@@ -95,6 +95,46 @@ describe('terminal-attach-scheduler', () => {
     background.unregister();
   });
 
+  it('limits background attaches to the scheduler budget and drains queued work on release', async () => {
+    const attachOrder: string[] = [];
+
+    const backgroundA = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-a');
+      },
+      getPriority: () => 2,
+      key: 'background-a',
+      taskId: 'task-background-a',
+    });
+    const backgroundB = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-b');
+      },
+      getPriority: () => 2,
+      key: 'background-b',
+      taskId: 'task-background-b',
+    });
+    const backgroundC = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-c');
+      },
+      getPriority: () => 2,
+      key: 'background-c',
+      taskId: 'task-background-c',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['background-a', 'background-b']);
+
+    backgroundA.release();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['background-a', 'background-b', 'background-c']);
+
+    backgroundA.unregister();
+    backgroundB.unregister();
+    backgroundC.unregister();
+  });
+
   it('reorders pending attaches when a candidate priority changes before attachment', async () => {
     const attachOrder: string[] = [];
     let dynamicPriority = 2;

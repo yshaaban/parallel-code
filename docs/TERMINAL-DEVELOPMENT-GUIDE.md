@@ -829,8 +829,11 @@ Do not stop at a targeted unit file here. The stress suite catches lifecycle dri
 
 Known proof gap:
 
-- different-width resize-authority flows still need stronger browser-lab coverage
-- attach-priority changes still need explicit scheduler-budget proof
+- different-width resize-authority has owner-local proof in `server/session-stress.test.ts` and
+  `src/components/terminal-view/terminal-input-pipeline.test.ts`; add browser-lab coverage when
+  real browser viewport geometry, focus, paint, or multi-context resize coordination is the risk
+- attach-priority changes must keep owner-local scheduler-budget proof current; the baseline budget
+  proof lives in `src/app/terminal-attach-scheduler.test.ts`
 
 If you change either area, add coverage or equivalent new validation before calling the slice done.
 

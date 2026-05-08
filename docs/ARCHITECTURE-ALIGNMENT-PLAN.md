@@ -1,11 +1,11 @@
 # Architecture Alignment Plan
 
-This document is the execution spec for the next architecture-quality pass.
+This document is the completion record for the architecture-quality pass that aligned
+server-owned review, attention, startup, and restore state.
 
-It focuses on closing the remaining contradictions between the current design
-principles and the actual implementation. It is intentionally narrower than a
-general roadmap. The goal is to make the existing product loop more coherent,
-more reliable, and harder to break:
+It focused on closing contradictions between the current design principles and the actual
+implementation. It is intentionally narrower than a general roadmap. The goal was to make the
+existing product loop more coherent, more reliable, and harder to break:
 
 1. server-owned state should be server-authoritative when practical
 2. shared concepts should have one canonical derivation
@@ -20,7 +20,9 @@ Workstream progress:
 
 - Workstream 1 is complete: convergence is now backend-owned, pushed, and replayed
 - Workstream 2 is complete: task-dot and attention semantics now share one canonical presentation mapper
-- Workstream 3 remains active: startup/session coordination and browser/Electron restore semantics still need final alignment
+- Workstream 3 is complete: startup/session coordination now flows through the shared server-state
+  bootstrap registry, with browser and Electron hydrating the same server-owned categories through
+  runtime-specific transports
 
 This plan originally addressed five specific implementation mismatches:
 
@@ -30,7 +32,9 @@ This plan originally addressed five specific implementation mismatches:
 4. startup/session coordination still carries too much policy
 5. browser and Electron still restore server-owned state differently
 
-Items 1 through 3 are now addressed in the implementation. Items 4 and 5 are the remaining active alignment targets.
+All five items are now addressed in the implementation. Future work should extend the shared
+bootstrap registry and guardrail tests when new server-owned state categories appear, instead of
+adding ad hoc startup listeners or runtime-specific restore policy.
 
 ## Desired End State
 
@@ -293,7 +297,7 @@ Suggested files:
 - `src/components/Sidebar.test.tsx`
 - `src/components/AttentionInbox.test.tsx`
 
-## Workstream 3: Session And Restore Contract Alignment (Remaining Active Workstream)
+## Workstream 3: Session And Restore Contract Alignment (Completed)
 
 This workstream addresses items 4 and 5 directly.
 
@@ -373,7 +377,7 @@ Target bootstrap categories:
 
 ### Validation Criteria
 
-Implementation is complete when:
+Implementation is complete because:
 
 - browser and Electron both hydrate the same categories of server-owned state
 - startup buffering semantics are consistent across those categories
@@ -397,9 +401,26 @@ Suggested files:
 - `src/runtime/server-sync.test.ts`
 - browser-mode scenario tests under `tests/`
 
+Current proof:
+
+- `src/domain/server-state-bootstrap.ts` owns the closed category and payload map
+- `electron/ipc/server-state-bootstrap.ts` builds the authoritative backend snapshot set
+- `src/app/server-state-bootstrap-registry.ts` owns runtime-specific listener scope and event
+  registration
+- `src/app/session-bootstrap-controller.ts` owns hydration, buffering, completion, and disposal
+- `src/app/desktop-session-startup.ts` hydrates Electron from `GetServerStateBootstrap` and browser
+  mode from cold bootstrap `serverStateBootstrap`
+- `server/browser-control-state.ts` and the websocket `state-bootstrap` message carry the browser
+  replay path without making `server/browser-control-plane.ts` a second registry
+- `src/app/desktop-session.architecture.test.ts`,
+  `src/app/server-state-bootstrap-registry.test.ts`, `src/app/server-state-bootstrap.test.ts`,
+  `src/app/session-bootstrap-controller.test.ts`, `src/app/desktop-session.test.ts`, and
+  `server/browser-control-plane.architecture.test.ts` guard the contract
+
 ## Cross-Cutting Type Hardening
 
-These changes should be applied while implementing the workstreams above.
+These changes were applied while implementing the workstreams above and remain standing rules for
+future lifecycle-heavy changes.
 
 ### Goals
 
@@ -424,29 +445,24 @@ These changes should be applied while implementing the workstreams above.
 
 ## Rollout Order
 
-This should not land as one giant commit.
+The work is structured as logical slices rather than one giant change. Use these boundaries when
+reviewing or splitting follow-up history.
 
 Completed:
 
 1. Workstream 1 backend convergence state + event contract
 2. Workstream 1 frontend convergence adoption
 3. Workstream 2 canonical task presentation mapping
-
-Remaining:
-
 4. Workstream 3 shared bootstrap/restore contract alignment
 5. follow-up type hardening and doc cleanup
 
 ## Suggested Commit Boundaries
 
-Completed:
+Suggested historical or follow-up boundaries:
 
 1. `Make convergence server-authoritative`
 2. `Drive review surfaces from pushed convergence state`
 3. `Unify supervision and task presentation status`
-
-Remaining:
-
 4. `Align Electron and browser startup state restoration`
 5. `Tighten typed bootstrap and replay boundaries`
 
@@ -463,7 +479,7 @@ Before each commit, verify:
 
 ## Final Acceptance Criteria
 
-This plan is complete when all of the following are true:
+This plan is complete because all of the following are true:
 
 1. review queue and review summary state are backend-owned, pushed, and restored
 2. changed-files/review surfaces no longer poll as the primary ownership model

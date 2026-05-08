@@ -58,4 +58,15 @@ describe('server state bootstrap registry guardrails', () => {
       );
     }
   });
+
+  it('does not introduce browser registry listener categories without an Electron listener path', () => {
+    for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+      const browserScope = getServerStateListenerScope(category, 'browser');
+      const electronScope = getServerStateListenerScope(category, 'electron');
+
+      if (browserScope !== 'none') {
+        expect(electronScope, `${category} electron listener scope`).not.toBe('none');
+      }
+    }
+  });
 });

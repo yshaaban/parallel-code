@@ -41,6 +41,11 @@ import {
   resetTerminalTraceClockAlignmentForTests,
   setTerminalTraceClockAlignment,
 } from '../../lib/terminal-trace-clock';
+import {
+  applyTaskCommandControllerChanged,
+  replaceTaskCommandControllers,
+  resetTaskCommandControllerStateForTests,
+} from '../../store/task-command-controllers';
 import { createTerminalInputPipeline } from './terminal-input-pipeline';
 
 function createDeferred<T>(): {
@@ -69,6 +74,11 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+function resetTaskCommandControllersForPipelineTests(): void {
+  resetTaskCommandControllerStateForTests();
+  replaceTaskCommandControllers([], { replaceVersion: 0 });
+}
+
 describe('terminal-input-pipeline', () => {
   const originalWindow = globalThis.window;
 
@@ -83,6 +93,7 @@ describe('terminal-input-pipeline', () => {
     resetRendererRuntimeDiagnostics();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
+    resetTaskCommandControllersForPipelineTests();
     vi.clearAllMocks();
     vi.mocked(invoke).mockResolvedValue(undefined);
     vi.mocked(hasTaskCommandLeaseTransportAvailability).mockReturnValue(true);
@@ -93,6 +104,7 @@ describe('terminal-input-pipeline', () => {
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
     vi.runOnlyPendingTimers();
+    resetTaskCommandControllersForPipelineTests();
     vi.useRealTimers();
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
@@ -927,6 +939,75 @@ describe('terminal-input-pipeline', () => {
       rows: 40,
       taskId: 'task-1',
     });
+
+    pipeline.cleanup();
+  });
+
+  it('preserves only the latest peer-controlled resize and commits it after takeover', async () => {
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(100, 30);
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+    pipeline.handleTerminalResize(132, 36);
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalResize.commitDeferredCounts[
+        'peer-controlled'
+      ],
+    ).toBeGreaterThanOrEqual(2);
+
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'runtime-client-1',
+      taskId: 'task-1',
+      version: 2,
+    });
+    pipeline.handleControllerChange('runtime-client-1');
+    await flushMicrotasks();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 132,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 36,
+      taskId: 'task-1',
+    });
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({ cols: 100, rows: 30 }),
+    );
 
     pipeline.cleanup();
   });
