@@ -152,6 +152,12 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     }
   }
 
+  function shouldFocusPreviewAfterPortAction(taskId: string): boolean {
+    return (
+      showPreview() && options.taskId() === taskId && options.isTaskPanelFocused(taskId, 'preview')
+    );
+  }
+
   async function refreshExposePortCandidates(): Promise<void> {
     const requestId = ++exposePortScanRequestId;
     const taskId = options.taskId();
@@ -327,7 +333,9 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     const wasOpen = showPreview();
     const snapshot = await options.exposeTaskPortForTask(taskId, port, label);
     options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(snapshot));
-    focusPreview(taskId, wasOpen);
+    if (shouldFocusPreviewAfterPortAction(taskId)) {
+      focusPreview(taskId, wasOpen);
+    }
   }
 
   const previewSection = () => {

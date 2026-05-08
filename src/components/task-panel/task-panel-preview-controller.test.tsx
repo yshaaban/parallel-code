@@ -1,6 +1,7 @@
 import { createRoot, createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { TaskPortSnapshot } from '../../domain/server-state';
 import type { TaskContainerInspectResult } from '../../domain/task-containers';
 import { createTaskPanelPreviewController } from './task-panel-preview-controller';
 
@@ -74,6 +75,16 @@ function createDeferred<T>(): {
   return { promise, reject, resolve };
 }
 
+function createTaskPortSnapshot(overrides: Partial<TaskPortSnapshot> = {}): TaskPortSnapshot {
+  return {
+    exposed: [],
+    observed: [],
+    taskId: 'task-1',
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
 function getLatestPreviewSectionProps() {
   const calls = createTaskPreviewSectionMock.mock.calls;
   return calls[calls.length - 1]?.[0] as
@@ -88,6 +99,7 @@ function getLatestPreviewSectionProps() {
         onRefreshContainerInspect: () => Promise<void>;
         onRefreshContainerLogs: () => Promise<void>;
         onDestroyContainers: () => Promise<void>;
+        onExposePort: (port: number, label?: string) => Promise<void>;
         onStartContainers: () => Promise<void>;
         onStopContainers: () => Promise<void>;
       }
@@ -432,6 +444,74 @@ describe('createTaskPanelPreviewController', () => {
     expect(props?.availableScanError()).toBe(
       'Port scanning is unavailable because this browser tab is connected to an older server build. Restart the local server, then refresh this page.',
     );
+
+    dispose();
+  });
+
+  it('does not reopen the preview when expose resolves after the user hides it', async () => {
+    const exposedSnapshot = createTaskPortSnapshot();
+    const exposeTaskPortForTask = vi.fn().mockResolvedValue(exposedSnapshot);
+    let previewFocused = true;
+    const options = createControllerOptions({
+      exposeTaskPortForTask,
+      isTaskPanelFocused: vi.fn(() => previewFocused),
+    });
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    expect(controller.previewSection()).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+    expect(props).toBeDefined();
+
+    const exposePromise = props?.onExposePort(5173);
+    controller.handlePreviewButtonClick();
+    previewFocused = false;
+    await exposePromise;
+
+    expect(options.applyTaskPortsEvent).toHaveBeenCalledWith({
+      ...exposedSnapshot,
+      kind: 'snapshot',
+    });
+    expect(controller.showPreview()).toBe(false);
+    expect(options.setTaskFocusedPanel).toHaveBeenCalledWith('task-1', 'prompt');
+
+    dispose();
+  });
+
+  it('does not steal focus back to preview when expose resolves after focus moved away', async () => {
+    const exposedSnapshot = createTaskPortSnapshot();
+    const exposeTaskPortForTask = vi.fn().mockResolvedValue(exposedSnapshot);
+    let previewFocused = true;
+    const options = createControllerOptions({
+      exposeTaskPortForTask,
+      isTaskPanelFocused: vi.fn(() => previewFocused),
+    });
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    expect(controller.previewSection()).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+    expect(props).toBeDefined();
+    vi.mocked(options.setTaskFocusedPanel).mockClear();
+
+    const exposePromise = props?.onExposePort(5173);
+    previewFocused = false;
+    await exposePromise;
+
+    expect(controller.showPreview()).toBe(true);
+    expect(options.setTaskFocusedPanel).not.toHaveBeenCalledWith('task-1', 'preview');
 
     dispose();
   });
