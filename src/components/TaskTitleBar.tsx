@@ -181,7 +181,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           onCommit={(value) => props.onUpdateTaskName(value)}
           class="editable-text"
           title={props.task.savedInitialPrompt}
-          ref={(handle) => props.onSetTitleEditHandle(handle)}
+          onHandle={(handle) => props.onSetTitleEditHandle(handle)}
         />
       </div>
       <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>

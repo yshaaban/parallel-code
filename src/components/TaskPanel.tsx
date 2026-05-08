@@ -311,10 +311,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                 }
               }}
               onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
-              ref={(element) => {
+              setTextareaRef={(element) => {
                 promptRef = element;
               }}
-              handle={(handle) => {
+              onHandle={(handle) => {
                 promptHandle = handle;
               }}
             />

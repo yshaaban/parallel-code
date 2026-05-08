@@ -1,4 +1,4 @@
-import { createEffect, onMount, onCleanup } from 'solid-js';
+import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
 import {
   store,
   closeTerminal,
@@ -26,7 +26,7 @@ interface TerminalPanelProps {
   isActive: boolean;
 }
 
-export function TerminalPanel(props: TerminalPanelProps) {
+export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
   let panelRef!: HTMLDivElement;
   let titleEditHandle: EditableTextHandle | undefined;
 
@@ -115,7 +115,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
             value={props.terminal.name}
             onCommit={(v) => updateTerminalName(props.terminal.id, v)}
             class="editable-text"
-            ref={(h) => (titleEditHandle = h)}
+            onHandle={(h) => (titleEditHandle = h)}
           />
         </div>
         <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>

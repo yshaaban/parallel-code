@@ -43,7 +43,7 @@ interface ChangedFilesListCommonProps {
   activeFilePath?: string | null;
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
-  ref?: (el: HTMLDivElement) => void;
+  setRootRef?: (element: HTMLDivElement) => void;
   filterHydraArtifacts?: boolean;
 }
 
@@ -527,7 +527,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
 
   return (
     <div
-      ref={props.ref}
+      ref={props.setRootRef}
       class="focusable-panel"
       tabIndex={0}
       onKeyDown={handleKeyDown}

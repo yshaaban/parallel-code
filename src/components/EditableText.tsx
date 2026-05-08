@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount, Show } from 'solid-js';
+import { createSignal, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { theme } from '../lib/theme';
 
@@ -12,10 +12,10 @@ interface EditableTextProps {
   placeholder?: string;
   class?: string;
   title?: string;
-  ref?: (handle: EditableTextHandle) => void;
+  onHandle?: (handle: EditableTextHandle | undefined) => void;
 }
 
-export function EditableText(props: EditableTextProps) {
+export function EditableText(props: EditableTextProps): JSX.Element {
   const [editing, setEditing] = createSignal(false);
   const [draft, setDraft] = createSignal('');
   const focusFrame = createAnimationFrameTask();
@@ -26,7 +26,7 @@ export function EditableText(props: EditableTextProps) {
   }
 
   onMount(() => {
-    props.ref?.({ startEdit });
+    props.onHandle?.({ startEdit });
   });
 
   function commit() {
@@ -53,7 +53,10 @@ export function EditableText(props: EditableTextProps) {
     });
   }
 
-  onCleanup(focusFrame.cancel);
+  onCleanup(() => {
+    focusFrame.cancel();
+    props.onHandle?.(undefined);
+  });
 
   return (
     <Show

@@ -17,7 +17,7 @@ describe('EditableText', () => {
       <EditableText
         value="Terminal"
         onCommit={vi.fn()}
-        ref={(nextHandle) => (handle = nextHandle)}
+        onHandle={(nextHandle) => (handle = nextHandle)}
       />
     ));
 

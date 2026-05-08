@@ -48,7 +48,9 @@ vi.mock('../../store/store', async () => {
 });
 
 vi.mock('../ChangedFilesList', () => ({
-  ChangedFilesList: () => <div>Changed files</div>,
+  ChangedFilesList: (props: { setRootRef?: (element: HTMLDivElement) => void }) => (
+    <div ref={props.setRootRef}>Changed files</div>
+  ),
 }));
 
 vi.mock('../ReviewPanel', () => ({
@@ -134,6 +136,73 @@ describe('TaskNotesFilesSection', () => {
       />
     ));
   }
+
+  it('clears the notes focus ref when the plan panel replaces notes', async () => {
+    const notesRefs: Array<HTMLTextAreaElement | undefined> = [];
+    const task = createTestTask({
+      id: 'task-1',
+      planContent: '# Generated plan',
+      notes: '',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={(element) => notesRefs.push(element)}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(notesRefs.at(-1)).toBeInstanceOf(HTMLTextAreaElement);
+    });
+
+    setNotesTab('plan');
+
+    await waitFor(() => {
+      expect(notesRefs.at(-1)).toBeUndefined();
+    });
+  });
+
+  it('clears the changed-files focus ref when review mode replaces changed files', async () => {
+    const changedFilesRefs: Array<HTMLDivElement | undefined> = [];
+    const task = createTestTask({
+      id: 'task-1',
+      notes: '',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={(element) => changedFilesRefs.push(element)}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(changedFilesRefs.at(-1)).toBeInstanceOf(HTMLDivElement);
+    });
+
+    setStore('reviewPanelOpen', 'task-1', true);
+
+    await waitFor(() => {
+      expect(changedFilesRefs.at(-1)).toBeUndefined();
+    });
+  });
 
   it('opens the shared markdown viewer from the floating review button', async () => {
     renderSection();

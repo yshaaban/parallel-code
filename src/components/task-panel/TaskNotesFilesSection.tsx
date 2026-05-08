@@ -4,6 +4,7 @@ import {
   createMemo,
   createSignal,
   createUniqueId,
+  onCleanup,
   type Accessor,
   type JSX,
   type Setter,
@@ -72,6 +73,20 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     return props.notesTab() === 'plan' && store.showPlans && Boolean(task().planContent);
   }
 
+  function isNotesVisible(): boolean {
+    return props.notesTab() === 'notes' || !store.showPlans || !task().planContent;
+  }
+
+  function isInlineChangedFilesVisible(): boolean {
+    return !reviewOpen();
+  }
+
+  function setInlineChangedFilesRef(element: HTMLDivElement): void {
+    if (isInlineChangedFilesVisible()) {
+      props.setChangedFilesRef(element);
+    }
+  }
+
   createDialogScroll({
     enabled: isPlanVisible,
     getElement: () => planContentRef,
@@ -83,6 +98,28 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     }
 
     planContentRef = undefined;
+    props.setPlanFocusRef(undefined);
+  });
+
+  createEffect(() => {
+    if (isNotesVisible()) {
+      return;
+    }
+
+    props.setNotesRef(undefined);
+  });
+
+  createEffect(() => {
+    if (isInlineChangedFilesVisible()) {
+      return;
+    }
+
+    props.setChangedFilesRef(undefined);
+  });
+
+  onCleanup(() => {
+    props.setChangedFilesRef(undefined);
+    props.setNotesRef(undefined);
     props.setPlanFocusRef(undefined);
   });
 
@@ -189,7 +226,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
             filterHydraArtifacts={props.isHydraTask()}
             isActive={props.isActive()}
             onFileClick={props.onFileClick}
-            ref={props.setChangedFilesRef}
+            setRootRef={fullscreen ? undefined : setInlineChangedFilesRef}
           />
         }
       >
@@ -278,9 +315,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     </div>
                   </Show>
 
-                  <Show
-                    when={props.notesTab() === 'notes' || !store.showPlans || !task().planContent}
-                  >
+                  <Show when={isNotesVisible()}>
                     <div
                       style={{
                         flex: '1',

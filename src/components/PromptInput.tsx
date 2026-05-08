@@ -47,8 +47,8 @@ interface PromptInputProps {
   prefillPrompt?: string;
   onPrefillConsumed?: () => void;
   onSend?: (text: string) => void;
-  ref?: (el: HTMLTextAreaElement) => void;
-  handle?: (h: PromptInputHandle) => void;
+  setTextareaRef?: (element: HTMLTextAreaElement | undefined) => void;
+  onHandle?: (handle: PromptInputHandle | undefined) => void;
 }
 
 // Quiescence: how often to snapshot and how long output must be stable.
@@ -285,7 +285,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   let textareaRef: HTMLTextAreaElement | undefined;
 
   onMount(() => {
-    props.handle?.({ getText: text, setText: updatePromptText });
+    props.onHandle?.({ getText: text, setText: updatePromptText });
     const focusKey = `${props.taskId}:prompt`;
     const actionKey = `${props.taskId}:send-prompt`;
     registerFocusFn(focusKey, () => textareaRef?.focus());
@@ -301,6 +301,8 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
     cleanupAutoSend = undefined;
     sendAbortController?.abort();
     promptLeaseSession.cleanup();
+    props.setTextareaRef?.(undefined);
+    props.onHandle?.(undefined);
   });
 
   function stopAutoSendTracking(): void {
@@ -514,7 +516,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
           class="prompt-textarea"
           ref={(el) => {
             textareaRef = el;
-            props.ref?.(el);
+            props.setTextareaRef?.(el);
           }}
           rows={3}
           value={text()}

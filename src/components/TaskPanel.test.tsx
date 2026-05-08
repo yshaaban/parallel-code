@@ -236,8 +236,10 @@ vi.mock('./TaskBranchInfoBar', () => ({
 
 vi.mock('./PromptInput', () => ({
   PromptInput: (props: {
-    ref?: (element: HTMLTextAreaElement) => void;
-    handle?: (handle: { getText: () => string; setText: (value: string) => void }) => void;
+    setTextareaRef?: (element: HTMLTextAreaElement | undefined) => void;
+    onHandle?: (
+      handle: { getText: () => string; setText: (value: string) => void } | undefined,
+    ) => void;
   }) => {
     let textarea!: HTMLTextAreaElement;
     return (
@@ -245,8 +247,8 @@ vi.mock('./PromptInput', () => ({
         aria-label="Prompt input"
         ref={(element) => {
           textarea = element;
-          props.ref?.(element);
-          props.handle?.({
+          props.setTextareaRef?.(element);
+          props.onHandle?.({
             getText: () => textarea.value,
             setText: (value: string) => {
               textarea.value = value;
