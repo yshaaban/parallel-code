@@ -20,6 +20,7 @@ describe('TaskStepsSection', () => {
 
     const { container } = render(() => (
       <TaskStepsSection
+        loadError={() => null}
         loading={() => false}
         onFileClick={onFileClick}
         onFocusSteps={onFocusSteps}
@@ -125,6 +126,7 @@ describe('TaskStepsSection', () => {
 
     render(() => (
       <TaskStepsSection
+        loadError={() => null}
         loading={() => false}
         onFileClick={() => {}}
         onFocusSteps={() => {}}
@@ -178,5 +180,57 @@ describe('TaskStepsSection', () => {
     await waitFor(() => {
       expect(onNaturalHeight.mock.calls.length).toBeGreaterThan(initialCallCount);
     });
+  });
+
+  it('keeps existing step history visible while showing snapshot load failures', () => {
+    const { container } = render(() => (
+      <TaskStepsSection
+        loadError={() => 'Failed to load task steps from the backend.'}
+        loading={() => false}
+        onFileClick={() => {}}
+        onFocusSteps={() => {}}
+        onJumpToStep={() => {}}
+        onNextClick={() => {}}
+        snapshot={() => ({
+          errorMessage: null,
+          revisionId: 'task-1::snapshot',
+          state: 'active',
+          steps: [
+            {
+              status: 'investigating',
+              summary: 'Investigating the failure',
+              timestamp: '2026-04-17T09:00:00.000Z',
+            },
+          ],
+          taskId: 'task-1',
+          trackingEnabled: true,
+          updatedAt: 1_000,
+        })}
+        summary={() => ({
+          errorMessage: null,
+          latestStep: {
+            status: 'investigating',
+            summary: 'Investigating the failure',
+            timestamp: '2026-04-17T09:00:00.000Z',
+          },
+          nextAction: null,
+          preview: 'Investigating the failure',
+          revisionId: 'task-1::summary',
+          state: 'active',
+          stepCount: 1,
+          taskId: 'task-1',
+          trackingEnabled: true,
+          updatedAt: 1_000,
+        })}
+        taskId="task-1"
+      />
+    ));
+    const view = within(container);
+
+    expect(view.getByText('Steps unavailable')).toBeTruthy();
+    expect(view.getByRole('status').textContent).toContain(
+      'Failed to load task steps from the backend.',
+    );
+    expect(view.getByText('Investigating the failure')).toBeTruthy();
   });
 });

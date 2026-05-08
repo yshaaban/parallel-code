@@ -29,10 +29,19 @@ function createChangedFile(filePath: string): ChangedFile {
   };
 }
 
+function getTaskStepsLoadErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return 'Failed to load task steps.';
+}
+
 export function createTaskPanelStepsController(options: TaskPanelStepsControllerOptions): {
   stepsSection: Accessor<PanelChild | null>;
 } {
   const [loading, setLoading] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
   const [naturalHeight, setNaturalHeight] = createSignal(96);
 
   const summary = createMemo(() => getTaskStepsSummary(options.task().id) ?? null);
@@ -46,6 +55,9 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
     setLoading(true);
     try {
       await fetchTaskStepsSnapshotForTask(options.task().id);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(getTaskStepsLoadErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -103,6 +115,7 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
       requestSize: () => naturalHeight(),
       content: () => (
         <TaskStepsSection
+          loadError={loadError}
           loading={loading}
           onFileClick={handleFileClick}
           onFocusSteps={handleFocusSteps}

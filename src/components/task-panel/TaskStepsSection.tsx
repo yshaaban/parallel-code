@@ -19,6 +19,7 @@ import type {
 import { sf } from '../../lib/fontScale';
 
 interface TaskStepsSectionProps {
+  loadError: Accessor<string | null>;
   loading: Accessor<boolean>;
   onFileClick: (filePath: string) => void;
   onFocusSteps: () => void;
@@ -248,10 +249,21 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
     const currentSteps = steps();
     return currentSteps.length > 1 ? currentSteps.slice(0, -1) : [];
   });
+  const errorMessage = createMemo(() => {
+    const summary = props.summary();
+    if (summary?.state === 'error') {
+      return summary.errorMessage ?? 'Failed to read task steps.';
+    }
+
+    return props.loadError();
+  });
   const headerLabel = createMemo(() => {
     const summary = props.summary();
     if (props.loading()) {
       return 'Loading…';
+    }
+    if (errorMessage()) {
+      return 'Steps unavailable';
     }
     if (!summary) {
       return 'Waiting for the first step';
@@ -375,22 +387,26 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
           outline: 'none',
         }}
       >
-        <Show when={props.summary()?.state === 'error'}>
-          <div
-            style={{
-              color: theme.error,
-              background: `color-mix(in srgb, ${theme.error} 10%, transparent)`,
-              border: `1px solid color-mix(in srgb, ${theme.error} 35%, transparent)`,
-              'border-radius': '10px',
-              padding: '10px 12px',
-              ...typography.ui,
-            }}
-          >
-            {props.summary()?.errorMessage ?? 'Failed to read task steps.'}
-          </div>
+        <Show when={errorMessage()}>
+          {(message) => (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                color: theme.error,
+                background: `color-mix(in srgb, ${theme.error} 10%, transparent)`,
+                border: `1px solid color-mix(in srgb, ${theme.error} 35%, transparent)`,
+                'border-radius': '10px',
+                padding: '10px 12px',
+                ...typography.ui,
+              }}
+            >
+              {message()}
+            </div>
+          )}
         </Show>
 
-        <Show when={!props.loading() && steps().length === 0 && props.summary()?.state !== 'error'}>
+        <Show when={!props.loading() && steps().length === 0 && !errorMessage()}>
           <div
             style={{
               color: theme.fgMuted,
