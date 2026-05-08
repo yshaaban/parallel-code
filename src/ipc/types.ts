@@ -67,6 +67,7 @@ export interface ChangedFile {
 
 export interface ProjectDiffResult {
   files: ChangedFile[];
+  revisionId?: string;
   totalAdded: number;
   totalRemoved: number;
 }

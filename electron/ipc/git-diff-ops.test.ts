@@ -230,6 +230,23 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     });
   });
 
+  it('includes a backend revision id for all-project diff snapshots', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    writeRepoFile(repoPath, 'README.md', '# repo\nupdated\n');
+
+    const projectDiff = await getProjectDiff(repoPath, 'all');
+
+    expect(projectDiff.revisionId).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
+    expect(projectDiff.files).toEqual([
+      expect.objectContaining({
+        path: 'README.md',
+        status: 'M',
+      }),
+    ]);
+  });
+
   it('includes committed deleted files in branch project diff mode', async () => {
     const repoPath = createRepo();
     repoPaths.push(repoPath);
@@ -241,7 +258,10 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     runGit(repoPath, 'add', '-A');
     runGit(repoPath, 'commit', '-m', 'delete file on branch');
 
-    await expect(getProjectDiff(repoPath, 'branch')).resolves.toMatchObject({
+    const projectDiff = await getProjectDiff(repoPath, 'branch');
+
+    expect(projectDiff.revisionId).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
+    expect(projectDiff).toMatchObject({
       files: [
         {
           committed: true,

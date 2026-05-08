@@ -19,6 +19,7 @@ export {
   getAllFileDiffsFromBranch,
   getChangedFiles,
   getChangedFilesFromBranch,
+  getChangedFilesFromBranchWithRevision,
   getFileDiff,
   getFileDiffFromBranch,
   getProjectDiff,

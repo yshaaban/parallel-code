@@ -1,4 +1,4 @@
-import { getChangedFilesFromBranch, getProjectDiff } from './git.js';
+import { getChangedFilesFromBranchWithRevision, getProjectDiff } from './git.js';
 import { runQueuedRefresh } from './queued-refresh.js';
 import type { ChangedFile } from '../../src/ipc/types.js';
 import type {
@@ -66,6 +66,7 @@ function createTaskReviewRevisionId(
   branchName: string,
   files: ReadonlyArray<ChangedFile>,
   totals: { totalAdded: number; totalRemoved: number },
+  diffRevisionId?: string,
 ): string {
   const fileIdentity = files
     .map(
@@ -78,6 +79,7 @@ function createTaskReviewRevisionId(
     source,
     worktreePath,
     branchName,
+    diffRevisionId ?? 'no-diff-revision',
     `${totals.totalAdded}`,
     `${totals.totalRemoved}`,
     fileIdentity,
@@ -88,6 +90,7 @@ function createTaskReviewSnapshot(
   metadata: TaskReviewMetadata,
   files: ChangedFile[],
   source: TaskReviewSource,
+  diffRevisionId?: string,
 ): TaskReviewSnapshot {
   const totals = summarizeChangedFiles(files);
   return {
@@ -100,6 +103,7 @@ function createTaskReviewSnapshot(
       metadata.branchName,
       files,
       totals,
+      diffRevisionId,
     ),
     source,
     taskId: metadata.taskId,
@@ -179,15 +183,20 @@ function setTaskReviewSnapshot(snapshot: TaskReviewSnapshot): void {
 async function loadTaskReviewSnapshot(metadata: TaskReviewMetadata): Promise<TaskReviewSnapshot> {
   try {
     const projectDiff = await getProjectDiff(metadata.worktreePath, 'all', metadata.baseBranch);
-    return createTaskReviewSnapshot(metadata, projectDiff.files, 'worktree');
+    return createTaskReviewSnapshot(
+      metadata,
+      projectDiff.files,
+      'worktree',
+      projectDiff.revisionId,
+    );
   } catch {
     try {
-      const files = await getChangedFilesFromBranch(
+      const result = await getChangedFilesFromBranchWithRevision(
         metadata.projectRoot,
         metadata.branchName,
         metadata.baseBranch,
       );
-      return createTaskReviewSnapshot(metadata, files, 'branch-fallback');
+      return createTaskReviewSnapshot(metadata, result.files, 'branch-fallback', result.revisionId);
     } catch {
       return createUnavailableTaskReviewSnapshot(metadata);
     }

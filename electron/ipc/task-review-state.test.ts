@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChangedFile } from '../../src/ipc/types.js';
 
-const { getChangedFilesFromBranchMock, getProjectDiffMock } = vi.hoisted(() => ({
-  getChangedFilesFromBranchMock: vi.fn(),
+const { getChangedFilesFromBranchWithRevisionMock, getProjectDiffMock } = vi.hoisted(() => ({
+  getChangedFilesFromBranchWithRevisionMock: vi.fn(),
   getProjectDiffMock: vi.fn(),
 }));
 
 vi.mock('./git.js', () => ({
-  getChangedFilesFromBranch: getChangedFilesFromBranchMock,
+  getChangedFilesFromBranchWithRevision: getChangedFilesFromBranchWithRevisionMock,
   getProjectDiff: getProjectDiffMock,
 }));
 
@@ -98,14 +98,42 @@ describe('task-review-state', () => {
       source: 'worktree',
       files: [expect.objectContaining({ path: 'src/first.ts' })],
     });
-    expect(getChangedFilesFromBranchMock).not.toHaveBeenCalled();
+    expect(getChangedFilesFromBranchWithRevisionMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a worktree review snapshot when only the backend diff revision changes', async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeTaskReview(listener);
+    const files = [createChangedFile({ path: 'src/stable.ts', committed: true })];
+    getProjectDiffMock
+      .mockResolvedValueOnce({
+        files,
+        revisionId: 'base:head-one',
+        totalAdded: 3,
+        totalRemoved: 1,
+      })
+      .mockResolvedValueOnce({
+        files,
+        revisionId: 'base:head-two',
+        totalAdded: 3,
+        totalRemoved: 1,
+      });
+
+    registerTask();
+    await refreshTaskReview('task-1');
+    await refreshTaskReview('task-1');
+    unsubscribe();
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(getTaskReviewSnapshot('task-1')?.revisionId).toContain('base:head-two');
   });
 
   it('falls back to branch files when project diff fails', async () => {
     getProjectDiffMock.mockRejectedValue(new Error('missing worktree'));
-    getChangedFilesFromBranchMock.mockResolvedValue([
-      createChangedFile({ path: 'src/fallback.ts', committed: true }),
-    ]);
+    getChangedFilesFromBranchWithRevisionMock.mockResolvedValue({
+      files: [createChangedFile({ path: 'src/fallback.ts', committed: true })],
+      revisionId: 'base:branch-head',
+    });
 
     registerTask();
     await refreshTaskReview('task-1');
@@ -117,15 +145,40 @@ describe('task-review-state', () => {
     });
   });
 
+  it('emits a branch fallback review snapshot when only the backend diff revision changes', async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeTaskReview(listener);
+    const files = [createChangedFile({ path: 'src/fallback.ts', committed: true })];
+    getProjectDiffMock.mockRejectedValue(new Error('missing worktree'));
+    getChangedFilesFromBranchWithRevisionMock
+      .mockResolvedValueOnce({
+        files,
+        revisionId: 'base:branch-head-one',
+      })
+      .mockResolvedValueOnce({
+        files,
+        revisionId: 'base:branch-head-two',
+      });
+
+    registerTask();
+    await refreshTaskReview('task-1');
+    await refreshTaskReview('task-1');
+    unsubscribe();
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(getTaskReviewSnapshot('task-1')?.revisionId).toContain('base:branch-head-two');
+  });
+
   it('returns to worktree review data when the worktree becomes available again', async () => {
     getProjectDiffMock.mockRejectedValueOnce(new Error('missing worktree')).mockResolvedValueOnce({
       files: [createChangedFile({ path: 'src/worktree.ts', committed: false })],
       totalAdded: 4,
       totalRemoved: 0,
     });
-    getChangedFilesFromBranchMock.mockResolvedValue([
-      createChangedFile({ path: 'src/fallback.ts', committed: true }),
-    ]);
+    getChangedFilesFromBranchWithRevisionMock.mockResolvedValue({
+      files: [createChangedFile({ path: 'src/fallback.ts', committed: true })],
+      revisionId: 'base:branch-head',
+    });
 
     registerTask();
 
@@ -140,7 +193,7 @@ describe('task-review-state', () => {
       source: 'worktree',
       files: [expect.objectContaining({ path: 'src/worktree.ts', committed: false })],
     });
-    expect(getChangedFilesFromBranchMock).toHaveBeenCalledTimes(1);
+    expect(getChangedFilesFromBranchWithRevisionMock).toHaveBeenCalledTimes(1);
     expect(getProjectDiffMock).toHaveBeenCalledTimes(2);
   });
 
