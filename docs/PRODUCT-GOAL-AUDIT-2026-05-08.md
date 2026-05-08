@@ -219,6 +219,11 @@ Browser lanes intentionally not run:
   root files and repeated-path edge cases keep their prior labels, and both changed-files and review
   panel file-list consumers still render through the same Solid review lane; backend git/diff truth,
   browser navigation, websocket auth, multi-context coordination, and real paint are unchanged.
+- The changed-files footer stats cleanup is a pure Solid review projection performance fix. The
+  existing footer regressions prove committed totals and uncommitted counts stay visible and
+  correctly separated while the implementation derives them in one pass over the visible files;
+  backend git/diff truth, browser navigation, websocket auth, multi-context coordination, and real
+  paint are unchanged.
 - The task-steps load failure cleanup is a Solid workflow/presentation-state fix. The regressions
   prove failed full-step snapshot loads become visible without hiding existing backend-owned step
   history and do not leak unhandled rejections; backend file watching, replay, browser navigation,

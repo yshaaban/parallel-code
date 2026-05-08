@@ -63,6 +63,13 @@ type ChangedFilesListProps = TaskChangedFilesListProps | WorktreeChangedFilesLis
 
 type ChangedFilesRefreshSource = 'branch-fallback' | 'project-diff' | 'unavailable';
 
+interface ChangedFilesVisibleFileStats {
+  fileCount: number;
+  totalAdded: number;
+  totalRemoved: number;
+  uncommittedCount: number;
+}
+
 interface ChangedFilesCacheEntry {
   result?: TaskReviewFilesResult;
   expiresAt: number;
@@ -185,6 +192,29 @@ function getChangedFilesRefreshErrorMessage(error: unknown): string {
   }
 
   return 'Unknown refresh failure';
+}
+
+function getChangedFilesVisibleFileStats(
+  files: ReadonlyArray<ChangedFile>,
+): ChangedFilesVisibleFileStats {
+  const stats: ChangedFilesVisibleFileStats = {
+    fileCount: files.length,
+    totalAdded: 0,
+    totalRemoved: 0,
+    uncommittedCount: 0,
+  };
+
+  for (const file of files) {
+    if (!file.committed) {
+      stats.uncommittedCount += 1;
+      continue;
+    }
+
+    stats.totalAdded += file.lines_added;
+    stats.totalRemoved += file.lines_removed;
+  }
+
+  return stats;
 }
 
 export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
@@ -504,16 +534,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     }
   });
 
-  const committedVisibleFiles = createMemo(() => visibleFiles().filter((file) => file.committed));
-  const totalAdded = createMemo(() =>
-    committedVisibleFiles().reduce((sum, file) => sum + file.lines_added, 0),
-  );
-  const totalRemoved = createMemo(() =>
-    committedVisibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
-  );
-  const uncommittedCount = createMemo(
-    () => visibleFiles().filter((file) => !file.committed).length,
-  );
+  const visibleFileStats = createMemo(() => getChangedFilesVisibleFileStats(visibleFiles()));
   const hydraToggleLabel = createMemo(() =>
     getHydraArtifactToggleLabel({
       count: hiddenHydraArtifactCount(),
@@ -704,7 +725,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
           }}
         </For>
       </div>
-      <Show when={visibleFiles().length > 0}>
+      <Show when={visibleFileStats().fileCount > 0}>
         <div
           style={{
             padding: 'var(--space-2xs) var(--space-sm)',
@@ -721,15 +742,19 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
               gap: '2px var(--space-xs)',
             }}
           >
-            <span style={{ 'white-space': 'nowrap' }}>{visibleFiles().length} files</span>
-            <span style={{ color: theme.success, 'white-space': 'nowrap' }}>+{totalAdded()}</span>
-            <span style={{ color: theme.error, 'white-space': 'nowrap' }}>-{totalRemoved()}</span>
-            <Show when={uncommittedCount() > 0}>
+            <span style={{ 'white-space': 'nowrap' }}>{visibleFileStats().fileCount} files</span>
+            <span style={{ color: theme.success, 'white-space': 'nowrap' }}>
+              +{visibleFileStats().totalAdded}
+            </span>
+            <span style={{ color: theme.error, 'white-space': 'nowrap' }}>
+              -{visibleFileStats().totalRemoved}
+            </span>
+            <Show when={visibleFileStats().uncommittedCount > 0}>
               <span
                 style={{ color: theme.warning, 'white-space': 'nowrap' }}
-                title={`${uncommittedCount()} uncommitted files`}
+                title={`${visibleFileStats().uncommittedCount} uncommitted files`}
               >
-                {uncommittedCount()} uncommitted
+                {visibleFileStats().uncommittedCount} uncommitted
               </span>
             </Show>
             <Show
@@ -761,7 +786,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
           </div>
         </div>
       </Show>
-      <Show when={visibleFiles().length === 0}>
+      <Show when={visibleFileStats().fileCount === 0}>
         <div
           role={isReviewUnavailable() || worktreeRefreshError() ? 'status' : undefined}
           aria-live={isReviewUnavailable() || worktreeRefreshError() ? 'polite' : undefined}
