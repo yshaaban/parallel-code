@@ -19,7 +19,10 @@ import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import type { ReviewCommitSummary } from '../domain/review-commit-history';
 import type { TaskReviewSnapshot } from '../domain/task-review';
 import { isDiffableChangedFilePath } from '../lib/changed-file-display';
-import { isHydraCoordinationArtifact } from '../lib/hydra';
+import {
+  getChangedFilesVisibilityModel,
+  getChangedFilesVisibleFileStats,
+} from '../lib/changed-file-projection';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
@@ -158,13 +161,14 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const scopedReviewFiles = createMemo(() => {
     return getCommitScopedReviewFiles(reviewFiles(), selectedCommit());
   });
-  const hiddenHydraArtifactCount = createMemo(() => {
-    if (!props.filterHydraArtifacts) {
-      return 0;
-    }
-
-    return scopedReviewFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
-  });
+  const visibilityModel = createMemo(() =>
+    getChangedFilesVisibilityModel(scopedReviewFiles(), {
+      filterHydraArtifacts: Boolean(props.filterHydraArtifacts),
+      includeFile: (file) => isDiffableChangedFilePath(file.path),
+      showHydraArtifacts: showHydraArtifacts(),
+    }),
+  );
+  const hiddenHydraArtifactCount = createMemo(() => visibilityModel().hiddenHydraArtifactCount);
   const emptyStateMessage = createMemo(() => {
     if (isReviewUnavailable()) {
       return 'Review data unavailable';
@@ -187,22 +191,8 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
 
     return 'Select a file';
   });
-  const visibleFiles = createMemo(() => {
-    const diffableFiles = scopedReviewFiles().filter((file) =>
-      isDiffableChangedFilePath(file.path),
-    );
-    if (!props.filterHydraArtifacts || showHydraArtifacts()) {
-      return diffableFiles;
-    }
-
-    return diffableFiles.filter((file) => !isHydraCoordinationArtifact(file.path));
-  });
-  const visibleTotalAdded = createMemo(() =>
-    visibleFiles().reduce((sum, file) => sum + file.lines_added, 0),
-  );
-  const visibleTotalRemoved = createMemo(() =>
-    visibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
-  );
+  const visibleFiles = createMemo(() => visibilityModel().visibleFiles);
+  const visibleFileStats = createMemo(() => getChangedFilesVisibleFileStats(visibleFiles(), 'all'));
   const hydraToggleLabel = createMemo(() =>
     getHydraArtifactToggleLabel({
       count: hiddenHydraArtifactCount(),
@@ -391,7 +381,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         canSelectNextFile={canSelectNextFile()}
         canSelectPreviousFile={canSelectPreviousFile()}
         commentCount={reviewSession.annotations().length}
-        fileCount={visibleFiles().length}
+        fileCount={visibleFileStats().fileCount}
         mode={controller.mode()}
         onNext={navNext}
         onOpenFullscreen={props.onOpenFullscreen}
@@ -404,8 +394,8 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         sideBySide={controller.sideBySide()}
         sidebarOpen={reviewSession.sidebarOpen()}
         showOpenFullscreen={Boolean(props.onOpenFullscreen && !props.fullscreen)}
-        totalAdded={visibleTotalAdded()}
-        totalRemoved={visibleTotalRemoved()}
+        totalAdded={visibleFileStats().totalAdded}
+        totalRemoved={visibleFileStats().totalRemoved}
       />
 
       <Show when={props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0}>

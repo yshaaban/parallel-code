@@ -17,6 +17,10 @@ import {
 } from '../app/review-files';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { getChangedFileDisplayEntries } from '../lib/changed-file-display';
+import {
+  getChangedFilesVisibilityModel,
+  getChangedFilesVisibleFileStats,
+} from '../lib/changed-file-projection';
 import { buildFileTree, flattenVisibleTree } from '../lib/file-tree';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import {
@@ -26,7 +30,6 @@ import {
   getHydraArtifactToggleTitle,
 } from './hydra-artifact-labels';
 import { scrollSelectedRowIntoView } from './file-list-scroll';
-import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 import { getStatusColor } from '../lib/status-colors';
@@ -62,18 +65,6 @@ interface WorktreeChangedFilesListProps extends ChangedFilesListCommonProps {
 type ChangedFilesListProps = TaskChangedFilesListProps | WorktreeChangedFilesListProps;
 
 type ChangedFilesRefreshSource = 'branch-fallback' | 'project-diff' | 'unavailable';
-
-interface ChangedFilesVisibleFileStats {
-  fileCount: number;
-  totalAdded: number;
-  totalRemoved: number;
-  uncommittedCount: number;
-}
-
-interface ChangedFilesVisibilityModel {
-  hiddenHydraArtifactCount: number;
-  visibleFiles: ReadonlyArray<ChangedFile>;
-}
 
 interface ChangedFilesCacheEntry {
   result?: TaskReviewFilesResult;
@@ -199,72 +190,6 @@ function getChangedFilesRefreshErrorMessage(error: unknown): string {
   return 'Unknown refresh failure';
 }
 
-function getChangedFilesVisibleFileStats(
-  files: ReadonlyArray<ChangedFile>,
-): ChangedFilesVisibleFileStats {
-  const stats: ChangedFilesVisibleFileStats = {
-    fileCount: files.length,
-    totalAdded: 0,
-    totalRemoved: 0,
-    uncommittedCount: 0,
-  };
-
-  for (const file of files) {
-    if (!file.committed) {
-      stats.uncommittedCount += 1;
-      continue;
-    }
-
-    stats.totalAdded += file.lines_added;
-    stats.totalRemoved += file.lines_removed;
-  }
-
-  return stats;
-}
-
-function getChangedFilesVisibilityModel(
-  files: ReadonlyArray<ChangedFile>,
-  filterHydraArtifacts: boolean,
-  showHydraArtifacts: boolean,
-): ChangedFilesVisibilityModel {
-  if (!filterHydraArtifacts) {
-    return {
-      hiddenHydraArtifactCount: 0,
-      visibleFiles: files,
-    };
-  }
-
-  let hiddenHydraArtifactCount = 0;
-  if (showHydraArtifacts) {
-    for (const file of files) {
-      if (isHydraCoordinationArtifact(file.path)) {
-        hiddenHydraArtifactCount += 1;
-      }
-    }
-
-    return {
-      hiddenHydraArtifactCount,
-      visibleFiles: files,
-    };
-  }
-
-  const visibleFiles: ChangedFile[] = [];
-
-  for (const file of files) {
-    if (isHydraCoordinationArtifact(file.path)) {
-      hiddenHydraArtifactCount += 1;
-      continue;
-    }
-
-    visibleFiles.push(file);
-  }
-
-  return {
-    hiddenHydraArtifactCount,
-    visibleFiles,
-  };
-}
-
 export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [taskReviewUnavailable, setTaskReviewUnavailable] = createSignal(false);
@@ -286,11 +211,10 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   );
 
   const visibilityModel = createMemo(() =>
-    getChangedFilesVisibilityModel(
-      files(),
-      Boolean(props.filterHydraArtifacts),
-      showHydraArtifacts(),
-    ),
+    getChangedFilesVisibilityModel(files(), {
+      filterHydraArtifacts: Boolean(props.filterHydraArtifacts),
+      showHydraArtifacts: showHydraArtifacts(),
+    }),
   );
   const hiddenHydraArtifactCount = createMemo(() => visibilityModel().hiddenHydraArtifactCount);
   const emptyStateMessage = createMemo(() => {
@@ -579,7 +503,9 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     }
   });
 
-  const visibleFileStats = createMemo(() => getChangedFilesVisibleFileStats(visibleFiles()));
+  const visibleFileStats = createMemo(() =>
+    getChangedFilesVisibleFileStats(visibleFiles(), 'committed'),
+  );
   const hydraToggleLabel = createMemo(() =>
     getHydraArtifactToggleLabel({
       count: hiddenHydraArtifactCount(),
