@@ -260,6 +260,35 @@ describe('NewTaskDialog', () => {
     });
   });
 
+  it('shows ignored directory suggestion failures without blocking task creation', async () => {
+    createTaskMock.mockResolvedValue('task-1');
+    invokeMock.mockRejectedValue(new Error('gitignored backend unavailable'));
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    expect(
+      await screen.findByText(
+        'Ignored directory suggestions unavailable: gitignored backend unavailable',
+      ),
+    ).toBeDefined();
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    fireEvent.input(taskNameInput, {
+      target: { value: 'Ship it' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Ship it',
+          projectId: 'project-1',
+          symlinkDirs: [],
+        }),
+      );
+    });
+  });
+
   it('resets steps tracking when the dialog reopens', async () => {
     const user = userEvent.setup();
     const [open, setOpen] = createSignal(true);

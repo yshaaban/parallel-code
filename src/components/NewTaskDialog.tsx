@@ -51,6 +51,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
+  const [ignoredDirsError, setIgnoredDirsError] = createSignal<string | null>(null);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
   const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
@@ -133,6 +134,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setName('');
     setError('');
     setLoading(false);
+    setIgnoredDirsError(null);
     setCurrentBranchMode(false);
     setExistingWorktreeMode(false);
     setExistingWorktreePath('');
@@ -202,9 +204,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     if (!path) {
       setIgnoredDirs([]);
+      setIgnoredDirsError(null);
       setSelectedDirs(new Set<string>());
       return;
     }
+
+    setIgnoredDirsError(null);
 
     void (async () => {
       try {
@@ -212,10 +217,13 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         if (cancelled) return;
         setIgnoredDirs(dirs);
         setSelectedDirs(new Set(dirs)); // all checked by default
-      } catch {
+        setIgnoredDirsError(null);
+      } catch (error) {
         if (cancelled) return;
         setIgnoredDirs([]);
         setSelectedDirs(new Set<string>());
+        const message = error instanceof Error ? error.message.trim() : String(error).trim();
+        setIgnoredDirsError(message || 'Unknown backend error');
       }
     })();
 
@@ -803,6 +811,25 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             selectedDirs={selectedDirs()}
             onToggle={toggleSelectedDir}
           />
+        </Show>
+
+        <Show when={createsNewWorktree() ? ignoredDirsError() : null}>
+          {(message) => (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                color: theme.warning,
+                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                padding: '6px 10px',
+                'border-radius': '8px',
+                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                ...typography.meta,
+              }}
+            >
+              Ignored directory suggestions unavailable: {message()}
+            </div>
+          )}
         </Show>
 
         <Show when={error()}>
