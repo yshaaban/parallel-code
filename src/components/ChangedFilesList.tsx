@@ -70,6 +70,11 @@ interface ChangedFilesVisibleFileStats {
   uncommittedCount: number;
 }
 
+interface ChangedFilesVisibilityModel {
+  hiddenHydraArtifactCount: number;
+  visibleFiles: ReadonlyArray<ChangedFile>;
+}
+
 interface ChangedFilesCacheEntry {
   result?: TaskReviewFilesResult;
   expiresAt: number;
@@ -217,6 +222,49 @@ function getChangedFilesVisibleFileStats(
   return stats;
 }
 
+function getChangedFilesVisibilityModel(
+  files: ReadonlyArray<ChangedFile>,
+  filterHydraArtifacts: boolean,
+  showHydraArtifacts: boolean,
+): ChangedFilesVisibilityModel {
+  if (!filterHydraArtifacts) {
+    return {
+      hiddenHydraArtifactCount: 0,
+      visibleFiles: files,
+    };
+  }
+
+  let hiddenHydraArtifactCount = 0;
+  if (showHydraArtifacts) {
+    for (const file of files) {
+      if (isHydraCoordinationArtifact(file.path)) {
+        hiddenHydraArtifactCount += 1;
+      }
+    }
+
+    return {
+      hiddenHydraArtifactCount,
+      visibleFiles: files,
+    };
+  }
+
+  const visibleFiles: ChangedFile[] = [];
+
+  for (const file of files) {
+    if (isHydraCoordinationArtifact(file.path)) {
+      hiddenHydraArtifactCount += 1;
+      continue;
+    }
+
+    visibleFiles.push(file);
+  }
+
+  return {
+    hiddenHydraArtifactCount,
+    visibleFiles,
+  };
+}
+
 export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [taskReviewUnavailable, setTaskReviewUnavailable] = createSignal(false);
@@ -237,14 +285,14 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     Boolean(props.kind === 'task' && taskReviewUnavailable()),
   );
 
-  const rawFiles = createMemo(() => {
-    return files();
-  });
-
-  const hiddenHydraArtifactCount = createMemo(() => {
-    if (!props.filterHydraArtifacts) return 0;
-    return rawFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
-  });
+  const visibilityModel = createMemo(() =>
+    getChangedFilesVisibilityModel(
+      files(),
+      Boolean(props.filterHydraArtifacts),
+      showHydraArtifacts(),
+    ),
+  );
+  const hiddenHydraArtifactCount = createMemo(() => visibilityModel().hiddenHydraArtifactCount);
   const emptyStateMessage = createMemo(() => {
     if (isReviewUnavailable()) {
       return 'Review data unavailable';
@@ -262,10 +310,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     return 'No changed files';
   });
 
-  const visibleFiles = createMemo(() => {
-    if (!props.filterHydraArtifacts || showHydraArtifacts()) return rawFiles();
-    return rawFiles().filter((file) => !isHydraCoordinationArtifact(file.path));
-  });
+  const visibleFiles = createMemo(() => visibilityModel().visibleFiles);
 
   const fileDisplayEntries = createMemo(() => {
     return new Map(

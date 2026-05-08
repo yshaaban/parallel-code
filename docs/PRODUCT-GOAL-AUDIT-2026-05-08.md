@@ -224,6 +224,11 @@ Browser lanes intentionally not run:
   correctly separated while the implementation derives them in one pass over the visible files;
   backend git/diff truth, browser navigation, websocket auth, multi-context coordination, and real
   paint are unchanged.
+- The changed-files Hydra visibility cleanup is a pure Solid review projection performance fix. The
+  existing Hydra-hidden regression proves coordination artifacts stay hidden until requested and
+  still contribute the hidden summary, while the implementation derives visibility and hidden count
+  through one projection; backend git/diff truth, browser navigation, websocket auth,
+  multi-context coordination, and real paint are unchanged.
 - The task-steps load failure cleanup is a Solid workflow/presentation-state fix. The regressions
   prove failed full-step snapshot loads become visible without hiding existing backend-owned step
   history and do not leak unhandled rejections; backend file watching, replay, browser navigation,
