@@ -102,8 +102,6 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   let exposePortScanRequestId = 0;
   let containerInspectRequestId = 0;
   let containerLogsRequestId = 0;
-  let initialExposePortScanTaskId: string | null = null;
-  let initialExposePortScanWorktreePath: string | null = null;
 
   function createTaskContainerRequest(): TaskContainerRequest {
     const projectContainerConfig = options.projectContainerConfig();
@@ -125,7 +123,6 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   function focusPreview(taskId: string, wasOpen: boolean): void {
     setShowPreview(true);
     options.setTaskFocusedPanel(taskId, 'preview');
-    requestInitialExposePortScan();
     if (wasOpen) {
       void refreshContainerInspect();
     }
@@ -183,21 +180,6 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
         setScanningExposePortCandidates(false);
       }
     }
-  }
-
-  function requestInitialExposePortScan(): void {
-    const taskId = options.taskId();
-    const worktreePath = options.worktreePath();
-    if (
-      initialExposePortScanTaskId === taskId &&
-      initialExposePortScanWorktreePath === worktreePath
-    ) {
-      return;
-    }
-
-    initialExposePortScanTaskId = taskId;
-    initialExposePortScanWorktreePath = worktreePath;
-    void refreshExposePortCandidates();
   }
 
   async function refreshContainerInspect(): Promise<void> {
@@ -296,7 +278,6 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setShowPreview(true);
-      requestInitialExposePortScan();
     }),
   );
 

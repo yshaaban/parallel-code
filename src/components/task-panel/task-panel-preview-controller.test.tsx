@@ -145,7 +145,7 @@ describe('createTaskPanelPreviewController', () => {
     expect(previewSectionProps?.containerInspectLoading()).toBe(false);
   });
 
-  it('scans available preview ports only once when the preview is first opened', async () => {
+  it('opens the preview without scanning available ports implicitly', async () => {
     const options = createControllerOptions();
     let dispose!: () => void;
 
@@ -161,14 +161,10 @@ describe('createTaskPanelPreviewController', () => {
     await Promise.resolve();
     dispose();
 
-    expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledTimes(1);
-    expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledWith(
-      'task-1',
-      '/tmp/project/.worktrees/task-1',
-    );
+    expect(options.fetchTaskPortExposureCandidates).not.toHaveBeenCalled();
   });
 
-  it('reruns the initial preview port scan when the worktree identity changes', async () => {
+  it('scans available preview ports from the explicit refresh action', async () => {
     const [worktreePath, setWorktreePath] = createSignal('/tmp/project/.worktrees/task-1');
     const options = createControllerOptions({ worktreePath });
     let dispose!: () => void;
@@ -180,10 +176,13 @@ describe('createTaskPanelPreviewController', () => {
 
     controller.handlePreviewButtonClick();
     await Promise.resolve();
-    controller.handlePreviewButtonClick();
+    expect(controller.previewSection()).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+    expect(props).toBeDefined();
+
+    await props?.onRefreshAvailablePorts();
     setWorktreePath('/tmp/project/.worktrees/task-2');
-    controller.handlePreviewButtonClick();
-    await Promise.resolve();
+    await props?.onRefreshAvailablePorts();
     dispose();
 
     expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledTimes(2);
