@@ -1,19 +1,15 @@
 import type { Setter } from 'solid-js';
 
-import { applyServerStateEvent, replaceServerStateBootstrap } from './server-state-bootstrap';
 import { handleTaskCommandTakeoverResult } from './task-command-lease';
 import type {
   BrowserRuntimeCleanupOptions,
   CleanupFn,
   StartDesktopAppSessionOptions,
 } from './desktop-session-types';
-import type { TaskPortsEvent } from '../domain/server-state';
 import type { ConnectionBanner } from '../runtime/browser-session';
 import { getConnectionBannerText, registerBrowserAppRuntime } from '../runtime/browser-session';
-import { updateRemotePeerStatus } from './remote-access';
 import {
   handleAgentLifecycleMessage,
-  handleGitStatusChanged,
   reconcileRunningAgentIds,
   syncAgentStatusesFromServer,
 } from '../runtime/server-sync';
@@ -48,14 +44,10 @@ export function createBrowserRuntimeOptions(
   const runtimeOptions: BrowserRuntimeCleanupOptions = {
     getTaskCommandControllerUpdateCount,
     onAgentLifecycle: handleAgentLifecycleMessage,
-    onGitStatusChanged: handleGitStatusChanged,
-    onRemoteStatus: updateRemotePeerStatus,
     onPeerPresence: replacePeerSessions,
-    onServerStateBootstrap: replaceServerStateBootstrap,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
     onTaskCommandTakeoverRequest: upsertIncomingTaskTakeoverRequest,
     onTaskCommandTakeoverResult: handleTaskCommandTakeoverResult,
-    onTaskPortsChanged: (event: TaskPortsEvent) => applyServerStateEvent('task-ports', event),
     replaceTaskCommandControllers,
     reconcileRunningAgentIds,
     scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
@@ -90,14 +82,10 @@ export function createBrowserRuntimeCleanup(
     },
     getTaskCommandControllerUpdateCount: runtimeOptions.getTaskCommandControllerUpdateCount,
     onAgentLifecycle: runtimeOptions.onAgentLifecycle,
-    onGitStatusChanged: runtimeOptions.onGitStatusChanged,
     onPeerPresence: runtimeOptions.onPeerPresence,
-    onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
     onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,
     onTaskCommandTakeoverRequest: runtimeOptions.onTaskCommandTakeoverRequest,
     onTaskCommandTakeoverResult: runtimeOptions.onTaskCommandTakeoverResult,
-    onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
-    onRemoteStatus: runtimeOptions.onRemoteStatus,
     reconcileRunningAgentIds: runtimeOptions.reconcileRunningAgentIds,
     replaceTaskCommandControllers: runtimeOptions.replaceTaskCommandControllers,
     scheduleBrowserStateSync: runtimeOptions.scheduleBrowserStateSync,

@@ -5,6 +5,7 @@ import type {
   GitStatusSyncSnapshotEvent,
   PeerPresenceSnapshot,
   RemoteAccessStatus,
+  RemotePresence,
   TaskCommandControllerSnapshot,
   TaskPortsEvent,
   TaskPortSnapshot,
@@ -44,7 +45,7 @@ export interface ServerStateBootstrapPayloadMap {
 
 export interface ServerStateEventPayloadMap {
   'git-status': GitStatusSyncEvent;
-  'remote-status': RemoteAccessStatus;
+  'remote-status': RemoteAccessStatus | RemotePresence;
   'peer-presence': PeerPresenceSnapshot[];
   'task-command-controller': TaskCommandControllerSnapshot;
   'agent-supervision': AgentSupervisionEvent;

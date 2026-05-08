@@ -134,14 +134,10 @@ function createBrowserRuntimeOptions(
     clearRestoringConnectionBanner: vi.fn(),
     getTaskCommandControllerUpdateCount: vi.fn(() => 0),
     onAgentLifecycle: vi.fn(),
-    onGitStatusChanged: vi.fn(),
     onPeerPresence: vi.fn(),
-    onRemoteStatus: vi.fn(),
-    onServerStateBootstrap: vi.fn(),
     onTaskCommandControllerChanged: vi.fn(),
     onTaskCommandTakeoverRequest: vi.fn(),
     onTaskCommandTakeoverResult: vi.fn(),
-    onTaskPortsChanged: vi.fn(),
     reconcileRunningAgentIds: vi.fn().mockResolvedValue(undefined),
     replaceTaskCommandControllers: vi.fn(),
     scheduleBrowserStateSync: vi.fn(),
@@ -292,15 +288,22 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
-  it('forwards bootstrap and live server-owned updates while restore is in flight', async () => {
+  it('leaves bootstrap-owned browser state categories to the session bootstrap registry', () => {
+    const cleanup = registerBrowserAppRuntime(createBrowserRuntimeOptions());
+
+    expect(serverMessageListeners.has('state-bootstrap')).toBe(false);
+    expect(serverMessageListeners.has('git-status-changed')).toBe(false);
+    expect(serverMessageListeners.has('task-ports-changed')).toBe(false);
+    expect(serverMessageListeners.has('remote-status')).toBe(false);
+
+    cleanup();
+  });
+
+  it('continues processing agent snapshots while restore is in flight', async () => {
     const syncDeferred = createDeferred<undefined>();
     const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
-    const onServerStateBootstrap = vi.fn();
-    const onGitStatusChanged = vi.fn();
     const onTaskCommandControllerChanged = vi.fn();
-    const onTaskPortsChanged = vi.fn();
-    const onRemoteStatus = vi.fn();
     const replaceTaskCommandControllers = vi.fn();
     const syncAgentStatusesFromServer = vi.fn();
     const clearRestoringConnectionBanner = vi.fn();
@@ -308,11 +311,7 @@ describe('browser runtime restore generation', () => {
     const cleanup = registerBrowserAppRuntime(
       createBrowserRuntimeOptions({
         clearRestoringConnectionBanner,
-        onGitStatusChanged,
-        onRemoteStatus,
-        onServerStateBootstrap,
         onTaskCommandControllerChanged,
-        onTaskPortsChanged,
         reconcileRunningAgentIds,
         replaceTaskCommandControllers,
         syncAgentStatusesFromServer,
@@ -325,57 +324,10 @@ describe('browser runtime restore generation', () => {
     emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
     emitBrowserAuthenticated();
 
-    emitServerMessage('state-bootstrap', {
-      snapshots: [
-        {
-          category: 'task-ports',
-          mode: 'replace',
-          payload: [],
-          version: 1,
-        },
-        {
-          category: 'task-review',
-          mode: 'replace',
-          payload: [],
-          version: 1,
-        },
-      ],
-    });
-    emitServerMessage('git-status-changed', {
-      branchName: 'feature/task-1',
-      worktreePath: '/tmp/task-1',
-    });
-    emitServerMessage('task-ports-changed', {
-      kind: 'snapshot',
-      taskId: 'task-1',
-      observed: [],
-      exposed: [],
-      updatedAt: 123,
-    });
-    emitServerMessage('remote-status', {
-      connectedClients: 2,
-      peerClients: 1,
-    });
     emitServerMessage('agents', {
       list: [{ agentId: 'agent-1', status: 'running' }],
     });
 
-    expect(onServerStateBootstrap).toHaveBeenCalledTimes(1);
-    expect(onGitStatusChanged).toHaveBeenCalledWith({
-      branchName: 'feature/task-1',
-      worktreePath: '/tmp/task-1',
-    });
-    expect(onTaskPortsChanged).toHaveBeenCalledWith({
-      kind: 'snapshot',
-      taskId: 'task-1',
-      observed: [],
-      exposed: [],
-      updatedAt: 123,
-    });
-    expect(onRemoteStatus).toHaveBeenCalledWith({
-      connectedClients: 2,
-      peerClients: 1,
-    });
     expect(syncAgentStatusesFromServer).toHaveBeenCalledWith([
       { agentId: 'agent-1', status: 'running' },
     ]);
@@ -387,29 +339,6 @@ describe('browser runtime restore generation', () => {
     expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
 
     expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
-
-    cleanup();
-  });
-
-  it('forwards removed task-port events without coercing them into snapshots', () => {
-    const onTaskPortsChanged = vi.fn();
-    const cleanup = registerBrowserAppRuntime(
-      createBrowserRuntimeOptions({
-        onTaskPortsChanged,
-      }),
-    );
-
-    emitServerMessage('task-ports-changed', {
-      kind: 'removed',
-      removed: true,
-      taskId: 'task-1',
-    });
-
-    expect(onTaskPortsChanged).toHaveBeenCalledWith({
-      kind: 'removed',
-      removed: true,
-      taskId: 'task-1',
-    });
 
     cleanup();
   });

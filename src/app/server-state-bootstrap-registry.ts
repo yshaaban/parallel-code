@@ -26,7 +26,6 @@ import {
   type ServerStateBootstrapCategoryDescriptor,
   type ServerStateBootstrapCategoryDescriptors,
 } from './server-state-bootstrap';
-import { applyRemoteStatus } from './remote-access';
 
 type CleanupFn = () => void;
 type ServerStateStartupRuntime = 'browser' | 'electron';
@@ -67,13 +66,6 @@ function createServerStateCategoryDescriptor<TCategory extends ServerStateBootst
   };
 }
 
-function createRemoteStatusDescriptor(): ServerStateBootstrapCategoryDescriptor<'remote-status'> {
-  return {
-    applyEvent: applyRemoteStatus,
-    applySnapshot: (payload) => applyRemoteStatus(payload),
-  };
-}
-
 function withBrowserTaskPortsStateVersion(
   event: TaskPortsEvent,
   message: BrowserTaskPortsServerMessage,
@@ -108,7 +100,7 @@ function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPo
   }
 }
 
-const SERVER_STATE_BOOTSTRAP_REGISTRY = {
+const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
   'agent-supervision': {
     createDescriptor: () => createServerStateCategoryDescriptor('agent-supervision'),
     getListenerScope: () => 'persistent',
@@ -116,7 +108,7 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
   },
   'git-status': {
     createDescriptor: () => createServerStateCategoryDescriptor('git-status'),
-    getListenerScope: (runtime) => (runtime === 'electron' ? 'persistent' : 'startup-only'),
+    getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
         return listenGitStatusChanged(handle);
@@ -126,13 +118,14 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
     },
   },
   'remote-status': {
-    createDescriptor: () => createRemoteStatusDescriptor(),
-    getListenerScope: (runtime) => (runtime === 'electron' ? 'persistent' : 'none'),
+    createDescriptor: () => createServerStateCategoryDescriptor('remote-status'),
+    getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
         return listenRemoteStatusChanged(handle);
       }
-      return () => {};
+
+      return listenServerMessage('remote-status', handle);
     },
   },
   'peer-presence': {
@@ -167,7 +160,7 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
   },
   'task-ports': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-ports'),
-    getListenerScope: (runtime) => (runtime === 'electron' ? 'persistent' : 'startup-only'),
+    getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
         return listenTaskPortsChanged(handle);
@@ -178,7 +171,7 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
       });
     },
   },
-} satisfies ServerStateBootstrapRegistry;
+};
 
 export function getServerStateBootstrapRegistryCategories(): ServerStateBootstrapCategory[] {
   return [...SERVER_STATE_BOOTSTRAP_CATEGORIES];
@@ -266,7 +259,7 @@ export function createServerStateEventListeners(
   }
 
   if (!electronRuntime) {
-    startupCleanups.push(
+    persistentCleanups.push(
       listenServerMessage('state-bootstrap', (message) => {
         handleBrowserStateBootstrapMessage(startupGate, message);
       }),

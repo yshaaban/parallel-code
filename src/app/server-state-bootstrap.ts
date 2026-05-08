@@ -15,7 +15,7 @@ import {
   recordBufferedBootstrapSnapshot,
 } from './runtime-diagnostics';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
-import { applyRemoteStatus } from './remote-access';
+import { applyRemoteStatus, updateRemotePeerStatus } from './remote-access';
 import { replacePeerSessions } from '../store/peer-presence';
 import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
@@ -56,7 +56,7 @@ const SERVER_STATE_EVENT_APPLIERS: {
   ) => void;
 } = {
   'git-status': handleGitStatusSyncEvent,
-  'remote-status': applyRemoteStatus,
+  'remote-status': applyRemoteStatusEvent,
   'peer-presence': replacePeerSessions,
   'task-command-controller': applyTaskCommandControllerChanged,
   'agent-supervision': applyAgentSupervisionEvent,
@@ -66,6 +66,15 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'task-steps': applyTaskStepsEvent,
   'task-ports': applyTaskPortsEvent,
 };
+
+function applyRemoteStatusEvent(event: ServerStateEventPayloadMap['remote-status']): void {
+  if ('enabled' in event) {
+    applyRemoteStatus(event);
+    return;
+  }
+
+  updateRemotePeerStatus(event);
+}
 
 function createReplaceVersionOptions(version: number | undefined): { replaceVersion?: number } {
   if (version === undefined) {

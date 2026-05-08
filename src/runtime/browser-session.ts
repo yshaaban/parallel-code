@@ -6,15 +6,10 @@ import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
 import type { WorkspaceStateChangedNotification } from '../domain/renderer-events';
 import type {
   AgentLifecycleEvent,
-  GitStatusSyncEvent,
   PeerPresenceSnapshot,
   RemoteAgentStatus,
-  RemotePresence,
   TaskCommandControllerSnapshot,
-  TaskPortsEvent,
 } from '../domain/server-state';
-import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
-import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
   type BrowserServerMessage,
   getBrowserQueueDepth,
@@ -70,10 +65,6 @@ interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
   getTaskCommandControllerUpdateCount: () => number;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
-  onGitStatusChanged: (message: GitStatusSyncEvent) => void;
-  onServerStateBootstrap: (snapshots: AnyServerStateBootstrapSnapshot[]) => void;
-  onTaskPortsChanged: (event: TaskPortsEvent) => void;
-  onRemoteStatus: (status: RemotePresence) => void;
   onPeerPresence: (peers: PeerPresenceSnapshot[]) => void;
   onTaskCommandTakeoverRequest: (
     message: Extract<BrowserServerMessage, { type: 'task-command-takeover-request' }>,
@@ -105,8 +96,6 @@ interface BrowserRuntimeOptions {
   onTaskCommandControllerChanged: (message: TaskCommandControllerSnapshot) => void;
   syncBrowserStateFromReconnectSnapshot: (snapshot: BrowserReconnectSnapshot) => Promise<void>;
 }
-
-type BrowserTaskPortsServerMessage = Extract<BrowserServerMessage, { type: 'task-ports-changed' }>;
 
 export function createInitialBrowserRuntimeLifecycleState(): BrowserRuntimeLifecycleState {
   return {
@@ -319,40 +308,6 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
   }
 }
 
-function withBrowserTaskPortsStateVersion(
-  event: TaskPortsEvent,
-  message: BrowserTaskPortsServerMessage,
-): TaskPortsEvent {
-  if (typeof message.stateVersion !== 'number') {
-    return event;
-  }
-
-  return {
-    ...event,
-    stateVersion: message.stateVersion,
-  };
-}
-
-function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPortsEvent {
-  switch (message.kind) {
-    case 'snapshot': {
-      const event = createTaskPortsSnapshotEvent({
-        exposed: message.exposed,
-        observed: message.observed,
-        taskId: message.taskId,
-        updatedAt: message.updatedAt,
-      });
-      return withBrowserTaskPortsStateVersion(event, message);
-    }
-    case 'removed': {
-      const event = createRemovedTaskPortsEvent(message.taskId);
-      return withBrowserTaskPortsStateVersion(event, message);
-    }
-    default:
-      return assertNever(message, 'Unhandled task ports server message');
-  }
-}
-
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
   let restoreGeneration = 0;
   let restoreAwaitingAuthentication = false;
@@ -374,21 +329,6 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.onAgentLifecycle(message);
   });
 
-  const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
-    options.onGitStatusChanged(message);
-  });
-
-  const offTaskPortsChanged = listenServerMessage('task-ports-changed', (message) => {
-    options.onTaskPortsChanged(toBrowserTaskPortsEvent(message));
-  });
-
-  const offStateBootstrap = listenServerMessage('state-bootstrap', (message) => {
-    options.onServerStateBootstrap(message.snapshots);
-  });
-
-  const offRemoteStatus = listenServerMessage('remote-status', (message) => {
-    options.onRemoteStatus(message);
-  });
   const offPeerPresences = listenServerMessage('peer-presences', (message) => {
     options.onPeerPresence(message.list);
   });
@@ -539,10 +479,6 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offTaskCommandControllerChanged();
     offAgents();
     offAgentLifecycle();
-    offGitStatusChanged();
-    offTaskPortsChanged();
-    offStateBootstrap();
-    offRemoteStatus();
     offPeerPresences();
     offTaskCommandTakeoverRequest();
     offTaskCommandTakeoverResult();

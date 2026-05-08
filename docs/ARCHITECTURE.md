@@ -1685,11 +1685,12 @@ Recent work improved several concepts:
 - remote-access status now uses a clearer enabled/disabled contract
 - remote presence now has one shared payload/runtime contract across browser desktop and
   remote/mobile, with runtime-specific projections kept at the UI edge
+- browser replay and Electron startup hydration now register bootstrap-owned state categories through
+  the shared bootstrap registry and session bootstrap gate
 
 Still mixed:
 
 - Electron git delivery still includes some targeted on-demand refresh in advanced UI surfaces
-- browser replay and Electron startup hydration still restore the same state through different mechanisms
 - remote presence projections are still runtime-specific because desktop and mobile show different
   shells, but they consume the same backend peer-presence truth
 - browser viewport/focus geometry still needs targeted browser proof when it changes, even though
@@ -1754,10 +1755,7 @@ Good examples:
 - backend convergence snapshots
 - peer presence payload and runtime publication
 - task presentation mapping
-
-Still weak:
-
-- startup/restore state-category alignment between browser replay and Electron hydration
+- bootstrap-owned state-category replay through the shared session bootstrap registry
 
 ### 3. Workflows should own multi-step use cases
 
@@ -2037,7 +2035,6 @@ Why this matters:
 This is much better than before, but still worth watching when future features land:
 
 - remote presence projections across desktop and mobile shells
-- startup/restore semantics across browser replay and Electron hydration
 - git refresh behavior in advanced or future UI surfaces
 
 ### 5. The Terminal Path Is Still Intentionally Complex
