@@ -1,4 +1,4 @@
-import type { PeerPresenceSnapshot } from '../domain/server-state';
+import { filterPeerPresenceSnapshots, type PeerPresenceSnapshot } from '../domain/server-state';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
 
@@ -15,9 +15,9 @@ function sortPeerPresence(
   });
 }
 
-export function replacePeerSessions(snapshots: ReadonlyArray<PeerPresenceSnapshot>): void {
+export function replacePeerSessions(snapshots: ReadonlyArray<unknown>): void {
   const nextSessions: Record<string, PeerPresenceSnapshot> = {};
-  for (const snapshot of sortPeerPresence(snapshots)) {
+  for (const snapshot of sortPeerPresence(filterPeerPresenceSnapshots(snapshots))) {
     nextSessions[snapshot.clientId] = snapshot;
   }
 

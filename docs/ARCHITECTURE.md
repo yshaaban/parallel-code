@@ -675,6 +675,9 @@ are no longer desktop-only concerns.
   fans out the authoritative presence list through `server/browser-peer-presence.ts`
 - `src/app/server-state-bootstrap.ts` and `src/runtime/browser-session.ts` replay presence on
   startup and reconnect
+- `src/domain/server-state.ts` owns the shared peer-presence snapshot validator used by both
+  desktop/browser store projection and remote/mobile collaboration projection, so malformed replay
+  entries cannot crash presence sorting or produce bogus owner cues
 - `src/store/peer-presence.ts` projects that snapshot list into UI-friendly selectors
 - UI surfaces like `src/components/SidebarFooter.tsx`, `src/components/TaskTitleBar.tsx`, and the
   terminal/prompt control affordances render those projections
@@ -1090,6 +1093,8 @@ Shape:
     - `task-ports` owns preview-port availability
     - task-command controller snapshots own blocked-owner / read-only truth
     - peer presence remains a softer activity cue until controller snapshots confirm ownership
+  - replayed peer-presence entries are validated before sorting or projection so malformed
+    transport data cannot crash the remote shell or become a false ownership cue
 
 This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
 shares session naming, presence, ownership, and takeover behavior with desktop while keeping its

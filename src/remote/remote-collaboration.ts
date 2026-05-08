@@ -9,6 +9,7 @@ import {
   type RemoteLiveIpcEventChannel,
 } from '../domain/remote-live-ipc-events';
 import { isChangedFileStatus } from '../domain/git-status';
+import { filterPeerPresenceSnapshots } from '../domain/server-state';
 import type {
   AgentSupervisionEvent,
   AgentSupervisionSnapshot,
@@ -336,9 +337,9 @@ function sortPeerSessions(
   });
 }
 
-function replacePeerPresenceSnapshots(snapshots: ReadonlyArray<PeerPresenceSnapshot>): void {
+function replacePeerPresenceSnapshots(snapshots: ReadonlyArray<unknown>): void {
   const nextSessions: Record<string, PeerPresenceSnapshot> = {};
-  for (const snapshot of sortPeerSessions(snapshots)) {
+  for (const snapshot of sortPeerSessions(filterPeerPresenceSnapshots(snapshots))) {
     nextSessions[snapshot.clientId] = snapshot;
   }
 
@@ -500,7 +501,7 @@ export function applyRemoteIpcEvent(channel: string, payload: unknown): void {
   return assertNever(handling, 'Unhandled remote IPC event handling mode');
 }
 
-export function replaceRemotePeerPresences(snapshots: ReadonlyArray<PeerPresenceSnapshot>): void {
+export function replaceRemotePeerPresences(snapshots: ReadonlyArray<unknown>): void {
   replacePeerPresenceSnapshots(snapshots);
 }
 

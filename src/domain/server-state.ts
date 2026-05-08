@@ -324,6 +324,39 @@ export interface PeerPresenceSnapshot {
   visibility: PeerPresenceVisibility;
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isPeerPresenceVisibility(value: unknown): value is PeerPresenceVisibility {
+  return value === 'hidden' || value === 'visible';
+}
+
+export function isPeerPresenceSnapshot(value: unknown): value is PeerPresenceSnapshot {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    (typeof candidate.activeTaskId === 'string' || candidate.activeTaskId === null) &&
+    typeof candidate.clientId === 'string' &&
+    isStringArray(candidate.controllingAgentIds) &&
+    isStringArray(candidate.controllingTaskIds) &&
+    typeof candidate.displayName === 'string' &&
+    (typeof candidate.focusedSurface === 'string' || candidate.focusedSurface === null) &&
+    typeof candidate.lastSeenAt === 'number' &&
+    Number.isFinite(candidate.lastSeenAt) &&
+    isPeerPresenceVisibility(candidate.visibility)
+  );
+}
+
+export function filterPeerPresenceSnapshots(
+  snapshots: ReadonlyArray<unknown>,
+): PeerPresenceSnapshot[] {
+  return snapshots.filter(isPeerPresenceSnapshot);
+}
+
 export interface TaskCommandControllerSnapshot {
   action: string | null;
   controllerId: string | null;

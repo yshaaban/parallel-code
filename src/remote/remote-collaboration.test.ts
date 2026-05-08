@@ -111,6 +111,74 @@ describe('remote collaboration state', () => {
     });
   });
 
+  it('filters malformed peer-presence bootstrap entries before projecting owner cues', () => {
+    applyRemoteStateBootstrap([
+      {
+        category: 'peer-presence',
+        mode: 'replace',
+        payload: [
+          {
+            activeTaskId: 'task-good',
+            clientId: 'peer-good',
+            controllingAgentIds: [],
+            controllingTaskIds: ['task-good'],
+            displayName: 'Valid Peer',
+            focusedSurface: 'terminal',
+            lastSeenAt: 20,
+            visibility: 'visible',
+          },
+          {
+            activeTaskId: 'task-bad',
+            clientId: 'peer-bad',
+            controllingAgentIds: [],
+            controllingTaskIds: ['task-bad'],
+            displayName: null,
+            focusedSurface: 'terminal',
+            lastSeenAt: 21,
+            visibility: 'visible',
+          },
+        ],
+        version: 1,
+      },
+    ] as unknown as ReadonlyArray<AnyServerStateBootstrapSnapshot>);
+
+    expect(getRemoteTaskPresenceOwnerStatus('task-good')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'peer-good',
+      isSelf: false,
+      label: 'Valid Peer typing',
+    });
+    expect(getRemoteTaskPresenceOwnerStatus('task-bad')).toBeNull();
+  });
+
+  it('filters malformed live peer-presence entries before sorting them', () => {
+    replaceRemotePeerPresences([
+      {
+        activeTaskId: 'task-good',
+        clientId: 'peer-good',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-good'],
+        displayName: 'Valid Peer',
+        focusedSurface: 'terminal',
+        lastSeenAt: 20,
+        visibility: 'visible',
+      },
+      {
+        activeTaskId: 'task-bad',
+        clientId: 'peer-bad',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-bad'],
+        displayName: 123,
+        focusedSurface: 'terminal',
+        lastSeenAt: 21,
+        visibility: 'visible',
+      },
+    ]);
+
+    expect(getRemoteTaskPresenceOwnerStatus('task-good')?.label).toBe('Valid Peer typing');
+    expect(getRemoteTaskPresenceOwnerStatus('task-bad')).toBeNull();
+  });
+
   it('ignores stale controller change events that arrive after a newer snapshot', () => {
     applyRemoteTaskCommandControllerChanged({
       action: 'type in the terminal',
