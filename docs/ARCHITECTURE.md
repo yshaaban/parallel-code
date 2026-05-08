@@ -1556,6 +1556,8 @@ Flow:
 Important property:
 
 - the status shape is now cleaner and more explicit than before
+- peer-count-only updates do not mutate disabled remote-access status, so stale browser-side count
+  messages cannot violate the disabled-state invariant
 - the remaining gap is semantic alignment: browser mode has a richer peer/client distinction than Electron remote hosting
 
 ## Where The Architecture Is Cleanest

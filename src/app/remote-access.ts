@@ -21,6 +21,10 @@ export function applyRemoteStatus(result: RemoteAccessStatus): void {
 }
 
 export function updateRemotePeerStatus(status: RemotePresence): void {
+  if (!store.remoteAccess.enabled) {
+    return;
+  }
+
   setStore('remoteAccess', 'connectedClients', status.connectedClients);
   setStore('remoteAccess', 'peerClients', status.peerClients);
 }

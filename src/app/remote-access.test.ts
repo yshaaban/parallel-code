@@ -188,7 +188,7 @@ describe('remote access app workflow', () => {
   });
 
   it('applies pushed remote status snapshots and peer-count updates', () => {
-    applyRemoteStatus({
+    const enabledStatus = {
       enabled: true,
       connectedClients: 3,
       peerClients: 2,
@@ -197,20 +197,27 @@ describe('remote access app workflow', () => {
       tailscaleUrl: null,
       token: 'secret',
       port: 7777,
-    });
+    } as const;
+    applyRemoteStatus(enabledStatus);
+    storeState.remoteAccess = enabledStatus;
+
     updateRemotePeerStatus({ connectedClients: 6, peerClients: 5 });
 
-    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
-      enabled: true,
-      connectedClients: 3,
-      peerClients: 2,
-      url: 'http://server',
-      wifiUrl: 'http://wifi',
-      tailscaleUrl: null,
-      token: 'secret',
-      port: 7777,
-    });
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', enabledStatus);
     expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', 'connectedClients', 6);
     expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', 'peerClients', 5);
+  });
+
+  it('ignores peer-count updates while remote access is disabled', () => {
+    storeState.remoteAccess = {
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+    };
+
+    updateRemotePeerStatus({ connectedClients: 3, peerClients: 2 });
+
+    expect(setStoreMock).not.toHaveBeenCalledWith('remoteAccess', 'connectedClients', 3);
+    expect(setStoreMock).not.toHaveBeenCalledWith('remoteAccess', 'peerClients', 2);
   });
 });
