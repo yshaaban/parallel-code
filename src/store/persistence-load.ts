@@ -169,6 +169,11 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.taskSteps = {};
       storeState.taskStepSummaries = {};
       storeState.incomingTaskTakeoverRequests = {};
+      storeState.pendingAction = null;
+      storeState.permissionRequests = {};
+      storeState.permissionAutoRules = [];
+      storeState.reviewComments = {};
+      storeState.reviewPanelOpen = {};
       resetTaskCommandControllerStoreState(storeState);
       storeState.focusedPanel = {};
       storeState.missingProjectIds = {};

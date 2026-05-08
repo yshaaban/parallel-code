@@ -1679,6 +1679,65 @@ describe('persistence integration', () => {
     expect(getRecentTaskGitStatusPollAge('/tmp/project/task-1')).toBeNull();
   });
 
+  it('clears local review, permission, and pending action state during full state load', () => {
+    setStore('permissionRequests', {
+      'agent-1': [
+        {
+          agentId: 'agent-1',
+          arguments: '{}',
+          description: 'Run command',
+          detectedAt: 1_000,
+          id: 'permission-1',
+          status: 'pending',
+          taskId: 'task-1',
+          tool: 'Bash',
+        },
+      ],
+    });
+    setStore('permissionAutoRules', [
+      { action: 'approve', taskId: 'task-1', tool: 'Bash' },
+      { action: 'deny', tool: 'Write' },
+    ]);
+    setStore('reviewComments', {
+      'task-1': [
+        {
+          agentId: 'agent-1',
+          anchor: {
+            diffKind: 'add',
+            endLine: 1,
+            filePath: 'src/app.ts',
+            hunkKey: 'hunk-1',
+            side: 'new',
+            startLine: 1,
+          },
+          createdAt: 1_000,
+          id: 'comment-1',
+          status: 'draft',
+          taskId: 'task-1',
+          text: 'Check this',
+        },
+      ],
+    });
+    setStore('reviewPanelOpen', { 'task-1': true });
+    setStore('pendingAction', { taskId: 'task-1', type: 'merge' });
+
+    expect(
+      applyLoadedStateJson(
+        JSON.stringify({
+          projects: [],
+          taskOrder: [],
+          tasks: {},
+          terminals: {},
+        }),
+      ),
+    ).toBe(true);
+    expect(store.permissionRequests).toEqual({});
+    expect(store.permissionAutoRules).toEqual([]);
+    expect(store.reviewComments).toEqual({});
+    expect(store.reviewPanelOpen).toEqual({});
+    expect(store.pendingAction).toBeNull();
+  });
+
   it('invalidates retained task-command lease sessions for removed tasks during incremental workspace apply', async () => {
     vi.useFakeTimers();
 

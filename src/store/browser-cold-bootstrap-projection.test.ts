@@ -234,6 +234,69 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.taskStepSummaries).toEqual({});
   });
 
+  it('clears local review, permission, and pending action state during browser cold bootstrap', () => {
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+        terminals: {},
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
+    setStore('permissionRequests', {
+      'agent-1': [
+        {
+          agentId: 'agent-1',
+          arguments: '{}',
+          description: 'Run command',
+          detectedAt: 1_000,
+          id: 'permission-1',
+          status: 'pending',
+          taskId: 'task-1',
+          tool: 'Bash',
+        },
+      ],
+    });
+    setStore('permissionAutoRules', [
+      { action: 'approve', taskId: 'task-1', tool: 'Bash' },
+      { action: 'deny', tool: 'Write' },
+    ]);
+    setStore('reviewComments', {
+      'task-1': [
+        {
+          agentId: 'agent-1',
+          anchor: {
+            diffKind: 'add',
+            endLine: 1,
+            filePath: 'src/app.ts',
+            hunkKey: 'hunk-1',
+            side: 'new',
+            startLine: 1,
+          },
+          createdAt: 1_000,
+          id: 'comment-1',
+          status: 'draft',
+          taskId: 'task-1',
+          text: 'Check this',
+        },
+      ],
+    });
+    setStore('reviewPanelOpen', { 'task-1': true });
+    setStore('pendingAction', { taskId: 'task-1', type: 'close' });
+
+    expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
+    expect(store.permissionRequests).toEqual({});
+    expect(store.permissionAutoRules).toEqual([]);
+    expect(store.reviewComments).toEqual({});
+    expect(store.reviewPanelOpen).toEqual({});
+    expect(store.pendingAction).toBeNull();
+  });
+
   it('treats standalone-terminal-only persisted workspace state as empty cold bootstrap state', () => {
     const projection = buildBrowserColdBootstrapProjectionFromJson(
       JSON.stringify({

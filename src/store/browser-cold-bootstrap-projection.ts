@@ -85,6 +85,11 @@ function resetStoreForBrowserColdBootstrap(
   storeState.taskSteps = {};
   storeState.taskStepSummaries = {};
   storeState.incomingTaskTakeoverRequests = {};
+  storeState.pendingAction = null;
+  storeState.permissionRequests = {};
+  storeState.permissionAutoRules = [];
+  storeState.reviewComments = {};
+  storeState.reviewPanelOpen = {};
   storeState.peerSessions = {};
   resetTaskCommandControllerStoreState(storeState);
   storeState.focusedPanel = {};
