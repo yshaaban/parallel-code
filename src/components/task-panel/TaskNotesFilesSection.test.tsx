@@ -48,8 +48,14 @@ vi.mock('../../store/store', async () => {
 });
 
 vi.mock('../ChangedFilesList', () => ({
-  ChangedFilesList: (props: { setRootRef?: (element: HTMLDivElement) => void }) => (
-    <div ref={props.setRootRef}>Changed files</div>
+  ChangedFilesList: (props: { setRootRef?: (element: HTMLDivElement | undefined) => void }) => (
+    <div
+      ref={(element) => {
+        props.setRootRef?.(element);
+      }}
+    >
+      Changed files
+    </div>
   ),
 }));
 

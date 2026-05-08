@@ -1,4 +1,4 @@
-import { For, Show, type Accessor } from 'solid-js';
+import { For, Show, onCleanup, type Accessor, type JSX } from 'solid-js';
 
 import { SectionLabel } from '../SectionLabel';
 import {
@@ -24,7 +24,11 @@ interface SidebarTaskListProps {
   setTaskListRef: (element: HTMLDivElement | undefined) => void;
 }
 
-export function SidebarTaskList(props: SidebarTaskListProps) {
+export function SidebarTaskList(props: SidebarTaskListProps): JSX.Element {
+  onCleanup(() => {
+    props.setTaskListRef(undefined);
+  });
+
   return (
     <div
       ref={(element) => props.setTaskListRef(element)}

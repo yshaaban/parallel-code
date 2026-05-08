@@ -1,4 +1,4 @@
-import { For, type JSX } from 'solid-js';
+import { For, onCleanup, type JSX } from 'solid-js';
 import type { TerminalBookmark } from '../store/types';
 import { extractLabel } from '../lib/bookmarks';
 import { theme } from '../lib/theme';
@@ -15,7 +15,7 @@ interface TaskShellToolbarProps {
   onToolbarKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent>;
   onOpenTerminal: (event: MouseEvent) => void;
   onRunBookmark: (command: string, event: MouseEvent) => void;
-  setToolbarRef: (element: HTMLDivElement) => void;
+  setToolbarRef: (element: HTMLDivElement | undefined) => void;
 }
 
 function getToolbarButtonBorder(selected: boolean): string {
@@ -23,9 +23,15 @@ function getToolbarButtonBorder(selected: boolean): string {
 }
 
 export function TaskShellToolbar(props: TaskShellToolbarProps): JSX.Element {
+  onCleanup(() => {
+    props.setToolbarRef(undefined);
+  });
+
   return (
     <div
-      ref={props.setToolbarRef}
+      ref={(element) => {
+        props.setToolbarRef(element);
+      }}
       class="focusable-panel shell-toolbar-panel"
       tabIndex={0}
       onClick={() => props.onToolbarClick()}

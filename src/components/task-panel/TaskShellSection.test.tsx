@@ -83,7 +83,7 @@ vi.mock('../TaskShellToolbar', () => ({
     onToolbarFocus: () => void;
     onToolbarKeyDown: (event: KeyboardEvent) => void;
     selectedIndex: number;
-    setToolbarRef: (element: HTMLDivElement) => void;
+    setToolbarRef: (element: HTMLDivElement | undefined) => void;
   }) => (
     <div>
       <div

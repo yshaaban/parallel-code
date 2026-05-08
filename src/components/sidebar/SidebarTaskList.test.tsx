@@ -56,6 +56,25 @@ describe('SidebarTaskList', () => {
     vi.useRealTimers();
   });
 
+  it('clears the task-list focus ref on unmount', () => {
+    const taskListRefs: Array<HTMLDivElement | undefined> = [];
+    const result = render(() => (
+      <SidebarTaskList
+        dragState={() => null}
+        dropTarget={() => null}
+        groupedTasks={() => computeGroupedTasks()}
+        onEditProject={() => undefined}
+        setTaskListRef={(element) => taskListRefs.push(element)}
+      />
+    ));
+
+    expect(taskListRefs.at(-1)).toBeInstanceOf(HTMLDivElement);
+
+    result.unmount();
+
+    expect(taskListRefs.at(-1)).toBeUndefined();
+  });
+
   it('groups collapsed tasks inline under their projects and other tasks', () => {
     const project = createTestProject({ id: 'project-1', name: 'Project' });
     setStore('projects', [project]);
