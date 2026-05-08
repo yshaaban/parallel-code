@@ -27,6 +27,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "validate:pr-description": "node scripts/validate-pr-description.mjs",
+    "test:validation-guards": "vitest run --config vitest.config.ts tests/harness/pr-description-validation.test.ts tests/harness/product-validation-objectives.test.ts",
     "test": "npm run test:node && npm run test:solid",
     "test:node": "npm run build:server && npm run test:node:default && npm run test:node:server-integration",
     "test:node:default": "vitest run --config vitest.config.ts --exclude server/terminal-latency.test.ts --exclude server/session-stress.test.ts",

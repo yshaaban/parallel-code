@@ -10,6 +10,8 @@ Use this document when reviewing non-trivial changes in Parallel Code, especiall
 This file is intentionally narrow:
 
 - it is the cross-cutting review checklist and lessons-learned record
+- product pain taxonomy and product-level validation objectives belong in
+  [PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md)
 - architecture-specific constraints belong in [ARCHITECTURE.md](./ARCHITECTURE.md)
 - validation sufficiency guidance and reusable harness rules belong in [TESTING.md](./TESTING.md)
 - terminal/browser-lab workflow and debugging guidance belong in
@@ -27,31 +29,38 @@ This document does not own:
 - terminal/browser-lab runbooks
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) for ownership rules and
-[UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) for upstream-port workflow.
+[PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md) for the user-frustration
+frame. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) for upstream-port workflow.
 
 ## Required Review Pass
 
 For any non-trivial change, review in this order:
 
-1. map the behavior to the local owner:
+1. map the change to the user frustration and product objective it protects
+2. map the behavior to the local owner:
    - backend
    - handler / transport
    - workflow / app
    - store / projection
    - presentation
-2. identify the failure mode if the change is wrong:
+3. identify the failure mode if the change is wrong:
    - stale truth
    - replay drift
    - auth / reconnect churn
    - preview / port mismatch
    - suite-order flake
-3. choose the validation seam:
+4. choose the validation seam:
    - node / backend
    - runtime / integration
    - Solid / UI
    - docs / sanity only
-4. run the full gate after targeted green if the change touches runtime, preview, persistence, or
+5. run the full gate after targeted green if the change touches runtime, preview, persistence, or
    shared test harnesses
+
+The pull request template and PR-description CI check mirror this order. The check only verifies
+that the required fields are present; reviewers still own whether the product pain, owner,
+validation seam, and browser-lane rationale are correct. If a change is reviewed outside GitHub,
+use the same product frustration / owner / validation / browser-lane fields in the review notes.
 
 Do not review a port only by comparing file shape to upstream. Review whether the behavior landed
 in the correct local owner.

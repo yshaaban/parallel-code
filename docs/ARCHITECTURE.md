@@ -1,6 +1,6 @@
 # Architecture Walkthrough
 
-Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) when you are porting changes from upstream or explaining why a direct cherry-pick is not appropriate.
+Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction. Read [PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md) when you are deciding which user frustration a change protects and how much proof it needs. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) when you are porting changes from upstream or explaining why a direct cherry-pick is not appropriate.
 For the practical contributor workflow around browser terminals, restore, browser-lab validation,
 and non-obvious terminal lifecycle rules, read
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).

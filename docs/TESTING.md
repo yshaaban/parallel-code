@@ -14,12 +14,14 @@ This document does not own:
 - exact command strings or every wrapper invocation
 - terminal/browser-lab runbooks
 - architecture ownership policy
+- product pain taxonomy and validation objectives
 - cross-cutting review heuristics
 
 For exact commands, use repo scripts and `package.json`. For terminal/browser workflow, use
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md). For ownership decisions, use
 [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) and
-[ARCHITECTURE.md](./ARCHITECTURE.md).
+[ARCHITECTURE.md](./ARCHITECTURE.md). For user-frustration-driven validation intent, use
+[PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md).
 
 ## Focus
 

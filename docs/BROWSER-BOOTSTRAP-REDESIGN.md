@@ -3,7 +3,10 @@
 This document defines the browser-first startup contract for Parallel Code.
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first for ownership rules and
-[ARCHITECTURE.md](./ARCHITECTURE.md) for the current runtime map.
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the current runtime map. Read
+[PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md) for the broader
+browser-first product objective: desktop-like responsiveness without desktop-style startup and
+restore semantics.
 
 This document owns:
 
