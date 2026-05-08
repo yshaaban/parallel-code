@@ -5,6 +5,7 @@ import { Socket } from 'net';
 import { assertNever } from '../src/lib/assert-never.js';
 
 const PREVIEW_ROUTE_PREFIX = '/_preview';
+const TASK_CONTAINER_PREVIEW_ROUTE_PREFIX = '/_container_preview';
 const SESSION_COOKIE_NAME = 'parallel_code_session';
 const STRIPPABLE_PREVIEW_PATH_SEGMENTS = new Set([
   'assets',
@@ -29,8 +30,14 @@ const detectedBasePaths = new Map<string, string>();
 const BASE_PATH_TTL_MS = 5 * 60 * 1000;
 const detectedBasePathTimestamps = new Map<string, number>();
 
-function getDetectedBasePath(taskId: string, port: number): string | null {
-  const key = `${taskId}:${port}`;
+type PreviewRouteKind = 'task-container' | 'task-port';
+
+function getPreviewCacheKey(kind: PreviewRouteKind, taskId: string, port: number): string {
+  return `${kind}:${taskId}:${port}`;
+}
+
+function getDetectedBasePath(kind: PreviewRouteKind, taskId: string, port: number): string | null {
+  const key = getPreviewCacheKey(kind, taskId, port);
   const timestamp = detectedBasePathTimestamps.get(key);
   if (timestamp && Date.now() - timestamp > BASE_PATH_TTL_MS) {
     detectedBasePaths.delete(key);
@@ -40,14 +47,19 @@ function getDetectedBasePath(taskId: string, port: number): string | null {
   return detectedBasePaths.get(key) ?? null;
 }
 
-function setDetectedBasePath(taskId: string, port: number, basePath: string): void {
-  const key = `${taskId}:${port}`;
+function setDetectedBasePath(
+  kind: PreviewRouteKind,
+  taskId: string,
+  port: number,
+  basePath: string,
+): void {
+  const key = getPreviewCacheKey(kind, taskId, port);
   detectedBasePaths.set(key, basePath);
   detectedBasePathTimestamps.set(key, Date.now());
 }
 
-function clearDetectedBasePath(taskId: string, port: number): void {
-  const key = `${taskId}:${port}`;
+function clearDetectedBasePath(kind: PreviewRouteKind, taskId: string, port: number): void {
+  const key = getPreviewCacheKey(kind, taskId, port);
   detectedBasePaths.delete(key);
   detectedBasePathTimestamps.delete(key);
 }
@@ -103,6 +115,7 @@ function inferBasePathFromAssetRefs(html: string): string | null {
 
 interface PreviewRouteMatch {
   forwardedSearch: string;
+  kind: PreviewRouteKind;
   pathRemainder: string;
   port: number;
   taskId: string;
@@ -162,7 +175,9 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
   const parsedUrl = new URL(url ?? '/', 'http://localhost');
   parsedUrl.searchParams.delete('token');
   const pathname = parsedUrl.pathname;
-  const match = /^\/_preview\/([^/]+)\/(\d+)(\/.*)?$/u.exec(pathname);
+  const taskPortMatch = /^\/_preview\/([^/]+)\/(\d+)(\/.*)?$/u.exec(pathname);
+  const taskContainerMatch = /^\/_container_preview\/([^/]+)\/(\d+)(\/.*)?$/u.exec(pathname);
+  const match = taskPortMatch ?? taskContainerMatch;
   if (!match) {
     return null;
   }
@@ -174,6 +189,7 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
   }
 
   return {
+    kind: taskPortMatch ? 'task-port' : 'task-container',
     taskId,
     port,
     pathRemainder: match[3] ?? '/',
@@ -181,23 +197,24 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
   };
 }
 
-function getPreviewBasePath(taskId: string, port: number): string {
-  return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
+function getPreviewRoutePrefix(kind: PreviewRouteKind): string {
+  switch (kind) {
+    case 'task-port':
+      return PREVIEW_ROUTE_PREFIX;
+    case 'task-container':
+      return TASK_CONTAINER_PREVIEW_ROUTE_PREFIX;
+    default:
+      return assertNever(kind, 'Unhandled preview route kind');
+  }
+}
+
+function getPreviewBasePath(match: PreviewRouteMatch): string {
+  return `${getPreviewRoutePrefix(match.kind)}/${encodeURIComponent(match.taskId)}/${match.port}`;
 }
 
 function getPreviewDocumentBasePath(previewBasePath: string, pathRemainder: string): string {
   const documentBasePath = new URL('.', `http://localhost${pathRemainder}`).pathname;
   return `${previewBasePath}${documentBasePath}`;
-}
-
-function parseRoutePort(value: unknown): number | null {
-  const rawPort = String(value ?? '');
-  if (!/^\d+$/u.test(rawPort)) {
-    return null;
-  }
-
-  const port = Number.parseInt(rawPort, 10);
-  return Number.isInteger(port) ? port : null;
 }
 
 function rewriteRootRelativeReferences(html: string, previewBasePath: string): string {
@@ -412,7 +429,7 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    const previewBasePath = getPreviewBasePath(match.taskId, match.port);
+    const previewBasePath = getPreviewBasePath(match);
     const previewDocumentBasePath = getPreviewDocumentBasePath(
       previewBasePath,
       match.pathRemainder,
@@ -429,7 +446,11 @@ export function registerBrowserPreviewRoutes(
       requestState.retriedWithStrippedBasePath = true;
       req.url = stripDetectedBasePath(
         requestState.match.pathRemainder,
-        getDetectedBasePath(requestState.match.taskId, requestState.match.port) ?? '',
+        getDetectedBasePath(
+          requestState.match.kind,
+          requestState.match.taskId,
+          requestState.match.port,
+        ) ?? '',
       );
       if (requestState.match.forwardedSearch) {
         req.url += requestState.match.forwardedSearch;
@@ -459,9 +480,9 @@ export function registerBrowserPreviewRoutes(
 
       const appBasePath = extractBaseHrefFromHtml(rawHtml) ?? inferBasePathFromAssetRefs(rawHtml);
       if (appBasePath) {
-        setDetectedBasePath(match.taskId, match.port, appBasePath);
+        setDetectedBasePath(match.kind, match.taskId, match.port, appBasePath);
       } else {
-        clearDetectedBasePath(match.taskId, match.port);
+        clearDetectedBasePath(match.kind, match.taskId, match.port);
       }
 
       const rewrittenHtml = rewriteHtmlForPreview(
@@ -527,7 +548,11 @@ export function registerBrowserPreviewRoutes(
       return false;
     }
 
-    const detectedBase = getDetectedBasePath(requestState.match.taskId, requestState.match.port);
+    const detectedBase = getDetectedBasePath(
+      requestState.match.kind,
+      requestState.match.taskId,
+      requestState.match.port,
+    );
     if (!detectedBase || !requestState.match.pathRemainder.startsWith(detectedBase)) {
       return false;
     }
@@ -571,38 +596,33 @@ export function registerBrowserPreviewRoutes(
       headers: IncomingMessage['headers'];
       url?: string | undefined;
     },
-    taskId: string,
-    port: number,
+    match: PreviewRouteMatch,
   ): Promise<PreviewTargetResolution> {
     if (!options.isAllowedBrowserOrigin(request) || !options.isAuthorizedRequest(request)) {
       return { kind: 'unauthorized' };
     }
 
-    const hasExposedTaskPort = options.hasExposedTaskPort(taskId, port);
-    const hasTaskContainerPreviewTarget =
-      options.hasTaskContainerPreviewTarget?.(taskId, port) ?? false;
-    if (!hasExposedTaskPort && !hasTaskContainerPreviewTarget) {
-      return { kind: 'not-found' };
-    }
+    switch (match.kind) {
+      case 'task-port': {
+        if (!options.hasExposedTaskPort(match.taskId, match.port)) {
+          return { kind: 'not-found' };
+        }
 
-    let target: string | null = null;
-    if (hasExposedTaskPort) {
-      target = await options.resolvePreviewTarget(taskId, port);
-    }
+        const target = await options.resolvePreviewTarget(match.taskId, match.port);
+        return target ? { kind: 'target', target } : { kind: 'unavailable' };
+      }
+      case 'task-container': {
+        if (!(options.hasTaskContainerPreviewTarget?.(match.taskId, match.port) ?? false)) {
+          return { kind: 'not-found' };
+        }
 
-    if (
-      target === null &&
-      hasTaskContainerPreviewTarget &&
-      options.resolveTaskContainerPreviewTarget
-    ) {
-      target = await options.resolveTaskContainerPreviewTarget(taskId, port);
+        const target =
+          (await options.resolveTaskContainerPreviewTarget?.(match.taskId, match.port)) ?? null;
+        return target ? { kind: 'target', target } : { kind: 'unavailable' };
+      }
+      default:
+        return assertNever(match.kind, 'Unhandled preview route kind');
     }
-
-    if (!target) {
-      return { kind: 'unavailable' };
-    }
-
-    return { kind: 'target', target };
   }
 
   async function handlePreviewRequest(req: express.Request, res: express.Response): Promise<void> {
@@ -612,13 +632,7 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    const routeTaskId = typeof req.params.taskId === 'string' ? req.params.taskId : '';
-    const routePort = parseRoutePort(req.params.port);
-    if (!routeTaskId || routePort === null) {
-      res.status(404).send('Preview not found');
-      return;
-    }
-    const targetResolution = await resolvePreviewTargetForRequest(req, routeTaskId, routePort);
+    const targetResolution = await resolvePreviewTargetForRequest(req, routeMatch);
     respondToPreviewTargetResolution(targetResolution, {
       onTarget(target) {
         proxyRequestStates.set(req, {
@@ -644,7 +658,11 @@ export function registerBrowserPreviewRoutes(
     });
   }
 
-  options.app.use('/_preview/:taskId/:port', (req, res) => {
+  options.app.use(`${PREVIEW_ROUTE_PREFIX}/:taskId/:port`, (req, res) => {
+    void handlePreviewRequest(req, res);
+  });
+
+  options.app.use(`${TASK_CONTAINER_PREVIEW_ROUTE_PREFIX}/:taskId/:port`, (req, res) => {
     void handlePreviewRequest(req, res);
   });
 
@@ -654,7 +672,7 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    const targetResolution = await resolvePreviewTargetForRequest(req, match.taskId, match.port);
+    const targetResolution = await resolvePreviewTargetForRequest(req, match);
     respondToPreviewTargetResolution(targetResolution, {
       onTarget(target) {
         proxyRequestStates.set(req, {

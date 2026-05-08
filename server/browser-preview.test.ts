@@ -117,6 +117,18 @@ function createNestedTargetServer(): ReturnType<typeof createServer> {
   return createServer(app);
 }
 
+function createNamedTargetServer(name: string): ReturnType<typeof createServer> {
+  const app = express();
+  app.use((req, res) => {
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.send(
+      `<html><head></head><body data-target="${name}" data-path="${req.url}">${name}</body></html>`,
+    );
+  });
+
+  return createServer(app);
+}
+
 function createPreviewRouteOptions(
   targetPort: number,
   options?: PreviewRouteTestOverrides,
@@ -306,7 +318,7 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      `http://127.0.0.1:${preview.port}/_container_preview/task-1/${target.port}/`,
       {
         headers: {
           cookie: SESSION_COOKIE,
@@ -315,9 +327,125 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain(`<base href="/_preview/task-1/${target.port}/">`);
+    expect(await response.text()).toContain(
+      `<base href="/_container_preview/task-1/${target.port}/">`,
+    );
     expect(resolvePreviewTarget).not.toHaveBeenCalled();
     expect(resolveTaskContainerPreviewTarget).toHaveBeenCalledWith('task-1', target.port);
+  });
+
+  it('keeps exposed and task-container preview routes distinct when ports collide', async () => {
+    const routePort = 5173;
+    const exposedTargetServer = createNamedTargetServer('exposed');
+    const containerTargetServer = createNamedTargetServer('container');
+    const exposedTarget = await listen(exposedTargetServer);
+    const containerTarget = await listen(containerTargetServer);
+    cleanups.push(exposedTarget.close, containerTarget.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const resolvePreviewTarget = vi
+      .fn()
+      .mockResolvedValue(`http://127.0.0.1:${exposedTarget.port}`);
+    const resolveTaskContainerPreviewTarget = vi
+      .fn()
+      .mockResolvedValue(`http://127.0.0.1:${containerTarget.port}`);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(routePort, {
+        hasExposedTaskPort: (taskId, port) => taskId === 'task-1' && port === routePort,
+        hasTaskContainerPreviewTarget: (taskId, port) => taskId === 'task-1' && port === routePort,
+        resolvePreviewTarget,
+        resolveTaskContainerPreviewTarget,
+      }),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const exposedResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${routePort}/`,
+      {
+        headers: { cookie: SESSION_COOKIE },
+      },
+    );
+    const containerResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_container_preview/task-1/${routePort}/`,
+      {
+        headers: { cookie: SESSION_COOKIE },
+      },
+    );
+
+    expect(exposedResponse.status).toBe(200);
+    expect(await exposedResponse.text()).toContain('data-target="exposed"');
+    expect(containerResponse.status).toBe(200);
+    const containerHtml = await containerResponse.text();
+    expect(containerHtml).toContain('data-target="container"');
+    expect(containerHtml).toContain(`<base href="/_container_preview/task-1/${routePort}/">`);
+    expect(resolvePreviewTarget).toHaveBeenCalledTimes(1);
+    expect(resolveTaskContainerPreviewTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps detected base-path caches scoped between exposed and container preview routes', async () => {
+    const routePort = 5173;
+    const exposedApp = express();
+    exposedApp.get('/', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head><base href="/editor/"></head><body>',
+          '<script type="module" src="/editor/assets/exposed.js"></script>',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    const containerApp = express();
+    containerApp.get('/editor/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.containerPreviewAssetLoaded = true;');
+    });
+    const exposedTarget = await listen(createServer(exposedApp));
+    const containerTarget = await listen(createServer(containerApp));
+    cleanups.push(exposedTarget.close, containerTarget.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(routePort, {
+        hasExposedTaskPort: (taskId, port) => taskId === 'task-1' && port === routePort,
+        hasTaskContainerPreviewTarget: (taskId, port) => taskId === 'task-1' && port === routePort,
+        resolvePreviewTarget: async () => `http://127.0.0.1:${exposedTarget.port}`,
+        resolveTaskContainerPreviewTarget: async () => `http://127.0.0.1:${containerTarget.port}`,
+      }),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const exposedHtmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${routePort}/`,
+      {
+        headers: { cookie: SESSION_COOKIE },
+      },
+    );
+    expect(exposedHtmlResponse.status).toBe(200);
+
+    const containerAssetResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_container_preview/task-1/${routePort}/editor/assets/index.js`,
+      {
+        headers: { cookie: SESSION_COOKIE },
+      },
+    );
+
+    expect(containerAssetResponse.status).toBe(200);
+    expect(await containerAssetResponse.text()).toContain('window.containerPreviewAssetLoaded');
   });
 
   it('streams non-HTML responses without waiting for the upstream response to end', async () => {

@@ -35,7 +35,7 @@ export function buildTaskContainerPreviewUrl(
   }
 
   const encodedTaskId = encodeURIComponent(taskId);
-  return `${window.location.origin}/_preview/${encodedTaskId}/${preview.port}/`;
+  return `${window.location.origin}/_container_preview/${encodedTaskId}/${preview.port}/`;
 }
 
 export async function inspectTaskContainerForTask(
