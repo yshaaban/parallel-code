@@ -3,6 +3,7 @@ import type { RemoteAgent } from '../../electron/remote/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const remoteDetailState = vi.hoisted(() => ({
+  agentReads: 0,
   emitOutput: null as null | ((agentId: string, data: string) => void),
   emitScrollback: null as null | ((agentId: string, data: string, cols: number) => void),
   fitSpy: vi.fn(),
@@ -86,9 +87,13 @@ vi.mock('./ws', async () => {
   remoteDetailState.emitScrollback = (agentId: string, data: string, cols: number) => {
     scrollbackListeners.get(agentId)?.forEach((listener) => listener(data, cols));
   };
+  const readAgents = (): RemoteAgent[] => {
+    remoteDetailState.agentReads += 1;
+    return agentsSignal();
+  };
 
   return {
-    agents: agentsSignal,
+    agents: readAgents,
     getAgentLastActivityAt: vi.fn(() => null),
     getAgentPreview: vi.fn(() => ''),
     onOutput: vi.fn((agentId: string, listener: (data: string) => void) => {
@@ -170,6 +175,7 @@ function useFakeTimersWithImmediateAnimationFrames(): void {
 
 describe('AgentDetail', () => {
   beforeEach(() => {
+    remoteDetailState.agentReads = 0;
     remoteDetailState.fitSpy.mockReset();
     remoteDetailState.refreshSpy.mockReset();
     remoteDetailState.scrollToBottomSpy.mockReset();
@@ -215,6 +221,34 @@ describe('AgentDetail', () => {
     await waitFor(() => {
       expect(screen.getByRole('alertdialog', { name: 'Agent not found' })).toBeDefined();
     });
+  });
+
+  it('derives selected agent detail from one selected-agent lookup per snapshot', () => {
+    remoteDetailState.setAgents?.([
+      createAgent({ agentId: 'agent-other-1', taskName: 'Other Agent 1' }),
+      createAgent({
+        agentId: 'agent-1',
+        taskMeta: {
+          agentDefId: null,
+          agentDefName: null,
+          branchName: 'feature/remote-detail',
+          directMode: false,
+          folderName: 'parallel-code',
+          lastPrompt: null,
+          worktreeOwnership: 'managed',
+        },
+        taskName: 'Selected Remote Agent',
+      }),
+      createAgent({ agentId: 'agent-other-2', taskName: 'Other Agent 2' }),
+    ]);
+    remoteDetailState.agentReads = 0;
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Fallback Agent" onBack={vi.fn()} />);
+
+    expect(screen.getByText('Selected Remote Agent')).toBeDefined();
+    expect(screen.queryByText('Other Agent 1')).toBeNull();
+    expect(screen.queryByText('Fallback Agent')).toBeNull();
+    expect(remoteDetailState.agentReads).toBe(1);
   });
 
   it('re-fits and refreshes the terminal after font size changes', async () => {

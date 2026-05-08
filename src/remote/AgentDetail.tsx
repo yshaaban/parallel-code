@@ -72,8 +72,19 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   const [forceTakeover, setForceTakeover] = createSignal(false);
   const [statusNotice, setStatusNotice] = createSignal<string | null>(null);
 
-  const agentInfo = () => agents().find((agent) => agent.agentId === props.agentId);
-  const taskId = createMemo(() => agentInfo()?.taskId ?? null);
+  const selectedAgent = createMemo(() => agents().find((agent) => agent.agentId === props.agentId));
+  const taskId = createMemo(() => selectedAgent()?.taskId ?? null);
+  const selectedAgentStatus = createMemo(() => selectedAgent()?.status);
+  const selectedTaskName = createMemo(() => selectedAgent()?.taskName ?? props.taskName);
+  const selectedTaskContextLine = createMemo(() => {
+    const taskMeta = selectedAgent()?.taskMeta;
+    return formatRemoteTaskContext(
+      taskMeta?.branchName ?? null,
+      taskMeta?.folderName ?? null,
+      taskMeta?.directMode === true,
+      taskMeta?.worktreeOwnership ?? null,
+    );
+  });
   const ownerStatus = createMemo(() => {
     const activeTaskId = taskId();
     if (!activeTaskId) {
@@ -150,16 +161,13 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let bufferedOutput: Uint8Array[] = [];
 
   createEffect(
-    on(
-      () => agentInfo()?.status,
-      (next, prev) => {
-        if (next && prev && next !== prev) {
-          setStatusFlashClass((current) =>
-            current === 'status-flash-a' ? 'status-flash-b' : 'status-flash-a',
-          );
-        }
-      },
-    ),
+    on(selectedAgentStatus, (next, prev) => {
+      if (next && prev && next !== prev) {
+        setStatusFlashClass((current) =>
+          current === 'status-flash-a' ? 'status-flash-b' : 'status-flash-a',
+        );
+      }
+    }),
   );
 
   createEffect(() => {
@@ -180,7 +188,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   });
 
   createEffect(() => {
-    const currentAgent = agentInfo();
+    const currentAgent = selectedAgent();
     if (!currentAgentId) {
       return;
     }
@@ -557,14 +565,9 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     >
       <AgentDetailHeader
         agentId={props.agentId}
-        agentStatus={agentInfo()?.status}
+        agentStatus={selectedAgentStatus()}
         connectionStatus={status()}
-        contextLine={formatRemoteTaskContext(
-          agentInfo()?.taskMeta?.branchName ?? null,
-          agentInfo()?.taskMeta?.folderName ?? null,
-          agentInfo()?.taskMeta?.directMode === true,
-          agentInfo()?.taskMeta?.worktreeOwnership ?? null,
-        )}
+        contextLine={selectedTaskContextLine()}
         lastActivityAt={getAgentLastActivityAt(props.agentId)}
         onBack={props.onBack}
         onKill={() => setShowKillConfirm(true)}
@@ -578,7 +581,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
         statusFlashClass={statusFlashClass()}
         takeOverBusy={takeoverBusy()}
         takeOverLabel={takeOverLabel()}
-        taskName={agentInfo()?.taskName ?? props.taskName}
+        taskName={selectedTaskName()}
       />
 
       <div
@@ -613,7 +616,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
             <div
               ref={termContainer}
               role="region"
-              aria-label={`Terminal output for ${agentInfo()?.taskName ?? props.taskName}`}
+              aria-label={`Terminal output for ${selectedTaskName()}`}
               style={{
                 width: '100%',
                 height: '100%',
