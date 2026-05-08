@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import { store } from '../store/store';
 import { monacoThemeName } from '../lib/monaco-theme';
@@ -12,11 +12,20 @@ interface MonacoDiffEditorProps {
   sideBySide: boolean;
 }
 
-export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
+export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
   let containerRef!: HTMLDivElement;
   let editor: monaco.editor.IStandaloneDiffEditor | undefined;
   let originalModel: monaco.editor.ITextModel | undefined;
   let modifiedModel: monaco.editor.ITextModel | undefined;
+  let diffUpdateDisposable: monaco.IDisposable | undefined;
+
+  function handleHiddenLinesClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    const center = target.closest('.diff-hidden-lines .center');
+    if (!center) return;
+    const link = center.querySelector<HTMLElement>('a[role="button"]');
+    if (link && !link.contains(target)) link.click();
+  }
 
   onMount(() => {
     editor = monaco.editor.createDiffEditor(containerRef, {
@@ -37,7 +46,7 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
     modifiedModel = monaco.editor.createModel(props.newContent, props.language);
     editor.setModel({ original: originalModel, modified: modifiedModel });
 
-    editor.onDidUpdateDiff(() => {
+    diffUpdateDisposable = editor.onDidUpdateDiff(() => {
       const changes = editor?.getLineChanges();
       if (changes && changes.length > 0) {
         const line = changes[0].modifiedStartLineNumber;
@@ -46,13 +55,7 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
     });
 
     // Make the entire hidden-lines bar clickable (Monaco only wires a tiny icon by default)
-    containerRef.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      const center = target.closest('.diff-hidden-lines .center');
-      if (!center) return;
-      const link = center.querySelector<HTMLElement>('a[role="button"]');
-      if (link && !link.contains(target)) link.click();
-    });
+    containerRef.addEventListener('click', handleHiddenLinesClick);
   });
 
   createEffect(() => {
@@ -94,6 +97,8 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
   });
 
   onCleanup(() => {
+    containerRef?.removeEventListener('click', handleHiddenLinesClick);
+    diffUpdateDisposable?.dispose();
     editor?.dispose();
     originalModel?.dispose();
     modifiedModel?.dispose();
