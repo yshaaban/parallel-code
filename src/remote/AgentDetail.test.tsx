@@ -7,6 +7,7 @@ const remoteDetailState = vi.hoisted(() => ({
   emitScrollback: null as null | ((agentId: string, data: string, cols: number) => void),
   fitSpy: vi.fn(),
   refreshSpy: vi.fn(),
+  scrollToBottomSpy: vi.fn(),
   setAgents: null as null | ((agents: RemoteAgent[]) => void),
 }));
 
@@ -22,6 +23,8 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     options: Record<string, unknown>;
     buffer = { active: { baseY: 0, viewportY: 0 } };
+    cols = 80;
+    rows = 24;
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
@@ -40,8 +43,14 @@ vi.mock('@xterm/xterm', () => ({
     refresh(start: number, end: number): void {
       remoteDetailState.refreshSpy(start, end);
     }
-    resize(): void {}
-    scrollToBottom(): void {}
+    resize(cols?: number): void {
+      if (cols !== undefined) {
+        this.cols = cols;
+      }
+    }
+    scrollToBottom(): void {
+      remoteDetailState.scrollToBottomSpy();
+    }
     write(_data: unknown, callback?: () => void): void {
       callback?.();
     }
@@ -116,7 +125,11 @@ import {
   getRemoteTaskControllerOwnerStatus,
   getRemoteTaskOwnerStatus,
 } from './remote-collaboration';
-import { requestRemoteTaskTakeover, sendRemoteAgentInput } from './remote-task-command';
+import {
+  requestRemoteTaskTakeover,
+  sendRemoteAgentInput,
+  sendRemoteAgentResize,
+} from './remote-task-command';
 
 function createAgent(overrides: Partial<RemoteAgent> = {}): RemoteAgent {
   return {
@@ -146,14 +159,25 @@ function createDeferred<T>(): {
   return { promise, reject, resolve };
 }
 
+function useFakeTimersWithImmediateAnimationFrames(): void {
+  vi.useFakeTimers();
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callback(0);
+    return 1;
+  });
+  vi.stubGlobal('cancelAnimationFrame', () => {});
+}
+
 describe('AgentDetail', () => {
   beforeEach(() => {
     remoteDetailState.fitSpy.mockReset();
     remoteDetailState.refreshSpy.mockReset();
+    remoteDetailState.scrollToBottomSpy.mockReset();
     vi.mocked(getRemoteTaskControllerOwnerStatus).mockReturnValue(null);
     vi.mocked(getRemoteTaskOwnerStatus).mockReturnValue(null);
     vi.mocked(requestRemoteTaskTakeover).mockResolvedValue('acquired');
     vi.mocked(sendRemoteAgentInput).mockResolvedValue(true);
+    vi.mocked(sendRemoteAgentResize).mockClear();
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -171,6 +195,7 @@ describe('AgentDetail', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -301,5 +326,44 @@ describe('AgentDetail', () => {
 
     expect(sendRemoteAgentInput).toHaveBeenCalledWith('agent-1', 'task-1', 'status\r');
     expect(screen.queryByText('Connection unavailable. Try again.')).toBeNull();
+  });
+
+  it('cancels delayed command scrolling when the agent moves to another task', () => {
+    useFakeTimersWithImmediateAnimationFrames();
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    fireEvent.input(screen.getByLabelText('Type a command for this agent'), {
+      target: { value: 'status' },
+    });
+    screen.getByRole('button', { name: 'Send command' }).click();
+
+    remoteDetailState.setAgents?.([
+      createAgent({
+        taskId: 'task-2',
+        taskName: 'Hydra Secondary Agent',
+      }),
+    ]);
+    vi.advanceTimersByTime(180);
+
+    expect(remoteDetailState.scrollToBottomSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not send a stale debounced resize after the agent moves to another task', () => {
+    useFakeTimersWithImmediateAnimationFrames();
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+    screen.getByRole('button', { name: 'Increase terminal font size' }).click();
+
+    remoteDetailState.setAgents?.([
+      createAgent({
+        taskId: 'task-2',
+        taskName: 'Hydra Secondary Agent',
+      }),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendRemoteAgentResize).not.toHaveBeenCalledWith('agent-1', 'task-1', 80, 24);
+    expect(sendRemoteAgentResize).toHaveBeenCalledWith('agent-1', 'task-2', 80, 24);
   });
 });

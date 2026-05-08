@@ -197,16 +197,19 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
   createEffect(
     on(taskId, (nextTaskId, previousTaskId) => {
+      currentTaskId = nextTaskId;
       if (!previousTaskId || previousTaskId === nextTaskId) {
         return;
       }
 
-      currentTaskId = nextTaskId;
       takeoverRequestId += 1;
       setTakeoverBusy(false);
-      void releaseRemoteTaskCommand(previousTaskId);
       setStatusNotice(null);
       setForceTakeover(false);
+      clearDelayedScrollTimers();
+      clearResizeDebounceTimer();
+      scheduleFitAndResize();
+      void releaseRemoteTaskCommand(previousTaskId);
     }),
   );
 
@@ -261,22 +264,29 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     }
   }
 
-  function scheduleResizeSend(): void {
+  function clearResizeDebounceTimer(): void {
     if (resizeDebounceTimer) {
       clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = null;
     }
+  }
+
+  function scheduleResizeSend(): void {
+    clearResizeDebounceTimer();
+    const activeAgentId = currentAgentId;
+    const activeTaskId = getActiveTaskId();
+
     resizeDebounceTimer = setTimeout(() => {
       resizeDebounceTimer = null;
-      if (!term) {
+      if (!term || !activeTaskId) {
         return;
       }
 
-      const activeTaskId = getActiveTaskId();
-      if (!activeTaskId) {
+      if (currentAgentId !== activeAgentId || getActiveTaskId() !== activeTaskId) {
         return;
       }
 
-      sendRemoteAgentResize(currentAgentId, activeTaskId, term.cols, term.rows);
+      sendRemoteAgentResize(activeAgentId, activeTaskId, term.cols, term.rows);
     }, 100);
   }
 
@@ -512,10 +522,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
     onCleanup(() => {
       cancelFitFrames();
-      if (resizeDebounceTimer) {
-        clearTimeout(resizeDebounceTimer);
-        resizeDebounceTimer = null;
-      }
+      clearResizeDebounceTimer();
       clearDelayedScrollTimers();
       clearMissingAgentTimer();
       cleanupTouchGestures();
