@@ -912,6 +912,10 @@ export function createTerminalInputPipeline(
     const inputGeneration = inputLifecycleGeneration;
     ensureInputLease()
       .then((acquired) => {
+        if (inputGeneration !== inputLifecycleGeneration || !isTerminalInputRetryAllowed()) {
+          return;
+        }
+
         if (!acquired) {
           if (!hasTaskCommandLeaseTransportAvailability()) {
             retryInputDrain();
@@ -940,6 +944,7 @@ export function createTerminalInputPipeline(
       .catch((error) => {
         if (
           inputGeneration !== inputLifecycleGeneration ||
+          !isTerminalInputRetryAllowed() ||
           isCanceledBrowserAgentCommandError(error)
         ) {
           return;
@@ -1326,13 +1331,15 @@ export function createTerminalInputPipeline(
     },
     requestInputTakeover(): Promise<boolean> {
       return inputLeaseSession.takeOver().then((acquired) => {
-        if (acquired) {
-          if (peerDeferredResize) {
-            scheduleResize(peerDeferredResize);
-            peerDeferredResize = null;
-          }
-          void flushPendingResize();
+        if (!acquired || !isTerminalInputRetryAllowed()) {
+          return acquired;
         }
+
+        if (peerDeferredResize) {
+          scheduleResize(peerDeferredResize);
+          peerDeferredResize = null;
+        }
+        void flushPendingResize();
         return acquired;
       });
     },

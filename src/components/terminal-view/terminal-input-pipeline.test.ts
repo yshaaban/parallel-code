@@ -541,6 +541,52 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('does not send queued input when lease reacquire resolves after disposal', async () => {
+    const acquireDeferred = createDeferred<boolean>();
+    let disposed = false;
+    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+      acquire: vi.fn(() => acquireDeferred.promise),
+      cleanup: vi.fn(),
+      release: vi.fn(async () => undefined),
+      takeOver: vi.fn(async () => true),
+      touch: vi.fn(() => false),
+    });
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => true,
+      isDisposed: () => disposed,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalData('abc');
+    await vi.advanceTimersByTimeAsync(2);
+
+    expect(sendTerminalInput).not.toHaveBeenCalled();
+
+    disposed = true;
+    acquireDeferred.resolve(true);
+    await flushMicrotasks();
+
+    expect(sendTerminalInput).not.toHaveBeenCalled();
+
+    pipeline.cleanup();
+  });
+
   it('keeps sustained interactive typing queued behind the active send without dropping suffix input', async () => {
     const firstSendDeferred = createDeferred<undefined>();
     const secondSendDeferred = createDeferred<undefined>();
@@ -1008,6 +1054,67 @@ describe('terminal-input-pipeline', () => {
       IPC.ResizeAgent,
       expect.objectContaining({ cols: 100, rows: 30 }),
     );
+
+    pipeline.cleanup();
+  });
+
+  it('does not commit a peer-deferred resize when input takeover resolves after disposal', async () => {
+    const takeoverDeferred = createDeferred<boolean>();
+    let disposed = false;
+    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+      acquire: vi.fn(async () => true),
+      cleanup: vi.fn(),
+      release: vi.fn(async () => undefined),
+      takeOver: vi.fn(() => takeoverDeferred.promise),
+      touch: vi.fn(() => false),
+    });
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => disposed,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(132, 36);
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+    const takeoverPromise = pipeline.requestInputTakeover();
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'runtime-client-1',
+      taskId: 'task-1',
+      version: 2,
+    });
+    disposed = true;
+    takeoverDeferred.resolve(true);
+
+    await expect(takeoverPromise).resolves.toBe(true);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
 
     pipeline.cleanup();
   });

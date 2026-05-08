@@ -337,6 +337,39 @@ describe('AgentDetail', () => {
     expect(screen.queryByText('You now control this terminal.')).toBeNull();
   });
 
+  it('ignores a late takeover result after the detail view unmounts', async () => {
+    const takeover = createDeferred<'acquired'>();
+    const ownerStatus = {
+      action: 'type in the terminal',
+      controllerId: 'other-client',
+      isSelf: false,
+      label: 'Other session typing',
+    };
+    vi.mocked(getRemoteTaskControllerOwnerStatus).mockReturnValue(ownerStatus);
+    vi.mocked(getRemoteTaskOwnerStatus).mockReturnValue(ownerStatus);
+    vi.mocked(requestRemoteTaskTakeover).mockReturnValue(takeover.promise);
+
+    const result = render(() => (
+      <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />
+    ));
+
+    const takeOverButton = screen.getByRole('button', { name: 'Take Over' });
+    takeOverButton.click();
+
+    await waitFor(() => {
+      expect(takeOverButton.textContent).toBe('Working…');
+    });
+
+    remoteDetailState.fitSpy.mockClear();
+    result.unmount();
+    takeover.resolve('acquired');
+    await takeover.promise;
+    await Promise.resolve();
+
+    expect(requestRemoteTaskTakeover).toHaveBeenCalledWith('task-1', false);
+    expect(remoteDetailState.fitSpy).not.toHaveBeenCalled();
+  });
+
   it('ignores a stale failed input send after the agent moves to another task', async () => {
     const sendResult = createDeferred<boolean>();
     vi.mocked(sendRemoteAgentInput).mockReturnValue(sendResult.promise);

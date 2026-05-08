@@ -49,6 +49,17 @@ function resetPromptStoreMocks(): void {
   offAgentReadyMock.mockReset();
 }
 
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
 vi.mock('../app/task-command-lease', () => ({
   createTaskCommandLeaseSession: () => ({
     cleanup: leaseCleanupMock,
@@ -155,6 +166,29 @@ describe('PromptInput', () => {
     await vi.waitFor(() => {
       expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'prompt');
     });
+  });
+
+  it('ignores a late prompt takeover result after cleanup', async () => {
+    const takeover = createDeferredPromise<boolean>();
+    takeOverMock.mockReturnValueOnce(takeover.promise);
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'send a prompt',
+      controllerId: 'peer-client',
+    });
+
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+
+    const takeOverButton = await result.findByRole('button', { name: 'Take Over Prompt' });
+    takeOverButton.click();
+
+    expect(takeOverMock).toHaveBeenCalledTimes(1);
+
+    result.unmount();
+    takeover.resolve(true);
+    await takeover.promise;
+    await Promise.resolve();
+
+    expect(setTaskFocusedPanelStateMock).not.toHaveBeenCalled();
   });
 
   it('collapses the prompt banner into a compact chip when dismissed', async () => {

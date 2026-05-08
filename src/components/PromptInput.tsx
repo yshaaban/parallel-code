@@ -94,6 +94,8 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   const [sendError, setSendError] = createSignal<string | null>(null);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
+  let disposed = false;
+  let takeOverGeneration = 0;
   const promptLeaseSession = createTaskCommandLeaseSession(taskId, 'send a prompt', {
     confirmTakeover: false,
   });
@@ -297,6 +299,9 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   });
 
   onCleanup(() => {
+    disposed = true;
+    takeOverGeneration += 1;
+    setTakingOver(false);
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
     sendAbortController?.abort();
@@ -428,15 +433,20 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
     }
 
     setTakingOver(true);
+    const generation = ++takeOverGeneration;
     try {
       const acquired = await promptLeaseSession.takeOver();
-      if (acquired) {
-        setSendError(null);
-        setTaskFocusedPanelState(props.taskId, 'prompt');
-        textareaRef?.focus();
+      if (!acquired || disposed || generation !== takeOverGeneration) {
+        return;
       }
+
+      setSendError(null);
+      setTaskFocusedPanelState(taskId, 'prompt');
+      textareaRef?.focus();
     } finally {
-      setTakingOver(false);
+      if (generation === takeOverGeneration) {
+        setTakingOver(false);
+      }
     }
   }
 
