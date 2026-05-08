@@ -1562,7 +1562,9 @@ Important property:
   re-enable or disable remote access after a newer user action
 - peer-count-only updates do not mutate disabled remote-access status, so stale browser-side count
   messages cannot violate the disabled-state invariant
-- the remaining gap is semantic alignment: browser mode has a richer peer/client distinction than Electron remote hosting
+- remote-access connected-client counts stay separate from collaboration peer presence; browser and
+  remote/mobile presence now share one payload/runtime contract, while each shell keeps its own UI
+  projection
 
 ## Where The Architecture Is Cleanest
 
@@ -1681,12 +1683,15 @@ Recent work improved several concepts:
 - review and convergence state are now backend-owned, pushed, and replayed
 - task-dot, attention, and focus semantics now come from one canonical presentation mapper
 - remote-access status now uses a clearer enabled/disabled contract
+- remote presence now has one shared payload/runtime contract across browser desktop and
+  remote/mobile, with runtime-specific projections kept at the UI edge
 
 Still mixed:
 
 - Electron git delivery still includes some targeted on-demand refresh in advanced UI surfaces
 - browser replay and Electron startup hydration still restore the same state through different mechanisms
-- remote presence semantics are aligned in shape, but not fully identical in meaning across runtimes
+- remote presence projections are still runtime-specific because desktop and mobile show different
+  shells, but they consume the same backend peer-presence truth
 - browser viewport/focus geometry still needs targeted browser proof when it changes, even though
   committed PTY resize authority is tied to backend task ownership
 - full-screen and alt-screen TUI restore still falls back to heavier redraw paths than ideal
@@ -1747,11 +1752,11 @@ Good examples:
 - control-event sequencing
 - backend canonical agent status
 - backend convergence snapshots
+- peer presence payload and runtime publication
 - task presentation mapping
 
 Still weak:
 
-- remote presence semantics across runtimes
 - startup/restore state-category alignment between browser replay and Electron hydration
 
 ### 3. Workflows should own multi-step use cases
@@ -2031,7 +2036,7 @@ Why this matters:
 
 This is much better than before, but still worth watching when future features land:
 
-- remote presence semantics across desktop host mode and browser mode
+- remote presence projections across desktop and mobile shells
 - startup/restore semantics across browser replay and Electron hydration
 - git refresh behavior in advanced or future UI surfaces
 
