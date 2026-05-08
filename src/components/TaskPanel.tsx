@@ -27,7 +27,7 @@ import {
   getTerminalExperimentSwitchTargetWindowMs,
   getTerminalPerformanceExperimentConfig,
 } from '../lib/terminal-performance-experiments';
-import { handleDragReorder } from '../lib/drag-reorder';
+import { handleDragReorder, type DragSessionCleanup } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import {
@@ -95,6 +95,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   let changedFilesRef: HTMLDivElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
   let promptHandle: PromptInputHandle | undefined;
+  let cleanupTitleDrag: DragSessionCleanup | undefined;
 
   const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
 
@@ -122,6 +123,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   function cancelTaskTerminalSwitchState(): void {
     cancelTerminalSwitchEchoGrace(props.task.id);
     cancelTerminalSwitchWindow(props.task.id, props.task.id);
+  }
+
+  function clearTitleDrag(): void {
+    const cleanup = cleanupTitleDrag;
+    cleanupTitleDrag = undefined;
+    cleanup?.();
   }
 
   function startTaskTerminalSwitchWindow(): void {
@@ -157,6 +164,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   });
 
   onCleanup(() => {
+    clearTitleDrag();
     if (props.isActive) {
       cancelTaskTerminalSwitchState();
     }
@@ -196,9 +204,13 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   }
 
   function handleTitleMouseDown(event: MouseEvent): void {
-    handleDragReorder(event, {
+    clearTitleDrag();
+    cleanupTitleDrag = handleDragReorder(event, {
       itemId: props.task.id,
       getTaskOrder: () => store.taskOrder,
+      onSessionEnd: () => {
+        cleanupTitleDrag = undefined;
+      },
       onReorder: reorderTask,
       onTap: () => setActiveTask(props.task.id),
     });

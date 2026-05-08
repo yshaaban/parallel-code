@@ -4,8 +4,11 @@ interface HorizontalDragReorderOptions {
   getTaskOrder: () => string[];
   itemId: string;
   onReorder: (fromIdx: number, toIdx: number) => void;
+  onSessionEnd?: () => void;
   onTap: () => void;
 }
+
+export type DragSessionCleanup = () => void;
 
 interface VerticalDropIndexOptions {
   clientY: number;
@@ -18,18 +21,68 @@ interface MouseDragSessionOptions {
   event: MouseEvent;
   onDragEnd: (didDrag: boolean) => void;
   onDragMove: (event: MouseEvent) => void;
+  onDragCancel?: (didDrag: boolean) => void;
   onDragStart?: () => void;
   threshold?: number;
 }
 
-export function handleDragReorder(event: MouseEvent, options: HorizontalDragReorderOptions): void {
+interface WindowMouseDragSessionOptions {
+  onCancel?: () => void;
+  onMove: (event: MouseEvent) => void;
+  onUp: () => void;
+}
+
+export function startWindowMouseDragSession(
+  options: WindowMouseDragSessionOptions,
+): DragSessionCleanup {
+  let active = true;
+
+  function removeListeners(): boolean {
+    if (!active) {
+      return false;
+    }
+
+    active = false;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    return true;
+  }
+
+  function onMove(nextEvent: MouseEvent): void {
+    if (!active) {
+      return;
+    }
+
+    options.onMove(nextEvent);
+  }
+
+  function onUp(): void {
+    if (removeListeners()) {
+      options.onUp();
+    }
+  }
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+
+  return function cancelDragSession(): void {
+    if (removeListeners()) {
+      options.onCancel?.();
+    }
+  };
+}
+
+export function handleDragReorder(
+  event: MouseEvent,
+  options: HorizontalDragReorderOptions,
+): DragSessionCleanup | undefined {
   if (event.button !== 0) {
-    return;
+    return undefined;
   }
 
   const target = event.target as HTMLElement;
   if (target.closest('button') || target.tagName === 'INPUT') {
-    return;
+    return undefined;
   }
 
   event.preventDefault();
@@ -37,13 +90,13 @@ export function handleDragReorder(event: MouseEvent, options: HorizontalDragReor
   const titleBarElement = event.currentTarget as HTMLElement;
   const draggedColumn = titleBarElement.closest<HTMLElement>('[data-task-id]');
   if (!draggedColumn) {
-    return;
+    return undefined;
   }
 
   const sizeWrapper = draggedColumn.parentElement;
   const columnsContainer = sizeWrapper?.parentElement;
   if (!columnsContainer) {
-    return;
+    return undefined;
   }
   const dragColumnsContainer = columnsContainer;
   const dragColumn = draggedColumn;
@@ -105,6 +158,13 @@ export function handleDragReorder(event: MouseEvent, options: HorizontalDragReor
     indicator.style.height = `${containerRect.height}px`;
   }
 
+  function clearDragPresentation(): void {
+    document.body.classList.remove('dragging-task');
+    dragColumn.style.opacity = '';
+    indicator?.remove();
+    indicator = null;
+  }
+
   function onMove(nextEvent: MouseEvent): void {
     if (!didDrag && Math.abs(nextEvent.clientX - startX) < DEFAULT_DRAG_THRESHOLD) {
       return;
@@ -127,29 +187,34 @@ export function handleDragReorder(event: MouseEvent, options: HorizontalDragReor
   }
 
   function onUp(): void {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
+    try {
+      if (!didDrag) {
+        options.onTap();
+        return;
+      }
 
-    if (!didDrag) {
-      options.onTap();
-      return;
+      clearDragPresentation();
+
+      const fromIndex = options.getTaskOrder().indexOf(options.itemId);
+      if (fromIndex === -1 || lastDropIndex === -1 || fromIndex === lastDropIndex) {
+        return;
+      }
+
+      const adjustedToIndex = lastDropIndex > fromIndex ? lastDropIndex - 1 : lastDropIndex;
+      options.onReorder(fromIndex, adjustedToIndex);
+    } finally {
+      options.onSessionEnd?.();
     }
-
-    document.body.classList.remove('dragging-task');
-    dragColumn.style.opacity = '';
-    indicator?.remove();
-
-    const fromIndex = options.getTaskOrder().indexOf(options.itemId);
-    if (fromIndex === -1 || lastDropIndex === -1 || fromIndex === lastDropIndex) {
-      return;
-    }
-
-    const adjustedToIndex = lastDropIndex > fromIndex ? lastDropIndex - 1 : lastDropIndex;
-    options.onReorder(fromIndex, adjustedToIndex);
   }
 
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
+  return startWindowMouseDragSession({
+    onCancel: () => {
+      clearDragPresentation();
+      options.onSessionEnd?.();
+    },
+    onMove,
+    onUp,
+  });
 }
 
 export function computeVerticalDropIndex(options: VerticalDropIndexOptions): number {
@@ -174,10 +239,12 @@ export function computeVerticalDropIndex(options: VerticalDropIndexOptions): num
   return items.length;
 }
 
-export function startMouseDragSession(options: MouseDragSessionOptions): void {
+export function startMouseDragSession(
+  options: MouseDragSessionOptions,
+): DragSessionCleanup | undefined {
   const { event, onDragEnd, onDragMove, onDragStart, threshold = DEFAULT_DRAG_THRESHOLD } = options;
   if (event.button !== 0) {
-    return;
+    return undefined;
   }
 
   event.preventDefault();
@@ -201,11 +268,12 @@ export function startMouseDragSession(options: MouseDragSessionOptions): void {
   }
 
   function onUp(): void {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
     onDragEnd(didDrag);
   }
 
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
+  return startWindowMouseDragSession({
+    onCancel: () => options.onDragCancel?.(didDrag),
+    onMove,
+    onUp,
+  });
 }

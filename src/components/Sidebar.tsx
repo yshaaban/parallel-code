@@ -20,7 +20,12 @@ import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
 import { SidebarRemoteAccessButton } from './sidebar/SidebarRemoteAccessButton';
 import { SidebarTaskList } from './sidebar/SidebarTaskList';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
-import { computeVerticalDropIndex, startMouseDragSession } from '../lib/drag-reorder';
+import {
+  computeVerticalDropIndex,
+  startMouseDragSession,
+  startWindowMouseDragSession,
+  type DragSessionCleanup,
+} from '../lib/drag-reorder';
 import { sf } from '../lib/fontScale';
 import { isElectronRuntime } from '../lib/ipc';
 import { mod } from '../lib/platform';
@@ -57,6 +62,8 @@ export function Sidebar(): JSX.Element {
   const [resizing, setResizing] = createSignal(false);
   const [resizePreviewWidth, setResizePreviewWidth] = createSignal<number | null>(null);
   let taskListRef: HTMLDivElement | undefined;
+  let cleanupResizeDrag: DragSessionCleanup | undefined;
+  let cleanupTaskDrag: DragSessionCleanup | undefined;
   const focusedProjectScrollFrame = createAnimationFrameTask();
 
   const sidebarWidth = () =>
@@ -78,8 +85,34 @@ export function Sidebar(): JSX.Element {
     electronRuntime ? store.remoteAccess.connectedClients : store.remoteAccess.peerClients;
   const remoteAccessConnected = () => store.remoteAccess.enabled && remotePeerClients() > 0;
 
+  function clearResizeDrag(): void {
+    const cleanup = cleanupResizeDrag;
+    cleanupResizeDrag = undefined;
+    cleanup?.();
+  }
+
+  function finishResizeDrag(latestWidth: number): void {
+    cleanupResizeDrag = undefined;
+    setResizing(false);
+    setPanelSizes({ [SIDEBAR_SIZE_KEY]: latestWidth });
+    setResizePreviewWidth(null);
+  }
+
+  function clearTaskDragState(): void {
+    setDragState(null);
+    setDropTarget(null);
+    document.body.classList.remove('dragging-task');
+  }
+
+  function clearTaskDrag(): void {
+    const cleanup = cleanupTaskDrag;
+    cleanupTaskDrag = undefined;
+    cleanup?.();
+  }
+
   function handleResizeMouseDown(event: MouseEvent): void {
     event.preventDefault();
+    clearResizeDrag();
     setResizing(true);
     const startX = event.clientX;
     const startWidth = sidebarWidth();
@@ -95,16 +128,19 @@ export function Sidebar(): JSX.Element {
     }
 
     function onUp(): void {
-      setResizing(false);
-      setPanelSizes({ [SIDEBAR_SIZE_KEY]: latestWidth });
-      setResizePreviewWidth(null);
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      finishResizeDrag(latestWidth);
     }
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    cleanupResizeDrag = startWindowMouseDragSession({
+      onMove,
+      onUp,
+    });
   }
+
+  onCleanup(() => {
+    clearResizeDrag();
+    clearTaskDrag();
+  });
 
   onMount(() => {
     const taskListElement = taskListRef;
@@ -197,8 +233,10 @@ export function Sidebar(): JSX.Element {
   }
 
   function handleTaskMouseDown(event: MouseEvent, taskId: string, groupId: string): void {
-    startMouseDragSession({
+    clearTaskDrag();
+    cleanupTaskDrag = startMouseDragSession({
       event,
+      onDragCancel: clearTaskDragState,
       onDragStart: () => {
         setDragState({ groupId, taskId });
         document.body.classList.add('dragging-task');
@@ -216,11 +254,10 @@ export function Sidebar(): JSX.Element {
         });
       },
       onDragEnd: (didDrag) => {
+        cleanupTaskDrag = undefined;
         const currentDragState = dragState();
         const currentDropTarget = dropTarget();
-        setDragState(null);
-        setDropTarget(null);
-        document.body.classList.remove('dragging-task');
+        clearTaskDragState();
 
         if (!didDrag) {
           setActiveTask(taskId);

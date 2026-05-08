@@ -1,5 +1,6 @@
 import { createSignal, createEffect, onCleanup, onMount, untrack, For, type JSX } from 'solid-js';
 import { beginPanelResizeDrag, endPanelResizeDrag } from '../app/panel-resize-drag';
+import { startWindowMouseDragSession, type DragSessionCleanup } from '../lib/drag-reorder';
 import { getPanelSize, setPanelSizes } from '../store/store';
 
 export interface PanelChild {
@@ -38,8 +39,21 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
   // In fitContent mode: pixel sizes. In flex mode: flex-grow weights (pixel values that work as proportional weights).
   const [sizes, setSizes] = createSignal<number[]>([]);
   const [dragging, setDragging] = createSignal<number | null>(null);
+  let cancelActiveDrag: DragSessionCleanup | undefined;
 
   const isHorizontal = () => props.direction === 'horizontal';
+
+  function clearActiveDrag(): void {
+    const cancel = cancelActiveDrag;
+    cancelActiveDrag = undefined;
+    cancel?.();
+  }
+
+  function finishActiveDrag(): void {
+    cancelActiveDrag = undefined;
+    setDragging(null);
+    endPanelResizeDrag();
+  }
 
   function initSizes() {
     if (!containerRef) return;
@@ -156,6 +170,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
   });
 
   onCleanup(() => {
+    clearActiveDrag();
     props.onHandle?.(undefined);
   });
 
@@ -213,10 +228,9 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     return -1;
   }
 
-  function handleMouseDown(handleIndex: number, e: MouseEvent) {
+  function handleMouseDown(handleIndex: number, e: MouseEvent): void {
     e.preventDefault();
-    setDragging(handleIndex);
-    beginPanelResizeDrag();
+    clearActiveDrag();
 
     const startPos = isHorizontal() ? e.clientX : e.clientY;
     // For flex-based panels, snapshot actual rendered pixel sizes so drag math works correctly
@@ -233,10 +247,13 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     if (resizeLeftIdx < 0) return;
     if (resizeRightIdx < 0 && !props.fitContent) return;
 
+    setDragging(handleIndex);
+    beginPanelResizeDrag();
+
     const leftPanel = props.children[resizeLeftIdx];
     const rightPanel = props.children[resizeRightIdx];
 
-    function onMove(ev: MouseEvent) {
+    function onMove(ev: MouseEvent): void {
       const delta = (isHorizontal() ? ev.clientX : ev.clientY) - startPos;
 
       if (props.fitContent) {
@@ -280,11 +297,8 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       });
     }
 
-    function onUp() {
-      setDragging(null);
-      endPanelResizeDrag();
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+    function onUp(): void {
+      finishActiveDrag();
 
       if (props.persistKey) {
         const current = sizes();
@@ -299,8 +313,11 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       }
     }
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    cancelActiveDrag = startWindowMouseDragSession({
+      onCancel: finishActiveDrag,
+      onMove,
+      onUp,
+    });
   }
 
   return (

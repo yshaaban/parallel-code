@@ -18,7 +18,7 @@ import { IconButton } from './IconButton';
 import { TerminalView } from './TerminalView';
 import { ScalablePanel } from './ScalablePanel';
 import { theme } from '../lib/theme';
-import { handleDragReorder } from '../lib/drag-reorder';
+import { handleDragReorder, type DragSessionCleanup } from '../lib/drag-reorder';
 import type { Terminal } from '../store/types';
 
 interface TerminalPanelProps {
@@ -29,6 +29,13 @@ interface TerminalPanelProps {
 export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
   let panelRef!: HTMLDivElement;
   let titleEditHandle: EditableTextHandle | undefined;
+  let cleanupTitleDrag: DragSessionCleanup | undefined;
+
+  function clearTitleDrag(): void {
+    const cleanup = cleanupTitleDrag;
+    cleanupTitleDrag = undefined;
+    cleanup?.();
+  }
 
   // Focus registration
   onMount(() => {
@@ -41,6 +48,8 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
     });
   });
 
+  onCleanup(clearTitleDrag);
+
   // Respond to focus panel changes
   createEffect(() => {
     if (!props.isActive) return;
@@ -48,10 +57,14 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
     triggerFocus(`${props.terminal.id}:${panel}`);
   });
 
-  function handleTitleMouseDown(e: MouseEvent) {
-    handleDragReorder(e, {
+  function handleTitleMouseDown(event: MouseEvent): void {
+    clearTitleDrag();
+    cleanupTitleDrag = handleDragReorder(event, {
       itemId: props.terminal.id,
       getTaskOrder: () => store.taskOrder,
+      onSessionEnd: () => {
+        cleanupTitleDrag = undefined;
+      },
       onReorder: reorderTask,
       onTap: () => setActiveTask(props.terminal.id),
     });

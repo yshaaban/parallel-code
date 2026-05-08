@@ -308,6 +308,41 @@ describe('Sidebar', () => {
     expect(setPanelSizesMock).toHaveBeenCalledWith({ 'sidebar:width': 320 });
   });
 
+  it('removes sidebar resize listeners without persisting when unmounted mid-drag', () => {
+    const result = render(() => <Sidebar />);
+
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (!(resizeHandle instanceof HTMLElement)) {
+      throw new Error('Expected sidebar resize handle');
+    }
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 240 });
+
+    result.unmount();
+    fireEvent.mouseMove(window, { clientX: 320 });
+    fireEvent.mouseUp(window);
+
+    expect(setPanelSizesMock).not.toHaveBeenCalled();
+  });
+
+  it('removes sidebar task drag listeners when unmounted before mouseup', () => {
+    const result = render(() => <Sidebar />);
+    const taskList = screen.getByTestId('sidebar-task-list');
+    const taskRow = document.createElement('div');
+    taskRow.dataset.sidebarDraggableTask = 'true';
+    taskRow.dataset.sidebarTaskId = 'task-1';
+    taskRow.dataset.sidebarGroup = 'project-1';
+    taskList.append(taskRow);
+
+    fireEvent.mouseDown(taskRow, { button: 0, clientX: 0, clientY: 0 });
+
+    result.unmount();
+    fireEvent.mouseUp(window);
+
+    expect(setActiveTaskMock).not.toHaveBeenCalled();
+    expect(focusSidebarMock).not.toHaveBeenCalled();
+  });
+
   it('cancels stale focused-project scroll frames when sidebar focus moves quickly', () => {
     const animationFrame = installManualAnimationFrame();
     const firstProject = document.createElement('div');
