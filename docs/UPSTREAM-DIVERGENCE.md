@@ -51,12 +51,12 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-04-17`, this repo has:
+As of `2026-05-08`, this repo has:
 
-- current upstream head: `a0f5280`
-- last reviewed upstream head: `91f00f4`
+- current upstream head: `af685eb`
+- last reviewed upstream head before the new intake: `a0f5280`
 - last shared graph ancestor with upstream: `b250446`
-- new upstream delta to review: `91f00f4..a0f5280` (`71` commits)
+- new upstream delta under active catch-up: `a0f5280..af685eb` (`118` commits)
 
 Important nuance:
 
@@ -71,6 +71,9 @@ Important nuance:
 - the `2026-04-17` catch-up pass now covers the new upstream-only span `91f00f4..a0f5280`
 - the detailed per-commit ledger for that new delta lives in
   [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
+- the `2026-05-08` catch-up intake covers the new upstream-only span `a0f5280..af685eb`
+- the detailed per-commit ledger for that new delta lives in
+  [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
 - the `2026-04-17` catch-up pass is now materially closed:
@@ -86,6 +89,8 @@ The detailed per-commit ledger for the `2026-04-01` pass lives in
 [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md).
 The detailed per-commit ledger for the `2026-04-17` pass lives in
 [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md).
+The detailed per-commit ledger for the `2026-05-08` pass lives in
+[UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md).
 The consolidated per-commit action ledger for the full upstream-only range now lives in
 [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md).
 The execution plan for bringing those changes over lives in
@@ -99,6 +104,7 @@ The detailed historical port record lives in:
 - [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md)
 - [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
 - [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
+- [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
 - [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md)
 
 The main question for this file is narrower: what is still open right now?
@@ -106,8 +112,15 @@ The main question for this file is narrower: what is still open right now?
 The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue.
 The `2026-04-17` catch-up pass now covers the fresh `91f00f4..a0f5280` delta as well, and its
 planned implementation work is closed. There is no remaining active direct-port or redesign queue
-for the reviewed upstream ranges. The only intentionally open parity question is redesign-only
-Docker isolation if product direction changes.
+for those reviewed upstream ranges. The new active queue is the `2026-05-08` range
+`a0f5280..af685eb`, tracked in [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md).
+That range must be reconciled by behavior, not by direct merge. The high-priority direct-port
+families from that range have now been reduced to local owner changes: git/diff correctness,
+diagnostics/logging, concrete shortcut additions, terminal image/drop/copy ergonomics, dialog
+accessibility, note-to-agent dispatch, bounded editor affordances, and review-surface polish.
+Existing-worktree import, PR check watching, configurable keybindings, coverage radar, non-git
+projects, MiniMax, and Docker-agent ideas remain explicit redesign/product-decision items rather
+than direct upstream ports.
 
 Recently landed locally:
 
