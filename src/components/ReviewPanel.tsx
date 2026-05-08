@@ -88,11 +88,20 @@ function getCommitHistoryRefreshKey(snapshot: TaskReviewSnapshot | undefined): s
   return `${snapshot.branchName}:${totalAdded}:${totalRemoved}:${fileIdentities.join('|')}`;
 }
 
+function getCommitHistoryErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return 'Commit history unavailable.';
+}
+
 export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
   const [commitHistory, setCommitHistory] = createSignal<Awaited<
     ReturnType<typeof fetchBranchCommitHistory>
   > | null>(null);
+  const [commitHistoryError, setCommitHistoryError] = createSignal<string | null>(null);
   const [selectedCommitHash, setSelectedCommitHash] = createSignal<string | null>(null);
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const commitHistoryRefreshKey = createMemo(() => getCommitHistoryRefreshKey(reviewSnapshot()));
@@ -134,6 +143,9 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   });
   const activeCommitHistory = createMemo(() => {
     return commitSelectionEnabled() ? commitHistory() : null;
+  });
+  const activeCommitHistoryError = createMemo(() => {
+    return commitSelectionEnabled() ? commitHistoryError() : null;
   });
   const selectedCommit = createMemo(() => {
     const hash = selectedCommitHash();
@@ -241,11 +253,13 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     const historyRefreshKey = commitHistoryRefreshKey();
     if (!props.isActive || !projectRoot || !branchName) {
       setCommitHistory(null);
+      setCommitHistoryError(null);
       setSelectedCommitHash(null);
       return;
     }
 
     let cancelled = false;
+    setCommitHistoryError(null);
     void fetchBranchCommitHistory({
       ...(baseBranch !== undefined ? { baseBranch } : {}),
       branchName,
@@ -257,6 +271,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         }
 
         setCommitHistory(history);
+        setCommitHistoryError(null);
         const currentSelectedCommitHash = untrack(selectedCommitHash);
         if (
           currentSelectedCommitHash &&
@@ -265,9 +280,10 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
           setSelectedCommitHash(null);
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setCommitHistory(null);
+          setCommitHistoryError(getCommitHistoryErrorMessage(error));
           setSelectedCommitHash(null);
         }
       });
@@ -440,6 +456,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
 
       <div style={{ display: 'flex', flex: '1', overflow: 'hidden' }}>
         <ReviewPanelFileList
+          commitHistoryError={activeCommitHistoryError()}
           commits={activeCommitHistory()?.commits}
           emptyMessage={emptyStateMessage()}
           files={visibleFiles()}

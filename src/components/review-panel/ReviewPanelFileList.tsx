@@ -12,6 +12,7 @@ import { typography } from '../../lib/typography';
 import { scrollSelectedRowIntoView } from '../file-list-scroll';
 
 interface ReviewPanelFileListProps {
+  commitHistoryError?: string | null;
   emptyMessage: string;
   files: ReadonlyArray<ChangedFile>;
   commits?: ReadonlyArray<ReviewCommitSummary>;
@@ -131,6 +132,22 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
             )}
           </For>
         </div>
+      </Show>
+      <Show when={props.commitHistoryError}>
+        {(commitHistoryError) => (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              padding: '6px',
+              color: theme.error,
+              'border-bottom': `1px solid ${theme.border}`,
+              ...typography.meta,
+            }}
+          >
+            Commit history unavailable: {commitHistoryError()}
+          </div>
+        )}
       </Show>
       <For each={props.files}>
         {(file, index) => {

@@ -394,6 +394,102 @@ describe('ReviewPanel', () => {
     expect(fetchBranchCommitHistoryMock).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces commit history failures without hiding review files', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: true, path: 'src/committed.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock.mockRejectedValue(new Error('branch history failed'));
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('committed'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('committed.ts')).toBeDefined();
+    expect(
+      await screen.findByText('Commit history unavailable: branch history failed'),
+    ).toBeDefined();
+  });
+
+  it('clears commit history failures after a later history fetch succeeds', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: true, path: 'src/committed.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock.mockImplementation(({ branchName }: { branchName: string }) => {
+      if (branchName === 'feature/task-1') {
+        return Promise.reject(new Error('branch history failed'));
+      }
+
+      return Promise.resolve({
+        baseHash: 'base',
+        commits: [
+          {
+            authoredAt: '2026-05-08T10:00:00Z',
+            authorName: 'Dev One',
+            files: [],
+            hash: 'abc1111',
+            parentHashes: ['base'],
+            shortHash: 'abc111',
+            subject: 'Recovered history',
+            totalAdded: 0,
+            totalRemoved: 0,
+          },
+        ],
+        headHash: 'head',
+        revisionId: 'base:head',
+      });
+    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('committed'));
+    const [branchName, setBranchName] = createSignal('feature/task-1');
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName={branchName()}
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(
+      await screen.findByText('Commit history unavailable: branch history failed'),
+    ).toBeDefined();
+
+    setBranchName('feature/task-2');
+
+    expect(await screen.findByText('abc111')).toBeDefined();
+    expect(screen.queryByText('Commit history unavailable: branch history failed')).toBeNull();
+  });
+
   it('refreshes non-all task review modes when pushed review state changes revision', async () => {
     replaceTaskReviewSnapshots([
       {
