@@ -90,6 +90,43 @@ describe('ChangedFilesList', () => {
     vi.useRealTimers();
   });
 
+  it('clears the root focus ref on unmount', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 3,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    const rootRefs: Array<HTMLDivElement | undefined> = [];
+
+    const result = render(() => (
+      <ChangedFilesList
+        kind="task"
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        isActive
+        setRootRef={(element) => rootRefs.push(element)}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(rootRefs.at(-1)).toBeInstanceOf(HTMLDivElement);
+    });
+
+    result.unmount();
+
+    expect(rootRefs.at(-1)).toBeUndefined();
+  });
+
   it('refreshes from pushed git-status events for task-bound lists using the canonical project diff', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     replaceTaskReviewSnapshots([

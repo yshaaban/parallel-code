@@ -81,7 +81,12 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     return !reviewOpen();
   }
 
-  function setInlineChangedFilesRef(element: HTMLDivElement): void {
+  function setInlineChangedFilesRef(element: HTMLDivElement | undefined): void {
+    if (!element) {
+      props.setChangedFilesRef(undefined);
+      return;
+    }
+
     if (isInlineChangedFilesVisible()) {
       props.setChangedFilesRef(element);
     }

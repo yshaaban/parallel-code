@@ -43,7 +43,7 @@ interface ChangedFilesListCommonProps {
   activeFilePath?: string | null;
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
-  setRootRef?: (element: HTMLDivElement) => void;
+  setRootRef?: (element: HTMLDivElement | undefined) => void;
   filterHydraArtifacts?: boolean;
 }
 
@@ -198,6 +198,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
   const rowRefs: Array<HTMLDivElement | undefined> = [];
+
   const requestRevisionId = createMemo(() =>
     getChangedFilesRequestRevisionId(props.kind, props.worktreePath, {
       branchName: props.kind === 'worktree' ? props.branchName : undefined,
@@ -525,9 +526,15 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     getHiddenHydraSummaryTitle(hiddenHydraArtifactCount()),
   );
 
+  onCleanup(() => {
+    props.setRootRef?.(undefined);
+  });
+
   return (
     <div
-      ref={props.setRootRef}
+      ref={(element) => {
+        props.setRootRef?.(element);
+      }}
       class="focusable-panel"
       tabIndex={0}
       onKeyDown={handleKeyDown}
