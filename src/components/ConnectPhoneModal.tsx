@@ -35,9 +35,11 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
   const [mode, setMode] = createSignal<NetworkMode>('wifi');
   let dialogRef: HTMLDivElement | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  let qrGeneration = 0;
   const dialogFocusFrame = createAnimationFrameTask();
   onCleanup(() => {
     if (copiedTimer !== undefined) clearTimeout(copiedTimer);
+    invalidateQrGeneration();
     dialogFocusFrame.cancel();
   });
 
@@ -54,7 +56,17 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
   createFocusRestore(() => props.open);
 
+  function nextQrGeneration(): number {
+    qrGeneration += 1;
+    return qrGeneration;
+  }
+
+  function invalidateQrGeneration(): void {
+    qrGeneration += 1;
+  }
+
   async function generateQr(url: string): Promise<void> {
+    const generation = nextQrGeneration();
     try {
       const mod = await import('qrcode');
       const QRCode = mod.default ?? mod;
@@ -63,8 +75,16 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
         margin: 2,
         color: { dark: '#000000', light: '#ffffff' },
       });
+      if (generation !== qrGeneration) {
+        return;
+      }
+
       setQrDataUrl(dataUrl);
     } catch (error) {
+      if (generation !== qrGeneration) {
+        return;
+      }
+
       console.error('[ConnectPhoneModal] QR generation failed:', error);
       setQrDataUrl(null);
     }
@@ -73,10 +93,14 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
   // Regenerate QR when mode changes
   createEffect(() => {
     const url = activeUrl();
-    if (url) {
-      setQrDataUrl(null); // clear stale QR immediately
-      generateQr(url);
+    if (!props.open || !url) {
+      invalidateQrGeneration();
+      setQrDataUrl(null);
+      return;
     }
+
+    setQrDataUrl(null);
+    void generateQr(url);
   });
 
   // Start server when modal opens
@@ -110,8 +134,6 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
         .then((result) => {
           setStarting(false);
           setMode(result.tailscaleUrl && !result.wifiUrl ? 'tailscale' : 'wifi');
-          const url = result.wifiUrl ?? result.tailscaleUrl ?? result.url;
-          generateQr(url);
         })
         .catch((err: unknown) => {
           setStarting(false);
@@ -128,8 +150,6 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
       ) {
         setMode('wifi');
       }
-      const url = activeUrl();
-      if (url) generateQr(url);
     }
   });
 

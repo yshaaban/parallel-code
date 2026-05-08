@@ -32,6 +32,17 @@ vi.mock('qrcode', () => ({
 
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('ConnectPhoneModal', () => {
   const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
@@ -131,6 +142,54 @@ describe('ConnectPhoneModal', () => {
     expect(startRemoteAccessMock).not.toHaveBeenCalled();
     expect(screen.getByText(/2 peer clients connected/i)).toBeDefined();
     expect(screen.getByRole('button', { name: 'Close' })).toBeDefined();
+  });
+
+  it('ignores stale QR generation after switching network modes', async () => {
+    const wifiQr = createDeferred<string>();
+    const tailscaleQr = createDeferred<string>();
+    toDataUrlMock.mockImplementation((url: string) => {
+      if (url === 'https://wifi') {
+        return wifiQr.promise;
+      }
+
+      if (url === 'https://tailscale') {
+        return tailscaleQr.promise;
+      }
+
+      return Promise.reject(new Error(`Unexpected QR URL: ${url}`));
+    });
+    isElectronRuntimeMock.mockReturnValue(true);
+    setStore('remoteAccess', {
+      enabled: true,
+      connectedClients: 1,
+      peerClients: 1,
+      port: 7777,
+      url: 'https://browser',
+      wifiUrl: 'https://wifi',
+      tailscaleUrl: 'https://tailscale',
+      token: 'secret',
+    });
+
+    render(() => <ConnectPhoneModal open onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(toDataUrlMock).toHaveBeenCalledWith('https://wifi', expect.any(Object));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tailscale' }));
+    await waitFor(() => {
+      expect(toDataUrlMock).toHaveBeenCalledWith('https://tailscale', expect.any(Object));
+    });
+
+    tailscaleQr.resolve('data:image/png;base64,dGFpbHNjYWxl');
+    const image = (await screen.findByAltText('Connection QR code')) as HTMLImageElement;
+    expect(image.getAttribute('src')).toBe('data:image/png;base64,dGFpbHNjYWxl');
+
+    wifiQr.resolve('data:image/png;base64,d2lmaQ==');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(image.getAttribute('src')).toBe('data:image/png;base64,dGFpbHNjYWxl');
   });
 
   it('cancels stale dialog focus when the modal closes before the scheduled frame', () => {
