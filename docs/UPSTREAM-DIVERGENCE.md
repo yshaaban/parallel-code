@@ -109,18 +109,22 @@ The detailed historical port record lives in:
 
 The main question for this file is narrower: what is still open right now?
 
-The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue.
-The `2026-04-17` catch-up pass now covers the fresh `91f00f4..a0f5280` delta as well, and its
-planned implementation work is closed. There is no remaining active direct-port or redesign queue
-for those reviewed upstream ranges. The new active queue is the `2026-05-08` range
-`a0f5280..af685eb`, tracked in [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md).
-That range must be reconciled by behavior, not by direct merge. The high-priority direct-port
-families from that range have now been reduced to local owner changes: git/diff correctness,
-diagnostics/logging, concrete shortcut additions, terminal image/drop/copy ergonomics, dialog
-accessibility, note-to-agent dispatch, bounded editor affordances, and review-surface polish.
-Existing-worktree import, PR check watching, configurable keybindings, coverage radar, non-git
-projects, MiniMax, and Docker-agent ideas remain explicit redesign/product-decision items rather
-than direct upstream ports.
+The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue. The
+`2026-04-17` catch-up pass covers `91f00f4..a0f5280`, and its planned implementation work is
+closed. The `2026-05-08` catch-up pass covers `a0f5280..af685eb`, tracked in
+[UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
+selective behavior catch-up work.
+
+After fetching on `2026-05-08`, `origin/main` was still `af685eb`, so there were `0` unreviewed
+upstream commits after the documented catch-up head. The local branch still reports graph
+divergence from `origin/main`; that is expected because this fork ports upstream behavior into
+local architecture owners rather than merging upstream history directly.
+
+What remains is not a direct-port queue. Existing-worktree import, PR check watching, configurable
+keybindings, changed-files commit-history navigation, coverage radar, and MiniMax are now handled
+through local redesigns in the current catch-up work. The intentionally deferred product decisions
+are non-git projects, Docker/task-container runner ideas, and theme/focus-mode polish; those require
+separate local product decisions and architecture-first designs before implementation.
 
 Recently landed locally:
 
