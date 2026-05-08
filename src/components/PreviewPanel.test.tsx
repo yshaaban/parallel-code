@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TaskPortSnapshot } from '../domain/server-state';
 
 const { buildTaskPreviewUrlMock } = vi.hoisted(() => ({
   buildTaskPreviewUrlMock: vi.fn(),
@@ -55,6 +57,48 @@ function createPreviewPanelProps(overrides: Partial<PreviewPanelProps> = {}): Pr
 function renderPreviewPanel(overrides: Partial<PreviewPanelProps> = {}): void {
   const props = createPreviewPanelProps(overrides);
   render(() => <PreviewPanel {...props} />);
+}
+
+function createUnknownPreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
+  return {
+    availability: 'unknown',
+    host: null,
+    label: 'Frontend',
+    lastVerifiedAt: null,
+    port: 3001,
+    protocol: 'http',
+    statusMessage: null,
+    source: 'manual',
+    updatedAt,
+    verifiedHost: null,
+  };
+}
+
+function createUnavailablePreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
+  return {
+    availability: 'unavailable',
+    host: null,
+    label: 'Frontend',
+    lastVerifiedAt: updatedAt,
+    port: 3001,
+    protocol: 'http',
+    statusMessage: 'Preview target is not reachable on loopback port 3001.',
+    source: 'manual',
+    updatedAt,
+    verifiedHost: null,
+  };
+}
+
+function createPreviewSnapshot(
+  exposed: TaskPortSnapshot['exposed'],
+  updatedAt = exposed[0]?.updatedAt ?? 1_100,
+): TaskPortSnapshot {
+  return {
+    taskId: 'task-1',
+    observed: [],
+    exposed,
+    updatedAt,
+  };
 }
 
 describe('PreviewPanel', () => {
@@ -325,6 +369,84 @@ describe('PreviewPanel', () => {
     expect(retryButton).toBeDefined();
     fireEvent.click(retryButton as HTMLButtonElement);
     expect(onRefreshPort).toHaveBeenCalledWith(3001);
+  });
+
+  it('auto-refreshes an unknown preview once per exposed port revision', async () => {
+    const onRefreshPort = vi.fn().mockResolvedValue(undefined);
+    function createSnapshot(
+      portUpdatedAt: number,
+      snapshotUpdatedAt = portUpdatedAt,
+    ): TaskPortSnapshot {
+      return createPreviewSnapshot([createUnknownPreviewPort(portUpdatedAt)], snapshotUpdatedAt);
+    }
+
+    const [snapshot, setSnapshot] = createSignal(createSnapshot(1_100));
+    const props = createPreviewPanelProps({
+      onRefreshPort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    await waitFor(() => {
+      expect(onRefreshPort).toHaveBeenCalledTimes(1);
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onRefreshPort).toHaveBeenCalledTimes(1);
+
+    setSnapshot(createSnapshot(1_100, 1_200));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onRefreshPort).toHaveBeenCalledTimes(1);
+
+    setSnapshot(createSnapshot(1_300));
+
+    await waitFor(() => {
+      expect(onRefreshPort).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('surfaces preview refresh failures without retrying the same unknown snapshot', async () => {
+    const onRefreshPort = vi.fn().mockRejectedValue(new Error('Preview refresh failed'));
+
+    renderPreviewPanel({
+      snapshot: createPreviewSnapshot([createUnknownPreviewPort(1_100)]),
+      onRefreshPort,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Preview refresh failed')).toBeDefined();
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onRefreshPort).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears preview refresh failures when backend availability changes', async () => {
+    const onRefreshPort = vi.fn().mockRejectedValue(new Error('Preview refresh failed'));
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([createUnknownPreviewPort(1_100)]),
+    );
+    const props = createPreviewPanelProps({
+      onRefreshPort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Preview refresh failed')).toBeDefined();
+    });
+
+    setSnapshot(createPreviewSnapshot([createUnavailablePreviewPort(1_200)]));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Preview refresh failed')).toBeNull();
+    });
+    expect(
+      screen.getAllByText('Preview target is not reachable on loopback port 3001.').length,
+    ).toBeGreaterThan(0);
   });
 
   it('hides the preview through the callback', async () => {

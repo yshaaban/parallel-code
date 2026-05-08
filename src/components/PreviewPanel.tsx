@@ -64,6 +64,11 @@ interface PreviewMessageCardProps {
   role?: 'status';
 }
 
+interface PreviewRefreshError {
+  message: string;
+  port: number;
+}
+
 const TASK_PREVIEW_AVAILABILITY_COLORS: Record<TaskPreviewAvailability, string> = {
   available: theme.success,
   unavailable: theme.error,
@@ -124,6 +129,25 @@ function getRetryPreviewLabel(port: number, isRefreshing: boolean): string {
   }
 
   return `Retry preview for port ${port}`;
+}
+
+function getPreviewRefreshErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return 'Failed to refresh preview.';
+}
+
+function getPreviewAutoRefreshKey(taskId: string, port: TaskExposedPort): string {
+  return `${taskId}:${port.port}:${port.updatedAt}`;
+}
+
+function getPortRefreshErrorMessage(
+  refreshError: PreviewRefreshError | null,
+  port: number,
+): string | null {
+  return refreshError?.port === port ? refreshError.message : null;
 }
 
 function getAvailablePreviewPorts(
@@ -338,9 +362,13 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
   const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
+  const [refreshErrorMessage, setRefreshErrorMessage] = createSignal<PreviewRefreshError | null>(
+    null,
+  );
   const [customPortText, setCustomPortText] = createSignal('');
   const [customLabelText, setCustomLabelText] = createSignal('');
   const [exposeErrorMessage, setExposeErrorMessage] = createSignal<string | null>(null);
+  const autoRefreshKeys = new Set<string>();
   const exposedPortSet = createMemo(() => new Set(props.snapshot.exposed.map((port) => port.port)));
   const availablePorts = createMemo(() =>
     getAvailablePreviewPorts(props.availableCandidates, props.snapshot, exposedPortSet()),
@@ -376,7 +404,25 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       return;
     }
 
+    const refreshKey = getPreviewAutoRefreshKey(props.taskId, port);
+    if (autoRefreshKeys.has(refreshKey)) {
+      return;
+    }
+
+    autoRefreshKeys.add(refreshKey);
     void handleRefreshPort(port.port);
+  });
+
+  createEffect(() => {
+    const refreshError = refreshErrorMessage();
+    if (!refreshError) {
+      return;
+    }
+
+    const port = props.snapshot.exposed.find((entry) => entry.port === refreshError.port);
+    if (!port || port.availability !== 'unknown') {
+      setRefreshErrorMessage(null);
+    }
   });
 
   async function handleExposePort(port: number, label?: string): Promise<boolean> {
@@ -406,8 +452,14 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
   async function handleRefreshPort(port: number): Promise<void> {
     setRefreshingPort(port);
+    setRefreshErrorMessage(null);
     try {
       await props.onRefreshPort(port);
+    } catch (error) {
+      setRefreshErrorMessage({
+        message: getPreviewRefreshErrorMessage(error),
+        port,
+      });
     } finally {
       if (refreshingPort() === port) {
         setRefreshingPort(null);
@@ -417,6 +469,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
   async function handleUnexposePort(port: number): Promise<void> {
     setBusyPort(port);
+    if (refreshErrorMessage()?.port === port) {
+      setRefreshErrorMessage(null);
+    }
     try {
       await props.onUnexposePort(port);
     } finally {
@@ -634,6 +689,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       <div style={{ color: theme.fgMuted, ...typography.meta }}>
                         {port.statusMessage}
                       </div>
+                    </Show>
+                    <Show when={getPortRefreshErrorMessage(refreshErrorMessage(), port.port)}>
+                      {(message) => (
+                        <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
+                      )}
                     </Show>
                   </div>
                 )}
