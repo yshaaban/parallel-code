@@ -69,6 +69,12 @@ interface PreviewPortError {
   port: number;
 }
 
+interface PreviewExposureIndex {
+  exposedPortNumbers: ReadonlySet<number>;
+  firstExposedPortNumber: number | null;
+  portsByNumber: ReadonlyMap<number, TaskExposedPort>;
+}
+
 const TASK_PREVIEW_AVAILABILITY_COLORS: Record<TaskPreviewAvailability, string> = {
   available: theme.success,
   unavailable: theme.error,
@@ -143,6 +149,26 @@ function getPreviewAutoRefreshKey(taskId: string, port: TaskExposedPort): string
   return `${taskId}:${port.port}:${port.updatedAt}`;
 }
 
+function getPreviewExposureIndex(
+  exposedPorts: ReadonlyArray<TaskExposedPort>,
+): PreviewExposureIndex {
+  const exposedPortNumbers = new Set<number>();
+  const portsByNumber = new Map<number, TaskExposedPort>();
+
+  for (const port of exposedPorts) {
+    exposedPortNumbers.add(port.port);
+    if (!portsByNumber.has(port.port)) {
+      portsByNumber.set(port.port, port);
+    }
+  }
+
+  return {
+    exposedPortNumbers,
+    firstExposedPortNumber: exposedPorts[0]?.port ?? null,
+    portsByNumber,
+  };
+}
+
 function getPortErrorMessage(portError: PreviewPortError | null, port: number): string | null {
   return portError?.port === port ? portError.message : null;
 }
@@ -150,12 +176,12 @@ function getPortErrorMessage(portError: PreviewPortError | null, port: number): 
 function getAvailablePreviewPorts(
   candidates: ReadonlyArray<TaskPortExposureCandidate>,
   snapshot: TaskPortSnapshot,
-  exposedPortSet: ReadonlySet<number>,
+  exposedPortNumbers: ReadonlySet<number>,
 ): AvailablePreviewPort[] {
   const portsByNumber = new Map<number, AvailablePreviewPort>();
 
   for (const candidate of candidates) {
-    if (exposedPortSet.has(candidate.port)) {
+    if (exposedPortNumbers.has(candidate.port)) {
       continue;
     }
 
@@ -167,7 +193,7 @@ function getAvailablePreviewPorts(
   }
 
   for (const observedPort of snapshot.observed) {
-    if (exposedPortSet.has(observedPort.port)) {
+    if (exposedPortNumbers.has(observedPort.port)) {
       continue;
     }
 
@@ -367,9 +393,13 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [customLabelText, setCustomLabelText] = createSignal('');
   const [exposeErrorMessage, setExposeErrorMessage] = createSignal<string | null>(null);
   const autoRefreshKeys = new Set<string>();
-  const exposedPortSet = createMemo(() => new Set(props.snapshot.exposed.map((port) => port.port)));
+  const exposureIndex = createMemo(() => getPreviewExposureIndex(props.snapshot.exposed));
   const availablePorts = createMemo(() =>
-    getAvailablePreviewPorts(props.availableCandidates, props.snapshot, exposedPortSet()),
+    getAvailablePreviewPorts(
+      props.availableCandidates,
+      props.snapshot,
+      exposureIndex().exposedPortNumbers,
+    ),
   );
   const hasDetectedOnlyPorts = createMemo(
     () => props.availableCandidates.length === 0 && availablePorts().length > 0,
@@ -379,21 +409,22 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     const port = selectedPort();
     return port === null ? null : buildTaskPreviewUrl(props.taskId, port);
   });
-  const selectedExposedPort = createMemo(
-    () => props.snapshot.exposed.find((port) => port.port === selectedPort()) ?? null,
-  );
+  const selectedExposedPort = createMemo(() => {
+    const port = selectedPort();
+    return port === null ? null : (exposureIndex().portsByNumber.get(port) ?? null);
+  });
 
   createEffect(() => {
     const currentSelectedPort = selectedPort();
-    const firstExposedPort = props.snapshot.exposed[0]?.port ?? null;
+    const currentExposureIndex = exposureIndex();
     if (
       currentSelectedPort !== null &&
-      props.snapshot.exposed.some((port) => port.port === currentSelectedPort)
+      currentExposureIndex.portsByNumber.has(currentSelectedPort)
     ) {
       return;
     }
 
-    setSelectedPort(firstExposedPort);
+    setSelectedPort(currentExposureIndex.firstExposedPortNumber);
   });
 
   createEffect(() => {
@@ -417,7 +448,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       return;
     }
 
-    const port = props.snapshot.exposed.find((entry) => entry.port === refreshError.port);
+    const port = exposureIndex().portsByNumber.get(refreshError.port);
     if (!port || port.availability !== 'unknown') {
       setRefreshErrorMessage(null);
     }
@@ -429,10 +460,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       return;
     }
 
-    const portStillExposed = props.snapshot.exposed.some(
-      (entry) => entry.port === actionError.port,
-    );
-    if (!portStillExposed) {
+    if (!exposureIndex().portsByNumber.has(actionError.port)) {
       setPortActionErrorMessage(null);
     }
   });

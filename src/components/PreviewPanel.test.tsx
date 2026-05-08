@@ -21,6 +21,11 @@ import { PreviewPanel } from './PreviewPanel';
 
 type PreviewPanelProps = Parameters<typeof PreviewPanel>[0];
 
+interface PreviewPortTestOptions {
+  label?: string;
+  port?: number;
+}
+
 function createPreviewPanelProps(overrides: Partial<PreviewPanelProps> = {}): PreviewPanelProps {
   return {
     availableCandidates: [],
@@ -74,13 +79,18 @@ function createUnknownPreviewPort(updatedAt: number): TaskPortSnapshot['exposed'
   };
 }
 
-function createAvailablePreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
+function createAvailablePreviewPort(
+  updatedAt: number,
+  options: PreviewPortTestOptions = {},
+): TaskPortSnapshot['exposed'][number] {
+  const port = options.port ?? 3001;
+
   return {
     availability: 'available',
     host: null,
-    label: 'Frontend',
+    label: options.label ?? 'Frontend',
     lastVerifiedAt: updatedAt,
-    port: 3001,
+    port,
     protocol: 'http',
     statusMessage: null,
     source: 'manual',
@@ -470,6 +480,39 @@ describe('PreviewPanel', () => {
 
     await waitFor(() => {
       expect(onRefreshPort).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('keeps the selected preview stable when backend snapshots update another exposed port', async () => {
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([
+        createAvailablePreviewPort(1_100),
+        createAvailablePreviewPort(1_100, { label: 'Docs', port: 5173 }),
+      ]),
+    );
+    const props = createPreviewPanelProps();
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Docs/ }));
+
+    await waitFor(() => {
+      expect(screen.getByTitle('Task preview 5173').getAttribute('src')).toBe(
+        'http://preview.local/task-1/5173',
+      );
+    });
+
+    setSnapshot(
+      createPreviewSnapshot([
+        createAvailablePreviewPort(1_200),
+        createAvailablePreviewPort(1_100, { label: 'Docs', port: 5173 }),
+      ]),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTitle('Task preview 5173').getAttribute('src')).toBe(
+        'http://preview.local/task-1/5173',
+      );
     });
   });
 
