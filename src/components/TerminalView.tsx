@@ -370,7 +370,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let denseOverloadCleanup: (() => void) | undefined;
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
-  let pendingTakeOverFocus = false;
   let takeOverGeneration = 0;
   let pendingRecoveryFocusRestore = false;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
@@ -497,12 +496,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       setTaskFocusedPanelState(taskId, 'ai-terminal');
       syncFocusedTypingTaskCommandLease(taskId, 'ai-terminal');
       void loadTaskCommandControllers();
-      pendingTakeOverFocus = true;
-      const activeSession = session;
-      if (activeSession === currentSession) {
-        pendingTakeOverFocus = false;
-        activeSession.term.focus();
-      }
+      currentSession.term.focus();
     } finally {
       if (generation === takeOverGeneration) {
         setTakingOver(false);
@@ -936,7 +930,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function cleanupTerminalSessionLifetime(): void {
     takeOverGeneration += 1;
-    pendingTakeOverFocus = false;
     setTakingOver(false);
     setRenderHibernating(false);
     setRestoreBlocked(false);
@@ -1393,18 +1386,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void status;
     if (!session) return;
     syncCurrentSessionRuntimeState();
-  });
-
-  createEffect(() => {
-    const focused = props.isFocused === true;
-    const status = sessionStatus();
-
-    if (!pendingTakeOverFocus || !focused || status !== 'ready' || !session) {
-      return;
-    }
-
-    pendingTakeOverFocus = false;
-    session.term.focus();
   });
 
   createEffect(() => {

@@ -399,6 +399,59 @@ export function createTerminalRecoveryRuntime(
     setRestoreBlocked(false);
   }
 
+  function waitForRecoveryGate(options: {
+    isReady: () => boolean;
+    subscribe: (listener: () => void) => () => void;
+    timeoutMs: number;
+  }): Promise<boolean> {
+    if (isRuntimeDisposed()) {
+      return Promise.resolve(false);
+    }
+
+    if (options.isReady()) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let cleanupSubscription = (): void => {};
+      let unregisterWaitCleanup = (): void => {};
+
+      const finish = (ready: boolean): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        unregisterWaitCleanup();
+        cleanupSubscription();
+        window.clearTimeout(timeoutId);
+        resolve(ready);
+      };
+
+      const check = (): void => {
+        if (isRuntimeDisposed()) {
+          finish(false);
+          return;
+        }
+
+        if (options.isReady()) {
+          finish(true);
+        }
+      };
+
+      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finish(false));
+      const timeoutId = window.setTimeout(() => finish(true), options.timeoutMs);
+      cleanupSubscription = options.subscribe(check);
+      if (settled) {
+        cleanupSubscription();
+        return;
+      }
+
+      check();
+    });
+  }
+
   function getStartupVisibleTerminalCount(): number {
     const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
     if (!startupPaintSnapshot) {
@@ -968,42 +1021,11 @@ export function createTerminalRecoveryRuntime(
 
     const waitBudgetMs = MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS;
     const waitStartedAtMs = performance.now();
-
-    const completed = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      let cleanupSwitchWindowSubscription = (): void => {};
-      let unregisterWaitCleanup = (): void => {};
-
-      const maybeFinish = (): void => {
-        if (isRuntimeDisposed()) {
-          finish(false);
-          return;
-        }
-
-        const stillWaitingForSwitchWindow = isVisibleStartupRecoveryDeferredBySwitchWindow(
-          getTerminalSwitchWindowSnapshot(),
-        );
-        if (!stillWaitingForSwitchWindow) {
-          finish(true);
-        }
-      };
-
-      const finish = (ready: boolean): void => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        unregisterWaitCleanup();
-        cleanupSwitchWindowSubscription();
-        window.clearTimeout(timeoutId);
-        resolve(ready);
-      };
-
-      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finish(false));
-      const timeoutId = window.setTimeout(() => finish(true), waitBudgetMs);
-      cleanupSwitchWindowSubscription = subscribeTerminalSwitchWindowChanges(maybeFinish);
-      maybeFinish();
+    const completed = await waitForRecoveryGate({
+      isReady: () =>
+        !isVisibleStartupRecoveryDeferredBySwitchWindow(getTerminalSwitchWindowSnapshot()),
+      subscribe: subscribeTerminalSwitchWindowChanges,
+      timeoutMs: waitBudgetMs,
     });
     if (!completed) {
       return false;
@@ -1035,45 +1057,10 @@ export function createTerminalRecoveryRuntime(
     }
 
     const waitStartedAtMs = performance.now();
-    const completed = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      let cleanupSubscription = (): void => {};
-      let unregisterWaitCleanup = (): void => {};
-
-      const cleanup = (): void => {
-        cleanupSubscription();
-        window.clearTimeout(timeoutId);
-      };
-
-      const finish = (ready: boolean): void => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        unregisterWaitCleanup();
-        cleanup();
-        resolve(ready);
-      };
-      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finish(false));
-      const timeoutId = window.setTimeout(
-        () => finish(true),
-        MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS,
-      );
-      cleanupSubscription = subscribe(() => {
-        if (isRuntimeDisposed()) {
-          finish(false);
-          return;
-        }
-
-        const snapshot = getSnapshot();
-        if (!isHiddenStartupRecoveryDeferredByPaintSnapshot(snapshot)) {
-          finish(true);
-        }
-      });
-      if (isRuntimeDisposed()) {
-        finish(false);
-      }
+    const completed = await waitForRecoveryGate({
+      isReady: () => !isHiddenStartupRecoveryDeferredByPaintSnapshot(getSnapshot()),
+      subscribe,
+      timeoutMs: MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS,
     });
     if (!completed) {
       return false;
