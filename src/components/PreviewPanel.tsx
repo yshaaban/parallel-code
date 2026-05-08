@@ -64,7 +64,7 @@ interface PreviewMessageCardProps {
   role?: 'status';
 }
 
-interface PreviewRefreshError {
+interface PreviewPortError {
   message: string;
   port: number;
 }
@@ -143,11 +143,8 @@ function getPreviewAutoRefreshKey(taskId: string, port: TaskExposedPort): string
   return `${taskId}:${port.port}:${port.updatedAt}`;
 }
 
-function getPortRefreshErrorMessage(
-  refreshError: PreviewRefreshError | null,
-  port: number,
-): string | null {
-  return refreshError?.port === port ? refreshError.message : null;
+function getPortErrorMessage(portError: PreviewPortError | null, port: number): string | null {
+  return portError?.port === port ? portError.message : null;
 }
 
 function getAvailablePreviewPorts(
@@ -362,7 +359,8 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
   const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
-  const [refreshErrorMessage, setRefreshErrorMessage] = createSignal<PreviewRefreshError | null>(
+  const [refreshErrorMessage, setRefreshErrorMessage] = createSignal<PreviewPortError | null>(null);
+  const [portActionErrorMessage, setPortActionErrorMessage] = createSignal<PreviewPortError | null>(
     null,
   );
   const [customPortText, setCustomPortText] = createSignal('');
@@ -425,9 +423,26 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     }
   });
 
+  createEffect(() => {
+    const actionError = portActionErrorMessage();
+    if (!actionError) {
+      return;
+    }
+
+    const portStillExposed = props.snapshot.exposed.some(
+      (entry) => entry.port === actionError.port,
+    );
+    if (!portStillExposed) {
+      setPortActionErrorMessage(null);
+    }
+  });
+
   async function handleExposePort(port: number, label?: string): Promise<boolean> {
     setBusyPort(port);
     setExposeErrorMessage(null);
+    if (portActionErrorMessage()?.port === port) {
+      setPortActionErrorMessage(null);
+    }
 
     try {
       await props.onExposePort(port, label);
@@ -453,6 +468,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   async function handleRefreshPort(port: number): Promise<void> {
     setRefreshingPort(port);
     setRefreshErrorMessage(null);
+    if (portActionErrorMessage()?.port === port) {
+      setPortActionErrorMessage(null);
+    }
     try {
       await props.onRefreshPort(port);
     } catch (error) {
@@ -472,8 +490,16 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     if (refreshErrorMessage()?.port === port) {
       setRefreshErrorMessage(null);
     }
+    if (portActionErrorMessage()?.port === port) {
+      setPortActionErrorMessage(null);
+    }
     try {
       await props.onUnexposePort(port);
+    } catch (error) {
+      setPortActionErrorMessage({
+        message: error instanceof Error ? error.message : 'Failed to unexpose port.',
+        port,
+      });
     } finally {
       setBusyPort(null);
     }
@@ -690,7 +716,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         {port.statusMessage}
                       </div>
                     </Show>
-                    <Show when={getPortRefreshErrorMessage(refreshErrorMessage(), port.port)}>
+                    <Show when={getPortErrorMessage(refreshErrorMessage(), port.port)}>
+                      {(message) => (
+                        <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
+                      )}
+                    </Show>
+                    <Show when={getPortErrorMessage(portActionErrorMessage(), port.port)}>
                       {(message) => (
                         <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
                       )}

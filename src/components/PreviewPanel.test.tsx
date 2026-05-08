@@ -74,6 +74,21 @@ function createUnknownPreviewPort(updatedAt: number): TaskPortSnapshot['exposed'
   };
 }
 
+function createAvailablePreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
+  return {
+    availability: 'available',
+    host: null,
+    label: 'Frontend',
+    lastVerifiedAt: updatedAt,
+    port: 3001,
+    protocol: 'http',
+    statusMessage: null,
+    source: 'manual',
+    updatedAt,
+    verifiedHost: '127.0.0.1',
+  };
+}
+
 function createUnavailablePreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
   return {
     availability: 'unavailable',
@@ -221,6 +236,57 @@ describe('PreviewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
     await waitFor(() => {
       expect(onUnexposePort).toHaveBeenCalledWith(3001);
+    });
+  });
+
+  it('surfaces unexpose failures on the exposed port card', async () => {
+    const onUnexposePort = vi.fn().mockRejectedValue(new Error('Failed to revoke exposure'));
+
+    renderPreviewPanel({
+      snapshot: {
+        taskId: 'task-1',
+        observed: [],
+        exposed: [createAvailablePreviewPort(1_100)],
+        updatedAt: 1_100,
+      },
+      onUnexposePort,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to revoke exposure')).toBeDefined();
+    });
+    expect(onUnexposePort).toHaveBeenCalledWith(3001);
+  });
+
+  it('clears unexpose failures when backend exposure state removes the port', async () => {
+    const onUnexposePort = vi.fn().mockRejectedValue(new Error('Failed to revoke exposure'));
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>({
+      taskId: 'task-1',
+      observed: [],
+      exposed: [createAvailablePreviewPort(1_100)],
+      updatedAt: 1_100,
+    });
+    const props = createPreviewPanelProps({ onUnexposePort });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to revoke exposure')).toBeDefined();
+    });
+
+    setSnapshot({
+      taskId: 'task-1',
+      observed: [],
+      exposed: [],
+      updatedAt: 1_200,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Failed to revoke exposure')).toBeNull();
     });
   });
 
