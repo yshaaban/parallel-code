@@ -94,7 +94,6 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   const [sendError, setSendError] = createSignal<string | null>(null);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
-  let disposed = false;
   let takeOverGeneration = 0;
   const promptLeaseSession = createTaskCommandLeaseSession(taskId, 'send a prompt', {
     confirmTakeover: false,
@@ -299,7 +298,6 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   });
 
   onCleanup(() => {
-    disposed = true;
     takeOverGeneration += 1;
     setTakingOver(false);
     cleanupAutoSend?.();
@@ -436,7 +434,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
     const generation = ++takeOverGeneration;
     try {
       const acquired = await promptLeaseSession.takeOver();
-      if (!acquired || disposed || generation !== takeOverGeneration) {
+      if (!acquired || generation !== takeOverGeneration) {
         return;
       }
 

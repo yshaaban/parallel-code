@@ -12,6 +12,8 @@ vi.mock('../../app/task-command-lease', () => ({
   createTaskCommandLeaseSession: vi.fn(() => ({
     acquire: vi.fn(async () => true),
     cleanup: vi.fn(),
+    release: vi.fn(async () => undefined),
+    takeOver: vi.fn(async () => true),
     touch: vi.fn(() => true),
   })),
   hasTaskCommandLeaseTransportAvailability: vi.fn(() => true),
@@ -21,6 +23,7 @@ import { IPC } from '../../../electron/ipc/channels';
 import {
   createTaskCommandLeaseSession,
   hasTaskCommandLeaseTransportAvailability,
+  type TaskCommandLeaseSession,
 } from '../../app/task-command-lease';
 import {
   cancelBrowserAgentCommandRequest,
@@ -65,6 +68,21 @@ function createDeferred<T>(): {
     resolve,
     reject,
   };
+}
+
+function mockNextTaskCommandLeaseSession(
+  overrides: Partial<TaskCommandLeaseSession> = {},
+): TaskCommandLeaseSession {
+  const session = {
+    acquire: vi.fn(async () => true),
+    cleanup: vi.fn(),
+    release: vi.fn(async () => undefined),
+    takeOver: vi.fn(async () => true),
+    touch: vi.fn(() => false),
+    ...overrides,
+  } satisfies TaskCommandLeaseSession;
+  vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce(session);
+  return session;
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -490,12 +508,8 @@ describe('terminal-input-pipeline', () => {
 
   it('batches the first interactive burst after lease reacquire instead of sending a partial first key', async () => {
     const acquireDeferred = createDeferred<boolean>();
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+    mockNextTaskCommandLeaseSession({
       acquire: vi.fn(() => acquireDeferred.promise),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
-      takeOver: vi.fn(async () => true),
-      touch: vi.fn(() => false),
     });
 
     const pipeline = createTerminalInputPipeline({
@@ -544,12 +558,8 @@ describe('terminal-input-pipeline', () => {
   it('does not send queued input when lease reacquire resolves after disposal', async () => {
     const acquireDeferred = createDeferred<boolean>();
     let disposed = false;
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+    mockNextTaskCommandLeaseSession({
       acquire: vi.fn(() => acquireDeferred.promise),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
-      takeOver: vi.fn(async () => true),
-      touch: vi.fn(() => false),
     });
 
     const pipeline = createTerminalInputPipeline({
@@ -658,12 +668,8 @@ describe('terminal-input-pipeline', () => {
     const acquireDeferred = createDeferred<boolean>();
     const firstSendDeferred = createDeferred<undefined>();
     const secondSendDeferred = createDeferred<undefined>();
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+    mockNextTaskCommandLeaseSession({
       acquire: vi.fn(() => acquireDeferred.promise),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
-      takeOver: vi.fn(async () => true),
-      touch: vi.fn(() => false),
     });
     vi.mocked(sendTerminalInput)
       .mockImplementationOnce(() => firstSendDeferred.promise)
@@ -839,12 +845,8 @@ describe('terminal-input-pipeline', () => {
   });
 
   it('keeps queued input buffered while task-command transport is temporarily unavailable', async () => {
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+    mockNextTaskCommandLeaseSession({
       acquire: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
-      takeOver: vi.fn(async () => true),
-      touch: vi.fn(() => false),
     });
     vi.mocked(hasTaskCommandLeaseTransportAvailability).mockReturnValue(false);
 
@@ -891,12 +893,8 @@ describe('terminal-input-pipeline', () => {
 
   it('keeps buffered interactive input when controller ownership is temporarily null during lease reacquire', async () => {
     const acquireDeferred = createDeferred<boolean>();
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
+    mockNextTaskCommandLeaseSession({
       acquire: vi.fn(() => acquireDeferred.promise),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
-      takeOver: vi.fn(async () => true),
-      touch: vi.fn(() => false),
     });
 
     const pipeline = createTerminalInputPipeline({
@@ -1061,12 +1059,8 @@ describe('terminal-input-pipeline', () => {
   it('does not commit a peer-deferred resize when input takeover resolves after disposal', async () => {
     const takeoverDeferred = createDeferred<boolean>();
     let disposed = false;
-    vi.mocked(createTaskCommandLeaseSession).mockReturnValueOnce({
-      acquire: vi.fn(async () => true),
-      cleanup: vi.fn(),
-      release: vi.fn(async () => undefined),
+    mockNextTaskCommandLeaseSession({
       takeOver: vi.fn(() => takeoverDeferred.promise),
-      touch: vi.fn(() => false),
     });
     applyTaskCommandControllerChanged({
       action: 'type in the terminal',

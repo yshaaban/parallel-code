@@ -399,17 +399,17 @@ export function createTerminalRecoveryRuntime(
     setRestoreBlocked(false);
   }
 
-  function waitForRecoveryGate(options: {
+  async function waitForRecoveryGate(options: {
     isReady: () => boolean;
     subscribe: (listener: () => void) => () => void;
     timeoutMs: number;
   }): Promise<boolean> {
     if (isRuntimeDisposed()) {
-      return Promise.resolve(false);
+      return false;
     }
 
     if (options.isReady()) {
-      return Promise.resolve(true);
+      return true;
     }
 
     return new Promise<boolean>((resolve) => {

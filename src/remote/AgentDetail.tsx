@@ -155,7 +155,6 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let commandScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let focusScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let takeoverRequestId = 0;
-  let disposed = false;
   let restoringScrollback = false;
   let hasTerminalData = false;
   let agentMissingValue = false;
@@ -418,7 +417,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     const result = await requestRemoteTaskTakeover(currentTaskIdValue, forceTakeover()).catch(
       () => 'transport-unavailable' as const,
     );
-    if (disposed || requestId !== takeoverRequestId || taskId() !== currentTaskIdValue) {
+    if (requestId !== takeoverRequestId || taskId() !== currentTaskIdValue) {
       return;
     }
 
@@ -530,7 +529,6 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     });
 
     onCleanup(() => {
-      disposed = true;
       takeoverRequestId += 1;
       setTakeoverBusy(false);
       cancelFitFrames();
