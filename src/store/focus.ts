@@ -489,6 +489,29 @@ export function navigateColumn(direction: 'left' | 'right'): void {
   }
 }
 
+export function navigateTask(direction: 'left' | 'right'): void {
+  if (hasBlockingDialog()) return;
+
+  const activePanelId = store.activeTaskId;
+  if (!activePanelId) return;
+
+  const currentIndex = store.taskOrder.indexOf(activePanelId);
+  if (currentIndex === -1) return;
+
+  const offset = direction === 'left' ? -1 : 1;
+  const targetPanelId = store.taskOrder[currentIndex + offset];
+  if (!targetPanelId || (!store.tasks[targetPanelId] && !store.terminals[targetPanelId])) {
+    return;
+  }
+
+  const currentPanel = getTaskFocusedPanel(activePanelId);
+  const targetGrid = buildGrid(targetPanelId);
+  const targetPanel =
+    findInGrid(targetGrid, currentPanel) !== null ? currentPanel : defaultPanelFor(targetPanelId);
+
+  focusTaskPanel(targetPanelId, targetPanel);
+}
+
 export function setPendingAction(
   action: { type: 'close' | 'merge' | 'push'; taskId: string } | null,
 ): void {

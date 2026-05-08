@@ -15,17 +15,6 @@ export function setActiveAgent(agentId: string): void {
   setStore('activeAgentId', agentId);
 }
 
-export function navigateTask(direction: 'left' | 'right'): void {
-  const { taskOrder, activeTaskId } = store;
-  if (taskOrder.length === 0) return;
-  const idx = activeTaskId ? taskOrder.indexOf(activeTaskId) : -1;
-  const next =
-    direction === 'left' ? Math.max(0, idx - 1) : Math.min(taskOrder.length - 1, idx + 1);
-  const nextTaskId = taskOrder[next];
-  if (!nextTaskId) return;
-  setActiveTask(nextTaskId);
-}
-
 export function navigateAgent(direction: 'up' | 'down'): void {
   const { activeTaskId, activeAgentId } = store;
   if (!activeTaskId) return;

@@ -6,11 +6,11 @@ This document records the intake review for the upstream range that landed after
 Scope:
 
 - upstream branch reviewed: `origin/main`
-- upstream head at review time: `af685eb`
+- upstream head at review time: `7aaf640`
 - previous reviewed upstream head: `a0f5280`
 - review date: `2026-05-08`
 - shared graph ancestor with upstream: `b250446`
-- commits reviewed in range: `118`
+- commits reviewed in range: `121`
 
 Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). This fork is intentionally
 selective: port behavior and tests into the local owner, not upstream file shape.
@@ -45,6 +45,8 @@ The useful queue was reviewed as:
    Ask Code support landed through backend-owned local redesigns.
 7. Optional product decisions: non-git projects, Docker runner profile inspiration, and theme
    variants are not direct-port candidates in this pass.
+8. Follow-up task-switch shortcut behavior landed through local keybinding/focus owners; the
+   follow-up preload allowlist fix does not map because that IPC channel is not present locally.
 
 ## Commit Ledger
 
@@ -168,14 +170,17 @@ The useful queue was reviewed as:
 | `77a05b2` bump `ip-address`                               | adopt-verify  | Covered by local `ip-address@10.1.0` transitive dependency.                                                                                         |
 | `a35c05a` bump `axios`                                    | adopt-verify  | Covered by local `axios@1.13.5` transitive dependency.                                                                                              |
 | `af685eb` inline-input cancel and Esc                     | adopt-rewrite | Landed in `InlineInput` with explicit Cancel affordance and scoped Escape handling.                                                                 |
+| `04d2db1` task switch shortcut preserving panel focus     | adopt-rewrite | Landed through local keybinding, app-shortcut, and focus-navigation owners instead of upstream file shape.                                          |
+| `08969d3` preload allowlist uncommitted diffs             | skip          | Not applicable: current local IPC has no `get_uncommitted_file_diffs` channel; enum/allowlist drift is already tested.                              |
+| `7aaf640` duplicate preload allowlist PR closure          | skip          | Signed no-content upstream closure for `08969d3`; no separate local behavior to port.                                                               |
 
 ## Implementation Queue
 
 ### Closure Status
 
-The `a0f5280..af685eb` upstream range is closed as selective catch-up work.
+The `a0f5280..7aaf640` upstream range is closed as selective catch-up work.
 
-- current upstream head after fetch: `af685eb`
+- current upstream head after fetch: `7aaf640`
 - unreviewed upstream commits after that head: `0`
 - direct-port families from this range are implemented or verified in local owners
 - graph divergence from `origin/main` remains expected because this fork ports behavior instead of
@@ -238,6 +243,14 @@ electron/ipc/preload-allowlist.test.ts` and terminal-session Solid tests.
   dialog focus-visible styling, and `InlineInput`. Dialogs now expose labels/descriptions,
   topmost-only modal Escape handling, and inline inputs have explicit Cancel/Escape affordances.
   Verified with focused Dialog, InlineInput, and affected dialog tests.
+- `04d2db1` is landed through local keybinding definitions, app-shortcut registration, and
+  focus-navigation state. Direct task switching now preserves the focused panel when the target
+  task exposes that panel, falls back to the target default panel otherwise, and stays inert while a
+  blocking dialog owns focus. Verified with
+  `npm run test:node:file -- src/store/focus.test.ts src/runtime/app-shortcuts.test.ts src/domain/keybindings.test.ts electron/ipc/preload-allowlist.test.ts`.
+- `08969d3` and `7aaf640` are intentionally not ported because the current local IPC enum does not
+  include `get_uncommitted_file_diffs`. The relevant safety property is preload allowlist drift,
+  verified by `electron/ipc/preload-allowlist.test.ts`.
 - `6638855`, `588dff7`, `d9f596b`, `f7c062a`, `1601465`, and `9932aa4` are landed in local
   presentation/workflow owners. Changed files ignore Alt+Arrow, DiffViewer embeds the changed-file
   list while retaining per-file backend diff fetches, MergeDialog makes plain rebase primary when

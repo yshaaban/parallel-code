@@ -6,6 +6,7 @@ const {
   getTaskFocusedPanelMock,
   handlers,
   jumpToTaskMock,
+  navigateTaskMock,
   registeredShortcuts,
   registerShortcutMock,
   showNotificationMock,
@@ -16,6 +17,7 @@ const {
   getTaskFocusedPanelMock: vi.fn(),
   handlers: new Map<string, () => void>(),
   jumpToTaskMock: vi.fn(),
+  navigateTaskMock: vi.fn(),
   registeredShortcuts: [] as Array<Record<string, unknown>>,
   registerShortcutMock: vi.fn(
     (definition: { actionId?: string; handler: () => void; key?: string }) => {
@@ -50,6 +52,7 @@ vi.mock('../store/focus', () => ({
   getTaskFocusedPanel: getTaskFocusedPanelMock,
   navigateColumn: vi.fn(),
   navigateRow: vi.fn(),
+  navigateTask: navigateTaskMock,
   sendActivePrompt: vi.fn(),
   setPendingAction: vi.fn(),
   toggleHelpDialog: vi.fn(),
@@ -103,6 +106,7 @@ describe('registerAppShortcuts', () => {
     registeredShortcuts.length = 0;
     registerShortcutMock.mockClear();
     jumpToTaskMock.mockReset();
+    navigateTaskMock.mockReset();
     closeMarkdownViewerMock.mockReset();
     closeShellMock.mockReset();
     getTaskFocusedPanelMock.mockReturnValue('shell:0');
@@ -176,6 +180,16 @@ describe('registerAppShortcuts', () => {
 
     expect(jumpToTaskMock).toHaveBeenNthCalledWith(1, 0);
     expect(jumpToTaskMock).toHaveBeenNthCalledWith(2, 8);
+  });
+
+  it('registers direct task switch shortcuts by keybinding action', () => {
+    registerAppShortcuts();
+
+    handlers.get('navigation.task-left')?.();
+    handlers.get('navigation.task-right')?.();
+
+    expect(navigateTaskMock).toHaveBeenNthCalledWith(1, 'left');
+    expect(navigateTaskMock).toHaveBeenNthCalledWith(2, 'right');
   });
 
   it('closes the shared markdown viewer before other dialogs on Escape', () => {

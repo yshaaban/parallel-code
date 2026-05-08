@@ -5,6 +5,7 @@ import {
   getTaskFocusedPanel,
   navigateColumn,
   navigateRow,
+  navigateTask,
   registerAction,
   registerFocusFn,
   resetFocusStateForTests,
@@ -14,6 +15,7 @@ import {
   unregisterAction,
 } from './focus';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
+import type { Task } from './types';
 
 function setupTaskWithToolbar(): { taskId: string } {
   const project = createTestProject({
@@ -33,6 +35,18 @@ function setupTaskWithToolbar(): { taskId: string } {
   setStore('activeTaskId', task.id);
 
   return { taskId: task.id };
+}
+
+function setupTwoTaskNavigationState(
+  firstTaskOverrides: Partial<Task> = {},
+  secondTaskOverrides: Partial<Task> = {},
+): void {
+  setStore('tasks', {
+    'task-1': createTestTask({ id: 'task-1', ...firstTaskOverrides }),
+    'task-2': createTestTask({ id: 'task-2', ...secondTaskOverrides }),
+  });
+  setStore('taskOrder', ['task-1', 'task-2']);
+  setStore('activeTaskId', 'task-1');
 }
 
 describe('focus shell toolbar navigation', () => {
@@ -190,5 +204,65 @@ describe('focus shell toolbar navigation', () => {
     await Promise.resolve();
 
     expect(focusMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the focused panel name when switching tasks directly', () => {
+    setupTwoTaskNavigationState();
+    setStore('focusedPanel', { 'task-1': 'changed-files' });
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('changed-files');
+  });
+
+  it('falls back to the default panel when direct task switching cannot preserve the panel', () => {
+    setupTwoTaskNavigationState({ stepsTracking: true });
+    setStore('focusedPanel', { 'task-1': 'steps' });
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('ai-terminal');
+  });
+
+  it('falls back to terminal focus when direct task switching reaches a terminal panel', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({ id: 'task-1' }),
+    });
+    setStore('terminals', {
+      'terminal-1': {
+        agentId: 'terminal-agent-1',
+        id: 'terminal-1',
+        name: 'Terminal 1',
+      },
+    });
+    setStore('taskOrder', ['task-1', 'terminal-1']);
+    setStore('activeTaskId', 'task-1');
+    setStore('focusedPanel', { 'task-1': 'changed-files' });
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.focusedPanel['terminal-1']).toBe('terminal');
+  });
+
+  it('keeps direct task switching inside the task order boundaries', () => {
+    setupTwoTaskNavigationState();
+    setStore('focusedPanel', { 'task-1': 'changed-files' });
+
+    navigateTask('left');
+
+    expect(store.activeTaskId).toBe('task-1');
+    expect(store.focusedPanel['task-1']).toBe('changed-files');
+  });
+
+  it('does not switch tasks directly while a blocking dialog is open', () => {
+    setupTwoTaskNavigationState();
+    setStore('showHelpDialog', true);
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('task-1');
   });
 });

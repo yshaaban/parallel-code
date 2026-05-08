@@ -53,10 +53,10 @@ That matters because upstream sync work should be reviewed against our architect
 
 As of `2026-05-08`, this repo has:
 
-- current upstream head: `af685eb`
-- last reviewed upstream head before the new intake: `a0f5280`
+- current upstream head: `7aaf640`
+- last reviewed upstream head before the latest intake: `af685eb`
 - last shared graph ancestor with upstream: `b250446`
-- new upstream delta under active catch-up: `a0f5280..af685eb` (`118` commits)
+- latest upstream delta under active catch-up: `af685eb..7aaf640` (`3` commits)
 
 Important nuance:
 
@@ -73,6 +73,10 @@ Important nuance:
   [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
 - the `2026-05-08` catch-up intake covers the new upstream-only span `a0f5280..af685eb`
 - the detailed per-commit ledger for that new delta lives in
+  [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
+- the `2026-05-08` follow-up catch-up intake covers the new upstream-only span
+  `af685eb..7aaf640`
+- the detailed per-commit ledger for that follow-up delta also lives in
   [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
@@ -111,11 +115,11 @@ The main question for this file is narrower: what is still open right now?
 
 The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue. The
 `2026-04-17` catch-up pass covers `91f00f4..a0f5280`, and its planned implementation work is
-closed. The `2026-05-08` catch-up pass covers `a0f5280..af685eb`, tracked in
+closed. The `2026-05-08` catch-up pass covers `a0f5280..7aaf640`, tracked in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
 selective behavior catch-up work.
 
-After fetching on `2026-05-08`, `origin/main` was still `af685eb`, so there were `0` unreviewed
+After fetching on `2026-05-08`, `origin/main` was `7aaf640`, so there were `0` unreviewed
 upstream commits after the documented catch-up head. The local branch still reports graph
 divergence from `origin/main`; that is expected because this fork ports upstream behavior into
 local architecture owners rather than merging upstream history directly.
@@ -198,6 +202,18 @@ Recently landed locally:
     through the OS account shell, dialog-safe Escape stays centralized in shortcut policy, remote
     websocket failures are surfaced explicitly, the new-task dialog uses bounded tooltip guidance,
     and diff/global zoom controls are now owned locally
+- `af685eb..7aaf640` task-switch shortcut subset:
+  - `04d2db1`
+  - status: `landed`
+  - reason: the direct prev/next task shortcut is implemented through local keybinding,
+    app-shortcut, and focus-navigation owners, preserving the focused panel when the target panel
+    exists and falling back to the target panel default otherwise
+- `af685eb..7aaf640` preload allowlist subset:
+  - `08969d3`
+  - `7aaf640`
+  - status: `not applicable`
+  - reason: current local IPC does not define `get_uncommitted_file_diffs`; preload allowlist drift
+    remains guarded by the local enum/allowlist test
 - `91f00f4..a0f5280` task-steps redesign:
   - `df89387`
   - `956a821`

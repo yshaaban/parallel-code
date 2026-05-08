@@ -3,6 +3,8 @@ export type KeybindingActionId =
   | 'navigation.focus-down'
   | 'navigation.focus-left'
   | 'navigation.focus-right'
+  | 'navigation.task-left'
+  | 'navigation.task-right'
   | 'task.move-left'
   | 'task.move-right'
   | 'task.jump-1'
@@ -94,6 +96,26 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     category: 'Navigation',
     defaultChords: [{ key: 'ArrowRight', alt: true }],
     description: 'Focus active task or adjacent task',
+    global: true,
+  },
+  {
+    actionId: 'navigation.task-left',
+    category: 'Navigation',
+    defaultChords: [
+      { key: 'PageUp', cmdOrCtrl: true },
+      { key: 'ArrowLeft', alt: true, cmdOrCtrl: true },
+    ],
+    description: 'Switch to previous task',
+    global: true,
+  },
+  {
+    actionId: 'navigation.task-right',
+    category: 'Navigation',
+    defaultChords: [
+      { key: 'PageDown', cmdOrCtrl: true },
+      { key: 'ArrowRight', alt: true, cmdOrCtrl: true },
+    ],
+    description: 'Switch to next task',
     global: true,
   },
   {

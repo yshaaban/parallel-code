@@ -5,6 +5,7 @@ import {
   getTaskFocusedPanel,
   navigateColumn,
   navigateRow,
+  navigateTask,
   sendActivePrompt,
   setPendingAction,
   toggleHelpDialog,
@@ -54,6 +55,14 @@ export function registerAppShortcuts(): () => void {
   registerShortcut({
     actionId: 'navigation.focus-right',
     handler: () => navigateColumn('right'),
+  });
+  registerShortcut({
+    actionId: 'navigation.task-left',
+    handler: () => navigateTask('left'),
+  });
+  registerShortcut({
+    actionId: 'navigation.task-right',
+    handler: () => navigateTask('right'),
   });
 
   registerShortcut({
