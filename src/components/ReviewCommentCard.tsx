@@ -1,4 +1,4 @@
-import { Show, createSignal, type JSX } from 'solid-js';
+import { Show, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import type { ReviewAnnotation } from '../app/review-session';
 import { sf } from '../lib/fontScale';
@@ -33,10 +33,31 @@ function getLocationLabel(annotation: ReviewAnnotation): string {
 }
 
 export function ReviewCommentEditor(props: ReviewCommentEditorProps): JSX.Element {
+  let focusFrame: number | undefined;
+
+  function focusTextarea(element: HTMLTextAreaElement): void {
+    if (focusFrame !== undefined) {
+      cancelAnimationFrame(focusFrame);
+    }
+
+    focusFrame = requestAnimationFrame(() => {
+      focusFrame = undefined;
+      if (element.isConnected) {
+        element.focus();
+      }
+    });
+  }
+
+  onCleanup(() => {
+    if (focusFrame !== undefined) {
+      cancelAnimationFrame(focusFrame);
+    }
+  });
+
   return (
     <div style={{ 'margin-top': '6px' }}>
       <textarea
-        ref={(element) => requestAnimationFrame(() => element.focus())}
+        ref={focusTextarea}
         value={props.comment}
         onInput={(event) => props.onChange(event.currentTarget.value)}
         onKeyDown={(event) => {

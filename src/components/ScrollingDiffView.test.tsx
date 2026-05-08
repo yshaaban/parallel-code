@@ -619,6 +619,71 @@ describe('ScrollingDiffView', () => {
     expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
   });
 
+  it('cancels queued scroll-target frames on unmount', async () => {
+    const reviewSession = createReviewSession();
+    const scrollTarget = {
+      comment: 'Check this line',
+      endLine: 6,
+      id: 'annotation-1',
+      selectedText: 'line 6',
+      source: 'src/demo.ts',
+      startLine: 6,
+    };
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const frame = nextFrame;
+      nextFrame += 1;
+      pendingFrames.set(frame, callback);
+      return frame;
+    });
+    const cancelRafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frame) => {
+      pendingFrames.delete(frame);
+    });
+
+    reviewSession.setScrollTarget(scrollTarget);
+    const { unmount } = render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 6,
+                oldCount: 1,
+                newStart: 6,
+                newCount: 1,
+                lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={reviewSession}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(pendingFrames.size).toBe(1);
+    });
+
+    unmount();
+    const queuedCallbacks = [...pendingFrames.values()];
+    pendingFrames.clear();
+    queuedCallbacks.forEach((callback) => callback(0));
+
+    expect(cancelRafSpy).toHaveBeenCalled();
+    expect(reviewSession.scrollTarget()).toBe(scrollTarget);
+
+    rafSpy.mockRestore();
+    cancelRafSpy.mockRestore();
+  });
+
   it('renders the binary diff fallback when the selected parsed file is binary', async () => {
     render(() => (
       <ScrollingDiffView

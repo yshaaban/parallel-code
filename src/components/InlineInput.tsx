@@ -13,9 +13,15 @@ export function InlineInput(props: InlineInputProps): JSX.Element {
   const [mode, setMode] = createSignal<ReviewInteractionMode>('review');
   const [text, setText] = createSignal('');
   let inputRef: HTMLInputElement | undefined;
+  let focusFrame: number | undefined;
 
   onMount(() => {
-    requestAnimationFrame(() => inputRef?.focus());
+    focusFrame = requestAnimationFrame(() => {
+      focusFrame = undefined;
+      if (inputRef?.isConnected) {
+        inputRef.focus();
+      }
+    });
 
     function handleGlobalKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Escape') {
@@ -28,7 +34,12 @@ export function InlineInput(props: InlineInputProps): JSX.Element {
     }
 
     document.addEventListener('keydown', handleGlobalKeyDown, true);
-    onCleanup(() => document.removeEventListener('keydown', handleGlobalKeyDown, true));
+    onCleanup(() => {
+      if (focusFrame !== undefined) {
+        cancelAnimationFrame(focusFrame);
+      }
+      document.removeEventListener('keydown', handleGlobalKeyDown, true);
+    });
   });
 
   function getBorderColor(): string {

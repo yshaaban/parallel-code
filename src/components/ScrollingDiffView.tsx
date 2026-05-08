@@ -190,6 +190,12 @@ function scrollContainerToElement(
   container.scrollTop = Math.max(0, scrollPosition);
 }
 
+function cancelQueuedAnimationFrame(frame: number | undefined): void {
+  if (frame !== undefined) {
+    cancelAnimationFrame(frame);
+  }
+}
+
 function countLinesOfType(file: ParsedFileDiff, type: DiffLine['type']): number {
   return file.hunks.reduce(
     (sum, hunk) => sum + hunk.lines.filter((line) => line.type === type).length,
@@ -413,6 +419,7 @@ function LineWithInsertions(props: {
   setPendingSelectionKey: (key: string | null) => void;
   startAskSession: ScrollingDiffViewProps['startAskSession'];
 }): JSX.Element {
+  let restoreScrollFrame: number | undefined;
   const currentLine = () => props.line.newLine;
   const isPendingSelection = () => {
     const lineNumber = currentLine();
@@ -464,13 +471,19 @@ function LineWithInsertions(props: {
       return;
     }
 
-    requestAnimationFrame(() => {
+    cancelQueuedAnimationFrame(restoreScrollFrame);
+    restoreScrollFrame = requestAnimationFrame(() => {
+      restoreScrollFrame = undefined;
       const scrollContainer = props.getScrollContainer();
-      if (scrollContainer) {
+      if (scrollContainer?.isConnected) {
         scrollContainer.scrollTop = savedScrollTop;
       }
     });
   }
+
+  onCleanup(() => {
+    cancelQueuedAnimationFrame(restoreScrollFrame);
+  });
 
   return (
     <>
@@ -834,11 +847,13 @@ function FileSection(props: {
   request: TaskReviewDiffRequest;
   reviewSession: ReviewSession;
   searchQuery?: string;
+  clearRef: (element: HTMLDivElement) => void;
   setPendingSelectionKey: (key: string | null) => void;
   setRef: (element: HTMLDivElement) => void;
   startAskSession: ScrollingDiffViewProps['startAskSession'];
 }): JSX.Element {
   const [collapsed, setCollapsed] = createSignal(false);
+  let sectionElement: HTMLDivElement | undefined;
   const lang = () => detectLang(props.file.path);
   const firstHunk = () => {
     if (props.file.status === 'D') {
@@ -855,9 +870,18 @@ function FileSection(props: {
     return getLastHunk(props.file);
   };
 
+  onCleanup(() => {
+    if (sectionElement) {
+      props.clearRef(sectionElement);
+    }
+  });
+
   return (
     <div
-      ref={props.setRef}
+      ref={(element) => {
+        sectionElement = element;
+        props.setRef(element);
+      }}
       style={{
         margin: '10px 8px',
         border: `1px solid ${theme.border}`,
@@ -1092,16 +1116,40 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   const [pendingSelectionKey, setPendingSelectionKey] = createSignal<string | null>(null);
   const sectionRefs = new Map<string, HTMLDivElement>();
   let containerRef: HTMLDivElement | undefined;
-  let dimTimer: ReturnType<typeof setTimeout> | undefined;
+  let dimFrame: number | undefined;
+  let scrollToPathFrame: number | undefined;
+  let searchFrame: number | undefined;
+  let scrollTargetFrame: number | undefined;
+
+  function cancelScrollToPathFrames(): void {
+    cancelQueuedAnimationFrame(dimFrame);
+    cancelQueuedAnimationFrame(scrollToPathFrame);
+    dimFrame = undefined;
+    scrollToPathFrame = undefined;
+  }
+
+  function cancelSearchFrame(): void {
+    cancelQueuedAnimationFrame(searchFrame);
+    searchFrame = undefined;
+  }
+
+  function cancelScrollTargetFrame(): void {
+    cancelQueuedAnimationFrame(scrollTargetFrame);
+    scrollTargetFrame = undefined;
+  }
+
+  function clearQueuedFrames(): void {
+    cancelScrollToPathFrames();
+    cancelSearchFrame();
+    cancelScrollTargetFrame();
+  }
 
   createDialogScroll({
     enabled: () => props.files.length > 0,
     getElement: () => containerRef,
   });
 
-  onCleanup(() => {
-    clearTimeout(dimTimer);
-  });
+  onCleanup(clearQueuedFrames);
 
   createEffect(() => {
     if (!props.reviewSession.pendingSelection()) {
@@ -1110,17 +1158,22 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   });
 
   createEffect(() => {
+    cancelScrollToPathFrames();
     const target = props.scrollToPath;
     if (!target || !containerRef) {
+      setDimOthers(false);
       return;
     }
 
-    clearTimeout(dimTimer);
     setDimOthers(true);
-    requestAnimationFrame(() => setDimOthers(false));
-    requestAnimationFrame(() => {
+    dimFrame = requestAnimationFrame(() => {
+      dimFrame = undefined;
+      setDimOthers(false);
+    });
+    scrollToPathFrame = requestAnimationFrame(() => {
+      scrollToPathFrame = undefined;
       const targetElement = sectionRefs.get(target);
-      if (!targetElement || !containerRef) {
+      if (!targetElement?.isConnected || !containerRef?.isConnected) {
         return;
       }
 
@@ -1129,14 +1182,16 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   });
 
   createEffect(() => {
+    cancelSearchFrame();
     const query = props.searchQuery?.trim();
     if (!query || !containerRef) {
       return;
     }
 
-    requestAnimationFrame(() => {
+    searchFrame = requestAnimationFrame(() => {
+      searchFrame = undefined;
       const firstMatch = containerRef?.querySelector('mark');
-      if (!(firstMatch instanceof HTMLElement) || !containerRef) {
+      if (!(firstMatch instanceof HTMLElement) || !containerRef?.isConnected) {
         return;
       }
 
@@ -1145,16 +1200,18 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   });
 
   createEffect(() => {
+    cancelScrollTargetFrame();
     const target = props.reviewSession.scrollTarget();
     if (!target || !containerRef) {
       return;
     }
 
-    requestAnimationFrame(() => {
+    scrollTargetFrame = requestAnimationFrame(() => {
+      scrollTargetFrame = undefined;
       const section = sectionRefs.get(target.source);
       const targetElement =
         section?.querySelector<HTMLElement>(`[data-new-line="${target.endLine}"]`) ?? undefined;
-      if (!targetElement || !containerRef) {
+      if (!targetElement?.isConnected || !containerRef?.isConnected) {
         return;
       }
 
@@ -1219,6 +1276,11 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
               props.file?.path === file.path ||
               (props.file === undefined && props.files.length === 1)
             }
+            clearRef={(element) => {
+              if (sectionRefs.get(file.path) === element) {
+                sectionRefs.delete(file.path);
+              }
+            }}
             dimmed={dimOthers() && file.path !== props.scrollToPath}
             file={file}
             requestFile={getRequestFile(file, props.file)}
