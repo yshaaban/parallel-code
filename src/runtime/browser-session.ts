@@ -476,7 +476,11 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       } finally {
         if (generation === restoreGeneration) {
           lifecycleState = completeBrowserRestore(lifecycleState);
-          completeBrowserReconnectRestore();
+          if (restoreCompleted) {
+            completeBrowserReconnectRestore();
+          } else {
+            cancelBrowserReconnectRestore('restore-failed');
+          }
           updateConnectionBanner();
           options.clearRestoringConnectionBanner();
           if (restoreCompleted) {

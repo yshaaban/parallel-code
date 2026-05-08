@@ -646,7 +646,14 @@ export function recordPtyInputWriteFailure(): void {
   backendRuntimeDiagnostics.ptyInput.writeFailures += 1;
 }
 
-export function recordPreviewCacheHit(): void {
+export function recordPreviewCacheHit(details?: { generation?: number }): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
   backendRuntimeDiagnostics.previewValidation.cacheHits += 1;
 }
 

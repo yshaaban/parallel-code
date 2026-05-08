@@ -39,7 +39,11 @@ export interface BrowserControlDelayedSends {
   clearClient: (client: WebSocket) => void;
   getPendingChannelSendState: (client: WebSocket) => PendingChannelSendState | null;
   sendChannelData: (client: WebSocket, data: string | Buffer) => boolean;
-  sendSafely: (client: WebSocket, data: string | Buffer) => SendTextResult;
+  sendSafely: (
+    client: WebSocket,
+    data: string | Buffer,
+    diagnosticsGeneration?: number,
+  ) => SendTextResult;
 }
 
 function getDataSizeBytes(data: string | Buffer): number {

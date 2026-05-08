@@ -51,6 +51,21 @@ describe('browser-startup', () => {
     });
   });
 
+  it('clears pending cold bootstrap when reconnect restore takes over', () => {
+    beginBrowserColdBootstrap();
+    setBrowserStartupTier('summary');
+
+    beginBrowserReconnectRestore();
+    markBrowserStartupSelectedTerminalReady();
+
+    expect(isBrowserColdBootstrapPending()).toBe(false);
+    expect(getBrowserStartupState()).toMatchObject({
+      coldBootstrapPending: false,
+      currentMode: 'reconnect-restore',
+      tier: 'summary',
+    });
+  });
+
   it('cancels reconnect restore when transport churn invalidates it', () => {
     beginBrowserReconnectRestore();
     expect(getBrowserStartupState()).toMatchObject({

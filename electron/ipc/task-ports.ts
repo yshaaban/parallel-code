@@ -1,3 +1,5 @@
+import { createConnection } from 'net';
+
 import type { PersistedTaskExposedPort } from '../../src/store/types.js';
 import type {
   TaskExposedPort,
@@ -54,8 +56,12 @@ const DEFAULT_PREVIEW_PROBE_TIMEOUT_MS = 250;
 
 const taskPorts = new Map<string, TaskPortRecord>();
 const taskPortListeners = new Set<TaskPortsListener>();
-const previewTargetCache = new Map<string, { expiresAt: number; target: string }>();
+const previewTargetCache = new Map<
+  string,
+  { expiresAt: number; generation?: number; target: string }
+>();
 const previewValidationTokens = new Map<string, number>();
+const previewAvailabilityGenerations = new Map<string, number>();
 let taskPortsStateVersion = 0;
 
 interface PreviewValidationOptions {
@@ -254,13 +260,16 @@ function shouldReplaceObservedPort(
 }
 
 function clearCachedPreviewTarget(taskId: string, port: number): void {
-  previewTargetCache.delete(getTaskPortKey(taskId, port));
+  const key = getTaskPortKey(taskId, port);
+  previewTargetCache.delete(key);
+  previewAvailabilityGenerations.delete(key);
 }
 
 function clearPreviewTracking(taskId: string, port: number): void {
   const key = getTaskPortKey(taskId, port);
   previewTargetCache.delete(key);
   previewValidationTokens.delete(key);
+  previewAvailabilityGenerations.delete(key);
 }
 
 function syncExposedPortFromObserved(
@@ -327,12 +336,14 @@ function getTaskPreviewTargetCandidates(
   );
 }
 
-async function probePreviewTarget(target: string, timeoutMs: number): Promise<boolean> {
-  const { createConnection } = await import('net');
+async function probePreviewTarget(
+  target: string,
+  timeoutMs: number,
+  diagnosticsGeneration: number,
+): Promise<boolean> {
   const { port } = new URL(target);
   const numericPort = Number.parseInt(port, 10);
   const startedAt = Date.now();
-  const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
 
   return new Promise((resolve) => {
     let settled = false;
@@ -366,9 +377,10 @@ async function probePreviewTarget(target: string, timeoutMs: number): Promise<bo
 async function resolvePreviewTargetForPort(
   port: TaskExposedPort,
   timeoutMs: number,
+  diagnosticsGeneration: number,
 ): Promise<string | null> {
   for (const target of getTaskPreviewTargetCandidates(port)) {
-    if (await probePreviewTarget(target, timeoutMs)) {
+    if (await probePreviewTarget(target, timeoutMs, diagnosticsGeneration)) {
       return target;
     }
   }
@@ -680,9 +692,10 @@ export async function revalidateTaskPortPreview(
 
   recordPreviewRevalidation();
   clearCachedPreviewTarget(taskId, port);
+  const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
   const validationToken = getValidationToken(taskId, port);
   const { cacheTtlMs, timeoutMs } = getPreviewValidationSettings(options);
-  const target = await resolvePreviewTargetForPort(exposedPort, timeoutMs);
+  const target = await resolvePreviewTargetForPort(exposedPort, timeoutMs, diagnosticsGeneration);
   if (!hasCurrentValidationToken(taskId, port, validationToken)) {
     return getTaskPortSnapshot(taskId);
   }
@@ -709,8 +722,10 @@ export async function revalidateTaskPortPreview(
 
   previewTargetCache.set(getTaskPortKey(taskId, port), {
     expiresAt: now + cacheTtlMs,
+    generation: diagnosticsGeneration,
     target,
   });
+  previewAvailabilityGenerations.set(getTaskPortKey(taskId, port), diagnosticsGeneration);
   return updateExposedPortAvailability(
     taskId,
     port,
@@ -731,7 +746,9 @@ export async function resolveTaskPreviewTarget(
   const cacheKey = getTaskPortKey(taskId, port);
   const cachedTarget = previewTargetCache.get(cacheKey);
   if (cachedTarget && cachedTarget.expiresAt > Date.now()) {
-    recordPreviewCacheHit();
+    if (cachedTarget.generation !== undefined) {
+      recordPreviewCacheHit({ generation: cachedTarget.generation });
+    }
     return cachedTarget.target;
   }
 
@@ -747,10 +764,14 @@ export async function resolveTaskPreviewTarget(
     exposedPort.lastVerifiedAt &&
     exposedPort.lastVerifiedAt + cacheTtlMs > Date.now()
   ) {
-    recordPreviewCacheHit();
+    const generation = previewAvailabilityGenerations.get(cacheKey);
+    if (generation !== undefined) {
+      recordPreviewCacheHit({ generation });
+    }
     const target = `${exposedPort.protocol}://${formatTargetHost(exposedPort.verifiedHost)}:${port}`;
     previewTargetCache.set(cacheKey, {
       expiresAt: exposedPort.lastVerifiedAt + cacheTtlMs,
+      ...(generation !== undefined ? { generation } : {}),
       target,
     });
     return target;
@@ -831,12 +852,18 @@ export function removeTaskPorts(taskId: string): void {
 }
 
 export function clearTaskPortRegistry(): void {
-  if (taskPorts.size === 0 && previewTargetCache.size === 0 && previewValidationTokens.size === 0) {
+  if (
+    taskPorts.size === 0 &&
+    previewTargetCache.size === 0 &&
+    previewValidationTokens.size === 0 &&
+    previewAvailabilityGenerations.size === 0
+  ) {
     return;
   }
 
   taskPorts.clear();
   previewTargetCache.clear();
   previewValidationTokens.clear();
+  previewAvailabilityGenerations.clear();
   bumpTaskPortsStateVersion();
 }

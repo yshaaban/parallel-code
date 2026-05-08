@@ -84,6 +84,7 @@ const BROWSER_STARTUP_CANCEL_REASONS = [
   'cleanup',
   'replaced',
   'reset',
+  'restore-failed',
   'transport-lost',
 ] as const;
 

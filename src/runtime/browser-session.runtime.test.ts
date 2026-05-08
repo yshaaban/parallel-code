@@ -1,6 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBrowserStartupState, resetBrowserStartupStateForTests } from '../app/browser-startup';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../app/runtime-diagnostics';
 
 type BrowserHttpStateTest = 'available' | 'unreachable' | 'auth-expired';
 type BrowserTransportEventTest =
@@ -150,6 +154,8 @@ function createBrowserRuntimeOptions(
 }
 
 describe('browser runtime restore generation', () => {
+  const originalWindow = globalThis.window;
+
   beforeEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -168,6 +174,7 @@ describe('browser runtime restore generation', () => {
     });
     serverMessageListeners.clear();
     resetBrowserStartupStateForTests();
+    resetRendererRuntimeDiagnostics();
   });
 
   afterEach(() => {
@@ -179,6 +186,11 @@ describe('browser runtime restore generation', () => {
     taskCommandControllerListeners.clear();
     serverMessageListeners.clear();
     resetBrowserStartupStateForTests();
+    resetRendererRuntimeDiagnostics();
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
   });
 
   it('ignores stale restore completion after a newer disconnect', async () => {
@@ -425,6 +437,14 @@ describe('browser runtime restore generation', () => {
   });
 
   it('reports reconnect restore failures without treating them as completed restoration', async () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+    resetRendererRuntimeDiagnostics();
+
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const scheduleBrowserStateSync = vi.fn();
     const showNotification = vi.fn();
@@ -456,6 +476,19 @@ describe('browser runtime restore generation', () => {
     expect(scheduleBrowserStateSync).toHaveBeenCalledWith(0, false);
     expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
     expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().browserStartup).toMatchObject({
+      modeCancelCounts: {
+        'reconnect-restore': 1,
+      },
+      modeCancelReasonCounts: {
+        'reconnect-restore': expect.objectContaining({
+          'restore-failed': 1,
+        }),
+      },
+      modeCompleteCounts: {
+        'reconnect-restore': 0,
+      },
+    });
 
     warnSpy.mockRestore();
     cleanup();

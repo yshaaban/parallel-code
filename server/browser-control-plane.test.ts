@@ -1602,6 +1602,40 @@ describe('browser control plane', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('does not let batched control sends from before a diagnostics reset pollute the next sample', () => {
+    vi.useFakeTimers();
+    const cleanupSocketClient = vi.fn();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+    setClientReadyState(client, WebSocket.CLOSED);
+
+    controlPlane.emitGitStatusChanged({
+      worktreePath: '/tmp/task-reset',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    resetBackendRuntimeDiagnostics();
+
+    vi.runOnlyPendingTimers();
+
+    expect(cleanupSocketClient).toHaveBeenCalledWith(client);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 0,
+      notOpenRejects: 0,
+      sendErrors: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('uses one delayed queue per client when channel latency simulation is enabled', async () => {
     vi.useFakeTimers();
     const controlPlane = createTrackedControlPlane({

@@ -14,6 +14,7 @@ import {
   pruneExpiredTaskCommandLeases,
   releaseTaskCommandLeasesForClient,
 } from '../electron/ipc/task-command-leases.js';
+import { getBackendRuntimeDiagnosticsGeneration } from '../electron/ipc/runtime-diagnostics.js';
 import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
@@ -203,9 +204,10 @@ export function createBrowserControlPlane(
   });
 
   const batchedSender = createBrowserSendQueue<WebSocket>({
+    captureMessageGeneration: getBackendRuntimeDiagnosticsGeneration,
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
-    send: (client, message) => {
-      const result = delayedSends.sendSafely(client, message);
+    send: (client, message, diagnosticsGeneration) => {
+      const result = delayedSends.sendSafely(client, message, diagnosticsGeneration);
       if (result.ok) {
         return { ok: true };
       }

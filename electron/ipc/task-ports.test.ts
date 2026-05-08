@@ -400,6 +400,29 @@ describe('task port registry', () => {
     });
   });
 
+  it('ignores preview probe diagnostics from validations started before a reset', async () => {
+    await withClosedPreviewPort(async (port) => {
+      exposeTaskPort('task-reset', port, 'Preview');
+
+      const revalidation = revalidateTaskPortPreview('task-reset', port);
+      resetBackendRuntimeDiagnostics();
+      await revalidation;
+
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics).toMatchObject({
+        connectionFailures: 0,
+        lastProbeDurationMs: null,
+        lastProbeFailureReason: null,
+        lastProbeTarget: null,
+        maxProbeDurationMs: 0,
+        probeFailures: 0,
+        probeSuccesses: 0,
+        revalidations: 0,
+        timeoutFailures: 0,
+      });
+    });
+  });
+
   it('records preview cache hits after a successful revalidation', async () => {
     await withPreviewServer(async (port) => {
       exposeTaskPort('task-cache', port, 'Preview');
@@ -413,6 +436,24 @@ describe('task port registry', () => {
       expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
       expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
       expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
+    });
+  });
+
+  it('does not count preview cache entries created before a diagnostics reset', async () => {
+    await withPreviewServer(async (port) => {
+      exposeTaskPort('task-cache-reset', port, 'Preview');
+      resetBackendRuntimeDiagnostics();
+      await revalidateTaskPortPreview('task-cache-reset', port);
+      expect(await resolveTaskPreviewTarget('task-cache-reset', port)).toBe(
+        `http://127.0.0.1:${port}`,
+      );
+
+      resetBackendRuntimeDiagnostics();
+
+      expect(await resolveTaskPreviewTarget('task-cache-reset', port)).toBe(
+        `http://127.0.0.1:${port}`,
+      );
+      expect(getBackendRuntimeDiagnosticsSnapshot().previewValidation.cacheHits).toBe(0);
     });
   });
 

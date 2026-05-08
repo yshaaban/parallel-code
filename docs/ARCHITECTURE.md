@@ -284,8 +284,9 @@ Browser startup now has an explicit split:
   the selected terminal gets a head start
 - reconnect restore still lives in `src/runtime/browser-session.ts` and continues to use the
   reconnect snapshot path after authenticated control traffic confirms reconnection; if transport
-  churn or auth expiry invalidates that restore, `src/app/browser-startup.ts` cancels the
-  reconnect-startup mode instead of leaving stale restore diagnostics active
+  churn, auth expiry, or restore failure invalidates that restore, `src/app/browser-startup.ts`
+  cancels the reconnect-startup mode instead of leaving stale or falsely completed restore
+  diagnostics active
 
 That split is important because browser mode should no longer behave like a restored Electron
 session on first page load.
@@ -849,10 +850,10 @@ This follows the same ownership rule as other server-owned state:
 4. browser mode proxies only explicitly exposed ports
 
 That matters because Parallel Code runs tasks on the host, not in a strict sandbox. Detection is advisory, while exposure is explicit and task-scoped.
-Preview target revalidation also reports backend runtime diagnostics for probe success, connection
-failure, timeout failure, target, and duration. Those diagnostics are generation-guarded so a
-probe that began before `reset_backend_runtime_diagnostics` cannot pollute the next measured
-scenario after it finishes.
+Preview target revalidation also reports backend runtime diagnostics for cache reuse, probe
+success, connection failure, timeout failure, target, and duration. Those diagnostics are
+generation-guarded so cache entries and probes that began before
+`reset_backend_runtime_diagnostics` cannot pollute the next measured scenario.
 
 ## Supervision And Attention Flow
 
@@ -1303,8 +1304,9 @@ Important property:
   be paced so the UI does not expose every intermediate repaint frame
 - that pacing works on raw bytes and must not invent terminal semantics: transport chunks are not
   ANSI boundaries, and the renderer still writes the original bytes to xterm unchanged
-- delayed browser control/channel diagnostics are generation-guarded so queued sends from before a
-  diagnostics reset cannot contaminate the next measured scenario
+- queued browser control/channel diagnostics are generation-guarded so delayed channel sends and
+  micro-batched control broadcasts from before a diagnostics reset cannot contaminate the next
+  measured scenario
 - more aggressive hidden-terminal suspension remains experimental until wake and restore costs are
   proven at the same browser-validation bar
 
@@ -1794,8 +1796,8 @@ Good:
 - typed browser runtime lifecycle transitions
 - reconnect restore now stays in `reconnecting` until authenticated control traffic confirms the
   restore can actually begin
-- reconnect restore cancellation is explicit when transport churn, auth expiry, or cleanup
-  invalidates an in-flight restore
+- reconnect restore cancellation is explicit when transport churn, auth expiry, cleanup, or restore
+  failure invalidates an in-flight restore
 
 Why this matters:
 

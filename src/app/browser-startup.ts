@@ -144,6 +144,10 @@ export function completeBrowserColdBootstrap(): void {
 
 export function beginBrowserReconnectRestore(): void {
   cancelBrowserStartupMode('replaced');
+  browserStartupState = {
+    ...browserStartupState,
+    coldBootstrapPending: false,
+  };
   setBrowserStartupMode('reconnect-restore');
 }
 
@@ -152,7 +156,10 @@ export function completeBrowserReconnectRestore(): void {
 }
 
 export function cancelBrowserReconnectRestore(
-  reason: Extract<BrowserStartupCancelReason, 'auth-expired' | 'cleanup' | 'transport-lost'>,
+  reason: Extract<
+    BrowserStartupCancelReason,
+    'auth-expired' | 'cleanup' | 'restore-failed' | 'transport-lost'
+  >,
 ): void {
   if (browserStartupState.currentMode !== 'reconnect-restore') {
     return;

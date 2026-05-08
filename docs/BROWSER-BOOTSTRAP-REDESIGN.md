@@ -140,7 +140,7 @@ The renderer diagnostics owner now records:
 - current startup mode
 - current startup tier
 - tier entry counts
-- cancellation reasons for stale reconnect restore and superseded startup work
+- cancellation reasons for stale, failed, or superseded reconnect restore and startup work
 - last tier timings within the current startup mode
 - last cold-bootstrap duration
 - last reconnect-restore duration
