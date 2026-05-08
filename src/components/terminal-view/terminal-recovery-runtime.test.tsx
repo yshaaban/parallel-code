@@ -358,6 +358,12 @@ function createDeferredPromise<T>(): {
   return { promise, resolve };
 }
 
+async function flushRecoveryRuntimeMicrotasks(): Promise<void> {
+  for (let index = 0; index < 6; index++) {
+    await Promise.resolve();
+  }
+}
+
 const LARGE_HIDDEN_ATTACH_RECOVERY_BYTES = 384 * 1024 + 1;
 const LARGE_FOCUSED_ATTACH_RECOVERY_BYTES = 1024 * 1024 + 1;
 const LARGE_FOCUSED_RECONNECT_RECOVERY_BYTES = 256 * 1024 + 1;
@@ -1085,6 +1091,42 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
   });
 
+  it('cancels hidden startup paint waits when the runtime is disposed', async () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      startupHiddenReplayUnblockPhase: 'selected-paint',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    vi.spyOn(window, 'setTimeout').mockImplementation(
+      () => 1 as unknown as ReturnType<typeof globalThis.setTimeout>,
+    );
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    const startupPaintSnapshot = {
+      hiddenPendingCount: 1,
+      hiddenReadyCount: 0,
+      selectedPaintReady: false,
+      selectedPendingCount: 1,
+      visiblePendingCount: 0,
+      visibleReadyCount: 0,
+    };
+    const { runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'hidden',
+      startupPaintSnapshot: () => startupPaintSnapshot,
+    });
+
+    const restorePromise = runtime.restoreTerminalOutput('attach');
+    await flushRecoveryRuntimeMicrotasks();
+
+    expect(switchWindowState.startupPaintListener).toBeTypeOf('function');
+
+    runtime.dispose();
+    await restorePromise;
+
+    expect(switchWindowState.startupPaintListener).toBeUndefined();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(1);
+    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(runtime.isRestoreBlocked()).toBe(false);
+  });
+
   it('keeps hidden attach recovery blocked by selected paint even when no visible siblings are pending', async () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       startupHiddenReplayUnblockPhase: 'selected-paint',
@@ -1132,6 +1174,43 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('cancels visible sibling startup readiness waits when the runtime is disposed', async () => {
+    vi.spyOn(window, 'setTimeout').mockImplementation(
+      () => 2 as unknown as ReturnType<typeof globalThis.setTimeout>,
+    );
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    switchWindowState.snapshot = {
+      ...switchWindowState.snapshot,
+      active: true,
+      phase: 'first-paint-pending',
+      selectedRecoveryActive: true,
+    };
+    const { runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'visible-background',
+      startupPaintSnapshot: () => ({
+        hiddenPendingCount: 0,
+        hiddenReadyCount: 0,
+        selectedPaintReady: false,
+        selectedPendingCount: 1,
+        visiblePendingCount: 1,
+        visibleReadyCount: 0,
+      }),
+    });
+
+    const restorePromise = runtime.restoreTerminalOutput('attach');
+    await flushRecoveryRuntimeMicrotasks();
+
+    expect(switchWindowState.listener).toBeTypeOf('function');
+
+    runtime.dispose();
+    await restorePromise;
+
+    expect(switchWindowState.listener).toBeUndefined();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(2);
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(runtime.isRestoreBlocked()).toBe(false);
   });
 
   it('still yields between reconnect replay chunks for large focused restores', async () => {

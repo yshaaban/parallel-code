@@ -163,6 +163,7 @@ function roundMilliseconds(value: number): number {
 }
 
 export interface TerminalRecoveryRuntime {
+  dispose(): void;
   handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
   isOutputFlushBlocked(): boolean;
   isRestoreBlocked(): boolean;
@@ -364,6 +365,39 @@ export function createTerminalRecoveryRuntime(
   let restoreGeneration = 0;
   let restoreWriteChunkCount = 0;
   let restoreWrittenBytes = 0;
+  let runtimeDisposed = false;
+  const pendingRecoveryWaitCleanups = new Set<() => void>();
+
+  function isRuntimeDisposed(): boolean {
+    return runtimeDisposed || options.isDisposed();
+  }
+
+  function registerPendingRecoveryWaitCleanup(cleanup: () => void): () => void {
+    pendingRecoveryWaitCleanups.add(cleanup);
+    return () => {
+      pendingRecoveryWaitCleanups.delete(cleanup);
+    };
+  }
+
+  function disposePendingRecoveryWaits(): void {
+    for (const cleanup of [...pendingRecoveryWaitCleanups]) {
+      cleanup();
+    }
+    pendingRecoveryWaitCleanups.clear();
+  }
+
+  function dispose(): void {
+    if (runtimeDisposed) {
+      return;
+    }
+
+    runtimeDisposed = true;
+    restoreGeneration += 1;
+    pendingReconnectRestoreState = 'none';
+    disposePendingRecoveryWaits();
+    recoveryState = { kind: 'idle' };
+    setRestoreBlocked(false);
+  }
 
   function getStartupVisibleTerminalCount(): number {
     const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
@@ -564,7 +598,7 @@ export function createTerminalRecoveryRuntime(
       (outputPipeline.hasWriteInFlight() ||
         outputPipeline.hasPendingFlowTransitions() ||
         (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput())) &&
-      !options.isDisposed()
+      !isRuntimeDisposed()
     ) {
       if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
         outputPipeline.scheduleOutputFlush();
@@ -579,7 +613,7 @@ export function createTerminalRecoveryRuntime(
       (outputPipeline.hasWriteInFlight() ||
         outputPipeline.hasPendingFlowTransitions() ||
         outputPipeline.hasQueuedOutput()) &&
-      !options.isDisposed()
+      !isRuntimeDisposed()
     ) {
       if (performance.now() - startedAtMs >= POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS) {
         return;
@@ -657,7 +691,7 @@ export function createTerminalRecoveryRuntime(
   }
 
   async function waitForTerminalFitReady(reason: 'renderer-loss' | 'restore'): Promise<boolean> {
-    while (!options.isDisposed()) {
+    while (!isRuntimeDisposed()) {
       if (await options.ensureTerminalFitReady(reason)) {
         return true;
       }
@@ -671,7 +705,7 @@ export function createTerminalRecoveryRuntime(
       generation === restoreGeneration &&
       recoveryState.kind === 'restoring' &&
       recoveryState.generation === generation &&
-      !options.isDisposed()
+      !isRuntimeDisposed()
     );
   }
 
@@ -915,106 +949,141 @@ export function createTerminalRecoveryRuntime(
     }
   }
 
-  async function waitForPrimaryStartupReadiness(reason: TerminalRecoveryReason): Promise<void> {
+  async function waitForPrimaryStartupReadiness(reason: TerminalRecoveryReason): Promise<boolean> {
     if (!shouldDeferVisibleStartupRecoveryUntilPrimaryReady(reason)) {
-      return;
+      return true;
     }
 
     const outputPriority = options.getOutputPriority();
     if (outputPriority !== 'active-visible' && outputPriority !== 'visible-background') {
-      return;
+      return true;
     }
 
     const waitsForSwitchWindow = isVisibleStartupRecoveryDeferredBySwitchWindow(
       getTerminalSwitchWindowSnapshot(),
     );
     if (!waitsForSwitchWindow) {
-      return;
+      return true;
     }
 
     const waitBudgetMs = MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS;
     const waitStartedAtMs = performance.now();
 
-    await new Promise<void>((resolve) => {
+    const completed = await new Promise<boolean>((resolve) => {
       let settled = false;
+      let cleanupSwitchWindowSubscription = (): void => {};
+      let unregisterWaitCleanup = (): void => {};
 
       const maybeFinish = (): void => {
+        if (isRuntimeDisposed()) {
+          finish(false);
+          return;
+        }
+
         const stillWaitingForSwitchWindow = isVisibleStartupRecoveryDeferredBySwitchWindow(
           getTerminalSwitchWindowSnapshot(),
         );
         if (!stillWaitingForSwitchWindow) {
-          finish();
+          finish(true);
         }
       };
 
-      const finish = (): void => {
+      const finish = (ready: boolean): void => {
         if (settled) {
           return;
         }
 
         settled = true;
+        unregisterWaitCleanup();
         cleanupSwitchWindowSubscription();
         window.clearTimeout(timeoutId);
-        resolve();
+        resolve(ready);
       };
 
-      const cleanupSwitchWindowSubscription = subscribeTerminalSwitchWindowChanges(maybeFinish);
-      const timeoutId = window.setTimeout(finish, waitBudgetMs);
+      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finish(false));
+      const timeoutId = window.setTimeout(() => finish(true), waitBudgetMs);
+      cleanupSwitchWindowSubscription = subscribeTerminalSwitchWindowChanges(maybeFinish);
+      maybeFinish();
     });
+    if (!completed) {
+      return false;
+    }
 
     recordTerminalRecoveryStartupFirstPaintDeferral({
       priority: outputPriority,
       waitMs: Math.max(0, performance.now() - waitStartedAtMs),
     });
+    return true;
   }
 
   async function waitForVisibleStartupPaintReadiness(
     reason: TerminalRecoveryReason,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!shouldDeferHiddenStartupRecoveryUntilVisiblePaint(reason)) {
-      return;
+      return true;
     }
 
     const getSnapshot = options.getStartupPaintCoordinationSnapshot;
     const subscribe = options.subscribeStartupPaintCoordinationChanges;
     if (!getSnapshot || !subscribe) {
-      return;
+      return true;
     }
 
     const initialSnapshot = getSnapshot();
     if (!isHiddenStartupRecoveryDeferredByPaintSnapshot(initialSnapshot)) {
-      return;
+      return true;
     }
 
     const waitStartedAtMs = performance.now();
-    await new Promise<void>((resolve) => {
+    const completed = await new Promise<boolean>((resolve) => {
       let settled = false;
-      const finish = (): void => {
+      let cleanupSubscription = (): void => {};
+      let unregisterWaitCleanup = (): void => {};
+
+      const cleanup = (): void => {
+        cleanupSubscription();
+        window.clearTimeout(timeoutId);
+      };
+
+      const finish = (ready: boolean): void => {
         if (settled) {
           return;
         }
 
         settled = true;
+        unregisterWaitCleanup();
         cleanup();
-        resolve();
+        resolve(ready);
       };
-      const cleanupSubscription = subscribe(() => {
+      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finish(false));
+      const timeoutId = window.setTimeout(
+        () => finish(true),
+        MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS,
+      );
+      cleanupSubscription = subscribe(() => {
+        if (isRuntimeDisposed()) {
+          finish(false);
+          return;
+        }
+
         const snapshot = getSnapshot();
         if (!isHiddenStartupRecoveryDeferredByPaintSnapshot(snapshot)) {
-          finish();
+          finish(true);
         }
       });
-      const timeoutId = window.setTimeout(finish, MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS);
-      const cleanup = (): void => {
-        cleanupSubscription();
-        window.clearTimeout(timeoutId);
-      };
+      if (isRuntimeDisposed()) {
+        finish(false);
+      }
     });
+    if (!completed) {
+      return false;
+    }
 
     recordTerminalRecoveryStartupFirstPaintDeferral({
       priority: 'hidden',
       waitMs: Math.max(0, performance.now() - waitStartedAtMs),
     });
+    return true;
   }
 
   async function restoreTerminalScrollbackData(
@@ -1254,7 +1323,7 @@ export function createTerminalRecoveryRuntime(
       !isRecoveryInFlight() &&
       browserTransportState === 'connected' &&
       options.isSpawnReady() &&
-      !options.isDisposed()
+      !isRuntimeDisposed()
     );
   }
 
@@ -1315,7 +1384,7 @@ export function createTerminalRecoveryRuntime(
   async function restoreTerminalOutput(
     reason: TerminalRecoveryReason = 'renderer-loss',
   ): Promise<void> {
-    if (options.isDisposed() || isRecoveryInFlight()) {
+    if (isRuntimeDisposed() || isRecoveryInFlight()) {
       return;
     }
 
@@ -1376,13 +1445,13 @@ export function createTerminalRecoveryRuntime(
         startBlockingRecovery();
         setRecoveryPhase(generation, 'renderer-refresh');
         const rendererFitReady = await waitForTerminalFitReady('renderer-loss');
-        if (!rendererFitReady || generation !== restoreGeneration || options.isDisposed()) {
+        if (!rendererFitReady || generation !== restoreGeneration || isRuntimeDisposed()) {
           return;
         }
         recordTerminalRecoveryRenderRefresh();
         term.refresh(0, Math.max(term.rows - 1, 0));
         revealSettleMs = await waitForPostRecoveryRevealSettle(reason);
-        if (generation !== restoreGeneration || options.isDisposed()) {
+        if (generation !== restoreGeneration || isRuntimeDisposed()) {
           return;
         }
         options.markTerminalReady();
@@ -1397,12 +1466,15 @@ export function createTerminalRecoveryRuntime(
         return;
       }
       const primaryReadinessWaitStartedAtMs = performance.now();
-      await waitForPrimaryStartupReadiness(reason);
+      const primaryReadinessReady = await waitForPrimaryStartupReadiness(reason);
       primaryReadinessWaitMs = performance.now() - primaryReadinessWaitStartedAtMs;
+      if (!primaryReadinessReady || !isActiveRestoreGeneration(generation)) {
+        return;
+      }
       const visiblePaintWaitStartedAtMs = performance.now();
-      await waitForVisibleStartupPaintReadiness(reason);
+      const visiblePaintReady = await waitForVisibleStartupPaintReadiness(reason);
       visiblePaintWaitMs = performance.now() - visiblePaintWaitStartedAtMs;
-      if (!isActiveRestoreGeneration(generation)) {
+      if (!visiblePaintReady || !isActiveRestoreGeneration(generation)) {
         return;
       }
       startBlockingRecovery();
@@ -1469,7 +1541,7 @@ export function createTerminalRecoveryRuntime(
       const postApplyFitStartedAtMs = performance.now();
       const postRecoveryFitReady = await waitForTerminalFitReady('restore');
       postApplyFitMs = performance.now() - postApplyFitStartedAtMs;
-      if (!postRecoveryFitReady || generation !== restoreGeneration || options.isDisposed()) {
+      if (!postRecoveryFitReady || generation !== restoreGeneration || isRuntimeDisposed()) {
         return;
       }
       // Snapshot replay already reconstructs the terminal buffer, viewport, and cursor state.
@@ -1477,7 +1549,7 @@ export function createTerminalRecoveryRuntime(
       refreshTerminalViewport();
       setRecoveryPhase(generation, 'waiting-post-reveal');
       revealSettleMs += await waitForPostRecoveryRevealSettle(reason);
-      if (generation !== restoreGeneration || options.isDisposed()) {
+      if (generation !== restoreGeneration || isRuntimeDisposed()) {
         return;
       }
     } catch (error) {
@@ -1544,7 +1616,7 @@ export function createTerminalRecoveryRuntime(
         shouldExitAfterFinally = true;
       } else {
         options.onRestoreSettled();
-        const restoreStaleOrDisposed = restoreGeneration !== generation || options.isDisposed();
+        const restoreStaleOrDisposed = restoreGeneration !== generation || isRuntimeDisposed();
         if (pendingReconnectRestoreState === 'queued') {
           clearRecoveryStateIfActive(generation);
         }
@@ -1561,7 +1633,7 @@ export function createTerminalRecoveryRuntime(
         if (
           !shouldRestartQueuedRestore &&
           !terminalMarkedReady &&
-          !options.isDisposed() &&
+          !isRuntimeDisposed() &&
           !options.isSpawnFailed()
         ) {
           if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
@@ -1575,7 +1647,7 @@ export function createTerminalRecoveryRuntime(
             };
             await waitForPostRecoveryOutputDrain();
           }
-          if (restoreGeneration !== generation || options.isDisposed() || options.isSpawnFailed()) {
+          if (restoreGeneration !== generation || isRuntimeDisposed() || options.isSpawnFailed()) {
             shouldExitAfterFinally = true;
           } else {
             if (shouldDrainQueuedOutputBeforeRecovery(reason)) {
@@ -1584,7 +1656,7 @@ export function createTerminalRecoveryRuntime(
             }
             if (
               restoreGeneration !== generation ||
-              options.isDisposed() ||
+              isRuntimeDisposed() ||
               options.isSpawnFailed()
             ) {
               shouldExitAfterFinally = true;
@@ -1622,6 +1694,7 @@ export function createTerminalRecoveryRuntime(
   }
 
   return {
+    dispose,
     handleBrowserTransportConnectionState(
       state: ReconnectAwareBrowserTransportConnectionState,
     ): void {

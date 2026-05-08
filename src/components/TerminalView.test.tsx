@@ -249,6 +249,17 @@ function getLastResizeTransactionChangeHandler(): ((isActive: boolean) => void) 
   return getLastSessionOptions()?.onResizeTransactionChange;
 }
 
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('TerminalView', () => {
   const originalIntersectionObserver = globalThis.IntersectionObserver;
 
@@ -1347,6 +1358,45 @@ describe('TerminalView', () => {
     });
     expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
     expect(session.term.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a late takeover result after the terminal session is cleaned up', async () => {
+    const takeover = createDeferredPromise<boolean>();
+    const session = createMockTerminalSession({
+      requestInputTakeover: vi.fn(() => takeover.promise),
+    });
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+
+    const takeOverButton = await result.findByRole('button', { name: 'Take Over' });
+    takeOverButton.click();
+
+    await vi.waitFor(() => {
+      expect(session.requestInputTakeover).toHaveBeenCalledTimes(1);
+    });
+
+    result.unmount();
+    takeover.resolve(true);
+    await takeover.promise;
+    await Promise.resolve();
+
+    expect(setTaskFocusedPanelStateMock).not.toHaveBeenCalled();
+    expect(session.term.focus).not.toHaveBeenCalled();
   });
 
   it('begins a terminal switch window when the task becomes selected', () => {

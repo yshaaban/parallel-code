@@ -371,6 +371,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
   let pendingTakeOverFocus = false;
+  let takeOverGeneration = 0;
   let pendingRecoveryFocusRestore = false;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
   let sessionStartedOnce = false;
@@ -485,22 +486,27 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
+    const generation = ++takeOverGeneration;
     setTakingOver(true);
     try {
       const acquired = await currentSession.requestInputTakeover();
-      if (acquired) {
-        setTaskFocusedPanelState(props.taskId, 'ai-terminal');
-        syncFocusedTypingTaskCommandLease(props.taskId, 'ai-terminal');
-        void loadTaskCommandControllers();
-        pendingTakeOverFocus = true;
-        const activeSession = session;
-        if (activeSession) {
-          pendingTakeOverFocus = false;
-          activeSession.term.focus();
-        }
+      if (!acquired || generation !== takeOverGeneration || session !== currentSession) {
+        return;
+      }
+
+      setTaskFocusedPanelState(taskId, 'ai-terminal');
+      syncFocusedTypingTaskCommandLease(taskId, 'ai-terminal');
+      void loadTaskCommandControllers();
+      pendingTakeOverFocus = true;
+      const activeSession = session;
+      if (activeSession === currentSession) {
+        pendingTakeOverFocus = false;
+        activeSession.term.focus();
       }
     } finally {
-      setTakingOver(false);
+      if (generation === takeOverGeneration) {
+        setTakingOver(false);
+      }
     }
   }
 
@@ -929,6 +935,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function cleanupTerminalSessionLifetime(): void {
+    takeOverGeneration += 1;
+    pendingTakeOverFocus = false;
+    setTakingOver(false);
     setRenderHibernating(false);
     setRestoreBlocked(false);
     session?.cleanup();

@@ -122,6 +122,7 @@ const {
       };
     }),
     createTerminalRecoveryRuntimeMock: vi.fn((options: RecoveryRuntimeTestOptions) => ({
+      dispose: vi.fn(),
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
       isRestoreBlocked: vi.fn(() => false),
@@ -1228,6 +1229,7 @@ describe('startTerminalSession render hibernation', () => {
 
     invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
     createTerminalRecoveryRuntimeMock.mockImplementationOnce((() => ({
+      dispose: vi.fn(),
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
       isRestoreBlocked: vi.fn(() => false),
@@ -1350,6 +1352,7 @@ describe('startTerminalSession render hibernation', () => {
       const recoveryOptions = options as RecoveryRuntimeTestOptions;
       onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
       return {
+        dispose: vi.fn(),
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),
@@ -1745,6 +1748,7 @@ describe('startTerminalSession render hibernation', () => {
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
       recoveryOptions = options as RecoveryRuntimeTestOptions;
       return {
+        dispose: vi.fn(),
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => false),
@@ -1779,6 +1783,7 @@ describe('startTerminalSession render hibernation', () => {
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
       void options;
       return {
+        dispose: vi.fn(),
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => false),
@@ -1959,6 +1964,7 @@ describe('startTerminalSession render hibernation', () => {
       const recoveryOptions = options as RecoveryRuntimeTestOptions;
       onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
       return {
+        dispose: vi.fn(),
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),
@@ -2034,6 +2040,7 @@ describe('startTerminalSession render hibernation', () => {
       const recoveryOptions = options as RecoveryRuntimeTestOptions;
       onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
       return {
+        dispose: vi.fn(),
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),

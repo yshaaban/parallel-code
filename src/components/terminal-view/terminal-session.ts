@@ -1364,7 +1364,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
     },
     RecoveryRequired(message: Extract<PtyOutput, { type: 'RecoveryRequired' }>): void {
-      void recoveryRuntime.restoreTerminalOutput(message.reason);
+      void recoveryRuntime?.restoreTerminalOutput(message.reason);
     },
   } satisfies DispatchByTypeHandlerMap<PtyOutput>;
 
@@ -1663,6 +1663,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       options.onRestoreBlockedChange?.(false);
       renderHibernation.cleanup();
       disposed = true;
+      recoveryRuntime?.dispose();
+      recoveryRuntime = null;
       clearReadyFallback();
       inputPipeline.cleanup();
       outputPipeline.cleanup();
