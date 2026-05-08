@@ -79,6 +79,13 @@ const TERMINAL_RECOVERY_STARTUP_DEFER_PRIORITIES = [
   'hidden',
   'visible-background',
 ] as const;
+const BROWSER_STARTUP_CANCEL_REASONS = [
+  'auth-expired',
+  'cleanup',
+  'replaced',
+  'reset',
+  'transport-lost',
+] as const;
 
 export type TerminalFitDirtyReason = (typeof TERMINAL_FIT_DIRTY_REASONS)[number];
 export type TerminalFitExecutionSource = (typeof TERMINAL_FIT_EXECUTION_SOURCES)[number];
@@ -86,6 +93,7 @@ export type TerminalFitScheduleReason = (typeof TERMINAL_FIT_SCHEDULE_REASONS)[n
 export type TerminalRecoveryReason = (typeof TERMINAL_RECOVERY_REASONS)[number];
 export type TerminalRecoveryKind = (typeof TERMINAL_RECOVERY_KINDS)[number];
 export type TerminalRecoveryResetReason = (typeof TERMINAL_RECOVERY_RESET_REASONS)[number];
+export type BrowserStartupCancelReason = (typeof BROWSER_STARTUP_CANCEL_REASONS)[number];
 export type TerminalRendererSwapReason = 'attach' | 'restore' | 'selected-switch';
 export type TerminalResizeDeferReason = (typeof TERMINAL_RESIZE_DEFER_REASONS)[number];
 export type TerminalStartupPaintRole = (typeof TERMINAL_STARTUP_PAINT_ROLES)[number];
@@ -147,6 +155,12 @@ export interface RendererRuntimeDiagnosticsSnapshot {
       | 'selected-terminal'
       | 'background';
     modeCompleteCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
+    modeCancelCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
+    modeCancelReasonCounts: Record<
+      'cold-bootstrap' | 'reconnect-restore',
+      Record<BrowserStartupCancelReason, number>
+    >;
+    modeLastCanceledMs: Record<'cold-bootstrap' | 'reconnect-restore', number | null>;
     modeLastDurationMs: Record<'cold-bootstrap' | 'reconnect-restore', number | null>;
     modeStartCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
     tierLastReachedMs: Record<
@@ -577,6 +591,18 @@ function createInitialBrowserStartupDiagnostics(): RendererRuntimeDiagnosticsSna
       'cold-bootstrap': 0,
       'reconnect-restore': 0,
     },
+    modeCancelCounts: {
+      'cold-bootstrap': 0,
+      'reconnect-restore': 0,
+    },
+    modeCancelReasonCounts: {
+      'cold-bootstrap': createCounterRecord(BROWSER_STARTUP_CANCEL_REASONS),
+      'reconnect-restore': createCounterRecord(BROWSER_STARTUP_CANCEL_REASONS),
+    },
+    modeLastCanceledMs: {
+      'cold-bootstrap': null,
+      'reconnect-restore': null,
+    },
     modeLastDurationMs: {
       'cold-bootstrap': null,
       'reconnect-restore': null,
@@ -648,6 +674,16 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
     browserStartup: {
       currentMode: rendererRuntimeDiagnostics.browserStartup.currentMode,
       currentTier: rendererRuntimeDiagnostics.browserStartup.currentTier,
+      modeCancelCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeCancelCounts },
+      modeCancelReasonCounts: {
+        'cold-bootstrap': {
+          ...rendererRuntimeDiagnostics.browserStartup.modeCancelReasonCounts['cold-bootstrap'],
+        },
+        'reconnect-restore': {
+          ...rendererRuntimeDiagnostics.browserStartup.modeCancelReasonCounts['reconnect-restore'],
+        },
+      },
+      modeLastCanceledMs: { ...rendererRuntimeDiagnostics.browserStartup.modeLastCanceledMs },
       modeCompleteCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeCompleteCounts },
       modeLastDurationMs: { ...rendererRuntimeDiagnostics.browserStartup.modeLastDurationMs },
       modeStartCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeStartCounts },
@@ -850,6 +886,19 @@ export function recordBrowserStartupModeCompleted(
     snapshot.browserStartup.currentMode = null;
     snapshot.browserStartup.modeCompleteCounts[mode] += 1;
     snapshot.browserStartup.modeLastDurationMs[mode] = durationMs;
+  });
+}
+
+export function recordBrowserStartupModeCanceled(
+  mode: 'cold-bootstrap' | 'reconnect-restore',
+  reason: BrowserStartupCancelReason,
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserStartup.currentMode = null;
+    snapshot.browserStartup.modeCancelCounts[mode] += 1;
+    snapshot.browserStartup.modeCancelReasonCounts[mode][reason] += 1;
+    snapshot.browserStartup.modeLastCanceledMs[mode] = durationMs;
   });
 }
 

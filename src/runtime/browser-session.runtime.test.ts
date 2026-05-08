@@ -1,5 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getBrowserStartupState, resetBrowserStartupStateForTests } from '../app/browser-startup';
 
 type BrowserHttpStateTest = 'available' | 'unreachable' | 'auth-expired';
 type BrowserTransportEventTest =
@@ -166,6 +167,7 @@ describe('browser runtime restore generation', () => {
       runningAgentIds: ['agent-1'],
     });
     serverMessageListeners.clear();
+    resetBrowserStartupStateForTests();
   });
 
   afterEach(() => {
@@ -176,6 +178,7 @@ describe('browser runtime restore generation', () => {
     browserTransportListeners.clear();
     taskCommandControllerListeners.clear();
     serverMessageListeners.clear();
+    resetBrowserStartupStateForTests();
   });
 
   it('ignores stale restore completion after a newer disconnect', async () => {
@@ -212,6 +215,37 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('clears reconnect startup mode when transport churn cancels restore', async () => {
+    const syncDeferred = createDeferred<undefined>();
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot: vi.fn(() => syncDeferred.promise),
+      }),
+    );
+
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
+    await Promise.resolve();
+
+    expect(getBrowserStartupState()).toMatchObject({
+      currentMode: 'reconnect-restore',
+    });
+
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+
+    expect(getBrowserStartupState()).toMatchObject({
+      currentMode: null,
+    });
+
+    syncDeferred.resolve(undefined);
+    await syncDeferred.promise;
+    await Promise.resolve();
+
+    cleanup();
+  });
+
   it('invalidates an in-flight restore when auth expires', async () => {
     const syncDeferred = createDeferred<undefined>();
     const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
@@ -231,6 +265,10 @@ describe('browser runtime restore generation', () => {
     emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
     emitBrowserAuthenticated();
     emitBrowserHttpState('auth-expired');
+
+    expect(getBrowserStartupState()).toMatchObject({
+      currentMode: null,
+    });
 
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;

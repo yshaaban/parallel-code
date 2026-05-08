@@ -1,7 +1,9 @@
 import {
   recordBrowserStartupModeCompleted,
+  recordBrowserStartupModeCanceled,
   recordBrowserStartupModeStarted,
   recordBrowserStartupTierReached,
+  type BrowserStartupCancelReason,
 } from './runtime-diagnostics';
 
 export type BrowserStartupMode = 'cold-bootstrap' | 'reconnect-restore';
@@ -73,7 +75,25 @@ function completeBrowserStartupMode(mode: BrowserStartupMode): void {
   };
 }
 
+function cancelBrowserStartupMode(reason: BrowserStartupCancelReason): void {
+  if (browserStartupState.currentMode === null || browserStartupState.modeStartedAtMs === null) {
+    return;
+  }
+
+  recordBrowserStartupModeCanceled(
+    browserStartupState.currentMode,
+    reason,
+    Math.max(0, getNow() - browserStartupState.modeStartedAtMs),
+  );
+  browserStartupState = {
+    ...browserStartupState,
+    currentMode: null,
+    modeStartedAtMs: null,
+  };
+}
+
 export function beginBrowserColdBootstrap(): void {
+  cancelBrowserStartupMode('replaced');
   browserStartupState = {
     coldBootstrapPending: true,
     currentMode: null,
@@ -123,6 +143,7 @@ export function completeBrowserColdBootstrap(): void {
 }
 
 export function beginBrowserReconnectRestore(): void {
+  cancelBrowserStartupMode('replaced');
   setBrowserStartupMode('reconnect-restore');
 }
 
@@ -130,7 +151,18 @@ export function completeBrowserReconnectRestore(): void {
   completeBrowserStartupMode('reconnect-restore');
 }
 
+export function cancelBrowserReconnectRestore(
+  reason: Extract<BrowserStartupCancelReason, 'auth-expired' | 'cleanup' | 'transport-lost'>,
+): void {
+  if (browserStartupState.currentMode !== 'reconnect-restore') {
+    return;
+  }
+
+  cancelBrowserStartupMode(reason);
+}
+
 export function resetBrowserStartupState(): void {
+  cancelBrowserStartupMode('reset');
   browserStartupState = {
     coldBootstrapPending: false,
     currentMode: null,

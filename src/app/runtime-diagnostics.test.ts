@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   getRendererRuntimeDiagnosticsSnapshot,
+  recordBrowserStartupModeCanceled,
   recordBrowserStartupModeCompleted,
   recordBrowserStartupModeStarted,
   recordBrowserStartupTierReached,
@@ -148,6 +149,7 @@ describe('runtime-diagnostics', () => {
       visibleContextsCurrent: 0,
     });
     recordTerminalRendererSwap('attach');
+    recordBrowserStartupModeCanceled('reconnect-restore', 'transport-lost', 18);
 
     expect(getRendererRuntimeDiagnosticsSnapshot()).toEqual(initialSnapshot);
   });
@@ -248,6 +250,8 @@ describe('runtime-diagnostics', () => {
     recordBrowserStartupModeStarted('cold-bootstrap');
     recordBrowserStartupTierReached('summary', 12);
     recordBrowserStartupModeCompleted('cold-bootstrap', 24);
+    recordBrowserStartupModeStarted('reconnect-restore');
+    recordBrowserStartupModeCanceled('reconnect-restore', 'transport-lost', 18);
 
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalOutputScheduler).toEqual(
       expect.objectContaining({
@@ -267,6 +271,17 @@ describe('runtime-diagnostics', () => {
       expect.objectContaining({
         currentMode: null,
         currentTier: 'summary',
+        modeCancelCounts: expect.objectContaining({
+          'reconnect-restore': 1,
+        }),
+        modeCancelReasonCounts: expect.objectContaining({
+          'reconnect-restore': expect.objectContaining({
+            'transport-lost': 1,
+          }),
+        }),
+        modeLastCanceledMs: expect.objectContaining({
+          'reconnect-restore': 18,
+        }),
         modeCompleteCounts: expect.objectContaining({
           'cold-bootstrap': 1,
         }),

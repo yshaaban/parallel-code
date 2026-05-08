@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   beginBrowserColdBootstrap,
+  cancelBrowserReconnectRestore,
   beginBrowserReconnectRestore,
   completeBrowserReconnectRestore,
   getBrowserStartupState,
@@ -43,6 +44,20 @@ describe('browser-startup', () => {
     });
 
     completeBrowserReconnectRestore();
+
+    expect(getBrowserStartupState()).toMatchObject({
+      currentMode: null,
+      tier: 'idle',
+    });
+  });
+
+  it('cancels reconnect restore when transport churn invalidates it', () => {
+    beginBrowserReconnectRestore();
+    expect(getBrowserStartupState()).toMatchObject({
+      currentMode: 'reconnect-restore',
+    });
+
+    cancelBrowserReconnectRestore('transport-lost');
 
     expect(getBrowserStartupState()).toMatchObject({
       currentMode: null,

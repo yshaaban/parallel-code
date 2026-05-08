@@ -283,7 +283,9 @@ Browser startup now has an explicit split:
   restores browser-local client-session state, and keeps background terminal attach blocked until
   the selected terminal gets a head start
 - reconnect restore still lives in `src/runtime/browser-session.ts` and continues to use the
-  reconnect snapshot path after authenticated control traffic confirms reconnection
+  reconnect snapshot path after authenticated control traffic confirms reconnection; if transport
+  churn or auth expiry invalidates that restore, `src/app/browser-startup.ts` cancels the
+  reconnect-startup mode instead of leaving stale restore diagnostics active
 
 That split is important because browser mode should no longer behave like a restored Electron
 session on first page load.
@@ -1790,6 +1792,8 @@ Good:
 - typed browser runtime lifecycle transitions
 - reconnect restore now stays in `reconnecting` until authenticated control traffic confirms the
   restore can actually begin
+- reconnect restore cancellation is explicit when transport churn, auth expiry, or cleanup
+  invalidates an in-flight restore
 
 Why this matters:
 

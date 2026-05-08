@@ -26,6 +26,7 @@ import {
 } from '../lib/ipc';
 import {
   beginBrowserReconnectRestore,
+  cancelBrowserReconnectRestore,
   completeBrowserReconnectRestore,
 } from '../app/browser-startup';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
@@ -410,9 +411,12 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.setConnectionBanner(deriveConnectionBanner(lifecycleState));
   }
 
-  function invalidateRestoreGeneration(): void {
+  function invalidateRestoreGeneration(
+    reason: 'auth-expired' | 'cleanup' | 'transport-lost' = 'transport-lost',
+  ): void {
     restoreGeneration += 1;
     restoreAwaitingAuthentication = false;
+    cancelBrowserReconnectRestore(reason);
   }
 
   function applyLifecycleEffects(effects: readonly BrowserLifecycleEffect[]): void {
@@ -490,7 +494,9 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     }
 
     if (event.state !== 'connected') {
-      invalidateRestoreGeneration();
+      invalidateRestoreGeneration(
+        event.state === 'auth-expired' ? 'auth-expired' : 'transport-lost',
+      );
     }
 
     const transition = applyBrowserControlConnectionState(lifecycleState, event.state);
@@ -517,14 +523,14 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   const offBrowserHttpState = onBrowserHttpStateChange((state) => {
     if (state === 'auth-expired') {
-      invalidateRestoreGeneration();
+      invalidateRestoreGeneration('auth-expired');
     }
     lifecycleState = applyBrowserHttpPlaneState(lifecycleState, state);
     updateConnectionBanner();
   });
 
   return () => {
-    invalidateRestoreGeneration();
+    invalidateRestoreGeneration('cleanup');
     offWorkspaceStateChanged();
     offTaskCommandControllerChanged();
     offAgents();

@@ -136,10 +136,11 @@ storage, but shared workspace truth still excludes them.
 
 The renderer diagnostics owner now records:
 
-- browser startup mode starts/completions
+- browser startup mode starts/completions/cancellations
 - current startup mode
 - current startup tier
 - tier entry counts
+- cancellation reasons for stale reconnect restore and superseded startup work
 - last tier timings within the current startup mode
 - last cold-bootstrap duration
 - last reconnect-restore duration
