@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 
 const {
   getPlanSelectionMock,
@@ -78,6 +79,7 @@ describe('PlanViewerDialog', () => {
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('renders the plan file name and content when open', () => {
@@ -409,5 +411,67 @@ describe('PlanViewerDialog', () => {
         ].join('\n'),
       );
     });
+  });
+
+  it('cancels stale scroll restoration when the viewer closes before the scheduled frame', async () => {
+    const animationFrame = installManualAnimationFrame();
+    getPlanSelectionMock.mockReturnValue({
+      endLine: 4,
+      nearestHeading: 'Execution',
+      selectedText: '- run tests',
+      startLine: 4,
+    });
+    const [open, setOpen] = createSignal(true);
+
+    render(() => (
+      <PlanViewerDialog
+        open={open()}
+        onClose={() => setOpen(false)}
+        planContent={'# Example Plan\n\n## Execution\n\n- run tests'}
+        planFileName="plan.md"
+      />
+    ));
+
+    const scrollContainer = document.querySelector('.plan-markdown-dialog') as HTMLDivElement;
+    const scrollTopSetter = vi.fn();
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      get: () => 240,
+      set: scrollTopSetter,
+    });
+
+    const planMarkdown = document.querySelector('.plan-markdown');
+    expect(planMarkdown).toBeTruthy();
+    if (!planMarkdown) {
+      return;
+    }
+
+    fireEvent.mouseUp(planMarkdown);
+    const input = await screen.findByPlaceholderText('Add review comment...');
+    animationFrame.flush();
+
+    fireEvent.input(input, { target: { value: 'Keep scroll stable.' } });
+    const inlineInput = input.closest('div');
+    expect(inlineInput).toBeTruthy();
+    if (!inlineInput) {
+      return;
+    }
+
+    const submitCommentButton = within(inlineInput as HTMLElement).getAllByRole('button', {
+      name: 'Comment',
+    })[1];
+    expect(submitCommentButton).toBeTruthy();
+    if (!submitCommentButton) {
+      return;
+    }
+
+    fireEvent.click(submitCommentButton);
+    expect(animationFrame.pendingCount()).toBe(1);
+
+    setOpen(false);
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalled();
+    expect(scrollTopSetter).not.toHaveBeenCalled();
   });
 });

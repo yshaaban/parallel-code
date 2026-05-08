@@ -10,6 +10,7 @@ import {
 
 import { openMarkdownViewer } from '../app/markdown-viewer';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
@@ -200,8 +201,12 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   let mermaidRenderGeneration = 0;
   let contentRef: HTMLDivElement | undefined;
   let scrollRef: HTMLDivElement | undefined;
+  const scrollRestoreFrame = createAnimationFrameTask();
+
+  onCleanup(scrollRestoreFrame.cancel);
 
   function resetTransientState(): void {
+    scrollRestoreFrame.cancel();
     reviewSession.reset();
     reviewCommentCopyController.resetCopyActionLabel();
     setHighlightRects([]);
@@ -421,8 +426,8 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
       return;
     }
 
-    requestAnimationFrame(() => {
-      if (scrollRef) {
+    scrollRestoreFrame.schedule(() => {
+      if (scrollRef?.isConnected) {
         scrollRef.scrollTop = savedScrollTop;
       }
     });
