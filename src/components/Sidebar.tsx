@@ -55,10 +55,12 @@ export function Sidebar(): JSX.Element {
   const [dragState, setDragState] = createSignal<{ groupId: string; taskId: string } | null>(null);
   const [dropTarget, setDropTarget] = createSignal<{ groupId: string; index: number } | null>(null);
   const [resizing, setResizing] = createSignal(false);
+  const [resizePreviewWidth, setResizePreviewWidth] = createSignal<number | null>(null);
   let taskListRef: HTMLDivElement | undefined;
   const focusedProjectScrollFrame = createAnimationFrameTask();
 
-  const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
+  const sidebarWidth = () =>
+    resizePreviewWidth() ?? getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
   const groupedTasks = createMemo(() => computeGroupedTasks());
   const confirmRemoveProjectState = createMemo(() => {
     const projectId = confirmRemove();
@@ -81,17 +83,21 @@ export function Sidebar(): JSX.Element {
     setResizing(true);
     const startX = event.clientX;
     const startWidth = sidebarWidth();
+    let latestWidth = startWidth;
+    setResizePreviewWidth(startWidth);
 
     function onMove(moveEvent: MouseEvent): void {
-      const nextWidth = Math.max(
+      latestWidth = Math.max(
         SIDEBAR_MIN_WIDTH,
         Math.min(SIDEBAR_MAX_WIDTH, startWidth + moveEvent.clientX - startX),
       );
-      setPanelSizes({ [SIDEBAR_SIZE_KEY]: nextWidth });
+      setResizePreviewWidth(latestWidth);
     }
 
     function onUp(): void {
       setResizing(false);
+      setPanelSizes({ [SIDEBAR_SIZE_KEY]: latestWidth });
+      setResizePreviewWidth(null);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     }

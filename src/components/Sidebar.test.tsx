@@ -8,6 +8,7 @@ import { createTestProject, createTestTask, resetStoreForTest } from '../test/st
 
 const {
   focusSidebarMock,
+  getPanelSizeMock,
   isElectronRuntimeMock,
   openNewTaskDialogMock,
   pickAndAddProjectMock,
@@ -15,6 +16,7 @@ const {
   removeProjectWithTasksMock,
   reorderTaskMock,
   setActiveTaskMock,
+  setPanelSizesMock,
   setTaskFocusedPanelMock,
   triggerActionMock,
   uncollapseTaskMock,
@@ -23,6 +25,7 @@ const {
   toggleSidebarMock,
 } = vi.hoisted(() => ({
   focusSidebarMock: vi.fn(),
+  getPanelSizeMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   openNewTaskDialogMock: vi.fn(),
   pickAndAddProjectMock: vi.fn(),
@@ -30,6 +33,7 @@ const {
   removeProjectWithTasksMock: vi.fn(),
   reorderTaskMock: vi.fn(),
   setActiveTaskMock: vi.fn(),
+  setPanelSizesMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
   triggerActionMock: vi.fn(),
   uncollapseTaskMock: vi.fn(),
@@ -123,13 +127,13 @@ vi.mock('../store/store', async () => {
   return {
     store: core.store,
     focusSidebar: focusSidebarMock,
-    getPanelSize: vi.fn(),
+    getPanelSize: getPanelSizeMock,
     registerFocusFn: vi.fn(),
     removeProject: removeProjectMock,
     reorderTask: reorderTaskMock,
     setActiveTask: setActiveTaskMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
-    setPanelSizes: vi.fn(),
+    setPanelSizes: setPanelSizesMock,
     triggerAction: triggerActionMock,
     toggleSettingsDialog: toggleSettingsDialogMock,
     toggleSidebar: toggleSidebarMock,
@@ -156,6 +160,7 @@ describe('Sidebar', () => {
     vi.clearAllMocks();
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(false);
+    getPanelSizeMock.mockReturnValue(undefined);
   });
 
   afterEach(() => {
@@ -273,6 +278,34 @@ describe('Sidebar', () => {
 
     expect(screen.queryByText('Review Queue')).toBeNull();
     expect(screen.getByTestId('sidebar-task-list')).toBeDefined();
+  });
+
+  it('previews sidebar resize locally and persists once when the drag ends', () => {
+    render(() => <Sidebar />);
+
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (
+      !(resizeHandle instanceof HTMLElement) ||
+      !(resizeHandle.parentElement instanceof HTMLElement)
+    ) {
+      throw new Error('Expected sidebar resize handle');
+    }
+    const sidebarShell = resizeHandle.parentElement;
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 240 });
+    fireEvent.mouseMove(window, { clientX: 300 });
+
+    expect(sidebarShell.style.width).toBe('300px');
+    expect(setPanelSizesMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseMove(window, { clientX: 320 });
+    expect(sidebarShell.style.width).toBe('320px');
+    expect(setPanelSizesMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseUp(window);
+
+    expect(setPanelSizesMock).toHaveBeenCalledTimes(1);
+    expect(setPanelSizesMock).toHaveBeenCalledWith({ 'sidebar:width': 320 });
   });
 
   it('cancels stale focused-project scroll frames when sidebar focus moves quickly', () => {
