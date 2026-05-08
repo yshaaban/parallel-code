@@ -174,9 +174,12 @@ vi.mock('./PermissionCard', () => ({
     onApprove: (requestId: string) => void;
     onDeny: (requestId: string) => void;
     request: { id: string; tool: string; status: string };
+    sourceLabel?: string;
   }) => (
     <div>
       <div>Permission card</div>
+      <div>{props.request.id}</div>
+      <div>{props.sourceLabel}</div>
       <button onClick={() => props.onApprove(props.request.id)}>Approve permission</button>
       <button onClick={() => props.onDeny(props.request.id)}>Deny permission</button>
     </div>
@@ -453,6 +456,73 @@ describe('TaskPanel', () => {
       'agent-1',
       'permission-1',
       'deny',
+    );
+  });
+
+  it('shows and routes permission requests for every task agent', () => {
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      id: 'task-1',
+      shellAgentIds: [],
+    });
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+    setStore('permissionRequests', {
+      'agent-1': [
+        {
+          agentId: 'agent-1',
+          arguments: 'npm test',
+          description: 'Run tests',
+          detectedAt: 1_000,
+          id: 'permission-1',
+          status: 'pending',
+          taskId: 'task-1',
+          tool: 'Bash',
+        },
+      ],
+      'agent-2': [
+        {
+          agentId: 'agent-2',
+          arguments: 'npm run lint',
+          description: 'Run lint',
+          detectedAt: 1_100,
+          id: 'permission-2',
+          status: 'pending',
+          taskId: 'task-1',
+          tool: 'Bash',
+        },
+      ],
+      'agent-other': [
+        {
+          agentId: 'agent-other',
+          arguments: 'ignored',
+          description: 'Ignored',
+          detectedAt: 1_200,
+          id: 'permission-other',
+          status: 'pending',
+          taskId: 'task-other',
+          tool: 'Bash',
+        },
+      ],
+    });
+
+    render(() => <TaskPanel task={task} isActive />);
+
+    expect(screen.getAllByText('Permission card')).toHaveLength(2);
+    expect(screen.getByText('permission-1')).toBeDefined();
+    expect(screen.getByText('permission-2')).toBeDefined();
+    expect(screen.getByText('Claude 1')).toBeDefined();
+    expect(screen.getByText('Claude 2')).toBeDefined();
+    expect(screen.queryByText('permission-other')).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve permission' })[1]);
+    expect(handleTaskPermissionResponseMock).toHaveBeenCalledWith(
+      'agent-2',
+      'permission-2',
+      'approve',
     );
   });
 

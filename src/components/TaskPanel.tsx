@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import {
   applyTaskPortsEvent,
@@ -290,15 +290,16 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
             style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
           >
-            <Show when={permissionController.pendingPermission()}>
-              {(request) => (
+            <For each={permissionController.pendingPermissionEntries()}>
+              {(entry) => (
                 <PermissionCard
-                  request={request()}
+                  request={entry.request}
+                  sourceLabel={entry.sourceLabel}
                   onApprove={handleApprovePermissionRequest}
                   onDeny={handleDenyPermissionRequest}
                 />
               )}
-            </Show>
+            </For>
             <PromptInput
               taskId={props.task.id}
               agentId={permissionController.firstAgentId()}

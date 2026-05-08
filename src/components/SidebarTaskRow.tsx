@@ -187,20 +187,27 @@ function TaskReviewBadge(props: { taskId: string }): JSX.Element {
   return (
     <Show when={badge()}>
       {(currentBadge) => (
-        <div
-          role="img"
+        <span
+          role="status"
           aria-label={currentBadge().label}
           title={currentBadge().label}
           style={{
-            width: '7px',
-            height: '7px',
-            'border-radius': '50%',
-            background: currentBadge().color,
-            border: `1px solid color-mix(in srgb, ${currentBadge().color} 42%, ${theme.border})`,
-            'box-shadow': `0 0 0 1px color-mix(in srgb, ${currentBadge().color} 14%, transparent)`,
+            display: 'inline-flex',
+            'align-items': 'center',
+            'border-radius': '3px',
+            padding: '1px 5px',
+            background: `color-mix(in srgb, ${currentBadge().color} 13%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${currentBadge().color} 34%, transparent)`,
+            color: currentBadge().color,
+            'font-size': sf(10),
+            'font-weight': '700',
+            'line-height': '1.35',
+            'white-space': 'nowrap',
             'flex-shrink': '0',
           }}
-        />
+        >
+          {currentBadge().label}
+        </span>
       )}
     </Show>
   );

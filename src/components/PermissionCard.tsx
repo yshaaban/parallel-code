@@ -5,6 +5,7 @@ import type { PermissionRequest } from '../store/types';
 
 interface PermissionCardProps {
   request: PermissionRequest;
+  sourceLabel?: string;
   onApprove: (requestId: string) => void;
   onDeny: (requestId: string) => void;
 }
@@ -56,6 +57,13 @@ export function PermissionCard(props: PermissionCardProps) {
           {props.request.tool}
         </span>
         <span style={{ color: theme.fgMuted, ...typography.meta }}>Permission requested</span>
+        <Show when={props.sourceLabel}>
+          {(sourceLabel) => (
+            <span style={{ color: theme.fgSubtle, ...typography.meta }}>
+              Requested by {sourceLabel()}
+            </span>
+          )}
+        </Show>
       </div>
 
       <Show when={props.request.arguments}>

@@ -205,7 +205,7 @@ describe('SidebarTaskRow', () => {
     expect(screen.getByLabelText('Gemini CLI agent')).toBeDefined();
   });
 
-  it('renders the review state as an accessible colored dot', () => {
+  it('renders blocked review state as a visible sidebar badge', () => {
     setStore(
       'taskConvergence',
       'task-1',
@@ -217,7 +217,27 @@ describe('SidebarTaskRow', () => {
     renderSidebarTaskRow();
 
     expect(screen.getByLabelText('Blocked')).toBeDefined();
-    expect(screen.queryByText('Blocked')).toBeNull();
+    expect(screen.getByText('Blocked')).toBeDefined();
+  });
+
+  it('renders stale review states as visible sidebar badges', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], id: 'task-1', name: 'Task 1' }),
+      'task-2': createTestTask({ agentIds: ['agent-2'], id: 'task-2', name: 'Task 2' }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-2' }),
+    });
+    setStore('taskConvergence', {
+      'task-1': createTestConvergenceSnapshot('task-1', { state: 'needs-refresh' }),
+      'task-2': createTestConvergenceSnapshot('task-2', { state: 'dirty-uncommitted' }),
+    });
+
+    renderSidebarTaskRows(['task-1', 'task-2']);
+
+    expect(screen.getByText('Refresh')).toBeDefined();
+    expect(screen.getByText('Dirty')).toBeDefined();
   });
 
   it('shows a starting activity badge while a task terminal is still attaching', () => {
