@@ -252,11 +252,14 @@ function startTaskCommandLeaseAcquire(
         return false;
       }
 
+      if (acquireResult.controllerId === clientId) {
+        updateLocalTaskCommandLeaseGeneration(lease, acquireResult.leaseGeneration);
+      }
+
       if (!isTaskCommandLeaseAttemptCurrent(taskId, clientId, transportGeneration)) {
         return false;
       }
 
-      updateLocalTaskCommandLeaseGeneration(lease, acquireResult.leaseGeneration);
       lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
       return true;
     })
@@ -367,12 +370,14 @@ export async function retainTaskCommandLease(
       actionDescription,
       options,
     );
+    if (acquiredLease?.controllerId === clientId) {
+      updateLocalTaskCommandLeaseGeneration(lease, acquiredLease.leaseGeneration);
+    }
     if (!isTaskCommandLeaseAttemptCurrent(taskId, clientId, transportGeneration)) {
       return false;
     }
     if (acquiredLease) {
       updateLocalTaskCommandLeaseAction(lease, actionDescription);
-      updateLocalTaskCommandLeaseGeneration(lease, acquiredLease.leaseGeneration);
     }
     return acquiredLease !== null;
   }

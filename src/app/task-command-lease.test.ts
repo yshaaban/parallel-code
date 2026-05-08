@@ -1184,11 +1184,12 @@ describe('task command lease helper', () => {
     session.cleanup();
   });
 
-  it('releases a backend lease if the control plane disconnects before acquire resolves', async () => {
+  it('releases the exact backend lease generation if the control plane disconnects before acquire resolves', async () => {
     const acquireDeferred = createDeferred<{
       acquired: boolean;
       action: string;
       controllerId: string;
+      leaseGeneration: number;
       taskId: string;
       version: number;
     }>();
@@ -1238,6 +1239,14 @@ describe('task command lease helper', () => {
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
     ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.find(([channel]) => channel === IPC.ReleaseTaskCommandLease)?.[1],
+    ).toMatchObject({
+      clientId: 'client-self',
+      leaseGeneration: 1,
+      ownerId: 'runtime-owner-self',
+      taskId: 'task-1',
+    });
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.RenewTaskCommandLease),
     ).toHaveLength(0);
