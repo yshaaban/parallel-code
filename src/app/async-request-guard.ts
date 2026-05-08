@@ -5,6 +5,7 @@ export interface AsyncRequestToken {
 
 export interface AsyncRequestGuard {
   beginRequest: () => AsyncRequestToken;
+  cancelRequests: () => void;
   isCurrent: (token: AsyncRequestToken) => boolean;
   isLatestRequest: (token: AsyncRequestToken) => boolean;
 }
@@ -19,6 +20,9 @@ export function createAsyncRequestGuard(getRevisionId: () => string): AsyncReque
         requestId: latestRequestId,
         revisionId: getRevisionId(),
       };
+    },
+    cancelRequests(): void {
+      latestRequestId += 1;
     },
     isCurrent(token: AsyncRequestToken): boolean {
       return token.requestId === latestRequestId && token.revisionId === getRevisionId();

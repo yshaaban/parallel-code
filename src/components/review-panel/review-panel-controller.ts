@@ -71,6 +71,7 @@ function getCurrentRevisionId(
 }
 
 export function createReviewPanelController(options: ReviewPanelControllerOptions): {
+  cancelFileRequests: () => void;
   clearDiff: () => void;
   currentRevisionId: Accessor<string>;
   diff: Accessor<FileDiffResult | null>;
@@ -113,8 +114,14 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
   });
   const fileRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
   const diffRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
+  let lastAppliedFileRevisionId: string | null = null;
+
+  function cancelFileRequests(): void {
+    fileRequestGuard.cancelRequests();
+  }
 
   function clearDiff(): void {
+    diffRequestGuard.cancelRequests();
     setDiff(null);
     setLoading(false);
   }
@@ -131,8 +138,15 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
       }
 
       setFiles(result.files);
+      lastAppliedFileRevisionId = requestToken.revisionId;
     } catch {
-      /* ignore polling errors */
+      if (!fileRequestGuard.isCurrent(requestToken)) {
+        return;
+      }
+
+      if (lastAppliedFileRevisionId !== requestToken.revisionId) {
+        setFiles([]);
+      }
     }
   }
 
@@ -177,6 +191,7 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
   }
 
   return {
+    cancelFileRequests,
     clearDiff,
     currentRevisionId,
     diff,

@@ -26,4 +26,15 @@ describe('createAsyncRequestGuard', () => {
     expect(guard.isCurrent(request)).toBe(false);
     expect(guard.isLatestRequest(request)).toBe(true);
   });
+
+  it('invalidates requests when the owner cancels pending work', () => {
+    const revisionId = 'r1';
+    const guard = createAsyncRequestGuard(() => revisionId);
+
+    const request = guard.beginRequest();
+    guard.cancelRequests();
+
+    expect(guard.isCurrent(request)).toBe(false);
+    expect(guard.isLatestRequest(request)).toBe(false);
+  });
 });

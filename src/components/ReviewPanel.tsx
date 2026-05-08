@@ -281,6 +281,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     });
     const currentMode = controller.mode();
     if (!props.isActive || (props.taskId && currentMode === 'all')) {
+      controller.cancelFileRequests();
       return;
     }
 
@@ -288,6 +289,11 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   });
 
   createEffect(() => {
+    if (!props.isActive) {
+      controller.clearDiff();
+      return;
+    }
+
     const currentFiles = visibleFiles();
     controller.syncSelectedFilePath(currentFiles);
 

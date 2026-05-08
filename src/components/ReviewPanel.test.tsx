@@ -3,6 +3,7 @@ import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ReviewSession } from '../app/review-session';
+import type { TaskReviewSnapshot } from '../domain/task-review';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -79,6 +80,22 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
     lines_removed: 2,
     path: 'src/first.ts',
     status: 'modified',
+    ...overrides,
+  };
+}
+
+function createReviewSnapshot(overrides: Partial<TaskReviewSnapshot> = {}): TaskReviewSnapshot {
+  return {
+    branchName: 'feature/task-1',
+    files: [createChangedFile()],
+    projectId: 'project-1',
+    revisionId: 'rev-1',
+    source: 'worktree',
+    taskId: 'task-1',
+    totalAdded: 5,
+    totalRemoved: 2,
+    updatedAt: Date.now(),
+    worktreePath: '/tmp/task-1',
     ...overrides,
   };
 }
@@ -579,6 +596,70 @@ describe('ReviewPanel', () => {
     });
   });
 
+  it('clears stale non-all files when a new review file request fails', async () => {
+    replaceTaskReviewSnapshots([
+      createReviewSnapshot({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+      }),
+    ]);
+
+    fetchTaskReviewFilesMock.mockImplementation((request, mode?: string) => {
+      if (mode !== 'branch') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/summary.ts' })],
+          totalAdded: 5,
+          totalRemoved: 2,
+        });
+      }
+
+      if (request.branchName === 'feature/task-1') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/branch-one.ts', committed: true })],
+          totalAdded: 7,
+          totalRemoved: 1,
+        });
+      }
+
+      if (request.branchName === 'feature/task-2') {
+        return Promise.reject(new Error('branch unavailable'));
+      }
+
+      throw new Error(`Unexpected branch name: ${request.branchName}`);
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    const [branchName, setBranchName] = createSignal('feature/task-1');
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName={branchName()}
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+
+    expect(await screen.findByText('branch-one.ts')).toBeDefined();
+
+    setBranchName('feature/task-2');
+
+    await waitFor(() => {
+      expect(fetchTaskReviewFilesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ branchName: 'feature/task-2' }),
+        'branch',
+      );
+      expect(screen.queryByText('branch-one.ts')).toBeNull();
+      expect(screen.getByText('No changes')).toBeDefined();
+    });
+  });
+
   it('refetches branch review files when the worktree path changes and ignores stale old-path results', async () => {
     replaceTaskReviewSnapshots([
       {
@@ -999,6 +1080,84 @@ describe('ReviewPanel', () => {
         }),
       );
       expect(screen.getByTestId('diff-editor').textContent).toContain('branch-version');
+    });
+  });
+
+  it('does not fetch diffs while inactive', async () => {
+    replaceTaskReviewSnapshots([
+      createReviewSnapshot({
+        files: [createChangedFile({ path: 'src/inactive.ts' })],
+      }),
+    ]);
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('inactive'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive={false}
+      />
+    ));
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.getByText('inactive.ts')).toBeDefined();
+    expect(screen.getByText('Select a file')).toBeDefined();
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores an in-flight diff after the review panel becomes inactive', async () => {
+    replaceTaskReviewSnapshots([
+      createReviewSnapshot({
+        files: [createChangedFile({ path: 'src/shared.ts' })],
+      }),
+    ]);
+    const pendingDiffs = [
+      createDeferredPromise<FileDiffResult>(),
+      createDeferredPromise<FileDiffResult>(),
+    ];
+    fetchTaskFileDiffMock.mockImplementation(() => {
+      const pendingDiff = pendingDiffs[fetchTaskFileDiffMock.mock.calls.length - 1];
+      return pendingDiff?.promise ?? Promise.resolve(createFileDiffResult('active-again'));
+    });
+
+    const [isActive, setIsActive] = createSignal(true);
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive={isActive()}
+      />
+    ));
+
+    fireEvent.click(screen.getByTitle('Show split diff'));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenCalledTimes(2);
+    });
+
+    setIsActive(false);
+    for (const pendingDiff of pendingDiffs) {
+      pendingDiff.resolve(createFileDiffResult('stale-diff'));
+    }
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByTestId('diff-editor')).toBeNull();
+    expect(screen.getByText('Select a file')).toBeDefined();
+
+    setIsActive(true);
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock.mock.calls.length).toBeGreaterThan(2);
+      expect(screen.getByTestId('diff-editor').textContent).toContain('active-again');
     });
   });
 
