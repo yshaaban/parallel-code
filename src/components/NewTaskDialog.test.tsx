@@ -40,7 +40,9 @@ vi.mock('./Dialog', () => ({
 }));
 
 vi.mock('./AgentSelector', () => ({
-  AgentSelector: () => <div>Agent selector</div>,
+  AgentSelector: (props: { selectedAgent: { name: string } | null }) => (
+    <div>Selected agent: {props.selectedAgent?.name ?? 'none'}</div>
+  ),
 }));
 
 vi.mock('./BranchPrefixField', () => ({
@@ -86,6 +88,18 @@ vi.mock('../app/agent-catalog', () => ({
 }));
 
 import { NewTaskDialog } from './NewTaskDialog';
+
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  return { promise, resolve };
+}
 
 describe('NewTaskDialog', () => {
   beforeEach(() => {
@@ -138,6 +152,53 @@ describe('NewTaskDialog', () => {
       name: /Dangerously skip all confirms/i,
     });
     expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('ignores stale agent loads after the dialog closes and reopens', async () => {
+    const firstAgents = createDeferredPromise<ReturnType<typeof createTestAgentDef>[]>();
+    const secondAgents = createDeferredPromise<ReturnType<typeof createTestAgentDef>[]>();
+    loadAgentsMock
+      .mockImplementationOnce(() => firstAgents.promise)
+      .mockImplementationOnce(() => secondAgents.promise);
+    const [open, setOpen] = createSignal(true);
+
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    setOpen(false);
+    setOpen(true);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
+    });
+
+    secondAgents.resolve([
+      createTestAgentDef({
+        id: 'fresh-agent',
+        name: 'Fresh Agent',
+        skip_permissions_args: ['--yolo'],
+      }),
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Selected agent: Fresh Agent')).toBeDefined();
+    });
+
+    firstAgents.resolve([
+      createTestAgentDef({
+        id: 'stale-agent',
+        name: 'Stale Agent',
+        skip_permissions_args: ['--yolo'],
+      }),
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.getByText('Selected agent: Fresh Agent')).toBeDefined();
+    expect(screen.queryByText('Selected agent: Stale Agent')).toBeNull();
   });
 
   it('passes skipPermissions through task creation by default', async () => {

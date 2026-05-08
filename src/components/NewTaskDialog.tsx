@@ -60,6 +60,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
+  let dialogInitializationGeneration = 0;
 
   const focusableSelector =
     'textarea:not(:disabled), input:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -109,9 +110,23 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     focusables[nextIdx].focus();
   }
 
+  function nextDialogInitializationGeneration(): number {
+    dialogInitializationGeneration += 1;
+    return dialogInitializationGeneration;
+  }
+
+  function invalidateDialogInitialization(): void {
+    dialogInitializationGeneration += 1;
+  }
+
   // Initialize state each time the dialog opens
   createEffect(() => {
-    if (!props.open) return;
+    if (!props.open) {
+      invalidateDialogInitialization();
+      return;
+    }
+
+    const initializationGeneration = nextDialogInitializationGeneration();
 
     // Reset signals for a fresh dialog
     setPrompt('');
@@ -126,6 +141,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     void (async () => {
       const availableAgents = await loadAgents();
+      if (initializationGeneration !== dialogInitializationGeneration) {
+        return;
+      }
+
       const lastAgent = store.lastAgentId
         ? (availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
         : null;
@@ -170,6 +189,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     window.addEventListener('keydown', handleAltArrow, true);
 
     onCleanup(() => {
+      invalidateDialogInitialization();
       window.removeEventListener('keydown', handleAltArrow, true);
     });
   });
