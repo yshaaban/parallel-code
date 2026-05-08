@@ -123,16 +123,15 @@ Closed in the Phase 1 port. The local owners now use merge-base-aware git status
 
 ## Phase 2: Markdown And Terminal-Link Hardening
 
-Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, terminal-session modifier-click link activation, and the shared app-level markdown viewer with owned `.md` routing from task-note/file surfaces. Terminal-owned `.md` routing and Mermaid remain bounded follow-up work.
+Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, terminal-session modifier-click link activation, the shared app-level markdown viewer with owned `.md` routing from task-note/file/terminal surfaces, and Mermaid rendering inside the owned plan-viewer pipeline.
 
 ### Upstream commits
 
 - `0bc4d65` subset
 - `933931a`
-- revisit later within the same arc:
-  - `9ce6abe`
-  - `a37b958`
-  - `e56a9fc`
+- `9ce6abe`
+- `a37b958`
+- `e56a9fc`
 
 ### Behavioral intent
 
@@ -325,7 +324,7 @@ Write the local isolation-model spec first. Do not start by renaming fields or c
 
 ## Phase 6: Deferred Investigation Tracks
 
-Status: re-checked on `2026-04-01`. The active bounded queue remains terminal-owned `.md` routing, Mermaid in the owned viewer path, and the optional prompt-panel behavior. The broader deferred families below still have no reproduced local gap or product signal strong enough to justify implementation churn, so they remain deferred.
+Status: re-checked on `2026-04-01`. The active bounded queue now only retains the optional prompt-panel behavior. The broader deferred families below still have no reproduced local gap or product signal strong enough to justify implementation churn, so they remain deferred.
 
 These are relevant but not active parity work until their local need is proven:
 
