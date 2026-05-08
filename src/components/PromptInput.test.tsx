@@ -192,6 +192,42 @@ describe('PromptInput', () => {
       });
     });
     expect(textarea.value).toBe('Ship it');
+    expect(
+      await result.findByText('Prompt was not sent because another client controls this task.'),
+    ).toBeTruthy();
+  });
+
+  it('shows send failures without clearing the draft prompt and clears them on retry', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    sendPromptMock.mockRejectedValueOnce(new Error('socket unavailable'));
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByPlaceholderText(
+      'Send a prompt... (Enter to send, Shift+Enter for newline)',
+    ) as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'Ship it' },
+      target: { value: 'Ship it' },
+    });
+    result.getByTitle('Send prompt').click();
+
+    expect(await result.findByText('Prompt send failed: socket unavailable')).toBeTruthy();
+    expect(textarea.value).toBe('Ship it');
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'Ship it again' },
+      target: { value: 'Ship it again' },
+    });
+    expect(result.queryByText('Prompt send failed: socket unavailable')).toBeNull();
+
+    result.getByTitle('Send prompt').click();
+
+    await vi.waitFor(() => {
+      expect(sendPromptMock).toHaveBeenCalledTimes(2);
+    });
+    expect(result.queryByText('Prompt send failed: socket unavailable')).toBeNull();
+    expect(textarea.value).toBe('');
+    consoleErrorSpy.mockRestore();
   });
 
   it('does not add extra retry delay after auto-send verification times out', async () => {

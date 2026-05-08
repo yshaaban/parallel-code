@@ -6,6 +6,7 @@ import {
   onMount,
   onCleanup,
   untrack,
+  type JSX,
 } from 'solid-js';
 import {
   registerFocusFn,
@@ -79,12 +80,18 @@ function isQuestionBlockingAutoSend(tail: string): boolean {
   return true;
 }
 
-export function PromptInput(props: PromptInputProps) {
+function getPromptSendErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : String(error).trim();
+  return message || 'Unknown send failure';
+}
+
+export function PromptInput(props: PromptInputProps): JSX.Element {
   const taskId = untrack(() => props.taskId);
   const agentId = untrack(() => props.agentId);
   const [text, setText] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [takingOver, setTakingOver] = createSignal(false);
+  const [sendError, setSendError] = createSignal<string | null>(null);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
   const promptLeaseSession = createTaskCommandLeaseSession(taskId, 'send a prompt', {
@@ -105,7 +112,7 @@ export function PromptInput(props: PromptInputProps) {
     const ip = props.initialPrompt?.trim();
     if (!ip) return;
 
-    setText(ip);
+    updatePromptText(ip);
     if (autoSentInitialPrompt() === ip) return;
 
     const spawnedAt = Date.now();
@@ -261,7 +268,7 @@ export function PromptInput(props: PromptInputProps) {
   createEffect(() => {
     const pf = props.prefillPrompt?.trim();
     if (!pf) return;
-    setText(pf);
+    updatePromptText(pf);
     untrack(() => props.onPrefillConsumed?.());
   });
 
@@ -278,7 +285,7 @@ export function PromptInput(props: PromptInputProps) {
   let textareaRef: HTMLTextAreaElement | undefined;
 
   onMount(() => {
-    props.handle?.({ getText: text, setText });
+    props.handle?.({ getText: text, setText: updatePromptText });
     const focusKey = `${props.taskId}:prompt`;
     const actionKey = `${props.taskId}:send-prompt`;
     registerFocusFn(focusKey, () => textareaRef?.focus());
@@ -299,6 +306,11 @@ export function PromptInput(props: PromptInputProps) {
   function stopAutoSendTracking(): void {
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
+  }
+
+  function updatePromptText(value: string): void {
+    setText(value);
+    setSendError(null);
   }
 
   async function waitForPromptAppearance(
@@ -347,14 +359,20 @@ export function PromptInput(props: PromptInputProps) {
     const val = text().trim();
     if (!val) {
       if (mode === 'auto') return;
+      setSendError(null);
       void sendAgentEnter(taskId, agentId, { confirmTakeover: false })
         .then((sent) => {
           if (!sent) {
+            setSendError('Prompt was not sent because another client controls this task.');
             controlVisualState.expandBanner();
+            return;
           }
+
+          setSendError(null);
         })
         .catch((error: unknown) => {
           console.error('Failed to send prompt enter:', error);
+          setSendError(`Prompt send failed: ${getPromptSendErrorMessage(error)}`);
           controlVisualState.expandBanner();
         });
       return;
@@ -365,6 +383,7 @@ export function PromptInput(props: PromptInputProps) {
     const { signal } = sendAbortController;
 
     setSending(true);
+    setSendError(null);
     try {
       // Snapshot tail before send for verification comparison.
       const preSendTail = getAgentOutputTail(agentId);
@@ -373,6 +392,7 @@ export function PromptInput(props: PromptInputProps) {
       });
       if (!sent || signal.aborted) {
         if (!signal.aborted && mode === 'manual') {
+          setSendError('Prompt was not sent because another client controls this task.');
           controlVisualState.expandBanner();
         }
         return;
@@ -388,8 +408,10 @@ export function PromptInput(props: PromptInputProps) {
       }
       props.onSend?.(val);
       setText('');
+      setSendError(null);
     } catch (e) {
       console.error('Failed to send prompt:', e);
+      setSendError(`Prompt send failed: ${getPromptSendErrorMessage(e)}`);
       if (mode === 'manual') {
         controlVisualState.expandBanner();
       }
@@ -407,6 +429,7 @@ export function PromptInput(props: PromptInputProps) {
     try {
       const acquired = await promptLeaseSession.takeOver();
       if (acquired) {
+        setSendError(null);
         setTaskFocusedPanelState(props.taskId, 'prompt');
         textareaRef?.focus();
       }
@@ -467,6 +490,25 @@ export function PromptInput(props: PromptInputProps) {
           />
         )}
       </Show>
+      <Show when={sendError()}>
+        {(message) => (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              color: theme.error,
+              background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
+              'border-radius': '8px',
+              padding: '5px 8px',
+              'font-size': sf(11),
+              'line-height': '1.35',
+            }}
+          >
+            {message()}
+          </div>
+        )}
+      </Show>
       <div style={{ position: 'relative', flex: '1', display: 'flex' }}>
         <textarea
           class="prompt-textarea"
@@ -477,7 +519,7 @@ export function PromptInput(props: PromptInputProps) {
           rows={3}
           value={text()}
           disabled={isPromptDisabled()}
-          onInput={(e) => setText(e.currentTarget.value)}
+          onInput={(e) => updatePromptText(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
