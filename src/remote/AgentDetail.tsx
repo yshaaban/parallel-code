@@ -137,9 +137,12 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     }
   }
 
-  let fitRaf = 0;
+  let fitRaf: number | null = null;
+  let settleFitRaf: number | null = null;
   let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let missingAgentTimer: ReturnType<typeof setTimeout> | null = null;
+  let commandScrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let focusScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let restoringScrollback = false;
   let hasTerminalData = false;
   let agentMissingValue = false;
@@ -260,6 +263,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       clearTimeout(resizeDebounceTimer);
     }
     resizeDebounceTimer = setTimeout(() => {
+      resizeDebounceTimer = null;
       if (!term) {
         return;
       }
@@ -289,14 +293,58 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     scheduleResizeSend();
   }
 
+  function cancelFitFrames(): void {
+    if (fitRaf !== null) {
+      cancelAnimationFrame(fitRaf);
+      fitRaf = null;
+    }
+    if (settleFitRaf !== null) {
+      cancelAnimationFrame(settleFitRaf);
+      settleFitRaf = null;
+    }
+  }
+
   function scheduleFitAndResize(options?: { refresh?: boolean }): void {
-    cancelAnimationFrame(fitRaf);
+    cancelFitFrames();
     fitRaf = requestAnimationFrame(() => {
+      fitRaf = null;
       fitAndResize(options);
-      requestAnimationFrame(() => {
+      settleFitRaf = requestAnimationFrame(() => {
+        settleFitRaf = null;
         fitAndResize(options);
       });
     });
+  }
+
+  function scheduleCommandScrollToBottom(): void {
+    if (commandScrollTimer) {
+      clearTimeout(commandScrollTimer);
+    }
+    commandScrollTimer = setTimeout(() => {
+      commandScrollTimer = null;
+      term?.scrollToBottom();
+    }, 180);
+  }
+
+  function scheduleFocusScrollToBottom(): void {
+    if (focusScrollTimer) {
+      clearTimeout(focusScrollTimer);
+    }
+    focusScrollTimer = setTimeout(() => {
+      focusScrollTimer = null;
+      term?.scrollToBottom();
+    }, 300);
+  }
+
+  function clearDelayedScrollTimers(): void {
+    if (commandScrollTimer) {
+      clearTimeout(commandScrollTimer);
+      commandScrollTimer = null;
+    }
+    if (focusScrollTimer) {
+      clearTimeout(focusScrollTimer);
+      focusScrollTimer = null;
+    }
   }
 
   async function handleTerminalInput(data: string): Promise<void> {
@@ -451,10 +499,12 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     });
 
     onCleanup(() => {
-      cancelAnimationFrame(fitRaf);
+      cancelFitFrames();
       if (resizeDebounceTimer) {
         clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = null;
       }
+      clearDelayedScrollTimers();
       clearMissingAgentTimer();
       cleanupTouchGestures();
       window.removeEventListener('resize', onWindowResize);
@@ -573,12 +623,8 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
           disabled={readOnly()}
           disabledReason={getReadOnlyReason()}
           fontSize={termFontSize()}
-          onCommandSent={() => {
-            setTimeout(() => term?.scrollToBottom(), 180);
-          }}
-          onFocusInput={() => {
-            setTimeout(() => term?.scrollToBottom(), 300);
-          }}
+          onCommandSent={scheduleCommandScrollToBottom}
+          onFocusInput={scheduleFocusScrollToBottom}
           onHaptic={haptic}
           onQuickAction={handleQuickAction}
           onSendText={(text) => {

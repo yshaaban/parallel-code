@@ -180,4 +180,37 @@ describe('AgentDetail', () => {
       expect(remoteDetailState.refreshSpy.mock.calls.length).toBeGreaterThan(refreshCallsBefore);
     });
   });
+
+  it('cancels stale settle fit frames when another fit is scheduled', () => {
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const frame = nextFrame;
+      nextFrame += 1;
+      pendingFrames.set(frame, callback);
+      return frame;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (frame: number) => {
+      pendingFrames.delete(frame);
+    });
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    screen.getByRole('button', { name: 'Increase terminal font size' }).click();
+    expect(pendingFrames.size).toBe(1);
+
+    const firstFrame = pendingFrames.keys().next().value;
+    if (firstFrame === undefined) {
+      throw new Error('Expected a queued fit frame');
+    }
+    const firstCallback = pendingFrames.get(firstFrame);
+    expect(firstCallback).toBeDefined();
+    pendingFrames.delete(firstFrame);
+    firstCallback?.(0);
+    expect(pendingFrames.size).toBe(1);
+
+    screen.getByRole('button', { name: 'Increase terminal font size' }).click();
+
+    expect(pendingFrames.size).toBe(1);
+  });
 });
