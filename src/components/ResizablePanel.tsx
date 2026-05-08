@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, untrack, For, type JSX } from 'solid-js';
+import { createSignal, createEffect, onCleanup, onMount, untrack, For, type JSX } from 'solid-js';
 import { beginPanelResizeDrag, endPanelResizeDrag } from '../app/panel-resize-drag';
 import { getPanelSize, setPanelSizes } from '../store/store';
 
@@ -30,10 +30,10 @@ interface ResizablePanelProps {
   /** When set, panel sizes are persisted to the store under keys `{persistKey}:{childId}`. */
   persistKey?: string;
   /** Callback to receive a handle for programmatic resize operations. */
-  onHandle?: (handle: ResizablePanelHandle) => void;
+  onHandle?: (handle: ResizablePanelHandle | undefined) => void;
 }
 
-export function ResizablePanel(props: ResizablePanelProps) {
+export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
   let containerRef!: HTMLDivElement;
   // In fitContent mode: pixel sizes. In flex mode: flex-grow weights (pixel values that work as proportional weights).
   const [sizes, setSizes] = createSignal<number[]>([]);
@@ -153,6 +153,10 @@ export function ResizablePanel(props: ResizablePanelProps) {
     });
 
     // CSS flex handles proportional scaling for non-fitContent panels — no ResizeObserver needed
+  });
+
+  onCleanup(() => {
+    props.onHandle?.(undefined);
   });
 
   // Re-init when children change (untrack initSizes to avoid store reads creating dependencies)

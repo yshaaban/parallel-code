@@ -364,8 +364,8 @@ export function TilingLayout(): JSX.Element {
           children={panelChildren()}
           fitContent
           persistKey="tiling"
-          onHandle={(h) => {
-            panelHandle = h;
+          onHandle={(handle) => {
+            panelHandle = handle;
           }}
         />
       </Show>
