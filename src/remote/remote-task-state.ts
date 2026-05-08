@@ -13,6 +13,17 @@ import {
   type TaskReviewSnapshot,
 } from '../domain/task-review';
 import { omitRecordKey } from '../lib/record-utils';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
+  stripServerStatePayloadVersion,
+} from '../store/server-state-versioning';
 
 const [agentSupervisionByAgentId, setAgentSupervisionByAgentId] = createSignal<
   Record<string, AgentSupervisionSnapshot>
@@ -24,16 +35,9 @@ const [taskReviewByTaskId, setTaskReviewByTaskId] = createSignal<
   Record<string, TaskReviewSnapshot>
 >({});
 
-let agentSupervisionReplaceVersion = -1;
-let taskPortsReplaceVersion = -1;
-let taskReviewReplaceVersion = -1;
-
-function shouldApplyReplaceVersion(
-  version: number | undefined,
-  currentVersion: number,
-): version is number {
-  return typeof version === 'number' && Number.isFinite(version) && version >= currentVersion;
-}
+const agentSupervisionVersionTracker = createServerStateVersionTracker();
+const taskPortsVersionTracker = createServerStateVersionTracker();
+const taskReviewVersionTracker = createServerStateVersionTracker();
 
 function createSnapshotRecord<
   Snapshot extends { [Key in Property]: string },
@@ -48,47 +52,84 @@ function createSnapshotRecord<
   return nextRecord;
 }
 
-function shouldApplySnapshotUpdate(
-  currentUpdatedAt: number | undefined,
-  nextUpdatedAt: number,
-): boolean {
-  return currentUpdatedAt === undefined || nextUpdatedAt >= currentUpdatedAt;
+function toRemoteAgentSupervisionSnapshot(
+  snapshot: AgentSupervisionSnapshot,
+): AgentSupervisionSnapshot {
+  return {
+    agentId: snapshot.agentId,
+    attentionReason: snapshot.attentionReason,
+    isShell: snapshot.isShell,
+    lastOutputAt: snapshot.lastOutputAt,
+    preview: snapshot.preview,
+    state: snapshot.state,
+    taskId: snapshot.taskId,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
+function toRemoteTaskPortSnapshot(snapshot: TaskPortSnapshot): TaskPortSnapshot {
+  return {
+    exposed: snapshot.exposed,
+    observed: snapshot.observed,
+    taskId: snapshot.taskId,
+    updatedAt: snapshot.updatedAt,
+  };
 }
 
 export function replaceRemoteAgentSupervisionSnapshots(
   snapshots: ReadonlyArray<AgentSupervisionSnapshot>,
   version?: number,
 ): void {
-  if (
-    version !== undefined &&
-    !shouldApplyReplaceVersion(version, agentSupervisionReplaceVersion)
-  ) {
+  if (!shouldApplyServerStateReplacement(agentSupervisionVersionTracker, version)) {
     return;
   }
-  if (shouldApplyReplaceVersion(version, agentSupervisionReplaceVersion)) {
-    agentSupervisionReplaceVersion = version;
-  }
 
-  setAgentSupervisionByAgentId(createSnapshotRecord(snapshots, 'agentId'));
+  const storedSnapshots = snapshots.map((snapshot) => toRemoteAgentSupervisionSnapshot(snapshot));
+  setAgentSupervisionByAgentId(createSnapshotRecord(storedSnapshots, 'agentId'));
+  noteServerStateReplacement(
+    agentSupervisionVersionTracker,
+    storedSnapshots.map((snapshot) => snapshot.agentId),
+    version,
+  );
 }
 
 export function applyRemoteAgentSupervisionChanged(event: AgentSupervisionEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedAgentSupervisionEvent(event)) {
+    if (
+      !shouldApplyServerStateEventVersion(
+        agentSupervisionVersionTracker,
+        event.agentId,
+        stateVersion,
+      )
+    ) {
+      return;
+    }
     setAgentSupervisionByAgentId((current) => omitRecordKey(current, event.agentId));
+    noteServerStateEventVersion(agentSupervisionVersionTracker, event.agentId, stateVersion);
+    return;
+  }
+
+  const currentSnapshot = agentSupervisionByAgentId()[event.agentId];
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      agentSupervisionVersionTracker,
+      event.agentId,
+      stateVersion,
+      currentSnapshot?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
     return;
   }
 
   setAgentSupervisionByAgentId((current) => {
-    const currentSnapshot = current[event.agentId];
-    if (!shouldApplySnapshotUpdate(currentSnapshot?.updatedAt, event.updatedAt)) {
-      return current;
-    }
-
     return {
       ...current,
-      [event.agentId]: event,
+      [event.agentId]: toRemoteAgentSupervisionSnapshot(event),
     };
   });
+  noteServerStateEventVersion(agentSupervisionVersionTracker, event.agentId, stateVersion);
 }
 
 export function getRemoteAgentSupervision(agentId: string): AgentSupervisionSnapshot | null {
@@ -99,33 +140,49 @@ export function replaceRemoteTaskReviewSnapshots(
   snapshots: ReadonlyArray<TaskReviewSnapshot>,
   version?: number,
 ): void {
-  if (version !== undefined && !shouldApplyReplaceVersion(version, taskReviewReplaceVersion)) {
+  if (!shouldApplyServerStateReplacement(taskReviewVersionTracker, version)) {
     return;
-  }
-  if (shouldApplyReplaceVersion(version, taskReviewReplaceVersion)) {
-    taskReviewReplaceVersion = version;
   }
 
   setTaskReviewByTaskId(createSnapshotRecord(snapshots, 'taskId'));
+  noteServerStateReplacement(
+    taskReviewVersionTracker,
+    snapshots.map((snapshot) => snapshot.taskId),
+    version,
+  );
 }
 
 export function applyRemoteTaskReviewChanged(event: TaskReviewEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskReviewEvent(event)) {
+    if (!shouldApplyServerStateEventVersion(taskReviewVersionTracker, event.taskId, stateVersion)) {
+      return;
+    }
     setTaskReviewByTaskId((current) => omitRecordKey(current, event.taskId));
+    noteServerStateEventVersion(taskReviewVersionTracker, event.taskId, stateVersion);
+    return;
+  }
+
+  const currentSnapshot = taskReviewByTaskId()[event.taskId];
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      taskReviewVersionTracker,
+      event.taskId,
+      stateVersion,
+      currentSnapshot?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
     return;
   }
 
   setTaskReviewByTaskId((current) => {
-    const currentSnapshot = current[event.taskId];
-    if (!shouldApplySnapshotUpdate(currentSnapshot?.updatedAt, event.updatedAt)) {
-      return current;
-    }
-
     return {
       ...current,
-      [event.taskId]: event,
+      [event.taskId]: stripServerStatePayloadVersion(event),
     };
   });
+  noteServerStateEventVersion(taskReviewVersionTracker, event.taskId, stateVersion);
 }
 
 export function getRemoteTaskReview(taskId: string): TaskReviewSnapshot | null {
@@ -136,33 +193,50 @@ export function replaceRemoteTaskPortsSnapshots(
   snapshots: ReadonlyArray<TaskPortSnapshot>,
   version?: number,
 ): void {
-  if (version !== undefined && !shouldApplyReplaceVersion(version, taskPortsReplaceVersion)) {
+  if (!shouldApplyServerStateReplacement(taskPortsVersionTracker, version)) {
     return;
   }
-  if (shouldApplyReplaceVersion(version, taskPortsReplaceVersion)) {
-    taskPortsReplaceVersion = version;
-  }
 
-  setTaskPortsByTaskId(createSnapshotRecord(snapshots, 'taskId'));
+  const storedSnapshots = snapshots.map((snapshot) => toRemoteTaskPortSnapshot(snapshot));
+  setTaskPortsByTaskId(createSnapshotRecord(storedSnapshots, 'taskId'));
+  noteServerStateReplacement(
+    taskPortsVersionTracker,
+    storedSnapshots.map((snapshot) => snapshot.taskId),
+    version,
+  );
 }
 
 export function applyRemoteTaskPortsChanged(event: TaskPortsEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskPortsEvent(event)) {
+    if (!shouldApplyServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion)) {
+      return;
+    }
     setTaskPortsByTaskId((current) => omitRecordKey(current, event.taskId));
+    noteServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion);
+    return;
+  }
+
+  const currentSnapshot = taskPortsByTaskId()[event.taskId];
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      taskPortsVersionTracker,
+      event.taskId,
+      stateVersion,
+      currentSnapshot?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
     return;
   }
 
   setTaskPortsByTaskId((current) => {
-    const currentSnapshot = current[event.taskId];
-    if (!shouldApplySnapshotUpdate(currentSnapshot?.updatedAt, event.updatedAt)) {
-      return current;
-    }
-
     return {
       ...current,
-      [event.taskId]: event,
+      [event.taskId]: toRemoteTaskPortSnapshot(event),
     };
   });
+  noteServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion);
 }
 
 export function getRemoteTaskPorts(taskId: string): TaskPortSnapshot | null {
@@ -173,7 +247,7 @@ export function resetRemoteTaskStateForTests(): void {
   setAgentSupervisionByAgentId({});
   setTaskPortsByTaskId({});
   setTaskReviewByTaskId({});
-  agentSupervisionReplaceVersion = -1;
-  taskPortsReplaceVersion = -1;
-  taskReviewReplaceVersion = -1;
+  resetServerStateVersionTracker(agentSupervisionVersionTracker);
+  resetServerStateVersionTracker(taskPortsVersionTracker);
+  resetServerStateVersionTracker(taskReviewVersionTracker);
 }

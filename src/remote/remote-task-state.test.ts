@@ -186,7 +186,38 @@ describe('remote task state', () => {
     expect(getRemoteTaskPorts('task-1')).toBeNull();
   });
 
-  it('ignores stale bootstrap replacements for review and port state', () => {
+  it('ignores stale bootstrap replacements for supervision, review, and port state', () => {
+    replaceRemoteAgentSupervisionSnapshots(
+      [
+        {
+          agentId: 'agent-1',
+          attentionReason: 'ready-for-next-step',
+          isShell: false,
+          lastOutputAt: 30,
+          preview: 'Ready',
+          state: 'idle-at-prompt',
+          taskId: 'task-1',
+          updatedAt: 30,
+        },
+      ],
+      5,
+    );
+    replaceRemoteAgentSupervisionSnapshots(
+      [
+        {
+          agentId: 'agent-1',
+          attentionReason: 'waiting-input',
+          isShell: false,
+          lastOutputAt: 10,
+          preview: 'Old',
+          state: 'awaiting-input',
+          taskId: 'task-1',
+          updatedAt: 10,
+        },
+      ],
+      4,
+    );
+
     replaceRemoteTaskReviewSnapshots(
       [
         {
@@ -258,8 +289,97 @@ describe('remote task state', () => {
       4,
     );
 
+    expect(getRemoteAgentSupervision('agent-1')?.preview).toBe('Ready');
     expect(getRemoteTaskReview('task-1')?.revisionId).toBe('rev-new');
     expect(getRemoteTaskPorts('task-1')?.exposed).toEqual([]);
+  });
+
+  it('ignores stale versioned live snapshots and removals after newer replacements', () => {
+    const supervisionSnapshot = {
+      agentId: 'agent-1',
+      attentionReason: 'ready-for-next-step' as const,
+      isShell: false,
+      lastOutputAt: 2_000,
+      preview: 'Fresh supervision',
+      state: 'idle-at-prompt' as const,
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    };
+    const reviewSnapshot = {
+      branchName: 'feature/review',
+      files: [],
+      projectId: 'project-1',
+      revisionId: 'rev-fresh',
+      source: 'worktree' as const,
+      taskId: 'task-1',
+      totalAdded: 0,
+      totalRemoved: 0,
+      updatedAt: 2_000,
+      worktreePath: '/tmp/task-1',
+    };
+    const portsSnapshot = {
+      exposed: [],
+      observed: [],
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    };
+
+    replaceRemoteAgentSupervisionSnapshots([supervisionSnapshot], 2);
+    replaceRemoteTaskReviewSnapshots([reviewSnapshot], 2);
+    replaceRemoteTaskPortsSnapshots([portsSnapshot], 2);
+
+    applyRemoteAgentSupervisionChanged({
+      ...createAgentSupervisionSnapshotEvent({
+        ...supervisionSnapshot,
+        preview: 'Stale supervision',
+        updatedAt: 1_000,
+      }),
+      stateVersion: 1,
+    });
+    applyRemoteAgentSupervisionChanged({
+      ...createRemovedAgentSupervisionEvent('agent-1', 'task-1'),
+      stateVersion: 1,
+    });
+    applyRemoteTaskReviewChanged({
+      ...reviewSnapshot,
+      revisionId: 'rev-stale',
+      stateVersion: 1,
+      updatedAt: 1_000,
+    });
+    applyRemoteTaskReviewChanged({
+      removed: true,
+      stateVersion: 1,
+      taskId: 'task-1',
+    });
+    applyRemoteTaskPortsChanged({
+      ...createTaskPortsSnapshotEvent({
+        ...portsSnapshot,
+        exposed: [
+          {
+            availability: 'available',
+            host: '127.0.0.1',
+            label: 'Stale',
+            lastVerifiedAt: 1_000,
+            port: 8080,
+            protocol: 'http',
+            source: 'manual',
+            statusMessage: null,
+            updatedAt: 1_000,
+            verifiedHost: '127.0.0.1',
+          },
+        ],
+        updatedAt: 1_000,
+      }),
+      stateVersion: 1,
+    });
+    applyRemoteTaskPortsChanged({
+      ...createRemovedTaskPortsEvent('task-1'),
+      stateVersion: 1,
+    });
+
+    expect(getRemoteAgentSupervision('agent-1')).toEqual(supervisionSnapshot);
+    expect(getRemoteTaskReview('task-1')).toEqual(reviewSnapshot);
+    expect(getRemoteTaskPorts('task-1')).toEqual(portsSnapshot);
   });
 
   it('ignores non-finite replace versions so stale-order tracking stays usable', () => {

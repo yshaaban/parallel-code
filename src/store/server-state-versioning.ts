@@ -7,6 +7,10 @@ export interface ServerStateVersionedPayload {
   stateVersion?: number;
 }
 
+function isFiniteServerStateVersion(version: unknown): version is number {
+  return typeof version === 'number' && Number.isFinite(version);
+}
+
 export function createServerStateVersionTracker(): ServerStateVersionTracker {
   return {
     highestVersion: -1,
@@ -17,7 +21,7 @@ export function createServerStateVersionTracker(): ServerStateVersionTracker {
 export function getServerStatePayloadVersion(
   payload: ServerStateVersionedPayload,
 ): number | undefined {
-  if (typeof payload.stateVersion !== 'number' || !Number.isFinite(payload.stateVersion)) {
+  if (!isFiniteServerStateVersion(payload.stateVersion)) {
     return undefined;
   }
 
@@ -78,7 +82,10 @@ export function shouldApplyServerStateReplacement(
   tracker: ServerStateVersionTracker,
   version: number | undefined,
 ): boolean {
-  return version === undefined || version >= tracker.highestVersion;
+  return (
+    version === undefined ||
+    (isFiniteServerStateVersion(version) && version >= tracker.highestVersion)
+  );
 }
 
 export function noteServerStateReplacement(
@@ -89,6 +96,10 @@ export function noteServerStateReplacement(
   tracker.versionByKey.clear();
   if (version === undefined) {
     tracker.highestVersion = -1;
+    return;
+  }
+
+  if (!isFiniteServerStateVersion(version)) {
     return;
   }
 

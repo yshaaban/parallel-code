@@ -1095,6 +1095,9 @@ Shape:
     - peer presence remains a softer activity cue until controller snapshots confirm ownership
   - replayed peer-presence entries are validated before sorting or projection so malformed
     transport data cannot crash the remote shell or become a false ownership cue
+  - remote task-state projections use the shared server-state version tracker for supervision,
+    review, and task-port replay so stale live snapshots or removals cannot erase newer bootstrap
+    truth
 
 This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
 shares session naming, presence, ownership, and takeover behavior with desktop while keeping its
