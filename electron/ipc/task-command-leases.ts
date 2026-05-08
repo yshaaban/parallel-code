@@ -193,6 +193,28 @@ export function releaseTaskCommandLease(
   };
 }
 
+export function clearTaskCommandLeaseForTask(
+  taskId: string,
+  now = Date.now(),
+): ReleaseTaskCommandLeaseResult {
+  const hadLease = taskCommandLeases.has(taskId);
+  const currentLease = getActiveTaskCommandLease(taskId, now);
+  if (!currentLease && !hadLease) {
+    return {
+      changed: false,
+      snapshot: createTaskCommandControllerSnapshot(taskId, null),
+    };
+  }
+
+  if (currentLease) {
+    deleteTaskCommandLease(taskId);
+  }
+  return {
+    changed: true,
+    snapshot: createTaskCommandControllerSnapshot(taskId, null),
+  };
+}
+
 export function getTaskCommandControllerStateVersion(): number {
   return taskCommandControllerStateVersion;
 }

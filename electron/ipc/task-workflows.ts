@@ -26,6 +26,7 @@ import {
 import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
 import { removeTaskContainerPreviewTargets } from './task-containers.js';
+import { clearTaskCommandLeaseForTask } from './task-command-leases.js';
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 import {
   createCurrentBranchTask,
@@ -34,6 +35,7 @@ import {
   importExistingWorktreeTask,
 } from './tasks.js';
 import { getMainBranch } from './git.js';
+import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 import type { TaskGitIsolationMode } from '../../src/store/types.js';
 
 export interface TaskWorkflowContext {
@@ -84,6 +86,10 @@ export interface CleanupTaskRuntimeWorkflowRequest {
   removeTaskState?: boolean;
   taskId: string;
   worktreePath?: string;
+}
+
+export interface CleanupTaskRuntimeWorkflowResult {
+  releasedTaskCommandController: TaskCommandControllerSnapshot | null;
 }
 
 interface ResolvedSpawnLaunch {
@@ -321,7 +327,9 @@ export function stopTaskWorktreeWatchers(taskId: string): void {
   stopTaskGitStatusWatcher(taskId);
 }
 
-export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRequest): void {
+export function cleanupTaskRuntimeWorkflow(
+  request: CleanupTaskRuntimeWorkflowRequest,
+): CleanupTaskRuntimeWorkflowResult {
   for (const agentId of request.agentIds) {
     removeAgentSupervision(agentId);
   }
@@ -329,9 +337,12 @@ export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRe
   stopTaskWorktreeWatchers(request.taskId);
 
   if (request.removeTaskState !== true) {
-    return;
+    return {
+      releasedTaskCommandController: null,
+    };
   }
 
+  const releasedTaskCommandController = clearTaskCommandLeaseForTask(request.taskId);
   removeTaskSupervision(request.taskId);
   removeTaskConvergence(request.taskId);
   removeTaskReview(request.taskId);
@@ -343,6 +354,12 @@ export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRe
   if (typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
   }
+
+  return {
+    releasedTaskCommandController: releasedTaskCommandController.changed
+      ? releasedTaskCommandController.snapshot
+      : null,
+  };
 }
 
 function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpawnLaunch {
@@ -442,17 +459,21 @@ export async function createTaskWorkflow(
   };
 }
 
-export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Promise<void> {
+export async function deleteTaskWorkflow(
+  request: DeleteTaskWorkflowRequest,
+): Promise<CleanupTaskRuntimeWorkflowResult> {
   await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
 
   if (!request.taskId) {
     for (const agentId of request.agentIds) {
       removeAgentSupervision(agentId);
     }
-    return;
+    return {
+      releasedTaskCommandController: null,
+    };
   }
 
-  cleanupTaskRuntimeWorkflow({
+  return cleanupTaskRuntimeWorkflow({
     agentIds: request.agentIds,
     removeTaskState: true,
     taskId: request.taskId,

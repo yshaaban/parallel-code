@@ -126,6 +126,11 @@ import {
   syncTaskWorkflowWorktreesFromSavedState,
   type TaskWorkflowContext,
 } from './task-workflows.js';
+import {
+  acquireTaskCommandLease,
+  getTaskCommandControllers,
+  resetTaskCommandLeasesForTest,
+} from './task-command-leases.js';
 
 function createContext(): TaskWorkflowContext {
   return {
@@ -137,6 +142,7 @@ function createContext(): TaskWorkflowContext {
 describe('task workflows', () => {
   beforeEach(() => {
     clearTaskWorkflowWorktreeRegistryForTests();
+    resetTaskCommandLeasesForTest();
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -526,13 +532,22 @@ describe('task workflows', () => {
   });
 
   it('removes backend task state when runtime cleanup is final', () => {
-    cleanupTaskRuntimeWorkflow({
+    acquireTaskCommandLease('task-3', 'client-a', 'owner-a', 'close this task', false, Date.now());
+
+    const result = cleanupTaskRuntimeWorkflow({
       agentIds: ['agent-1'],
       removeTaskState: true,
       taskId: 'task-3',
       worktreePath: '/tmp/project/.worktrees/task-3',
     });
 
+    expect(result.releasedTaskCommandController).toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-3',
+      version: 2,
+    });
+    expect(getTaskCommandControllers()).toEqual([]);
     expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskConvergenceMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskReviewMock).toHaveBeenCalledWith('task-3');

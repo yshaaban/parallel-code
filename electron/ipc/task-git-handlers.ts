@@ -54,6 +54,7 @@ import {
   type TaskGitIsolationMode,
 } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
+import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (typeof value !== 'string' || !isReviewDiffMode(value)) {
@@ -85,6 +86,17 @@ function assertOptionalCommitHash(
   if (typeof value !== 'string' || !/^[0-9a-f]{7,64}$/iu.test(value)) {
     throw new BadRequestError(`${label} must be a hex commit hash`);
   }
+}
+
+function emitReleasedTaskCommandController(
+  context: HandlerContext,
+  snapshot: TaskCommandControllerSnapshot | null,
+): void {
+  if (!snapshot) {
+    return;
+  }
+
+  context.emitIpcEvent?.(IPC.TaskCommandControllerChanged, snapshot);
 }
 
 function assertOptionalTaskGitIsolation(
@@ -198,7 +210,7 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.worktreePath, 'worktreePath');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 
-      await deleteTaskWorkflow({
+      const cleanupResult = await deleteTaskWorkflow({
         agentIds: request.agentIds,
         branchName: request.branchName,
         deleteBranch: request.deleteBranch,
@@ -206,6 +218,7 @@ export function createTaskAndGitIpcHandlers(
         ...(typeof request.taskId === 'string' ? { taskId: request.taskId } : {}),
         ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
       });
+      emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
 
       if (typeof request.taskId === 'string') {
         taskNames.deleteTask(request.taskId);
@@ -228,7 +241,7 @@ export function createTaskAndGitIpcHandlers(
         }
         assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 
-        cleanupTaskRuntimeWorkflow({
+        const cleanupResult = cleanupTaskRuntimeWorkflow({
           agentIds: request.agentIds,
           removeTaskState: request.removeTaskState ?? false,
           taskId: request.taskId,
@@ -236,6 +249,7 @@ export function createTaskAndGitIpcHandlers(
             ? { worktreePath: request.worktreePath }
             : {}),
         });
+        emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
 
         if (request.removeTaskState === true) {
           taskNames.deleteTask(request.taskId);

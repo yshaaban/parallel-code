@@ -56,6 +56,12 @@ function createContext(): HandlerContext {
 describe('createTaskAndGitIpcHandlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cleanupTaskRuntimeWorkflowMock.mockReturnValue({
+      releasedTaskCommandController: null,
+    });
+    deleteTaskWorkflowMock.mockResolvedValue({
+      releasedTaskCommandController: null,
+    });
   });
 
   it('registers created task metadata through the shared registry owner', async () => {
@@ -209,7 +215,6 @@ describe('createTaskAndGitIpcHandlers', () => {
   });
 
   it('removes created task metadata through the shared registry owner on delete', async () => {
-    deleteTaskWorkflowMock.mockResolvedValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -230,8 +235,44 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('emits released task command ownership when deleting a controlled task', async () => {
+    const releasedController = {
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 2,
+    };
+    deleteTaskWorkflowMock.mockResolvedValue({
+      releasedTaskCommandController: releasedController,
+    });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const context = {
+      ...createContext(),
+      emitIpcEvent: vi.fn(),
+    };
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    await handlers[IPC.DeleteTask]?.({
+      agentIds: [],
+      branchName: 'task/auth',
+      controllerId: 'client-1',
+      deleteBranch: true,
+      projectRoot: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-auth',
+    });
+
+    expect(context.emitIpcEvent).toHaveBeenCalledWith(
+      IPC.TaskCommandControllerChanged,
+      releasedController,
+    );
+  });
+
   it('rejects task deletion when another client keeps the task lease', async () => {
-    deleteTaskWorkflowMock.mockResolvedValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(false);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -256,7 +297,6 @@ describe('createTaskAndGitIpcHandlers', () => {
   });
 
   it('cleans backend task runtime without deleting registry metadata for collapse-style cleanup', () => {
-    cleanupTaskRuntimeWorkflowMock.mockReturnValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -279,7 +319,6 @@ describe('createTaskAndGitIpcHandlers', () => {
   });
 
   it('removes registry metadata when runtime cleanup is final', () => {
-    cleanupTaskRuntimeWorkflowMock.mockReturnValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -304,8 +343,42 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('emits released task command ownership when runtime cleanup is final', () => {
+    const releasedController = {
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 2,
+    };
+    cleanupTaskRuntimeWorkflowMock.mockReturnValue({
+      releasedTaskCommandController: releasedController,
+    });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const context = {
+      ...createContext(),
+      emitIpcEvent: vi.fn(),
+    };
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    handlers[IPC.CleanupTaskRuntime]?.({
+      agentIds: ['agent-1'],
+      controllerId: 'client-1',
+      removeTaskState: true,
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-auth',
+    });
+
+    expect(context.emitIpcEvent).toHaveBeenCalledWith(
+      IPC.TaskCommandControllerChanged,
+      releasedController,
+    );
+  });
+
   it('rejects runtime cleanup when another client holds the task lease', () => {
-    cleanupTaskRuntimeWorkflowMock.mockReturnValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(false);
     const taskRegistry = {
       deleteTask: vi.fn(),

@@ -7,6 +7,7 @@ import {
 } from '../electron/ipc/runtime-diagnostics.js';
 import {
   acquireTaskCommandLease,
+  clearTaskCommandLeaseForTask,
   getTaskCommandControllerSnapshot,
   releaseTaskCommandLease,
   resetTaskCommandLeasesForTest,
@@ -536,6 +537,28 @@ describe('browser control plane', () => {
     expect(getTaskCommandControllerSnapshot('task-1')).toMatchObject({
       action: 'type in the terminal',
       controllerId: 'client-b',
+    });
+  });
+
+  it('does not bootstrap a task command controller after final task cleanup clears it', () => {
+    acquireTaskCommandLeaseForTest('task-deleted', 'client-a', 'close this task');
+    expect(clearTaskCommandLeaseForTask('task-deleted').changed).toBe(true);
+
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(getStateBootstrapSnapshots(sent)).toContainEqual({
+      category: 'task-command-controller',
+      mode: 'replace',
+      payload: [],
+      version: expect.any(Number),
     });
   });
 

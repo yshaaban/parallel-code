@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireTaskCommandLease,
   canResizeTaskTerminal,
+  clearTaskCommandLeaseForTask,
   getTaskCommandControllerSnapshot,
   getTaskCommandControllers,
   isTaskCommandLeaseHeld,
@@ -181,6 +182,45 @@ describe('task-command leases', () => {
         version: 5,
       },
     ]);
+  });
+
+  it('force-clears a task lease during final task cleanup', () => {
+    acquireTaskCommandLease('task-1', 'client-a', 'owner-a', 'close this task', false, 1_000);
+
+    expect(clearTaskCommandLeaseForTask('task-1', 2_000)).toEqual({
+      changed: true,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+    expect(getTaskCommandControllers(2_000)).toEqual([]);
+    expect(clearTaskCommandLeaseForTask('task-1', 2_001)).toEqual({
+      changed: false,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+  });
+
+  it('force-clears an expired stored lease during final task cleanup', () => {
+    acquireTaskCommandLease('task-1', 'client-a', 'owner-a', 'close this task', false, 1_000);
+
+    expect(clearTaskCommandLeaseForTask('task-1', 20_100)).toEqual({
+      changed: true,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+    expect(getTaskCommandControllers(20_100)).toEqual([]);
   });
 
   it('emits released snapshots when leases expire during pruning', () => {
