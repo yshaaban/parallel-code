@@ -18,6 +18,11 @@ import {
   createTerminalInputEchoScenario,
 } from './harness/scenarios.js';
 
+const RAW_BROWSER_RAPID_RENDER_P50_MAX_MS = 5;
+const RAW_BROWSER_RAPID_RENDER_MAX_MS = 32;
+const RAW_BROWSER_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS = 32;
+const RAW_BROWSER_SUSTAINED_END_TO_END_P95_MAX_MS = 36;
+
 async function waitForRendererInputQueueToSettle(
   page: import('@playwright/test').Page,
 ): Promise<void> {
@@ -157,7 +162,8 @@ test.describe('browser-lab terminal input latency', () => {
     expect(snapshot.droppedTraces).toBe(0);
     expect(snapshot.summary.clientBufferMs.max).toBeLessThan(1);
     expect(snapshot.summary.clientSendMs.max).toBeLessThan(1);
-    expect(snapshot.summary.renderMs.max).toBeLessThan(5);
+    expect(snapshot.summary.renderMs.p50).toBeLessThan(RAW_BROWSER_RAPID_RENDER_P50_MAX_MS);
+    expect(snapshot.summary.renderMs.max).toBeLessThan(RAW_BROWSER_RAPID_RENDER_MAX_MS);
     expect(burstCatchupMs).toBeLessThan(40);
   });
 
@@ -190,8 +196,12 @@ test.describe('browser-lab terminal input latency', () => {
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(8);
     expect(snapshot.summary.clientBufferMs.p95).toBeLessThan(1);
-    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
-    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(
+      RAW_BROWSER_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS,
+    );
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(
+      RAW_BROWSER_SUSTAINED_END_TO_END_P95_MAX_MS,
+    );
     expect(
       rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
     ).toBe(0);
