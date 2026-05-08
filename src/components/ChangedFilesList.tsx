@@ -178,9 +178,19 @@ function getInitialRefreshDelayMs(
   return INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
 }
 
+function getChangedFilesRefreshErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : '';
+  if (message.length > 0) {
+    return message;
+  }
+
+  return 'Unknown refresh failure';
+}
+
 export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [taskReviewUnavailable, setTaskReviewUnavailable] = createSignal(false);
+  const [worktreeRefreshError, setWorktreeRefreshError] = createSignal<string | null>(null);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
@@ -208,6 +218,11 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const emptyStateMessage = createMemo(() => {
     if (isReviewUnavailable()) {
       return 'Review data unavailable';
+    }
+
+    const refreshError = worktreeRefreshError();
+    if (refreshError) {
+      return `Changed files unavailable: ${refreshError}`;
     }
 
     if (hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()) {
@@ -361,6 +376,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     const reviewSnapshot = getTaskReviewSnapshot(props.taskId);
     setFiles(reviewSnapshot?.files ?? []);
     setTaskReviewUnavailable(reviewSnapshot?.source === 'unavailable');
+    setWorktreeRefreshError(null);
   });
 
   createEffect(() => {
@@ -387,6 +403,9 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
     let refreshSource: ChangedFilesRefreshSource = 'project-diff';
     let initialTimer: ReturnType<typeof setTimeout> | undefined;
 
+    setTaskReviewUnavailable(false);
+    setWorktreeRefreshError(null);
+
     async function refresh(forceFresh: boolean): Promise<void> {
       if (inFlight) {
         return;
@@ -411,13 +430,14 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
         }
 
         setFiles(reviewFiles.files);
+        setWorktreeRefreshError(null);
         refreshSource = reviewFiles.source;
-      } catch {
+      } catch (error) {
         if (cancelled || !refreshRequestGuard.isCurrent(requestToken)) {
           return;
         }
 
-        setFiles([]);
+        setWorktreeRefreshError(getChangedFilesRefreshErrorMessage(error));
         refreshSource = 'unavailable';
       } finally {
         inFlight = false;
@@ -726,11 +746,25 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
                 {hiddenHydraSummaryLabel()}
               </span>
             </Show>
+            <Show when={worktreeRefreshError()}>
+              {(message) => (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  style={{ color: theme.warning, 'min-width': '0' }}
+                  title={`Changed files refresh failed: ${message()}`}
+                >
+                  Changed files refresh failed: {message()}
+                </span>
+              )}
+            </Show>
           </div>
         </div>
       </Show>
       <Show when={visibleFiles().length === 0}>
         <div
+          role={isReviewUnavailable() || worktreeRefreshError() ? 'status' : undefined}
+          aria-live={isReviewUnavailable() || worktreeRefreshError() ? 'polite' : undefined}
           style={{
             padding: 'var(--space-2xs) var(--space-sm)',
             'border-top': `1px solid ${theme.border}`,

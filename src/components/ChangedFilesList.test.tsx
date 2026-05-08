@@ -430,6 +430,46 @@ describe('ChangedFilesList', () => {
     expect(screen.queryByText('fallback.ts')).toBeNull();
   });
 
+  it('shows unavailable state when the initial worktree changed-files refresh fails', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockRejectedValue(new Error('git unavailable'));
+
+    render(() => <ChangedFilesList kind="worktree" worktreePath="/tmp/task-1" isActive />);
+
+    expect(
+      await screen.findByText('Changed files unavailable: Task review files unavailable'),
+    ).toBeDefined();
+  });
+
+  it('keeps the last worktree file list visible when a later refresh fails', async () => {
+    vi.useFakeTimers();
+    isElectronRuntimeMock.mockReturnValue(true);
+    invokeMock
+      .mockResolvedValueOnce({
+        files: [createChangedFile({ path: 'src/current.ts' })],
+        totalAdded: 3,
+        totalRemoved: 1,
+      })
+      .mockRejectedValueOnce(new Error('git unavailable'));
+
+    render(() => <ChangedFilesList kind="worktree" worktreePath="/tmp/task-1" isActive />);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await waitFor(() => {
+      expect(screen.getByText('current.ts')).toBeDefined();
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain(
+        'Changed files refresh failed: Task review files unavailable',
+      );
+    });
+    expect(screen.getByText('current.ts')).toBeDefined();
+    expect(screen.queryByText('No changed files')).toBeNull();
+  });
+
   it('ignores stale generic refresh results when request inputs change mid-load', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     const secondResult = createDeferredPromise<{
