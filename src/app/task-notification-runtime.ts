@@ -7,6 +7,7 @@ import {
   type TaskNotificationRequest,
 } from '../domain/task-notification';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { getTaskFocusedPanel, setTaskFocusedPanel } from '../store/focus';
 import { setActiveTask } from '../store/navigation';
 import { listPeerSessions } from '../store/peer-presence';
 import { store } from '../store/state';
@@ -399,6 +400,7 @@ export function startTaskNotificationRuntime(
       const taskId = taskIds.find((entry) => Boolean(store.tasks[entry]));
       if (taskId) {
         setActiveTask(taskId);
+        setTaskFocusedPanel(taskId, getTaskFocusedPanel(taskId));
       }
     });
 

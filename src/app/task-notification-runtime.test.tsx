@@ -6,6 +6,7 @@ import type {
   TaskNotificationRequest,
 } from '../domain/task-notification';
 import { setStore, store } from '../store/core';
+import { registerFocusFn, resetFocusStateForTests } from '../store/focus';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 import type { TaskNotificationSink } from './task-notification-sinks';
 import { startTaskNotificationRuntime } from './task-notification-runtime';
@@ -104,6 +105,7 @@ describe('task-notification-runtime', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    resetFocusStateForTests();
     setDocumentVisibility('visible');
     localStorage.clear();
   });
@@ -111,6 +113,7 @@ describe('task-notification-runtime', () => {
   afterEach(() => {
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
+    resetFocusStateForTests();
     setDocumentVisibility('visible');
     localStorage.clear();
   });
@@ -368,6 +371,9 @@ describe('task-notification-runtime', () => {
 
     setupTask('task-1', 'agent-1', 'First task');
     setupTask('task-2', 'agent-2', 'Second task');
+    setStore('focusedPanel', { 'task-2': 'prompt' });
+    const focusMock = vi.fn();
+    registerFocusFn('task-2:prompt', focusMock);
 
     const dispose = startTaskNotificationRuntime({
       capability: () => createCapability(),
@@ -379,6 +385,8 @@ describe('task-notification-runtime', () => {
     sink.emitClick(['task-2', 'task-1']);
 
     expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('prompt');
+    expect(focusMock).toHaveBeenCalledTimes(1);
     dispose();
   });
 
