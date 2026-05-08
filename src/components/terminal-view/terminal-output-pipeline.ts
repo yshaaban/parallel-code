@@ -879,6 +879,10 @@ export function createTerminalOutputPipeline(
       clearOutputWriteWatchdog();
       outputWriteInFlight = false;
       watermark = Math.max(watermark - chunk.length, 0);
+      if (options.isDisposed()) {
+        return;
+      }
+
       renderedOutputCursor += chunk.length;
       appendRenderedOutputHistory(chunk);
       recordOutputWritten(receiveTs);
@@ -892,9 +896,6 @@ export function createTerminalOutputPipeline(
       }
       if (watermark < FLOW_LOW && isFlowPauseApplied()) {
         requestPtyResume();
-      }
-      if (options.isDisposed()) {
-        return;
       }
       dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
       if (outputQueue.length > 0) {

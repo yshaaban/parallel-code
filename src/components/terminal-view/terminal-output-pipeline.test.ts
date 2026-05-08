@@ -294,6 +294,53 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('ignores late write completion lifecycle side effects after cleanup', () => {
+    const pendingWriteCallbacks: Array<() => void> = [];
+    let disposed = false;
+    const markTerminalReady = vi.fn();
+    const onChunkRendered = vi.fn();
+    const onQueueEmpty = vi.fn();
+    const term = {
+      write: (_chunk: Uint8Array, callback: () => void) => {
+        pendingWriteCallbacks.push(callback);
+      },
+    };
+    const pipeline = createTerminalOutputPipeline({
+      agentId: 'agent-1',
+      canFlushOutput: () => true,
+      channelId: 'channel-1',
+      getOutputPriority: () => 'focused',
+      hasObservedLocalInput: () => false,
+      isDisposed: () => disposed,
+      isSpawnFailed: () => false,
+      markTerminalReady,
+      onChunkRendered,
+      onQueueEmpty,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'fixture',
+        cwd: '/tmp',
+        onData: vi.fn(),
+        taskId: 'task-1',
+      },
+      taskId: 'task-1',
+      term,
+    });
+
+    pipeline.enqueueOutput(encoder.encode('late output'));
+    expect(pendingWriteCallbacks).toHaveLength(1);
+
+    disposed = true;
+    pipeline.cleanup();
+    pendingWriteCallbacks[0]?.();
+
+    expect(pipeline.hasWriteInFlight()).toBe(false);
+    expect(onChunkRendered).not.toHaveBeenCalled();
+    expect(markTerminalReady).not.toHaveBeenCalled();
+    expect(onQueueEmpty).not.toHaveBeenCalled();
+  });
+
   it('builds recovery request state from rendered history plus queued local output', () => {
     const { pipeline } = createPipelineWithOptions('visible-background', {
       canFlushOutput: () => false,
