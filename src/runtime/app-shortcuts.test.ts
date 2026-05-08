@@ -5,6 +5,7 @@ const {
   closeShellMock,
   getTaskFocusedPanelMock,
   handlers,
+  jumpToTaskMock,
   registeredShortcuts,
   registerShortcutMock,
   showNotificationMock,
@@ -14,6 +15,7 @@ const {
   closeShellMock: vi.fn(),
   getTaskFocusedPanelMock: vi.fn(),
   handlers: new Map<string, () => void>(),
+  jumpToTaskMock: vi.fn(),
   registeredShortcuts: [] as Array<Record<string, unknown>>,
   registerShortcutMock: vi.fn((definition: { handler: () => void; key: string }) => {
     registeredShortcuts.push(definition as Record<string, unknown>);
@@ -53,6 +55,7 @@ vi.mock('../store/focus', () => ({
 }));
 
 vi.mock('../store/navigation', () => ({
+  jumpToTask: jumpToTaskMock,
   moveActiveTask: vi.fn(),
   toggleNewTaskDialog: vi.fn(),
 }));
@@ -97,6 +100,7 @@ describe('registerAppShortcuts', () => {
     handlers.clear();
     registeredShortcuts.length = 0;
     registerShortcutMock.mockClear();
+    jumpToTaskMock.mockReset();
     closeMarkdownViewerMock.mockReset();
     closeShellMock.mockReset();
     getTaskFocusedPanelMock.mockReturnValue('shell:0');
@@ -154,6 +158,39 @@ describe('registerAppShortcuts', () => {
         key: '-',
       }),
     );
+  });
+
+  it('registers task jump shortcuts for Cmd/Ctrl+1-9 and shift digit layouts', () => {
+    registerAppShortcuts();
+
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        global: true,
+        key: '1',
+      }),
+    );
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        global: true,
+        key: '9',
+        shift: true,
+      }),
+    );
+
+    const firstTaskShortcut = registeredShortcuts.find(
+      (shortcut) => shortcut.key === '1' && shortcut.shift !== true,
+    );
+    const ninthTaskShiftShortcut = registeredShortcuts.find(
+      (shortcut) => shortcut.key === '9' && shortcut.shift === true,
+    );
+
+    (firstTaskShortcut?.handler as (() => void) | undefined)?.();
+    (ninthTaskShiftShortcut?.handler as (() => void) | undefined)?.();
+
+    expect(jumpToTaskMock).toHaveBeenNthCalledWith(1, 0);
+    expect(jumpToTaskMock).toHaveBeenNthCalledWith(2, 8);
   });
 
   it('closes the shared markdown viewer before other dialogs on Escape', () => {

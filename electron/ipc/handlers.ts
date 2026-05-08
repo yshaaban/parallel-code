@@ -18,6 +18,7 @@ import { loadTaskRegistryStateForEnv } from './storage.js';
 import { createTaskNameRegistry } from '../../server/task-names.js';
 export { BadRequestError } from './errors.js';
 export type {
+  ClipboardController,
   DialogController,
   HandlerContext,
   IpcHandler,

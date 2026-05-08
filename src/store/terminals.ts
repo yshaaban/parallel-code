@@ -6,6 +6,7 @@ import { store, setStore, updateWindowTitle } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
 import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
+import { warn as logWarn } from '../lib/log';
 import type { Terminal } from './types';
 
 let terminalCounter = 0;
@@ -71,7 +72,9 @@ export async function closeTerminal(terminalId: string): Promise<void> {
   // Set closing status synchronously to prevent concurrent close calls
   setStore('terminals', terminalId, 'closingStatus', 'closing');
 
-  await invoke(IPC.KillAgent, { agentId: terminal.agentId }).catch(() => {});
+  await invoke(IPC.KillAgent, { agentId: terminal.agentId }).catch((error) => {
+    logWarn('terminals.close', 'KillAgent failed while closing terminal', { error });
+  });
   clearAgentActivity(terminal.agentId);
 
   const idx = store.taskOrder.indexOf(terminalId);

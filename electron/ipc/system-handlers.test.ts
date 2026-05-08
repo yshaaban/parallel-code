@@ -103,6 +103,12 @@ describe('system handlers', () => {
     await expect(handlers[IPC.SaveClipboardImage]?.()).resolves.toBeNull();
   });
 
+  it('returns an empty clipboard paste when clipboard runtime support is unavailable', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+
+    await expect(handlers[IPC.ResolveClipboardPaste]?.()).resolves.toEqual({ kind: 'empty' });
+  });
+
   it('returns a saved clipboard-image path when clipboard runtime support is available', async () => {
     const saveClipboardImage = vi.fn(async () => '/tmp/parallel-code-clipboard.png');
     const handlers = createSystemIpcHandlers(
@@ -117,6 +123,69 @@ describe('system handlers', () => {
       '/tmp/parallel-code-clipboard.png',
     );
     expect(saveClipboardImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns resolved clipboard paste data when clipboard runtime support is available', async () => {
+    const resolveClipboardPaste = vi.fn(async () => ({
+      kind: 'file' as const,
+      path: '/tmp/screenshot.png',
+    }));
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        clipboard: {
+          resolveClipboardPaste,
+          saveClipboardImage: vi.fn(async () => null),
+        },
+      },
+      buildOptions(),
+    );
+
+    await expect(handlers[IPC.ResolveClipboardPaste]?.()).resolves.toEqual({
+      kind: 'file',
+      path: '/tmp/screenshot.png',
+    });
+    expect(resolveClipboardPaste).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves dropped images through clipboard runtime support', async () => {
+    const saveDroppedImage = vi.fn(async () => '/tmp/parallel-code-drop-screen.png');
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        clipboard: {
+          saveClipboardImage: vi.fn(async () => null),
+          saveDroppedImage,
+        },
+      },
+      buildOptions(),
+    );
+
+    await expect(
+      handlers[IPC.SaveDroppedImage]?.({ data: 'iVBORw==', name: 'screen.png' }),
+    ).resolves.toBe('/tmp/parallel-code-drop-screen.png');
+    expect(saveDroppedImage).toHaveBeenCalledWith({
+      data: 'iVBORw==',
+      name: 'screen.png',
+    });
+  });
+
+  it('accepts renderer log payloads without throwing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+
+    const result = handlers[IPC.LogFromRenderer]?.({
+      category: 'test',
+      level: 'warn',
+      level_min: 'warn',
+      msg: 'renderer warning',
+      ts: Date.now(),
+    });
+
+    expect(result).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('renderer.test'));
+
+    warnSpy.mockRestore();
   });
 
   it('reads markdown files through the worktree-scoped handler', () => {

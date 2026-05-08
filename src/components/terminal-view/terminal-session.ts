@@ -38,6 +38,12 @@ import {
   unregisterTerminal,
 } from '../../lib/terminalFitManager';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
+import { cleanCopiedTerminalText } from '../../lib/copy-text';
+import {
+  dataTransferHasFiles,
+  dataTransferToTerminalPaste,
+  escapeTerminalPath,
+} from '../../lib/terminal-drop';
 import { matchesDialogSafeShortcut, matchesGlobalShortcut } from '../../lib/shortcuts';
 import { alignTerminalDomRendererWidthMetricsWithWebgl } from '../../lib/terminal-renderer-metrics';
 import { getTerminalTheme } from '../../lib/theme';
@@ -1009,19 +1015,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     props.onExit?.(payload);
   }
 
-  function clearSelectionAfterCopy(): void {
-    queueMicrotask(() => term.clearSelection());
-  }
-
   async function copySelectionToClipboard(): Promise<void> {
     const selection = term.getSelection();
     if (!selection) {
       return;
     }
+    const cleanedSelection = cleanCopiedTerminalText(selection);
 
     if (navigator.clipboard?.writeText) {
       try {
-        await navigator.clipboard.writeText(selection);
+        await navigator.clipboard.writeText(cleanedSelection);
         term.clearSelection();
         return;
       } catch (error) {
@@ -1041,38 +1044,92 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     showNotification('Copy failed. Use your browser copy shortcut or the context menu.');
   }
 
+  function handleCopy(event: ClipboardEvent): void {
+    const selection = term.getSelection();
+    if (!selection || !event.clipboardData) {
+      return;
+    }
+
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', cleanCopiedTerminalText(selection));
+    queueMicrotask(() => term.clearSelection());
+  }
+
   async function pasteTerminalInput(data: string): Promise<void> {
     inputPipeline.setNextProgrammaticInputTrace(data);
     term.paste(data);
   }
 
   async function pasteFromClipboard(): Promise<void> {
-    if (!navigator.clipboard?.readText) {
-      showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
-      return;
-    }
-
     try {
+      if (isElectronRuntime()) {
+        const clipboardPaste = await invoke(IPC.ResolveClipboardPaste);
+
+        switch (clipboardPaste.kind) {
+          case 'file':
+          case 'image':
+            await pasteTerminalInput(escapeTerminalPath(clipboardPaste.path));
+            return;
+          case 'text':
+            await pasteTerminalInput(clipboardPaste.text);
+            return;
+          case 'empty':
+            return;
+        }
+      }
+
+      if (!navigator.clipboard?.readText) {
+        showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
+        return;
+      }
+
       const text = await navigator.clipboard.readText();
       if (text) {
         await pasteTerminalInput(text);
-        return;
       }
-
-      if (!isElectronRuntime()) {
-        return;
-      }
-
-      const clipboardImagePath = await invoke(IPC.SaveClipboardImage);
-      if (!clipboardImagePath) {
-        return;
-      }
-
-      await pasteTerminalInput(clipboardImagePath);
     } catch (error) {
       console.warn('[terminal] Failed to read clipboard text', error);
       showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
     }
+  }
+
+  function handleDragOver(event: DragEvent): void {
+    if (!dataTransferHasFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+  }
+
+  function handleDrop(event: DragEvent): void {
+    if (!event.dataTransfer || event.dataTransfer.files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const dataTransfer = event.dataTransfer;
+
+    void (async () => {
+      const droppedText = await dataTransferToTerminalPaste(dataTransfer, {
+        resolveFilePath: window.electron?.getPathForFile,
+        saveDroppedFile: isElectronRuntime()
+          ? (request) => invoke(IPC.SaveDroppedImage, request)
+          : undefined,
+      });
+      if (!droppedText) {
+        return;
+      }
+
+      term.focus();
+      await pasteTerminalInput(droppedText);
+    })().catch((error: unknown) => {
+      console.warn('[terminal] Failed to handle dropped files', error);
+    });
   }
 
   function flushPendingExitWhenIdle(): void {
@@ -1346,12 +1403,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return lines.join('\n');
   });
 
-  if (browserMode) {
-    containerRef.addEventListener('copy', clearSelectionAfterCopy);
-    cleanupCallbacks.push(() => {
-      containerRef.removeEventListener('copy', clearSelectionAfterCopy);
-    });
-  }
+  containerRef.addEventListener('copy', handleCopy, true);
+  containerRef.addEventListener('dragover', handleDragOver, true);
+  containerRef.addEventListener('drop', handleDrop, true);
+  cleanupCallbacks.push(() => {
+    containerRef.removeEventListener('copy', handleCopy, true);
+    containerRef.removeEventListener('dragover', handleDragOver, true);
+    containerRef.removeEventListener('drop', handleDrop, true);
+  });
 
   term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
     if (
@@ -1375,7 +1434,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       hasTerminalTraceClockAlignment() &&
       shouldTrackKeyboardEvent(event)
     ) {
-      inputPipeline.recordKeyboardTraceStart();
+      inputPipeline.recordKeyboardTraceStart(event);
     }
 
     switch (shortcutAction.kind) {
@@ -1388,6 +1447,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return false;
       case 'paste':
         void pasteFromClipboard();
+        return false;
+      case 'scrollback':
+        if (shortcutAction.unit === 'line') {
+          term.scrollLines(shortcutAction.delta);
+        } else {
+          term.scrollPages(shortcutAction.delta);
+        }
         return false;
       case 'send-input':
         inputPipeline.setNextProgrammaticInputTrace(shortcutAction.data);

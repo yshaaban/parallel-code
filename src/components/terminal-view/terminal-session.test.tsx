@@ -186,6 +186,8 @@ const {
       onResize = vi.fn();
       open = vi.fn();
       paste = vi.fn();
+      scrollLines = vi.fn();
+      scrollPages = vi.fn();
       registerLinkProvider = vi.fn((provider: typeof state.lineLinkProvider) => {
         state.lineLinkProvider = provider;
         return { dispose: vi.fn() };
@@ -384,6 +386,29 @@ function createMeasuredContainer(): HTMLDivElement {
   return container;
 }
 
+function createFakeFile(name: string, bytes: Uint8Array): File {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+
+  return {
+    arrayBuffer: () => Promise.resolve(buffer),
+    name,
+    size: bytes.byteLength,
+  } as File;
+}
+
+function createDropEvent(files: File[]): DragEvent {
+  const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
+  Object.defineProperty(event, 'dataTransfer', {
+    value: {
+      dropEffect: 'none',
+      files,
+      types: ['Files'],
+    },
+  });
+  return event;
+}
+
 async function flushSessionStartup(cycles = 2): Promise<void> {
   for (let index = 0; index < cycles; index += 1) {
     await Promise.resolve();
@@ -431,6 +456,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   afterEach(() => {
+    delete (window as unknown as { electron?: unknown }).electron;
     resetBrowserPagehideStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -744,7 +770,7 @@ describe('startTerminalSession render hibernation', () => {
     openWindowSpy.mockRestore();
   });
 
-  it('pastes a saved clipboard image path into the terminal when text paste is empty', async () => {
+  it('pastes a resolved clipboard image path into the terminal with shell escaping', async () => {
     const setNextProgrammaticInputTrace = vi.fn();
     createTerminalInputPipelineMock.mockImplementationOnce(() => ({
       cleanup: vi.fn(),
@@ -765,13 +791,12 @@ describe('startTerminalSession render hibernation', () => {
       setNextProgrammaticInputTrace,
     }));
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'paste', preventDefault: true });
-    clipboardReadTextMock.mockResolvedValue('');
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
         return { attachedExistingSession: false };
       }
-      if (channel === IPC.SaveClipboardImage) {
-        return '/tmp/parallel-code-clipboard.png';
+      if (channel === IPC.ResolveClipboardPaste) {
+        return { kind: 'image', path: '/tmp/parallel code clipboard.png' };
       }
       return undefined;
     });
@@ -795,11 +820,185 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(4);
 
     expect(accepted).toBe(false);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.SaveClipboardImage);
-    expect(setNextProgrammaticInputTrace).toHaveBeenCalledWith('/tmp/parallel-code-clipboard.png');
-    expect(session.term.paste).toHaveBeenCalledWith('/tmp/parallel-code-clipboard.png');
+    expect(invokeMock).toHaveBeenCalledWith(IPC.ResolveClipboardPaste);
+    expect(setNextProgrammaticInputTrace).toHaveBeenCalledWith(
+      '/tmp/parallel\\ code\\ clipboard.png',
+    );
+    expect(session.term.paste).toHaveBeenCalledWith('/tmp/parallel\\ code\\ clipboard.png');
 
     session.cleanup();
+  });
+
+  it('cleans selected terminal text before shortcut copy writes to the clipboard', async () => {
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'copy', preventDefault: true });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    const terminal = session.term as unknown as InstanceType<typeof MockTerminalClass>;
+    terminal.getSelection.mockReturnValue(
+      [
+        "  Let me know if you'd like to commit this or want a   ",
+        '  different change instead.                          ',
+      ].join('\n'),
+    );
+
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'c' }));
+    await flushSessionStartup(4);
+
+    expect(accepted).toBe(false);
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith(
+      "  Let me know if you'd like to commit this or want a different change instead.",
+    );
+    expect(session.term.clearSelection).toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('cleans selected terminal text for DOM copy events before xterm handles them', async () => {
+    const containerRef = createMeasuredContainer();
+    const clipboardData = {
+      setData: vi.fn(),
+    };
+    const session = startTerminalSession({
+      containerRef,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    const terminal = session.term as unknown as InstanceType<typeof MockTerminalClass>;
+    terminal.getSelection.mockReturnValue('padded text   \n');
+
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: clipboardData,
+    });
+    containerRef.dispatchEvent(event);
+    await flushSessionStartup(1);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(clipboardData.setData).toHaveBeenCalledWith('text/plain', 'padded text\n');
+    expect(session.term.clearSelection).toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('handles terminal scrollback shortcut actions locally without sending input', async () => {
+    getTerminalShortcutActionMock.mockReturnValue({
+      delta: -1,
+      kind: 'scrollback',
+      preventDefault: true,
+      unit: 'page',
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
+      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(
+      new KeyboardEvent('keydown', { ctrlKey: true, key: 'PageUp', shiftKey: true }),
+    );
+
+    expect(accepted).toBe(false);
+    expect(session.term.scrollPages).toHaveBeenCalledWith(-1);
+    expect(session.term.paste).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('pastes dropped native file paths into the terminal before xterm sees basenames', async () => {
+    const runtimeWindow = window as unknown as {
+      electron?: { getPathForFile?: (file: File) => string };
+    };
+    const previousElectron = runtimeWindow.electron;
+    runtimeWindow.electron = {
+      getPathForFile: vi.fn(() => '/tmp/My Image.png'),
+    };
+    const containerRef = createMeasuredContainer();
+    const session = startTerminalSession({
+      containerRef,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    invokeMock.mockClear();
+
+    const event = createDropEvent([createFakeFile('My Image.png', new Uint8Array([1, 2, 3]))]);
+    containerRef.dispatchEvent(event);
+    await flushSessionStartup(4);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.SaveDroppedImage, expect.anything());
+    expect(session.term.focus).toHaveBeenCalled();
+    expect(session.term.paste).toHaveBeenCalledWith('/tmp/My\\ Image.png');
+
+    session.cleanup();
+    runtimeWindow.electron = previousElectron;
+  });
+
+  it('saves pathless dropped files before pasting their temp path', async () => {
+    const runtimeWindow = window as unknown as {
+      electron?: { getPathForFile?: (file: File) => string };
+    };
+    const previousElectron = runtimeWindow.electron;
+    runtimeWindow.electron = {
+      getPathForFile: vi.fn(() => ''),
+    };
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.SpawnAgent) {
+        return { attachedExistingSession: false };
+      }
+      if (channel === IPC.SaveDroppedImage) {
+        return '/tmp/parallel-code-drop-screen.png';
+      }
+      return undefined;
+    });
+    const containerRef = createMeasuredContainer();
+    const session = startTerminalSession({
+      containerRef,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    invokeMock.mockClear();
+
+    const event = createDropEvent([
+      createFakeFile('screen.png', new Uint8Array([137, 80, 78, 71])),
+    ]);
+    containerRef.dispatchEvent(event);
+    await flushSessionStartup(4);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.SaveDroppedImage, {
+      data: 'iVBORw==',
+      name: 'screen.png',
+    });
+    expect(session.term.paste).toHaveBeenCalledWith('/tmp/parallel-code-drop-screen.png');
+
+    session.cleanup();
+    runtimeWindow.electron = previousElectron;
   });
 
   it('lets shortcut policy suppress non-keydown echoes such as Shift+Enter keyup', async () => {

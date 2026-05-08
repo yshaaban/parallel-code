@@ -10,7 +10,7 @@ import {
   toggleHelpDialog,
   toggleSettingsDialog,
 } from '../store/focus';
-import { moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
+import { jumpToTask, moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
 import { showNotification } from '../store/notification';
@@ -59,6 +59,23 @@ export function registerAppShortcuts(): () => void {
     global: true,
     handler: () => moveActiveTask('right'),
   });
+
+  for (let index = 0; index < 9; index += 1) {
+    const key = String(index + 1);
+    registerShortcut({
+      key,
+      cmdOrCtrl: true,
+      global: true,
+      handler: () => jumpToTask(index),
+    });
+    registerShortcut({
+      key,
+      cmdOrCtrl: true,
+      shift: true,
+      global: true,
+      handler: () => jumpToTask(index),
+    });
+  }
 
   registerShortcut({
     key: 'w',

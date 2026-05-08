@@ -175,6 +175,7 @@ export interface PersistedState {
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
   desktopNotificationsEnabled?: boolean;
+  verboseLogging?: boolean;
   inactiveColumnOpacity?: number;
   hasSeenDesktopIntro?: boolean;
   editorCommand?: string;
@@ -224,6 +225,7 @@ export interface ClientSessionState {
   terminalHighLoadMode?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
+  verboseLogging?: boolean;
   terminalPanels?: ClientSessionTerminalPanels;
   sidebarFocused?: boolean;
   sidebarFocusedProjectId?: string | null;
@@ -384,6 +386,7 @@ export interface AppStore {
   terminalHighLoadMode: boolean;
   taskNotificationsEnabled: boolean;
   taskNotificationsPreferenceInitialized: boolean;
+  verboseLogging: boolean;
   inactiveColumnOpacity: number;
   editorCommand: string;
   hydraCommand: string;

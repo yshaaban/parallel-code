@@ -114,6 +114,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     taskNotificationsEnabled: store.taskNotificationsEnabled,
     taskNotificationsPreferenceInitialized: true,
     ...(terminalPanels ? { terminalPanels } : {}),
+    ...(store.verboseLogging ? { verboseLogging: true } : {}),
     terminalFont: store.terminalFont,
     fontSmoothing: store.fontSmoothing,
     themePreset: store.themePreset,
@@ -277,6 +278,7 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
   syncTerminalHighLoadMode(store.terminalHighLoadMode);
   setStore('taskNotificationsEnabled', getPersistedTaskNotificationsEnabled(raw));
   setStore('taskNotificationsPreferenceInitialized', true);
+  setStore('verboseLogging', raw.verboseLogging === true);
   setStore('inactiveColumnOpacity', normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity));
   setStore(
     'terminalFontSize',

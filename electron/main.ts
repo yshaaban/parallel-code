@@ -2,7 +2,6 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { execFileSync } from 'child_process';
 import {
   getGitStatusSyncEventBufferKey,
   type GitStatusSyncEvent,
@@ -19,46 +18,15 @@ import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
-import { resolveUserShell } from './user-shell.js';
+import { installStdioEpipeGuard } from './stdio.js';
+import { applyLoginShellEnvironment } from './user-shell.js';
+import { warn as logWarn } from './log.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// When launched from a .desktop file, PATH is minimal (/usr/bin:/bin).
-// Resolve the user's full login-interactive shell PATH so spawned PTYs
-// can find CLI tools like claude, codex, gemini, etc.
-//
-// Uses -ilc (interactive + login) to source both .zprofile/.profile AND
-// .zshrc/.bashrc, where version managers (nvm, volta, fnm) add to PATH.
-// Sentinel markers isolate PATH from noisy shell init output.
-//
-// Trade-off: -i (interactive) triggers .zshrc side effects (compinit, conda,
-// welcome messages). Login-only (-lc) would be quieter but would miss tools
-// that are only added to PATH in .bashrc/.zshrc (e.g. nvm). We accept the
-// side effects since the sentinel-based parsing discards all other output.
-// stderr is piped (not inherited) to suppress "no job control" warnings that
-// bash emits when started interactive without a controlling TTY (common in
-// Electron on WSL).
-function fixPath(): void {
-  if (process.platform === 'win32') return;
-  try {
-    const loginShell = resolveUserShell();
-    const sentinel = '__PCODE_PATH__';
-    const result = execFileSync(loginShell, ['-ilc', `printf "${sentinel}%s${sentinel}" "$PATH"`], {
-      encoding: 'utf8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const match = result.match(new RegExp(`${sentinel}(.+?)${sentinel}`));
-    if (match?.[1]) {
-      process.env.PATH = match[1];
-    }
-  } catch (err) {
-    console.warn('[fixPath] Failed to resolve login shell PATH:', err);
-  }
-}
-
-fixPath();
+installStdioEpipeGuard();
+applyLoginShellEnvironment();
 
 // Verify that preload.cjs ALLOWED_CHANNELS stays in sync with the IPC enum.
 // Logs a warning in dev if they drift — catches mismatches before they hit users.
@@ -93,7 +61,7 @@ function getIconPath(): string | undefined {
   return path.join(__dirname, '..', 'build', 'icon.png');
 }
 
-function createWindow() {
+function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -157,7 +125,9 @@ function createWindow() {
   // Open links in external browser instead of inside Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http:') || url.startsWith('https:')) {
-      shell.openExternal(url).catch(() => {});
+      shell.openExternal(url).catch((error) => {
+        logWarn('window.externalUrl', 'failed to open external URL', { error: String(error) });
+      });
     }
     return { action: 'deny' };
   });
@@ -175,7 +145,9 @@ function createWindow() {
     if (url.startsWith('file://')) return;
     event.preventDefault();
     if (url.startsWith('http:') || url.startsWith('https:')) {
-      shell.openExternal(url).catch(() => {});
+      shell.openExternal(url).catch((error) => {
+        logWarn('window.externalUrl', 'failed to open external URL', { error: String(error) });
+      });
     }
   });
 

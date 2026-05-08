@@ -168,4 +168,35 @@ describe('terminal shortcuts', () => {
       preventDefault: false,
     });
   });
+
+  it('maps primary shift arrows and page keys to terminal scrollback actions', () => {
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('ArrowUp', { ctrlKey: true, shiftKey: true }), {
+        browserMode: true,
+        hasSelection: false,
+        isMac: false,
+      }),
+    ).toEqual({
+      delta: -1,
+      kind: 'scrollback',
+      preventDefault: true,
+      unit: 'line',
+    });
+
+    expect(
+      getTerminalShortcutAction(
+        createShortcutEvent('PageDown', { metaKey: true, shiftKey: true }),
+        {
+          browserMode: false,
+          hasSelection: false,
+          isMac: true,
+        },
+      ),
+    ).toEqual({
+      delta: 1,
+      kind: 'scrollback',
+      preventDefault: true,
+      unit: 'page',
+    });
+  });
 });

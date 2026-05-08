@@ -7,13 +7,16 @@ import {
   shell,
 } from 'electron';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
 import { subscribeAgentSupervision } from './agent-supervision.js';
 import {
   createIpcHandlers,
+  type ClipboardController,
   type DialogController,
   type ShellController,
   type WindowController,
@@ -160,22 +163,137 @@ function createShellController(): ShellController {
   };
 }
 
-function createClipboardController() {
+const MAX_DROPPED_IMAGE_BYTES = 50 * 1024 * 1024;
+
+function readClipboardFileUrl(): string | null {
+  const formats = electronClipboard.availableFormats();
+
+  if (formats.includes('public.file-url')) {
+    const url = electronClipboard.read('public.file-url').trim();
+    if (url) {
+      return url;
+    }
+  }
+
+  if (formats.includes('x-special/gnome-copied-files')) {
+    const payload = electronClipboard.read('x-special/gnome-copied-files');
+    const lines = payload.split('\n');
+    for (let index = 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line) {
+        continue;
+      }
+
+      const url = line.trim();
+      if (url.startsWith('file://')) {
+        return url;
+      }
+    }
+  }
+
+  if (formats.includes('text/uri-list')) {
+    const payload = electronClipboard.read('text/uri-list');
+    for (const line of payload.split('\n')) {
+      const url = line.trim();
+      if (url && !url.startsWith('#') && url.startsWith('file://')) {
+        return url;
+      }
+    }
+  }
+
+  return null;
+}
+
+function clipboardFileUrlToPath(url: string): string | null {
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeDroppedImageName(name: string | undefined): string {
+  const base = (name ?? '')
+    // eslint-disable-next-line no-control-regex -- NUL cannot be allowed inside filesystem names.
+    .replace(/[\\/\x00]/g, '_')
+    .replace(/^\.+/u, '')
+    .trim()
+    .slice(0, 200);
+  const suffix = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+
+  if (base) {
+    return `parallel-code-drop-${suffix}-${base}`;
+  }
+
+  return `parallel-code-drop-${suffix}.png`;
+}
+
+function getBase64DecodedByteLength(data: string): number {
+  let padding = 0;
+  if (data.endsWith('==')) {
+    padding = 2;
+  } else if (data.endsWith('=')) {
+    padding = 1;
+  }
+
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+function createClipboardController(): ClipboardController {
   const clipboardImagePath = path.join(os.tmpdir(), 'parallel-code-clipboard.png');
 
-  return {
-    async saveClipboardImage(): Promise<string | null> {
-      try {
-        const image = electronClipboard.readImage();
-        if (image.isEmpty()) {
-          return null;
-        }
-
-        await fs.promises.writeFile(clipboardImagePath, image.toPNG());
-        return clipboardImagePath;
-      } catch {
+  async function saveClipboardImage(): Promise<string | null> {
+    try {
+      const image = electronClipboard.readImage();
+      if (image.isEmpty()) {
         return null;
       }
+
+      await fs.promises.writeFile(clipboardImagePath, image.toPNG());
+      return clipboardImagePath;
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    async resolveClipboardPaste() {
+      try {
+        const fileUrl = readClipboardFileUrl();
+        if (fileUrl) {
+          const filePath = clipboardFileUrlToPath(fileUrl);
+          if (filePath) {
+            return { kind: 'file', path: filePath };
+          }
+        }
+
+        const text = electronClipboard.readText();
+        if (text) {
+          return { kind: 'text', text };
+        }
+
+        const imagePath = await saveClipboardImage();
+        if (imagePath) {
+          return { kind: 'image', path: imagePath };
+        }
+      } catch {
+        return { kind: 'empty' };
+      }
+
+      return { kind: 'empty' };
+    },
+
+    saveClipboardImage,
+
+    async saveDroppedImage(args: { data: string; name?: string }): Promise<string | null> {
+      const decodedBytes = getBase64DecodedByteLength(args.data);
+      if (decodedBytes < 0 || decodedBytes > MAX_DROPPED_IMAGE_BYTES) {
+        return null;
+      }
+
+      const imagePath = path.join(os.tmpdir(), sanitizeDroppedImageName(args.name));
+      await fs.promises.writeFile(imagePath, Buffer.from(args.data, 'base64'));
+      return imagePath;
     },
   };
 }

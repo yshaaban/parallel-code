@@ -50,6 +50,12 @@ export function moveActiveTask(direction: 'left' | 'right'): void {
   setTaskFocusedPanel(activeTaskId, getTaskFocusedPanel(activeTaskId));
 }
 
+export function jumpToTask(index: number): void {
+  const nextTaskId = store.taskOrder[index];
+  if (!nextTaskId) return;
+  setActiveTask(nextTaskId);
+}
+
 export function toggleNewTaskDialog(show?: boolean): void {
   const shouldShow = show ?? !store.showNewTaskDialog;
   if (!shouldShow) {

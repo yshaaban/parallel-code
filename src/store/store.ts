@@ -50,6 +50,7 @@ export {
   navigateTask,
   navigateAgent,
   moveActiveTask,
+  jumpToTask,
   toggleNewTaskDialog,
 } from './navigation';
 export {
@@ -136,6 +137,7 @@ export {
   setShowPlans,
   setTerminalHighLoadMode,
   setTaskNotificationsEnabled,
+  setVerboseLogging,
   setInactiveColumnOpacity,
   setEditorCommand,
   setHydraForceDispatchFromPromptPanel,

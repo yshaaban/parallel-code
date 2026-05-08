@@ -270,27 +270,33 @@ export interface RendererInvokeRequestMap {
   };
 
   [IPC.GetChangedFiles]: {
+    baseBranch?: string;
     worktreePath: string;
   };
   [IPC.GetChangedFilesFromBranch]: {
+    baseBranch?: string;
     branchName: string;
     projectRoot: string;
   };
   [IPC.GetFileDiff]: {
+    baseBranch?: string;
     filePath: string;
     status?: ChangedFile['status'];
     worktreePath: string;
   };
   [IPC.GetFileDiffFromBranch]: {
+    baseBranch?: string;
     branchName: string;
     filePath: string;
     projectRoot: string;
     status?: ChangedFile['status'];
   };
   [IPC.GetAllFileDiffs]: {
+    baseBranch?: string;
     worktreePath: string;
   };
   [IPC.GetAllFileDiffsFromBranch]: {
+    baseBranch?: string;
     branchName: string;
     projectRoot: string;
   };
@@ -301,12 +307,15 @@ export interface RendererInvokeRequestMap {
     projectRoot: string;
   };
   [IPC.GetWorktreeStatus]: {
+    baseBranch?: string;
     worktreePath: string;
   };
   [IPC.CheckMergeStatus]: {
+    baseBranch?: string;
     worktreePath: string;
   };
   [IPC.MergeTask]: {
+    baseBranch?: string;
     branchName: string;
     cleanup?: boolean;
     controllerId?: string;
@@ -317,6 +326,7 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetBranchLog]: {
+    baseBranch?: string;
     worktreePath: string;
   };
   [IPC.PushTask]: {
@@ -336,6 +346,7 @@ export interface RendererInvokeRequestMap {
     requestId: string;
   };
   [IPC.RebaseTask]: {
+    baseBranch?: string;
     controllerId?: string;
     taskId?: string;
     worktreePath: string;
@@ -355,6 +366,7 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetProjectDiff]: {
+    baseBranch?: string;
     mode: ReviewDiffMode;
     worktreePath: string;
   };
@@ -466,7 +478,20 @@ export interface RendererInvokeRequestMap {
     relativePath: string;
     worktreePath: string;
   };
+  [IPC.ResolveClipboardPaste]: undefined;
   [IPC.SaveClipboardImage]: undefined;
+  [IPC.SaveDroppedImage]: {
+    data: string;
+    name?: string;
+  };
+  [IPC.LogFromRenderer]: {
+    category: string;
+    ctx?: Record<string, unknown>;
+    level: 'debug' | 'error' | 'info' | 'warn';
+    level_min: 'debug' | 'error' | 'info' | 'warn';
+    msg: string;
+    ts: number;
+  };
 }
 
 export interface RendererInvokeResponseMap {
@@ -600,7 +625,14 @@ export interface RendererInvokeResponseMap {
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
   [IPC.ReadMarkdownFile]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.ResolveClipboardPaste]:
+    | { kind: 'empty' }
+    | { kind: 'file'; path: string }
+    | { kind: 'image'; path: string }
+    | { kind: 'text'; text: string };
   [IPC.SaveClipboardImage]: string | null;
+  [IPC.SaveDroppedImage]: string | null;
+  [IPC.LogFromRenderer]: undefined;
   [IPC.GetNotificationCapability]: boolean;
   [IPC.ShowNotification]: undefined;
 }

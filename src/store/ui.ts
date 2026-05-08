@@ -111,6 +111,10 @@ export function setTaskNotificationsEnabled(enabled: boolean): void {
   setStore('taskNotificationsPreferenceInitialized', true);
 }
 
+export function setVerboseLogging(enabled: boolean): void {
+  setStore('verboseLogging', enabled);
+}
+
 export function setInactiveColumnOpacity(opacity: number): void {
   setStore('inactiveColumnOpacity', Math.round(Math.max(0.3, Math.min(1.0, opacity)) * 100) / 100);
 }

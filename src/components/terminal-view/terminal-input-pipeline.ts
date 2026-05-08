@@ -51,12 +51,13 @@ import {
 
 const INPUT_RETRY_DELAY_MS = 50;
 const MAX_CONCURRENT_INPUT_BATCHES = 16;
-const MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES = 3;
+const MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES = MAX_CONCURRENT_INPUT_BATCHES;
 const MAX_INITIAL_INTERACTIVE_SEND_BATCH_CHARS = 4;
 const RESIZE_FLUSH_DELAY_MS = 48;
 const ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS = 120;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
+const KEYBOARD_TRACE_START_MAX_AGE_MS = 250;
 const INPUT_TRACE_TEXT_DECODER = new TextDecoder();
 
 interface QueuedInputChunk {
@@ -77,6 +78,19 @@ interface InFlightInputBatch {
   startedAtMs: number;
   status: 'accepted' | 'sending';
   traceEchoText: string | null;
+}
+
+interface KeyboardTraceEventLike {
+  altKey: boolean;
+  ctrlKey: boolean;
+  key: string;
+  metaKey: boolean;
+  shiftKey: boolean;
+}
+
+interface PendingKeyboardTraceStart {
+  event: KeyboardTraceEventLike;
+  startedAtMs: number;
 }
 
 interface TerminalGeometry {
@@ -123,7 +137,7 @@ export interface TerminalInputPipeline {
   handleTerminalData(data: string): void;
   handleTerminalResize(cols: number, rows: number): void;
   isResizeTransactionPending(): boolean;
-  recordKeyboardTraceStart(): void;
+  recordKeyboardTraceStart(event: KeyboardTraceEventLike): void;
   requestInputTakeover(): Promise<boolean>;
   setNextProgrammaticInputTrace(data: string): void;
 }
@@ -188,6 +202,82 @@ function getTraceEchoText(data: string): string | null {
   return printableText.length > 0 ? printableText : null;
 }
 
+function getControlTracePrefix(event: KeyboardTraceEventLike): string | null {
+  if (!event.ctrlKey || event.altKey || event.metaKey) {
+    return null;
+  }
+
+  const normalizedKey = event.key.toLowerCase();
+  if (normalizedKey.length === 1 && normalizedKey >= 'a' && normalizedKey <= 'z') {
+    return String.fromCharCode(normalizedKey.charCodeAt(0) - 96);
+  }
+
+  switch (normalizedKey) {
+    case '[':
+      return '\x1b';
+    case '\\':
+      return '\x1c';
+    case ']':
+      return '\x1d';
+    case '^':
+    case '6':
+      return '\x1e';
+    case '_':
+    case '-':
+      return '\x1f';
+    default:
+      return null;
+  }
+}
+
+function getSingleCharacterKeyInput(key: string): string | null {
+  return key.length === 1 ? key : null;
+}
+
+function getKeyboardTraceInputPrefix(event: KeyboardTraceEventLike): string | null {
+  const controlPrefix = getControlTracePrefix(event);
+  if (controlPrefix !== null) {
+    return controlPrefix;
+  }
+
+  if (event.ctrlKey || event.metaKey) {
+    return null;
+  }
+
+  switch (event.key) {
+    case 'Backspace':
+      return '\x7f';
+    case 'Enter':
+      return '\r';
+    case 'Escape':
+      return '\x1b';
+    case 'Tab':
+      return '\t';
+    default:
+      break;
+  }
+
+  if (event.altKey) {
+    const keyInput = getSingleCharacterKeyInput(event.key);
+    return keyInput === null ? null : `\x1b${keyInput}`;
+  }
+
+  return getSingleCharacterKeyInput(event.key);
+}
+
+function doesKeyboardTraceMatchInput(
+  traceStart: PendingKeyboardTraceStart,
+  data: string,
+  nowMs: number,
+): boolean {
+  if (nowMs - traceStart.startedAtMs > KEYBOARD_TRACE_START_MAX_AGE_MS) {
+    return false;
+  }
+
+  const prefix = getKeyboardTraceInputPrefix(traceStart.event);
+  return prefix !== null && data.startsWith(prefix);
+}
+
 export function createTerminalInputPipeline(
   options: CreateTerminalInputPipelineOptions,
 ): TerminalInputPipeline {
@@ -199,7 +289,7 @@ export function createTerminalInputPipeline(
   let pendingInputStartedAtMs = -1;
   let pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
   let pendingInputKind: TerminalInputTraceKind = 'interactive';
-  const pendingKeyboardTraceStarts: number[] = [];
+  const pendingKeyboardTraceStarts: PendingKeyboardTraceStart[] = [];
   let nextProgrammaticInputTrace: {
     inputKind: TerminalInputTraceKind;
     startedAtMs: number;
@@ -453,6 +543,22 @@ export function createTerminalInputPipeline(
     scheduleInputFlush(INPUT_RETRY_DELAY_MS);
   }
 
+  function takeKeyboardTraceStartForData(data: string): number | null {
+    const nowMs = getTerminalTraceTimestampMs();
+    while (pendingKeyboardTraceStarts.length > 0) {
+      const traceStart = pendingKeyboardTraceStarts.shift();
+      if (!traceStart) {
+        continue;
+      }
+
+      if (doesKeyboardTraceMatchInput(traceStart, data, nowMs)) {
+        return traceStart.startedAtMs;
+      }
+    }
+
+    return null;
+  }
+
   function takeInputTraceContext(data: string): {
     inputKind: TerminalInputTraceKind;
     startedAtMs: number;
@@ -464,7 +570,7 @@ export function createTerminalInputPipeline(
     }
 
     const startedAtMs = hasTerminalTraceClockAlignment()
-      ? (pendingKeyboardTraceStarts.shift() ?? getTerminalTraceTimestampMs())
+      ? (takeKeyboardTraceStartForData(data) ?? getTerminalTraceTimestampMs())
       : -1;
     return {
       inputKind: classifyTerminalInputTraceKind(data),
@@ -1203,8 +1309,17 @@ export function createTerminalInputPipeline(
     isResizeTransactionPending(): boolean {
       return resizeState.kind !== 'idle';
     },
-    recordKeyboardTraceStart(): void {
-      pendingKeyboardTraceStarts.push(getTerminalTraceTimestampMs());
+    recordKeyboardTraceStart(event: KeyboardTraceEventLike): void {
+      pendingKeyboardTraceStarts.push({
+        event: {
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          key: event.key,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+        },
+        startedAtMs: getTerminalTraceTimestampMs(),
+      });
       while (pendingKeyboardTraceStarts.length > 64) {
         pendingKeyboardTraceStarts.shift();
       }

@@ -46,8 +46,16 @@ export interface ShellController {
   openInEditor: (editorCommand: string, worktreePath: string) => Promise<void>;
 }
 
+export type ClipboardPasteResult =
+  | { kind: 'empty' }
+  | { kind: 'file'; path: string }
+  | { kind: 'image'; path: string }
+  | { kind: 'text'; text: string };
+
 export interface ClipboardController {
+  resolveClipboardPaste?: () => Promise<ClipboardPasteResult>;
   saveClipboardImage: () => Promise<string | null>;
+  saveDroppedImage?: (args: { data: string; name?: string }) => Promise<string | null>;
 }
 
 export interface HandlerContext extends StorageEnv {

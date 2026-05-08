@@ -73,6 +73,7 @@ export function createInitialAppStore(): AppStore {
     terminalHighLoadMode: getInitialTerminalHighLoadModeEnabled(),
     taskNotificationsEnabled: DEFAULT_TASK_NOTIFICATIONS_ENABLED,
     taskNotificationsPreferenceInitialized: true,
+    verboseLogging: false,
     inactiveColumnOpacity: 0.6,
     editorCommand: '',
     hydraCommand: '',

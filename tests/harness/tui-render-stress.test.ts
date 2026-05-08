@@ -11,7 +11,13 @@ const FIXTURE_ENTRY = path.resolve(PROJECT_ROOT, 'scripts', 'fixtures', 'tui-ren
 
 const activeChildren = new Set<ReturnType<typeof spawn>>();
 
-function spawnFixture(args: string[]) {
+interface SpawnedFixture {
+  child: ReturnType<typeof spawn>;
+  getStderr: () => string;
+  getStdout: () => string;
+}
+
+function spawnFixture(args: string[]): SpawnedFixture {
   const child = spawn(process.execPath, [FIXTURE_ENTRY, ...args], {
     cwd: PROJECT_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -78,7 +84,7 @@ describe('tui-render-stress fixture', () => {
     const fixture = spawnFixture(['control-heavy', '256', '96', '32', '8', '0']);
 
     try {
-      const stdout = await waitForOutputMatch(fixture.getStdout, /control redraw fixture ready/u);
+      const stdout = await waitForOutputMatch(fixture.getStdout, /control-redraw fixture/u);
 
       expect(stdout).toContain('\u001b[?1049h');
       expect(stdout).toMatch(new RegExp(String.raw`\u001b\[[0-9;]*H`, 'u'));
@@ -97,7 +103,10 @@ describe('tui-render-stress fixture', () => {
     const fixture = spawnFixture(['progress-redraw', '256', '96', '32', '8', '0']);
 
     try {
-      const stdout = await waitForOutputMatch(fixture.getStdout, /progress redraw fixture ready/u);
+      const stdout = await waitForOutputMatch(
+        fixture.getStdout,
+        /carriage-return progress redraw pressure/u,
+      );
 
       expect(stdout).toContain('\u001b[?1049h');
       expect(stdout).toContain('\r\u001b[2K');
@@ -114,7 +123,7 @@ describe('tui-render-stress fixture', () => {
     const fixture = spawnFixture(['prompt-middle', '256', '96', '32', '8', '0']);
 
     try {
-      const stdout = await waitForOutputMatch(fixture.getStdout, /prompt middle fixture ready/u);
+      const stdout = await waitForOutputMatch(fixture.getStdout, /input>/u);
 
       expect(stdout).toContain('\u001b[?1049h');
       expect(stdout).toContain('\u001b[s');
@@ -134,7 +143,7 @@ describe('tui-render-stress fixture', () => {
     try {
       const stdout = await waitForOutputMatch(
         fixture.getStdout,
-        /save-restore resize fixture ready/u,
+        /resize-friendly terminal repaint/u,
       );
 
       expect(stdout).toContain('\u001b[?1049h');

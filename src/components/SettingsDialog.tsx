@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
+import { For, Show, createEffect, createMemo, createUniqueId, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { isElectronRuntime } from '../lib/browser-auth';
@@ -25,6 +25,7 @@ import {
   setShowPlans,
   setTerminalHighLoadMode,
   setTaskNotificationsEnabled,
+  setVerboseLogging,
   setInactiveColumnOpacity,
   setEditorCommand,
   setHydraForceDispatchFromPromptPanel,
@@ -119,6 +120,7 @@ function getTaskNotificationSettingState(
 }
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const fonts = createMemo<TerminalFont[]>(() => {
     const available = getAvailableTerminalFonts();
     // Always include the currently selected font so it stays visible even if detection misses it
@@ -170,6 +172,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       onClose={props.onClose}
       width="640px"
       zIndex={1100}
+      labelledBy={titleId}
       panelStyle={{ 'max-width': 'calc(100vw - 32px)', padding: '24px', gap: '18px' }}
     >
       <DialogHeader
@@ -192,6 +195,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
         }
         onClose={props.onClose}
         title="Settings"
+        titleId={titleId}
       />
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
@@ -499,6 +503,37 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             CLI command to open worktree folders. Click the path bar in a task to open it.
           </span>
         </div>
+      </div>
+
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+        <SectionLabel>Diagnostics</SectionLabel>
+        <label
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '10px',
+            cursor: 'pointer',
+            padding: '8px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <input
+            type="checkbox"
+            aria-label="Verbose logging"
+            checked={store.verboseLogging}
+            onChange={(event) => setVerboseLogging(event.currentTarget.checked)}
+            style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+          />
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>Verbose logging</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
+              Emits debug-level diagnostics that can include file paths, branch names, command
+              arguments, commit messages, IPC activity, and terminal lifecycle events.
+            </span>
+          </div>
+        </label>
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>

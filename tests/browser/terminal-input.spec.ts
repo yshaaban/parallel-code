@@ -8,6 +8,10 @@ import {
   measureTypedTextTrace,
   warmTerminalInputTracing,
 } from './harness/terminal-input-tracing.js';
+import type {
+  TerminalInputTraceDiagnosticsSnapshot,
+  TerminalInputTraceSample,
+} from '../../src/domain/terminal-input-tracing.js';
 import {
   createInteractiveNodeScenario,
   createPromptReadyScenario,
@@ -32,6 +36,45 @@ async function resetRendererInputDiagnostics(page: import('@playwright/test').Pa
   await page.evaluate(() => {
     window.__parallelCodeRendererRuntimeDiagnostics?.reset();
   });
+}
+
+function getLatestCompletedTraceStageMs(
+  snapshot: TerminalInputTraceDiagnosticsSnapshot,
+  readStage: (trace: TerminalInputTraceSample) => number | null,
+): number {
+  let latestStageMs: number | null = null;
+
+  for (const trace of snapshot.completedTraces) {
+    if (!trace.completed) {
+      continue;
+    }
+
+    const stageMs = readStage(trace);
+    if (stageMs === null) {
+      continue;
+    }
+
+    latestStageMs = latestStageMs === null ? stageMs : Math.max(latestStageMs, stageMs);
+  }
+
+  if (latestStageMs === null) {
+    throw new Error('Expected at least one completed terminal input trace with a stage timestamp');
+  }
+
+  return latestStageMs;
+}
+
+function getBurstCatchupAfterFinalInputMs(snapshot: TerminalInputTraceDiagnosticsSnapshot): number {
+  const latestInputStartedAtMs = getLatestCompletedTraceStageMs(
+    snapshot,
+    (trace) => trace.stages.startedAtMs,
+  );
+  const latestOutputRenderedAtMs = getLatestCompletedTraceStageMs(
+    snapshot,
+    (trace) => trace.stages.outputRenderedAtMs,
+  );
+
+  return latestOutputRenderedAtMs - latestInputStartedAtMs;
 }
 
 async function waitForNewRunningAgentId(
@@ -106,11 +149,16 @@ test.describe('browser-lab terminal input latency', () => {
 
     const snapshot = await measureTypedTextTrace(browserLab, page, request, 'latencyprobe', {
       focusTerminal: false,
-      minimumCount: 2,
+      minimumCount: 12,
     });
-    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    const burstCatchupMs = getBurstCatchupAfterFinalInputMs(snapshot);
+
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(12);
     expect(snapshot.droppedTraces).toBe(0);
-    expect(snapshot.summary.endToEndMs.max).toBeLessThan(40);
+    expect(snapshot.summary.clientBufferMs.max).toBeLessThan(1);
+    expect(snapshot.summary.clientSendMs.max).toBeLessThan(1);
+    expect(snapshot.summary.renderMs.max).toBeLessThan(5);
+    expect(burstCatchupMs).toBeLessThan(40);
   });
 
   test('keeps sustained raw-browser key hold responsive without building a large client backlog', async ({

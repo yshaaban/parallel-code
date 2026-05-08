@@ -234,6 +234,8 @@ export function applyLoadedStateJson(json: string): boolean {
         ? getPersistedTaskNotificationsEnabled(raw)
         : DEFAULT_TASK_NOTIFICATIONS_ENABLED;
       storeState.taskNotificationsPreferenceInitialized = true;
+      storeState.verboseLogging =
+        electronRuntime && typeof raw.verboseLogging === 'boolean' ? raw.verboseLogging : false;
 
       storeState.inactiveColumnOpacity = electronRuntime
         ? normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity)

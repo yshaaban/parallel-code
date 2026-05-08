@@ -4,6 +4,7 @@ import {
   looksLikeTrustDialogInVisibleTail,
 } from '../lib/prompt-detection';
 import { invoke } from '../lib/ipc';
+import { warn as logWarn } from '../lib/log';
 import { runWithAgentTaskCommandLease } from '../app/task-command-lease';
 import { store } from './core';
 
@@ -90,7 +91,9 @@ export function createAutoTrustController(callbacks: AutoTrustCallbacks): AutoTr
           await invoke(IPC.WriteToAgent, { agentId, data: '\r' });
         },
         { confirmTakeover: false },
-      ).catch(() => {});
+      ).catch((error) => {
+        logWarn('tasks.autoTrust', 'failed to accept trust prompt', { agentId, error });
+      });
 
       const cooldown = setTimeout(() => {
         autoTrustCooldowns.delete(agentId);

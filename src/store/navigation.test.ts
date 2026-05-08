@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStore, store } from './core';
 import { registerFocusFn, resetFocusStateForTests } from './focus';
-import { moveActiveTask } from './navigation';
+import { jumpToTask, moveActiveTask } from './navigation';
 import {
   createTestAgent,
   createTestProject,
@@ -56,5 +56,58 @@ describe('moveActiveTask', () => {
     expect(focusMock).toHaveBeenCalledTimes(1);
     expect(store.taskOrder).toEqual(['task-2', 'task-1']);
     expect(store.activeTaskId).toBe('task-1');
+  });
+
+  it('jumps to a visible task by task order index', () => {
+    const project = createTestProject();
+    const firstTask = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      projectId: project.id,
+    });
+    const secondTask = createTestTask({
+      agentIds: ['agent-2'],
+      id: 'task-2',
+      projectId: project.id,
+    });
+
+    setStore('projects', [project]);
+    setStore('tasks', {
+      'task-1': firstTask,
+      'task-2': secondTask,
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-2' }),
+    });
+    setStore('taskOrder', ['task-1', 'task-2']);
+
+    jumpToTask(1);
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.activeAgentId).toBe('agent-2');
+  });
+
+  it('does not jump when the task order index is out of bounds', () => {
+    const project = createTestProject();
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      projectId: project.id,
+    });
+
+    setStore('projects', [project]);
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+    });
+    setStore('taskOrder', ['task-1']);
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+
+    jumpToTask(8);
+
+    expect(store.activeTaskId).toBe('task-1');
+    expect(store.activeAgentId).toBe('agent-1');
   });
 });

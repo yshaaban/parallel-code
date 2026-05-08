@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { resolveUserShell } from './user-shell.js';
+import { applyLoginShellEnvironment, resolveUserShell } from './user-shell.js';
 
 const mockUserInfo = {
   gid: 20,
@@ -81,5 +81,111 @@ describe('resolveUserShell', () => {
     });
 
     expect(shell).toBe('/bin/sh');
+  });
+});
+
+describe('applyLoginShellEnvironment', () => {
+  function createExecFileSync(output: string): typeof import('child_process').execFileSync {
+    return vi.fn(() => output) as unknown as typeof import('child_process').execFileSync;
+  }
+
+  it('merges the login shell environment into the current process environment', () => {
+    const env = {
+      PATH: '/usr/bin:/bin',
+    };
+    const execFileSync = createExecFileSync(
+      'noise before__PCODE_ENV__PATH=/opt/homebrew/bin:/usr/bin\0SSH_AUTH_SOCK=/tmp/agent.sock\0__PCODE_ENV__noise after',
+    );
+
+    applyLoginShellEnvironment({
+      env,
+      execFileSync,
+      platform: 'darwin',
+      resolveShell: () => '/bin/zsh',
+    });
+
+    expect(execFileSync).toHaveBeenCalledWith(
+      '/bin/zsh',
+      [
+        '-ilc',
+        `printf '__PCODE_ENV__' && perl -e 'print "$_=$ENV{$_}\\0" for keys %ENV' && printf '__PCODE_ENV__'`,
+      ],
+      {
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 5000,
+      },
+    );
+    expect(env).toEqual({
+      PATH: '/opt/homebrew/bin:/usr/bin',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+    });
+  });
+
+  it('does not overwrite environment variables owned by the Electron runtime', () => {
+    const env = {
+      NODE_OPTIONS: '--original',
+      PATH: '/usr/bin:/bin',
+    };
+
+    applyLoginShellEnvironment({
+      env,
+      execFileSync: createExecFileSync(
+        '__PCODE_ENV__NODE_OPTIONS=--from-shell\0LD_PRELOAD=/tmp/libhook.so\0PATH=/custom/bin\0__PCODE_ENV__',
+      ),
+      platform: 'linux',
+      resolveShell: () => '/bin/bash',
+    });
+
+    expect(env).toEqual({
+      NODE_OPTIONS: '--original',
+      PATH: '/custom/bin',
+    });
+  });
+
+  it('does nothing on Windows', () => {
+    const env = {
+      PATH: 'C:\\Windows\\System32',
+    };
+    const execFileSync = createExecFileSync(
+      '__PCODE_ENV__PATH=C:\\Users\\test\\bin\0__PCODE_ENV__',
+    );
+
+    applyLoginShellEnvironment({
+      env,
+      execFileSync,
+      platform: 'win32',
+      resolveShell: () => 'cmd.exe',
+    });
+
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(env).toEqual({
+      PATH: 'C:\\Windows\\System32',
+    });
+  });
+
+  it('warns and keeps the original environment when login shell capture fails', () => {
+    const env = {
+      PATH: '/usr/bin:/bin',
+    };
+    const error = new Error('shell failed');
+    const warn = vi.fn();
+    const execFileSync = vi.fn(() => {
+      throw error;
+    }) as unknown as typeof import('child_process').execFileSync;
+
+    applyLoginShellEnvironment({
+      env,
+      execFileSync,
+      platform: 'linux',
+      resolveShell: () => '/bin/bash',
+      warn,
+    });
+
+    expect(env).toEqual({
+      PATH: '/usr/bin:/bin',
+    });
+    expect(warn).toHaveBeenCalledWith('[fixEnv] Failed to resolve login shell environment:', error);
   });
 });

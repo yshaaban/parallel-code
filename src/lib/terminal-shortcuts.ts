@@ -18,6 +18,7 @@ export type TerminalShortcutAction =
   | { kind: 'block'; preventDefault: boolean }
   | { kind: 'copy'; preventDefault: true }
   | { kind: 'paste'; preventDefault: true }
+  | { kind: 'scrollback'; preventDefault: true; unit: 'line' | 'page'; delta: -1 | 1 }
   | { kind: 'send-input'; data: string; preventDefault: true };
 
 const ALLOW_TERMINAL_SHORTCUT: TerminalShortcutAction = {
@@ -81,6 +82,9 @@ export function getTerminalShortcutAction(
     !event.altKey &&
     event.shiftKey &&
     key === 'v';
+  const isScrollbackShortcut = context.isMac
+    ? event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey
+    : event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
 
   if (isShiftEnter) {
     return {
@@ -105,6 +109,19 @@ export function getTerminalShortcutAction(
         kind: 'send-input',
         preventDefault: true,
       };
+    }
+  }
+
+  if (isScrollbackShortcut) {
+    switch (key) {
+      case 'arrowup':
+        return { delta: -1, kind: 'scrollback', preventDefault: true, unit: 'line' };
+      case 'arrowdown':
+        return { delta: 1, kind: 'scrollback', preventDefault: true, unit: 'line' };
+      case 'pageup':
+        return { delta: -1, kind: 'scrollback', preventDefault: true, unit: 'page' };
+      case 'pagedown':
+        return { delta: 1, kind: 'scrollback', preventDefault: true, unit: 'page' };
     }
   }
 

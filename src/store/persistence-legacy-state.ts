@@ -29,6 +29,7 @@ export interface LegacyPersistedState {
   taskNotificationsEnabled?: unknown;
   taskNotificationsPreferenceInitialized?: unknown;
   desktopNotificationsEnabled?: unknown;
+  verboseLogging?: unknown;
   inactiveColumnOpacity?: unknown;
   hasSeenDesktopIntro?: unknown;
   editorCommand?: unknown;

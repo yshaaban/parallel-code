@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Allowlist of valid IPC channels.
 // IMPORTANT: This list MUST stay in sync with the IPC enum in electron/ipc/channels.ts.
@@ -125,7 +125,11 @@ const ALLOWED_CHANNELS = new Set([
   'read_plan_content',
   'read_markdown_file',
   // Clipboard
+  'resolve_clipboard_paste',
   'save_clipboard_image',
+  'save_dropped_image',
+  // Logging
+  'log_from_renderer',
   // Notifications
   'get_notification_capability',
   'show_notification',
@@ -160,5 +164,12 @@ contextBridge.exposeInMainWorld('electron', {
       if (!isAllowedChannel(channel)) throw new Error(`Blocked IPC channel: ${channel}`);
       ipcRenderer.removeAllListeners(channel);
     },
+  },
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
   },
 });

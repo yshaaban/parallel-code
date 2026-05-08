@@ -250,6 +250,7 @@ export function buildPersistedState(): PersistedState {
     ...(terminals ? { terminals } : {}),
     ...(store.editorCommand ? { editorCommand: store.editorCommand } : {}),
     ...(store.hydraCommand ? { hydraCommand: store.hydraCommand } : {}),
+    ...(store.verboseLogging ? { verboseLogging: true } : {}),
   };
 
   if (!isElectronRuntime()) {

@@ -241,6 +241,70 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('does not reuse stale keyboard trace starts for later terminal input', async () => {
+    setTerminalTraceClockAlignment(0, 0);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    const staleStartedAtMs = performance.timeOrigin + performance.now();
+    pipeline.recordKeyboardTraceStart({
+      altKey: false,
+      ctrlKey: true,
+      key: 'u',
+      metaKey: false,
+      shiftKey: false,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+
+    const freshStartedAtFloorMs = performance.timeOrigin + performance.now();
+    pipeline.recordKeyboardTraceStart({
+      altKey: false,
+      ctrlKey: false,
+      key: 'x',
+      metaKey: false,
+      shiftKey: false,
+    });
+    pipeline.handleTerminalData('x');
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    const request = vi.mocked(sendTerminalInput).mock.calls[0]?.[0] as
+      | {
+          trace?: {
+            bufferedAtMs: number;
+            startedAtMs: number;
+          };
+        }
+      | undefined;
+
+    expect(request?.trace?.startedAtMs).not.toBe(staleStartedAtMs);
+    expect(request?.trace?.startedAtMs).toBeGreaterThanOrEqual(freshStartedAtFloorMs);
+    expect(
+      (request?.trace?.bufferedAtMs ?? Number.POSITIVE_INFINITY) -
+        (request?.trace?.startedAtMs ?? 0),
+    ).toBeLessThan(5);
+
+    pipeline.cleanup();
+  });
+
   it('marks split interactive echoes at their earliest visible match instead of waiting for a final suffix', async () => {
     setTerminalTraceClockAlignment(0, 0);
 

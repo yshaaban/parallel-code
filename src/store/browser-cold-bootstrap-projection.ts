@@ -107,6 +107,7 @@ function resetStoreForBrowserColdBootstrap(
   storeState.taskNotificationsEnabled = initialStore.taskNotificationsEnabled;
   storeState.taskNotificationsPreferenceInitialized =
     initialStore.taskNotificationsPreferenceInitialized;
+  storeState.verboseLogging = initialStore.verboseLogging;
   storeState.inactiveColumnOpacity = initialStore.inactiveColumnOpacity;
   storeState.editorCommand = initialStore.editorCommand;
   storeState.remoteAccess = createDisabledRemoteAccessStatus(initialStore.remoteAccess.port);

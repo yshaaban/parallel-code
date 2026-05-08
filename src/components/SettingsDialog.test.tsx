@@ -126,6 +126,16 @@ describe('SettingsDialog', () => {
     expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
   });
 
+  it('updates verbose logging from diagnostics settings', () => {
+    setStore('verboseLogging', false);
+
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByLabelText('Verbose logging'));
+
+    expect(store.verboseLogging).toBe(true);
+  });
+
   it('keeps the browser task notification toggle interactive before permission is granted', () => {
     Object.defineProperty(window, 'electron', {
       configurable: true,

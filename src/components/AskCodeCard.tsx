@@ -3,6 +3,7 @@ import { Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 import type { AskAboutCodeSession } from '../app/task-ai-workflows';
 import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 import { assertNever } from '../lib/assert-never';
+import { warn as logWarn } from '../lib/log';
 import { buildAskAboutCodePrompt } from '../lib/review-prompts';
 import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';
@@ -73,7 +74,10 @@ export function AskCodeCard(props: AskCodeCardProps): JSX.Element {
       return;
     }
 
-    await activeSession.cancel().catch(() => {});
+    const requestId = props.requestId;
+    await activeSession.cancel().catch((error) => {
+      logWarn('askCode', 'cancel failed', { requestId, error });
+    });
   }
 
   async function dismiss(): Promise<void> {

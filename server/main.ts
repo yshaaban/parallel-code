@@ -5,6 +5,7 @@ import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from '../electron/ipc/runtime-diagnostics.js';
+import { installStdioEpipeGuard } from '../electron/stdio.js';
 import { startBrowserServer } from './browser-server.js';
 import {
   assertBrowserServerBuildArtifactsAreFresh,
@@ -19,6 +20,7 @@ import { getServerPort } from './server-port.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+installStdioEpipeGuard();
 loadEnvFile(path.resolve(__dirname, '..', '..', '.env'));
 const distDir = path.resolve(__dirname, '..', '..', 'dist');
 const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');

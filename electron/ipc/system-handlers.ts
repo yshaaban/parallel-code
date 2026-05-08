@@ -61,6 +61,7 @@ import { readMarkdownFileForWorktree } from './markdown-files.js';
 import { inspectArenaCompetitor } from './arena-competitors.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
 import { getServerStateBootstrap } from './server-state-bootstrap.js';
+import { handleRendererLogPayload } from '../log.js';
 import {
   getTaskCommandControllers,
   getTaskCommandControllerStateVersion,
@@ -611,7 +612,31 @@ export function createSystemIpcHandlers(
       return getRecentProjectPaths(homeDir, projectBaseDir);
     },
 
+    [IPC.ResolveClipboardPaste]: async () =>
+      context.clipboard?.resolveClipboardPaste?.() ?? { kind: 'empty' },
+
     [IPC.SaveClipboardImage]: async () => context.clipboard?.saveClipboardImage() ?? null,
+
+    [IPC.SaveDroppedImage]: defineIpcHandler<IPC.SaveDroppedImage>(
+      IPC.SaveDroppedImage,
+      async (args) => {
+        const request = args;
+        assertString(request.data, 'data');
+        assertOptionalString(request.name, 'name');
+        const saveRequest: { data: string; name?: string } = {
+          data: request.data,
+        };
+        if (request.name !== undefined) {
+          saveRequest.name = request.name;
+        }
+
+        return context.clipboard?.saveDroppedImage?.(saveRequest) ?? null;
+      },
+    ),
+
+    [IPC.LogFromRenderer]: defineIpcHandler<IPC.LogFromRenderer>(IPC.LogFromRenderer, (args) => {
+      handleRendererLogPayload(args);
+    }),
 
     [IPC.CloneGitRepo]: defineIpcHandler<IPC.CloneGitRepo>(IPC.CloneGitRepo, async (args) => {
       const request = args;

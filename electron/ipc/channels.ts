@@ -131,7 +131,12 @@ export enum IPC {
   ReadMarkdownFile = 'read_markdown_file',
 
   // Clipboard
+  ResolveClipboardPaste = 'resolve_clipboard_paste',
   SaveClipboardImage = 'save_clipboard_image',
+  SaveDroppedImage = 'save_dropped_image',
+
+  // Logging
+  LogFromRenderer = 'log_from_renderer',
 
   // Notifications
   GetNotificationCapability = 'get_notification_capability',

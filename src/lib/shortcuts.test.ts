@@ -73,4 +73,48 @@ describe('shortcuts', () => {
     cleanup();
     unregister();
   });
+
+  it('fires global task-position digit shortcuts with and without Shift', () => {
+    const handler = vi.fn();
+    const unregisterPlain = registerShortcut({
+      cmdOrCtrl: true,
+      global: true,
+      handler,
+      key: '1',
+    });
+    const unregisterShift = registerShortcut({
+      cmdOrCtrl: true,
+      global: true,
+      handler,
+      key: '2',
+      shift: true,
+    });
+    const cleanup = initShortcuts();
+
+    const plainEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: '1',
+      metaKey: true,
+    });
+    document.body.dispatchEvent(plainEvent);
+
+    const shiftEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'Digit2',
+      key: '@',
+      metaKey: true,
+      shiftKey: true,
+    });
+    document.body.dispatchEvent(shiftEvent);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(plainEvent.defaultPrevented).toBe(true);
+    expect(shiftEvent.defaultPrevented).toBe(true);
+
+    cleanup();
+    unregisterPlain();
+    unregisterShift();
+  });
 });

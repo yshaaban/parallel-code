@@ -60,6 +60,7 @@ declare global {
       getConnectionState: () => BrowserControlConnectionState;
     };
     electron?: {
+      getPathForFile?: (file: File) => string;
       ipcRenderer: {
         invoke: <TChannel extends RendererInvokeChannel>(
           channel: TChannel,

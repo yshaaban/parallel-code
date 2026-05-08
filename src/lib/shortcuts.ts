@@ -38,12 +38,24 @@ function matches(e: KeyboardEvent, s: Shortcut): boolean {
   const metaMatch = s.cmdOrCtrl || !e.metaKey;
 
   return (
-    e.key.toLowerCase() === s.key.toLowerCase() &&
+    keyMatches(e, s.key) &&
     ctrlMatch &&
     metaMatch &&
     !!e.altKey === !!s.alt &&
     !!e.shiftKey === !!s.shift
   );
+}
+
+function keyMatches(event: KeyboardEvent, shortcutKey: string): boolean {
+  if (event.key.toLowerCase() === shortcutKey.toLowerCase()) {
+    return true;
+  }
+
+  if (/^[0-9]$/u.test(shortcutKey)) {
+    return event.code === `Digit${shortcutKey}` || event.code === `Numpad${shortcutKey}`;
+  }
+
+  return false;
 }
 
 function isDialogOpen(): boolean {
