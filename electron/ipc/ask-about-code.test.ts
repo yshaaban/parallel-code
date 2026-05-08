@@ -86,6 +86,31 @@ describe('askAboutCode', () => {
     ]);
   });
 
+  it('routes minimax requests through the backend-only provider adapter', () => {
+    const proc = createSpawnProcess();
+    spawnMock.mockReturnValue(proc);
+
+    askAboutCode(
+      {
+        requestId: 'req-minimax',
+        prompt: 'Explain this code',
+        cwd: '/repo',
+        providerId: 'minimax',
+      },
+      () => {},
+    );
+
+    expect(validateCommandMock).toHaveBeenCalledWith('minimax');
+    expect(spawnMock).toHaveBeenCalledWith(
+      'minimax',
+      ['Explain this code'],
+      expect.objectContaining({
+        cwd: '/repo',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    );
+  });
+
   it('kills an active request when cancelled', () => {
     const proc = createSpawnProcess();
     spawnMock.mockReturnValue(proc);

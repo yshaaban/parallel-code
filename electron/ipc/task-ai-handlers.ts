@@ -3,7 +3,10 @@ import {
   cancelAskAboutCode,
   MAX_ASK_ABOUT_CODE_PROMPT_LENGTH,
 } from './ask-about-code.js';
-import type { AskAboutCodeMessage } from '../../src/domain/ask-about-code.js';
+import {
+  isAskAboutCodeProviderId,
+  type AskAboutCodeMessage,
+} from '../../src/domain/ask-about-code.js';
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
@@ -52,6 +55,12 @@ export function createTaskAiIpcHandlers(context: HandlerContext): Partial<Record
       assertString(request.requestId, 'requestId');
       assertString(request.prompt, 'prompt');
       assertString(request.cwd, 'cwd');
+      if (
+        request.providerId !== undefined &&
+        (typeof request.providerId !== 'string' || !isAskAboutCodeProviderId(request.providerId))
+      ) {
+        throw new BadRequestError('providerId must be one of: claude, minimax');
+      }
       assertNonEmptyString(request.requestId, 'requestId');
       assertNonEmptyString(request.prompt, 'prompt');
       assertStringMaxLength(request.requestId, 'requestId', MAX_ASK_ABOUT_CODE_REQUEST_ID_LENGTH);
@@ -65,6 +74,7 @@ export function createTaskAiIpcHandlers(context: HandlerContext): Partial<Record
           requestId: request.requestId,
           prompt: request.prompt,
           cwd: request.cwd,
+          ...(request.providerId !== undefined ? { providerId: request.providerId } : {}),
         },
         createOutputHandler(context, channelId),
       );

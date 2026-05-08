@@ -1,12 +1,16 @@
 import { spawn, type ChildProcess } from 'child_process';
 
-import type { AskAboutCodeMessage } from '../../src/domain/ask-about-code.js';
+import type {
+  AskAboutCodeMessage,
+  AskAboutCodeProviderId,
+} from '../../src/domain/ask-about-code.js';
 import { validateCommand } from './command-resolver.js';
 import { BadRequestError } from './errors.js';
 
 export interface AskAboutCodeRequest {
   cwd: string;
   prompt: string;
+  providerId?: AskAboutCodeProviderId;
   requestId: string;
 }
 
@@ -23,6 +27,55 @@ function createClaudeEnvironment(): NodeJS.ProcessEnv {
   delete nextEnvironment.CLAUDE_CODE_SESSION;
   delete nextEnvironment.CLAUDE_CODE_ENTRYPOINT;
   return nextEnvironment;
+}
+
+interface AskAboutCodeProviderLaunch {
+  args: string[];
+  command: string;
+  env: NodeJS.ProcessEnv;
+}
+
+function createClaudeProviderLaunch(prompt: string): AskAboutCodeProviderLaunch {
+  return {
+    command: 'claude',
+    args: [
+      '-p',
+      prompt,
+      '--output-format',
+      'text',
+      '--model',
+      'sonnet',
+      '--tools',
+      '',
+      '--no-session-persistence',
+      '--append-system-prompt',
+      'Answer concisely about the selected code. Use markdown.',
+    ],
+    env: createClaudeEnvironment(),
+  };
+}
+
+function createMinimaxProviderLaunch(prompt: string): AskAboutCodeProviderLaunch {
+  return {
+    command: process.env.PARALLEL_CODE_MINIMAX_COMMAND?.trim() || 'minimax',
+    args: [
+      ...(process.env.PARALLEL_CODE_MINIMAX_ARGS?.trim().split(/\s+/u).filter(Boolean) ?? []),
+      prompt,
+    ],
+    env: { ...process.env },
+  };
+}
+
+function resolveProviderLaunch(
+  providerId: AskAboutCodeProviderId,
+  prompt: string,
+): AskAboutCodeProviderLaunch {
+  switch (providerId) {
+    case 'claude':
+      return createClaudeProviderLaunch(prompt);
+    case 'minimax':
+      return createMinimaxProviderLaunch(prompt);
+  }
 }
 
 function clearRequestTimer(requestId: string): void {
@@ -70,29 +123,15 @@ export function askAboutCode(
   }
 
   cancelAskAboutCode(requestId);
-  validateCommand('claude');
+  const providerId = request.providerId ?? 'claude';
+  const launch = resolveProviderLaunch(providerId, prompt);
+  validateCommand(launch.command);
 
-  const proc = spawn(
-    'claude',
-    [
-      '-p',
-      prompt,
-      '--output-format',
-      'text',
-      '--model',
-      'sonnet',
-      '--tools',
-      '',
-      '--no-session-persistence',
-      '--append-system-prompt',
-      'Answer concisely about the selected code. Use markdown.',
-    ],
-    {
-      cwd,
-      env: createClaudeEnvironment(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  const proc = spawn(launch.command, launch.args, {
+    cwd,
+    env: launch.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   activeRequests.set(requestId, proc);
 

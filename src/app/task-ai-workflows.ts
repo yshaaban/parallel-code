@@ -1,5 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { AskAboutCodeMessage } from '../domain/ask-about-code';
+import type { AskAboutCodeMessage, AskAboutCodeProviderId } from '../domain/ask-about-code';
 import { invoke } from '../lib/ipc';
 import type { ReviewAnnotation } from './review-session';
 import { sendPrompt } from './task-workflows';
@@ -15,6 +15,7 @@ export async function startAskAboutCodeSession(
   prompt: string,
   cwd: string,
   onMessage: (message: AskAboutCodeMessage) => void,
+  providerId?: AskAboutCodeProviderId,
 ): Promise<AskAboutCodeSession> {
   const { channel, cleanup } = createTaskOutputChannelBinding(onMessage);
 
@@ -24,6 +25,7 @@ export async function startAskAboutCodeSession(
       prompt,
       cwd,
       onOutput: channel,
+      ...(providerId !== undefined ? { providerId } : {}),
     });
   } catch (error) {
     cleanup();

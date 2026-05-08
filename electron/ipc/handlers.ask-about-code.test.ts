@@ -60,6 +60,43 @@ describe('ask-about-code IPC handlers', () => {
     });
   });
 
+  it('accepts an explicit ask-about-code provider id', () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    handlers[IPC.AskAboutCode]?.({
+      requestId: 'request-1',
+      prompt: 'What does this do?',
+      cwd: '/tmp/project',
+      providerId: 'minimax',
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+    });
+
+    expect(askAboutCodeMock).toHaveBeenCalledWith(
+      {
+        requestId: 'request-1',
+        prompt: 'What does this do?',
+        cwd: '/tmp/project',
+        providerId: 'minimax',
+      },
+      expect.any(Function),
+    );
+  });
+
+  it('rejects unknown ask-about-code provider ids', () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    expect(() =>
+      handlers[IPC.AskAboutCode]?.({
+        requestId: 'request-1',
+        prompt: 'Question',
+        cwd: '/tmp/project',
+        providerId: 'other',
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+      }),
+    ).toThrow(/providerId must be one of/i);
+    expect(askAboutCodeMock).not.toHaveBeenCalled();
+  });
+
   it('routes ask-about-code cancellations through the backend service', () => {
     const handlers = createIpcHandlers(buildContext());
 
