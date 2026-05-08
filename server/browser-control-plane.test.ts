@@ -38,20 +38,83 @@ function setClientReadyState(client: WebSocket, readyState: number): void {
   (client as unknown as { readyState: number }).readyState = readyState;
 }
 
-function getStateBootstrapSnapshots(sent: unknown[]): unknown[] {
-  const bootstrapMessage = sent.find(
-    (message): message is { type: 'state-bootstrap'; snapshots: unknown[] } =>
-      typeof message === 'object' &&
-      message !== null &&
-      'type' in message &&
-      (message as { type?: unknown }).type === 'state-bootstrap',
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isStateBootstrapMessage(
+  message: unknown,
+): message is { snapshots: unknown[]; type: 'state-bootstrap' } {
+  return (
+    isObjectRecord(message) &&
+    message.type === 'state-bootstrap' &&
+    Array.isArray(message.snapshots)
   );
+}
+
+function getStateBootstrapSnapshots(sent: unknown[]): unknown[] {
+  const bootstrapMessage = sent.find(isStateBootstrapMessage);
 
   if (!bootstrapMessage) {
     throw new Error('Missing state-bootstrap message');
   }
 
   return bootstrapMessage.snapshots;
+}
+
+interface SequencedMessage {
+  seq: number;
+  type: string;
+}
+
+function isSequencedMessage(message: unknown): message is SequencedMessage {
+  return (
+    isObjectRecord(message) && typeof message.seq === 'number' && typeof message.type === 'string'
+  );
+}
+
+interface RemoteStatusMessage {
+  connectedClients: number;
+  peerClients: number;
+  type: 'remote-status';
+}
+
+function isRemoteStatusMessage(message: unknown): message is RemoteStatusMessage {
+  return (
+    isObjectRecord(message) &&
+    message.type === 'remote-status' &&
+    typeof message.connectedClients === 'number' &&
+    typeof message.peerClients === 'number'
+  );
+}
+
+function getSequencedMessages(sent: unknown[]): SequencedMessage[] {
+  return sent.filter(isSequencedMessage);
+}
+
+function findSentMessageIndex(
+  sent: unknown[],
+  predicate: (message: unknown) => boolean,
+  description: string,
+): number {
+  const index = sent.findIndex(predicate);
+  if (index === -1) {
+    throw new Error(`Missing sent message: ${description}`);
+  }
+
+  return index;
+}
+
+function findRemoteStatusMessageIndex(
+  sent: unknown[],
+  connectedClients: number,
+  description: string,
+): number {
+  return findSentMessageIndex(
+    sent,
+    (message) => isRemoteStatusMessage(message) && message.connectedClients === connectedClients,
+    description,
+  );
 }
 
 const activeControlPlanes: Array<ReturnType<typeof createBrowserControlPlane>> = [];
@@ -812,6 +875,76 @@ describe('browser control plane', () => {
     expect(controlPlane.getPeerPresenceSnapshots()).toEqual([]);
   });
 
+  it('keeps ownership and presence stable across repeated same-client reconnect churn', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    let activeSocket = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(activeSocket.client, 'client-a')).toBe(true);
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
+    controlPlane.updatePeerPresence(
+      activeSocket.client,
+      createPresenceUpdate({
+        activeTaskId: 'task-1',
+        displayName: 'Session 0',
+        focusedSurface: 'terminal',
+        visibility: 'visible',
+      }),
+    );
+
+    for (const cycle of [1, 2, 3, 4, 5]) {
+      const staleSocket = activeSocket;
+      activeSocket = createFakeClient();
+
+      expect(controlPlane.authenticateConnection(activeSocket.client, 'client-a')).toBe(true);
+      controlPlane.updatePeerPresence(
+        activeSocket.client,
+        createPresenceUpdate({
+          activeTaskId: 'task-1',
+          displayName: `Session ${cycle}`,
+          focusedSurface: 'terminal',
+          visibility: 'visible',
+        }),
+      );
+      controlPlane.cleanupClient(staleSocket.client);
+
+      expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+        action: 'type in the terminal',
+        controllerId: 'client-a',
+        taskId: 'task-1',
+        version: expect.any(Number),
+      });
+      expect(controlPlane.getPeerPresenceSnapshots()).toEqual([
+        expect.objectContaining({
+          activeTaskId: 'task-1',
+          clientId: 'client-a',
+          displayName: `Session ${cycle}`,
+          focusedSurface: 'terminal',
+          visibility: 'visible',
+        }),
+      ]);
+      expect(controlPlane.getRemoteStatus()).toEqual(
+        expect.objectContaining({
+          connectedClients: 1,
+          peerClients: 0,
+        }),
+      );
+    }
+
+    controlPlane.cleanupClient(activeSocket.client);
+    expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: expect.any(Number),
+    });
+    expect(controlPlane.getPeerPresenceSnapshots()).toEqual([]);
+  });
+
   it('prunes stale task ownership and presence when transport liveness drops without control-plane cleanup', async () => {
     vi.useFakeTimers();
     const controlPlane = createTrackedControlPlane({
@@ -928,6 +1061,98 @@ describe('browser control plane', () => {
         enabled: true,
         connectedClients: 1,
         peerClients: 0,
+      }),
+      version: expect.any(Number),
+    });
+  });
+
+  it('replays control events before authoritative bootstrap and sends fresh auth status', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    const firstSession = createFakeClient();
+    expect(controlPlane.authenticateConnection(firstSession.client, 'browser-client')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    firstSession.sent.length = 0;
+
+    controlPlane.broadcastControl({
+      type: 'task-event',
+      event: 'created',
+      name: 'Replay task',
+      taskId: 'task-1',
+    });
+    controlPlane.broadcastRemoteStatus();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const replayedMessages = getSequencedMessages(firstSession.sent);
+    const taskEvent = replayedMessages.find((message) => message.type === 'task-event');
+    if (!taskEvent) {
+      throw new Error('Expected a task-event control message before reconnect');
+    }
+    expect(taskEvent).toEqual(
+      expect.objectContaining({
+        seq: expect.any(Number),
+        type: 'task-event',
+      }),
+    );
+
+    const reconnectSession = createFakeClient();
+    expect(
+      controlPlane.authenticateConnection(reconnectSession.client, 'browser-client', taskEvent.seq),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const reconnectRemoteStatuses = reconnectSession.sent.filter(isRemoteStatusMessage);
+
+    expect(reconnectRemoteStatuses).toEqual([
+      expect.objectContaining({
+        connectedClients: 1,
+        type: 'remote-status',
+      }),
+      expect.objectContaining({
+        connectedClients: 2,
+        type: 'remote-status',
+      }),
+    ]);
+    const replayedRemoteStatusIndex = findRemoteStatusMessageIndex(
+      reconnectSession.sent,
+      1,
+      'replayed remote status',
+    );
+    const bootstrapIndex = findSentMessageIndex(
+      reconnectSession.sent,
+      isStateBootstrapMessage,
+      'authoritative bootstrap',
+    );
+    const freshRemoteStatusIndex = findRemoteStatusMessageIndex(
+      reconnectSession.sent,
+      2,
+      'fresh auth remote status',
+    );
+
+    expect(replayedRemoteStatusIndex).toBeLessThan(bootstrapIndex);
+    expect(freshRemoteStatusIndex).toBeGreaterThan(bootstrapIndex);
+    expect(reconnectSession.sent).toContainEqual({
+      list: [],
+      type: 'agents',
+    });
+    expect(reconnectSession.sent).toContainEqual(
+      expect.objectContaining({
+        type: 'state-bootstrap',
+      }),
+    );
+    expect(getStateBootstrapSnapshots(reconnectSession.sent)).toContainEqual({
+      category: 'remote-status',
+      mode: 'replace',
+      payload: expect.objectContaining({
+        connectedClients: 2,
+        enabled: true,
+        peerClients: 1,
       }),
       version: expect.any(Number),
     });

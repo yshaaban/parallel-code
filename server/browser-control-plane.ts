@@ -358,6 +358,8 @@ export function createBrowserControlPlane(
   }
 
   function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
+    const lastReplayableSeq =
+      lastSeq === undefined ? undefined : transport.getLatestControlEventSeq();
     const authResult = transport.authenticateClient(client, clientId);
     if (!authResult.ok) {
       return false;
@@ -366,7 +368,7 @@ export function createBrowserControlPlane(
     peerPresence.ensurePeerPresence(authResult.clientId);
 
     if (lastSeq !== undefined) {
-      transport.replayControlEvents(client, lastSeq);
+      transport.replayControlEvents(client, lastSeq, lastReplayableSeq);
     }
     sendAgentSnapshot(client);
     sendJsonMessage(client, controlState.createStateBootstrapMessage());

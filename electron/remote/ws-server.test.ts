@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import type { ClaimAgentControlResult } from './ws-transport.js';
+import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport.js';
 
 const writeToAgentMock = vi.fn();
 const recordTerminalInputTraceClientUpdateMock = vi.fn();
@@ -56,6 +56,34 @@ function createClaimAgentControlMock() {
   return vi.fn((): ClaimAgentControlResult => ({ ok: true, controllerId: 'client-1' }));
 }
 
+function createMockTransport(
+  overrides: Partial<WebSocketTransport<WebSocket>> = {},
+): WebSocketTransport<WebSocket> {
+  return {
+    authenticateClient: vi.fn(() => ({ ok: true as const, clientId: 'client-1' })),
+    broadcast: vi.fn(),
+    broadcastControl: vi.fn(),
+    cleanupClient: vi.fn(),
+    claimAgentControl: createClaimAgentControlMock(),
+    getAgentControllerId: vi.fn(() => null),
+    getAuthenticatedClientCount: vi.fn(() => 1),
+    getClientId: vi.fn(() => 'client-1'),
+    getLatestControlEventSeq: vi.fn(() => -1),
+    hasClientId: vi.fn(() => true),
+    isAuthenticated: vi.fn(() => true),
+    notePong: vi.fn(),
+    releaseAgentControl: vi.fn(),
+    replayControlEvents: vi.fn(),
+    scheduleAuthTimeout: vi.fn(),
+    sendAgentControllers: vi.fn(),
+    sendMessage: vi.fn(() => ({ ok: true as const })),
+    sendToClientId: vi.fn(() => true),
+    startHeartbeat: vi.fn(),
+    stopHeartbeat: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe('registerRemoteWebSocketServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,27 +104,7 @@ describe('registerRemoteWebSocketServer', () => {
       authenticateConnection: () => true,
       getAgentList: () => [],
       safeCompareToken: (token) => token === 'good',
-      transport: {
-        authenticateClient: vi.fn(),
-        broadcast: vi.fn(),
-        broadcastControl: vi.fn(),
-        cleanupClient: vi.fn(),
-        claimAgentControl: createClaimAgentControlMock(),
-        getAgentControllerId: vi.fn(() => null),
-        getAuthenticatedClientCount: vi.fn(() => 1),
-        getClientId: vi.fn(() => 'client-1'),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-        sendAgentControllers: vi.fn(),
-        sendMessage,
-        sendToClientId: vi.fn(() => true),
-        startHeartbeat: vi.fn(),
-        stopHeartbeat: vi.fn(),
-      },
+      transport: createMockTransport({ sendMessage }),
       wss: wss as never,
     });
 
@@ -140,27 +148,7 @@ describe('registerRemoteWebSocketServer', () => {
       authenticateConnection: () => true,
       getAgentList: () => [],
       safeCompareToken: (token) => token === 'good',
-      transport: {
-        authenticateClient: vi.fn(),
-        broadcast: vi.fn(),
-        broadcastControl: vi.fn(),
-        cleanupClient: vi.fn(),
-        claimAgentControl: createClaimAgentControlMock(),
-        getAgentControllerId: vi.fn(() => null),
-        getAuthenticatedClientCount: vi.fn(() => 1),
-        getClientId: vi.fn(() => 'client-1'),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-        sendAgentControllers: vi.fn(),
-        sendMessage: vi.fn(),
-        sendToClientId: vi.fn(() => true),
-        startHeartbeat: vi.fn(),
-        stopHeartbeat: vi.fn(),
-      },
+      transport: createMockTransport(),
       wss: wss as never,
     });
 
@@ -183,27 +171,7 @@ describe('registerRemoteWebSocketServer', () => {
       authenticateConnection: () => true,
       getAgentList: () => [],
       safeCompareToken: (token) => token === 'good',
-      transport: {
-        authenticateClient: vi.fn(),
-        broadcast: vi.fn(),
-        broadcastControl: vi.fn(),
-        cleanupClient: vi.fn(),
-        claimAgentControl: createClaimAgentControlMock(),
-        getAgentControllerId: vi.fn(() => null),
-        getAuthenticatedClientCount: vi.fn(() => 1),
-        getClientId: vi.fn(() => 'client-1'),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-        sendAgentControllers: vi.fn(),
-        sendMessage,
-        sendToClientId: vi.fn(() => true),
-        startHeartbeat: vi.fn(),
-        stopHeartbeat: vi.fn(),
-      },
+      transport: createMockTransport({ sendMessage }),
       wss: wss as never,
     });
 
@@ -243,27 +211,7 @@ describe('registerRemoteWebSocketServer', () => {
       authenticateConnection: () => true,
       getAgentList: () => [],
       safeCompareToken: (token) => token === 'good',
-      transport: {
-        authenticateClient: vi.fn(),
-        broadcast: vi.fn(),
-        broadcastControl: vi.fn(),
-        cleanupClient: vi.fn(),
-        claimAgentControl: createClaimAgentControlMock(),
-        getAgentControllerId: vi.fn(() => null),
-        getAuthenticatedClientCount: vi.fn(() => 1),
-        getClientId: vi.fn(() => 'client-1'),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-        sendAgentControllers: vi.fn(),
-        sendMessage: vi.fn(),
-        sendToClientId: vi.fn(() => true),
-        startHeartbeat: vi.fn(),
-        stopHeartbeat: vi.fn(),
-      },
+      transport: createMockTransport(),
       wss: wss as never,
     });
 

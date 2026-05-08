@@ -141,6 +141,36 @@ describe('createWebSocketTransport', () => {
     });
   });
 
+  it('caps replay at the provided control-event high-water mark', () => {
+    const transport = createTransport();
+    const replay = createFakeClient();
+
+    expect(transport.getLatestControlEventSeq()).toBe(-1);
+    expect(transport.authenticateClient(replay, 'replay').ok).toBe(true);
+
+    transport.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/before-auth',
+    });
+    const replayHighWaterSeq = transport.getLatestControlEventSeq();
+    transport.broadcastControl({
+      type: 'remote-status',
+      connectedClients: 1,
+      peerClients: 0,
+    });
+    replay.sentDirect = [];
+
+    transport.replayControlEvents(replay, -1, replayHighWaterSeq);
+
+    expect(replay.sentDirect.map((message) => JSON.parse(message))).toEqual([
+      expect.objectContaining({
+        seq: 0,
+        type: 'git-status-changed',
+      }),
+    ]);
+    expect(transport.getLatestControlEventSeq()).toBe(1);
+  });
+
   it('broadcasts controller acquisition and release through shared lease state', () => {
     const transport = createTransport();
     const controller = createFakeClient();

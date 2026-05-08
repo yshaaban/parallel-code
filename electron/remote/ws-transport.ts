@@ -70,11 +70,12 @@ export interface WebSocketTransport<Client extends WebSocket> {
   getAgentControllerId: (agentId: string) => string | null;
   getClientId: (client: Client) => string | null;
   getAuthenticatedClientCount: () => number;
+  getLatestControlEventSeq: () => number;
   hasClientId: (clientId: string) => boolean;
   isAuthenticated: (client: Client) => boolean;
   notePong: (client: Client) => void;
   releaseAgentControl: (agentId: string, clientId?: string) => void;
-  replayControlEvents: (client: Client, lastSeq?: number) => void;
+  replayControlEvents: (client: Client, lastSeq?: number, maxSeq?: number) => void;
   scheduleAuthTimeout: (client: Client) => void;
   sendToClientId: (clientId: string, message: ServerMessage) => boolean;
   sendAgentControllers: (client: Client) => void;
@@ -197,8 +198,16 @@ export function createWebSocketTransport<Client extends WebSocket>(
     broadcastSerialized(json);
   }
 
-  function replayControlEvents(client: Client, lastSeq = -1): void {
+  function replayControlEvents(
+    client: Client,
+    lastSeq = -1,
+    maxSeq = Number.POSITIVE_INFINITY,
+  ): void {
     for (const event of controlEventRingBuffer) {
+      if (event.seq > maxSeq) {
+        return;
+      }
+
       if (event.seq > lastSeq && !sendSerializedDirect(client, event.json)) {
         return;
       }
@@ -306,6 +315,10 @@ export function createWebSocketTransport<Client extends WebSocket>(
     return authenticatedClients.size;
   }
 
+  function getLatestControlEventSeq(): number {
+    return controlEventSeq - 1;
+  }
+
   function hasClientId(clientId: string): boolean {
     return (clientsByClientId.get(clientId)?.size ?? 0) > 0;
   }
@@ -371,6 +384,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
     getAgentControllerId,
     getClientId,
     getAuthenticatedClientCount,
+    getLatestControlEventSeq,
     hasClientId,
     isAuthenticated,
     notePong,
