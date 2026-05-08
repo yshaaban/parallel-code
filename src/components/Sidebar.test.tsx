@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import { setStore } from '../store/core';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
 const {
@@ -158,7 +159,9 @@ describe('Sidebar', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('links a project when none exist', () => {
@@ -270,5 +273,31 @@ describe('Sidebar', () => {
 
     expect(screen.queryByText('Review Queue')).toBeNull();
     expect(screen.getByTestId('sidebar-task-list')).toBeDefined();
+  });
+
+  it('cancels stale focused-project scroll frames when sidebar focus moves quickly', () => {
+    const animationFrame = installManualAnimationFrame();
+    const firstProject = document.createElement('div');
+    const secondProject = document.createElement('div');
+    const firstScrollIntoView = vi.fn();
+    const secondScrollIntoView = vi.fn();
+    firstProject.dataset.projectId = 'project-1';
+    secondProject.dataset.projectId = 'project-2';
+    firstProject.scrollIntoView = firstScrollIntoView;
+    secondProject.scrollIntoView = secondScrollIntoView;
+    document.body.append(firstProject, secondProject);
+
+    render(() => <Sidebar />);
+
+    setStore('sidebarFocusedProjectId', 'project-1');
+    setStore('sidebarFocusedProjectId', 'project-2');
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalledWith(1);
+    expect(firstScrollIntoView).not.toHaveBeenCalled();
+    expect(secondScrollIntoView).toHaveBeenCalledWith({
+      block: 'nearest',
+      behavior: 'instant',
+    });
   });
 });

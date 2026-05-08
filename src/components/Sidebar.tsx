@@ -19,6 +19,7 @@ import { SidebarFooter } from './SidebarFooter';
 import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
 import { SidebarRemoteAccessButton } from './sidebar/SidebarRemoteAccessButton';
 import { SidebarTaskList } from './sidebar/SidebarTaskList';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { computeVerticalDropIndex, startMouseDragSession } from '../lib/drag-reorder';
 import { sf } from '../lib/fontScale';
 import { isElectronRuntime } from '../lib/ipc';
@@ -55,6 +56,7 @@ export function Sidebar(): JSX.Element {
   const [dropTarget, setDropTarget] = createSignal<{ groupId: string; index: number } | null>(null);
   const [resizing, setResizing] = createSignal(false);
   let taskListRef: HTMLDivElement | undefined;
+  const focusedProjectScrollFrame = createAnimationFrameTask();
 
   const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
   const groupedTasks = createMemo(() => computeGroupedTasks());
@@ -117,6 +119,7 @@ export function Sidebar(): JSX.Element {
 
     registerFocusFn('sidebar', () => taskListRef?.focus());
     onCleanup(() => unregisterFocusFn('sidebar'));
+    onCleanup(focusedProjectScrollFrame.cancel);
   });
 
   createEffect(() => {
@@ -145,8 +148,12 @@ export function Sidebar(): JSX.Element {
 
   createEffect(() => {
     const projectId = store.sidebarFocusedProjectId;
-    if (!projectId) return;
-    requestAnimationFrame(() => {
+    if (!projectId) {
+      focusedProjectScrollFrame.cancel();
+      return;
+    }
+
+    focusedProjectScrollFrame.schedule(() => {
       const element = document.querySelector<HTMLElement>(
         `[data-project-id="${CSS.escape(projectId)}"]`,
       );
