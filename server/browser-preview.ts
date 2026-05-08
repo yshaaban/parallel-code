@@ -258,13 +258,39 @@ function rewriteSetCookieHeaders(
   }
 
   const headerList = Array.isArray(headers) ? headers : [headers];
-  return headerList.map((header) => {
-    if (/;\s*path=/iu.test(header)) {
-      return header.replace(/;\s*path=[^;]*/iu, `; Path=${previewBasePath}`);
+  return headerList.map((header) => rewriteSetCookieHeader(header, previewBasePath));
+}
+
+function rewriteSetCookieHeader(header: string, previewBasePath: string): string {
+  const [cookiePair = '', ...attributes] = header
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  const rewrittenAttributes: string[] = [];
+  let hasPath = false;
+
+  for (const attribute of attributes) {
+    const attributeName = attribute.split('=', 1)[0]?.toLowerCase();
+    if (attributeName === 'domain') {
+      continue;
     }
 
-    return `${header}; Path=${previewBasePath}`;
-  });
+    if (attributeName === 'path') {
+      if (!hasPath) {
+        rewrittenAttributes.push(`Path=${previewBasePath}`);
+        hasPath = true;
+      }
+      continue;
+    }
+
+    rewrittenAttributes.push(attribute);
+  }
+
+  if (!hasPath) {
+    rewrittenAttributes.push(`Path=${previewBasePath}`);
+  }
+
+  return [cookiePair, ...rewrittenAttributes].join('; ');
 }
 
 function appendSetCookieHeaders(response: express.Response, headers: ReadonlyArray<string>): void {

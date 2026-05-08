@@ -168,6 +168,12 @@ async function getClosedPort(): Promise<number> {
   return port;
 }
 
+function getSetCookieHeaders(response: Response): string[] {
+  return typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : [response.headers.get('set-cookie')].filter((value): value is string => value !== null);
+}
+
 describe('browser preview proxy', { timeout: 15_000 }, () => {
   const cleanups: Array<() => Promise<void>> = [];
 
@@ -208,10 +214,7 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     );
 
     expect(response.status).toBe(200);
-    const setCookies =
-      typeof response.headers.getSetCookie === 'function'
-        ? response.headers.getSetCookie()
-        : [response.headers.get('set-cookie')].filter((value): value is string => value !== null);
+    const setCookies = getSetCookieHeaders(response);
     expect(setCookies).toEqual(
       expect.arrayContaining([
         expect.stringContaining(`target-session=abc; Path=/_preview/task-1/${target.port}`),
@@ -222,6 +225,56 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     expect(html).toContain(`src="/_preview/task-1/${target.port}/@vite/client"`);
     expect(html).toContain('data-cookie=""');
     expect(html).toContain('data-auth=""');
+  });
+
+  it('strips target cookie domains while scoping cookies to the preview path', async () => {
+    const targetApp = express();
+    targetApp.get('/', (_req, res) => {
+      res.setHeader('set-cookie', [
+        'local-session=abc; Domain=localhost; Path=/; HttpOnly',
+        'loopback-session=def; domain=127.0.0.1; SameSite=Lax',
+      ]);
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send('<html><head></head><body>Cookie app</body></html>');
+    });
+    const target = await listen(createServer(targetApp));
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const setCookies = getSetCookieHeaders(response);
+    expect(setCookies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          `local-session=abc; Path=/_preview/task-1/${target.port}; HttpOnly`,
+        ),
+        expect.stringContaining(
+          `loopback-session=def; SameSite=Lax; Path=/_preview/task-1/${target.port}`,
+        ),
+      ]),
+    );
+    expect(setCookies.join('\n')).not.toMatch(/domain=/iu);
   });
 
   it('proxies container preview targets without requiring an exposed task port', async () => {

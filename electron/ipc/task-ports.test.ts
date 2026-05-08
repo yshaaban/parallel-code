@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { createServer } from 'http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -18,12 +19,44 @@ interface TaskPortExposureCandidateScanResultMock {
   source: 'local' | 'task';
 }
 
-const { rediscoverTaskPortsMock, scanTaskPortExposureCandidatesMock } = vi.hoisted(() => ({
-  rediscoverTaskPortsMock: vi.fn<() => RediscoveredTaskPortMock[]>(() => []),
-  scanTaskPortExposureCandidatesMock: vi.fn<() => TaskPortExposureCandidateScanResultMock[]>(
-    () => [],
-  ),
-}));
+const { createConnectionControl, rediscoverTaskPortsMock, scanTaskPortExposureCandidatesMock } =
+  vi.hoisted(() => {
+    const control: {
+      delegate: (...args: unknown[]) => unknown;
+      mock: ReturnType<typeof vi.fn>;
+      realDelegate: (...args: unknown[]) => unknown;
+    } = {
+      delegate: () => {
+        throw new Error('createConnection delegate is not initialized');
+      },
+      mock: vi.fn((...args: unknown[]) => control.delegate(...args)),
+      realDelegate: () => {
+        throw new Error('createConnection real delegate is not initialized');
+      },
+    };
+
+    return {
+      createConnectionControl: control,
+      rediscoverTaskPortsMock: vi.fn<() => RediscoveredTaskPortMock[]>(() => []),
+      scanTaskPortExposureCandidatesMock: vi.fn<() => TaskPortExposureCandidateScanResultMock[]>(
+        () => [],
+      ),
+    };
+  });
+
+vi.mock('net', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('net')>();
+  const realDelegate = (...args: unknown[]): unknown => {
+    return Reflect.apply(actual.createConnection, actual, args);
+  };
+  createConnectionControl.delegate = realDelegate;
+  createConnectionControl.realDelegate = realDelegate;
+
+  return {
+    ...actual,
+    createConnection: createConnectionControl.mock,
+  };
+});
 
 vi.mock('./port-discovery.js', () => ({
   rediscoverTaskPorts: rediscoverTaskPortsMock,
@@ -122,10 +155,40 @@ async function withClosedPreviewPort(run: (port: number) => Promise<void>): Prom
   await run(port);
 }
 
+interface ControlledPreviewSocket {
+  destroy: ReturnType<typeof vi.fn>;
+  emitConnect: () => void;
+  emitError: () => void;
+  once: (event: string, listener: (...args: unknown[]) => void) => ControlledPreviewSocket;
+  setTimeout: ReturnType<typeof vi.fn>;
+}
+
+function createControlledPreviewSocket(): ControlledPreviewSocket {
+  const events = new EventEmitter();
+  const socket: ControlledPreviewSocket = {
+    destroy: vi.fn(),
+    emitConnect() {
+      events.emit('connect');
+    },
+    emitError() {
+      events.emit('error', new Error('Preview connection failed'));
+    },
+    once(event, listener) {
+      events.once(event, listener);
+      return socket;
+    },
+    setTimeout: vi.fn(),
+  };
+
+  return socket;
+}
+
 describe('task port registry', () => {
   beforeEach(() => {
     clearTaskPortRegistry();
     resetBackendRuntimeDiagnostics();
+    createConnectionControl.delegate = createConnectionControl.realDelegate;
+    createConnectionControl.mock.mockClear();
     rediscoverTaskPortsMock.mockReset();
     rediscoverTaskPortsMock.mockReturnValue([]);
     scanTaskPortExposureCandidatesMock.mockReset();
@@ -398,6 +461,35 @@ describe('task port registry', () => {
         diagnostics.lastProbeDurationMs ?? 0,
       );
     });
+  });
+
+  it('ignores stale preview validation after a port is unexposed and re-exposed', async () => {
+    const sockets: ControlledPreviewSocket[] = [];
+    createConnectionControl.delegate = () => {
+      const socket = createControlledPreviewSocket();
+      sockets.push(socket);
+      return socket;
+    };
+
+    exposeTaskPort('task-race', 4321, 'Old preview');
+    expect(sockets).toHaveLength(1);
+
+    unexposeTaskPort('task-race', 4321);
+    exposeTaskPort('task-race', 4321, 'Fresh preview');
+    expect(sockets).toHaveLength(2);
+
+    sockets[0]?.emitConnect();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getExposedTaskPort('task-race', 4321)).toMatchObject({
+      availability: 'unknown',
+      label: 'Fresh preview',
+      verifiedHost: null,
+    });
+
+    sockets.slice(1).forEach((socket) => socket.emitError());
+    await Promise.resolve();
   });
 
   it('ignores preview probe diagnostics from validations started before a reset', async () => {

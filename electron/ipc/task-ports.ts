@@ -63,6 +63,7 @@ const previewTargetCache = new Map<
 const previewValidationTokens = new Map<string, number>();
 const previewAvailabilityGenerations = new Map<string, number>();
 let taskPortsStateVersion = 0;
+let previewValidationTokenGeneration = 0;
 
 interface PreviewValidationOptions {
   previewTargetCacheTtlMs?: number;
@@ -390,9 +391,9 @@ async function resolvePreviewTargetForPort(
 
 function getValidationToken(taskId: string, port: number): number {
   const key = getTaskPortKey(taskId, port);
-  const nextToken = (previewValidationTokens.get(key) ?? 0) + 1;
-  previewValidationTokens.set(key, nextToken);
-  return nextToken;
+  previewValidationTokenGeneration += 1;
+  previewValidationTokens.set(key, previewValidationTokenGeneration);
+  return previewValidationTokenGeneration;
 }
 
 function hasCurrentValidationToken(taskId: string, port: number, token: number): boolean {

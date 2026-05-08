@@ -1227,6 +1227,8 @@ Important properties:
 
 - detection is advisory
 - exposure is explicit
+- preview proxy responses rewrite target cookies onto the preview path and strip upstream cookie
+  domains so app sessions stay scoped to the Parallel Code preview origin
 - task container previews are distinct from observed/exposed task ports:
   - container previews come from backend-owned inspect truth
   - task-port previews come from port detection, explicit exposure, and authenticated preview routes
