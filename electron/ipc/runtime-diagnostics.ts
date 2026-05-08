@@ -694,7 +694,15 @@ export function recordPreviewRevalidation(): void {
 
 export function recordBrowserControlSendResult(
   reason: 'backpressure' | 'not-open' | 'send-error',
+  details?: { generation?: number },
 ): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
   switch (reason) {
     case 'backpressure':
       backendRuntimeDiagnostics.browserControl.backpressureRejects += 1;
@@ -712,7 +720,15 @@ export function recordBrowserControlDelayedQueue(
   queueDepth: number,
   queuedBytes: number,
   queueAgeMs: number,
+  details?: { generation?: number },
 ): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
   if (queueDepth > backendRuntimeDiagnostics.browserControl.delayedQueueMaxDepth) {
     backendRuntimeDiagnostics.browserControl.delayedQueueMaxDepth = queueDepth;
   }

@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import {
+  getBackendRuntimeDiagnosticsGeneration,
   recordBrowserControlDelayedQueue,
   recordBrowserControlSendResult,
 } from '../electron/ipc/runtime-diagnostics.js';
@@ -12,6 +13,7 @@ interface DelayedClientSendEntry {
   data: string | Buffer;
   dueAt: number;
   enqueuedAt: number;
+  generation: number;
   sizeBytes: number;
 }
 
@@ -44,6 +46,12 @@ function getDataSizeBytes(data: string | Buffer): number {
   return Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
 }
 
+function createDiagnosticsGenerationDetails(
+  generation: number | undefined,
+): { generation: number } | undefined {
+  return generation === undefined ? undefined : { generation };
+}
+
 function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
   const firstEntry = state.queue[0];
   if (!firstEntry) {
@@ -62,6 +70,7 @@ function recordDelayedClientQueueHighWater(state: DelayedClientSendState): void 
     state.queue.length,
     state.totalBytes,
     getDelayedClientQueueAgeMs(state),
+    createDiagnosticsGenerationDetails(state.queue[0]?.generation),
   );
 }
 
@@ -97,14 +106,19 @@ export function createBrowserControlDelayedSends(
     delayedClientSends.delete(client);
   }
 
-  function sendSafely(client: WebSocket, data: string | Buffer): SendTextResult {
+  function sendSafely(
+    client: WebSocket,
+    data: string | Buffer,
+    diagnosticsGeneration?: number,
+  ): SendTextResult {
+    const diagnosticsDetails = createDiagnosticsGenerationDetails(diagnosticsGeneration);
     if (client.readyState !== WebSocket.OPEN) {
-      recordBrowserControlSendResult('not-open');
+      recordBrowserControlSendResult('not-open', diagnosticsDetails);
       options.onInactiveClient(client);
       return { ok: false, reason: 'not-open' };
     }
     if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) {
-      recordBrowserControlSendResult('backpressure');
+      recordBrowserControlSendResult('backpressure', diagnosticsDetails);
       return { ok: false, reason: 'backpressure' };
     }
 
@@ -112,7 +126,7 @@ export function createBrowserControlDelayedSends(
       client.send(data);
       return { ok: true };
     } catch (error) {
-      recordBrowserControlSendResult('send-error');
+      recordBrowserControlSendResult('send-error', diagnosticsDetails);
       options.onFailedClientSend(client);
       return {
         ok: false,
@@ -176,7 +190,7 @@ export function createBrowserControlDelayedSends(
         return;
       }
 
-      const result = sendSafely(client, nextEntry.data);
+      const result = sendSafely(client, nextEntry.data, nextEntry.generation);
       if (!result.ok) {
         if (result.reason === 'backpressure') {
           scheduleDelayedClientDrain(client, state, DELAYED_SEND_RETRY_INTERVAL_MS);
@@ -197,16 +211,19 @@ export function createBrowserControlDelayedSends(
     delayMs: number,
   ): boolean {
     if (client.readyState !== WebSocket.OPEN) {
-      recordBrowserControlSendResult('not-open');
+      recordBrowserControlSendResult('not-open', {
+        generation: getBackendRuntimeDiagnosticsGeneration(),
+      });
       options.onInactiveClient(client);
       return false;
     }
 
     const state = getDelayedClientSendState(client);
+    const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
     const sizeBytes = getDataSizeBytes(data);
     const bufferedBytes = state.totalBytes + client.bufferedAmount + sizeBytes;
     if (bufferedBytes > WS_BACKPRESSURE_MAX_BYTES) {
-      recordBrowserControlSendResult('backpressure');
+      recordBrowserControlSendResult('backpressure', { generation: diagnosticsGeneration });
       return false;
     }
 
@@ -214,6 +231,7 @@ export function createBrowserControlDelayedSends(
       data,
       dueAt: Date.now() + delayMs,
       enqueuedAt: Date.now(),
+      generation: diagnosticsGeneration,
       sizeBytes,
     });
     state.totalBytes += sizeBytes;

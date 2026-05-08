@@ -1303,6 +1303,8 @@ Important property:
   be paced so the UI does not expose every intermediate repaint frame
 - that pacing works on raw bytes and must not invent terminal semantics: transport chunks are not
   ANSI boundaries, and the renderer still writes the original bytes to xterm unchanged
+- delayed browser control/channel diagnostics are generation-guarded so queued sends from before a
+  diagnostics reset cannot contaminate the next measured scenario
 - more aggressive hidden-terminal suspension remains experimental until wake and restore costs are
   proven at the same browser-validation bar
 

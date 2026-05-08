@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getBackendRuntimeDiagnosticsGeneration,
   getBackendRuntimeDiagnosticsSnapshot,
+  recordBrowserControlDelayedQueue,
+  recordBrowserControlSendResult,
   recordPreviewProbeResult,
   recordTerminalInputTraceFailure,
   recordTerminalInputTracePtyEnqueued,
@@ -128,6 +130,32 @@ describe('backend runtime diagnostics terminal input tracing', () => {
       maxProbeDurationMs: 6,
       probeFailures: 0,
       probeSuccesses: 1,
+    });
+  });
+
+  it('ignores browser control diagnostics from before the latest diagnostics reset', () => {
+    const previousGeneration = getBackendRuntimeDiagnosticsGeneration();
+    resetBackendRuntimeDiagnostics();
+
+    recordBrowserControlSendResult('backpressure', {
+      generation: previousGeneration,
+    });
+    recordBrowserControlDelayedQueue(4, 128_000, 250, {
+      generation: previousGeneration,
+    });
+    recordBrowserControlSendResult('not-open', {
+      generation: getBackendRuntimeDiagnosticsGeneration(),
+    });
+    recordBrowserControlDelayedQueue(2, 64_000, 125, {
+      generation: getBackendRuntimeDiagnosticsGeneration(),
+    });
+
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 0,
+      delayedQueueMaxAgeMs: 125,
+      delayedQueueMaxBytes: 64_000,
+      delayedQueueMaxDepth: 2,
+      notOpenRejects: 1,
     });
   });
 });

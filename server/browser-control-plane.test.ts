@@ -1633,6 +1633,33 @@ describe('browser control plane', () => {
     expect(vi.getTimerCount()).toBe(0);
   }, 10_000);
 
+  it('does not let delayed sends from before a diagnostics reset pollute the next sample', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateJitterMs: 0,
+      simulateLatencyMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('stale'))).toBe(true);
+    resetBackendRuntimeDiagnostics();
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(sent).toEqual([Buffer.from('stale')]);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      delayedQueueMaxAgeMs: 0,
+      delayedQueueMaxBytes: 0,
+      delayedQueueMaxDepth: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  }, 10_000);
+
   it('treats simulated packet loss as extra delay instead of dropping channel data', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0);
