@@ -19,6 +19,10 @@ import { applyRemoteStatus } from './remote-access';
 import { replacePeerSessions } from '../store/peer-presence';
 import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
+import {
+  applyTaskReviewSignalsEvent,
+  replaceTaskReviewSignalsSnapshots,
+} from './task-review-signals';
 import { applyTaskPortsEvent, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import { applyTaskStepsEvent, replaceTaskStepsSummarySnapshots } from '../store/task-steps';
@@ -58,6 +62,7 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'agent-supervision': applyAgentSupervisionEvent,
   'task-convergence': applyTaskConvergenceEvent,
   'task-review': applyTaskReviewEvent,
+  'task-review-signals': applyTaskReviewSignalsEvent,
   'task-steps': applyTaskStepsEvent,
   'task-ports': applyTaskPortsEvent,
 };
@@ -88,6 +93,8 @@ const SERVER_STATE_SNAPSHOT_APPLIERS: {
     replaceTaskConvergenceSnapshots(payload, createReplaceVersionOptions(version)),
   'task-review': (payload, version) =>
     replaceTaskReviewSnapshots(payload, createReplaceVersionOptions(version)),
+  'task-review-signals': (payload, version) =>
+    replaceTaskReviewSignalsSnapshots(payload, createReplaceVersionOptions(version)),
   'task-steps': (payload, version) =>
     replaceTaskStepsSummarySnapshots(payload, createReplaceVersionOptions(version)),
   'task-ports': (payload, version) =>
@@ -159,6 +166,7 @@ function createPendingEventQueue(): PendingEventQueue {
     'agent-supervision': [],
     'task-convergence': [],
     'task-review': [],
+    'task-review-signals': [],
     'task-steps': [],
     'task-ports': [],
   };

@@ -12,6 +12,7 @@ import type {
 import type { TaskConvergenceEvent, TaskConvergenceSnapshot } from './task-convergence.js';
 import type { TaskStepsEvent, TaskStepsSummarySnapshot } from './task-steps.js';
 import type { TaskReviewEvent, TaskReviewSnapshot } from './task-review.js';
+import type { TaskReviewSignalsEvent, TaskReviewSignalsSnapshot } from './task-review-signals.js';
 
 export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
   'git-status',
@@ -21,6 +22,7 @@ export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
   'agent-supervision',
   'task-convergence',
   'task-review',
+  'task-review-signals',
   'task-steps',
   'task-ports',
 ] as const;
@@ -35,6 +37,7 @@ export interface ServerStateBootstrapPayloadMap {
   'agent-supervision': AgentSupervisionSnapshot[];
   'task-convergence': TaskConvergenceSnapshot[];
   'task-review': TaskReviewSnapshot[];
+  'task-review-signals': TaskReviewSignalsSnapshot[];
   'task-steps': TaskStepsSummarySnapshot[];
   'task-ports': TaskPortSnapshot[];
 }
@@ -47,6 +50,7 @@ export interface ServerStateEventPayloadMap {
   'agent-supervision': AgentSupervisionEvent;
   'task-convergence': TaskConvergenceEvent;
   'task-review': TaskReviewEvent;
+  'task-review-signals': TaskReviewSignalsEvent;
   'task-steps': TaskStepsEvent;
   'task-ports': TaskPortsEvent;
 }

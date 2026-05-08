@@ -822,4 +822,48 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     expect(fileDiff.diff).toContain('+feature');
     expect(fileDiff.diff).not.toContain('-base');
   });
+
+  it('returns a first-parent file diff for a selected commit hash', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    const baseHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    runGit(repoPath, 'checkout', '-b', 'feature/review', baseHead);
+    commitRepoFile(repoPath, 'src/shared.ts', 'one\n', 'first feature commit');
+    commitRepoFile(repoPath, 'src/shared.ts', 'one\ntwo\n', 'second feature commit');
+    const secondCommit = runGit(repoPath, 'rev-parse', 'HEAD');
+
+    const fileDiff = await getFileDiffFromBranch(repoPath, 'feature/review', 'src/shared.ts', {
+      commitHash: secondCommit,
+      status: 'M',
+    });
+
+    expect(fileDiff.oldContent).toBe('one\n');
+    expect(fileDiff.newContent).toBe('one\ntwo\n');
+    expect(fileDiff.diff).toContain('+two');
+    expect(fileDiff.diff).not.toContain('-# repo');
+  });
+
+  it('rejects commit-scoped diffs outside the reviewed branch range', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    const baseHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    runGit(repoPath, 'checkout', '-b', 'feature/review', baseHead);
+    commitRepoFile(repoPath, 'src/review.ts', 'review\n', 'review commit');
+
+    runGit(repoPath, 'checkout', 'main');
+    runGit(repoPath, 'checkout', '-b', 'feature/other', baseHead);
+    commitRepoFile(repoPath, 'src/other.ts', 'other\n', 'other commit');
+    const otherCommit = runGit(repoPath, 'rev-parse', 'HEAD');
+
+    await expect(
+      getFileDiffFromBranch(repoPath, 'feature/review', 'src/other.ts', {
+        commitHash: otherCommit,
+        status: 'A',
+      }),
+    ).rejects.toThrow(`Commit is not in reviewed branch range: ${otherCommit}`);
+  });
 });

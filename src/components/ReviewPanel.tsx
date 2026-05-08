@@ -1,11 +1,23 @@
-import { Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  untrack,
+  type JSX,
+} from 'solid-js';
 
+import { fetchBranchCommitHistory } from '../app/review-commit-history';
 import { createTaskReviewFilesRequest } from '../app/review-files';
 import type { ReviewAnnotation } from '../app/review-session';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
+import { getTaskReviewSignalsSnapshot } from '../app/task-review-signals';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import type { ReviewCommitSummary } from '../domain/review-commit-history';
+import type { TaskReviewSnapshot } from '../domain/task-review';
 import { isDiffableChangedFilePath } from '../lib/changed-file-display';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
@@ -17,6 +29,7 @@ import { ReviewPanelConvergenceBanner } from './review-panel/ReviewPanelConverge
 import { createReviewPanelController } from './review-panel/review-panel-controller';
 import { ReviewPanelDiffPane } from './review-panel/ReviewPanelDiffPane';
 import { ReviewPanelFileList } from './review-panel/ReviewPanelFileList';
+import { ReviewPanelSignalsBanner } from './review-panel/ReviewPanelSignalsBanner';
 import { ReviewPanelToolbar } from './review-panel/ReviewPanelToolbar';
 import { createReviewSurfaceSession } from './review-surface-session';
 import { getTaskReviewPanelColor } from './task-review-presentation';
@@ -43,9 +56,48 @@ function getReviewStateColor(taskId?: string): string {
   return state ? getTaskReviewPanelColor(state) : theme.fgMuted;
 }
 
+function getCommitScopedReviewFiles(
+  files: ReadonlyArray<ChangedFile>,
+  commit: ReviewCommitSummary | null,
+): ChangedFile[] {
+  if (!commit) {
+    return [...files];
+  }
+
+  return commit.files.map((file) => ({ ...file }));
+}
+
+function getCommitHistoryRefreshKey(snapshot: TaskReviewSnapshot | undefined): string | undefined {
+  if (!snapshot) {
+    return undefined;
+  }
+
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  const fileIdentities: string[] = [];
+  for (const file of snapshot.files) {
+    if (!file.committed) {
+      continue;
+    }
+
+    totalAdded += file.lines_added;
+    totalRemoved += file.lines_removed;
+    fileIdentities.push(`${file.path}:${file.status}:${file.lines_added}:${file.lines_removed}`);
+  }
+
+  return `${snapshot.branchName}:${totalAdded}:${totalRemoved}:${fileIdentities.join('|')}`;
+}
+
 export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
+  const [commitHistory, setCommitHistory] = createSignal<Awaited<
+    ReturnType<typeof fetchBranchCommitHistory>
+  > | null>(null);
+  const [selectedCommitHash, setSelectedCommitHash] = createSignal<string | null>(null);
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
+  const commitHistoryRefreshKey = createMemo(() => getCommitHistoryRefreshKey(reviewSnapshot()));
+  const reviewSignalsSnapshot = () =>
+    props.taskId ? getTaskReviewSignalsSnapshot(props.taskId) : undefined;
   const controller = createReviewPanelController({
     baseBranch: () => props.baseBranch,
     branchName: () => props.branchName,
@@ -69,12 +121,30 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
 
     return controller.files();
   });
+  const commitSelectionEnabled = createMemo(() => {
+    const mode = controller.mode();
+    return mode === 'all' || mode === 'branch';
+  });
+  const activeCommitHistory = createMemo(() => {
+    return commitSelectionEnabled() ? commitHistory() : null;
+  });
+  const selectedCommit = createMemo(() => {
+    const hash = selectedCommitHash();
+    if (!hash) {
+      return null;
+    }
+
+    return activeCommitHistory()?.commits.find((commit) => commit.hash === hash) ?? null;
+  });
+  const scopedReviewFiles = createMemo(() => {
+    return getCommitScopedReviewFiles(reviewFiles(), selectedCommit());
+  });
   const hiddenHydraArtifactCount = createMemo(() => {
     if (!props.filterHydraArtifacts) {
       return 0;
     }
 
-    return reviewFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+    return scopedReviewFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
   });
   const emptyStateMessage = createMemo(() => {
     if (isReviewUnavailable()) {
@@ -99,7 +169,9 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     return 'Select a file';
   });
   const visibleFiles = createMemo(() => {
-    const diffableFiles = reviewFiles().filter((file) => isDiffableChangedFilePath(file.path));
+    const diffableFiles = scopedReviewFiles().filter((file) =>
+      isDiffableChangedFilePath(file.path),
+    );
     if (!props.filterHydraArtifacts || showHydraArtifacts()) {
       return diffableFiles;
     }
@@ -154,6 +226,50 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     return parseMultiFileUnifiedDiff(currentDiff.diff);
   });
   const reviewDiffRequest = controller.reviewDiffRequest;
+
+  createEffect(() => {
+    const projectRoot = props.projectRoot;
+    const branchName = props.branchName;
+    const baseBranch = props.baseBranch;
+    const historyRefreshKey = commitHistoryRefreshKey();
+    if (!props.isActive || !projectRoot || !branchName) {
+      setCommitHistory(null);
+      setSelectedCommitHash(null);
+      return;
+    }
+
+    let cancelled = false;
+    void fetchBranchCommitHistory({
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
+      branchName,
+      projectRoot,
+    })
+      .then((history) => {
+        if (cancelled) {
+          return;
+        }
+
+        setCommitHistory(history);
+        const currentSelectedCommitHash = untrack(selectedCommitHash);
+        if (
+          currentSelectedCommitHash &&
+          !history.commits.some((commit) => commit.hash === currentSelectedCommitHash)
+        ) {
+          setSelectedCommitHash(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCommitHistory(null);
+          setSelectedCommitHash(null);
+        }
+      });
+
+    void historyRefreshKey;
+    onCleanup(() => {
+      cancelled = true;
+    });
+  });
 
   createEffect(() => {
     controller.currentRevisionId();
@@ -303,11 +419,18 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         )}
       </Show>
 
+      <Show when={reviewSignalsSnapshot()}>
+        {(snapshot) => <ReviewPanelSignalsBanner snapshot={snapshot()} />}
+      </Show>
+
       <div style={{ display: 'flex', flex: '1', overflow: 'hidden' }}>
         <ReviewPanelFileList
+          commits={activeCommitHistory()?.commits}
           emptyMessage={emptyStateMessage()}
           files={visibleFiles()}
           onSelect={selectVisibleFile}
+          onSelectCommit={setSelectedCommitHash}
+          selectedCommitHash={selectedCommitHash()}
           selectedIndex={selectedIndex()}
         />
         <ReviewPanelDiffPane

@@ -9,6 +9,7 @@ import type {
 import type { TaskConvergenceEvent } from './task-convergence.js';
 import type { TaskStepsEvent } from './task-steps.js';
 import type { TaskReviewEvent } from './task-review.js';
+import type { TaskReviewSignalsEvent } from './task-review-signals.js';
 
 export interface PlanContentUpdate {
   content: string | null;
@@ -43,6 +44,7 @@ export interface RendererIpcEventPayloads {
   [IPC.WorkspaceStateChanged]: WorkspaceStateChangedNotification;
   [IPC.TaskConvergenceChanged]: TaskConvergenceEvent;
   [IPC.TaskReviewChanged]: TaskReviewEvent;
+  [IPC.TaskReviewSignalsChanged]: TaskReviewSignalsEvent;
   [IPC.TaskPortsChanged]: TaskPortsEvent;
   [IPC.TaskStepsChanged]: TaskStepsEvent;
 }

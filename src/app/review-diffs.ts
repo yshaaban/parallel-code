@@ -5,6 +5,7 @@ import type { ChangedFile, FileDiffResult } from '../ipc/types';
 export type TaskReviewDiffSource = 'branch' | 'worktree';
 
 export interface TaskReviewDiffFileTarget {
+  commitHash?: string;
   committed?: boolean;
   path: string;
   status: ChangedFile['status'];
@@ -47,6 +48,7 @@ function fetchFileDiffFromBranch(
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiffFromBranch, {
     ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(file.commitHash !== undefined ? { commitHash: file.commitHash } : {}),
     projectRoot,
     branchName,
     filePath: file.path,

@@ -66,6 +66,7 @@ describe('Hydra spawn handling', () => {
       adapter: 'hydra',
       command: 'hydra',
       args: ['agents=codex,claude'],
+      baseBranch: 'release/main',
       cwd: '/tmp/parallel-code/worktree-one',
       env: {
         PARALLEL_CODE_HYDRA_STARTUP_MODE: 'smart',
@@ -95,6 +96,11 @@ describe('Hydra spawn handling', () => {
         ]),
       }),
     );
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'release/main',
+      taskId: 'task-1',
+      worktreePath: '/tmp/parallel-code/worktree-one',
+    });
   });
 
   it('rejects invalid Hydra startup recovery flags', async () => {

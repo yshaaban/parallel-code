@@ -19,10 +19,12 @@ describe('persisted-task-lookup-state', () => {
             kept: {
               baseBranch: ' personal/main ',
               branchName: 'feature/test',
-              gitIsolation: 'worktree',
+              gitIsolation: 'existing-worktree',
+              githubUrl: 'https://github.com/example/repo/pull/12',
               id: 'task-1',
               name: 'Task One',
               projectId: 'project-1',
+              worktreeOwnership: 'external',
               worktreePath: '/repo/task-1',
             },
             partial: {
@@ -48,10 +50,12 @@ describe('persisted-task-lookup-state', () => {
         kept: {
           baseBranch: 'personal/main',
           branchName: 'feature/test',
-          gitIsolation: 'worktree',
+          gitIsolation: 'existing-worktree',
+          githubUrl: 'https://github.com/example/repo/pull/12',
           id: 'task-1',
           name: 'Task One',
           projectId: 'project-1',
+          worktreeOwnership: 'external',
           worktreePath: '/repo/task-1',
         },
         partial: {

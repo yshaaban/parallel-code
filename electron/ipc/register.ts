@@ -25,6 +25,7 @@ import { emitRendererEvent } from './renderer-events.js';
 import { createRemoteAccessController } from './remote-access-workflows.js';
 import { subscribeTaskConvergence } from './task-convergence-state.js';
 import { subscribeTaskReview } from './task-review-state.js';
+import { subscribeTaskReviewSignals } from './task-review-signals.js';
 import { subscribeTaskSteps } from './task-steps.js';
 import { subscribeTaskPorts } from './task-ports.js';
 
@@ -128,7 +129,11 @@ function createDialogController(win: BrowserWindow): DialogController {
       if (args?.multiple) properties.push('multiSelections');
       const result = await dialog.showOpenDialog(win, { properties });
       if (result.canceled) return null;
-      return args?.multiple ? result.filePaths : (result.filePaths[0] ?? null);
+      if (args?.multiple) {
+        return result.filePaths;
+      }
+
+      return result.filePaths[0] ?? null;
     },
   };
 }
@@ -325,6 +330,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
       emitRendererEvent(win.webContents, IPC.TaskReviewChanged, event);
     }
   });
+  const stopTaskReviewSignalsSubscription = subscribeTaskReviewSignals((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.TaskReviewSignalsChanged, event);
+    }
+  });
   const stopTaskStepsSubscription = subscribeTaskSteps((event) => {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.TaskStepsChanged, event);
@@ -378,6 +388,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     stopRemoteStatusSubscription();
     stopTaskConvergenceSubscription();
     stopTaskReviewSubscription();
+    stopTaskReviewSignalsSubscription();
     stopTaskStepsSubscription();
     stopTaskPortsSubscription();
   });

@@ -78,6 +78,38 @@ describe('review-diffs', () => {
     });
   });
 
+  it('passes commit-scoped file targets to the branch diff source', async () => {
+    invokeMock.mockResolvedValue({
+      diff: 'diff --git a/src/shared.ts b/src/shared.ts',
+      newContent: 'commit version',
+      oldContent: 'parent version',
+    });
+
+    const request = createTaskReviewDiffRequest({
+      branchName: 'feature/task-1',
+      projectRoot: '/tmp/project',
+      worktreePath: '/tmp/task',
+    });
+    const result = await fetchTaskFileDiff(
+      request,
+      createChangedFile({
+        commitHash: 'abc1234',
+        committed: true,
+        path: 'src/shared.ts',
+        status: 'M',
+      }),
+    );
+
+    expect(result.newContent).toBe('commit version');
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetFileDiffFromBranch, {
+      branchName: 'feature/task-1',
+      commitHash: 'abc1234',
+      filePath: 'src/shared.ts',
+      projectRoot: '/tmp/project',
+      status: 'M',
+    });
+  });
+
   it('falls back to the branch diff source when a worktree file diff is unavailable', async () => {
     invokeMock.mockRejectedValueOnce(new Error('missing worktree')).mockResolvedValueOnce({
       diff: 'diff --git a/src/a.ts b/src/a.ts',

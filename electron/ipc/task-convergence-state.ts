@@ -371,9 +371,11 @@ async function refreshTaskConvergenceInternal(
   }
 
   if (
-    currentMetadata.projectId !== snapshot.projectId ||
-    currentMetadata.branchName !== snapshot.branchName ||
-    currentMetadata.worktreePath !== snapshot.worktreePath
+    currentMetadata.projectId !== metadata.projectId ||
+    currentMetadata.baseBranch !== metadata.baseBranch ||
+    currentMetadata.projectRoot !== metadata.projectRoot ||
+    currentMetadata.branchName !== metadata.branchName ||
+    currentMetadata.worktreePath !== metadata.worktreePath
   ) {
     return;
   }

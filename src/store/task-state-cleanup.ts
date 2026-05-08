@@ -32,6 +32,7 @@ export function removeTaskScopedStoreState(
   deleteRecordEntry(storeState.taskPorts, taskId);
   deleteRecordEntry(storeState.taskConvergence, taskId);
   deleteRecordEntry(storeState.taskReview, taskId);
+  deleteRecordEntry(storeState.taskReviewSignals, taskId);
   deleteRecordEntry(storeState.taskSteps, taskId);
   deleteRecordEntry(storeState.taskStepSummaries, taskId);
   removeTaskCommandControllerStoreState(storeState, taskId);
@@ -108,6 +109,9 @@ export function reconcileTaskScopedStoreStateForExistingTasks(storeState: AppSto
     removeIfTaskMissing(taskId);
   }
   for (const taskId of Object.keys(storeState.taskReview)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskReviewSignals)) {
     removeIfTaskMissing(taskId);
   }
   for (const taskId of Object.keys(storeState.taskSteps)) {

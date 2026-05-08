@@ -11,6 +11,12 @@ import {
 } from '../electron/ipc/task-convergence-state.js';
 import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/task-review-state.js';
 import {
+  getTaskReviewSignalsStateVersion,
+  listTaskReviewSignalsSnapshots,
+  restoreSavedTaskReviewSignals,
+  subscribeTaskReviewSignals,
+} from '../electron/ipc/task-review-signals.js';
+import {
   getTaskStepsStateVersion,
   listTaskStepsSummarySnapshots,
   restoreSavedTaskSteps,
@@ -214,6 +220,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     );
     restoreSavedTaskConvergence(savedAppState);
     restoreSavedTaskReview(savedAppState);
+    restoreSavedTaskReviewSignals(savedAppState);
     restoreSavedTaskSteps(savedAppState);
     const taskConvergenceStateVersion = getTaskConvergenceStateVersion();
     for (const snapshot of getTaskConvergenceSnapshots()) {
@@ -227,6 +234,13 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       controlPlane.emitTaskStepsChanged({
         ...snapshot,
         stateVersion: taskStepsStateVersion,
+      });
+    }
+    const taskReviewSignalsStateVersion = getTaskReviewSignalsStateVersion();
+    for (const snapshot of listTaskReviewSignalsSnapshots()) {
+      controlPlane.emitTaskReviewSignalsChanged({
+        ...snapshot,
+        stateVersion: taskReviewSignalsStateVersion,
       });
     }
   }
@@ -289,6 +303,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupTaskReview = subscribeTaskReview((event) => {
     controlPlane.emitTaskReviewChanged(event);
+  });
+  const cleanupTaskReviewSignals = subscribeTaskReviewSignals((event) => {
+    controlPlane.emitTaskReviewSignalsChanged(event);
   });
   const cleanupTaskSteps = subscribeTaskSteps((event) => {
     controlPlane.emitTaskStepsChanged(event);
@@ -431,6 +448,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupAgentSupervision();
     cleanupTaskConvergence();
     cleanupTaskReview();
+    cleanupTaskReviewSignals();
     cleanupTaskSteps();
     cleanupTaskPorts();
     cleanupPreviewRoutes();

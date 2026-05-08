@@ -68,14 +68,18 @@ function buildOptions(): {
   syncProjectBaseBranchesFromJson: (json: string) => void;
   syncTaskConvergenceFromJson: (json: string) => void;
   syncTaskNamesFromJson: (json: string) => void;
+  syncTaskReviewSignalsFromJson: (json: string) => void;
   syncTaskStepsFromJson: (json: string) => void;
+  syncTaskWorkflowWorktreesFromJson: (json: string) => void;
 } {
   return {
     getTaskName: (taskId: string) => taskId,
     syncProjectBaseBranchesFromJson: vi.fn(),
     syncTaskConvergenceFromJson: vi.fn(),
     syncTaskNamesFromJson: vi.fn(),
+    syncTaskReviewSignalsFromJson: vi.fn(),
     syncTaskStepsFromJson: vi.fn(),
+    syncTaskWorkflowWorktreesFromJson: vi.fn(),
   };
 }
 

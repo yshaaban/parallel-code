@@ -15,6 +15,10 @@ import {
   getTaskCommandControllerStateVersion,
 } from './task-command-leases.js';
 import { getTaskReviewStateVersion, listTaskReviewSnapshots } from './task-review-state.js';
+import {
+  getTaskReviewSignalsStateVersion,
+  listTaskReviewSignalsSnapshots,
+} from './task-review-signals.js';
 import { getTaskStepsStateVersion, listTaskStepsSummarySnapshots } from './task-steps.js';
 import { getTaskPortsStateVersion, getTaskPortSnapshots } from './task-ports.js';
 
@@ -71,6 +75,11 @@ export function getServerStateBootstrap(
       'task-review',
       listTaskReviewSnapshots(),
       getTaskReviewStateVersion(),
+    ),
+    createServerStateBootstrapSnapshot(
+      'task-review-signals',
+      listTaskReviewSignalsSnapshots(),
+      getTaskReviewSignalsStateVersion(),
     ),
     createServerStateBootstrapSnapshot(
       'task-steps',

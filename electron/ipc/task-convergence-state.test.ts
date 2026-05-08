@@ -301,6 +301,91 @@ describe('task convergence state', () => {
       totalRemoved: 1,
     });
   });
+
+  it('ignores in-flight convergence snapshots when task metadata changes', async () => {
+    const firstProjectDiff = createDeferred<{
+      files: Array<{
+        committed: boolean;
+        lines_added: number;
+        lines_removed: number;
+        path: string;
+        status: string;
+      }>;
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    registerTaskConvergenceTask({
+      baseBranch: 'release/old',
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+
+    getProjectDiffMock.mockReturnValueOnce(firstProjectDiff.promise).mockResolvedValueOnce({
+      files: [
+        {
+          committed: true,
+          lines_added: 5,
+          lines_removed: 0,
+          path: 'src/new-base.ts',
+          status: 'modified',
+        },
+      ],
+      totalAdded: 5,
+      totalRemoved: 0,
+    });
+    getWorktreeStatusMock.mockResolvedValue({
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    checkMergeStatusMock.mockResolvedValue({
+      conflicting_files: [],
+      current_branch: 'feature/task-1',
+      main_ahead_count: 0,
+    });
+    getBranchLogMock.mockResolvedValue('commit one\n');
+
+    const refresh = refreshTaskConvergence('task-1');
+
+    registerTaskConvergenceTask({
+      baseBranch: 'release/new',
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+    firstProjectDiff.resolve({
+      files: [
+        {
+          committed: true,
+          lines_added: 2,
+          lines_removed: 1,
+          path: 'src/old-base.ts',
+          status: 'modified',
+        },
+      ],
+      totalAdded: 2,
+      totalRemoved: 1,
+    });
+
+    await refresh;
+
+    expect(getProjectDiffMock).toHaveBeenNthCalledWith(1, '/tmp/task-1', 'branch', 'release/old');
+    expect(getProjectDiffMock).toHaveBeenNthCalledWith(2, '/tmp/task-1', 'branch', 'release/new');
+    expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
+      branchFiles: ['src/new-base.ts'],
+      changedFileCount: 1,
+      totalAdded: 5,
+      totalRemoved: 0,
+    });
+  });
+
   it('marks review state as needs-refresh when the worktree branch drifts from task metadata', async () => {
     registerTaskConvergenceTask({
       branchName: 'feature/task-1',

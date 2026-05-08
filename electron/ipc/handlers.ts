@@ -8,10 +8,13 @@ import { createTaskCommandLeaseIpcHandlers } from './task-command-lease-handlers
 import { createTaskAiIpcHandlers } from './task-ai-handlers.js';
 import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js';
 import { createTaskContainerIpcHandlers } from './task-container-handlers.js';
+import { createTaskReviewSignalsIpcHandlers } from './task-review-signals-handlers.js';
 import { createTaskStepsIpcHandlers } from './task-steps-handlers.js';
 import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
+import { syncTaskReviewSignalsFromSavedState } from './task-review-signals.js';
 import { syncTaskStepsFromSavedState } from './task-steps.js';
+import { syncTaskWorkflowWorktreesFromSavedState } from './task-workflows.js';
 import { createTaskPortIpcHandlers } from './task-port-handlers.js';
 import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
 import { loadTaskRegistryStateForEnv } from './storage.js';
@@ -34,6 +37,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
 
   if (savedTaskRegistryState) {
     taskRegistry.syncFromSavedState(savedTaskRegistryState);
+    syncTaskWorkflowWorktreesFromSavedState(savedTaskRegistryState);
   }
 
   function syncTaskNamesFromJson(json: string): void {
@@ -47,6 +51,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
     ...createTaskAndGitIpcHandlers(context, taskRegistry),
     ...createTaskCommandLeaseIpcHandlers(context),
     ...createTaskConvergenceIpcHandlers(),
+    ...createTaskReviewSignalsIpcHandlers(),
     ...createTaskStepsIpcHandlers(),
     ...createTaskContainerIpcHandlers(context),
     ...createTaskPortIpcHandlers(),
@@ -57,7 +62,9 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
       syncProjectBaseBranchesFromJson: syncConfiguredBaseBranchesFromSavedState,
       syncTaskNamesFromJson,
       syncTaskConvergenceFromJson: syncTaskConvergenceFromSavedState,
+      syncTaskReviewSignalsFromJson: syncTaskReviewSignalsFromSavedState,
       syncTaskStepsFromJson: syncTaskStepsFromSavedState,
+      syncTaskWorkflowWorktreesFromJson: syncTaskWorkflowWorktreesFromSavedState,
     }),
   } satisfies IpcHandlerMap;
 }

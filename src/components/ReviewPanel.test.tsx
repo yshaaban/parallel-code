@@ -6,12 +6,17 @@ import type { ReviewSession } from '../app/review-session';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
-const { fetchTaskFileDiffMock, fetchTaskReviewFilesMock, getTaskConvergenceSnapshotMock } =
-  vi.hoisted(() => ({
-    fetchTaskFileDiffMock: vi.fn(),
-    fetchTaskReviewFilesMock: vi.fn(),
-    getTaskConvergenceSnapshotMock: vi.fn(),
-  }));
+const {
+  fetchBranchCommitHistoryMock,
+  fetchTaskFileDiffMock,
+  fetchTaskReviewFilesMock,
+  getTaskConvergenceSnapshotMock,
+} = vi.hoisted(() => ({
+  fetchBranchCommitHistoryMock: vi.fn(),
+  fetchTaskFileDiffMock: vi.fn(),
+  fetchTaskReviewFilesMock: vi.fn(),
+  getTaskConvergenceSnapshotMock: vi.fn(),
+}));
 
 vi.mock('../app/review-diffs', () => ({
   createTaskReviewDiffRequest: vi.fn((request: Record<string, unknown>) => request),
@@ -21,6 +26,10 @@ vi.mock('../app/review-diffs', () => ({
 vi.mock('../app/review-files', () => ({
   createTaskReviewFilesRequest: vi.fn((request: Record<string, unknown>) => request),
   fetchTaskReviewFiles: fetchTaskReviewFilesMock,
+}));
+
+vi.mock('../app/review-commit-history', () => ({
+  fetchBranchCommitHistory: fetchBranchCommitHistoryMock,
 }));
 
 vi.mock('../app/task-convergence', () => ({
@@ -99,6 +108,12 @@ describe('ReviewPanel', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    fetchBranchCommitHistoryMock.mockResolvedValue({
+      baseHash: 'base',
+      commits: [],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
     getTaskConvergenceSnapshotMock.mockReturnValue(undefined);
     Object.defineProperty(globalThis.navigator, 'clipboard', {
       configurable: true,
@@ -158,6 +173,158 @@ describe('ReviewPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('updated.ts')).toBeDefined();
     });
+  });
+
+  it('refreshes commit history from pushed task-review revisions', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: true, path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock
+      .mockResolvedValueOnce({
+        baseHash: 'base',
+        commits: [
+          {
+            authoredAt: '2026-05-08T10:00:00Z',
+            authorName: 'Dev One',
+            files: [],
+            hash: 'old1111',
+            parentHashes: ['base'],
+            shortHash: 'old111',
+            subject: 'Old history',
+            totalAdded: 0,
+            totalRemoved: 0,
+          },
+        ],
+        headHash: 'old-head',
+        revisionId: 'base:old-head',
+      })
+      .mockResolvedValueOnce({
+        baseHash: 'base',
+        commits: [
+          {
+            authoredAt: '2026-05-08T11:00:00Z',
+            authorName: 'Dev Two',
+            files: [],
+            hash: 'new2222',
+            parentHashes: ['base'],
+            shortHash: 'new222',
+            subject: 'New history',
+            totalAdded: 0,
+            totalRemoved: 0,
+          },
+        ],
+        headHash: 'new-head',
+        revisionId: 'base:new-head',
+      });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('old111')).toBeDefined();
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ committed: true, path: 'src/second.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 4,
+      totalRemoved: 0,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+
+    expect(await screen.findByText('new222')).toBeDefined();
+    expect(screen.queryByText('old111')).toBeNull();
+    expect(fetchBranchCommitHistoryMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps commit history stable for uncommitted-only review revisions', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: true, path: 'src/committed.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock.mockResolvedValue({
+      baseHash: 'base',
+      commits: [
+        {
+          authoredAt: '2026-05-08T10:00:00Z',
+          authorName: 'Dev One',
+          files: [],
+          hash: 'abc1111',
+          parentHashes: ['base'],
+          shortHash: 'abc111',
+          subject: 'Committed history',
+          totalAdded: 0,
+          totalRemoved: 0,
+        },
+      ],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('abc111')).toBeDefined();
+    expect(fetchBranchCommitHistoryMock).toHaveBeenCalledTimes(1);
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [
+        createChangedFile({ committed: true, path: 'src/committed.ts' }),
+        createChangedFile({ committed: false, path: 'src/uncommitted.ts' }),
+      ],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 8,
+      totalRemoved: 2,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+    await Promise.resolve();
+
+    expect(fetchBranchCommitHistoryMock).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes non-all task review modes when pushed review state changes revision', async () => {
@@ -833,6 +1000,160 @@ describe('ReviewPanel', () => {
       );
       expect(screen.getByTestId('diff-editor').textContent).toContain('branch-version');
     });
+  });
+
+  it('uses commit-scoped file targets when a commit is selected', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [
+          createChangedFile({
+            committed: true,
+            lines_added: 20,
+            path: 'src/shared.ts',
+            status: 'M',
+          }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 20,
+        totalRemoved: 0,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock.mockResolvedValue({
+      baseHash: 'base',
+      commits: [
+        {
+          authoredAt: '2026-05-08T10:00:00Z',
+          authorName: 'Dev One',
+          files: [
+            {
+              commitHash: 'abc1234',
+              committed: true,
+              lines_added: 2,
+              lines_removed: 1,
+              path: 'src/shared.ts',
+              status: 'M',
+            },
+          ],
+          hash: 'abc1234',
+          parentHashes: ['base'],
+          shortHash: 'abc123',
+          subject: 'Focused change',
+          totalAdded: 2,
+          totalRemoved: 1,
+        },
+      ],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.commitHash ? 'commit-version' : 'branch-version')),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.click(await screen.findByText('abc123'));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          branchName: 'feature/task-1',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task-1',
+        }),
+        expect.objectContaining({
+          commitHash: 'abc1234',
+          committed: true,
+          lines_added: 2,
+          path: 'src/shared.ts',
+        }),
+      );
+    });
+  });
+
+  it('does not apply commit history selection to staged and unstaged modes', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: true, path: 'src/branch.ts', status: 'M' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchBranchCommitHistoryMock.mockResolvedValue({
+      baseHash: 'base',
+      commits: [
+        {
+          authoredAt: '2026-05-08T10:00:00Z',
+          authorName: 'Dev One',
+          files: [
+            {
+              commitHash: 'abc1234',
+              committed: true,
+              lines_added: 2,
+              lines_removed: 1,
+              path: 'src/branch.ts',
+              status: 'M',
+            },
+          ],
+          hash: 'abc1234',
+          parentHashes: ['base'],
+          shortHash: 'abc123',
+          subject: 'Focused change',
+          totalAdded: 2,
+          totalRemoved: 1,
+        },
+      ],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
+    fetchTaskReviewFilesMock.mockResolvedValue({
+      files: [createChangedFile({ committed: false, path: 'src/staged.ts', status: 'M' })],
+      totalAdded: 1,
+      totalRemoved: 0,
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.click(await screen.findByText('abc123'));
+    expect(await screen.findByText('branch.ts')).toBeDefined();
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'staged' },
+    });
+
+    expect(await screen.findByText('staged.ts')).toBeDefined();
+    expect(screen.queryByText('abc123')).toBeNull();
   });
 
   it('shows convergence summary when task review data exists', async () => {

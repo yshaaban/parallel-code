@@ -44,6 +44,7 @@ export function createInitialAppStore(): AppStore {
     taskPorts: {},
     taskConvergence: {},
     taskReview: {},
+    taskReviewSignals: {},
     taskSteps: {},
     taskStepSummaries: {},
     focusedPanel: {},

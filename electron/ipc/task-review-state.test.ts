@@ -199,6 +199,49 @@ describe('task-review-state', () => {
     });
   });
 
+  it('ignores in-flight snapshots when review metadata changes', async () => {
+    const firstLoad = createDeferred<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    getProjectDiffMock.mockReturnValueOnce(firstLoad.promise).mockResolvedValueOnce({
+      files: [createChangedFile({ path: 'src/new-base.ts' })],
+      totalAdded: 6,
+      totalRemoved: 0,
+    });
+
+    registerTask({ baseBranch: 'release/old' });
+    const refresh = refreshTaskReview('task-1');
+
+    registerTask({ baseBranch: 'release/new' });
+    firstLoad.resolve({
+      files: [createChangedFile({ path: 'src/old-base.ts' })],
+      totalAdded: 3,
+      totalRemoved: 1,
+    });
+
+    await refresh;
+
+    expect(getProjectDiffMock).toHaveBeenNthCalledWith(
+      1,
+      '/tmp/project/task-1',
+      'all',
+      'release/old',
+    );
+    expect(getProjectDiffMock).toHaveBeenNthCalledWith(
+      2,
+      '/tmp/project/task-1',
+      'all',
+      'release/new',
+    );
+    expect(getTaskReviewSnapshot('task-1')).toMatchObject({
+      files: [expect.objectContaining({ path: 'src/new-base.ts' })],
+      revisionId: expect.stringContaining('src/new-base.ts'),
+    });
+  });
+
   it('restores review metadata from saved state even when the task name is missing', async () => {
     getProjectDiffMock.mockResolvedValue({
       files: [createChangedFile({ path: 'src/restored.ts' })],

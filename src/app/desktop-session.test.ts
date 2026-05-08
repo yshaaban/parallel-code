@@ -263,6 +263,8 @@ vi.mock('../lib/ipc-events', () => ({
     listenMock(IPC.TaskPortsChanged, listener),
   listenTaskReviewChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.TaskReviewChanged, listener),
+  listenTaskReviewSignalsChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskReviewSignalsChanged, listener),
   listenTaskStepsChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.TaskStepsChanged, listener),
 }));
@@ -1671,9 +1673,11 @@ describe('desktop session startup sequencing', () => {
     expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
       bufferedEvents: expect.objectContaining({
         'task-review': 1,
+        'task-review-signals': 0,
       }),
       bufferedSnapshots: expect.objectContaining({
         'task-review': 0,
+        'task-review-signals': 0,
       }),
       completions: expect.any(Number),
       lastDurationMs: expect.any(Number),

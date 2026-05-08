@@ -89,7 +89,9 @@ interface SavedStateSyncOptions {
   syncProjectBaseBranchesFromJson: (json: string) => void;
   syncTaskConvergenceFromJson: (json: string) => void;
   syncTaskNamesFromJson: (json: string) => void;
+  syncTaskReviewSignalsFromJson: (json: string) => void;
   syncTaskStepsFromJson: (json: string) => void;
+  syncTaskWorkflowWorktreesFromJson: (json: string) => void;
 }
 
 interface LoadedWorkspaceState {
@@ -168,10 +170,7 @@ function loadSavedAppStateJson(
     return null;
   }
 
-  options.syncTaskNamesFromJson(json);
-  options.syncTaskConvergenceFromJson(json);
-  options.syncTaskStepsFromJson(json);
-  options.syncProjectBaseBranchesFromJson(json);
+  syncSavedStateJson(json, options);
   return json;
 }
 
@@ -181,7 +180,7 @@ function loadSavedWorkspaceState(
 ): LoadedWorkspaceState {
   const savedWorkspace = loadWorkspaceStateForEnv(context);
   if (savedWorkspace) {
-    syncSavedWorkspaceStateJson(savedWorkspace.json, options);
+    syncSavedStateJson(savedWorkspace.json, options);
     return savedWorkspace;
   }
 
@@ -192,10 +191,12 @@ function loadSavedWorkspaceState(
   };
 }
 
-function syncSavedWorkspaceStateJson(json: string, options: SavedStateSyncOptions): void {
+function syncSavedStateJson(json: string, options: SavedStateSyncOptions): void {
   options.syncTaskNamesFromJson(json);
   options.syncTaskConvergenceFromJson(json);
+  options.syncTaskReviewSignalsFromJson(json);
   options.syncTaskStepsFromJson(json);
+  options.syncTaskWorkflowWorktreesFromJson(json);
   options.syncProjectBaseBranchesFromJson(json);
 }
 
@@ -207,7 +208,7 @@ function createBrowserReconnectSnapshot(
   const appStateJson = loadSavedAppStateJson(context, options);
   const savedWorkspace = loadWorkspaceStateForEnv(context);
   if (savedWorkspace) {
-    syncSavedWorkspaceStateJson(savedWorkspace.json, options);
+    syncSavedStateJson(savedWorkspace.json, options);
   }
 
   const workspace = savedWorkspace ?? {
@@ -475,10 +476,7 @@ export function createSystemIpcHandlers(
       const request = args;
       assertString(request.json, 'json');
       assertOptionalString(request.sourceId, 'sourceId');
-      options.syncTaskNamesFromJson(request.json);
-      options.syncTaskConvergenceFromJson(request.json);
-      options.syncTaskStepsFromJson(request.json);
-      options.syncProjectBaseBranchesFromJson(request.json);
+      syncSavedStateJson(request.json, options);
       clearReconnectSnapshotCache(context.userDataPath);
       saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
@@ -510,9 +508,7 @@ export function createSystemIpcHandlers(
           throw new BadRequestError('Workspace state revision conflict');
         }
 
-        options.syncTaskNamesFromJson(request.json);
-        options.syncTaskConvergenceFromJson(request.json);
-        options.syncProjectBaseBranchesFromJson(request.json);
+        syncSavedStateJson(request.json, options);
 
         const nextRevision = currentRevision + 1;
         clearReconnectSnapshotCache(context.userDataPath);

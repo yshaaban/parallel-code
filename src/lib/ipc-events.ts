@@ -53,6 +53,12 @@ export function listenTaskReviewChanged(
   return listenRendererEvent(IPC.TaskReviewChanged, listener);
 }
 
+export function listenTaskReviewSignalsChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.TaskReviewSignalsChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.TaskReviewSignalsChanged, listener);
+}
+
 export function listenTaskStepsChanged(
   listener: (payload: RendererIpcEventPayloads[IPC.TaskStepsChanged]) => void,
 ): () => void {

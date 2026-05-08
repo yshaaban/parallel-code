@@ -41,6 +41,7 @@ describe('server state bootstrap registry guardrails', () => {
       'task-command-controller': { browser: 'persistent', electron: 'persistent' },
       'task-convergence': { browser: 'persistent', electron: 'persistent' },
       'task-review': { browser: 'persistent', electron: 'persistent' },
+      'task-review-signals': { browser: 'persistent', electron: 'persistent' },
       'task-steps': { browser: 'persistent', electron: 'persistent' },
       'task-ports': { browser: 'startup-only', electron: 'persistent' },
     } as const satisfies Record<

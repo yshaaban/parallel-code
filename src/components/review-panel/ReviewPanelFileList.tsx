@@ -5,6 +5,7 @@ import {
   getChangedFileStatusCategory,
   type ChangedFileStatusCategory,
 } from '../../domain/git-status';
+import type { ReviewCommitSummary } from '../../domain/review-commit-history';
 import type { ChangedFile } from '../../ipc/types';
 import { theme } from '../../lib/theme';
 import { typography } from '../../lib/typography';
@@ -13,7 +14,10 @@ import { scrollSelectedRowIntoView } from '../file-list-scroll';
 interface ReviewPanelFileListProps {
   emptyMessage: string;
   files: ReadonlyArray<ChangedFile>;
+  commits?: ReadonlyArray<ReviewCommitSummary>;
   onSelect: (index: number) => void;
+  onSelectCommit?: (hash: string | null) => void;
+  selectedCommitHash?: string | null;
   selectedIndex: number;
 }
 
@@ -41,6 +45,14 @@ function getStatusIcon(file: ChangedFile): string {
   return REVIEW_FILE_STATUS_ICONS[getFileStatusCategory(file)];
 }
 
+function isAllFilesCommitSelection(selectedCommitHash: string | null | undefined): boolean {
+  return selectedCommitHash === null || selectedCommitHash === undefined;
+}
+
+function getCommitButtonBackground(active: boolean): string {
+  return active ? `${theme.accent}25` : 'transparent';
+}
+
 export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Element {
   const fileDisplays = createMemo(() => getChangedFileDisplayEntries(props.files));
   const rowRefs: Array<HTMLDivElement | undefined> = [];
@@ -59,6 +71,67 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
         'flex-shrink': '0',
       }}
     >
+      <Show when={props.commits && props.commits.length > 0}>
+        <div
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '4px',
+            padding: '6px',
+            'border-bottom': `1px solid ${theme.border}`,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => props.onSelectCommit?.(null)}
+            style={{
+              background: getCommitButtonBackground(
+                isAllFilesCommitSelection(props.selectedCommitHash),
+              ),
+              border: `1px solid ${theme.border}`,
+              'border-radius': '6px',
+              color: theme.fg,
+              cursor: 'pointer',
+              padding: '4px 6px',
+              'text-align': 'left',
+              ...typography.metaStrong,
+            }}
+          >
+            All files
+          </button>
+          <For each={props.commits}>
+            {(commit) => (
+              <button
+                type="button"
+                onClick={() => props.onSelectCommit?.(commit.hash)}
+                title={commit.subject}
+                style={{
+                  background: getCommitButtonBackground(props.selectedCommitHash === commit.hash),
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '6px',
+                  color: theme.fgMuted,
+                  cursor: 'pointer',
+                  padding: '4px 6px',
+                  'text-align': 'left',
+                  overflow: 'hidden',
+                  ...typography.monoMeta,
+                }}
+              >
+                <span style={{ color: theme.fg, 'margin-right': '6px' }}>{commit.shortHash}</span>
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    'text-overflow': 'ellipsis',
+                    'white-space': 'nowrap',
+                  }}
+                >
+                  {commit.subject || '(no subject)'}
+                </span>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
       <For each={props.files}>
         {(file, index) => {
           const display = () => fileDisplays()[index()];

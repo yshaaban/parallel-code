@@ -76,16 +76,28 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
     task.projectId = value.projectId;
     hasKnownField = true;
   }
+  if (typeof value.githubUrl === 'string') {
+    task.githubUrl = value.githubUrl;
+    hasKnownField = true;
+  }
   if (typeof value.worktreePath === 'string') {
     task.worktreePath = value.worktreePath;
     hasKnownField = true;
   }
 
-  if (value.gitIsolation === 'worktree' || value.gitIsolation === 'current-branch') {
+  if (
+    value.gitIsolation === 'worktree' ||
+    value.gitIsolation === 'current-branch' ||
+    value.gitIsolation === 'existing-worktree'
+  ) {
     task.gitIsolation = value.gitIsolation;
     hasKnownField = true;
   } else if (value.directMode === true) {
     task.gitIsolation = 'current-branch';
+    hasKnownField = true;
+  }
+  if (value.worktreeOwnership === 'managed' || value.worktreeOwnership === 'external') {
+    task.worktreeOwnership = value.worktreeOwnership;
     hasKnownField = true;
   }
 

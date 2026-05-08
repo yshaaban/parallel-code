@@ -36,6 +36,10 @@ function createBootstrapDescriptors() {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),
     },
+    'task-review-signals': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
     'task-steps': {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),

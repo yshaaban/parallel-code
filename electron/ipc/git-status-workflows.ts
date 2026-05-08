@@ -26,6 +26,7 @@ import {
   scheduleTaskReviewRefreshForBranch,
   scheduleTaskReviewRefreshForWorktree,
 } from './task-review-state.js';
+import { scheduleTaskReviewSignalsRefreshForWorktree } from './task-review-signals.js';
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 import { warn as logWarn } from '../log.js';
 
@@ -138,6 +139,7 @@ export async function refreshGitStatusWorkflow(
   emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath, baseBranch));
   scheduleTaskConvergenceRefreshForWorktree(worktreePath);
   scheduleTaskReviewRefreshForWorktree(worktreePath);
+  scheduleTaskReviewSignalsRefreshForWorktree(worktreePath);
 }
 
 export function scheduleGitStatusRefresh(

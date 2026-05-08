@@ -156,18 +156,31 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
               agentDefId?: string;
               agentDefName?: string;
               directMode?: boolean;
+              gitIsolation?: string;
+              githubUrl?: string;
               name?: string;
             }
           | undefined;
-        const created = result as { id?: string; branch_name?: string; worktree_path?: string };
+        const created = result as {
+          id?: string;
+          branch_name?: string;
+          git_isolation?: string;
+          worktree_path?: string;
+        };
         if (created.id) {
+          const directMode =
+            created.git_isolation === 'current-branch' ||
+            body?.gitIsolation === 'current-branch' ||
+            body?.directMode === true;
           options.taskNames.registerCreatedTask(created.id, {
             agentDefId: typeof body?.agentDefId === 'string' ? body.agentDefId : null,
             agentDefName: typeof body?.agentDefName === 'string' ? body.agentDefName : null,
             branchName: typeof created.branch_name === 'string' ? created.branch_name : null,
-            directMode: body?.directMode === true,
+            directMode,
             taskName: typeof body?.name === 'string' ? body.name : null,
             worktreePath: typeof created.worktree_path === 'string' ? created.worktree_path : null,
+            worktreeOwnership:
+              created.git_isolation === 'existing-worktree' ? 'external' : 'managed',
           });
           options.broadcastControl({
             type: 'task-event',

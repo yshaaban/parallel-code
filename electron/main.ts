@@ -13,6 +13,7 @@ import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { restoreSavedTaskConvergence } from './ipc/task-convergence-state.js';
 import { restoreSavedTaskReview } from './ipc/task-review-state.js';
+import { restoreSavedTaskReviewSignals } from './ipc/task-review-signals.js';
 import { restoreSavedTaskPorts } from './ipc/task-ports.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
@@ -119,6 +120,7 @@ function createWindow(): void {
     );
     restoreSavedTaskConvergence(savedJson);
     restoreSavedTaskReview(savedJson);
+    restoreSavedTaskReviewSignals(savedJson);
     restoreSavedTaskPorts(savedJson);
   }
 

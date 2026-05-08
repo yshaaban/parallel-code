@@ -1627,6 +1627,9 @@ describe('persistence integration', () => {
     setStore('taskReview', {
       'task-1': {} as never,
     });
+    setStore('taskReviewSignals', {
+      'task-1': {} as never,
+    });
     setStore('taskCommandControllers', {
       'task-1': {
         action: 'send a prompt',
@@ -1658,6 +1661,7 @@ describe('persistence integration', () => {
     expect(store.taskPorts['task-1']).toBeUndefined();
     expect(store.taskConvergence['task-1']).toBeUndefined();
     expect(store.taskReview['task-1']).toBeUndefined();
+    expect(store.taskReviewSignals['task-1']).toBeUndefined();
     expect(store.taskCommandControllers['task-1']).toBeUndefined();
     expect(store.agents['agent-1']).toBeUndefined();
     expect(store.agents['shell-1']).toBeUndefined();
