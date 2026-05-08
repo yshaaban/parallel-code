@@ -19,11 +19,25 @@ export function collectTaskAgentIds(task: TaskScopedCleanupSource): string[] {
   return Array.from(new Set([...task.agentIds, ...task.shellAgentIds]));
 }
 
+function removeTaskPermissionRequests(storeState: AppStore, taskId: string): void {
+  for (const [agentId, requests] of Object.entries(storeState.permissionRequests)) {
+    const remainingRequests = requests.filter((request) => request.taskId !== taskId);
+    if (remainingRequests.length === 0) {
+      deleteRecordEntry(storeState.permissionRequests, agentId);
+      continue;
+    }
+
+    storeState.permissionRequests[agentId] = remainingRequests;
+  }
+}
+
 export function removeTaskScopedStoreState(
   storeState: AppStore,
   taskId: string,
   task: TaskScopedCleanupSource = storeState.tasks[taskId],
 ): void {
+  cleanupPanelEntries(storeState, taskId);
+
   if (task?.worktreePath) {
     clearRecentTaskGitStatusPollAge(task.worktreePath);
   }
@@ -35,7 +49,20 @@ export function removeTaskScopedStoreState(
   deleteRecordEntry(storeState.taskReviewSignals, taskId);
   deleteRecordEntry(storeState.taskSteps, taskId);
   deleteRecordEntry(storeState.taskStepSummaries, taskId);
+  deleteRecordEntry(storeState.reviewComments, taskId);
+  deleteRecordEntry(storeState.reviewPanelOpen, taskId);
   removeTaskCommandControllerStoreState(storeState, taskId);
+  removeTaskPermissionRequests(storeState, taskId);
+  storeState.permissionAutoRules = storeState.permissionAutoRules.filter(
+    (rule) => rule.taskId !== taskId,
+  );
+  if (storeState.pendingAction?.taskId === taskId) {
+    storeState.pendingAction = null;
+  }
+  if (storeState.sidebarFocusedTaskId === taskId) {
+    storeState.sidebarFocusedTaskId = null;
+  }
+
   for (const [requestId, request] of Object.entries(storeState.incomingTaskTakeoverRequests)) {
     if (request.taskId !== taskId) {
       continue;
@@ -53,6 +80,7 @@ export function removeAgentScopedStoreState(
     deleteRecordEntry(storeState.agents, agentId);
     deleteRecordEntry(storeState.agentActive, agentId);
     deleteRecordEntry(storeState.agentSupervision, agentId);
+    deleteRecordEntry(storeState.permissionRequests, agentId);
   }
 }
 
@@ -75,7 +103,6 @@ export function removeTerminalStoreState(
 
 export function removeTaskStoreState(storeState: AppStore, taskId: string): void {
   const task = storeState.tasks[taskId];
-  cleanupPanelEntries(storeState, taskId);
   deleteRecordEntry(storeState.tasks, taskId);
   removeTaskScopedStoreState(storeState, taskId, task);
 }
@@ -120,11 +147,27 @@ export function reconcileTaskScopedStoreStateForExistingTasks(storeState: AppSto
   for (const taskId of Object.keys(storeState.taskStepSummaries)) {
     removeIfTaskMissing(taskId);
   }
+  for (const taskId of Object.keys(storeState.reviewComments)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.reviewPanelOpen)) {
+    removeIfTaskMissing(taskId);
+  }
   for (const taskId of Object.keys(storeState.taskCommandControllers)) {
     removeIfTaskMissing(taskId);
   }
   for (const request of Object.values(storeState.incomingTaskTakeoverRequests)) {
     removeIfTaskMissing(request.taskId);
+  }
+  for (const requests of Object.values(storeState.permissionRequests)) {
+    for (const request of requests) {
+      removeIfTaskMissing(request.taskId);
+    }
+  }
+  for (const rule of storeState.permissionAutoRules) {
+    if (rule.taskId !== undefined) {
+      removeIfTaskMissing(rule.taskId);
+    }
   }
 
   return [...removedTaskIds];

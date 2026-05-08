@@ -1239,7 +1239,7 @@ Important properties:
     suppression, and error state
   - `src/components/TaskContainersPanel.tsx` renders that workflow-owned state
 - preview state is replayable after reconnect
-- task deletion clears task-port state
+- task deletion clears task-scoped port, review, permission, takeover, focus, and layout state
 - opening preview is snapshot-first; the controller renders current task-port truth immediately and
   expensive candidate scans stay behind explicit rescan policy
 
