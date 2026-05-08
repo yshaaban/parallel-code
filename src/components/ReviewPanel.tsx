@@ -98,6 +98,13 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const commitHistoryRefreshKey = createMemo(() => getCommitHistoryRefreshKey(reviewSnapshot()));
   const reviewSignalsSnapshot = () =>
     props.taskId ? getTaskReviewSignalsSnapshot(props.taskId) : undefined;
+  const reviewSignalsStale = createMemo(() => {
+    const currentReview = reviewSnapshot();
+    const currentSignals = reviewSignalsSnapshot();
+    return Boolean(
+      currentReview && currentSignals && currentSignals.updatedAt < currentReview.updatedAt,
+    );
+  });
   const controller = createReviewPanelController({
     baseBranch: () => props.baseBranch,
     branchName: () => props.branchName,
@@ -426,7 +433,9 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
       </Show>
 
       <Show when={reviewSignalsSnapshot()}>
-        {(snapshot) => <ReviewPanelSignalsBanner snapshot={snapshot()} />}
+        {(snapshot) => (
+          <ReviewPanelSignalsBanner snapshot={snapshot()} stale={reviewSignalsStale()} />
+        )}
       </Show>
 
       <div style={{ display: 'flex', flex: '1', overflow: 'hidden' }}>

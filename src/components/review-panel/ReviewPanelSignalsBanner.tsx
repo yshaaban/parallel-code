@@ -5,6 +5,7 @@ import { theme } from '../../lib/theme';
 
 interface ReviewPanelSignalsBannerProps {
   snapshot: TaskReviewSignalsSnapshot;
+  stale?: boolean;
 }
 
 const CI_COLORS = {
@@ -79,6 +80,9 @@ export function ReviewPanelSignalsBanner(props: ReviewPanelSignalsBannerProps): 
         overflow: 'hidden',
       }}
     >
+      <Show when={props.stale}>
+        <span style={createSignalChipStyle('#e8a838')}>Signals updating</span>
+      </Show>
       <span style={createSignalChipStyle(CI_COLORS[props.snapshot.ci.state])}>
         {props.snapshot.ci.label}
       </span>

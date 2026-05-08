@@ -2,6 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import {
+  replaceTaskReviewSignalsSnapshots,
+  resetTaskReviewSignalsProjectionStateForTests,
+} from '../app/task-review-signals';
 import type { ReviewSession } from '../app/review-session';
 import type { TaskReviewSnapshot } from '../domain/task-review';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
@@ -125,6 +129,7 @@ describe('ReviewPanel', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    resetTaskReviewSignalsProjectionStateForTests();
     fetchBranchCommitHistoryMock.mockResolvedValue({
       baseHash: 'base',
       commits: [],
@@ -190,6 +195,51 @@ describe('ReviewPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('updated.ts')).toBeDefined();
     });
+  });
+
+  it('marks review signals as updating when they trail the review snapshot', async () => {
+    replaceTaskReviewSnapshots([
+      createReviewSnapshot({
+        revisionId: 'rev-2',
+        updatedAt: 2_000,
+      }),
+    ]);
+    replaceTaskReviewSignalsSnapshots(
+      [
+        {
+          ci: {
+            checkedAt: 900,
+            headSha: 'old-head',
+            label: 'CI passing',
+            state: 'success',
+            totalCount: 3,
+          },
+          coverage: {
+            checkedAt: 900,
+            label: 'Coverage 92.0%',
+            linesPct: 92,
+            state: 'available',
+          },
+          taskId: 'task-1',
+          updatedAt: 1_000,
+        },
+      ],
+      { replaceVersion: 1 },
+    );
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('Signals updating')).toBeDefined();
+    expect(screen.getByText('CI passing')).toBeDefined();
   });
 
   it('refreshes commit history from pushed task-review revisions', async () => {
