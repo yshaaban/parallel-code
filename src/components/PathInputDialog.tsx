@@ -133,8 +133,16 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   let inputRef: HTMLInputElement | undefined;
   let listRef: HTMLDivElement | undefined;
   let latestListingRequest = 0;
+  let latestQuickPickRequest = 0;
+  let latestRecentProjectsRequest = 0;
   const inputFocusFrame = createAnimationFrameTask();
   const highlightScrollFrame = createAnimationFrameTask();
+
+  function invalidatePendingLoads(): void {
+    latestListingRequest += 1;
+    latestQuickPickRequest += 1;
+    latestRecentProjectsRequest += 1;
+  }
 
   function isSshUrlMode(): boolean {
     return Boolean(props.allowSshClone) && isGitSshUrl(value());
@@ -225,6 +233,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   }
 
   async function loadQuickPickPaths(home: string, projectBase: string): Promise<void> {
+    const requestId = ++latestQuickPickRequest;
     setLoadingQuickPicks(true);
 
     const candidates: QuickPick[] = [];
@@ -260,11 +269,16 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       }),
     );
 
+    if (requestId !== latestQuickPickRequest) {
+      return;
+    }
+
     setQuickPicks(existing.filter((candidate): candidate is QuickPick => candidate !== null));
     setLoadingQuickPicks(false);
   }
 
   async function loadRecentProjects(home: string): Promise<void> {
+    const requestId = ++latestRecentProjectsRequest;
     setLoadingRecentProjects(true);
 
     try {
@@ -289,11 +303,17 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
         });
       }
 
-      setRecentProjects(items);
+      if (requestId === latestRecentProjectsRequest) {
+        setRecentProjects(items);
+      }
     } catch {
-      setRecentProjects([]);
+      if (requestId === latestRecentProjectsRequest) {
+        setRecentProjects([]);
+      }
     } finally {
-      setLoadingRecentProjects(false);
+      if (requestId === latestRecentProjectsRequest) {
+        setLoadingRecentProjects(false);
+      }
     }
   }
 
@@ -438,6 +458,10 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
 
   createEffect(() => {
     if (!props.open) {
+      invalidatePendingLoads();
+      setLoadingDirs(false);
+      setLoadingQuickPicks(false);
+      setLoadingRecentProjects(false);
       inputFocusFrame.cancel();
       highlightScrollFrame.cancel();
       return;
@@ -472,12 +496,14 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
 
     onCleanup(() => {
       cancelled = true;
+      invalidatePendingLoads();
       inputFocusFrame.cancel();
       highlightScrollFrame.cancel();
     });
   });
 
   onCleanup(() => {
+    invalidatePendingLoads();
     inputFocusFrame.cancel();
     highlightScrollFrame.cancel();
   });

@@ -20,6 +20,17 @@ vi.mock('../lib/ipc', () => ({
 import { IPC } from '../../electron/ipc/channels';
 import { PathInputDialog } from './PathInputDialog';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('PathInputDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -168,5 +179,56 @@ describe('PathInputDialog', () => {
 
     expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalled();
     expect(focusSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale recent project loads after the dialog closes and reopens', async () => {
+    const firstRecentProjects = createDeferred<string[]>();
+    let recentProjectRequestCount = 0;
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetHomePath) {
+        return Promise.resolve('/home/tester');
+      }
+      if (channel === IPC.GetProjectBasePath) {
+        return Promise.resolve('/workspace');
+      }
+      if (channel === IPC.ListDirectory) {
+        return Promise.resolve(['projects', 'workspace']);
+      }
+      if (channel === IPC.GetRecentProjects) {
+        recentProjectRequestCount += 1;
+        if (recentProjectRequestCount === 1) {
+          return firstRecentProjects.promise;
+        }
+
+        return Promise.resolve(['/home/tester/projects/new']);
+      }
+      if (channel === IPC.CheckPathExists) {
+        return Promise.resolve(true);
+      }
+      return Promise.resolve(undefined);
+    });
+    const [open, setOpen] = createSignal(true);
+
+    render(() => (
+      <PathInputDialog open={open()} directory onSubmit={vi.fn()} onCancel={() => {}} />
+    ));
+
+    const input = (await screen.findByRole('textbox')) as HTMLInputElement;
+    await waitFor(() => {
+      expect(input.value).toBe('/workspace/');
+    });
+
+    setOpen(false);
+    setOpen(true);
+
+    await waitFor(() => {
+      expect(screen.getByText('new')).toBeTruthy();
+    });
+
+    firstRecentProjects.resolve(['/home/tester/projects/old']);
+    await Promise.resolve();
+
+    expect(screen.getByText('new')).toBeTruthy();
+    expect(screen.queryByText('old')).toBeNull();
   });
 });
