@@ -816,7 +816,9 @@ Important property:
 - global startup visibility is intentionally separate from backend-owned task attention; local
   attach/restore progress belongs to the renderer-side startup owner, not to
   `src/app/task-presentation-status.ts`
-- it is intentionally still separate from PTY resize authority, which remains a follow-up gap
+- local terminal fit stays local, but committed PTY resize authority follows backend task-command
+  control; peer-controlled geometry is deferred locally and server-side resize requests are accepted
+  or rejected by the current task owner
 - dense-overload and surface-role reductions remain explicitly experimental and
   presentation/runtime-only; they may reduce browser work under load, but backend recovery truth and
   switch ownership stay unchanged
@@ -1685,7 +1687,8 @@ Still mixed:
 - Electron git delivery still includes some targeted on-demand refresh in advanced UI surfaces
 - browser replay and Electron startup hydration still restore the same state through different mechanisms
 - remote presence semantics are aligned in shape, but not fully identical in meaning across runtimes
-- resize authority is not yet fully backend-authoritative for shared browser terminals
+- browser viewport/focus geometry still needs targeted browser proof when it changes, even though
+  committed PTY resize authority is tied to backend task ownership
 - full-screen and alt-screen TUI restore still falls back to heavier redraw paths than ideal
 
 Why this matters:
