@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, type JSX } from 'solid-js';
 import { pushTask } from '../app/task-workflows';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
@@ -15,7 +15,8 @@ interface PushDialogProps {
   onDone: (success: boolean) => void;
 }
 
-export function PushDialog(props: PushDialogProps) {
+export function PushDialog(props: PushDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const [pushError, setPushError] = createSignal('');
   const [pushing, setPushing] = createSignal(false);
   const [output, setOutput] = createSignal('');
@@ -84,8 +85,8 @@ export function PushDialog(props: PushDialogProps) {
   }
 
   return (
-    <Dialog open={props.open} onClose={handleDialogClose} width="480px">
-      <DialogHeader title="Push to Remote" />
+    <Dialog open={props.open} onClose={handleDialogClose} width="480px" labelledBy={titleId}>
+      <DialogHeader title="Push to Remote" titleId={titleId} />
       <div style={{ ...typography.ui, color: theme.fgMuted }}>
         <Show
           when={pushing() || output()}

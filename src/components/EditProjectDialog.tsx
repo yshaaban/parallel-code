@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show } from 'solid-js';
+import { createSignal, createEffect, createUniqueId, For, Show, type JSX } from 'solid-js';
 import { relinkProject, removeProjectWithTasks } from '../app/project-workflows';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
@@ -29,7 +29,8 @@ function hueFromColor(color: string): number {
   return match ? Number(match[1]) : 0;
 }
 
-export function EditProjectDialog(props: EditProjectDialogProps) {
+export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const [name, setName] = createSignal('');
   const [selectedHue, setSelectedHue] = createSignal(0);
   const [baseBranch, setBaseBranch] = createSignal('');
@@ -108,12 +109,13 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
       open={props.project !== null}
       onClose={props.onClose}
       width="480px"
+      labelledBy={titleId}
       panelStyle={{ gap: '20px' }}
     >
       <Show when={props.project}>
         {(project) => (
           <>
-            <DialogHeader title="Edit Project" />
+            <DialogHeader title="Edit Project" titleId={titleId} />
 
             {/* Path */}
             <div

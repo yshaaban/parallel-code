@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js';
+import { For, Show, createUniqueId, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { SectionLabel } from './SectionLabel';
@@ -23,8 +23,8 @@ const SECTIONS = [
   {
     title: 'Navigation',
     shortcuts: [
-      [`${alt} + Up/Down`, 'Move between panels or sidebar tasks'],
-      [`${alt} + Left/Right`, 'Navigate within row or across tasks'],
+      [`${alt} + Up/Down`, 'Focus pane above or below'],
+      [`${alt} + Left/Right`, 'Focus sidebar or adjacent task'],
       [`${alt} + Left (from first task)`, 'Focus sidebar'],
       [`${alt} + Right (from sidebar)`, 'Focus active task'],
       ['Enter (in sidebar)', 'Jump to active task panel'],
@@ -39,7 +39,8 @@ const SECTIONS = [
       [`${mod} + Shift + M`, 'Merge active task'],
       [`${mod} + Shift + P`, 'Push to remote'],
       [`${mod} + Shift + T`, 'New task shell terminal'],
-      [`${mod} + Shift + Left/Right`, 'Reorder active task'],
+      [`${mod} + Shift + Left/Right`, 'Move task left or right'],
+      [`${mod} + 1-9`, 'Jump to task by position'],
     ],
   },
   {
@@ -59,10 +60,18 @@ const SECTIONS = [
   },
 ];
 
-export function HelpDialog(props: HelpDialogProps) {
+export function HelpDialog(props: HelpDialogProps): JSX.Element {
+  const titleId = createUniqueId();
+
   return (
-    <Dialog open={props.open} onClose={props.onClose} width="520px" panelStyle={{ gap: '20px' }}>
-      <DialogHeader onClose={props.onClose} title="Help & Shortcuts" />
+    <Dialog
+      open={props.open}
+      onClose={props.onClose}
+      width="520px"
+      labelledBy={titleId}
+      panelStyle={{ gap: '20px' }}
+    >
+      <DialogHeader onClose={props.onClose} title="Help & Shortcuts" titleId={titleId} />
 
       <Show when={props.showIntro}>
         <div

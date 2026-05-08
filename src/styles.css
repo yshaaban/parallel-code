@@ -445,6 +445,42 @@ textarea::placeholder {
   outline-offset: 1.5px;
 }
 
+.dialog-panel
+  :is(
+    button,
+    input,
+    select,
+    textarea,
+    a[href],
+    [tabindex],
+    [role='button'],
+    [role='switch'],
+    [role='checkbox'],
+    [role='link'],
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='menuitemcheckbox'],
+    [role='tab'],
+    [role='option'],
+    [role='combobox'],
+    [role='radio']
+  ):focus-visible {
+  outline: 2.5px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.dialog-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .input-field,
 .prompt-textarea {
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);

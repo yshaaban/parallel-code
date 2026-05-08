@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, onCleanup, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
@@ -37,6 +37,7 @@ interface NewTaskDialogProps {
 }
 
 export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const defaultSkipPermissions = true;
   const [prompt, setPrompt] = createSignal('');
   const [name, setName] = createSignal('');
@@ -357,6 +358,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       open={props.open}
       onClose={props.onClose}
       width={dialogWidth()}
+      labelledBy={titleId}
       panelStyle={{ gap: '20px' }}
     >
       <form
@@ -373,6 +375,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             description={currentBranchGuidance()}
             descriptionTone="muted"
             title="New Task"
+            titleId={titleId}
           />
         </div>
 

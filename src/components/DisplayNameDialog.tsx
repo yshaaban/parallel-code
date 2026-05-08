@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, type JSX } from 'solid-js';
 import type { AppStartupSummary } from '../app/app-startup-status';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
@@ -19,6 +19,7 @@ interface DisplayNameDialogProps {
 
 export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
   let inputRef: HTMLInputElement | undefined;
+  const titleId = createUniqueId();
   const [value, setValue] = createSignal(props.initialValue ?? '');
 
   createEffect(() => {
@@ -66,11 +67,12 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog open={props.open} onClose={close} width="420px">
+    <Dialog open={props.open} onClose={close} width="420px" labelledBy={titleId}>
       <DialogHeader
         description={getDescription()}
         descriptionTone="muted"
         title={getTitle()}
+        titleId={titleId}
         titleSize="lg"
       />
       <Show when={props.startupSummary}>

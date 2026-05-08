@@ -22,6 +22,7 @@ interface DialogHeaderProps {
   descriptionTone?: DialogHeaderDescriptionTone;
   onClose?: () => void;
   title: JSX.Element;
+  titleId?: string;
   titleSize?: DialogHeaderTitleSize;
 }
 
@@ -51,6 +52,7 @@ export function DialogHeader(props: DialogHeaderProps): JSX.Element {
         }}
       >
         <h2
+          id={props.titleId}
           style={{
             margin: '0',
             ...DIALOG_HEADER_TITLE_STYLES[titleSize()],

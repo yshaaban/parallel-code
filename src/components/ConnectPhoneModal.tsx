@@ -3,6 +3,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  createUniqueId,
   onCleanup,
   type JSX,
   untrack,
@@ -24,6 +25,7 @@ interface ConnectPhoneModalProps {
 }
 
 export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
+  const titleId = createUniqueId();
   const electronRuntime = isElectronRuntime();
   const [qrDataUrl, setQrDataUrl] = createSignal<string | null>(null);
   const [starting, setStarting] = createSignal(false);
@@ -168,6 +170,9 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
           <div
             ref={dialogRef}
             tabIndex={0}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
             class="dialog-panel"
             style={{
               background: theme.islandBg,
@@ -188,6 +193,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
               align="center"
               description={electronRuntime ? 'Experimental' : 'Current browser server'}
               title={electronRuntime ? 'Connect Phone' : 'Server Access'}
+              titleId={titleId}
             />
 
             <Show when={starting()}>

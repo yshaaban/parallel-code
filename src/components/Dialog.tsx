@@ -1,7 +1,8 @@
-import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createUniqueId, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { createFocusRestore } from '../lib/focus-restore';
 import { createFocusTrap } from '../lib/focus-trap';
+import { isTopmostDialog, popDialog, pushDialog } from '../lib/dialog-stack';
 import { theme } from '../lib/theme';
 
 interface DialogProps {
@@ -10,23 +11,40 @@ interface DialogProps {
   width?: string;
   zIndex?: number;
   panelStyle?: JSX.CSSProperties;
+  labelledBy?: string;
+  describedBy?: string;
   children: JSX.Element;
 }
 
-export function Dialog(props: DialogProps) {
+export function Dialog(props: DialogProps): JSX.Element {
   let panelRef: HTMLDivElement | undefined;
+  const dialogId = createUniqueId();
 
   createFocusRestore(() => props.open);
   createFocusTrap(
-    () => props.open,
+    () => props.open && isTopmostDialog(dialogId),
     () => panelRef,
   );
 
-  // Escape key → close
+  createEffect(() => {
+    if (!props.open) {
+      return;
+    }
+
+    pushDialog(dialogId);
+    onCleanup(() => popDialog(dialogId));
+  });
+
   createEffect(() => {
     if (!props.open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') props.onClose();
+      if (e.key !== 'Escape' || !isTopmostDialog(dialogId)) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      props.onClose();
     };
     document.addEventListener('keydown', handler);
     onCleanup(() => document.removeEventListener('keydown', handler));
@@ -84,6 +102,10 @@ export function Dialog(props: DialogProps) {
           <div
             ref={panelRef}
             tabIndex={0}
+            role="dialog"
+            aria-modal={isTopmostDialog(dialogId) ? 'true' : undefined}
+            aria-labelledby={props.labelledBy}
+            aria-describedby={props.describedBy}
             class="dialog-panel"
             style={{
               background: theme.islandBg,

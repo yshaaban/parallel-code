@@ -1,4 +1,12 @@
-import { createEffect, createSignal, For, onCleanup, Show, type JSX } from 'solid-js';
+import {
+  createEffect,
+  createSignal,
+  createUniqueId,
+  For,
+  onCleanup,
+  Show,
+  type JSX,
+} from 'solid-js';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { deriveRepoNameFromSshUrl, isGitSshUrl } from '../lib/git-ssh-url';
@@ -108,6 +116,7 @@ async function loadDialogBasePaths(): Promise<DialogBasePaths> {
 }
 
 export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const [value, setValue] = createSignal('');
   const [homePath, setHomePath] = createSignal('/');
   const [projectBasePath, setProjectBasePath] = createSignal('/');
@@ -482,8 +491,9 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   });
 
   return (
-    <Dialog open={props.open} onClose={props.onCancel} width="640px">
+    <Dialog open={props.open} onClose={props.onCancel} width="640px" labelledBy={titleId}>
       <h2
+        id={titleId}
         style={{
           margin: '0',
           color: theme.fg,

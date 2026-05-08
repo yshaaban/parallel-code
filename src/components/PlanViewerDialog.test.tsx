@@ -4,15 +4,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   getPlanSelectionMock,
+  isElectronRuntimeMock,
   mermaidInitializeMock,
   mermaidRenderMock,
+  openFileInEditorMock,
   openMarkdownViewerMock,
+  showNotificationMock,
   writeTextMock,
 } = vi.hoisted(() => ({
   getPlanSelectionMock: vi.fn(),
+  isElectronRuntimeMock: vi.fn(() => true),
   mermaidInitializeMock: vi.fn(),
   mermaidRenderMock: vi.fn(),
+  openFileInEditorMock: vi.fn(),
   openMarkdownViewerMock: vi.fn(),
+  showNotificationMock: vi.fn(),
   writeTextMock: vi.fn(async () => undefined),
 }));
 
@@ -22,6 +28,22 @@ vi.mock('../lib/plan-selection', () => ({
 
 vi.mock('../app/markdown-viewer', () => ({
   openMarkdownViewer: openMarkdownViewerMock,
+}));
+
+vi.mock('../lib/browser-auth', async () => {
+  const actual = await vi.importActual<typeof import('../lib/browser-auth')>('../lib/browser-auth');
+  return {
+    ...actual,
+    isElectronRuntime: isElectronRuntimeMock,
+  };
+});
+
+vi.mock('../lib/shell', () => ({
+  openFileInEditor: openFileInEditorMock,
+}));
+
+vi.mock('../store/notification', () => ({
+  showNotification: showNotificationMock,
 }));
 
 vi.mock('mermaid', () => ({
@@ -41,8 +63,12 @@ describe('PlanViewerDialog', () => {
     getPlanSelectionMock.mockReset();
     mermaidInitializeMock.mockReset();
     mermaidRenderMock.mockReset();
+    openFileInEditorMock.mockReset();
+    openFileInEditorMock.mockResolvedValue(undefined);
     openMarkdownViewerMock.mockReset();
     openMarkdownViewerMock.mockResolvedValue(true);
+    showNotificationMock.mockReset();
+    isElectronRuntimeMock.mockReturnValue(true);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: writeTextMock },
@@ -65,6 +91,42 @@ describe('PlanViewerDialog', () => {
     ));
 
     expect(screen.getByText('plan.md')).toBeTruthy();
+  });
+
+  it('opens the backing plan file in the editor when available', async () => {
+    render(() => (
+      <PlanViewerDialog
+        open
+        onClose={() => {}}
+        planContent={'# Example Plan'}
+        planFileName="plan.md"
+        relativePath=".parallel-code/plan.md"
+        worktreePath="/tmp/task"
+      />
+    ));
+
+    fireEvent.click(screen.getByLabelText('Open plan in editor'));
+
+    await waitFor(() => {
+      expect(openFileInEditorMock).toHaveBeenCalledWith('/tmp/task', '.parallel-code/plan.md');
+    });
+  });
+
+  it('does not show editor actions in browser mode', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    render(() => (
+      <PlanViewerDialog
+        open
+        onClose={() => {}}
+        planContent={'# Example Plan'}
+        planFileName="plan.md"
+        relativePath=".parallel-code/plan.md"
+        worktreePath="/tmp/task"
+      />
+    ));
+
+    expect(screen.queryByLabelText('Open plan in editor')).toBeNull();
   });
 
   it('renders the plan markdown content when open', async () => {

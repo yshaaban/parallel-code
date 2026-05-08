@@ -1,4 +1,4 @@
-import { Show, createEffect, type JSX } from 'solid-js';
+import { Show, createEffect, createUniqueId, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { typography } from '../lib/typography';
@@ -15,12 +15,15 @@ interface ConfirmDialogProps {
   confirmDisabled?: boolean;
   autoFocusCancel?: boolean;
   width?: string;
+  labelledBy?: string;
+  describedBy?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-export function ConfirmDialog(props: ConfirmDialogProps) {
+export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
   let cancelRef: HTMLButtonElement | undefined;
+  const generatedTitleId = createUniqueId();
 
   // Auto-focus the cancel button (or let Dialog's panel get focus)
   createEffect(() => {
@@ -38,8 +41,14 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
   });
 
   return (
-    <Dialog open={props.open} onClose={props.onCancel} width={props.width}>
-      <DialogHeader title={props.title} />
+    <Dialog
+      open={props.open}
+      onClose={props.onCancel}
+      width={props.width}
+      labelledBy={props.labelledBy ?? generatedTitleId}
+      describedBy={props.describedBy}
+    >
+      <DialogHeader title={props.title} titleId={props.labelledBy ? undefined : generatedTitleId} />
 
       <div style={{ ...typography.ui, color: theme.fgMuted }}>{props.message}</div>
 

@@ -1,13 +1,24 @@
-import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import {
+  For,
+  Show,
+  createEffect,
+  createSignal,
+  createUniqueId,
+  onCleanup,
+  type JSX,
+} from 'solid-js';
 
 import { openMarkdownViewer } from '../app/markdown-viewer';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
 import { getPlanSelection } from '../lib/plan-selection';
 import { compilePlanReviewPrompt } from '../lib/review-prompts';
+import { openFileInEditor } from '../lib/shell';
 import { theme } from '../lib/theme';
+import { showNotification } from '../store/notification';
 import { AskCodeCard } from './AskCodeCard';
 import { Dialog } from './Dialog';
 import { InlineInput } from './InlineInput';
@@ -171,6 +182,7 @@ function normalizeMarkdownLinkRelativePath(
 }
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const planHtml = createHighlightedMarkdown(() => props.planContent, {
     renderSpecialCodeBlock: (block) => renderPlanMermaidCodeBlock(block.lang, block.text),
   });
@@ -184,6 +196,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const [cardOffsets, setCardOffsets] = createSignal<Record<string, number>>({});
   const [highlightRects, setHighlightRects] = createSignal<HighlightRect[]>([]);
   const [selectionY, setSelectionY] = createSignal(0);
+  const electronRuntime = isElectronRuntime();
   let mermaidRenderGeneration = 0;
   let contentRef: HTMLDivElement | undefined;
   let scrollRef: HTMLDivElement | undefined;
@@ -415,11 +428,28 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     });
   }
 
+  function canOpenPlanInEditor(): boolean {
+    return electronRuntime && Boolean(props.worktreePath && props.relativePath);
+  }
+
+  async function handleOpenPlanInEditor(): Promise<void> {
+    if (!props.worktreePath || !props.relativePath) {
+      return;
+    }
+
+    await openFileInEditor(props.worktreePath, props.relativePath).catch((error) => {
+      showNotification(
+        `Could not open plan file: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
   return (
     <Dialog
       open={props.open}
       onClose={closeDialog}
       width="min(1000px, 86vw)"
+      labelledBy={titleId}
       panelStyle={{
         height: '78vh',
         'max-width': '1200px',
@@ -428,6 +458,9 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
         gap: '0',
       }}
     >
+      <h2 id={titleId} class="dialog-sr-only">
+        Plan viewer: {props.planFileName ?? 'Plan'}
+      </h2>
       <Show when={props.open}>
         <>
           <div
@@ -459,8 +492,35 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
 
             <span style={{ flex: '1' }} />
 
+            <Show when={canOpenPlanInEditor()}>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenPlanInEditor();
+                }}
+                aria-label="Open plan in editor"
+                title="Open in editor"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: theme.fgMuted,
+                  cursor: 'pointer',
+                  padding: '4px',
+                  display: 'flex',
+                  'align-items': 'center',
+                  'border-radius': '4px',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M3.5 2A1.5 1.5 0 0 0 2 3.5v9A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5v-3a.75.75 0 0 1 1.5 0v3A3 3 0 0 1 12.5 16h-9A3 3 0 0 1 0 12.5v-9A3 3 0 0 1 3.5 0h3a.75.75 0 0 1 0 1.5h-3ZM10 .75a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0V2.56L8.53 8.53a.75.75 0 0 1-1.06-1.06L13.44 1.5h-2.69A.75.75 0 0 1 10 .75Z" />
+                </svg>
+              </button>
+            </Show>
+
             <button
+              type="button"
               onClick={closeDialog}
+              aria-label="Close plan viewer"
               style={{
                 background: 'transparent',
                 border: 'none',
