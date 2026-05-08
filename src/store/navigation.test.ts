@@ -81,11 +81,35 @@ describe('moveActiveTask', () => {
       'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-2' }),
     });
     setStore('taskOrder', ['task-1', 'task-2']);
+    setStore('focusedPanel', { 'task-2': 'changed-files' });
+    const focusMock = vi.fn();
+    registerFocusFn('task-2:changed-files', focusMock);
 
     jumpToTask(1);
 
     expect(store.activeTaskId).toBe('task-2');
     expect(store.activeAgentId).toBe('agent-2');
+    expect(focusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('jumps to a standalone terminal by task order index and focuses the terminal panel', () => {
+    setStore('terminals', {
+      'terminal-1': {
+        agentId: 'terminal-agent-1',
+        id: 'terminal-1',
+        name: 'Terminal 1',
+      },
+    });
+    setStore('taskOrder', ['terminal-1']);
+    const focusMock = vi.fn();
+    registerFocusFn('terminal-1:terminal', focusMock);
+
+    jumpToTask(0);
+
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.activeAgentId).toBe(null);
+    expect(store.focusedPanel['terminal-1']).toBe('terminal');
+    expect(focusMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not jump when the task order index is out of bounds', () => {

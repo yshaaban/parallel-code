@@ -43,6 +43,7 @@ export function jumpToTask(index: number): void {
   const nextTaskId = store.taskOrder[index];
   if (!nextTaskId) return;
   setActiveTask(nextTaskId);
+  setTaskFocusedPanel(nextTaskId, getTaskFocusedPanel(nextTaskId));
 }
 
 export function toggleNewTaskDialog(show?: boolean): void {
