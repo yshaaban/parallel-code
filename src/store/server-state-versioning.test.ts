@@ -5,6 +5,7 @@ import {
   noteServerStateReplacement,
   shouldApplyServerStateEventVersion,
   shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
 } from './server-state-versioning.js';
 
 describe('server state versioning', () => {
@@ -23,5 +24,26 @@ describe('server state versioning', () => {
     expect(shouldApplyServerStateEventVersion(tracker, 'task-1', 2)).toBe(true);
     expect(shouldApplyServerStateEventVersion(tracker, 'task-2', 1)).toBe(false);
     expect(shouldApplyServerStateReplacement(tracker, 1)).toBe(false);
+  });
+
+  it('rejects unversioned events after versioned truth for the same key', () => {
+    const tracker = createServerStateVersionTracker();
+
+    expect(
+      shouldApplyServerStateSnapshotEvent(tracker, 'task-1', undefined, undefined, 1_000),
+    ).toBe(true);
+
+    expect(shouldApplyServerStateSnapshotEvent(tracker, 'task-1', 2, 1_000, 1_000)).toBe(true);
+    expect(shouldApplyServerStateEventVersion(tracker, 'task-1', 2)).toBe(true);
+    noteServerStateReplacement(tracker, ['task-1'], 2);
+
+    expect(shouldApplyServerStateSnapshotEvent(tracker, 'task-1', undefined, 1_000, 1_000)).toBe(
+      false,
+    );
+    expect(shouldApplyServerStateSnapshotEvent(tracker, 'task-1', undefined, 1_000, 2_000)).toBe(
+      false,
+    );
+    expect(shouldApplyServerStateEventVersion(tracker, 'task-1', undefined)).toBe(false);
+    expect(shouldApplyServerStateEventVersion(tracker, 'task-2', undefined)).toBe(true);
   });
 });

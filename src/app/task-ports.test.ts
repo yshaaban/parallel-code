@@ -169,4 +169,73 @@ describe('task preview urls', () => {
       updatedAt: 2_000,
     });
   });
+
+  it('ignores stale unversioned task-port invoke echoes after versioned backend truth', () => {
+    applyTaskPortsEvent({
+      ...createTaskPortsSnapshotEvent({
+        taskId: 'task-1',
+        exposed: [
+          {
+            availability: 'available',
+            host: '127.0.0.1',
+            label: 'Fresh app',
+            lastVerifiedAt: 1_000,
+            port: 5173,
+            protocol: 'http',
+            source: 'manual',
+            statusMessage: null,
+            updatedAt: 1_000,
+            verifiedHost: '127.0.0.1',
+          },
+        ],
+        observed: [],
+        updatedAt: 1_000,
+      }),
+      stateVersion: 2,
+    });
+
+    applyTaskPortsEvent(
+      createTaskPortsSnapshotEvent({
+        taskId: 'task-1',
+        exposed: [],
+        observed: [],
+        updatedAt: 1_000,
+      }),
+    );
+
+    expect(getTaskPortSnapshot('task-1')?.exposed).toEqual([
+      expect.objectContaining({
+        label: 'Fresh app',
+        port: 5173,
+      }),
+    ]);
+
+    applyTaskPortsEvent({
+      ...createRemovedTaskPortsEvent('task-1'),
+      stateVersion: 3,
+    });
+    applyTaskPortsEvent(
+      createTaskPortsSnapshotEvent({
+        taskId: 'task-1',
+        exposed: [
+          {
+            availability: 'available',
+            host: '127.0.0.1',
+            label: 'Stale app',
+            lastVerifiedAt: 1_000,
+            port: 5173,
+            protocol: 'http',
+            source: 'manual',
+            statusMessage: null,
+            updatedAt: 1_000,
+            verifiedHost: '127.0.0.1',
+          },
+        ],
+        observed: [],
+        updatedAt: 1_000,
+      }),
+    );
+
+    expect(getTaskPortSnapshot('task-1')).toBeUndefined();
+  });
 });

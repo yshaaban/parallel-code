@@ -42,7 +42,7 @@ export function shouldApplyServerStateEventVersion(
   version: number | undefined,
 ): boolean {
   if (version === undefined) {
-    return true;
+    return !tracker.versionByKey.has(key);
   }
 
   const keyVersion = tracker.versionByKey.get(key) ?? -1;
@@ -73,9 +73,15 @@ export function shouldApplyServerStateSnapshotEvent(
     return false;
   }
 
-  return (
-    version !== undefined || currentUpdatedAt === undefined || nextUpdatedAt >= currentUpdatedAt
-  );
+  if (version !== undefined) {
+    return true;
+  }
+
+  if (currentUpdatedAt === undefined) {
+    return true;
+  }
+
+  return nextUpdatedAt >= currentUpdatedAt;
 }
 
 export function shouldApplyServerStateReplacement(
