@@ -32,6 +32,7 @@ import {
   setHydraStartupMode,
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
+import { KeybindingsSettingsSection } from './settings/KeybindingsSettingsSection';
 import { mod } from '../lib/platform';
 import { SectionLabel } from './SectionLabel';
 import { typography } from '../lib/typography';
@@ -458,6 +459,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           </div>
         </label>
       </div>
+
+      <KeybindingsSettingsSection />
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
         <SectionLabel>Editor</SectionLabel>

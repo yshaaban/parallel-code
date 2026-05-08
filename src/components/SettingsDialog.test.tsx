@@ -136,6 +136,34 @@ describe('SettingsDialog', () => {
     expect(store.verboseLogging).toBe(true);
   });
 
+  it('disables and resets configurable keybindings', async () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    const disableNewTask = screen.getByRole('button', {
+      name: 'Disable New task (app.new-task)',
+    });
+    fireEvent.click(disableNewTask);
+
+    expect(store.keybindings.overrides['app.new-task']).toEqual({ chords: null });
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'Disable New task (app.new-task)',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Reset New task (app.new-task)',
+      }),
+    );
+
+    expect(store.keybindings.overrides['app.new-task']).toBeUndefined();
+  });
+
   it('keeps the browser task notification toggle interactive before permission is granted', () => {
     Object.defineProperty(window, 'electron', {
       configurable: true,

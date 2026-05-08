@@ -18,11 +18,12 @@ describe('HelpDialog', () => {
     ).toBeDefined();
   });
 
-  it('hides the onboarding section by default and shows the task move shortcut', () => {
+  it('hides the onboarding section by default and shows task move shortcuts', () => {
     render(() => <HelpDialog open={true} onClose={vi.fn()} />);
 
     expect(screen.queryByText('Getting Started')).toBeNull();
-    expect(screen.getByText('Move task left or right')).toBeDefined();
+    expect(screen.getByText('Move task left')).toBeDefined();
+    expect(screen.getByText('Move task right')).toBeDefined();
     expect(screen.queryByText('Reorder tasks/terminals')).toBeNull();
   });
 });

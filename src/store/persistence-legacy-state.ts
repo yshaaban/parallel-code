@@ -36,6 +36,7 @@ export interface LegacyPersistedState {
   hydraCommand?: unknown;
   hydraForceDispatchFromPromptPanel?: unknown;
   hydraStartupMode?: unknown;
+  keybindings?: unknown;
   customAgents?: unknown;
   terminals?: unknown;
 }

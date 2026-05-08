@@ -11,6 +11,7 @@ vi.mock('./ipc', () => ({
 }));
 
 import { initShortcuts, registerShortcut } from './shortcuts';
+import { setStore } from '../store/core';
 
 describe('shortcuts', () => {
   afterEach(() => {
@@ -116,5 +117,35 @@ describe('shortcuts', () => {
     cleanup();
     unregisterPlain();
     unregisterShift();
+  });
+
+  it('resolves action shortcuts dynamically from keybinding overrides', () => {
+    const handler = vi.fn();
+    const unregister = registerShortcut({
+      actionId: 'app.new-task',
+      handler,
+    });
+    const cleanup = initShortcuts();
+
+    setStore('keybindings', {
+      version: 1,
+      overrides: {
+        'app.new-task': { chords: [{ key: 'k', cmdOrCtrl: true }] },
+      },
+    });
+
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'k',
+      metaKey: true,
+    });
+    document.body.dispatchEvent(event);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+
+    cleanup();
+    unregister();
   });
 });

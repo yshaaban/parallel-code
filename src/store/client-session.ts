@@ -27,6 +27,7 @@ import {
 } from './persistence-terminal-restore';
 import { normalizeSidebarSectionCollapsedState } from './sidebar-section-state';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
+import { normalizeKeybindings } from './keybindings';
 import { syncTerminalCounter } from './terminals';
 import type { ClientSessionState, ClientSessionTerminalPanels, PersistedTerminal } from './types';
 
@@ -119,6 +120,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     fontSmoothing: store.fontSmoothing,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : null,
+    keybindings: store.keybindings,
   };
 }
 
@@ -293,6 +295,7 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
     resolvePersistedFontSmoothing(raw.fontSmoothing, DEFAULT_FONT_SMOOTHING),
   );
   setStore('themePreset', isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal');
+  setStore('keybindings', normalizeKeybindings(raw.keybindings));
   setStore('windowState', parsePersistedWindowState(raw.windowState));
   reconcileClientSessionSidebarFocus();
   reconcileClientSessionSelection();

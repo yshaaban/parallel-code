@@ -2,6 +2,7 @@ import { createStore } from 'solid-js/store';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
+import { createDefaultKeybindingOverrides } from '../domain/keybindings';
 import { getInitialTerminalHighLoadModeEnabled } from '../lib/terminal-high-load-mode-bootstrap';
 import { getLocalDateKey } from '../lib/date';
 import { createDefaultSidebarSectionCollapsedState } from './sidebar-section-state';
@@ -80,6 +81,7 @@ export function createInitialAppStore(): AppStore {
     hydraCommand: '',
     hydraForceDispatchFromPromptPanel: true,
     hydraStartupMode: 'auto',
+    keybindings: createDefaultKeybindingOverrides(),
     newTaskDropUrl: null,
     newTaskPrefillPrompt: null,
     missingProjectIds: {},

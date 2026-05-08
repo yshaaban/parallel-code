@@ -2,9 +2,10 @@ import { For, Show, createUniqueId, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { SectionLabel } from './SectionLabel';
+import { formatKeyChord } from '../domain/keybindings';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
-import { alt, mod } from '../lib/platform';
+import { getResolvedKeybindingDefinitions } from '../store/keybindings';
 
 interface HelpDialogProps {
   onClose: () => void;
@@ -19,46 +20,28 @@ const INTRO_ITEMS = [
   'Reopen this guide any time from Tips, F1, or Cmd/Ctrl + /.',
 ] as const;
 
-const SECTIONS = [
-  {
-    title: 'Navigation',
-    shortcuts: [
-      [`${alt} + Up/Down`, 'Focus pane above or below'],
-      [`${alt} + Left/Right`, 'Focus sidebar or adjacent task'],
-      [`${alt} + Left (from first task)`, 'Focus sidebar'],
-      [`${alt} + Right (from sidebar)`, 'Focus active task'],
-      ['Enter (in sidebar)', 'Jump to active task panel'],
-    ],
-  },
-  {
-    title: 'Task Actions',
-    shortcuts: [
-      [`${mod} + Enter`, 'Send prompt'],
-      [`${mod} + W`, 'Close focused terminal'],
-      [`${mod} + Shift + W`, 'Close active task/terminal'],
-      [`${mod} + Shift + M`, 'Merge active task'],
-      [`${mod} + Shift + P`, 'Push to remote'],
-      [`${mod} + Shift + T`, 'New task shell terminal'],
-      [`${mod} + Shift + Left/Right`, 'Move task left or right'],
-      [`${mod} + 1-9`, 'Jump to task by position'],
-    ],
-  },
-  {
-    title: 'App',
-    shortcuts: [
-      [`${mod} + N`, 'New task'],
-      [`${mod} + Shift + D`, 'New standalone terminal'],
-      [`${mod} + Shift + A`, 'New task'],
-      [`${mod} + B`, 'Toggle sidebar'],
-      [`${mod} + ,`, 'Open settings'],
-      [`${mod} + = / ${mod} + -`, 'Zoom in / out'],
-      [`${mod} + 0`, 'Reset zoom'],
-      ['Ctrl + Shift + Scroll', 'Resize all panel widths'],
-      [`${mod} + / or F1`, 'Toggle this help'],
-      ['Escape', 'Close dialogs'],
-    ],
-  },
-];
+function getHelpSections(): Array<{
+  shortcuts: Array<{ description: string; key: string }>;
+  title: string;
+}> {
+  const sections = new Map<string, Array<{ description: string; key: string }>>();
+  for (const definition of getResolvedKeybindingDefinitions()) {
+    const shortcuts = sections.get(definition.category) ?? [];
+    shortcuts.push({
+      description: definition.description,
+      key:
+        definition.chords.length > 0
+          ? definition.chords.map((chord) => formatKeyChord(chord)).join(' or ')
+          : 'Disabled',
+    });
+    sections.set(definition.category, shortcuts);
+  }
+
+  return Array.from(sections.entries()).map(([title, shortcuts]) => ({
+    title,
+    shortcuts,
+  }));
+}
 
 export function HelpDialog(props: HelpDialogProps): JSX.Element {
   const titleId = createUniqueId();
@@ -96,12 +79,12 @@ export function HelpDialog(props: HelpDialogProps): JSX.Element {
         </div>
       </Show>
 
-      <For each={SECTIONS}>
+      <For each={getHelpSections()}>
         {(section) => (
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
             <SectionLabel>{section.title}</SectionLabel>
             <For each={section.shortcuts}>
-              {([key, desc]) => (
+              {(shortcut) => (
                 <div
                   style={{
                     display: 'flex',
@@ -111,7 +94,9 @@ export function HelpDialog(props: HelpDialogProps): JSX.Element {
                     gap: '16px',
                   }}
                 >
-                  <span style={{ color: theme.fgMuted, ...typography.meta }}>{desc}</span>
+                  <span style={{ color: theme.fgMuted, ...typography.meta }}>
+                    {shortcut.description}
+                  </span>
                   <kbd
                     style={{
                       background: theme.bgInput,
@@ -123,7 +108,7 @@ export function HelpDialog(props: HelpDialogProps): JSX.Element {
                       ...typography.monoMeta,
                     }}
                   >
-                    {key}
+                    {shortcut.key}
                   </kbd>
                 </div>
               )}

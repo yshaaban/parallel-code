@@ -17,10 +17,12 @@ const {
   handlers: new Map<string, () => void>(),
   jumpToTaskMock: vi.fn(),
   registeredShortcuts: [] as Array<Record<string, unknown>>,
-  registerShortcutMock: vi.fn((definition: { handler: () => void; key: string }) => {
-    registeredShortcuts.push(definition as Record<string, unknown>);
-    handlers.set(definition.key, definition.handler);
-  }),
+  registerShortcutMock: vi.fn(
+    (definition: { actionId?: string; handler: () => void; key?: string }) => {
+      registeredShortcuts.push(definition as Record<string, unknown>);
+      handlers.set(definition.actionId ?? definition.key ?? '', definition.handler);
+    },
+  ),
   showNotificationMock: vi.fn(),
   storeRef: {
     current: {
@@ -118,72 +120,55 @@ describe('registerAppShortcuts', () => {
     vi.restoreAllMocks();
   });
 
-  it('registers zoom reset as a global shortcut', () => {
+  it('registers zoom reset by keybinding action', () => {
     registerAppShortcuts();
 
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        dialogSafe: true,
-        global: true,
-        key: '0',
+        actionId: 'app.reset-zoom',
       }),
     );
   });
 
-  it('registers zoom in and out as global dialog-safe shortcuts', () => {
+  it('registers zoom in and out by keybinding action', () => {
     registerAppShortcuts();
 
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        dialogSafe: true,
-        global: true,
-        key: '=',
+        actionId: 'app.zoom-in',
       }),
     );
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        dialogSafe: true,
-        global: true,
-        key: '+',
+        actionId: 'app.zoom-in-alt',
       }),
     );
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        dialogSafe: true,
-        global: true,
-        key: '-',
+        actionId: 'app.zoom-out',
       }),
     );
   });
 
-  it('registers task jump shortcuts for Cmd/Ctrl+1-9 and shift digit layouts', () => {
+  it('registers task jump shortcuts by keybinding action', () => {
     registerAppShortcuts();
 
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        global: true,
-        key: '1',
+        actionId: 'task.jump-1',
       }),
     );
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
-        cmdOrCtrl: true,
-        global: true,
-        key: '9',
-        shift: true,
+        actionId: 'task.jump-9',
       }),
     );
 
     const firstTaskShortcut = registeredShortcuts.find(
-      (shortcut) => shortcut.key === '1' && shortcut.shift !== true,
+      (shortcut) => shortcut.actionId === 'task.jump-1',
     );
     const ninthTaskShiftShortcut = registeredShortcuts.find(
-      (shortcut) => shortcut.key === '9' && shortcut.shift === true,
+      (shortcut) => shortcut.actionId === 'task.jump-9',
     );
 
     (firstTaskShortcut?.handler as (() => void) | undefined)?.();
@@ -197,7 +182,7 @@ describe('registerAppShortcuts', () => {
     storeRef.current.markdownViewer = { content: '# Plan' };
 
     registerAppShortcuts();
-    handlers.get('Escape')?.();
+    handlers.get('app.close-dialog')?.();
 
     expect(closeMarkdownViewerMock).toHaveBeenCalledTimes(1);
   });
@@ -207,7 +192,7 @@ describe('registerAppShortcuts', () => {
     closeShellMock.mockRejectedValueOnce(new Error('kill failed'));
 
     registerAppShortcuts();
-    handlers.get('w')?.();
+    handlers.get('task.close-focused-terminal')?.();
     await Promise.resolve();
 
     expect(showNotificationMock).toHaveBeenCalledWith('Failed to close terminal');
