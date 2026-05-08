@@ -66,6 +66,8 @@ import {
   isTerminalAnomalyMonitorEnabled,
   registerTerminalAnomalyMonitorTerminal,
   subscribeTerminalAnomalyMonitorChanges,
+  type TerminalAnomalySeverity,
+  type TerminalAnomalySnapshot,
 } from '../app/terminal-anomaly-monitor';
 import {
   getTerminalSurfaceTier,
@@ -288,6 +290,20 @@ function getTerminalLoadingLabel(status: TerminalViewStatus): string | null {
 
 type LoadingPresentationMode = Extract<TerminalPresentationMode, { kind: 'loading' }>;
 
+interface TerminalAnomalyPresentation {
+  count: number;
+  kinds: string | null;
+  label: string | null;
+  severity: TerminalAnomalySeverity | null;
+}
+
+const EMPTY_TERMINAL_ANOMALY_PRESENTATION: TerminalAnomalyPresentation = {
+  count: 0,
+  kinds: null,
+  label: null,
+  severity: null,
+};
+
 function getLoadingPresentationMode(
   mode: TerminalPresentationMode,
 ): LoadingPresentationMode | null {
@@ -308,6 +324,33 @@ function shouldMaskTerminalPresentationMode(mode: TerminalPresentationMode): boo
     default:
       return assertNever(mode, 'Unhandled terminal presentation mode');
   }
+}
+
+function getTerminalAnomalyPresentation(
+  anomalies: readonly TerminalAnomalySnapshot[],
+): TerminalAnomalyPresentation {
+  if (anomalies.length === 0) {
+    return EMPTY_TERMINAL_ANOMALY_PRESENTATION;
+  }
+
+  const kinds: string[] = [];
+  const labels: string[] = [];
+  let severity: TerminalAnomalySeverity = 'warning';
+
+  for (const anomaly of anomalies) {
+    kinds.push(anomaly.key);
+    labels.push(anomaly.label);
+    if (anomaly.severity === 'error') {
+      severity = 'error';
+    }
+  }
+
+  return {
+    count: anomalies.length,
+    kinds: kinds.join(','),
+    label: labels.join(' · '),
+    severity,
+  };
 }
 
 export function TerminalView(props: TerminalViewProps): JSX.Element {
@@ -411,37 +454,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     anomalyMonitorVersion();
     return getTerminalAnomalyTerminalSnapshot(terminalStartupKey);
   });
-  const terminalAnomalies = createMemo(() => terminalAnomalySnapshot()?.anomalies ?? []);
-  const terminalAnomalyKinds = createMemo(() => {
-    if (terminalAnomalies().length === 0) {
-      return null;
-    }
-
-    return terminalAnomalies()
-      .map((anomaly) => anomaly.key)
-      .join(',');
-  });
-  const terminalAnomalySeverity = createMemo(() => {
-    const anomalies = terminalAnomalies();
-    if (anomalies.some((anomaly) => anomaly.severity === 'error')) {
-      return 'error';
-    }
-
-    if (anomalies.length > 0) {
-      return 'warning';
-    }
-
-    return null;
-  });
-  const terminalAnomalyLabel = createMemo(() => {
-    if (terminalAnomalies().length === 0) {
-      return null;
-    }
-
-    return terminalAnomalies()
-      .map((anomaly) => anomaly.label)
-      .join(' · ');
-  });
+  const terminalAnomalyPresentation = createMemo(() =>
+    getTerminalAnomalyPresentation(terminalAnomalySnapshot()?.anomalies ?? []),
+  );
 
   function bumpAnomalyMonitorVersion(): void {
     setAnomalyMonitorVersion((version) => version + 1);
@@ -1495,10 +1510,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       ref={shellRef}
       data-terminal-agent-id={props.agentId}
       data-terminal-anomaly-count={
-        terminalAnomalies().length > 0 ? String(terminalAnomalies().length) : undefined
+        terminalAnomalyPresentation().count > 0
+          ? String(terminalAnomalyPresentation().count)
+          : undefined
       }
-      data-terminal-anomaly-kinds={terminalAnomalyKinds() ?? undefined}
-      data-terminal-anomaly-severity={terminalAnomalySeverity() ?? undefined}
+      data-terminal-anomaly-kinds={terminalAnomalyPresentation().kinds ?? undefined}
+      data-terminal-anomaly-severity={terminalAnomalyPresentation().severity ?? undefined}
       data-terminal-cursor-blink={shouldBlinkTerminalCursor() ? 'true' : undefined}
       data-terminal-dormant={sessionDormant() ? 'true' : undefined}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
@@ -1635,7 +1652,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           />
         )}
       </Show>
-      <Show when={isTerminalAnomalyMonitorEnabled() && terminalAnomalyLabel()}>
+      <Show when={isTerminalAnomalyMonitorEnabled() && terminalAnomalyPresentation().label}>
         {(label) => (
           <div
             data-terminal-anomaly-monitor="true"
@@ -1648,7 +1665,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               'max-width': 'calc(100% - 16px)',
               background: 'color-mix(in srgb, var(--island-bg) 90%, rgba(10, 12, 16, 0.55))',
               border: `1px solid ${
-                terminalAnomalySeverity() === 'error'
+                terminalAnomalyPresentation().severity === 'error'
                   ? (theme.error ?? '#ff6b6b')
                   : (theme.warning ?? '#d4a017')
               }`,

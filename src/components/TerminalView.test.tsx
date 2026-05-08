@@ -717,6 +717,41 @@ describe('TerminalView', () => {
     expect(result.queryByText('Visible while restore blocked')).toBeNull();
   });
 
+  it('combines multiple terminal anomalies into one diagnostic presentation', async () => {
+    vi.useFakeTimers();
+    window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__ = true;
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={true}
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const statusHandler = getLastStatusChangeHandler();
+    const renderHibernationHandler = getLastRenderHibernationHandler();
+    const restoreBlockedHandler = getLastRestoreBlockedHandler();
+
+    statusHandler?.('ready');
+    renderHibernationHandler?.(true);
+    restoreBlockedHandler?.(true);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(terminalRoot?.getAttribute('data-terminal-anomaly-count')).toBe('2');
+    expect(terminalRoot?.getAttribute('data-terminal-anomaly-kinds')).toBe(
+      'visible-render-hibernating,visible-restore-blocked',
+    );
+    expect(terminalRoot?.getAttribute('data-terminal-anomaly-severity')).toBe('warning');
+    expect(
+      result.getByText('Visible while render hibernating · Visible while restore blocked'),
+    ).toBeTruthy();
+  });
+
   it('keeps the initialization overlay left-anchored and width-stable across startup phases', () => {
     const result = render(() => (
       <TerminalView
