@@ -1606,6 +1606,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         rows: term.rows,
         taskId,
       });
+      if (disposed) {
+        return;
+      }
+
       spawnReady = true;
       markAttachBound();
       void waitForTerminalFitReady('spawn-ready');
@@ -1618,11 +1622,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         try {
           await recoveryRuntime.restoreTerminalOutput('attach');
         } finally {
-          if (shouldPrioritizeSelectedAttachRecovery) {
+          if (shouldPrioritizeSelectedAttachRecovery && !disposed) {
             setSelectedAttachRecoveryPending(false);
           }
         }
       }
+      if (disposed) {
+        return;
+      }
+
       recoveryRuntime.notifySpawnReady();
       outputPipeline.recoverFlowControlIfIdle();
       scheduleReadyFallback();

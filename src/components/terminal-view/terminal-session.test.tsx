@@ -523,6 +523,37 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('ignores a late spawn result after cleanup', async () => {
+    const spawnDeferred = createDeferredPromise<{ attachedExistingSession: boolean }>();
+    const onAttachBound = vi.fn();
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.SpawnAgent) {
+        return spawnDeferred.promise;
+      }
+      return undefined;
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachBound,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.SpawnAgent, expect.anything());
+
+    const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
+    const outputPipeline = createTerminalOutputPipelineMock.mock.results[0]?.value;
+    session.cleanup();
+    spawnDeferred.resolve({ attachedExistingSession: false });
+    await flushSessionStartup(4);
+
+    expect(onAttachBound).not.toHaveBeenCalled();
+    expect(recoveryRuntime?.notifySpawnReady).not.toHaveBeenCalled();
+    expect(outputPipeline?.recoverFlowControlIfIdle).not.toHaveBeenCalled();
+  });
+
   it('does not use normal browser detach cleanup during pagehide', async () => {
     vi.mocked(isElectronRuntime).mockReturnValue(false);
     const session = startTerminalSession({
@@ -1190,6 +1221,44 @@ describe('startTerminalSession render hibernation', () => {
     });
 
     session.cleanup();
+  });
+
+  it('ignores late existing-session attach recovery after cleanup', async () => {
+    const restoreDeferred = createDeferredPromise<undefined>();
+
+    invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce((() => ({
+      handleBrowserTransportConnectionState: vi.fn(),
+      isOutputFlushBlocked: vi.fn(() => false),
+      isRestoreBlocked: vi.fn(() => false),
+      notifySpawnReady: vi.fn(),
+      restoreTerminalOutput: vi.fn(async (reason?: string) => {
+        if (reason === 'attach') {
+          await restoreDeferred.promise;
+        }
+      }),
+    })) as never);
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
+    const outputPipeline = createTerminalOutputPipelineMock.mock.results[0]?.value;
+    await vi.waitFor(() => {
+      expect(recoveryRuntime?.restoreTerminalOutput).toHaveBeenCalledWith('attach');
+    });
+
+    session.cleanup();
+    restoreDeferred.resolve(undefined);
+    await flushSessionStartup(4);
+
+    expect(recoveryRuntime?.notifySpawnReady).not.toHaveBeenCalled();
+    expect(outputPipeline?.recoverFlowControlIfIdle).not.toHaveBeenCalled();
   });
 
   it('seeds recovery runtime from the current browser transport state in browser mode', async () => {
