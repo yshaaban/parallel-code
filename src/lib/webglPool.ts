@@ -6,7 +6,7 @@
  * context exhaustion and the resulting fallback flicker.
  */
 
-import { WebglAddon } from '@xterm/addon-webgl';
+import type { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
 import {
   recordTerminalRendererAcquire,
@@ -19,6 +19,7 @@ import {
 import type { TerminalWebglPriority } from './terminal-output-priority';
 
 const MAX_WEBGL_CONTEXTS = 6;
+type WebglAddonConstructor = new () => WebglAddon;
 
 interface PoolEntry {
   addon: WebglAddon;
@@ -31,7 +32,50 @@ interface PoolEntry {
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
 const fallbackAgents = new Set<string>();
+const WEBGL_PRIORITY_METADATA = {
+  focused: { order: 0, visible: true },
+  visible: { order: 1, visible: true },
+  background: { order: 2, visible: false },
+  hidden: { order: 3, visible: false },
+} as const satisfies Record<TerminalWebglPriority, { order: number; visible: boolean }>;
+let webglAddonConstructor: WebglAddonConstructor | null = null;
+let webglAddonLoadPromise: Promise<WebglAddonConstructor> | null = null;
 let touchSequence = 0;
+
+function loadWebglAddonConstructor(): Promise<WebglAddonConstructor> {
+  if (webglAddonConstructor) {
+    return Promise.resolve(webglAddonConstructor);
+  }
+
+  webglAddonLoadPromise ??= import('@xterm/addon-webgl')
+    .then((module) => {
+      webglAddonConstructor = module.WebglAddon;
+      return module.WebglAddon;
+    })
+    .catch((error: unknown) => {
+      webglAddonLoadPromise = null;
+      throw error;
+    });
+
+  return webglAddonLoadPromise;
+}
+
+export function isWebglAddonRuntimeReady(): boolean {
+  return webglAddonConstructor !== null;
+}
+
+export async function preloadWebglAddon(): Promise<void> {
+  await loadWebglAddonConstructor();
+}
+
+function createWebglAddon(): WebglAddon | null {
+  if (!webglAddonConstructor) {
+    void preloadWebglAddon().catch(() => {});
+    return null;
+  }
+
+  return new webglAddonConstructor();
+}
 
 function getWebglPoolSnapshot(): TerminalRendererPoolSnapshot {
   let visibleContextsCurrent = 0;
@@ -62,7 +106,9 @@ function setRendererLostCallback(entry: PoolEntry, onRendererLost: (() => void) 
 
 function removeFromOrder(id: string): void {
   const idx = contextOrder.indexOf(id);
-  if (idx >= 0) contextOrder.splice(idx, 1);
+  if (idx >= 0) {
+    contextOrder.splice(idx, 1);
+  }
 }
 
 function promoteEntry(id: string): void {
@@ -76,20 +122,11 @@ function promoteEntry(id: string): void {
 }
 
 function getPriorityOrder(priority: TerminalWebglPriority): number {
-  switch (priority) {
-    case 'focused':
-      return 0;
-    case 'visible':
-      return 1;
-    case 'background':
-      return 2;
-    case 'hidden':
-      return 3;
-  }
+  return WEBGL_PRIORITY_METADATA[priority].order;
 }
 
 function isVisibleWebglPriority(priority: TerminalWebglPriority): boolean {
-  return priority === 'focused' || priority === 'visible';
+  return WEBGL_PRIORITY_METADATA[priority].visible;
 }
 
 function shouldEvictEntryForAcquire(
@@ -220,7 +257,11 @@ export function acquireWebglAddon(
   }
 
   try {
-    const addon = new WebglAddon();
+    const addon = createWebglAddon();
+    if (!addon) {
+      return null;
+    }
+
     addon.onContextLoss(() => {
       // Browser-initiated context loss — viewport is truly blank, so the
       // terminal needs a scrollback restore (notifyLost: true).
@@ -270,7 +311,7 @@ export function setWebglAddonPriority(agentId: string, priority: TerminalWebglPr
   }
 
   entry.priority = priority;
-  if (priority === 'focused' || priority === 'visible') {
+  if (isVisibleWebglPriority(priority)) {
     promoteEntry(agentId);
   }
   recordTerminalRendererPoolSnapshot(getWebglPoolSnapshot());

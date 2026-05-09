@@ -97,6 +97,36 @@ function resetTaskCommandControllersForPipelineTests(): void {
   replaceTaskCommandControllers([], { replaceVersion: 0 });
 }
 
+type TerminalInputPipelineOptions = Parameters<typeof createTerminalInputPipeline>[0];
+type TestTerminal = TerminalInputPipelineOptions['term'];
+type TestTerminalBufferType = 'alternate' | 'normal';
+
+function createTestTerminal(
+  options: {
+    bufferType?: TestTerminalBufferType;
+    cols?: number;
+    rows?: number;
+  } = {},
+): TestTerminal {
+  const terminal = {
+    cols: options.cols ?? 80,
+    rows: options.rows ?? 24,
+  };
+
+  if (!options.bufferType) {
+    return terminal as TestTerminal;
+  }
+
+  return {
+    ...terminal,
+    buffer: {
+      active: {
+        type: options.bufferType,
+      },
+    },
+  } as TestTerminal;
+}
+
 describe('terminal-input-pipeline', () => {
   const originalWindow = globalThis.window;
 
@@ -151,7 +181,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     beginTerminalSwitchEchoGrace('task-1', 120);
@@ -200,7 +230,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.enqueueProgrammaticInput('start\n');
@@ -240,7 +270,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('a');
@@ -291,7 +321,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     const staleStartedAtMs = performance.timeOrigin + performance.now();
@@ -355,7 +385,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('l');
@@ -417,7 +447,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     reduceSpy.mockClear();
@@ -451,7 +481,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('blocked input');
@@ -482,7 +512,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('buffered while restoring');
@@ -530,7 +560,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('a');
@@ -580,7 +610,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('abc');
@@ -624,7 +654,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('a');
@@ -693,7 +723,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     for (const char of 'abcde') {
@@ -757,7 +787,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('a');
@@ -816,7 +846,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     for (const char of 'abc') {
@@ -868,7 +898,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('echo retry after reconnect');
@@ -915,7 +945,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalData('a');
@@ -959,7 +989,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1012,7 +1042,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1037,6 +1067,66 @@ describe('terminal-input-pipeline', () => {
       version: 2,
     });
     pipeline.handleControllerChange('runtime-client-1');
+    await flushMicrotasks();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 132,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 36,
+      taskId: 'task-1',
+    });
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({ cols: 100, rows: 30 }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('commits the latest peer-deferred resize when task control becomes unowned', async () => {
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalResize(100, 30);
+    pipeline.handleTerminalResize(132, 36);
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: null,
+      taskId: 'task-1',
+      version: 2,
+    });
+    pipeline.handleControllerChange(null);
     await flushMicrotasks();
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
@@ -1086,7 +1176,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(132, 36);
@@ -1131,15 +1221,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: {
-        buffer: {
-          active: {
-            type: 'alternate',
-          },
-        },
-        cols: 80,
-        rows: 24,
-      } as never,
+      term: createTestTerminal({ bufferType: 'alternate' }),
     });
 
     pipeline.handleTerminalResize(90, 28);
@@ -1183,7 +1265,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1240,7 +1322,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1282,7 +1364,7 @@ describe('terminal-input-pipeline', () => {
       runtimeClientId: 'runtime-client-1',
       shouldCommitResize: () => shouldCommitResize,
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(120, 40);
@@ -1337,7 +1419,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(120, 40);
@@ -1391,7 +1473,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(120, 40);
@@ -1418,7 +1500,7 @@ describe('terminal-input-pipeline', () => {
   });
 
   it('commits the live terminal geometry during recovery alignment even without a queued resize', async () => {
-    const term = { cols: 120, rows: 40 } as never;
+    const term = createTestTerminal({ cols: 120, rows: 40 });
     const pipeline = createTerminalInputPipeline({
       agentId: 'agent-1',
       armInteractiveEchoFastPath: vi.fn(),
@@ -1481,7 +1563,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1519,7 +1601,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1553,7 +1635,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1594,7 +1676,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);
@@ -1631,7 +1713,7 @@ describe('terminal-input-pipeline', () => {
       },
       runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
-      term: { cols: 80, rows: 24 } as never,
+      term: createTestTerminal(),
     });
 
     pipeline.handleTerminalResize(100, 30);

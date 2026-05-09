@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { For, Show, Suspense, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import {
   applyTaskPortsEvent,
@@ -29,6 +29,7 @@ import {
 } from '../lib/terminal-performance-experiments';
 import { handleDragReorder, type DragSessionCleanup } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
+import { lazyNamed } from '../lib/lazy-named';
 import { theme } from '../lib/theme';
 import {
   getTaskCloseError,
@@ -57,14 +58,9 @@ import {
 import { showNotification } from '../store/notification';
 import type { Task } from '../store/types';
 import { collapseTask, retryCloseTask } from '../app/task-workflows';
-import { CloseTaskDialog } from './CloseTaskDialog';
-import { DiffViewerDialog } from './DiffViewerDialog';
 import type { EditableTextHandle } from './EditableText';
-import { EditProjectDialog } from './EditProjectDialog';
-import { MergeDialog } from './MergeDialog';
 import { PermissionCard } from './PermissionCard';
 import { PromptInput, type PromptInputHandle } from './PromptInput';
-import { PushDialog } from './PushDialog';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import { ScalablePanel } from './ScalablePanel';
 import { TaskBranchInfoBar } from './TaskBranchInfoBar';
@@ -77,6 +73,12 @@ import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection'
 import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
 import { createTaskPanelStepsController } from './task-panel/task-panel-steps-controller';
+
+const CloseTaskDialog = lazyNamed(() => import('./CloseTaskDialog'), 'CloseTaskDialog');
+const DiffViewerDialog = lazyNamed(() => import('./DiffViewerDialog'), 'DiffViewerDialog');
+const EditProjectDialog = lazyNamed(() => import('./EditProjectDialog'), 'EditProjectDialog');
+const MergeDialog = lazyNamed(() => import('./MergeDialog'), 'MergeDialog');
+const PushDialog = lazyNamed(() => import('./PushDialog'), 'PushDialog');
 
 interface TaskPanelProps {
   task: Task;
@@ -462,44 +464,65 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         children={panelChildren()}
       />
 
-      <CloseTaskDialog
-        open={dialogState.showCloseConfirm()}
-        task={props.task}
-        onDone={() => dialogState.setShowCloseConfirm(false)}
-      />
-      <MergeDialog
-        open={dialogState.showMergeConfirm()}
-        task={props.task}
-        initialCleanup={getProject(props.task.projectId)?.deleteBranchOnClose ?? true}
-        onDone={() => dialogState.setShowMergeConfirm(false)}
-        onDiffFileClick={dialogState.setDiffFile}
-      />
-      <PushDialog
-        open={dialogState.showPushConfirm()}
-        task={props.task}
-        onStart={dialogState.handlePushStarted}
-        onClose={() => {
-          dialogState.setShowPushConfirm(false);
-        }}
-        onDone={dialogState.handlePushFinished}
-      />
-      <DiffViewerDialog
-        baseBranch={props.task.baseBranch}
-        file={dialogState.diffFile()}
-        worktreePath={props.task.worktreePath}
-        projectRoot={getProject(props.task.projectId)?.path}
-        branchName={props.task.branchName}
-        taskId={props.task.id}
-        agentId={props.task.agentIds[0]}
-        onClose={() => dialogState.setDiffFile(null)}
-      />
-      <EditProjectDialog
-        project={(() => {
-          const projectId = dialogState.editingProjectId();
-          return projectId ? (getProject(projectId) ?? null) : null;
-        })()}
-        onClose={() => dialogState.setEditingProjectId(null)}
-      />
+      <Suspense>
+        <Show when={dialogState.showCloseConfirm()}>
+          <CloseTaskDialog
+            open
+            task={props.task}
+            onDone={() => dialogState.setShowCloseConfirm(false)}
+          />
+        </Show>
+      </Suspense>
+      <Suspense>
+        <Show when={dialogState.showMergeConfirm()}>
+          <MergeDialog
+            open
+            task={props.task}
+            initialCleanup={getProject(props.task.projectId)?.deleteBranchOnClose ?? true}
+            onDone={() => dialogState.setShowMergeConfirm(false)}
+            onDiffFileClick={dialogState.setDiffFile}
+          />
+        </Show>
+      </Suspense>
+      <Suspense>
+        <Show when={dialogState.showPushConfirm()}>
+          <PushDialog
+            open
+            task={props.task}
+            onStart={dialogState.handlePushStarted}
+            onClose={() => {
+              dialogState.setShowPushConfirm(false);
+            }}
+            onDone={dialogState.handlePushFinished}
+          />
+        </Show>
+      </Suspense>
+      <Suspense>
+        <Show when={dialogState.diffFile()}>
+          {(file) => (
+            <DiffViewerDialog
+              baseBranch={props.task.baseBranch}
+              file={file()}
+              worktreePath={props.task.worktreePath}
+              projectRoot={getProject(props.task.projectId)?.path}
+              branchName={props.task.branchName}
+              taskId={props.task.id}
+              agentId={props.task.agentIds[0]}
+              onClose={() => dialogState.setDiffFile(null)}
+            />
+          )}
+        </Show>
+      </Suspense>
+      <Suspense>
+        <Show when={dialogState.editingProjectId()}>
+          {(projectId) => (
+            <EditProjectDialog
+              project={getProject(projectId()) ?? null}
+              onClose={() => dialogState.setEditingProjectId(null)}
+            />
+          )}
+        </Show>
+      </Suspense>
     </div>
   );
 }

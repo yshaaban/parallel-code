@@ -20,6 +20,34 @@ const IMMEDIATE_FLUSH_INPUTS = ['\r', '\u0003', '\u0004', '\u001a'];
 const ESCAPE_CHARACTER = String.fromCharCode(27);
 const TERMINAL_CONTROL_SEQUENCE_SUFFIX_PATTERN = /^(?:\[[0-?]*[ -/]*[@-~]|O[@-~])$/;
 
+const IMMEDIATE_FLUSH_BATCH_PLAN = {
+  flushMode: 'interactive',
+  flushDelayMs: 0,
+  flushImmediately: true,
+  maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+  preferImmediateFlushWhenIdle: false,
+} satisfies TerminalInputBatchPlan;
+
+const PASTE_BATCH_PLAN = {
+  flushMode: 'bulk',
+  flushDelayMs: 2,
+  flushImmediately: false,
+  maxPendingChars: PASTE_MAX_PENDING_CHARS,
+  preferImmediateFlushWhenIdle: false,
+} satisfies TerminalInputBatchPlan;
+
+function createSustainedInteractiveBatchPlan(
+  singleInteractiveInput: boolean,
+): TerminalInputBatchPlan {
+  return {
+    flushMode: 'interactive',
+    flushDelayMs: singleInteractiveInput ? SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS : 1,
+    flushImmediately: false,
+    maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
+    preferImmediateFlushWhenIdle: singleInteractiveInput,
+  };
+}
+
 function isLikelyPaste(data: string): boolean {
   return data.length >= 256 || (data.includes('\n') && data.length >= 64);
 }
@@ -50,42 +78,18 @@ export function hasImmediateFlushTerminalInput(data: string): boolean {
 export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan {
   const singleInteractiveInput = isSingleInteractiveTerminalInput(data);
   if (hasImmediateFlushTerminalInput(data)) {
-    return {
-      flushMode: 'interactive',
-      flushDelayMs: 0,
-      flushImmediately: true,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
-      preferImmediateFlushWhenIdle: false,
-    };
+    return { ...IMMEDIATE_FLUSH_BATCH_PLAN };
   }
 
   if (isLikelyPaste(data)) {
-    return {
-      flushMode: 'bulk',
-      flushDelayMs: 2,
-      flushImmediately: false,
-      maxPendingChars: PASTE_MAX_PENDING_CHARS,
-      preferImmediateFlushWhenIdle: false,
-    };
+    return { ...PASTE_BATCH_PLAN };
   }
 
   if (isShortCommandCommit(data)) {
-    return {
-      flushMode: 'interactive',
-      flushDelayMs: 0,
-      flushImmediately: true,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
-      preferImmediateFlushWhenIdle: false,
-    };
+    return { ...IMMEDIATE_FLUSH_BATCH_PLAN };
   }
 
-  return {
-    flushMode: 'interactive',
-    flushDelayMs: singleInteractiveInput ? SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS : 1,
-    flushImmediately: false,
-    maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
-    preferImmediateFlushWhenIdle: singleInteractiveInput,
-  };
+  return createSustainedInteractiveBatchPlan(singleInteractiveInput);
 }
 
 export function mergePendingInputCharLimit(currentLimit: number, data: string): number {
@@ -150,7 +154,7 @@ export function splitTerminalInputChunks(
 function getSafeChunkEnd(data: string, start: number, maxChunkChars: number): number {
   const proposedEnd = Math.min(data.length, start + maxChunkChars);
   if (proposedEnd <= start) {
-    return start + 1;
+    return Math.min(data.length, start + 1);
   }
 
   if (proposedEnd >= data.length) {
@@ -163,6 +167,10 @@ function getSafeChunkEnd(data: string, start: number, maxChunkChars: number): nu
   const nextIsLowSurrogate = next >= 0xdc00 && next <= 0xdfff;
 
   if (previousIsHighSurrogate && nextIsLowSurrogate) {
+    if (proposedEnd === start + 1) {
+      return proposedEnd + 1;
+    }
+
     return proposedEnd - 1;
   }
 

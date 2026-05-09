@@ -147,4 +147,10 @@ describe('terminal-input-batching', () => {
     expect(chunks[1]?.data.startsWith('\ude00')).toBe(false);
     expect(chunks.map((chunk) => chunk.data).join('')).toBe(input);
   });
+
+  it('keeps making progress when the chunk cap is smaller than one surrogate pair', () => {
+    const chunks = splitTerminalInputChunks('😀a', 1);
+
+    expect(chunks).toEqual([{ data: '😀' }, { data: 'a' }]);
+  });
 });

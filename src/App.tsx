@@ -3,6 +3,7 @@ import './styles.css';
 import {
   ErrorBoundary,
   Show,
+  Suspense,
   createEffect,
   createMemo,
   createSignal,
@@ -21,9 +22,6 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { DisplayNameDialog } from './components/DisplayNameDialog';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
-import { NewTaskDialog } from './components/NewTaskDialog';
-import { HelpDialog } from './components/HelpDialog';
-import { SettingsDialog } from './components/SettingsDialog';
 import { TerminalStartupChip } from './components/TerminalStartupChip';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
@@ -56,9 +54,6 @@ import {
 import { setStore } from './store/state';
 import { isMac, mod } from './lib/platform';
 import { setVerbose as setRendererLogVerbose } from './lib/log';
-import { ArenaOverlay } from './arena/ArenaOverlay';
-import { PathInputDialog } from './components/PathInputDialog';
-import { PlanViewerDialog } from './components/PlanViewerDialog';
 import {
   expireIncomingTaskCommandTakeoverRequest,
   respondToIncomingTaskCommandTakeover,
@@ -73,6 +68,17 @@ import { type ConnectionBanner } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
 import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
 import { emitStartupBreadcrumb } from './app/startup-breadcrumbs';
+import { lazyNamed } from './lib/lazy-named';
+
+const ArenaOverlay = lazyNamed(() => import('./arena/ArenaOverlay'), 'ArenaOverlay');
+const HelpDialog = lazyNamed(() => import('./components/HelpDialog'), 'HelpDialog');
+const NewTaskDialog = lazyNamed(() => import('./components/NewTaskDialog'), 'NewTaskDialog');
+const PathInputDialog = lazyNamed(() => import('./components/PathInputDialog'), 'PathInputDialog');
+const PlanViewerDialog = lazyNamed(
+  () => import('./components/PlanViewerDialog'),
+  'PlanViewerDialog',
+);
+const SettingsDialog = lazyNamed(() => import('./components/SettingsDialog'), 'SettingsDialog');
 
 function DropOverlay(): JSX.Element {
   return (
@@ -344,29 +350,32 @@ function App(): JSX.Element {
             <SidebarRevealRail onClick={toggleSidebar} shortcutLabel={`${mod}+B`} />
           </Show>
           <TilingLayout />
-          <NewTaskDialog
-            open={store.showNewTaskDialog}
-            onClose={() => toggleNewTaskDialog(false)}
-          />
+          <Suspense>
+            <Show when={store.showNewTaskDialog}>
+              <NewTaskDialog open onClose={() => toggleNewTaskDialog(false)} />
+            </Show>
+          </Suspense>
         </main>
         <Show when={electronRuntime && !isMac}>
           <WindowResizeHandles />
         </Show>
-        <Show when={showPathInput()}>
-          <PathInputDialog
-            open={showPathInput()}
-            directory={pathInputIsDir()}
-            allowSshClone={pathInputAllowSshClone()}
-            onSubmit={(path) => {
-              setShowPathInput(false);
-              resolvePendingPathInput(path);
-            }}
-            onCancel={() => {
-              setShowPathInput(false);
-              resolvePendingPathInput(null);
-            }}
-          />
-        </Show>
+        <Suspense>
+          <Show when={showPathInput()}>
+            <PathInputDialog
+              open
+              directory={pathInputIsDir()}
+              allowSshClone={pathInputAllowSshClone()}
+              onSubmit={(path) => {
+                setShowPathInput(false);
+                resolvePendingPathInput(path);
+              }}
+              onCancel={() => {
+                setShowPathInput(false);
+                resolvePendingPathInput(null);
+              }}
+            />
+          </Show>
+        </Suspense>
         <Show when={showConfirm() && getPendingConfirm()}>
           {(request) => (
             <ConfirmDialog
@@ -415,18 +424,21 @@ function App(): JSX.Element {
           }}
           requests={incomingTakeoverRequests()}
         />
-        <HelpDialog
-          open={store.showHelpDialog}
-          onClose={() => toggleHelpDialog(false)}
-          showIntro={electronRuntime}
-        />
-        <SettingsDialog
-          open={store.showSettingsDialog}
-          onClose={() => toggleSettingsDialog(false)}
-        />
-        <Show when={store.showArena}>
-          <ArenaOverlay onClose={() => toggleArena(false)} />
-        </Show>
+        <Suspense>
+          <Show when={store.showHelpDialog}>
+            <HelpDialog open onClose={() => toggleHelpDialog(false)} showIntro={electronRuntime} />
+          </Show>
+        </Suspense>
+        <Suspense>
+          <Show when={store.showSettingsDialog}>
+            <SettingsDialog open onClose={() => toggleSettingsDialog(false)} />
+          </Show>
+        </Suspense>
+        <Suspense>
+          <Show when={store.showArena}>
+            <ArenaOverlay onClose={() => toggleArena(false)} />
+          </Show>
+        </Suspense>
         <Show when={showDropOverlay()}>
           <DropOverlay />
         </Show>
@@ -436,20 +448,22 @@ function App(): JSX.Element {
         <Show when={showGlobalStartupChip()}>
           <TerminalStartupChip />
         </Show>
-        <Show when={markdownViewer()}>
-          {(viewer) => (
-            <PlanViewerDialog
-              open
-              onClose={closeMarkdownViewer}
-              planContent={viewer().content}
-              planFileName={viewer().fileName}
-              relativePath={viewer().relativePath}
-              taskId={viewer().taskId}
-              agentId={viewer().agentId}
-              worktreePath={viewer().worktreePath}
-            />
-          )}
-        </Show>
+        <Suspense>
+          <Show when={markdownViewer()}>
+            {(viewer) => (
+              <PlanViewerDialog
+                open
+                onClose={closeMarkdownViewer}
+                planContent={viewer().content}
+                planFileName={viewer().fileName}
+                relativePath={viewer().relativePath}
+                taskId={viewer().taskId}
+                agentId={viewer().agentId}
+                worktreePath={viewer().worktreePath}
+              />
+            )}
+          </Show>
+        </Suspense>
       </div>
     </ErrorBoundary>
   );

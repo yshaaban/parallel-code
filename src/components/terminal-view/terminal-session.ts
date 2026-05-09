@@ -1,6 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ITerminalAddon } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
 import { openMarkdownViewer } from '../../app/markdown-viewer';
@@ -49,6 +48,8 @@ import { alignTerminalDomRendererWidthMetricsWithWebgl } from '../../lib/termina
 import { getTerminalTheme } from '../../lib/theme';
 import {
   acquireWebglAddon,
+  isWebglAddonRuntimeReady,
+  preloadWebglAddon,
   releaseWebglAddon,
   setWebglAddonPriority,
   touchWebglAddon,
@@ -97,9 +98,33 @@ const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another clien
 const TERMINAL_LETTER_SPACING = 0;
 const TERMINAL_LINE_HEIGHT = 1;
 type TerminalFitEnsureReason = 'attach' | 'renderer-loss' | 'restore' | 'spawn-ready';
+type TerminalWebLinksAddonConstructor = new (
+  handler: (event: MouseEvent, uri: string) => void,
+) => ITerminalAddon;
 interface TerminalGeometry {
   cols: number;
   rows: number;
+}
+
+let terminalWebLinksAddonConstructor: TerminalWebLinksAddonConstructor | null = null;
+let terminalWebLinksAddonLoadPromise: Promise<TerminalWebLinksAddonConstructor> | null = null;
+
+function loadTerminalWebLinksAddonConstructor(): Promise<TerminalWebLinksAddonConstructor> {
+  if (terminalWebLinksAddonConstructor) {
+    return Promise.resolve(terminalWebLinksAddonConstructor);
+  }
+
+  terminalWebLinksAddonLoadPromise ??= import('@xterm/addon-web-links')
+    .then((module) => {
+      terminalWebLinksAddonConstructor = module.WebLinksAddon;
+      return module.WebLinksAddon;
+    })
+    .catch((error: unknown) => {
+      terminalWebLinksAddonLoadPromise = null;
+      throw error;
+    });
+
+  return terminalWebLinksAddonLoadPromise;
 }
 
 function getInitialRecoveryTransportState(
@@ -542,6 +567,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let selectedAttachRecoveryPending = false;
   let webglRendererActive = false;
   let webglRendererAttachedOnce = false;
+  let webglRendererLoadPending = false;
 
   function setPaintReady(nextPaintReady: boolean): void {
     if (paintReady === nextPaintReady) {
@@ -779,7 +805,27 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return startupPaintSnapshot.selectedPaintReady !== true;
   }
 
+  function requestWebglRendererRuntime(): void {
+    if (webglRendererLoadPending || isWebglAddonRuntimeReady()) {
+      return;
+    }
+
+    webglRendererLoadPending = true;
+    void preloadWebglAddon()
+      .then(() => {
+        webglRendererLoadPending = false;
+        syncWebglRendererPolicy();
+      })
+      .catch(() => {
+        webglRendererLoadPending = false;
+      });
+  }
+
   function syncWebglRendererPolicy(): void {
+    if (disposed) {
+      return;
+    }
+
     const outputPriority = getOutputPriority();
     const shouldUseWebglRenderer =
       currentStatus === 'ready' &&
@@ -799,6 +845,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     if (!webglRendererActive && inputPipeline.isResizeTransactionPending()) {
+      return;
+    }
+
+    if (!webglRendererActive && !isWebglAddonRuntimeReady()) {
+      requestWebglRendererRuntime();
       return;
     }
 
@@ -1371,15 +1422,25 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   outputChannel.onmessage = (message) => dispatchByType(outputHandlers, message);
 
   term.loadAddon(fitAddon);
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (!shouldOpenTerminalLink(event)) {
+  void loadTerminalWebLinksAddonConstructor()
+    .then((WebLinksAddon) => {
+      if (disposed) {
         return;
       }
 
-      openTerminalLink(uri);
-    }),
-  );
+      const webLinksAddon = new WebLinksAddon((event, uri) => {
+        if (!shouldOpenTerminalLink(event)) {
+          return;
+        }
+
+        openTerminalLink(uri);
+      });
+      term.loadAddon(webLinksAddon);
+      cleanupCallbacks.push(() => {
+        webLinksAddon.dispose();
+      });
+    })
+    .catch(() => {});
   term.open(containerRef);
   const markdownLinkProvider = registerTerminalMarkdownLinkProvider(term, props);
   cleanupCallbacks.push(() => {

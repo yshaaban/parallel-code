@@ -1,4 +1,4 @@
-import * as monaco from 'monaco-editor';
+import type * as Monaco from 'monaco-editor';
 import type { LookPreset } from './look';
 
 interface PresetColors {
@@ -63,7 +63,11 @@ const presetColors: Record<LookPreset, PresetColors> = {
   },
 };
 
-function buildThemeData(c: PresetColors): monaco.editor.IStandaloneThemeData {
+type MonacoEditorNamespace = typeof Monaco.editor;
+
+let themesRegistered = false;
+
+function buildThemeData(c: PresetColors): Monaco.editor.IStandaloneThemeData {
   return {
     base: 'vs-dark',
     inherit: true,
@@ -100,8 +104,14 @@ export function monacoThemeName(preset: LookPreset): string {
   return `parallel-${preset}`;
 }
 
-export function registerMonacoThemes(): void {
-  for (const [preset, colors] of Object.entries(presetColors)) {
-    monaco.editor.defineTheme(monacoThemeName(preset as LookPreset), buildThemeData(colors));
+export function registerMonacoThemes(editor: MonacoEditorNamespace): void {
+  if (themesRegistered) {
+    return;
   }
+
+  for (const [preset, colors] of Object.entries(presetColors)) {
+    editor.defineTheme(monacoThemeName(preset as LookPreset), buildThemeData(colors));
+  }
+
+  themesRegistered = true;
 }

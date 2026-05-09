@@ -19,6 +19,14 @@ const taskPreviewSectionSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskPreviewSection.tsx'),
   'utf8',
 );
+const taskNotesFilesSectionSource = readFileSync(
+  path.resolve(projectRoot, 'src/components/task-panel/TaskNotesFilesSection.tsx'),
+  'utf8',
+);
+const taskPlanContentSource = readFileSync(
+  path.resolve(projectRoot, 'src/components/task-panel/TaskPlanContent.tsx'),
+  'utf8',
+);
 const taskStepsSectionSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskStepsSection.tsx'),
   'utf8',
@@ -42,9 +50,30 @@ describe('task panel architecture guardrails', () => {
   });
 
   it('keeps the preview section presentational', () => {
+    expect(taskPreviewSectionSource).toContain('lazyNamed(() =>');
+    expect(taskPreviewSectionSource).toContain("import('../PreviewPanel')");
     expect(taskPreviewSectionSource).toContain('onFocusPreview');
+    expect(taskPreviewSectionSource).toContain(
+      "import type { PreviewPanelProps } from '../PreviewPanel'",
+    );
+    expect(taskPreviewSectionSource).not.toMatch(
+      /^import\s+(?!type)[^;]*from\s+['"]\.\.\/PreviewPanel['"]/mu,
+    );
     expect(taskPreviewSectionSource).not.toContain('store/store');
     expect(taskPreviewSectionSource).not.toContain('setTaskFocusedPanel');
+  });
+
+  it('keeps plan markdown rendering out of the default task panel startup path', () => {
+    expect(taskNotesFilesSectionSource).toContain('lazyNamed(() =>');
+    expect(taskNotesFilesSectionSource).toContain("import('./TaskPlanContent')");
+    expect(taskNotesFilesSectionSource).not.toContain('marked-shiki');
+    expect(taskPlanContentSource).toContain('renderMarkdownSafely');
+  });
+
+  it('keeps the embedded review panel out of the default task panel startup path', () => {
+    expect(taskNotesFilesSectionSource).toContain('lazyNamed(() =>');
+    expect(taskNotesFilesSectionSource).toContain("import('../ReviewPanel')");
+    expect(taskNotesFilesSectionSource).not.toMatch(/from\s+['"]\.\.\/ReviewPanel['"]/u);
   });
 
   it('keeps the steps section presentational', () => {

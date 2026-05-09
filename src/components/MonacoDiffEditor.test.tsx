@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@solidjs/testing-library';
+import { fireEvent, render, waitFor } from '@solidjs/testing-library';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const monacoMock = vi.hoisted(() => ({
@@ -7,12 +7,14 @@ const monacoMock = vi.hoisted(() => ({
   modifiedRevealLineInCenter: vi.fn(),
   originalModelDispose: vi.fn(),
   modifiedModelDispose: vi.fn(),
+  defineTheme: vi.fn(),
   setModelLanguage: vi.fn(),
   setTheme: vi.fn(),
 }));
 
 vi.mock('monaco-editor', () => ({
   editor: {
+    defineTheme: monacoMock.defineTheme,
     createDiffEditor: vi.fn(() => ({
       dispose: monacoMock.editorDispose,
       getLineChanges: vi.fn(() => [{ modifiedStartLineNumber: 3 }]),
@@ -33,6 +35,8 @@ vi.mock('monaco-editor', () => ({
   },
 }));
 
+vi.mock('../lib/monaco-workers', () => ({}));
+
 import * as monaco from 'monaco-editor';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
 
@@ -52,7 +56,7 @@ describe('MonacoDiffEditor', () => {
     });
   });
 
-  it('cleans up hidden-line click and diff subscriptions on unmount', () => {
+  it('cleans up hidden-line click and diff subscriptions on unmount', async () => {
     const result = render(() => (
       <MonacoDiffEditor
         oldContent="old"
@@ -61,6 +65,11 @@ describe('MonacoDiffEditor', () => {
         sideBySide={false}
       />
     ));
+
+    await waitFor(() => {
+      expect(monaco.editor.createDiffEditor).toHaveBeenCalledTimes(1);
+    });
+
     const editorRoot = result.container.firstElementChild as HTMLDivElement;
     const hiddenLineCenter = document.createElement('div');
     hiddenLineCenter.className = 'center';
@@ -86,5 +95,25 @@ describe('MonacoDiffEditor', () => {
     expect(monacoMock.editorDispose).toHaveBeenCalledTimes(1);
     expect(monacoMock.originalModelDispose).toHaveBeenCalledTimes(1);
     expect(monacoMock.modifiedModelDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays an initial reveal target after Monaco finishes loading', async () => {
+    const onRevealLine = vi.fn();
+
+    render(() => (
+      <MonacoDiffEditor
+        oldContent="old"
+        newContent="new"
+        language="typescript"
+        revealLine={42}
+        sideBySide={false}
+        onRevealLine={onRevealLine}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(monacoMock.modifiedRevealLineInCenter).toHaveBeenCalledWith(42);
+    });
+    expect(onRevealLine).toHaveBeenCalledTimes(1);
   });
 });

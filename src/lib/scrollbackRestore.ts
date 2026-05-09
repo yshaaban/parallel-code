@@ -1,5 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from './ipc';
+import { createRandomId } from './random-id';
 
 import type {
   TerminalRecoveryBatchEntry,
@@ -194,7 +195,7 @@ async function requestImmediateTerminalRecoveryEntry(
   agentId: string,
   options: TerminalRecoveryRequestOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
-  const requestId = crypto.randomUUID();
+  const requestId = createRandomId();
   const [entry] = await invokeTerminalRecoveryBatch([
     createTerminalRecoveryRequestEntry(agentId, requestId, options),
   ]);
@@ -206,7 +207,7 @@ async function requestImmediateTerminalStartupRecoveryEntry(
   agentId: string,
   role: TerminalStartupRecoveryRole,
 ): Promise<TerminalRecoveryBatchEntry> {
-  const requestId = crypto.randomUUID();
+  const requestId = createRandomId();
   const [entry] = await invokeTerminalStartupRecoveryBatch([
     createTerminalStartupRecoveryRequestEntry(agentId, requestId, role),
   ]);
@@ -231,7 +232,7 @@ function requestBatchedTerminalRecovery(
       agentId,
       outputCursor: options.outputCursor ?? null,
       renderedTail: options.renderedTail ?? null,
-      requestId: crypto.randomUUID(),
+      requestId: createRandomId(),
       snapshotByteLimit: options.snapshotByteLimit ?? null,
       resolve,
       reject,
@@ -304,7 +305,7 @@ export function requestStartupTerminalRecovery(
   return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
     startupAttachRestoreState.pending.push({
       agentId,
-      requestId: crypto.randomUUID(),
+      requestId: createRandomId(),
       role,
       resolve,
       reject,

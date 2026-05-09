@@ -8,6 +8,7 @@ import {
   sendTerminalInput,
   sendTerminalInputTraceUpdate,
 } from '../../lib/ipc';
+import { createRandomId } from '../../lib/random-id';
 import {
   getTerminalTraceTimestampMs,
   hasTerminalTraceClockAlignment,
@@ -710,7 +711,7 @@ export function createTerminalInputPipeline(
       bufferedAtMs: traceSummary.bufferedAtMs,
       inputKind: traceSummary.inputKind,
       queuedAt: queuedBatchEntries[0]?.queuedAt ?? 0,
-      requestId: crypto.randomUUID(),
+      requestId: createRandomId(),
       startedAtMs: traceSummary.startedAtMs,
       status: 'sending' as const,
       traceEchoText: getTraceEchoText(nextBatch.batch),
@@ -1146,7 +1147,7 @@ export function createTerminalInputPipeline(
     }
 
     recordTerminalResizeCommitAttempt();
-    const requestId = crypto.randomUUID();
+    const requestId = createRandomId();
     const resizeGeneration = resizeLifecycleGeneration;
     setResizeState({
       generation: resizeGeneration,
@@ -1274,11 +1275,7 @@ export function createTerminalInputPipeline(
       return flushPendingResizeAndWait(false);
     },
     handleControllerChange(controllerId: string | null): void {
-      if (controllerId === null) {
-        return;
-      }
-
-      if (controllerId !== runtimeClientId) {
+      if (controllerId !== null && controllerId !== runtimeClientId) {
         handleTaskControlLoss();
         return;
       }

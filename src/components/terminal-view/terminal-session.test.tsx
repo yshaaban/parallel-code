@@ -12,7 +12,10 @@ import {
   onBrowserTransportEvent,
   sendPagehideInvoke,
 } from '../../lib/ipc';
+import type { TerminalFitLifecycle } from '../../lib/terminalFitLifecycle';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
+import type { TerminalInputPipeline } from './terminal-input-pipeline';
+import type { TerminalRecoveryRuntime } from './terminal-recovery-runtime';
 import type { TerminalViewProps } from './types';
 
 const {
@@ -26,10 +29,12 @@ const {
   clipboardWriteTextMock,
   getTerminalShortcutActionMock,
   invokeMock,
+  isWebglAddonRuntimeReadyMock,
   matchesDialogSafeShortcutMock,
   matchesGlobalShortcutMock,
   MockTerminalClass,
   outputPipelineFactoryState,
+  preloadWebglAddonMock,
   registerTerminalMock,
   releaseWebglAddonMock,
   scheduleFitIfDirtyMock,
@@ -71,12 +76,16 @@ const {
   return {
     acquireWebglAddonMock: vi.fn<(...args: unknown[]) => unknown>(() => null),
     openMarkdownViewerMock: vi.fn(async () => true),
-    createTerminalFitLifecycleMock: vi.fn(() => ({
+    createTerminalFitLifecycleMock: vi.fn<
+      (options: TerminalFitLifecycleTestOptions) => TerminalFitLifecycle
+    >(() => ({
       cleanup: vi.fn(),
       ensureReady: vi.fn(async () => true),
       scheduleStabilize: vi.fn(),
     })),
-    createTerminalInputPipelineMock: vi.fn(() => ({
+    createTerminalInputPipelineMock: vi.fn<
+      (options: TerminalInputPipelineTestOptions) => TerminalInputPipeline
+    >(() => ({
       cleanup: vi.fn(),
       detectPendingInputTraceEcho: vi.fn(),
       drainInputQueue: vi.fn(),
@@ -121,7 +130,9 @@ const {
         updateOutputPriority: vi.fn(),
       };
     }),
-    createTerminalRecoveryRuntimeMock: vi.fn((options: RecoveryRuntimeTestOptions) => ({
+    createTerminalRecoveryRuntimeMock: vi.fn<
+      (options: RecoveryRuntimeTestOptions) => TerminalRecoveryRuntime
+    >((options) => ({
       dispose: vi.fn(),
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
@@ -145,6 +156,7 @@ const {
       }
       return undefined;
     }),
+    isWebglAddonRuntimeReadyMock: vi.fn(() => true),
     matchesDialogSafeShortcutMock: vi.fn(() => false),
     matchesGlobalShortcutMock: vi.fn(() => false),
     MockTerminalClass: class {
@@ -204,6 +216,7 @@ const {
       }
     },
     outputPipelineFactoryState: state,
+    preloadWebglAddonMock: vi.fn(async () => undefined),
     registerTerminalMock: vi.fn(),
     releaseWebglAddonMock: vi.fn(),
     scheduleFitIfDirtyMock: vi.fn(),
@@ -231,6 +244,63 @@ type RecoveryRuntimeTestOptions = {
   onRestoreBlockedChange?: (isBlocked: boolean) => void;
 };
 
+type TerminalFitLifecycleTestOptions = {
+  onReady?: () => void;
+};
+
+type TerminalInputPipelineTestOptions = {
+  onResizeTransactionChange?: (active: boolean) => void;
+};
+
+function createTestTerminalFitLifecycle(
+  overrides: Partial<TerminalFitLifecycle> = {},
+): TerminalFitLifecycle {
+  return {
+    cleanup: vi.fn(),
+    ensureReady: vi.fn(async () => true),
+    scheduleStabilize: vi.fn(),
+    ...overrides,
+  };
+}
+
+function createTestTerminalInputPipeline(
+  overrides: Partial<TerminalInputPipeline> = {},
+): TerminalInputPipeline {
+  return {
+    cleanup: vi.fn(),
+    detectPendingInputTraceEcho: vi.fn(),
+    drainInputQueue: vi.fn(),
+    enqueueProgrammaticInput: vi.fn(),
+    finalizePendingInputTraceEchoes: vi.fn(),
+    flushPendingInput: vi.fn(),
+    flushPendingResizeForRecoveryAlignment: vi.fn(async () => undefined),
+    flushPendingResize: vi.fn(async () => undefined),
+    handleControllerChange: vi.fn(),
+    handleTaskControlLoss: vi.fn(),
+    handleTerminalData: vi.fn(),
+    handleTerminalResize: vi.fn(),
+    isResizeTransactionPending: vi.fn(() => false),
+    recordKeyboardTraceStart: vi.fn(),
+    requestInputTakeover: vi.fn(async () => true),
+    setNextProgrammaticInputTrace: vi.fn(),
+    ...overrides,
+  };
+}
+
+function createTestTerminalRecoveryRuntime(
+  overrides: Partial<TerminalRecoveryRuntime> = {},
+): TerminalRecoveryRuntime {
+  return {
+    dispose: vi.fn(),
+    handleBrowserTransportConnectionState: vi.fn(),
+    isOutputFlushBlocked: vi.fn(() => false),
+    isRestoreBlocked: vi.fn(() => false),
+    notifySpawnReady: vi.fn(),
+    restoreTerminalOutput: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: MockTerminalClass,
 }));
@@ -250,8 +320,13 @@ vi.mock('@xterm/addon-fit', () => ({
 }));
 
 vi.mock('@xterm/addon-web-links', () => ({
-  WebLinksAddon: function WebLinksAddon(handler: (event: MouseEvent, uri: string) => void) {
-    outputPipelineFactoryState.webLinkHandler = handler;
+  WebLinksAddon: class {
+    activate = vi.fn();
+    dispose = vi.fn();
+
+    constructor(handler: (event: MouseEvent, uri: string) => void) {
+      outputPipelineFactoryState.webLinkHandler = handler;
+    }
   },
 }));
 
@@ -316,6 +391,8 @@ vi.mock('../../lib/theme', () => ({
 
 vi.mock('../../lib/webglPool', () => ({
   acquireWebglAddon: acquireWebglAddonMock,
+  isWebglAddonRuntimeReady: isWebglAddonRuntimeReadyMock,
+  preloadWebglAddon: preloadWebglAddonMock,
   releaseWebglAddon: releaseWebglAddonMock,
   setWebglAddonPriority: setWebglAddonPriorityMock,
   touchWebglAddon: touchWebglAddonMock,
@@ -417,6 +494,46 @@ async function flushSessionStartup(cycles = 2): Promise<void> {
   }
 }
 
+type TerminalSessionForTest = ReturnType<typeof startTerminalSession>;
+type MockTerminalInstance = InstanceType<typeof MockTerminalClass>;
+type TerminalKeyHandler = (event: KeyboardEvent) => boolean;
+type TerminalWebLinkHandler = (event: MouseEvent, uri: string) => void;
+type TestElectronWindow = {
+  electron?: { getPathForFile?: (file: File) => string };
+};
+
+function getMockTerminal(session: TerminalSessionForTest): MockTerminalInstance {
+  return session.term as unknown as MockTerminalInstance;
+}
+
+function getTestElectronWindow(): TestElectronWindow {
+  return window as Window & TestElectronWindow;
+}
+
+function getTerminalKeyHandler(session: TerminalSessionForTest): TerminalKeyHandler | undefined {
+  return getMockTerminal(session).attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+    | TerminalKeyHandler
+    | undefined;
+}
+
+function emitTerminalRender(session: TerminalSessionForTest, start: number, end: number): void {
+  getMockTerminal(session).emitRender(start, end);
+}
+
+async function waitForTerminalWebLinkHandler(): Promise<TerminalWebLinkHandler> {
+  for (let index = 0; index < 10; index += 1) {
+    const handler = outputPipelineFactoryState.webLinkHandler;
+    if (handler) {
+      return handler;
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    await flushSessionStartup(1);
+  }
+
+  throw new Error('Expected terminal web link handler to be registered');
+}
+
 describe('startTerminalSession render hibernation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -432,6 +549,8 @@ describe('startTerminalSession render hibernation', () => {
     });
     openMarkdownViewerMock.mockReset();
     openMarkdownViewerMock.mockResolvedValue(true);
+    isWebglAddonRuntimeReadyMock.mockReturnValue(true);
+    preloadWebglAddonMock.mockResolvedValue(undefined);
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'allow', preventDefault: false });
     clipboardReadTextMock.mockResolvedValue('');
     clipboardWriteTextMock.mockResolvedValue(undefined);
@@ -458,7 +577,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   afterEach(() => {
-    delete (window as unknown as { electron?: unknown }).electron;
+    delete getTestElectronWindow().electron;
     resetBrowserPagehideStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -636,8 +755,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    const linkHandler = outputPipelineFactoryState.webLinkHandler;
-    expect(linkHandler).toBeTypeOf('function');
+    const linkHandler = await waitForTerminalWebLinkHandler();
 
     linkHandler?.(new MouseEvent('click'), 'https://example.com');
     expect(openWindowSpy).not.toHaveBeenCalled();
@@ -659,10 +777,8 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    outputPipelineFactoryState.webLinkHandler?.(
-      new MouseEvent('click', { ctrlKey: true }),
-      'not a url',
-    );
+    const linkHandler = await waitForTerminalWebLinkHandler();
+    linkHandler(new MouseEvent('click', { ctrlKey: true }), 'not a url');
     expect(openWindowSpy).not.toHaveBeenCalled();
 
     session.cleanup();
@@ -809,10 +925,8 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    outputPipelineFactoryState.webLinkHandler?.(
-      new MouseEvent('click', { ctrlKey: true }),
-      'https://example.com/guide.md',
-    );
+    const linkHandler = await waitForTerminalWebLinkHandler();
+    linkHandler(new MouseEvent('click', { ctrlKey: true }), 'https://example.com/guide.md');
     expect(openMarkdownViewerMock).not.toHaveBeenCalled();
     expect(openWindowSpy).toHaveBeenCalledWith(
       'https://example.com/guide.md',
@@ -826,24 +940,11 @@ describe('startTerminalSession render hibernation', () => {
 
   it('pastes a resolved clipboard image path into the terminal with shell escaping', async () => {
     const setNextProgrammaticInputTrace = vi.fn();
-    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
-      cleanup: vi.fn(),
-      detectPendingInputTraceEcho: vi.fn(),
-      drainInputQueue: vi.fn(),
-      enqueueProgrammaticInput: vi.fn(),
-      finalizePendingInputTraceEchoes: vi.fn(),
-      flushPendingInput: vi.fn(),
-      flushPendingResizeForRecoveryAlignment: vi.fn(),
-      flushPendingResize: vi.fn(),
-      handleControllerChange: vi.fn(),
-      handleTaskControlLoss: vi.fn(),
-      handleTerminalData: vi.fn(),
-      handleTerminalResize: vi.fn(),
-      isResizeTransactionPending: vi.fn(() => false),
-      recordKeyboardTraceStart: vi.fn(),
-      requestInputTakeover: vi.fn(async () => true),
-      setNextProgrammaticInputTrace,
-    }));
+    createTerminalInputPipelineMock.mockImplementationOnce(() =>
+      createTestTerminalInputPipeline({
+        setNextProgrammaticInputTrace,
+      }),
+    );
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'paste', preventDefault: true });
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
@@ -864,10 +965,7 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(4);
     invokeMock.mockClear();
 
-    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
-      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'v' }));
@@ -893,7 +991,7 @@ describe('startTerminalSession render hibernation', () => {
     });
 
     await flushSessionStartup(4);
-    const terminal = session.term as unknown as InstanceType<typeof MockTerminalClass>;
+    const terminal = getMockTerminal(session);
     terminal.getSelection.mockReturnValue(
       [
         "  Let me know if you'd like to commit this or want a   ",
@@ -901,9 +999,7 @@ describe('startTerminalSession render hibernation', () => {
       ].join('\n'),
     );
 
-    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'c' }));
@@ -930,7 +1026,7 @@ describe('startTerminalSession render hibernation', () => {
     });
 
     await flushSessionStartup(4);
-    const terminal = session.term as unknown as InstanceType<typeof MockTerminalClass>;
+    const terminal = getMockTerminal(session);
     terminal.getSelection.mockReturnValue('padded text   \n');
 
     const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
@@ -963,10 +1059,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
-      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(
@@ -981,9 +1074,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   it('pastes dropped native file paths into the terminal before xterm sees basenames', async () => {
-    const runtimeWindow = window as unknown as {
-      electron?: { getPathForFile?: (file: File) => string };
-    };
+    const runtimeWindow = getTestElectronWindow();
     const previousElectron = runtimeWindow.electron;
     runtimeWindow.electron = {
       getPathForFile: vi.fn(() => '/tmp/My Image.png'),
@@ -1012,9 +1103,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   it('saves pathless dropped files before pasting their temp path', async () => {
-    const runtimeWindow = window as unknown as {
-      electron?: { getPathForFile?: (file: File) => string };
-    };
+    const runtimeWindow = getTestElectronWindow();
     const previousElectron = runtimeWindow.electron;
     runtimeWindow.electron = {
       getPathForFile: vi.fn(() => ''),
@@ -1066,10 +1155,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
-      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(new KeyboardEvent('keyup', { key: 'Enter', shiftKey: true }));
@@ -1094,10 +1180,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
-      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(new KeyboardEvent('keydown', { key: 'Escape' }));
@@ -1111,24 +1194,12 @@ describe('startTerminalSession render hibernation', () => {
   it('enqueues terminal input for shortcut actions that send escape sequences', async () => {
     const enqueueProgrammaticInput = vi.fn();
     const setNextProgrammaticInputTrace = vi.fn();
-    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
-      cleanup: vi.fn(),
-      detectPendingInputTraceEcho: vi.fn(),
-      drainInputQueue: vi.fn(),
-      enqueueProgrammaticInput,
-      finalizePendingInputTraceEchoes: vi.fn(),
-      flushPendingInput: vi.fn(),
-      flushPendingResizeForRecoveryAlignment: vi.fn(),
-      flushPendingResize: vi.fn(),
-      handleControllerChange: vi.fn(),
-      handleTaskControlLoss: vi.fn(),
-      handleTerminalData: vi.fn(),
-      handleTerminalResize: vi.fn(),
-      isResizeTransactionPending: vi.fn(() => false),
-      recordKeyboardTraceStart: vi.fn(),
-      requestInputTakeover: vi.fn(async () => true),
-      setNextProgrammaticInputTrace,
-    }));
+    createTerminalInputPipelineMock.mockImplementationOnce(() =>
+      createTestTerminalInputPipeline({
+        enqueueProgrammaticInput,
+        setNextProgrammaticInputTrace,
+      }),
+    );
     getTerminalShortcutActionMock.mockReturnValue({
       data: '\x1b\r',
       kind: 'send-input',
@@ -1143,10 +1214,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup(4);
 
-    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
-      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const keyHandler = getTerminalKeyHandler(session);
 
     expect(keyHandler).toBeTypeOf('function');
     const accepted = keyHandler?.(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
@@ -1175,7 +1243,7 @@ describe('startTerminalSession render hibernation', () => {
 
     expect(paintReadyChanges).toEqual([]);
 
-    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    emitTerminalRender(session, 0, 10);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(paintReadyChanges).toEqual([true]);
@@ -1228,18 +1296,15 @@ describe('startTerminalSession render hibernation', () => {
     const restoreDeferred = createDeferredPromise<undefined>();
 
     invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce((() => ({
-      dispose: vi.fn(),
-      handleBrowserTransportConnectionState: vi.fn(),
-      isOutputFlushBlocked: vi.fn(() => false),
-      isRestoreBlocked: vi.fn(() => false),
-      notifySpawnReady: vi.fn(),
-      restoreTerminalOutput: vi.fn(async (reason?: string) => {
-        if (reason === 'attach') {
-          await restoreDeferred.promise;
-        }
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(() =>
+      createTestTerminalRecoveryRuntime({
+        restoreTerminalOutput: vi.fn(async (reason?: string) => {
+          if (reason === 'attach') {
+            await restoreDeferred.promise;
+          }
+        }),
       }),
-    })) as never);
+    );
 
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
@@ -1340,6 +1405,41 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('loads the WebGL runtime after focused terminal readiness before acquiring the renderer', async () => {
+    const container = createMeasuredContainer();
+    const deferredWebglRuntime = createDeferredPromise<undefined>();
+
+    isWebglAddonRuntimeReadyMock.mockReturnValue(false);
+    preloadWebglAddonMock.mockReturnValue(deferredWebglRuntime.promise);
+    acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+
+    expect(preloadWebglAddonMock).toHaveBeenCalledTimes(1);
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    isWebglAddonRuntimeReadyMock.mockReturnValue(true);
+    deferredWebglRuntime.resolve(undefined);
+    await flushSessionStartup(2);
+
+    expect(acquireWebglAddonMock).toHaveBeenCalledWith(
+      'agent-1',
+      expect.any(MockTerminalClass),
+      expect.any(Function),
+      'focused',
+    );
+
+    session.cleanup();
+  });
+
   it('releases WebGL while restore-blocked and keeps it through focused resize commits', async () => {
     const container = createMeasuredContainer();
     const paintReadyChanges: boolean[] = [];
@@ -1348,42 +1448,23 @@ describe('startTerminalSession render hibernation', () => {
     let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
     let onResizeTransactionChange: ((active: boolean) => void) | undefined;
 
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      const recoveryOptions = options as RecoveryRuntimeTestOptions;
-      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
-      return {
-        dispose: vi.fn(),
-        handleBrowserTransportConnectionState: vi.fn(),
-        isOutputFlushBlocked: vi.fn(() => false),
-        isRestoreBlocked: vi.fn(() => restoreBlocked),
-        notifySpawnReady: vi.fn(),
-        restoreTerminalOutput: vi.fn(async () => undefined),
-      };
-    }) as never);
-    createTerminalInputPipelineMock.mockImplementationOnce(((options: unknown) => {
-      const inputOptions = options as {
-        onResizeTransactionChange?: (active: boolean) => void;
-      };
-      onResizeTransactionChange = inputOptions.onResizeTransactionChange;
-      return {
-        cleanup: vi.fn(),
-        detectPendingInputTraceEcho: vi.fn(),
-        drainInputQueue: vi.fn(),
-        enqueueProgrammaticInput: vi.fn(),
-        finalizePendingInputTraceEchoes: vi.fn(),
-        flushPendingInput: vi.fn(),
-        flushPendingResizeForRecoveryAlignment: vi.fn(),
-        flushPendingResize: vi.fn(),
-        handleControllerChange: vi.fn(),
-        handleTaskControlLoss: vi.fn(),
-        handleTerminalData: vi.fn(),
-        handleTerminalResize: vi.fn(),
-        isResizeTransactionPending: vi.fn(() => resizePending),
-        recordKeyboardTraceStart: vi.fn(),
-        requestInputTakeover: vi.fn(async () => true),
-        setNextProgrammaticInputTrace: vi.fn(),
-      };
-    }) as never);
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(
+      (options: RecoveryRuntimeTestOptions) => {
+        onRestoreBlockedChange = options.onRestoreBlockedChange;
+        return createTestTerminalRecoveryRuntime({
+          isRestoreBlocked: vi.fn(() => restoreBlocked),
+          restoreTerminalOutput: vi.fn(async () => undefined),
+        });
+      },
+    );
+    createTerminalInputPipelineMock.mockImplementationOnce(
+      (options: { onResizeTransactionChange?: (active: boolean) => void }) => {
+        onResizeTransactionChange = options.onResizeTransactionChange;
+        return createTestTerminalInputPipeline({
+          isResizeTransactionPending: vi.fn(() => resizePending),
+        });
+      },
+    );
     acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
 
     const session = startTerminalSession({
@@ -1398,7 +1479,7 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(4);
     await vi.advanceTimersByTimeAsync(500);
     await flushSessionStartup(4);
-    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    emitTerminalRender(session, 0, 10);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(acquireWebglAddonMock).toHaveBeenCalledTimes(1);
@@ -1414,7 +1495,7 @@ describe('startTerminalSession render hibernation', () => {
     expect(acquireWebglAddonMock).toHaveBeenCalledTimes(2);
     expect(paintReadyChanges).toEqual([true, false]);
 
-    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    emitTerminalRender(session, 0, 10);
     await vi.advanceTimersByTimeAsync(16);
     expect(paintReadyChanges).toEqual([true, false, true]);
 
@@ -1571,24 +1652,11 @@ describe('startTerminalSession render hibernation', () => {
 
   it('cancels the delayed initial command when the session is cleaned up first', async () => {
     const enqueueProgrammaticInput = vi.fn();
-    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
-      cleanup: vi.fn(),
-      detectPendingInputTraceEcho: vi.fn(),
-      drainInputQueue: vi.fn(),
-      enqueueProgrammaticInput,
-      finalizePendingInputTraceEchoes: vi.fn(),
-      flushPendingInput: vi.fn(),
-      flushPendingResizeForRecoveryAlignment: vi.fn(),
-      flushPendingResize: vi.fn(),
-      handleControllerChange: vi.fn(),
-      handleTaskControlLoss: vi.fn(),
-      handleTerminalData: vi.fn(),
-      handleTerminalResize: vi.fn(),
-      isResizeTransactionPending: vi.fn(() => false),
-      recordKeyboardTraceStart: vi.fn(),
-      requestInputTakeover: vi.fn(async () => true),
-      setNextProgrammaticInputTrace: vi.fn(),
-    }));
+    createTerminalInputPipelineMock.mockImplementationOnce(() =>
+      createTestTerminalInputPipeline({
+        enqueueProgrammaticInput,
+      }),
+    );
 
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
@@ -1615,30 +1683,14 @@ describe('startTerminalSession render hibernation', () => {
     const container = createMeasuredContainer();
     let resizeTransactionPending = false;
     let onResizeTransactionChangeHandler: ((active: boolean) => void) | undefined;
-    createTerminalInputPipelineMock.mockImplementationOnce(((...args: unknown[]) => {
-      const options = args[0] as {
-        onResizeTransactionChange?: (active: boolean) => void;
-      };
-      onResizeTransactionChangeHandler = options.onResizeTransactionChange;
-      return {
-        cleanup: vi.fn(),
-        detectPendingInputTraceEcho: vi.fn(),
-        drainInputQueue: vi.fn(),
-        enqueueProgrammaticInput: vi.fn(),
-        finalizePendingInputTraceEchoes: vi.fn(),
-        flushPendingInput: vi.fn(),
-        flushPendingResizeForRecoveryAlignment: vi.fn(),
-        flushPendingResize: vi.fn(),
-        handleControllerChange: vi.fn(),
-        handleTaskControlLoss: vi.fn(),
-        handleTerminalData: vi.fn(),
-        handleTerminalResize: vi.fn(),
-        isResizeTransactionPending: vi.fn(() => resizeTransactionPending),
-        recordKeyboardTraceStart: vi.fn(),
-        requestInputTakeover: vi.fn(async () => true),
-        setNextProgrammaticInputTrace: vi.fn(),
-      };
-    }) as never);
+    createTerminalInputPipelineMock.mockImplementationOnce(
+      (options: { onResizeTransactionChange?: (active: boolean) => void }) => {
+        onResizeTransactionChangeHandler = options.onResizeTransactionChange;
+        return createTestTerminalInputPipeline({
+          isResizeTransactionPending: vi.fn(() => resizeTransactionPending),
+        });
+      },
+    );
 
     const session = startTerminalSession({
       containerRef: container,
@@ -1689,14 +1741,10 @@ describe('startTerminalSession render hibernation', () => {
       startupVisibleSiblingSessionFitGateUntilSelectedPaintReady: true,
     };
 
-    createTerminalFitLifecycleMock.mockImplementationOnce(((options: { onReady?: () => void }) => {
+    createTerminalFitLifecycleMock.mockImplementationOnce((options: { onReady?: () => void }) => {
       onReady = options.onReady;
-      return {
-        cleanup: vi.fn(),
-        ensureReady: vi.fn(async () => true),
-        scheduleStabilize: vi.fn(),
-      };
-    }) as never);
+      return createTestTerminalFitLifecycle();
+    });
 
     const session = startTerminalSession({
       containerRef: container,
@@ -1745,21 +1793,18 @@ describe('startTerminalSession render hibernation', () => {
     let recoveryOptions: RecoveryRuntimeTestOptions | undefined;
 
     invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      recoveryOptions = options as RecoveryRuntimeTestOptions;
-      return {
-        dispose: vi.fn(),
-        handleBrowserTransportConnectionState: vi.fn(),
-        isOutputFlushBlocked: vi.fn(() => false),
-        isRestoreBlocked: vi.fn(() => false),
-        notifySpawnReady: vi.fn(),
-        restoreTerminalOutput: vi.fn(async (reason?: string) => {
-          if (reason === 'attach') {
-            await recoveryOptions?.ensureTerminalFitReady?.('restore');
-          }
-        }),
-      };
-    }) as never);
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(
+      (options: RecoveryRuntimeTestOptions) => {
+        recoveryOptions = options;
+        return createTestTerminalRecoveryRuntime({
+          restoreTerminalOutput: vi.fn(async (reason?: string) => {
+            if (reason === 'attach') {
+              await recoveryOptions?.ensureTerminalFitReady?.('restore');
+            }
+          }),
+        });
+      },
+    );
 
     const session = startTerminalSession({
       containerRef: container,
@@ -1780,13 +1825,8 @@ describe('startTerminalSession render hibernation', () => {
     const callSequence: string[] = [];
 
     invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      void options;
-      return {
-        dispose: vi.fn(),
-        handleBrowserTransportConnectionState: vi.fn(),
-        isOutputFlushBlocked: vi.fn(() => false),
-        isRestoreBlocked: vi.fn(() => false),
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(() =>
+      createTestTerminalRecoveryRuntime({
         notifySpawnReady: vi.fn(() => {
           callSequence.push('notify-spawn-ready');
         }),
@@ -1797,8 +1837,8 @@ describe('startTerminalSession render hibernation', () => {
             callSequence.push('restore-attach:end');
           }
         }),
-      };
-    }) as never);
+      }),
+    );
 
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
@@ -1901,24 +1941,11 @@ describe('startTerminalSession render hibernation', () => {
     const container = createMeasuredContainer();
     const resizeCommit = createDeferredPromise<undefined>();
     const flushPendingResize = vi.fn(() => resizeCommit.promise);
-    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
-      cleanup: vi.fn(),
-      detectPendingInputTraceEcho: vi.fn(),
-      drainInputQueue: vi.fn(),
-      enqueueProgrammaticInput: vi.fn(),
-      finalizePendingInputTraceEchoes: vi.fn(),
-      flushPendingInput: vi.fn(),
-      flushPendingResizeForRecoveryAlignment: vi.fn(),
-      flushPendingResize,
-      handleControllerChange: vi.fn(),
-      handleTaskControlLoss: vi.fn(),
-      handleTerminalData: vi.fn(),
-      handleTerminalResize: vi.fn(),
-      isResizeTransactionPending: vi.fn(() => false),
-      recordKeyboardTraceStart: vi.fn(),
-      requestInputTakeover: vi.fn(async () => true),
-      setNextProgrammaticInputTrace: vi.fn(),
-    }));
+    createTerminalInputPipelineMock.mockImplementationOnce(() =>
+      createTestTerminalInputPipeline({
+        flushPendingResize,
+      }),
+    );
 
     const session = startTerminalSession({
       containerRef: container,
@@ -1960,24 +1987,21 @@ describe('startTerminalSession render hibernation', () => {
     const container = createMeasuredContainer();
     let restoreBlocked = true;
     let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      const recoveryOptions = options as RecoveryRuntimeTestOptions;
-      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
-      return {
-        dispose: vi.fn(),
-        handleBrowserTransportConnectionState: vi.fn(),
-        isOutputFlushBlocked: vi.fn(() => false),
-        isRestoreBlocked: vi.fn(() => restoreBlocked),
-        notifySpawnReady: vi.fn(),
-        restoreTerminalOutput: vi.fn(async (reason?: string) => {
-          if (reason === 'hibernate') {
-            outputPipelineFactoryState.recoveryVisibilitySnapshots.push(
-              recoveryOptions.isRenderHibernating(),
-            );
-          }
-        }),
-      };
-    }) as never);
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(
+      (options: RecoveryRuntimeTestOptions) => {
+        onRestoreBlockedChange = options.onRestoreBlockedChange;
+        return createTestTerminalRecoveryRuntime({
+          isRestoreBlocked: vi.fn(() => restoreBlocked),
+          restoreTerminalOutput: vi.fn(async (reason?: string) => {
+            if (reason === 'hibernate') {
+              outputPipelineFactoryState.recoveryVisibilitySnapshots.push(
+                options.isRenderHibernating(),
+              );
+            }
+          }),
+        });
+      },
+    );
     vi.mocked(isElectronRuntime).mockReturnValue(false);
 
     const session = startTerminalSession({
@@ -2036,18 +2060,15 @@ describe('startTerminalSession render hibernation', () => {
     const container = createMeasuredContainer();
     let restoreBlocked = true;
     let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
-    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      const recoveryOptions = options as RecoveryRuntimeTestOptions;
-      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
-      return {
-        dispose: vi.fn(),
-        handleBrowserTransportConnectionState: vi.fn(),
-        isOutputFlushBlocked: vi.fn(() => false),
-        isRestoreBlocked: vi.fn(() => restoreBlocked),
-        notifySpawnReady: vi.fn(),
-        restoreTerminalOutput: vi.fn(async () => undefined),
-      };
-    }) as never);
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(
+      (options: RecoveryRuntimeTestOptions) => {
+        onRestoreBlockedChange = options.onRestoreBlockedChange;
+        return createTestTerminalRecoveryRuntime({
+          isRestoreBlocked: vi.fn(() => restoreBlocked),
+          restoreTerminalOutput: vi.fn(async () => undefined),
+        });
+      },
+    );
     vi.mocked(isElectronRuntime).mockReturnValue(false);
 
     const session = startTerminalSession({

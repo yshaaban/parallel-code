@@ -65,9 +65,9 @@ const {
   updateTaskNameMock: vi.fn(),
   previewSectionPropsRef: {
     current: null as null | {
-      availableCandidates: () => unknown[];
-      availableScanError: () => string | null;
-      availableScanning: () => boolean;
+      availableCandidates: unknown[];
+      availableScanError: string | null;
+      availableScanning: boolean;
       onExposePort: (port: number, label?: string) => Promise<void> | void;
       onRefreshAvailablePorts: () => Promise<void> | void;
       onUnexposePort: (port: number) => Promise<void> | void;
@@ -82,6 +82,19 @@ const {
     },
   },
 }));
+
+interface PreviewSectionPanelPropsForTest {
+  availableCandidates: unknown[];
+  availableScanError: string | null;
+  availableScanning: boolean;
+  onExposePort: (port: number, label?: string) => Promise<void> | void;
+  onRefreshAvailablePorts: () => Promise<void> | void;
+  onUnexposePort: (port: number) => Promise<void> | void;
+}
+
+interface PreviewSectionFactoryPropsForTest {
+  previewProps: () => PreviewSectionPanelPropsForTest;
+}
 
 vi.mock('../lib/ipc', () => ({
   isElectronRuntime: isElectronRuntimeMock,
@@ -283,17 +296,10 @@ vi.mock('./task-panel/TaskAiTerminalSection', () => ({
 
 vi.mock('./task-panel/TaskPreviewSection', () => ({
   createTaskPreviewSection: vi.fn((props: unknown) => {
-    const typedProps = props as {
-      availableCandidates: () => unknown[];
-      availableScanError: () => string | null;
-      availableScanning: () => boolean;
-      onExposePort: (port: number, label?: string) => Promise<void> | void;
-      onRefreshAvailablePorts: () => Promise<void> | void;
-      onUnexposePort: (port: number) => Promise<void> | void;
-    };
+    const typedProps = props as PreviewSectionFactoryPropsForTest;
 
     createRenderEffect(() => {
-      previewSectionPropsRef.current = typedProps;
+      previewSectionPropsRef.current = typedProps.previewProps();
     });
 
     return {
@@ -400,14 +406,16 @@ describe('TaskPanel', () => {
     vi.useRealTimers();
   });
 
-  it('opens the close dialog from the title bar action', () => {
+  it('opens the close dialog from the title bar action', async () => {
     setStore('focusedPanel', { 'task-1': 'prompt' });
 
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
-    expect(screen.getByText('Close task dialog')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByText('Close task dialog')).toBeDefined();
+    });
   });
 
   it('owns task-level switch-window lifecycle when the panel gains or loses activity', () => {
@@ -658,20 +666,22 @@ describe('TaskPanel', () => {
     await previewSectionPropsRef.current?.onRefreshAvailablePorts();
     await Promise.resolve();
 
-    expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(1);
+    expect(previewSectionPropsRef.current?.availableCandidates).toHaveLength(1);
 
     await previewSectionPropsRef.current?.onRefreshAvailablePorts();
 
     expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledTimes(2);
-    expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(0);
-    expect(previewSectionPropsRef.current?.availableScanError()).toBe('Scan failed');
+    expect(previewSectionPropsRef.current?.availableCandidates).toHaveLength(0);
+    expect(previewSectionPropsRef.current?.availableScanError).toBe('Scan failed');
   });
 
   it('shows a notification when a push finishes after the dialog was closed', async () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open push' }));
-    expect(screen.getByText('Push dialog')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByText('Push dialog')).toBeDefined();
+    });
 
     pushDialogPropsRef.current?.onClose();
     await waitFor(() => {
@@ -691,6 +701,9 @@ describe('TaskPanel', () => {
     render(() => <TaskPanel task={task()} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open push' }));
+    await waitFor(() => {
+      expect(screen.getByText('Push dialog')).toBeDefined();
+    });
     pushDialogPropsRef.current?.onStart(pushRun);
     pushDialogPropsRef.current?.onClose();
     setTask(createTestTask({ agentIds: ['agent-1'], branchName: 'feature/renamed' }));

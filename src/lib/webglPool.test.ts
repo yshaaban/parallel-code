@@ -1,3 +1,4 @@
+import type { Terminal } from '@xterm/xterm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@xterm/addon-webgl', () => {
@@ -32,6 +33,16 @@ function createTerminal(): MockTerminal {
   };
 }
 
+function asTerminal(terminal: MockTerminal): Terminal {
+  return terminal as unknown as Terminal;
+}
+
+async function importReadyWebglPool(): Promise<typeof import('./webglPool')> {
+  const module = await import('./webglPool');
+  await module.preloadWebglAddon();
+  return module;
+}
+
 describe('webglPool', () => {
   let agentIdPrefix = '';
 
@@ -54,38 +65,52 @@ describe('webglPool', () => {
 
   afterEach(async () => {
     vi.clearAllTimers();
-    const { releaseWebglAddon } = await import('./webglPool');
+    const { releaseWebglAddon } = await importReadyWebglPool();
     for (let i = 0; i < 8; i++) {
       releaseWebglAddon(getAgentId(i));
     }
     Reflect.deleteProperty(globalThis, 'window');
   });
 
+  it('loads the WebGL addon runtime on demand before acquiring contexts', async () => {
+    const module = await import('./webglPool');
+    const terminal = createTerminal();
+
+    expect(module.isWebglAddonRuntimeReady()).toBe(false);
+    expect(module.acquireWebglAddon(getAgentId(0), asTerminal(terminal))).toBeNull();
+
+    await module.preloadWebglAddon();
+
+    expect(module.isWebglAddonRuntimeReady()).toBe(true);
+    expect(module.acquireWebglAddon(getAgentId(0), asTerminal(terminal))).not.toBeNull();
+    expect(terminal.loadAddon).toHaveBeenCalledTimes(1);
+  });
+
   it('touches active terminals so eviction is true LRU within the same priority', async () => {
-    const { acquireWebglAddon, touchWebglAddon } = await import('./webglPool');
+    const { acquireWebglAddon, touchWebglAddon } = await importReadyWebglPool();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let i = 0; i < 6; i++) {
-      acquireWebglAddon(getAgentId(i), terminals[i] as never);
+      acquireWebglAddon(getAgentId(i), asTerminal(terminals[i]));
     }
 
     touchWebglAddon(getAgentId(0));
-    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    acquireWebglAddon(getAgentId(6), asTerminal(terminals[6]));
 
     expect(terminals[0].refresh).not.toHaveBeenCalled();
     expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
   });
 
   it('preserves focused terminals ahead of background terminals during eviction', async () => {
-    const { acquireWebglAddon, setWebglAddonPriority } = await import('./webglPool');
+    const { acquireWebglAddon, setWebglAddonPriority } = await importReadyWebglPool();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let index = 0; index < 6; index += 1) {
-      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      acquireWebglAddon(getAgentId(index), asTerminal(terminals[index]));
       setWebglAddonPriority(getAgentId(index), index === 0 ? 'focused' : 'background');
     }
 
-    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    acquireWebglAddon(getAgentId(6), asTerminal(terminals[6]));
     setWebglAddonPriority(getAgentId(6), 'background');
 
     expect(terminals[0].refresh).not.toHaveBeenCalled();
@@ -93,10 +118,10 @@ describe('webglPool', () => {
   });
 
   it('does not fire renderer-lost recovery during explicit release', async () => {
-    const { acquireWebglAddon, releaseWebglAddon } = await import('./webglPool');
+    const { acquireWebglAddon, releaseWebglAddon } = await importReadyWebglPool();
     const onRendererLost = vi.fn();
 
-    acquireWebglAddon(getAgentId(0), createTerminal() as never, onRendererLost);
+    acquireWebglAddon(getAgentId(0), asTerminal(createTerminal()), onRendererLost);
     releaseWebglAddon(getAgentId(0));
     await Promise.resolve();
 
@@ -104,26 +129,26 @@ describe('webglPool', () => {
   });
 
   it('protects focused terminals from background eviction', async () => {
-    const { acquireWebglAddon, setWebglAddonPriority } = await import('./webglPool');
+    const { acquireWebglAddon, setWebglAddonPriority } = await importReadyWebglPool();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let index = 0; index < 6; index += 1) {
-      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      acquireWebglAddon(getAgentId(index), asTerminal(terminals[index]));
     }
 
     setWebglAddonPriority(getAgentId(0), 'focused');
-    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    acquireWebglAddon(getAgentId(6), asTerminal(terminals[6]));
 
     expect(terminals[0].refresh).not.toHaveBeenCalled();
     expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the terminal and notifies recovery handlers on context loss', async () => {
-    const { acquireWebglAddon } = await import('./webglPool');
+    const { acquireWebglAddon } = await importReadyWebglPool();
     const term = createTerminal();
     const onRendererLost = vi.fn();
 
-    const addon = acquireWebglAddon(getAgentId(0), term as never, onRendererLost) as {
+    const addon = acquireWebglAddon(getAgentId(0), asTerminal(term), onRendererLost) as {
       triggerContextLoss: () => void;
     } | null;
 
@@ -134,7 +159,7 @@ describe('webglPool', () => {
     expect(term.refresh).toHaveBeenCalledWith(0, term.rows - 1);
     expect(onRendererLost).toHaveBeenCalledTimes(1);
 
-    const replacement = acquireWebglAddon(getAgentId(0), term as never, onRendererLost);
+    const replacement = acquireWebglAddon(getAgentId(0), asTerminal(term), onRendererLost);
     expect(replacement).not.toBe(addon);
     expect(term.loadAddon).toHaveBeenCalledTimes(2);
   });
@@ -143,17 +168,17 @@ describe('webglPool', () => {
     const { getRendererRuntimeDiagnosticsSnapshot, resetRendererRuntimeDiagnostics } =
       await import('../app/runtime-diagnostics');
     const { acquireWebglAddon, releaseWebglAddon, setWebglAddonPriority } =
-      await import('./webglPool');
+      await importReadyWebglPool();
 
     resetRendererRuntimeDiagnostics();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let index = 0; index < 6; index += 1) {
-      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      acquireWebglAddon(getAgentId(index), asTerminal(terminals[index]));
       setWebglAddonPriority(getAgentId(index), index < 2 ? 'visible' : 'background');
     }
 
-    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    acquireWebglAddon(getAgentId(6), asTerminal(terminals[6]));
     releaseWebglAddon(getAgentId(6));
 
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer).toEqual(
@@ -175,18 +200,18 @@ describe('webglPool', () => {
 
   it('refuses to evict visible terminals just to acquire another visible context', async () => {
     const { acquireWebglAddon, getWebglPoolRuntimeSnapshot, setWebglAddonPriority } =
-      await import('./webglPool');
+      await importReadyWebglPool();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let index = 0; index < 6; index += 1) {
-      const addon = acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      const addon = acquireWebglAddon(getAgentId(index), asTerminal(terminals[index]));
       expect(addon).not.toBeNull();
       setWebglAddonPriority(getAgentId(index), 'visible');
     }
 
     const refusedAddon = acquireWebglAddon(
       getAgentId(6),
-      terminals[6] as never,
+      asTerminal(terminals[6]),
       undefined,
       'focused',
     );

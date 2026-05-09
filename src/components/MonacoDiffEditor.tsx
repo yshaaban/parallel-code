@@ -1,7 +1,7 @@
-import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import * as monaco from 'monaco-editor';
+import { createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
+import type * as Monaco from 'monaco-editor';
 import { store } from '../store/store';
-import { monacoThemeName } from '../lib/monaco-theme';
+import { monacoThemeName, registerMonacoThemes } from '../lib/monaco-theme';
 
 interface MonacoDiffEditorProps {
   oldContent: string;
@@ -12,12 +12,33 @@ interface MonacoDiffEditorProps {
   sideBySide: boolean;
 }
 
+type MonacoModule = typeof import('monaco-editor');
+
+let monacoModulePromise: Promise<MonacoModule> | null = null;
+
+function loadMonacoModule(): Promise<MonacoModule> {
+  monacoModulePromise ??= Promise.all([import('../lib/monaco-workers'), import('monaco-editor')])
+    .then(([, module]) => {
+      registerMonacoThemes(module.editor);
+      return module;
+    })
+    .catch((error: unknown) => {
+      monacoModulePromise = null;
+      throw error;
+    });
+
+  return monacoModulePromise;
+}
+
 export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
   let containerRef!: HTMLDivElement;
-  let editor: monaco.editor.IStandaloneDiffEditor | undefined;
-  let originalModel: monaco.editor.ITextModel | undefined;
-  let modifiedModel: monaco.editor.ITextModel | undefined;
-  let diffUpdateDisposable: monaco.IDisposable | undefined;
+  let monacoModule: MonacoModule | undefined;
+  let editor: Monaco.editor.IStandaloneDiffEditor | undefined;
+  let originalModel: Monaco.editor.ITextModel | undefined;
+  let modifiedModel: Monaco.editor.ITextModel | undefined;
+  let diffUpdateDisposable: Monaco.IDisposable | undefined;
+  let mounted = true;
+  const [editorReadyVersion, setEditorReadyVersion] = createSignal(0);
 
   function handleHiddenLinesClick(event: MouseEvent): void {
     const target = event.target as HTMLElement;
@@ -27,8 +48,14 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
     if (link && !link.contains(target)) link.click();
   }
 
-  onMount(() => {
-    editor = monaco.editor.createDiffEditor(containerRef, {
+  async function mountEditor(): Promise<void> {
+    const loadedMonaco = await loadMonacoModule();
+    if (!mounted) {
+      return;
+    }
+
+    monacoModule = loadedMonaco;
+    editor = loadedMonaco.editor.createDiffEditor(containerRef, {
       automaticLayout: true,
       readOnly: true,
       renderSideBySide: props.sideBySide,
@@ -42,8 +69,8 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
       hideUnchangedRegions: { enabled: true },
     });
 
-    originalModel = monaco.editor.createModel(props.oldContent, props.language);
-    modifiedModel = monaco.editor.createModel(props.newContent, props.language);
+    originalModel = loadedMonaco.editor.createModel(props.oldContent, props.language);
+    modifiedModel = loadedMonaco.editor.createModel(props.newContent, props.language);
     editor.setModel({ original: originalModel, modified: modifiedModel });
 
     diffUpdateDisposable = editor.onDidUpdateDiff(() => {
@@ -56,15 +83,22 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
 
     // Make the entire hidden-lines bar clickable (Monaco only wires a tiny icon by default)
     containerRef.addEventListener('click', handleHiddenLinesClick);
+    setEditorReadyVersion((version) => version + 1);
+  }
+
+  onMount(() => {
+    void mountEditor();
   });
 
   createEffect(() => {
+    editorReadyVersion();
     const lang = props.language;
-    if (originalModel) monaco.editor.setModelLanguage(originalModel, lang);
-    if (modifiedModel) monaco.editor.setModelLanguage(modifiedModel, lang);
+    if (originalModel) monacoModule?.editor.setModelLanguage(originalModel, lang);
+    if (modifiedModel) monacoModule?.editor.setModelLanguage(modifiedModel, lang);
   });
 
   createEffect(() => {
+    editorReadyVersion();
     const value = props.oldContent;
     if (originalModel && originalModel.getValue() !== value) {
       originalModel.setValue(value);
@@ -72,6 +106,7 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
   });
 
   createEffect(() => {
+    editorReadyVersion();
     const value = props.newContent;
     if (modifiedModel && modifiedModel.getValue() !== value) {
       modifiedModel.setValue(value);
@@ -79,10 +114,12 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
   });
 
   createEffect(() => {
+    editorReadyVersion();
     editor?.updateOptions({ renderSideBySide: props.sideBySide });
   });
 
   createEffect(() => {
+    editorReadyVersion();
     const lineNumber = props.revealLine;
     if (!lineNumber || !editor) {
       return;
@@ -93,10 +130,12 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
   });
 
   createEffect(() => {
-    monaco.editor.setTheme(monacoThemeName(store.themePreset));
+    editorReadyVersion();
+    monacoModule?.editor.setTheme(monacoThemeName(store.themePreset));
   });
 
   onCleanup(() => {
+    mounted = false;
     containerRef?.removeEventListener('click', handleHiddenLinesClick);
     diffUpdateDisposable?.dispose();
     editor?.dispose();

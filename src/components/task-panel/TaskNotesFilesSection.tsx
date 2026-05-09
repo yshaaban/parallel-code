@@ -1,7 +1,7 @@
 import {
   Show,
+  Suspense,
   createEffect,
-  createMemo,
   createSignal,
   createUniqueId,
   onCleanup,
@@ -12,10 +12,9 @@ import {
 
 import { openMarkdownViewer } from '../../app/markdown-viewer';
 import { sendPrompt } from '../../app/task-workflows';
+import { lazyNamed } from '../../lib/lazy-named';
 import { warn as logWarn } from '../../lib/log';
-import { renderMarkdownSafely } from '../../lib/marked-shiki';
 
-import { createDialogScroll } from '../../lib/dialog-scroll';
 import { theme } from '../../lib/theme';
 import { typography } from '../../lib/typography';
 import type { ChangedFile } from '../../ipc/types';
@@ -34,19 +33,36 @@ import { Dialog } from '../Dialog';
 import { IconButton } from '../IconButton';
 import type { PanelChild } from '../ResizablePanel';
 import { ResizablePanel } from '../ResizablePanel';
-import { ReviewPanel } from '../ReviewPanel';
 import { ScalablePanel } from '../ScalablePanel';
+
+const ReviewPanel = lazyNamed(() => import('../ReviewPanel'), 'ReviewPanel');
+const TaskPlanContent = lazyNamed(() => import('./TaskPlanContent'), 'TaskPlanContent');
+
+type TaskNotesTab = 'notes' | 'plan';
 
 interface TaskNotesFilesSectionProps {
   isActive: Accessor<boolean>;
   isHydraTask: Accessor<boolean>;
-  notesTab: Accessor<'notes' | 'plan'>;
+  notesTab: Accessor<TaskNotesTab>;
   onFileClick: (file: ChangedFile | null) => void;
   setChangedFilesRef: (element: HTMLDivElement | undefined) => void;
   setNotesRef: (element: HTMLTextAreaElement | undefined) => void;
   setPlanFocusRef: (element: HTMLDivElement | undefined) => void;
-  setNotesTab: Setter<'notes' | 'plan'>;
+  setNotesTab: Setter<TaskNotesTab>;
   task: Accessor<Task>;
+}
+
+function getNotesTabButtonStyle(tab: TaskNotesTab, selectedTab: TaskNotesTab): JSX.CSSProperties {
+  const selected = tab === selectedTab;
+  return {
+    padding: '2px 8px',
+    background: selected ? theme.taskPanelBg : 'transparent',
+    color: selected ? theme.fg : theme.fgMuted,
+    border: 'none',
+    'border-bottom': selected ? `2px solid ${theme.accent}` : '2px solid transparent',
+    cursor: 'pointer',
+    ...typography.monoMeta,
+  };
 }
 
 export function createTaskNotesFilesSection(props: TaskNotesFilesSectionProps): PanelChild {
@@ -65,9 +81,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
   const projectPath = () => getProject(task().projectId)?.path;
   const reviewOpen = () => store.reviewPanelOpen[task().id];
   const filesPanelTitle = () => (reviewOpen() ? 'Review' : 'Changed Files');
-  const planHtml = createMemo(() => renderMarkdownSafely(task().planContent ?? ''));
   const [sendingNotes, setSendingNotes] = createSignal(false);
-  let planContentRef: HTMLDivElement | undefined;
 
   function isPlanVisible(): boolean {
     return props.notesTab() === 'plan' && store.showPlans && Boolean(task().planContent);
@@ -91,20 +105,6 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
       props.setChangedFilesRef(element);
     }
   }
-
-  createDialogScroll({
-    enabled: isPlanVisible,
-    getElement: () => planContentRef,
-  });
-
-  createEffect(() => {
-    if (isPlanVisible()) {
-      return;
-    }
-
-    planContentRef = undefined;
-    props.setPlanFocusRef(undefined);
-  });
 
   createEffect(() => {
     if (isNotesVisible()) {
@@ -235,18 +235,20 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
           />
         }
       >
-        <ReviewPanel
-          agentId={task().agentIds[0]}
-          baseBranch={task().baseBranch}
-          taskId={task().id}
-          worktreePath={task().worktreePath}
-          projectRoot={projectPath()}
-          branchName={task().branchName}
-          filterHydraArtifacts={props.isHydraTask()}
-          isActive={props.isActive()}
-          fullscreen={fullscreen}
-          onOpenFullscreen={openFilesFullscreen}
-        />
+        <Suspense>
+          <ReviewPanel
+            agentId={task().agentIds[0]}
+            baseBranch={task().baseBranch}
+            taskId={task().id}
+            worktreePath={task().worktreePath}
+            projectRoot={projectPath()}
+            branchName={task().branchName}
+            filterHydraArtifacts={props.isHydraTask()}
+            isActive={props.isActive()}
+            fullscreen={fullscreen}
+            onOpenFullscreen={openFilesFullscreen}
+          />
+        </Suspense>
       </Show>
     );
   }
@@ -282,37 +284,13 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       }}
                     >
                       <button
-                        style={{
-                          padding: '2px 8px',
-                          background:
-                            props.notesTab() === 'notes' ? theme.taskPanelBg : 'transparent',
-                          color: props.notesTab() === 'notes' ? theme.fg : theme.fgMuted,
-                          border: 'none',
-                          'border-bottom':
-                            props.notesTab() === 'notes'
-                              ? `2px solid ${theme.accent}`
-                              : '2px solid transparent',
-                          cursor: 'pointer',
-                          ...typography.monoMeta,
-                        }}
+                        style={getNotesTabButtonStyle('notes', props.notesTab())}
                         onClick={() => props.setNotesTab('notes')}
                       >
                         Notes
                       </button>
                       <button
-                        style={{
-                          padding: '2px 8px',
-                          background:
-                            props.notesTab() === 'plan' ? theme.taskPanelBg : 'transparent',
-                          color: props.notesTab() === 'plan' ? theme.fg : theme.fgMuted,
-                          border: 'none',
-                          'border-bottom':
-                            props.notesTab() === 'plan'
-                              ? `2px solid ${theme.accent}`
-                              : '2px solid transparent',
-                          cursor: 'pointer',
-                          ...typography.monoMeta,
-                        }}
+                        style={getNotesTabButtonStyle('plan', props.notesTab())}
                         onClick={() => props.setNotesTab('plan')}
                       >
                         Plan
@@ -364,61 +342,22 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                   </Show>
 
                   <Show when={isPlanVisible()}>
-                    <div
-                      style={{
-                        position: 'relative',
-                        flex: '1',
-                        overflow: 'hidden',
-                        background: theme.taskPanelBg,
-                      }}
+                    <Suspense
+                      fallback={
+                        <div
+                          style={{
+                            flex: '1',
+                            background: theme.taskPanelBg,
+                          }}
+                        />
+                      }
                     >
-                      <button
-                        onClick={() => {
-                          void openPlanViewer();
-                        }}
-                        title="Review Plan"
-                        style={{
-                          position: 'absolute',
-                          top: '10px',
-                          right: '10px',
-                          'z-index': '1',
-                          padding: '4px 10px',
-                          background: 'rgba(0, 0, 0, 0.72)',
-                          color: theme.fg,
-                          border: `1px solid ${theme.border}`,
-                          'border-radius': '999px',
-                          cursor: 'pointer',
-                          'backdrop-filter': 'blur(10px)',
-                          ...typography.monoMeta,
-                        }}
-                      >
-                        Review Plan
-                      </button>
-                      <div
-                        ref={(element) => {
-                          planContentRef = element;
-                          props.setPlanFocusRef(element);
-                        }}
-                        tabIndex={0}
-                        class="plan-markdown"
-                        style={{
-                          height: '100%',
-                          overflow: 'auto',
-                          padding: '6px 8px',
-                          color: theme.fg,
-                          outline: 'none',
-                          ...typography.monoUi,
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' && event.currentTarget === event.target) {
-                            event.preventDefault();
-                            void openPlanViewer();
-                          }
-                        }}
-                        // eslint-disable-next-line solid/no-innerhtml -- plan content is rendered through the shared sanitized markdown renderer
-                        innerHTML={planHtml()}
+                      <TaskPlanContent
+                        content={task().planContent ?? ''}
+                        onOpenPlanViewer={openPlanViewer}
+                        setPlanFocusRef={props.setPlanFocusRef}
                       />
-                    </div>
+                    </Suspense>
                   </Show>
                 </div>
               </ScalablePanel>

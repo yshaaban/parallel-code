@@ -1,5 +1,6 @@
 import {
   Show,
+  Suspense,
   createEffect,
   createMemo,
   createSignal,
@@ -11,9 +12,7 @@ import {
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
 import { pickAndAddProject, removeProjectWithTasks } from '../app/project-workflows';
-import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
-import { EditProjectDialog } from './EditProjectDialog';
 import { IconButton } from './IconButton';
 import { SidebarFooter } from './SidebarFooter';
 import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
@@ -28,6 +27,7 @@ import {
 } from '../lib/drag-reorder';
 import { sf } from '../lib/fontScale';
 import { isElectronRuntime } from '../lib/ipc';
+import { lazyNamed } from '../lib/lazy-named';
 import { mod } from '../lib/platform';
 import { theme } from '../lib/theme';
 import { computeGroupedTasks, SIDEBAR_ORPHANED_ACTIVE_GROUP_ID } from '../store/sidebar-order';
@@ -46,6 +46,9 @@ import {
   unregisterFocusFn,
 } from '../store/store';
 import type { Project } from '../store/types';
+
+const ConnectPhoneModal = lazyNamed(() => import('./ConnectPhoneModal'), 'ConnectPhoneModal');
+const EditProjectDialog = lazyNamed(() => import('./EditProjectDialog'), 'EditProjectDialog');
 
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 160;
@@ -468,8 +471,18 @@ export function Sidebar(): JSX.Element {
           <SidebarFooter />
         </div>
 
-        <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
-        <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />
+        <Suspense>
+          <Show when={showConnectPhone()}>
+            <ConnectPhoneModal open onClose={() => setShowConnectPhone(false)} />
+          </Show>
+        </Suspense>
+        <Suspense>
+          <Show when={editingProject()}>
+            {(project) => (
+              <EditProjectDialog project={project()} onClose={() => setEditingProject(null)} />
+            )}
+          </Show>
+        </Suspense>
         <ConfirmDialog
           open={confirmRemoveProjectState().projectId !== null}
           title="Remove project?"

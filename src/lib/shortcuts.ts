@@ -4,6 +4,7 @@ import { getKeybindingDefinition } from '../domain/keybindings';
 import type { KeybindingActionId, KeyChord } from '../domain/keybindings';
 
 type ShortcutHandler = (e: KeyboardEvent) => void;
+type ShortcutDefinitionFlag = 'dialogSafe' | 'global';
 
 interface Shortcut {
   actionId?: KeybindingActionId;
@@ -49,28 +50,25 @@ function getShortcutChords(shortcut: Shortcut): KeyChord[] {
   return getStaticShortcutChord(shortcut);
 }
 
-function isShortcutGlobal(shortcut: Shortcut): boolean {
-  if (shortcut.global !== undefined) {
-    return shortcut.global;
+function getShortcutDefinitionFlag(shortcut: Shortcut, flag: ShortcutDefinitionFlag): boolean {
+  const override = shortcut[flag];
+  if (override !== undefined) {
+    return override;
   }
 
   if (!shortcut.actionId) {
     return false;
   }
 
-  return getKeybindingDefinition(shortcut.actionId)?.global === true;
+  return getKeybindingDefinition(shortcut.actionId)?.[flag] === true;
+}
+
+function isShortcutGlobal(shortcut: Shortcut): boolean {
+  return getShortcutDefinitionFlag(shortcut, 'global');
 }
 
 function isShortcutDialogSafe(shortcut: Shortcut): boolean {
-  if (shortcut.dialogSafe !== undefined) {
-    return shortcut.dialogSafe;
-  }
-
-  if (!shortcut.actionId) {
-    return false;
-  }
-
-  return getKeybindingDefinition(shortcut.actionId)?.dialogSafe === true;
+  return getShortcutDefinitionFlag(shortcut, 'dialogSafe');
 }
 
 function shouldBypassChordInBrowserTerminal(e: KeyboardEvent, chord: KeyChord): boolean {

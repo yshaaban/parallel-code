@@ -213,7 +213,7 @@ describe('TaskNotesFilesSection', () => {
   it('opens the shared markdown viewer from the floating review button', async () => {
     renderSection();
 
-    fireEvent.click(screen.getByTitle('Review Plan'));
+    fireEvent.click(await screen.findByTitle('Review Plan'));
 
     await waitFor(() => {
       expect(openMarkdownViewerMock).toHaveBeenCalledWith({
@@ -260,9 +260,11 @@ describe('TaskNotesFilesSection', () => {
   it('opens the shared markdown viewer when Enter is pressed on the plan panel', async () => {
     const { container } = renderSection();
 
-    const planPanels = container.querySelectorAll('.plan-markdown');
-    const inlinePlan = planPanels[0] as HTMLDivElement | undefined;
-    expect(inlinePlan).toBeDefined();
+    let inlinePlan: HTMLDivElement | undefined;
+    await waitFor(() => {
+      inlinePlan = container.querySelector<HTMLDivElement>('.plan-markdown') ?? undefined;
+      expect(inlinePlan).toBeDefined();
+    });
 
     if (!inlinePlan) {
       return;

@@ -13,6 +13,7 @@ import { Dialog } from './Dialog';
 import { InlineNotice } from './InlineNotice';
 import { SectionLabel } from './SectionLabel';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
+import { createRandomId } from '../lib/random-id';
 import { typography } from '../lib/typography';
 import {
   updateProject,
@@ -84,7 +85,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
     if (!cmd) return;
     const existing = bookmarks();
     const bookmark: TerminalBookmark = {
-      id: crypto.randomUUID(),
+      id: createRandomId(),
       command: cmd,
     };
     setBookmarks([...existing, bookmark]);
