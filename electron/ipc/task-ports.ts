@@ -11,9 +11,14 @@ import type {
 import {
   createRemovedTaskPortsEvent,
   createTaskPortsSnapshotEvent,
+  isTaskExposedPortSource,
+  isTaskPortProtocol,
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
 } from '../../src/domain/server-state.js';
+import { parseSavedStateTasksRecord } from '../../src/domain/saved-state-tasks.js';
+import { isRecord, isTcpPortNumber } from '../../src/lib/type-guards.js';
+import { compareTaskPortExposureCandidateOrder } from './task-port-candidate-order.js';
 import { rediscoverTaskPorts, scanTaskPortExposureCandidates } from './port-discovery.js';
 import { detectObservedPortsFromOutput } from './port-detection.js';
 import {
@@ -41,14 +46,13 @@ interface ObservedPortInput {
 }
 
 interface SavedTaskPortsState {
-  tasks?: Record<
-    string,
-    {
-      exposedPorts?: PersistedTaskExposedPort[];
-      id?: string;
-      worktreePath?: string;
-    }
-  >;
+  tasks?: Record<string, SavedTaskPortsTask>;
+}
+
+interface SavedTaskPortsTask {
+  exposedPorts?: PersistedTaskExposedPort[];
+  id?: string;
+  worktreePath?: string;
 }
 
 const DEFAULT_PREVIEW_TARGET_CACHE_TTL_MS = 5_000;
@@ -167,18 +171,6 @@ function createObservedPort(detection: ObservedPortInput): TaskObservedPort {
     suggestion: detection.suggestion,
     updatedAt: Date.now(),
   };
-}
-
-function compareExposureCandidates(
-  left: TaskPortExposureCandidate,
-  right: TaskPortExposureCandidate,
-): number {
-  const sourceRank = left.source === right.source ? 0 : left.source === 'task' ? -1 : 1;
-  if (sourceRank !== 0) {
-    return sourceRank;
-  }
-
-  return left.port - right.port;
 }
 
 function createTaskPortExposureCandidate(
@@ -446,12 +438,55 @@ function updateExposedPortAvailability(
 }
 
 function parseSavedTaskPortsState(savedJson: string): SavedTaskPortsState | null {
-  try {
-    const parsed = JSON.parse(savedJson) as SavedTaskPortsState;
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
+  const parsed = parseSavedStateTasksRecord(savedJson);
+  if (parsed.kind === 'invalid') {
     return null;
   }
+  if (parsed.kind === 'missing') {
+    return {};
+  }
+
+  const tasks = Object.fromEntries(
+    Object.entries(parsed.tasks)
+      .map(([taskId, task]) => [taskId, parseSavedTaskPortsTask(task)] as const)
+      .filter((entry): entry is readonly [string, SavedTaskPortsTask] => entry[1] !== null),
+  );
+  return { tasks };
+}
+
+function parseSavedTaskPortsTask(value: unknown): SavedTaskPortsTask | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    ...(Array.isArray(value.exposedPorts)
+      ? {
+          exposedPorts: value.exposedPorts
+            .map(parseSavedExposedPort)
+            .filter((port): port is PersistedTaskExposedPort => port !== null),
+        }
+      : {}),
+    ...(typeof value.id === 'string' ? { id: value.id } : {}),
+    ...(typeof value.worktreePath === 'string' ? { worktreePath: value.worktreePath } : {}),
+  };
+}
+
+function parseSavedExposedPort(value: unknown): PersistedTaskExposedPort | null {
+  if (!isRecord(value) || !isTcpPortNumber(value.port)) {
+    return null;
+  }
+
+  const protocol = isTaskPortProtocol(value.protocol) ? value.protocol : undefined;
+  const source = isTaskExposedPortSource(value.source) ? value.source : undefined;
+
+  return {
+    ...(typeof value.host === 'string' || value.host === null ? { host: value.host } : {}),
+    ...(typeof value.label === 'string' || value.label === null ? { label: value.label } : {}),
+    port: value.port,
+    ...(protocol === 'https' ? { protocol } : {}),
+    ...(source === 'observed' ? { source } : {}),
+  };
 }
 
 function syncObservedPort(
@@ -498,17 +533,6 @@ function syncSavedExposedPorts(savedState: SavedTaskPortsState): void {
 
     const record = getOrCreateTaskPortRecord(taskId);
     for (const savedPort of task.exposedPorts) {
-      if (
-        typeof savedPort !== 'object' ||
-        savedPort === null ||
-        typeof savedPort.port !== 'number' ||
-        !Number.isInteger(savedPort.port) ||
-        savedPort.port < 1 ||
-        savedPort.port > 65_535
-      ) {
-        continue;
-      }
-
       record.exposed.set(
         savedPort.port,
         createExposedPort(savedPort.port, {
@@ -611,7 +635,7 @@ export function getTaskPortExposureCandidates(
     );
   }
 
-  return Array.from(candidates.values()).sort(compareExposureCandidates);
+  return Array.from(candidates.values()).sort(compareTaskPortExposureCandidateOrder);
 }
 
 export function observeTaskPortsFromOutput(

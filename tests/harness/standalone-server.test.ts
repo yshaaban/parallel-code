@@ -1,16 +1,22 @@
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import {
+  createServer as createHttpServer,
+  type IncomingHttpHeaders,
+  type Server as HttpServer,
+} from 'node:http';
 import { createServer, type Server } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from '../../electron/ipc/runtime-diagnostics.js';
+import type { TaskPortSnapshot } from '../../src/domain/server-state.js';
 import { killAllAgents, spawnAgent, writeToAgent } from '../../electron/ipc/pty.js';
 import { IPC } from '../../electron/ipc/channels.js';
 import {
@@ -56,6 +62,46 @@ function closeServer(server: Server): Promise<void> {
       }
 
       resolve();
+    });
+  });
+}
+
+interface StartedHttpServer {
+  close: () => Promise<void>;
+  port: number;
+}
+
+interface PreviewTargetUpgradeRequest {
+  headers: IncomingHttpHeaders;
+  url: string | undefined;
+}
+
+function listenOnHttpServer(server: HttpServer): Promise<StartedHttpServer> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Failed to bind HTTP server'));
+        return;
+      }
+
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise<void>((closeResolve, closeReject) => {
+            server.closeAllConnections?.();
+            server.close((error) => {
+              if (error) {
+                closeReject(error);
+                return;
+              }
+
+              closeResolve();
+            });
+          }),
+      });
     });
   });
 }
@@ -146,6 +192,68 @@ async function waitForWebSocketOpen(socket: WebSocket): Promise<void> {
   });
 }
 
+async function waitForWebSocketMessage(socket: WebSocket): Promise<string> {
+  const [data] = (await once(socket, 'message')) as [WebSocket.RawData];
+  return String(data);
+}
+
+function getSessionCookie(response: Response): string {
+  const setCookie = response.headers.get('set-cookie');
+  if (!setCookie) {
+    throw new Error('Expected remote auth bootstrap to set a session cookie');
+  }
+
+  return setCookie.split(';')[0] ?? setCookie;
+}
+
+function expectRedirectLocation(response: Response, baseUrl: string): URL {
+  expect(response.status).toBeGreaterThanOrEqual(300);
+  expect(response.status).toBeLessThan(400);
+
+  const location = response.headers.get('location');
+  if (!location) {
+    throw new Error('Expected redirect response to include a Location header');
+  }
+
+  return new URL(location, baseUrl);
+}
+
+async function createBrowserSessionCookie(baseUrl: string, authToken: string): Promise<string> {
+  const bootstrapResponse = await fetch(`${baseUrl}/?token=${encodeURIComponent(authToken)}`, {
+    redirect: 'manual',
+  });
+
+  return getSessionCookie(bootstrapResponse);
+}
+
+async function fetchRemoteShellWithSession(baseUrl: string, authToken: string): Promise<Response> {
+  const bootstrapResponse = await fetch(
+    `${baseUrl}/remote?token=${encodeURIComponent(authToken)}`,
+    {
+      redirect: 'manual',
+    },
+  );
+  const sessionCookie = getSessionCookie(bootstrapResponse);
+  let nextUrl = expectRedirectLocation(bootstrapResponse, baseUrl);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(nextUrl, {
+      headers: {
+        Cookie: sessionCookie,
+      },
+      redirect: 'manual',
+    });
+
+    if (response.status < 300 || response.status >= 400) {
+      return response;
+    }
+
+    nextUrl = expectRedirectLocation(response, baseUrl);
+  }
+
+  throw new Error('Remote auth bootstrap redirected too many times');
+}
+
 async function waitForCondition(
   check: () => boolean,
   timeoutMs: number,
@@ -163,6 +271,59 @@ async function waitForCondition(
   }
 
   throw new Error(failureMessage);
+}
+
+function createPreviewTargetServer(
+  options: {
+    onUpgrade?: (request: PreviewTargetUpgradeRequest) => void;
+  } = {},
+): HttpServer {
+  const server = createHttpServer((req, res) => {
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.setHeader('set-cookie', 'target-session=abc; Path=/; HttpOnly');
+    res.end(
+      [
+        '<html><head></head>',
+        `<body data-auth="${req.headers.authorization ?? ''}" data-cookie="${req.headers.cookie ?? ''}" data-path="${req.url ?? ''}">`,
+        '<script type="module" src="/assets/app.js"></script>',
+        '</body></html>',
+      ].join(''),
+    );
+  });
+
+  const sockets = new Set<WebSocket>();
+  const wss = new WebSocketServer({ noServer: true });
+  wss.on('connection', (socket, request) => {
+    sockets.add(socket);
+    socket.on('close', () => {
+      sockets.delete(socket);
+    });
+    socket.on('message', (message) => {
+      socket.send(`target:${request.url ?? ''}:${String(message)}`);
+    });
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname !== '/hmr') {
+      socket.destroy();
+      return;
+    }
+
+    options.onUpgrade?.({ headers: req.headers, url: req.url });
+    wss.handleUpgrade(req, socket, head, (client) => {
+      wss.emit('connection', client, req);
+    });
+  });
+
+  server.on('close', () => {
+    for (const socket of sockets) {
+      socket.terminate();
+    }
+    wss.close();
+  });
+
+  return server;
 }
 
 describe('browser-lab standalone server startup', () => {
@@ -225,6 +386,165 @@ describe('browser-lab standalone server startup', () => {
       tasks?: Record<string, { branchName?: string }>;
     };
     expect(savedState.tasks?.[server.taskId]?.branchName).toBe('main');
+  });
+
+  it('serves the authenticated remote shell and accepts its websocket endpoint', async () => {
+    const server = await startStandaloneBrowserServer({
+      scenario: createInteractiveNodeScenario(),
+      testSlug: 'remote-shell-startup',
+      validateBrowserBuildArtifacts: false,
+    });
+    cleanup.push(() => server.stop());
+
+    const unauthenticatedResponse = await fetch(`${server.baseUrl}/remote/`, {
+      redirect: 'manual',
+    });
+    const authGateUrl = expectRedirectLocation(unauthenticatedResponse, server.baseUrl);
+    expect(authGateUrl.pathname).toBe('/auth');
+    expect(authGateUrl.searchParams.get('next')).toBe('/remote/');
+
+    const remoteShellResponse = await fetchRemoteShellWithSession(server.baseUrl, server.authToken);
+    expect(remoteShellResponse.ok).toBe(true);
+    expect(remoteShellResponse.headers.get('cache-control')).toBe('no-store, max-age=0');
+
+    const remoteShellBody = await remoteShellResponse.text();
+    expect(remoteShellBody).toContain('<title>Parallel Code</title>');
+    expect(remoteShellBody).toContain('<div id="root"></div>');
+    expect(remoteShellBody).not.toContain('Not authenticated');
+
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${server.port}/ws?token=${encodeURIComponent(server.authToken)}&clientId=remote-route-smoke&lastSeq=-1`,
+    );
+    cleanup.push(async () => {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    });
+
+    await waitForWebSocketOpen(socket);
+  });
+
+  it('wires authenticated port exposure through the browser preview proxy', async () => {
+    const upgradeCapture: {
+      headers: IncomingHttpHeaders | null;
+      url: string | undefined;
+    } = { headers: null, url: undefined };
+    const target = await listenOnHttpServer(
+      createPreviewTargetServer({
+        onUpgrade({ headers, url }) {
+          upgradeCapture.headers = headers;
+          upgradeCapture.url = url;
+        },
+      }),
+    );
+    cleanup.push(target.close);
+
+    const server = await startStandaloneBrowserServer({
+      scenario: createInteractiveNodeScenario(),
+      testSlug: 'preview-proxy-startup',
+      validateBrowserBuildArtifacts: false,
+    });
+    cleanup.push(() => server.stop());
+
+    const sessionCookie = await createBrowserSessionCookie(server.baseUrl, server.authToken);
+    const encodedTaskId = encodeURIComponent(server.taskId);
+    const unexposedResponse = await fetch(
+      `${server.baseUrl}/_preview/${encodedTaskId}/${target.port}/nested/path`,
+      {
+        headers: {
+          Cookie: sessionCookie,
+        },
+      },
+    );
+    expect(unexposedResponse.status).toBe(404);
+    expect(await unexposedResponse.text()).toBe('Preview not found');
+
+    const snapshot = await invokeIpcViaHttp<TaskPortSnapshot>(
+      server.baseUrl,
+      server.authToken,
+      IPC.ExposePort,
+      {
+        label: 'Remote test app',
+        port: target.port,
+        taskId: server.taskId,
+      },
+    );
+    expect(snapshot.exposed.map((port) => port.port)).toContain(target.port);
+
+    const unauthenticatedPreviewResponse = await fetch(
+      `${server.baseUrl}/_preview/${encodedTaskId}/${target.port}/nested/path?mode=remote`,
+    );
+    expect(unauthenticatedPreviewResponse.status).toBe(401);
+    expect(await unauthenticatedPreviewResponse.text()).toBe('Unauthorized');
+
+    const hostileOriginPreviewResponse = await fetch(
+      `${server.baseUrl}/_preview/${encodedTaskId}/${target.port}/nested/path?mode=remote`,
+      {
+        headers: {
+          Cookie: sessionCookie,
+          Origin: 'https://example.invalid',
+        },
+      },
+    );
+    expect(hostileOriginPreviewResponse.status).toBe(401);
+    expect(await hostileOriginPreviewResponse.text()).toBe('Unauthorized');
+
+    const previewResponse = await fetch(
+      `${server.baseUrl}/_preview/${encodedTaskId}/${target.port}/nested/path?mode=remote&token=${encodeURIComponent(server.authToken)}`,
+      {
+        headers: {
+          Authorization: 'Bearer should-not-reach-target',
+          Cookie: `${sessionCookie}; target-session=kept`,
+        },
+      },
+    );
+
+    expect(previewResponse.ok).toBe(true);
+    const setCookie = previewResponse.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain(
+      `target-session=abc; Path=/_preview/${encodedTaskId}/${target.port}; HttpOnly`,
+    );
+
+    const html = await previewResponse.text();
+    expect(html).toContain(`<base href="/_preview/${encodedTaskId}/${target.port}/nested/">`);
+    expect(html).toContain(`src="/_preview/${encodedTaskId}/${target.port}/assets/app.js"`);
+    expect(html).toContain('data-auth=""');
+    expect(html).toContain('data-cookie="target-session=kept"');
+    expect(html).not.toContain('parallel_code_session=');
+    expect(html).not.toContain(server.authToken);
+    expect(html).not.toContain('should-not-reach-target');
+    expect(html).toContain('data-path="/nested/path?mode=remote"');
+
+    const previewWebSocket = new WebSocket(
+      `ws://127.0.0.1:${server.port}/_preview/${encodedTaskId}/${target.port}/hmr?channel=vite&token=${encodeURIComponent(server.authToken)}`,
+      {
+        headers: {
+          Authorization: 'Bearer should-not-reach-target',
+          Cookie: `${sessionCookie}; target-session=kept`,
+        },
+      },
+    );
+    cleanup.push(async () => {
+      if (
+        previewWebSocket.readyState === WebSocket.OPEN ||
+        previewWebSocket.readyState === WebSocket.CONNECTING
+      ) {
+        previewWebSocket.close();
+      }
+    });
+
+    await waitForWebSocketOpen(previewWebSocket);
+    previewWebSocket.send('ping');
+    await expect(waitForWebSocketMessage(previewWebSocket)).resolves.toBe(
+      'target:/hmr?channel=vite:ping',
+    );
+
+    if (!upgradeCapture.headers) {
+      throw new Error('Expected preview websocket target to receive an upgrade request');
+    }
+    expect(upgradeCapture.headers.authorization).toBeUndefined();
+    expect(upgradeCapture.headers.cookie).toBe('target-session=kept');
+    expect(upgradeCapture.url).toBe('/hmr?channel=vite');
   });
 
   it('honors the shared skip-build env contract for standalone browser startup', async () => {

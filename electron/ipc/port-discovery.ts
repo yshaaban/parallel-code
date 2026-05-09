@@ -2,6 +2,9 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { isInteger, isTcpPortNumber } from '../../src/lib/type-guards.js';
+import { compareTaskPortExposureCandidateOrder } from './task-port-candidate-order.js';
+
 export interface TaskPortDiscoveryTarget {
   taskId: string;
   worktreePath: string;
@@ -83,7 +86,7 @@ function parseListeningSocketName(value: string): ListeningSocket | null {
   }
 
   const port = Number.parseInt(match[2] ?? '', 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  if (!isTcpPortNumber(port)) {
     return null;
   }
 
@@ -101,7 +104,7 @@ function parseListeningSockets(raw: string): ListeningSocket[] {
   for (const line of raw.split('\n')) {
     if (line.startsWith('p')) {
       const pid = Number.parseInt(line.slice(1), 10);
-      currentPid = Number.isInteger(pid) ? pid : null;
+      currentPid = isInteger(pid) ? pid : null;
       continue;
     }
 
@@ -214,18 +217,6 @@ function pushUniquePortCandidate(
   });
 }
 
-function compareTaskPortExposureCandidates(
-  left: TaskPortExposureCandidateScanResult,
-  right: TaskPortExposureCandidateScanResult,
-): number {
-  const sourceRank = left.source === right.source ? 0 : left.source === 'task' ? -1 : 1;
-  if (sourceRank !== 0) {
-    return sourceRank;
-  }
-
-  return left.port - right.port;
-}
-
 export function scanTaskPortExposureCandidates(
   task: TaskPortDiscoveryTarget,
 ): TaskPortExposureCandidateScanResult[] {
@@ -250,7 +241,7 @@ export function scanTaskPortExposureCandidates(
     pushUniquePortCandidate(results, seenPorts, socket.port, 'local', socket.host);
   }
 
-  return results.sort(compareTaskPortExposureCandidates);
+  return results.sort(compareTaskPortExposureCandidateOrder);
 }
 
 export function rediscoverTaskPorts(

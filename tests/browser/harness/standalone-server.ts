@@ -12,7 +12,13 @@ import {
 } from '../../../server/build-artifacts.js';
 import { rewriteDistServerRelativeImports } from '../../../server/rewrite-dist-server-relative-imports.mjs';
 import type { AgentDef } from '../../../src/ipc/types.js';
-import type { PersistedState, Project, WorkspaceSharedState } from '../../../src/store/types.js';
+import type {
+  PersistedState,
+  PersistedTask,
+  Project,
+  TaskGitIsolationMode,
+  WorkspaceSharedState,
+} from '../../../src/store/types.js';
 import type { BrowserLabScenario } from './scenarios.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -77,6 +83,56 @@ function createProject(projectId: string, repoDir: string): Project {
   };
 }
 
+type SeedTaskGitIsolationFields = Pick<
+  PersistedTask,
+  'directMode' | 'gitIsolation' | 'worktreeOwnership'
+>;
+
+function getSeedTaskGitIsolationFields(
+  gitIsolation: TaskGitIsolationMode | undefined,
+): Partial<SeedTaskGitIsolationFields> {
+  switch (gitIsolation) {
+    case 'current-branch':
+      return {
+        directMode: true,
+        gitIsolation,
+      };
+    case 'existing-worktree':
+      return {
+        gitIsolation,
+        worktreeOwnership: 'external',
+      };
+    case 'worktree':
+    case undefined:
+      return gitIsolation ? { gitIsolation } : {};
+  }
+}
+
+function createPersistedBrowserLabTask(
+  project: Project,
+  taskId: string,
+  agentId: string,
+  taskName: string,
+  agentDef: AgentDef,
+  branchName: string,
+  taskGitIsolation: TaskGitIsolationMode | undefined,
+): PersistedTask {
+  return {
+    id: taskId,
+    name: taskName,
+    projectId: project.id,
+    branchName,
+    worktreePath: project.path,
+    notes: '',
+    lastPrompt: '',
+    shellCount: 0,
+    agentId,
+    shellAgentIds: [],
+    agentDef,
+    ...getSeedTaskGitIsolationFields(taskGitIsolation),
+  };
+}
+
 function createLegacyState(
   project: Project,
   taskId: string,
@@ -84,6 +140,7 @@ function createLegacyState(
   taskName: string,
   agentDef: AgentDef,
   branchName: string,
+  taskGitIsolation: TaskGitIsolationMode | undefined,
 ): PersistedState {
   return {
     projects: [project],
@@ -92,19 +149,15 @@ function createLegacyState(
     taskOrder: [taskId],
     collapsedTaskOrder: [],
     tasks: {
-      [taskId]: {
-        id: taskId,
-        name: taskName,
-        projectId: project.id,
-        branchName,
-        worktreePath: project.path,
-        notes: '',
-        lastPrompt: '',
-        shellCount: 0,
+      [taskId]: createPersistedBrowserLabTask(
+        project,
+        taskId,
         agentId,
-        shellAgentIds: [],
+        taskName,
         agentDef,
-      },
+        branchName,
+        taskGitIsolation,
+      ),
     },
     terminals: {},
     activeTaskId: taskId,
@@ -127,25 +180,22 @@ function createWorkspaceState(
   taskName: string,
   agentDef: AgentDef,
   branchName: string,
+  taskGitIsolation: TaskGitIsolationMode | undefined,
 ): WorkspaceSharedState {
   return {
     projects: [project],
     taskOrder: [taskId],
     collapsedTaskOrder: [],
     tasks: {
-      [taskId]: {
-        id: taskId,
-        name: taskName,
-        projectId: project.id,
-        branchName,
-        worktreePath: project.path,
-        notes: '',
-        lastPrompt: '',
-        shellCount: 0,
+      [taskId]: createPersistedBrowserLabTask(
+        project,
+        taskId,
         agentId,
-        shellAgentIds: [],
+        taskName,
         agentDef,
-      },
+        branchName,
+        taskGitIsolation,
+      ),
     },
     terminals: {},
     completedTaskDate: '2026-03-17',
@@ -260,6 +310,7 @@ export async function seedBrowserState(
     scenario.taskName,
     scenario.agentDef,
     branchName,
+    scenario.taskGitIsolation,
   );
   const workspaceState = createWorkspaceState(
     project,
@@ -268,6 +319,7 @@ export async function seedBrowserState(
     scenario.taskName,
     scenario.agentDef,
     branchName,
+    scenario.taskGitIsolation,
   );
 
   await writeSeededStateFiles(stateDir, legacyState, workspaceState);
@@ -318,13 +370,9 @@ async function waitForServerReady(
     function handleExit(code: number | null): void {
       cleanup();
       const stderrSummary = stderrText.trim();
-      reject(
-        new Error(
-          stderrSummary
-            ? `Standalone browser server exited early with code ${code ?? 'null'}: ${stderrSummary}`
-            : `Standalone browser server exited early with code ${code ?? 'null'}`,
-        ),
-      );
+      const baseMessage = `Standalone browser server exited early with code ${code ?? 'null'}`;
+      const message = stderrSummary ? `${baseMessage}: ${stderrSummary}` : baseMessage;
+      reject(new Error(message));
     }
 
     process.stdout.on('data', handleStdout);

@@ -3,9 +3,16 @@ import type express from 'express';
 import httpProxy from 'http-proxy';
 import { Socket } from 'net';
 import { assertNever } from '../src/lib/assert-never.js';
+import { isTcpPortNumber } from '../src/lib/type-guards.js';
 
-const PREVIEW_ROUTE_PREFIX = '/_preview';
-const TASK_CONTAINER_PREVIEW_ROUTE_PREFIX = '/_container_preview';
+type PreviewRouteKind = 'task-container' | 'task-port';
+
+const PREVIEW_ROUTE_PREFIXES = {
+  'task-container': '/_container_preview',
+  'task-port': '/_preview',
+} satisfies Record<PreviewRouteKind, string>;
+const PREVIEW_ROUTE_PREFIX = PREVIEW_ROUTE_PREFIXES['task-port'];
+const TASK_CONTAINER_PREVIEW_ROUTE_PREFIX = PREVIEW_ROUTE_PREFIXES['task-container'];
 const SESSION_COOKIE_NAME = 'parallel_code_session';
 const STRIPPABLE_PREVIEW_PATH_SEGMENTS = new Set([
   'assets',
@@ -29,8 +36,6 @@ const STRIPPABLE_PREVIEW_PATH_SEGMENTS = new Set([
 const detectedBasePaths = new Map<string, string>();
 const BASE_PATH_TTL_MS = 5 * 60 * 1000;
 const detectedBasePathTimestamps = new Map<string, number>();
-
-type PreviewRouteKind = 'task-container' | 'task-port';
 
 function getPreviewCacheKey(kind: PreviewRouteKind, taskId: string, port: number): string {
   return `${kind}:${taskId}:${port}`;
@@ -147,6 +152,11 @@ function decodeUriComponentSafely(value: string): string | null {
   }
 }
 
+function parseRequestUrlSafely(url: string | undefined): URL | null {
+  const value = url ?? '/';
+  return URL.canParse(value, 'http://localhost') ? new URL(value, 'http://localhost') : null;
+}
+
 function stripBrowserSessionCookie(header: string | undefined): string | undefined {
   if (!header) {
     return undefined;
@@ -172,7 +182,11 @@ function stripPreviewAuthHeaders(headers: IncomingMessage['headers']): void {
 }
 
 function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | null {
-  const parsedUrl = new URL(url ?? '/', 'http://localhost');
+  const parsedUrl = parseRequestUrlSafely(url);
+  if (!parsedUrl) {
+    return null;
+  }
+
   parsedUrl.searchParams.delete('token');
   const pathname = parsedUrl.pathname;
   const taskPortMatch = /^\/_preview\/([^/]+)\/(\d+)(\/.*)?$/u.exec(pathname);
@@ -184,7 +198,7 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
 
   const taskId = decodeUriComponentSafely(match[1] ?? '');
   const port = Number.parseInt(match[2] ?? '', 10);
-  if (!taskId || !Number.isInteger(port) || port < 1 || port > 65_535) {
+  if (!taskId || !isTcpPortNumber(port)) {
     return null;
   }
 
@@ -197,15 +211,20 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
   };
 }
 
-function getPreviewRoutePrefix(kind: PreviewRouteKind): string {
-  switch (kind) {
-    case 'task-port':
-      return PREVIEW_ROUTE_PREFIX;
-    case 'task-container':
-      return TASK_CONTAINER_PREVIEW_ROUTE_PREFIX;
-    default:
-      return assertNever(kind, 'Unhandled preview route kind');
+function isPreviewRoutePath(url: string | undefined): boolean {
+  const parsedUrl = parseRequestUrlSafely(url);
+  if (!parsedUrl) {
+    return false;
   }
+
+  const pathname = parsedUrl.pathname;
+  return Object.values(PREVIEW_ROUTE_PREFIXES).some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
+function getPreviewRoutePrefix(kind: PreviewRouteKind): string {
+  return PREVIEW_ROUTE_PREFIXES[kind];
 }
 
 function getPreviewBasePath(match: PreviewRouteMatch): string {
@@ -360,23 +379,43 @@ function copyProxyHeaders(
   }
 }
 
-function sendUnauthorized(res: express.Response): void {
-  res.status(401).send('Unauthorized');
-}
-
 type PreviewTargetResolution =
   | { kind: 'target'; target: string }
   | { kind: 'unauthorized' }
   | { kind: 'not-found' }
   | { kind: 'unavailable' };
 
+type PreviewTargetFailureResolution = Exclude<PreviewTargetResolution, { kind: 'target' }>;
+
+interface PreviewTargetFailureResponse {
+  body: string;
+  status: number;
+  statusLine: string;
+}
+
+const PREVIEW_TARGET_FAILURE_RESPONSES = {
+  'not-found': {
+    body: 'Preview not found',
+    status: 404,
+    statusLine: 'HTTP/1.1 404 Not Found',
+  },
+  unauthorized: {
+    body: 'Unauthorized',
+    status: 401,
+    statusLine: 'HTTP/1.1 401 Unauthorized',
+  },
+  unavailable: {
+    body: 'Preview unavailable',
+    status: 502,
+    statusLine: 'HTTP/1.1 502 Bad Gateway',
+  },
+} satisfies Record<PreviewTargetFailureResolution['kind'], PreviewTargetFailureResponse>;
+
 function respondToPreviewTargetResolution(
   resolution: PreviewTargetResolution,
   handlers: {
+    onFailure: (failure: PreviewTargetFailureResponse) => void;
     onTarget: (target: string) => void;
-    onUnauthorized: () => void;
-    onNotFound: () => void;
-    onUnavailable: () => void;
   },
 ): void {
   switch (resolution.kind) {
@@ -384,13 +423,9 @@ function respondToPreviewTargetResolution(
       handlers.onTarget(resolution.target);
       return;
     case 'unauthorized':
-      handlers.onUnauthorized();
-      return;
     case 'not-found':
-      handlers.onNotFound();
-      return;
     case 'unavailable':
-      handlers.onUnavailable();
+      handlers.onFailure(PREVIEW_TARGET_FAILURE_RESPONSES[resolution.kind]);
       return;
     default:
       assertNever(resolution, 'Unhandled preview target resolution');
@@ -602,26 +637,30 @@ export function registerBrowserPreviewRoutes(
       return { kind: 'unauthorized' };
     }
 
-    switch (match.kind) {
-      case 'task-port': {
-        if (!options.hasExposedTaskPort(match.taskId, match.port)) {
-          return { kind: 'not-found' };
-        }
+    try {
+      switch (match.kind) {
+        case 'task-port': {
+          if (!options.hasExposedTaskPort(match.taskId, match.port)) {
+            return { kind: 'not-found' };
+          }
 
-        const target = await options.resolvePreviewTarget(match.taskId, match.port);
-        return target ? { kind: 'target', target } : { kind: 'unavailable' };
-      }
-      case 'task-container': {
-        if (!(options.hasTaskContainerPreviewTarget?.(match.taskId, match.port) ?? false)) {
-          return { kind: 'not-found' };
+          const target = await options.resolvePreviewTarget(match.taskId, match.port);
+          return target ? { kind: 'target', target } : { kind: 'unavailable' };
         }
+        case 'task-container': {
+          if (!(options.hasTaskContainerPreviewTarget?.(match.taskId, match.port) ?? false)) {
+            return { kind: 'not-found' };
+          }
 
-        const target =
-          (await options.resolveTaskContainerPreviewTarget?.(match.taskId, match.port)) ?? null;
-        return target ? { kind: 'target', target } : { kind: 'unavailable' };
+          const target =
+            (await options.resolveTaskContainerPreviewTarget?.(match.taskId, match.port)) ?? null;
+          return target ? { kind: 'target', target } : { kind: 'unavailable' };
+        }
+        default:
+          return assertNever(match.kind, 'Unhandled preview route kind');
       }
-      default:
-        return assertNever(match.kind, 'Unhandled preview route kind');
+    } catch {
+      return { kind: 'unavailable' };
     }
   }
 
@@ -646,14 +685,8 @@ export function registerBrowserPreviewRoutes(
           target,
         });
       },
-      onUnauthorized() {
-        sendUnauthorized(res);
-      },
-      onNotFound() {
-        res.status(404).send('Preview not found');
-      },
-      onUnavailable() {
-        res.status(502).send('Preview unavailable');
+      onFailure(failure) {
+        res.status(failure.status).send(failure.body);
       },
     });
   }
@@ -669,6 +702,10 @@ export function registerBrowserPreviewRoutes(
   async function handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
     const match = parsePreviewRoutePath(req.url);
     if (!match) {
+      if (isPreviewRoutePath(req.url)) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+      }
       return;
     }
 
@@ -685,16 +722,8 @@ export function registerBrowserPreviewRoutes(
           target,
         });
       },
-      onUnauthorized() {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-      },
-      onNotFound() {
-        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-        socket.destroy();
-      },
-      onUnavailable() {
-        socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      onFailure(failure) {
+        socket.write(`${failure.statusLine}\r\n\r\n`);
         socket.destroy();
       },
     });

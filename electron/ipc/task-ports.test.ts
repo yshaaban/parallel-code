@@ -373,6 +373,56 @@ describe('task port registry', () => {
     });
   });
 
+  it('restores only validated task port entries from malformed saved state', () => {
+    rediscoverTaskPortsMock.mockReturnValue([
+      {
+        taskId: 'task-good',
+        host: '127.0.0.1',
+        port: 5173,
+        suggestion: 'Rediscovered localhost:5173',
+      },
+    ]);
+
+    expect(() =>
+      restoreSavedTaskPorts(
+        JSON.stringify({
+          tasks: {
+            'task-null': null,
+            'task-bad-worktree': {
+              worktreePath: 42,
+              exposedPorts: [{ port: 3000 }],
+            },
+            'task-good': {
+              id: 'task-good',
+              worktreePath: '/tmp/worktree-good',
+              exposedPorts: [
+                { port: 5173, label: 'Frontend', protocol: 'https' },
+                { port: 'not-a-port', label: 'Broken' },
+                null,
+              ],
+            },
+          },
+        }),
+      ),
+    ).not.toThrow();
+
+    expect(rediscoverTaskPortsMock).toHaveBeenCalledWith([
+      {
+        taskId: 'task-good',
+        worktreePath: '/tmp/worktree-good',
+      },
+    ]);
+    expect(getExposedTaskPort('task-good', 5173)).toMatchObject({
+      label: 'Frontend',
+      port: 5173,
+      protocol: 'https',
+    });
+    expect(getExposedTaskPort('task-bad-worktree', 3000)).toMatchObject({
+      port: 3000,
+      protocol: 'http',
+    });
+  });
+
   it('preserves saved https exposure protocol during restart rediscovery', () => {
     rediscoverTaskPortsMock.mockReturnValue([
       {

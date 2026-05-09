@@ -77,6 +77,14 @@ describe('createTaskContainerIpcHandlers', () => {
 
     expect(() =>
       handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: [],
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig must be an object');
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
         projectContainerConfig: {
           previewPorts: [{ port: '3000' }],
         },
@@ -85,6 +93,33 @@ describe('createTaskContainerIpcHandlers', () => {
         worktreePath: '/tmp/project/.worktrees/task-1',
       }),
     ).toThrow('projectContainerConfig.previewPorts[0].port must be an integer');
+
+    expect(inspectTaskContainersMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects out-of-range preview port config before reaching the backend owner', async () => {
+    const handlers = createTaskContainerIpcHandlers(createContext());
+
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: {
+          previewPorts: [{ port: 0 }],
+        },
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig.previewPorts[0].port must be an integer between 1 and 65535');
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: {
+          previewPorts: [{ port: 65_536 }],
+        },
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig.previewPorts[0].port must be an integer between 1 and 65535');
 
     expect(inspectTaskContainersMock).not.toHaveBeenCalled();
   });

@@ -114,6 +114,42 @@ async function waitForSocketMessage<T>(
   });
 }
 
+async function expectWebSocketUpgradeRejected(url: string, statusCode: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(url);
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.terminate();
+      reject(new Error(`Timed out waiting for websocket rejection from ${url}`));
+    }, 5_000);
+
+    function cleanup(): void {
+      clearTimeout(timeout);
+      socket.off('open', handleOpen);
+      socket.off('error', handleError);
+    }
+
+    function handleOpen(): void {
+      cleanup();
+      socket.close();
+      reject(new Error(`Expected websocket upgrade to ${url} to be rejected`));
+    }
+
+    function handleError(error: Error): void {
+      cleanup();
+      try {
+        expect(error.message).toContain(`Unexpected server response: ${statusCode}`);
+        resolve();
+      } catch (assertionError) {
+        reject(assertionError);
+      }
+    }
+
+    socket.once('open', handleOpen);
+    socket.once('error', handleError);
+  });
+}
+
 describe('startBrowserServer', () => {
   const tempDirs: string[] = [];
 
@@ -287,6 +323,33 @@ describe('startBrowserServer', () => {
     controller.cleanup();
 
     await closePromise;
+  });
+
+  it('rejects unknown websocket upgrade paths without stranding clients', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
+    tempDirs.push(rootDir);
+
+    const distDir = path.join(rootDir, 'dist');
+    const distRemoteDir = path.join(rootDir, 'dist-remote');
+    await Promise.all([
+      mkdir(distDir, { recursive: true }),
+      mkdir(distRemoteDir, { recursive: true }),
+    ]);
+
+    const port = await getAvailablePort();
+    const controller = startBrowserServer({
+      distDir,
+      distRemoteDir,
+      port,
+      token: 'browser-server-test-token-unknown-upgrade',
+      userDataPath: path.join(rootDir, 'user-data'),
+    });
+
+    try {
+      await expectWebSocketUpgradeRejected(`ws://127.0.0.1:${port}/unknown`, 404);
+    } finally {
+      controller.cleanup();
+    }
   });
 
   it('registers the preview port-scan IPC channel in browser mode', async () => {

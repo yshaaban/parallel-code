@@ -85,25 +85,30 @@ function createTaskPortSnapshot(overrides: Partial<TaskPortSnapshot> = {}): Task
   };
 }
 
+interface PreviewSectionPanelProps {
+  availableCandidates: unknown[];
+  availableScanError: string | null;
+  containerActionError: string | null;
+  containerInspectError: string | null;
+  containerInspectLoading: boolean;
+  containerLogsError: string | null;
+  onRefreshAvailablePorts: () => Promise<void>;
+  onRefreshContainerInspect: () => Promise<void>;
+  onRefreshContainerLogs: () => Promise<void>;
+  onDestroyContainers: () => Promise<void>;
+  onExposePort: (port: number, label?: string) => Promise<void>;
+  onStartContainers: () => Promise<void>;
+  onStopContainers: () => Promise<void>;
+}
+
+interface PreviewSectionFactoryProps {
+  previewProps: () => PreviewSectionPanelProps;
+}
+
 function getLatestPreviewSectionProps() {
   const calls = createTaskPreviewSectionMock.mock.calls;
-  return calls[calls.length - 1]?.[0] as
-    | {
-        availableCandidates: () => unknown[];
-        availableScanError: () => string | null;
-        containerActionError: () => string | null;
-        containerInspectError: () => string | null;
-        containerInspectLoading: () => boolean;
-        containerLogsError: () => string | null;
-        onRefreshAvailablePorts: () => Promise<void>;
-        onRefreshContainerInspect: () => Promise<void>;
-        onRefreshContainerLogs: () => Promise<void>;
-        onDestroyContainers: () => Promise<void>;
-        onExposePort: (port: number, label?: string) => Promise<void>;
-        onStartContainers: () => Promise<void>;
-        onStopContainers: () => Promise<void>;
-      }
-    | undefined;
+  const sectionProps = calls[calls.length - 1]?.[0] as PreviewSectionFactoryProps | undefined;
+  return sectionProps?.previewProps();
 }
 
 describe('createTaskPanelPreviewController', () => {
@@ -142,7 +147,7 @@ describe('createTaskPanelPreviewController', () => {
     expect(options.startTaskContainersForTask).not.toHaveBeenCalled();
     expect(options.setTaskFocusedPanel).toHaveBeenCalledWith('task-1', 'preview');
     expect(previewSection).not.toBeNull();
-    expect(previewSectionProps?.containerInspectLoading()).toBe(false);
+    expect(previewSectionProps?.containerInspectLoading).toBe(false);
   });
 
   it('opens the preview without scanning available ports implicitly', async () => {
@@ -252,8 +257,8 @@ describe('createTaskPanelPreviewController', () => {
     expect(previewSection).not.toBeNull();
     const props = getLatestPreviewSectionProps();
 
-    expect(props?.containerInspectError()).toBe('Inspect failed');
-    expect(props?.containerInspectLoading()).toBe(false);
+    expect(props?.containerInspectError).toBe('Inspect failed');
+    expect(props?.containerInspectLoading).toBe(false);
 
     dispose();
   });
@@ -295,8 +300,8 @@ describe('createTaskPanelPreviewController', () => {
     firstInspect.reject(new Error('Inspect failed'));
     await Promise.resolve();
 
-    expect(props?.containerInspectLoading()).toBe(false);
-    expect(props?.containerInspectError()).toBe(null);
+    expect(getLatestPreviewSectionProps()?.containerInspectLoading).toBe(false);
+    expect(getLatestPreviewSectionProps()?.containerInspectError).toBe(null);
 
     dispose();
   });
@@ -325,11 +330,11 @@ describe('createTaskPanelPreviewController', () => {
 
     await props?.onRefreshContainerLogs();
     await Promise.resolve();
-    expect(props?.containerLogsError()).toBe('Logs failed');
+    expect(getLatestPreviewSectionProps()?.containerLogsError).toBe('Logs failed');
 
     await props?.onStartContainers();
     await Promise.resolve();
-    expect(props?.containerActionError()).toBe('Start failed');
+    expect(getLatestPreviewSectionProps()?.containerActionError).toBe('Start failed');
 
     dispose();
   });
@@ -359,7 +364,7 @@ describe('createTaskPanelPreviewController', () => {
 
     await props?.onStartContainers();
     expect(startTaskContainersForTask).not.toHaveBeenCalled();
-    expect(props?.containerActionError()).toBe(null);
+    expect(getLatestPreviewSectionProps()?.containerActionError).toBe(null);
 
     dispose();
   });
@@ -410,7 +415,7 @@ describe('createTaskPanelPreviewController', () => {
       await actionPromise;
 
       expect(inspectTaskContainerForTask).toHaveBeenCalledTimes(1);
-      expect(props?.containerActionError()).toBe(errorMessage);
+      expect(getLatestPreviewSectionProps()?.containerActionError).toBe(errorMessage);
 
       dispose();
     },
@@ -439,8 +444,8 @@ describe('createTaskPanelPreviewController', () => {
     await props?.onRefreshAvailablePorts();
     await Promise.resolve();
 
-    expect(props?.availableCandidates()).toEqual([]);
-    expect(props?.availableScanError()).toBe(
+    expect(getLatestPreviewSectionProps()?.availableCandidates).toEqual([]);
+    expect(getLatestPreviewSectionProps()?.availableScanError).toBe(
       'Port scanning is unavailable because this browser tab is connected to an older server build. Restart the local server, then refresh this page.',
     );
 
@@ -550,11 +555,11 @@ describe('createTaskPanelPreviewController', () => {
 
     await props?.onStartContainers();
     await Promise.resolve();
-    expect(props?.containerActionError()).toBe('Start failed');
+    expect(getLatestPreviewSectionProps()?.containerActionError).toBe('Start failed');
 
     await props?.onRefreshContainerInspect();
     await Promise.resolve();
-    expect(props?.containerActionError()).toBe(null);
+    expect(getLatestPreviewSectionProps()?.containerActionError).toBe(null);
 
     dispose();
   });

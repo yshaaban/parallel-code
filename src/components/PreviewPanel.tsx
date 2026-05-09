@@ -13,8 +13,9 @@ import type {
 import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
+import { isTcpPortNumber } from '../lib/type-guards';
 
-interface PreviewPanelProps {
+export interface PreviewPanelProps {
   availableCandidates: ReadonlyArray<TaskPortExposureCandidate>;
   availableScanError: string | null;
   availableScanning: boolean;
@@ -52,8 +53,10 @@ interface PreviewActionButtonProps {
   onClick: () => void;
 }
 
+type AvailablePreviewPortBadge = 'Detected' | 'Local' | 'Rediscovered' | 'Task';
+
 interface AvailablePreviewPort {
-  badges: string[];
+  badges: AvailablePreviewPortBadge[];
   port: number;
   suggestion: string;
 }
@@ -64,10 +67,32 @@ interface PreviewMessageCardProps {
   role?: 'status';
 }
 
-interface PreviewPortError {
-  message: string;
+type PreviewPortKey = string;
+
+interface PreviewPortRevisionRef {
+  key: PreviewPortKey;
   port: number;
 }
+
+interface PreviewPortError extends PreviewPortRevisionRef {
+  message: string;
+}
+
+interface PreviewExposeError {
+  message: string;
+  port: number | null;
+}
+
+type PreviewBusyAction =
+  | {
+      id: number;
+      kind: 'expose';
+      port: number;
+    }
+  | ({
+      id: number;
+      kind: 'unexpose';
+    } & PreviewPortRevisionRef);
 
 interface PreviewExposureIndex {
   exposedPortNumbers: ReadonlySet<number>;
@@ -86,6 +111,13 @@ const TASK_PREVIEW_AVAILABILITY_LABELS: Record<TaskPreviewAvailability, string> 
   unavailable: 'Unavailable',
   unknown: 'Checking',
 };
+
+const AVAILABLE_PREVIEW_PORT_BADGE_COLORS = {
+  Detected: theme.warning,
+  Local: theme.fgMuted,
+  Rediscovered: theme.warning,
+  Task: theme.accent,
+} satisfies Record<AvailablePreviewPortBadge, string>;
 
 function normalizeDialogLabel(value: string): string | undefined {
   const trimmed = value.trim();
@@ -125,7 +157,7 @@ function getPreviewAvailabilityLabel(port: TaskExposedPort): string {
 
 function getObservedPortSourceLabel(
   source: TaskPortSnapshot['observed'][number]['source'],
-): string {
+): Extract<AvailablePreviewPortBadge, 'Detected' | 'Rediscovered'> {
   return source === 'rediscovery' ? 'Rediscovered' : 'Detected';
 }
 
@@ -149,6 +181,17 @@ function getPreviewAutoRefreshKey(taskId: string, port: TaskExposedPort): string
   return `${taskId}:${port.port}:${port.updatedAt}`;
 }
 
+function getPreviewPortKey(taskId: string, port: TaskExposedPort): string {
+  return getPreviewAutoRefreshKey(taskId, port);
+}
+
+function getPreviewPortRevisionRef(taskId: string, port: TaskExposedPort): PreviewPortRevisionRef {
+  return {
+    key: getPreviewPortKey(taskId, port),
+    port: port.port,
+  };
+}
+
 function getPreviewExposureIndex(
   exposedPorts: ReadonlyArray<TaskExposedPort>,
 ): PreviewExposureIndex {
@@ -169,8 +212,12 @@ function getPreviewExposureIndex(
   };
 }
 
-function getPortErrorMessage(portError: PreviewPortError | null, port: number): string | null {
-  return portError?.port === port ? portError.message : null;
+function getPortErrorMessage(
+  portError: PreviewPortError | null,
+  port: TaskExposedPort,
+  taskId: string,
+): string | null {
+  return portError?.key === getPreviewPortRevisionRef(taskId, port).key ? portError.message : null;
 }
 
 function getAvailablePreviewPorts(
@@ -216,18 +263,8 @@ function getAvailablePreviewPorts(
   return [...portsByNumber.values()].sort((left, right) => left.port - right.port);
 }
 
-function getAvailablePortBadgeColor(badge: string): string {
-  switch (badge) {
-    case 'Task':
-      return theme.accent;
-    case 'Local':
-      return theme.fgMuted;
-    case 'Detected':
-    case 'Rediscovered':
-      return theme.warning;
-    default:
-      return theme.fgMuted;
-  }
+function getAvailablePortBadgeColor(badge: AvailablePreviewPortBadge): string {
+  return AVAILABLE_PREVIEW_PORT_BADGE_COLORS[badge];
 }
 
 function getAvailablePortsFallbackMessage(
@@ -383,17 +420,17 @@ function UnavailablePreviewState(props: UnavailablePreviewStateProps): JSX.Eleme
 
 export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
-  const [busyPort, setBusyPort] = createSignal<number | null>(null);
-  const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
+  const [busyAction, setBusyAction] = createSignal<PreviewBusyAction | null>(null);
+  const [refreshingPortKey, setRefreshingPortKey] = createSignal<string | null>(null);
   const [refreshErrorMessage, setRefreshErrorMessage] = createSignal<PreviewPortError | null>(null);
   const [portActionErrorMessage, setPortActionErrorMessage] = createSignal<PreviewPortError | null>(
     null,
   );
   const [customPortText, setCustomPortText] = createSignal('');
   const [customLabelText, setCustomLabelText] = createSignal('');
-  const [exposeErrorMessage, setExposeErrorMessage] = createSignal<string | null>(null);
+  const [exposeErrorMessage, setExposeErrorMessage] = createSignal<PreviewExposeError | null>(null);
   const autoRefreshKeys = new Set<string>();
-  let exposeRequestId = 0;
+  let nextBusyActionId = 0;
   const exposureIndex = createMemo(() => getPreviewExposureIndex(props.snapshot.exposed));
   const availablePorts = createMemo(() =>
     getAvailablePreviewPorts(
@@ -412,7 +449,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   });
   const selectedExposedPort = createMemo(() => {
     const port = selectedPort();
-    return port === null ? null : (exposureIndex().portsByNumber.get(port) ?? null);
+    if (port === null) {
+      return null;
+    }
+
+    return exposureIndex().portsByNumber.get(port) ?? null;
   });
 
   createEffect(() => {
@@ -430,11 +471,14 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
   createEffect(() => {
     const port = selectedExposedPort();
-    if (!port || port.availability !== 'unknown' || refreshingPort() === port.port) {
+    if (!port || port.availability !== 'unknown') {
       return;
     }
 
     const refreshKey = getPreviewAutoRefreshKey(props.taskId, port);
+    if (refreshingPortKey() === refreshKey) {
+      return;
+    }
     if (autoRefreshKeys.has(refreshKey)) {
       return;
     }
@@ -450,7 +494,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     }
 
     const port = exposureIndex().portsByNumber.get(refreshError.port);
-    if (!port || port.availability !== 'unknown') {
+    if (!port || port.availability !== 'unknown' || !isCurrentPreviewPortRevision(refreshError)) {
       setRefreshErrorMessage(null);
     }
   });
@@ -461,18 +505,72 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       return;
     }
 
-    if (!exposureIndex().portsByNumber.has(actionError.port)) {
+    if (!isCurrentPreviewPortRevision(actionError)) {
       setPortActionErrorMessage(null);
     }
   });
 
+  createEffect(() => {
+    const exposeError = exposeErrorMessage();
+    if (!exposeError) {
+      return;
+    }
+
+    if (exposeError.port !== null && exposureIndex().portsByNumber.has(exposeError.port)) {
+      setExposeErrorMessage(null);
+    }
+  });
+
+  createEffect(() => {
+    const action = busyAction();
+    if (!action) {
+      return;
+    }
+
+    switch (action.kind) {
+      case 'expose':
+        if (exposureIndex().portsByNumber.has(action.port)) {
+          setSelectedPort(action.port);
+          clearCustomExposeDrafts();
+          setBusyAction(null);
+        }
+        return;
+      case 'unexpose':
+        if (!isCurrentPreviewPortRevision(action)) {
+          setBusyAction(null);
+        }
+        return;
+    }
+  });
+
+  function isPreviewActionBusy(): boolean {
+    return busyAction() !== null;
+  }
+
+  function isBusyActionCurrent(action: PreviewBusyAction): boolean {
+    return busyAction()?.id === action.id;
+  }
+
+  function getCurrentPreviewPortRevisionRef(portNumber: number): PreviewPortRevisionRef | null {
+    const port = exposureIndex().portsByNumber.get(portNumber);
+    return port ? getPreviewPortRevisionRef(props.taskId, port) : null;
+  }
+
+  function isCurrentPreviewPortRevision(ref: PreviewPortRevisionRef): boolean {
+    return getCurrentPreviewPortRevisionRef(ref.port)?.key === ref.key;
+  }
+
   async function handleExposePort(port: number, label?: string): Promise<boolean> {
-    if (busyPort() !== null) {
+    if (isPreviewActionBusy()) {
       return false;
     }
 
-    const requestId = ++exposeRequestId;
-    setBusyPort(port);
+    const action: PreviewBusyAction = {
+      id: ++nextBusyActionId,
+      kind: 'expose',
+      port,
+    };
+    setBusyAction(action);
     setExposeErrorMessage(null);
     if (portActionErrorMessage()?.port === port) {
       setPortActionErrorMessage(null);
@@ -480,22 +578,27 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
     try {
       await props.onExposePort(port, label);
-      if (requestId !== exposeRequestId) {
+      if (!isBusyActionCurrent(action)) {
         return false;
       }
 
       setSelectedPort(port);
       return true;
     } catch (error) {
-      if (requestId !== exposeRequestId) {
+      if (!isBusyActionCurrent(action)) {
         return false;
       }
 
-      setExposeErrorMessage(error instanceof Error ? error.message : 'Failed to expose port');
+      if (!exposureIndex().portsByNumber.has(port)) {
+        setExposeErrorMessage({
+          message: error instanceof Error ? error.message : 'Failed to expose port',
+          port,
+        });
+      }
       return false;
     } finally {
-      if (requestId === exposeRequestId) {
-        setBusyPort(null);
+      if (isBusyActionCurrent(action)) {
+        setBusyAction(null);
       }
     }
   }
@@ -509,47 +612,79 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     void props.onRefreshAvailablePorts();
   }
 
-  async function handleRefreshPort(port: number): Promise<void> {
-    setRefreshingPort(port);
+  async function handleRefreshPort(portNumber: number): Promise<void> {
+    const port = exposureIndex().portsByNumber.get(portNumber);
+    if (!port) {
+      return;
+    }
+
+    const refreshRef = getPreviewPortRevisionRef(props.taskId, port);
+    const refreshKey = refreshRef.key;
+    setRefreshingPortKey(refreshKey);
     setRefreshErrorMessage(null);
-    if (portActionErrorMessage()?.port === port) {
+    if (portActionErrorMessage()?.key === refreshKey) {
       setPortActionErrorMessage(null);
     }
     try {
-      await props.onRefreshPort(port);
+      await props.onRefreshPort(portNumber);
     } catch (error) {
-      setRefreshErrorMessage({
-        message: getPreviewRefreshErrorMessage(error),
-        port,
-      });
+      if (isCurrentPreviewPortRevision(refreshRef)) {
+        setRefreshErrorMessage({
+          ...refreshRef,
+          message: getPreviewRefreshErrorMessage(error),
+        });
+      }
     } finally {
-      if (refreshingPort() === port) {
-        setRefreshingPort(null);
+      if (refreshingPortKey() === refreshKey) {
+        setRefreshingPortKey(null);
       }
     }
   }
 
+  function isRefreshingPreviewPort(port: TaskExposedPort): boolean {
+    return refreshingPortKey() === getPreviewPortKey(props.taskId, port);
+  }
+
   async function handleUnexposePort(port: number): Promise<void> {
-    if (busyPort() !== null) {
+    if (isPreviewActionBusy()) {
       return;
     }
 
-    setBusyPort(port);
-    if (refreshErrorMessage()?.port === port) {
+    const exposedPort = exposureIndex().portsByNumber.get(port);
+    if (!exposedPort) {
+      return;
+    }
+
+    const action: PreviewBusyAction = {
+      id: ++nextBusyActionId,
+      kind: 'unexpose',
+      ...getPreviewPortRevisionRef(props.taskId, exposedPort),
+    };
+    setBusyAction(action);
+    if (refreshErrorMessage()?.key === action.key) {
       setRefreshErrorMessage(null);
     }
-    if (portActionErrorMessage()?.port === port) {
+    if (portActionErrorMessage()?.key === action.key) {
       setPortActionErrorMessage(null);
     }
     try {
       await props.onUnexposePort(port);
     } catch (error) {
-      setPortActionErrorMessage({
-        message: error instanceof Error ? error.message : 'Failed to unexpose port.',
-        port,
-      });
+      if (!isBusyActionCurrent(action)) {
+        return;
+      }
+
+      if (isCurrentPreviewPortRevision(action)) {
+        setPortActionErrorMessage({
+          key: action.key,
+          message: error instanceof Error ? error.message : 'Failed to unexpose port.',
+          port,
+        });
+      }
     } finally {
-      setBusyPort(null);
+      if (isBusyActionCurrent(action)) {
+        setBusyAction(null);
+      }
     }
   }
 
@@ -580,8 +715,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
   async function handleCustomExpose(): Promise<void> {
     const port = Number.parseInt(customPortText(), 10);
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      setExposeErrorMessage('Enter a valid port between 1 and 65535.');
+    if (!isTcpPortNumber(port)) {
+      setExposeErrorMessage({
+        message: 'Enter a valid port between 1 and 65535.',
+        port: null,
+      });
       return;
     }
 
@@ -739,8 +877,8 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           <OpenTabIcon />
                         </PreviewActionButton>
                         <PreviewActionButton
-                          label={getRetryPreviewLabel(port.port, refreshingPort() === port.port)}
-                          disabled={refreshingPort() === port.port}
+                          label={getRetryPreviewLabel(port.port, isRefreshingPreviewPort(port))}
+                          disabled={isRefreshingPreviewPort(port)}
                           onClick={() => {
                             void handleRefreshPort(port.port);
                           }}
@@ -750,7 +888,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         <PreviewActionButton
                           label={`Unexpose port ${port.port}`}
                           color={theme.error}
-                          disabled={busyPort() !== null}
+                          disabled={isPreviewActionBusy()}
                           onClick={() => {
                             void handleUnexposePort(port.port);
                           }}
@@ -764,12 +902,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         {port.statusMessage}
                       </div>
                     </Show>
-                    <Show when={getPortErrorMessage(refreshErrorMessage(), port.port)}>
+                    <Show when={getPortErrorMessage(refreshErrorMessage(), port, props.taskId)}>
                       {(message) => (
                         <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
                       )}
                     </Show>
-                    <Show when={getPortErrorMessage(portActionErrorMessage(), port.port)}>
+                    <Show when={getPortErrorMessage(portActionErrorMessage(), port, props.taskId)}>
                       {(message) => (
                         <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
                       )}
@@ -898,7 +1036,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     </div>
                     <PreviewActionButton
                       label={`Expose port ${port.port}`}
-                      disabled={busyPort() !== null}
+                      disabled={isPreviewActionBusy()}
                       onClick={() => {
                         void handleAvailablePortExpose(port.port);
                       }}
@@ -963,13 +1101,13 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                 />
               </label>
               <Show when={exposeErrorMessage()}>
-                {(message) => (
-                  <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
+                {(error) => (
+                  <div style={{ color: theme.error, ...typography.meta }}>{error().message}</div>
                 )}
               </Show>
               <button
                 type="button"
-                disabled={busyPort() !== null}
+                disabled={isPreviewActionBusy()}
                 onClick={() => {
                   void handleCustomExpose();
                 }}
@@ -979,7 +1117,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   border: `1px solid ${theme.border}`,
                   'border-radius': '6px',
                   padding: '6px 10px',
-                  cursor: busyPort() !== null ? 'wait' : 'pointer',
+                  cursor: isPreviewActionBusy() ? 'wait' : 'pointer',
                   ...typography.uiStrong,
                 }}
               >

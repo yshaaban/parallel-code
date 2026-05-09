@@ -315,6 +315,70 @@ describe('PreviewPanel', () => {
     });
   });
 
+  it('ignores stale unexpose failures after backend exposure state updates the same port', async () => {
+    const unexposeResult = createDeferred<undefined>();
+    const onUnexposePort = vi.fn().mockReturnValue(unexposeResult.promise);
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([createAvailablePreviewPort(1_100)]),
+    );
+    const props = createPreviewPanelProps({ onUnexposePort });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
+    expect(onUnexposePort).toHaveBeenCalledWith(3001);
+
+    setSnapshot(createPreviewSnapshot([createAvailablePreviewPort(1_200)]));
+
+    unexposeResult.reject(new Error('Old unexpose failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Old unexpose failed')).toBeNull();
+  });
+
+  it('clears unexpose busy state when backend exposure truth removes the port before action settles', async () => {
+    const unexposeResult = createDeferred<undefined>();
+    const onUnexposePort = vi.fn().mockReturnValue(unexposeResult.promise);
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([createAvailablePreviewPort(1_100)]),
+    );
+    const props = createPreviewPanelProps({
+      availableCandidates: [
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          source: 'task',
+          suggestion: 'Listening in this task worktree',
+        },
+      ],
+      onUnexposePort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
+    expect(screen.getByRole('button', { name: 'Expose port 5173' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+
+    setSnapshot(createPreviewSnapshot([], 1_200));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Expose port 5173' })).toHaveProperty(
+        'disabled',
+        false,
+      );
+    });
+
+    unexposeResult.reject(new Error('Old unexpose failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Old unexpose failed')).toBeNull();
+  });
+
   it('applies the shared label draft when exposing a detected port', async () => {
     const onExposePort = vi.fn().mockResolvedValue(undefined);
 
@@ -384,6 +448,96 @@ describe('PreviewPanel', () => {
 
     expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
     expect(screen.getByText('Port is already exposed')).toBeDefined();
+  });
+
+  it('ignores stale expose failures after backend exposure state adds the port', async () => {
+    const exposeResult = createDeferred<undefined>();
+    const onExposePort = vi.fn().mockReturnValue(exposeResult.promise);
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([], 1_100),
+    );
+    const props = createPreviewPanelProps({
+      availableCandidates: [
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          source: 'task',
+          suggestion: 'Listening in this task worktree',
+        },
+      ],
+      onExposePort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
+    expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
+
+    setSnapshot(createPreviewSnapshot([createAvailablePreviewPort(1_200, { port: 5173 })]));
+
+    exposeResult.reject(new Error('Old expose failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Old expose failed')).toBeNull();
+    expect(screen.getByTitle('Task preview 5173').getAttribute('src')).toBe(
+      'http://preview.local/task-1/5173',
+    );
+  });
+
+  it('clears expose busy state when backend exposure truth adds the port before action settles', async () => {
+    const exposeResult = createDeferred<undefined>();
+    const onExposePort = vi.fn().mockReturnValue(exposeResult.promise);
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([], 1_100),
+    );
+    const props = createPreviewPanelProps({
+      availableCandidates: [
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          source: 'task',
+          suggestion: 'First app',
+        },
+        {
+          host: '127.0.0.1',
+          port: 3000,
+          source: 'task',
+          suggestion: 'Second app',
+        },
+      ],
+      onExposePort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
+    expect(screen.getByRole('button', { name: 'Expose port 3000' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+
+    setSnapshot(createPreviewSnapshot([createAvailablePreviewPort(1_200, { port: 5173 })]));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Expose port 3000' })).toHaveProperty(
+        'disabled',
+        false,
+      );
+    });
+    expect(screen.getByRole('button', { name: 'Expose custom port' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(screen.getByTitle('Task preview 5173').getAttribute('src')).toBe(
+      'http://preview.local/task-1/5173',
+    );
+
+    exposeResult.reject(new Error('Old expose failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Old expose failed')).toBeNull();
   });
 
   it('prevents concurrent expose requests from racing selected preview state', async () => {
@@ -606,6 +760,43 @@ describe('PreviewPanel', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(onRefreshPort).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a stale refresh failure block a newer preview revision', async () => {
+    const firstRefresh = createDeferred<undefined>();
+    const secondRefresh = createDeferred<undefined>();
+    const refreshResults = [firstRefresh.promise, secondRefresh.promise];
+    const onRefreshPort = vi.fn(() => refreshResults.shift() ?? Promise.resolve());
+    const [snapshot, setSnapshot] = createSignal<TaskPortSnapshot>(
+      createPreviewSnapshot([createUnknownPreviewPort(1_100)]),
+    );
+    const props = createPreviewPanelProps({
+      onRefreshPort,
+    });
+
+    render(() => <PreviewPanel {...props} snapshot={snapshot()} />);
+
+    await waitFor(() => {
+      expect(onRefreshPort).toHaveBeenCalledTimes(1);
+    });
+
+    setSnapshot(createPreviewSnapshot([createUnknownPreviewPort(1_200)]));
+
+    await waitFor(() => {
+      expect(onRefreshPort).toHaveBeenCalledTimes(2);
+    });
+
+    firstRefresh.reject(new Error('Old preview refresh failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Old preview refresh failed')).toBeNull();
+
+    secondRefresh.reject(new Error('Current preview refresh failed'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Current preview refresh failed')).toBeDefined();
+    });
   });
 
   it('clears preview refresh failures when backend availability changes', async () => {

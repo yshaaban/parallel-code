@@ -1,9 +1,15 @@
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
-import type { HandlerContext, IpcHandler } from './handler-context.js';
+import type { IpcHandlerMap } from './handlers.js';
+import type { HandlerContext } from './handler-context.js';
 import { validatePath, validateRelativePath } from './path-utils.js';
 import { defineIpcHandler } from './typed-handler.js';
-import { assertInt, assertOptionalInt, assertOptionalString, assertString } from './validate.js';
+import {
+  assertOptionalInt,
+  assertOptionalString,
+  assertString,
+  assertTcpPortNumber,
+} from './validate.js';
 import {
   destroyTaskContainers,
   getTaskContainerLogs,
@@ -12,16 +18,8 @@ import {
   stopTaskContainers,
 } from './task-containers.js';
 import type { ProjectContainerConfig } from '../../src/domain/task-containers.js';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function assertValidPreviewPort(port: number, label: string): void {
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new BadRequestError(`${label} must be an integer between 1 and 65535`);
-  }
-}
+import { isTaskPortProtocol } from '../../src/domain/server-state.js';
+import { isRecord } from '../../src/lib/type-guards.js';
 
 function normalizeProjectContainerConfig(value: unknown): ProjectContainerConfig | undefined {
   if (value === undefined) {
@@ -60,22 +58,19 @@ function normalizeProjectContainerConfig(value: unknown): ProjectContainerConfig
         );
       }
 
-      assertInt(entry.port, `projectContainerConfig.previewPorts[${index}].port`);
-      assertValidPreviewPort(entry.port, `projectContainerConfig.previewPorts[${index}].port`);
+      assertTcpPortNumber(entry.port, `projectContainerConfig.previewPorts[${index}].port`);
       assertOptionalString(entry.label, `projectContainerConfig.previewPorts[${index}].label`);
       const protocol = entry.protocol;
-      if (protocol !== undefined && protocol !== 'http' && protocol !== 'https') {
+      if (protocol !== undefined && !isTaskPortProtocol(protocol)) {
         throw new BadRequestError(
           `projectContainerConfig.previewPorts[${index}].protocol must be "http", "https", or undefined`,
         );
       }
 
-      const normalizedProtocol = protocol as 'http' | 'https' | undefined;
-
       return {
         ...(entry.label !== undefined ? { label: entry.label } : {}),
         port: entry.port,
-        ...(normalizedProtocol !== undefined ? { protocol: normalizedProtocol } : {}),
+        ...(protocol !== undefined ? { protocol } : {}),
       };
     }) ?? undefined;
 
@@ -117,9 +112,7 @@ function createTaskContainerRequest(
   };
 }
 
-export function createTaskContainerIpcHandlers(
-  context: HandlerContext,
-): Partial<Record<IPC, IpcHandler>> {
+export function createTaskContainerIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
     [IPC.ContainersInspectTask]: defineIpcHandler(IPC.ContainersInspectTask, (request) => {
       return inspectTaskContainers(createTaskContainerRequest(request, context));

@@ -1,5 +1,6 @@
 import express from 'express';
-import { createServer, type IncomingHttpHeaders } from 'http';
+import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'http';
+import type { Duplex } from 'stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
@@ -61,6 +62,10 @@ type BrowserServerLifecycle =
   | { kind: 'closing'; exitOnClose: boolean }
   | { kind: 'closed' };
 
+const CONTROL_SOCKET_PATH = '/ws';
+const PREVIEW_SOCKET_PATH_PREFIXES = ['/_preview/', '/_container_preview/'] as const;
+const REQUEST_URL_BASE = 'http://localhost';
+
 export interface StartBrowserServerOptions {
   browserChannelBackpressureDrainIntervalMs?: number;
   browserChannelClientDegradedMaxDrainPasses?: number;
@@ -81,6 +86,15 @@ export interface StartBrowserServerOptions {
 export interface BrowserServerController {
   cleanup: () => void;
   shutdown: () => void;
+}
+
+function getUpgradePathname(req: IncomingMessage): string | null {
+  const value = req.url ?? '/';
+  return URL.canParse(value, REQUEST_URL_BASE) ? new URL(value, REQUEST_URL_BASE).pathname : null;
+}
+
+function isPreviewSocketPath(pathname: string): boolean {
+  return PREVIEW_SOCKET_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
 function createBrowserRemoteAccessController(
@@ -106,10 +120,30 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const app = express();
   const server = createServer(app);
   const wss = new WebSocketServer({
-    server,
     maxPayload: 256 * 1024,
-    path: '/ws',
+    noServer: true,
   });
+  const handleControlSocketUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    const pathname = getUpgradePathname(req);
+    if (pathname !== CONTROL_SOCKET_PATH) {
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (client) => {
+      wss.emit('connection', client, req);
+    });
+  };
+  server.on('upgrade', handleControlSocketUpgrade);
+  const handleUnknownSocketUpgrade = (req: IncomingMessage, socket: Duplex): void => {
+    const pathname = getUpgradePathname(req);
+    if (pathname === CONTROL_SOCKET_PATH || (pathname && isPreviewSocketPath(pathname))) {
+      return;
+    }
+
+    const statusLine = pathname ? 'HTTP/1.1 404 Not Found' : 'HTTP/1.1 400 Bad Request';
+    socket.write(`${statusLine}\r\n\r\n`);
+    socket.destroy();
+  };
   const taskNames = createTaskNameRegistry();
   const storageEnv = { userDataPath: options.userDataPath, isPackaged: false } as const;
   const savedAppState = loadAppStateForEnv(storageEnv);
@@ -279,6 +313,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     resolvePreviewTarget: (taskId, port) => resolveTaskPreviewTarget(taskId, port),
     server,
   });
+  server.on('upgrade', handleUnknownSocketUpgrade);
 
   registerBrowserStaticRoutes({
     app,
@@ -335,6 +370,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     }
 
     browserSocketInfrastructureCleaned = true;
+    browserSocketServer?.cleanup();
     controlPlane.cleanup();
     channelManager.cleanup();
   }
@@ -451,6 +487,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupTaskReviewSignals();
     cleanupTaskSteps();
     cleanupTaskPorts();
+    server.off('upgrade', handleControlSocketUpgrade);
+    server.off('upgrade', handleUnknownSocketUpgrade);
     cleanupPreviewRoutes();
     clearTaskContainerPreviewTargets();
     stopAllGitWatchers();
@@ -458,6 +496,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       cleanupClientState(client);
       client.close();
     }
+    cleanupBrowserSocketInfrastructure();
     wss.close();
     requestServerClose(false);
   }

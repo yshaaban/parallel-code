@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentDef } from '../../../src/ipc/types.js';
+import type { TaskGitIsolationMode } from '../../../src/store/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +11,7 @@ export interface BrowserLabScenario {
   agentDef: AgentDef;
   name: string;
   seedRepo?: (repoDir: string) => Promise<void> | void;
+  taskGitIsolation?: TaskGitIsolationMode;
   taskName: string;
 }
 

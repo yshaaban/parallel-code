@@ -1,5 +1,5 @@
 import express from 'express';
-import { createServer } from 'http';
+import { createServer, type IncomingHttpHeaders } from 'http';
 import { createServer as createNetServer } from 'net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -53,13 +53,17 @@ function listen(server: ReturnType<typeof createServer>): Promise<StartedServer>
   });
 }
 
-function createTargetServer(): ReturnType<typeof createServer> {
+interface TargetServerOptions {
+  onUpgrade?: (request: { headers: IncomingHttpHeaders; url: string | undefined }) => void;
+}
+
+function createTargetServer(options: TargetServerOptions = {}): ReturnType<typeof createServer> {
   const app = express();
   app.use((req, res) => {
     res.setHeader('set-cookie', 'target-session=abc; Path=/');
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.send(
-      `<html><head></head><body data-cookie="${req.headers.cookie ?? ''}" data-auth="${req.headers.authorization ?? ''}"><script type="module" src="/@vite/client"></script></body></html>`,
+      `<html><head></head><body data-cookie="${req.headers.cookie ?? ''}" data-auth="${req.headers.authorization ?? ''}" data-path="${req.url}"><script type="module" src="/@vite/client"></script></body></html>`,
     );
   });
 
@@ -72,11 +76,13 @@ function createTargetServer(): ReturnType<typeof createServer> {
   });
 
   server.on('upgrade', (req, socket, head) => {
-    if (req.url !== '/hmr') {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname !== '/hmr') {
       socket.destroy();
       return;
     }
 
+    options.onUpgrade?.({ headers: req.headers, url: req.url });
     wss.handleUpgrade(req, socket, head, (client) => {
       wss.emit('connection', client, req);
     });
@@ -186,6 +192,48 @@ function getSetCookieHeaders(response: Response): string[] {
     : [response.headers.get('set-cookie')].filter((value): value is string => value !== null);
 }
 
+async function expectWebSocketUpgradeRejected(options: {
+  headers?: Record<string, string>;
+  statusCode: number;
+  url: string;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(options.url, {
+      headers: options.headers,
+    });
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.terminate();
+      reject(new Error(`Timed out waiting for websocket rejection from ${options.url}`));
+    }, 5_000);
+
+    function cleanup(): void {
+      clearTimeout(timeout);
+      socket.off('open', handleOpen);
+      socket.off('error', handleError);
+    }
+
+    function handleOpen(): void {
+      cleanup();
+      socket.close();
+      reject(new Error(`Expected websocket upgrade to ${options.url} to be rejected`));
+    }
+
+    function handleError(error: Error): void {
+      cleanup();
+      try {
+        expect(error.message).toContain(`Unexpected server response: ${options.statusCode}`);
+        resolve();
+      } catch (assertionError) {
+        reject(assertionError);
+      }
+    }
+
+    socket.once('open', handleOpen);
+    socket.once('error', handleError);
+  });
+}
+
 describe('browser preview proxy', { timeout: 15_000 }, () => {
   const cleanups: Array<() => Promise<void>> = [];
 
@@ -239,6 +287,39 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     expect(html).toContain('data-auth=""');
   });
 
+  it('strips preview auth tokens from forwarded target query strings', async () => {
+    const targetServer = createTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/dashboard?mode=remote&token=should-not-forward&tab=logs`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('data-path="/dashboard?mode=remote&tab=logs"');
+    expect(html).not.toContain('should-not-forward');
+  });
+
   it('strips target cookie domains while scoping cookies to the preview path', async () => {
     const targetApp = express();
     targetApp.get('/', (_req, res) => {
@@ -287,6 +368,61 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
       ]),
     );
     expect(setCookies.join('\n')).not.toMatch(/domain=/iu);
+  });
+
+  it('rewrites loopback preview redirects back through the preview route', async () => {
+    let targetPort = 0;
+    const targetApp = express();
+    targetApp.get('/relative-redirect', (_req, res) => {
+      res.redirect(302, '/login?next=/relative-redirect');
+    });
+    targetApp.get('/absolute-redirect', (_req, res) => {
+      res.redirect(302, `http://127.0.0.1:${targetPort}/done#complete`);
+    });
+    const target = await listen(createServer(targetApp));
+    targetPort = target.port;
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const relativeResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/relative-redirect`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+        redirect: 'manual',
+      },
+    );
+    expect(relativeResponse.status).toBe(302);
+    expect(relativeResponse.headers.get('location')).toBe(
+      `/_preview/task-1/${target.port}/login?next=/relative-redirect`,
+    );
+
+    const absoluteResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/absolute-redirect`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+        redirect: 'manual',
+      },
+    );
+    expect(absoluteResponse.status).toBe(302);
+    expect(absoluteResponse.headers.get('location')).toBe(
+      `/_preview/task-1/${target.port}/done#complete`,
+    );
   });
 
   it('proxies container preview targets without requiring an exposed task port', async () => {
@@ -679,8 +815,49 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     expect(markPreviewUnavailable).toHaveBeenCalledWith('task-1', targetPort);
   });
 
+  it('returns an unavailable response when preview target resolution fails', async () => {
+    const targetPort = 5173;
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(targetPort, {
+        resolvePreviewTarget: async () => {
+          throw new Error('resolver failed');
+        },
+      }),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${targetPort}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toBe('Preview unavailable');
+  });
+
   it('proxies websocket upgrades for exposed task ports', async () => {
-    const targetServer = createTargetServer();
+    const upgradeCapture: {
+      headers: IncomingHttpHeaders | null;
+      url: string | undefined;
+    } = { headers: null, url: undefined };
+    const targetServer = createTargetServer({
+      onUpgrade({ headers, url }) {
+        upgradeCapture.headers = headers;
+        upgradeCapture.url = url;
+      },
+    });
     const target = await listen(targetServer);
     cleanups.push(target.close);
 
@@ -700,11 +877,12 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
       await preview.close();
     });
 
-    const url = `ws://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/hmr`;
+    const url = `ws://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/hmr?channel=vite&token=should-not-forward`;
     const message = await new Promise<string>((resolve, reject) => {
       const socket = new WebSocket(url, {
         headers: {
-          Cookie: SESSION_COOKIE,
+          Authorization: 'Bearer should-not-reach-target',
+          Cookie: `${SESSION_COOKIE}; target-session=kept`,
           Origin: `http://127.0.0.1:${preview.port}`,
         },
       });
@@ -719,7 +897,39 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     });
 
     expect(message).toBe('echo:hello');
+    const forwardedUpgradeHeaders = upgradeCapture.headers;
+    if (!forwardedUpgradeHeaders) {
+      throw new Error('Expected preview websocket target to receive an upgrade request');
+    }
+
+    expect(forwardedUpgradeHeaders.authorization).toBeUndefined();
+    expect(forwardedUpgradeHeaders.cookie).toBe('target-session=kept');
+    expect(upgradeCapture.url).toBe('/hmr?channel=vite');
     expect(markPreviewUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed preview websocket upgrade routes', async () => {
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(3000),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    await expectWebSocketUpgradeRejected({
+      headers: {
+        Cookie: SESSION_COOKIE,
+        Origin: `http://127.0.0.1:${preview.port}`,
+      },
+      statusCode: 404,
+      url: `ws://127.0.0.1:${preview.port}/_preview/task-1/not-a-port/hmr`,
+    });
   });
 
   it('forwards nested preview assets and preserves nested document base paths', async () => {

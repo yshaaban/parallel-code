@@ -1,6 +1,5 @@
 import { IPC } from './channels.js';
-import type { IpcHandler } from './handler-context.js';
-import { BadRequestError } from './errors.js';
+import type { IpcHandlerMap } from './handlers.js';
 import { validatePath } from './path-utils.js';
 import {
   exposeTaskPort,
@@ -10,23 +9,16 @@ import {
   unexposeTaskPort,
 } from './task-ports.js';
 import { defineIpcHandler } from './typed-handler.js';
-import { assertInt, assertOptionalString, assertString } from './validate.js';
+import { assertOptionalString, assertString, assertTcpPortNumber } from './validate.js';
 
-function assertValidPort(port: number): void {
-  if (port < 1 || port > 65_535) {
-    throw new BadRequestError('port must be between 1 and 65535');
-  }
-}
-
-export function createTaskPortIpcHandlers(): Partial<Record<IPC, IpcHandler>> {
+export function createTaskPortIpcHandlers(): IpcHandlerMap {
   return {
     [IPC.GetTaskPorts]: () => getTaskPortSnapshots(),
     [IPC.ExposePort]: defineIpcHandler<IPC.ExposePort>(IPC.ExposePort, (args) => {
       const request = args;
       assertString(request.taskId, 'taskId');
-      assertInt(request.port, 'port');
+      assertTcpPortNumber(request.port, 'port');
       assertOptionalString(request.label, 'label');
-      assertValidPort(request.port);
       return exposeTaskPort(request.taskId, request.port, request.label);
     }),
     [IPC.GetTaskPortExposureCandidates]: defineIpcHandler<IPC.GetTaskPortExposureCandidates>(
@@ -44,16 +36,14 @@ export function createTaskPortIpcHandlers(): Partial<Record<IPC, IpcHandler>> {
       async (args) => {
         const request = args;
         assertString(request.taskId, 'taskId');
-        assertInt(request.port, 'port');
-        assertValidPort(request.port);
+        assertTcpPortNumber(request.port, 'port');
         return revalidateTaskPortPreview(request.taskId, request.port);
       },
     ),
     [IPC.UnexposePort]: defineIpcHandler<IPC.UnexposePort>(IPC.UnexposePort, (args) => {
       const request = args;
       assertString(request.taskId, 'taskId');
-      assertInt(request.port, 'port');
-      assertValidPort(request.port);
+      assertTcpPortNumber(request.port, 'port');
       return unexposeTaskPort(request.taskId, request.port);
     }),
   };

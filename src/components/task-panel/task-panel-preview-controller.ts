@@ -57,6 +57,12 @@ interface TaskPanelPreviewControllerOptions {
   worktreePath: Accessor<string>;
 }
 
+interface LatestRequestTracker {
+  begin: () => number;
+  invalidate: () => void;
+  isCurrent: (requestId: number) => boolean;
+}
+
 function createEmptyTaskPortSnapshot(taskId: string): TaskPortSnapshot {
   return {
     exposed: [],
@@ -76,6 +82,21 @@ function getExposePortScanErrorMessage(error: unknown): string {
   }
 
   return error.message;
+}
+
+function createLatestRequestTracker(): LatestRequestTracker {
+  let currentRequestId = 0;
+
+  return {
+    begin: () => {
+      currentRequestId += 1;
+      return currentRequestId;
+    },
+    invalidate: () => {
+      currentRequestId += 1;
+    },
+    isCurrent: (requestId) => requestId === currentRequestId,
+  };
 }
 
 export function createTaskPanelPreviewController(options: TaskPanelPreviewControllerOptions): {
@@ -99,9 +120,9 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   const [containerInspectError, setContainerInspectError] = createSignal<string | null>(null);
   const [containerLogsError, setContainerLogsError] = createSignal<string | null>(null);
   const [containerActionError, setContainerActionError] = createSignal<string | null>(null);
-  let exposePortScanRequestId = 0;
-  let containerInspectRequestId = 0;
-  let containerLogsRequestId = 0;
+  const exposePortScanRequest = createLatestRequestTracker();
+  const containerInspectRequest = createLatestRequestTracker();
+  const containerLogsRequest = createLatestRequestTracker();
 
   function createTaskContainerRequest(): TaskContainerRequest {
     const projectContainerConfig = options.projectContainerConfig();
@@ -156,46 +177,46 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   }
 
   async function refreshExposePortCandidates(): Promise<void> {
-    const requestId = ++exposePortScanRequestId;
+    const requestId = exposePortScanRequest.begin();
     const taskId = options.taskId();
     const worktreePath = options.worktreePath();
     setScanningExposePortCandidates(true);
     setExposePortScanError(null);
     try {
       const candidates = await options.fetchTaskPortExposureCandidates(taskId, worktreePath);
-      if (requestId !== exposePortScanRequestId) {
+      if (!exposePortScanRequest.isCurrent(requestId)) {
         return;
       }
 
       setExposePortCandidates(candidates);
     } catch (error) {
-      if (requestId !== exposePortScanRequestId) {
+      if (!exposePortScanRequest.isCurrent(requestId)) {
         return;
       }
 
       setExposePortCandidates([]);
       setExposePortScanError(getExposePortScanErrorMessage(error));
     } finally {
-      if (requestId === exposePortScanRequestId) {
+      if (exposePortScanRequest.isCurrent(requestId)) {
         setScanningExposePortCandidates(false);
       }
     }
   }
 
   async function refreshContainerInspect(): Promise<void> {
-    const requestId = ++containerInspectRequestId;
+    const requestId = containerInspectRequest.begin();
     setLoadingContainerInspect(true);
     setContainerInspectError(null);
     try {
       const nextInspect = await options.inspectTaskContainerForTask(createTaskContainerRequest());
-      if (requestId !== containerInspectRequestId) {
+      if (!containerInspectRequest.isCurrent(requestId)) {
         return;
       }
 
       setContainerInspect(nextInspect);
       setContainerActionError(null);
     } catch (error) {
-      if (requestId !== containerInspectRequestId) {
+      if (!containerInspectRequest.isCurrent(requestId)) {
         return;
       }
 
@@ -203,31 +224,31 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
         getContainerErrorMessage(error, 'Failed to inspect the task container.'),
       );
     } finally {
-      if (requestId === containerInspectRequestId) {
+      if (containerInspectRequest.isCurrent(requestId)) {
         setLoadingContainerInspect(false);
       }
     }
   }
 
   async function refreshContainerLogs(): Promise<void> {
-    const requestId = ++containerLogsRequestId;
+    const requestId = containerLogsRequest.begin();
     setLoadingContainerLogs(true);
     setContainerLogsError(null);
     try {
       const nextLogs = await options.fetchTaskContainerLogsForTask(createTaskContainerRequest());
-      if (requestId !== containerLogsRequestId) {
+      if (!containerLogsRequest.isCurrent(requestId)) {
         return;
       }
 
       setContainerLogs(nextLogs);
     } catch (error) {
-      if (requestId !== containerLogsRequestId) {
+      if (!containerLogsRequest.isCurrent(requestId)) {
         return;
       }
 
       setContainerLogsError(getContainerErrorMessage(error, 'Failed to load task container logs.'));
     } finally {
-      if (requestId === containerLogsRequestId) {
+      if (containerLogsRequest.isCurrent(requestId)) {
         setLoadingContainerLogs(false);
       }
     }
@@ -240,14 +261,14 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       return;
     }
 
-    const requestId = ++containerInspectRequestId;
-    containerLogsRequestId += 1;
+    const requestId = containerInspectRequest.begin();
+    containerLogsRequest.invalidate();
     setLoadingContainerLogs(false);
     setContainerActionError(null);
     setLoadingContainerInspect(true);
     try {
       const nextInspect = await action(createTaskContainerRequest());
-      if (requestId !== containerInspectRequestId) {
+      if (!containerInspectRequest.isCurrent(requestId)) {
         return;
       }
 
@@ -257,7 +278,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
         void refreshContainerLogs();
       }
     } catch (error) {
-      if (requestId !== containerInspectRequestId) {
+      if (!containerInspectRequest.isCurrent(requestId)) {
         return;
       }
 
@@ -265,7 +286,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
         getContainerErrorMessage(error, 'Failed to update the task container.'),
       );
     } finally {
-      if (requestId === containerInspectRequestId) {
+      if (containerInspectRequest.isCurrent(requestId)) {
         setLoadingContainerInspect(false);
       }
     }
@@ -325,42 +346,45 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     }
 
     return createTaskPreviewSection({
-      availableCandidates: exposePortCandidates,
-      availableScanError: exposePortScanError,
-      availableScanning: scanningExposePortCandidates,
-      containerInspect,
-      containerInspectError,
-      containerInspectLoading: loadingContainerInspect,
-      containerLogs,
-      containerLogsError,
-      containerLogsLoading: loadingContainerLogs,
-      containerActionError,
-      onDestroyContainers: () => runContainerAction(options.destroyTaskContainersForTask),
-      onExposePort: handleExposePort,
       onFocusPreview: openPreview,
-      onHide: hidePreview,
-      onRefreshContainerInspect: refreshContainerInspect,
-      onRefreshContainerLogs: refreshContainerLogs,
-      onRefreshAvailablePorts: refreshExposePortCandidates,
-      onRefreshPort: async (port) => {
-        const nextSnapshot = await options.refreshTaskPreviewForTask(options.taskId(), port);
-        if (nextSnapshot) {
-          options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
-        }
-      },
-      onStartContainers: () => runContainerAction(options.startTaskContainersForTask),
-      onStopContainers: () => runContainerAction(options.stopTaskContainersForTask),
-      onUnexposePort: async (port) => {
-        const taskId = options.taskId();
-        const nextSnapshot = await options.unexposeTaskPortForTask(taskId, port);
-        if (nextSnapshot) {
-          options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
-          return;
-        }
+      previewProps: () => ({
+        availableCandidates: exposePortCandidates(),
+        availableScanError: exposePortScanError(),
+        availableScanning: scanningExposePortCandidates(),
+        containerActionError: containerActionError(),
+        containerInspect: containerInspect(),
+        containerInspectError: containerInspectError(),
+        containerInspectLoading: loadingContainerInspect(),
+        containerLogs: containerLogs(),
+        containerLogsError: containerLogsError(),
+        containerLogsLoading: loadingContainerLogs(),
+        onDestroyContainers: () => runContainerAction(options.destroyTaskContainersForTask),
+        onExposePort: handleExposePort,
+        onHide: hidePreview,
+        onRefreshAvailablePorts: refreshExposePortCandidates,
+        onRefreshContainerInspect: refreshContainerInspect,
+        onRefreshContainerLogs: refreshContainerLogs,
+        onRefreshPort: async (port) => {
+          const nextSnapshot = await options.refreshTaskPreviewForTask(options.taskId(), port);
+          if (nextSnapshot) {
+            options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
+          }
+        },
+        onStartContainers: () => runContainerAction(options.startTaskContainersForTask),
+        onStopContainers: () => runContainerAction(options.stopTaskContainersForTask),
+        onUnexposePort: async (port) => {
+          const taskId = options.taskId();
+          const nextSnapshot = await options.unexposeTaskPortForTask(taskId, port);
+          if (nextSnapshot) {
+            options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
+            return;
+          }
 
-        options.applyTaskPortsEvent(createRemovedTaskPortsEvent(taskId));
-      },
-      snapshot: () => taskPortSnapshot() ?? createEmptyTaskPortSnapshot(options.taskId()),
+          options.applyTaskPortsEvent(createRemovedTaskPortsEvent(taskId));
+        },
+        snapshot: taskPortSnapshot() ?? createEmptyTaskPortSnapshot(options.taskId()),
+        taskId: options.taskId(),
+      }),
       taskId: options.taskId,
     });
   };
