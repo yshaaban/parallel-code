@@ -7,11 +7,11 @@
     "noEmitOnError": true,
     "strict": true,
     "outDir": "../dist-electron",
-    "rootDir": ".",
+    "rootDir": "..",
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "types": ["node"]
   },
   "include": ["./**/*.ts"],
-  "exclude": ["./preload.ts", "./shims/**", "./vite.config.electron.ts"]
+  "exclude": ["./**/*.test.ts", "./preload.ts", "./shims/**", "./vite.config.electron.ts"]
 }

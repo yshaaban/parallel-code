@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:1421';
 const ELECTRON_BIN = process.platform === 'win32' ? 'electron.cmd' : 'electron';
-const ELECTRON_ARGS = ['--no-sandbox', 'dist-electron/main.js'];
+const ELECTRON_ARGS = ['--no-sandbox', 'dist-electron/electron/main.js'];
 const DEV_SERVER_TIMEOUT_MS = 60_000;
 const DEV_SERVER_RETRY_MS = 250;
 const FAST_EXIT_MS = 2_000;

@@ -1,15 +1,17 @@
-import { URL } from 'node:url';
+import path from 'node:path';
+import { URL, fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
+const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 100;
 const REMOTE_AUTH_FALLBACK_TEXT = 'Not authenticated';
 
-function parseArgs(argv) {
+export function parseArgs(argv, env = process.env) {
   const options = {
-    authToken: process.env.AUTH_TOKEN ?? '',
+    authToken: env.AUTH_TOKEN ?? '',
     ignoreHttpsErrors: false,
-    serverUrl: process.env.SERVER_URL ?? '',
+    serverUrl: env.SERVER_URL ?? '',
     timeoutMs: DEFAULT_TIMEOUT_MS,
   };
 
@@ -43,7 +45,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function assertRequiredOption(value, flag) {
+export function assertRequiredOption(value, flag) {
   if (!value) {
     throw new Error(
       `Missing ${flag}. Provide it as ${flag} <value> or via the matching environment variable.`,
@@ -51,24 +53,24 @@ function assertRequiredOption(value, flag) {
   }
 }
 
-function buildRemoteBootstrapUrl(serverUrl, authToken) {
+export function buildRemoteBootstrapUrl(serverUrl, authToken) {
   const url = new URL('/remote', serverUrl);
   url.searchParams.set('token', authToken);
   return url.toString();
 }
 
-async function readPageBodyText(page) {
+export async function readPageBodyText(page) {
   return page
     .locator('body')
     .innerText()
     .catch(() => '');
 }
 
-function writeResult(payload, method = 'log') {
+export function writeResult(payload, method = 'log') {
   console[method](JSON.stringify(payload, null, 2));
 }
 
-async function waitForRemoteShell(page, timeoutMs) {
+export async function waitForRemoteShell(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -87,7 +89,7 @@ async function waitForRemoteShell(page, timeoutMs) {
   throw new Error('Timed out waiting for the remote shell to render.');
 }
 
-async function waitForRemoteWebSocket(getState, page, timeoutMs) {
+export async function waitForRemoteWebSocket(getState, page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -131,7 +133,7 @@ async function main() {
   try {
     await page.goto(buildRemoteBootstrapUrl(options.serverUrl, options.authToken), {
       timeout: options.timeoutMs,
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded',
     });
 
     await waitForRemoteShell(page, options.timeoutMs);
@@ -161,4 +163,14 @@ async function main() {
   }
 }
 
-void main();
+function isCliEntrypoint() {
+  return (
+    !process.env.VITEST_WORKER_ID &&
+    process.argv[1] !== undefined &&
+    path.resolve(process.argv[1]) === __filename
+  );
+}
+
+if (isCliEntrypoint()) {
+  void main();
+}

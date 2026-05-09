@@ -475,26 +475,32 @@ describe('PR description validation', () => {
     );
   });
 
-  it('rejects browser proof runs combined with a specific skipped-lane reason', () => {
-    const result = runValidator(
-      createPullRequestBody({
-        browserProofRun: 'npm run test:browser:canaries',
-        browserSkipReason:
-          'no browser focus, paint, navigation, cookies, websocket auth, or multi-context path changed',
-        evidence: 'browser canary covered reconnect visibility.',
-        frustration: 'It works in Electron but not in browser.',
-        ownershipChoices: '- [x] Handler / transport',
-        productObjective: 'Browser correctness remains a release promise.',
-        responsivenessRisk: 'browser-specific proof could contradict skipped-lane notes.',
-        stateAndControlChoices: '- [x] What is blocked and why',
-        targetedProof: 'npm run test:node:file -- src/runtime/browser-session.test.ts',
-      }),
-    );
+  it('requires skipped browser lanes to be none when browser proof was run', () => {
+    const invalidSkipReasons = [
+      'because not needed',
+      'no browser focus, paint, navigation, cookies, websocket auth, or multi-context path changed',
+    ];
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(
-      'Do not combine browser proof run with a skipped browser-lane reason.',
-    );
+    for (const browserSkipReason of invalidSkipReasons) {
+      const result = runValidator(
+        createPullRequestBody({
+          browserProofRun: 'npm run test:browser:canaries',
+          browserSkipReason,
+          evidence: 'browser canary covered reconnect visibility.',
+          frustration: 'It works in Electron but not in browser.',
+          ownershipChoices: '- [x] Handler / transport',
+          productObjective: 'Browser correctness remains a release promise.',
+          responsivenessRisk: 'browser-specific proof could contradict skipped-lane notes.',
+          stateAndControlChoices: '- [x] What is blocked and why',
+          targetedProof: 'npm run test:node:file -- src/runtime/browser-session.test.ts',
+        }),
+      );
+
+      expect(result.status, browserSkipReason).toBe(1);
+      expect(result.stderr).toContain(
+        'Use `none` for skipped browser lanes when browser proof was run.',
+      );
+    }
   });
 
   it('rejects the checked-in template until placeholders are filled', () => {

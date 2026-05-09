@@ -22,6 +22,11 @@ import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
 import { installStdioEpipeGuard } from './stdio.js';
 import { applyLoginShellEnvironment } from './user-shell.js';
 import { warn as logWarn } from './log.js';
+import {
+  getDevelopmentIconPath,
+  getElectronPreloadPath,
+  getFrontendIndexPath,
+} from './main-paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,7 +38,7 @@ applyLoginShellEnvironment();
 // Logs a warning in dev if they drift — catches mismatches before they hit users.
 function verifyPreloadAllowlist(): void {
   try {
-    const preloadPath = path.join(__dirname, '..', 'electron', 'preload.cjs');
+    const preloadPath = getElectronPreloadPath(__dirname);
     const preloadSrc = fs.readFileSync(preloadPath, 'utf8');
     const { missing, extra } = diffPreloadAllowedChannels(preloadSrc, Object.values(IPC));
     if (missing.length > 0 || extra.length > 0) {
@@ -59,7 +64,7 @@ function getIconPath(): string | undefined {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'icon.png');
   }
-  return path.join(__dirname, '..', 'build', 'icon.png');
+  return getDevelopmentIconPath(__dirname);
 }
 
 function createWindow(): void {
@@ -71,7 +76,7 @@ function createWindow(): void {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     resizable: true,
     webPreferences: {
-      preload: path.join(__dirname, '..', 'electron', 'preload.cjs'),
+      preload: getElectronPreloadPath(__dirname),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -170,7 +175,7 @@ function createWindow(): void {
   if (devUrl) {
     mainWindow.loadURL(devUrl);
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    mainWindow.loadFile(getFrontendIndexPath(__dirname));
   }
 
   mainWindow.on('closed', () => {

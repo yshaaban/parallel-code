@@ -194,9 +194,9 @@ Useful operational commands:
 | `npm run dev`          | Start Electron app in dev mode                |
 | `npm run server`       | Build and start standalone server (port 3000) |
 | `npm run dev:server`   | Server dev mode with hot reload               |
-| `npm run build`        | Build production Electron app                 |
+| `npm run build`        | Build browser/server artifacts and Electron   |
 | `npm run build:remote` | Build remote mobile app to `dist-remote/`     |
-| `npm run typecheck`    | Run TypeScript type checking                  |
+| `npm run typecheck`    | Run app, lifecycle, and server type checking  |
 | `npm test`             | Run the full node + Solid test suites         |
 | `npm run test:node`    | Run node/transport/backend tests              |
 | `npm run test:solid`   | Run Solid/jsdom screen behavior tests         |

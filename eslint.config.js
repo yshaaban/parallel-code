@@ -48,7 +48,7 @@ export default [
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: './electron/tsconfig.json',
+        project: './electron/tsconfig.eslint.json',
       },
     },
   },

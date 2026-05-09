@@ -28,11 +28,8 @@ jobs:
       - name: Validation guard tests
         run: npm run test:validation-guards
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Static quality gate
+        run: npm run check
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Format check
-        run: npm run format:check
+      - name: Owner-local behavior tests
+        run: npm test

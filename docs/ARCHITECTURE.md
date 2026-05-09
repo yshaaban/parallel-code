@@ -2063,7 +2063,8 @@ Goal:
 
 Targets:
 
-- add browser-mode scenario coverage for auth/bootstrap, reconnect, restore overlap, preview replay, and deletion while review/preview is open
+- add browser-mode scenario coverage for auth/bootstrap, reconnect, restore overlap, and preview replay
+- keep the task-deletion browser canary covering review/preview-open cleanup current as those surfaces change
 - add standalone deploy smoke tests
 - keep flake-management and diagnostics around the heavy latency/replay suites explicit instead of ad hoc
 

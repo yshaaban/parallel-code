@@ -349,19 +349,15 @@ export function validatePullRequestDescription(body) {
     if (browserProofWasSkipped && !isMeaningfulBrowserSkipReason(browserSkipReason)) {
       errors.push('Explain why browser lanes were intentionally not run.');
     }
-    if (
+    const browserProofIsSpecific =
       !browserProofWasSkipped &&
       !browserProofSkipIsAmbiguous &&
-      !isSpecificBrowserProofRun(browserProofRun)
-    ) {
+      isSpecificBrowserProofRun(browserProofRun);
+    if (!browserProofWasSkipped && !browserProofSkipIsAmbiguous && !browserProofIsSpecific) {
       errors.push('Browser proof run must name a browser lane or browser-specific proof.');
     }
-    if (
-      !browserProofWasSkipped &&
-      !browserProofSkipIsAmbiguous &&
-      isMeaningfulBrowserSkipReason(browserSkipReason)
-    ) {
-      errors.push('Do not combine browser proof run with a skipped browser-lane reason.');
+    if (browserProofIsSpecific && normalizeFieldValue(browserSkipReason) !== 'none') {
+      errors.push('Use `none` for skipped browser lanes when browser proof was run.');
     }
   }
 

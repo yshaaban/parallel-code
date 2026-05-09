@@ -48,6 +48,11 @@ import {
   type GitStatusWorkflowContext,
 } from './git-status-workflows.js';
 
+const dirtyWorktreeStatus = {
+  has_committed_changes: false,
+  has_uncommitted_changes: true,
+} as const;
+
 function createContext(): GitStatusWorkflowContext {
   return {
     emitIpcEvent: vi.fn(),
@@ -65,7 +70,7 @@ describe('git status workflows', () => {
     rebaseTaskMock.mockReset();
     startGitWatcherMock.mockReset();
     stopGitWatcherMock.mockReset();
-    getWorktreeStatusMock.mockResolvedValue({ dirty: true });
+    getWorktreeStatusMock.mockResolvedValue(dirtyWorktreeStatus);
     commitAllMock.mockResolvedValue({ commitHash: 'abc123' });
     discardUncommittedMock.mockResolvedValue(undefined);
     rebaseTaskMock.mockResolvedValue({ ok: true });
@@ -84,7 +89,7 @@ describe('git status workflows', () => {
       IPC.GitStatusChanged,
       expect.objectContaining({
         worktreePath: '/tmp/task-1',
-        status: { dirty: true },
+        status: dirtyWorktreeStatus,
         stateVersion: expect.any(Number),
       }),
     );
@@ -93,7 +98,7 @@ describe('git status workflows', () => {
   it('builds a reusable git status payload for server-driven updates', async () => {
     await expect(loadGitStatusChangedPayload('/tmp/task-1')).resolves.toEqual({
       worktreePath: '/tmp/task-1',
-      status: { dirty: true },
+      status: dirtyWorktreeStatus,
     });
   });
 
@@ -141,7 +146,7 @@ describe('git status workflows', () => {
         IPC.GitStatusChanged,
         expect.objectContaining({
           worktreePath: '/tmp/task-1',
-          status: { dirty: true },
+          status: dirtyWorktreeStatus,
           stateVersion: expect.any(Number),
         }),
       );
@@ -165,7 +170,7 @@ describe('git status workflows', () => {
         IPC.GitStatusChanged,
         expect.objectContaining({
           worktreePath: '/tmp/task-1',
-          status: { dirty: true },
+          status: dirtyWorktreeStatus,
           stateVersion: expect.any(Number),
         }),
       );
@@ -201,14 +206,14 @@ describe('git status workflows', () => {
       expect(emitGitStatusChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           worktreePath: '/tmp/task-1',
-          status: { dirty: true },
+          status: dirtyWorktreeStatus,
           stateVersion: expect.any(Number),
         }),
       );
       expect(emitGitStatusChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           worktreePath: '/tmp/task-2',
-          status: { dirty: true },
+          status: dirtyWorktreeStatus,
           stateVersion: expect.any(Number),
         }),
       );
