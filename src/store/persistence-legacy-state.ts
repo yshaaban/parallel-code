@@ -1,4 +1,20 @@
+import type { AgentDef } from '../ipc/types.js';
+import {
+  isFiniteNumber,
+  isNonNegativeInteger,
+  isRecord,
+  isStringArray,
+} from '../lib/type-guards.js';
 import type { PersistedTask, PersistedWindowState, Project } from './types.js';
+
+export type HydratablePersistedTask = Omit<
+  PersistedTask,
+  'agentDef' | 'projectId' | 'shellCount'
+> & {
+  agentDef?: AgentDef | null;
+  projectId?: string;
+  shellCount?: number;
+};
 
 export interface LegacyPersistedState {
   projectRoot?: string;
@@ -7,9 +23,9 @@ export interface LegacyPersistedState {
   lastAgentId?: string | null;
   taskOrder: string[];
   collapsedTaskOrder?: string[];
-  tasks: Record<string, PersistedTask & { projectId?: string }>;
-  activeTaskId: string | null;
-  sidebarVisible: boolean;
+  tasks: Record<string, unknown>;
+  activeTaskId?: string | null;
+  sidebarVisible?: boolean;
   fontScales?: unknown;
   panelSizes?: unknown;
   globalScale?: unknown;
@@ -41,28 +57,79 @@ export interface LegacyPersistedState {
   terminals?: unknown;
 }
 
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === 'boolean';
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+  return value === undefined || isStringArray(value);
+}
+
+function isOptionalStringOrNull(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+export function isPersistedAgentDef(value: unknown): value is AgentDef {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.command === 'string'
+  );
+}
+
+export function isPersistedTask(value: unknown): value is HydratablePersistedTask {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    isOptionalString(value.projectId) &&
+    typeof value.branchName === 'string' &&
+    typeof value.worktreePath === 'string' &&
+    typeof value.notes === 'string' &&
+    typeof value.lastPrompt === 'string' &&
+    (value.shellCount === undefined || isNonNegativeInteger(value.shellCount)) &&
+    isOptionalStringOrNull(value.agentId) &&
+    isOptionalStringArray(value.shellAgentIds) &&
+    (value.agentDef === undefined ||
+      value.agentDef === null ||
+      isPersistedAgentDef(value.agentDef)) &&
+    isOptionalString(value.baseBranch) &&
+    isOptionalBoolean(value.directMode) &&
+    isOptionalBoolean(value.skipPermissions) &&
+    isOptionalString(value.githubUrl) &&
+    isOptionalString(value.savedInitialPrompt) &&
+    isOptionalString(value.planFileName) &&
+    isOptionalString(value.planRelativePath) &&
+    isOptionalBoolean(value.stepsTracking) &&
+    isOptionalBoolean(value.collapsed)
+  );
+}
+
 export function parsePersistedWindowState(value: unknown): PersistedWindowState | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return null;
   }
 
-  const raw = value as Record<string, unknown>;
-  const x = raw.x;
-  const y = raw.y;
-  const width = raw.width;
-  const height = raw.height;
-  const maximized = raw.maximized;
+  const x = value.x;
+  const y = value.y;
+  const width = value.width;
+  const height = value.height;
+  const maximized = value.maximized;
 
   if (
-    typeof x !== 'number' ||
-    !Number.isFinite(x) ||
-    typeof y !== 'number' ||
-    !Number.isFinite(y) ||
-    typeof width !== 'number' ||
-    !Number.isFinite(width) ||
+    !isFiniteNumber(x) ||
+    !isFiniteNumber(y) ||
+    !isFiniteNumber(width) ||
     width <= 0 ||
-    typeof height !== 'number' ||
-    !Number.isFinite(height) ||
+    !isFiniteNumber(height) ||
     height <= 0 ||
     typeof maximized !== 'boolean'
   ) {
@@ -80,9 +147,14 @@ export function parsePersistedWindowState(value: unknown): PersistedWindowState 
 
 export function isLegacyPersistedState(raw: unknown): raw is LegacyPersistedState {
   return (
-    !!raw &&
-    typeof raw === 'object' &&
-    Array.isArray((raw as LegacyPersistedState).taskOrder) &&
-    typeof (raw as LegacyPersistedState).tasks === 'object'
+    isRecord(raw) &&
+    isOptionalString(raw.projectRoot) &&
+    isOptionalStringOrNull(raw.lastProjectId) &&
+    isOptionalStringOrNull(raw.lastAgentId) &&
+    isOptionalStringOrNull(raw.activeTaskId) &&
+    isOptionalBoolean(raw.sidebarVisible) &&
+    isStringArray(raw.taskOrder) &&
+    (raw.collapsedTaskOrder === undefined || isStringArray(raw.collapsedTaskOrder)) &&
+    isRecord(raw.tasks)
   );
 }

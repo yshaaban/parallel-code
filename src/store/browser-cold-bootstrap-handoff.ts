@@ -7,6 +7,7 @@ import {
   removeSafeStorageItem,
   setSafeStorageItem,
 } from '../lib/browser-storage.js';
+import { isFiniteNumber, isRecord } from '../lib/type-guards.js';
 import type { BrowserColdBootstrapProjectionBuildOptions } from './browser-cold-bootstrap-projection-types.js';
 
 const BROWSER_COLD_BOOTSTRAP_HANDOFF_STORAGE_KEY = 'parallel-code-browser-cold-bootstrap-handoff';
@@ -29,16 +30,17 @@ function parseStoredBrowserColdBootstrapHandoff(
   raw: string,
 ): StoredBrowserColdBootstrapHandoff | null {
   try {
-    const parsed = JSON.parse(raw) as Partial<StoredBrowserColdBootstrapHandoff>;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+
     if (typeof parsed.workspaceStateJson !== 'string') {
       return null;
     }
 
     return {
-      capturedAtMs:
-        typeof parsed.capturedAtMs === 'number' && Number.isFinite(parsed.capturedAtMs)
-          ? parsed.capturedAtMs
-          : 0,
+      capturedAtMs: isFiniteNumber(parsed.capturedAtMs) ? parsed.capturedAtMs : 0,
       workspaceStateJson: parsed.workspaceStateJson,
     };
   } catch {

@@ -390,6 +390,32 @@ describe('system handlers', () => {
     });
   });
 
+  it('rejects invalid remote-access ports before starting the remote server', async () => {
+    const start = vi.fn();
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        remoteAccess: {
+          getStatusVersion: () => 0,
+          start,
+          stop: vi.fn(),
+          status: vi.fn(),
+          subscribe: vi.fn(),
+        } as HandlerContext['remoteAccess'],
+      },
+      buildOptions(),
+    );
+
+    await expect(handlers[IPC.StartRemoteServer]?.({ port: 0 })).rejects.toThrow(
+      'port must be an integer between 1 and 65535',
+    );
+    await expect(handlers[IPC.StartRemoteServer]?.({ port: 65_536 })).rejects.toThrow(
+      'port must be an integer between 1 and 65535',
+    );
+
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it('invalidates a cached reconnect snapshot when app state is saved', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);

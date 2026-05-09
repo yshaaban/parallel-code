@@ -1,3 +1,13 @@
+import {
+  isArrayOf,
+  isNonNegativeInteger,
+  isOptionalNonNegativeInteger,
+  isRecord,
+  isStringArray,
+  isStringKeyOf,
+} from '../lib/type-guards.js';
+import { isRemovedTaskScopedEvent } from './removed-task-event.js';
+
 export type TaskReviewState =
   | 'review-ready'
   | 'needs-refresh'
@@ -135,10 +145,65 @@ const TASK_REVIEW_QUEUE_GROUP_METADATA: Record<TaskReviewQueueGroup, TaskReviewQ
     },
   };
 
+export function isTaskReviewState(value: unknown): value is TaskReviewState {
+  return isStringKeyOf(value, TASK_REVIEW_STATE_METADATA);
+}
+
+export function isTaskOverlapWarning(value: unknown): value is TaskOverlapWarning {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.otherTaskId === 'string' &&
+    typeof value.otherTaskName === 'string' &&
+    isNonNegativeInteger(value.sharedCount) &&
+    isStringArray(value.sharedFiles)
+  );
+}
+
+export function isTaskConvergenceSnapshot(value: unknown): value is TaskConvergenceSnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isStringArray(value.branchFiles) &&
+    typeof value.branchName === 'string' &&
+    isNonNegativeInteger(value.changedFileCount) &&
+    isNonNegativeInteger(value.commitCount) &&
+    isStringArray(value.conflictingFiles) &&
+    typeof value.hasCommittedChanges === 'boolean' &&
+    typeof value.hasUncommittedChanges === 'boolean' &&
+    isNonNegativeInteger(value.mainAheadCount) &&
+    isArrayOf(value.overlapWarnings, isTaskOverlapWarning) &&
+    typeof value.projectId === 'string' &&
+    isTaskReviewState(value.state) &&
+    typeof value.summary === 'string' &&
+    typeof value.taskId === 'string' &&
+    isNonNegativeInteger(value.totalAdded) &&
+    isNonNegativeInteger(value.totalRemoved) &&
+    isNonNegativeInteger(value.updatedAt) &&
+    typeof value.worktreePath === 'string'
+  );
+}
+
 export function isRemovedTaskConvergenceEvent(
-  event: TaskConvergenceEvent,
+  event: unknown,
 ): event is RemovedTaskConvergenceEvent {
-  return 'removed' in event;
+  return isRemovedTaskScopedEvent(event);
+}
+
+export function isTaskConvergenceEvent(value: unknown): value is TaskConvergenceEvent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (isRemovedTaskConvergenceEvent(value)) {
+    return true;
+  }
+
+  return isTaskConvergenceSnapshot(value) && isOptionalNonNegativeInteger(value.stateVersion);
 }
 
 export function getTaskReviewStateLabel(state: TaskReviewState): string {

@@ -1,8 +1,9 @@
 import type { AgentDef } from '../ipc/types.js';
 import { getAgentResumeStrategy } from '../lib/agent-resume.js';
 import { applyHydraCommandOverride } from '../lib/hydra.js';
+import { createRandomId } from '../lib/random-id.js';
 import { isNonEmptyString } from '../lib/type-guards.js';
-import type { LegacyPersistedState } from './persistence-legacy-state.js';
+import { isPersistedAgentDef, type LegacyPersistedState } from './persistence-legacy-state.js';
 
 function normalizeAgentArgList(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -25,7 +26,7 @@ function normalizePersistedAgentDef(agentDef: AgentDef, hydraCommand: string): A
 }
 
 export function resolvePersistedAgentId(agentId: unknown): string {
-  return isNonEmptyString(agentId) ? agentId : crypto.randomUUID();
+  return isNonEmptyString(agentId) ? agentId : createRandomId();
 }
 
 export function resolvePersistedTerminalAgentId(agentId: unknown): string | null {
@@ -87,29 +88,27 @@ export function createWorkspaceStateBaseAgents(
   availableAgents: AgentDef[];
   customAgents: AgentDef[];
 } {
+  const currentCustomAgentIds = new Set(currentCustomAgents.map((agent) => agent.id));
   const defaultAvailableAgents = currentAvailableAgents.filter(
-    (agent) => !currentCustomAgents.some((custom) => custom.id === agent.id),
+    (agent) => !currentCustomAgentIds.has(agent.id),
   );
   const customAgents = Array.isArray(raw.customAgents)
     ? raw.customAgents
-        .filter(
-          (agent: unknown): agent is AgentDef =>
-            typeof agent === 'object' &&
-            agent !== null &&
-            typeof (agent as AgentDef).id === 'string' &&
-            typeof (agent as AgentDef).name === 'string' &&
-            typeof (agent as AgentDef).command === 'string',
-        )
+        .filter(isPersistedAgentDef)
         .map((agent) => normalizePersistedAgentDef(agent, restoredHydraCommand))
     : [];
   const availableAgents = defaultAvailableAgents.map((agent) =>
     applyHydraCommandOverride(agent, restoredHydraCommand),
   );
+  const availableAgentIds = new Set(availableAgents.map((agent) => agent.id));
 
   for (const customAgent of customAgents) {
-    if (!availableAgents.some((agent) => agent.id === customAgent.id)) {
-      availableAgents.push(applyHydraCommandOverride(customAgent, restoredHydraCommand));
+    if (availableAgentIds.has(customAgent.id)) {
+      continue;
     }
+
+    availableAgents.push(applyHydraCommandOverride(customAgent, restoredHydraCommand));
+    availableAgentIds.add(customAgent.id);
   }
 
   return {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getAgentPromptDispatchAt, markTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import { setStore, store } from './core';
-import { markAgentExited, restartAgent, switchAgent } from './agents';
+import { hydrateAgentGeneration, markAgentExited, restartAgent, switchAgent } from './agents';
 import { createTestAgent, resetStoreForTest } from '../test/store-test-helpers';
 
 describe('agents store lifecycle guards', () => {
@@ -69,6 +69,20 @@ describe('agents store lifecycle guards', () => {
         status: 'exited',
       }),
     );
+  });
+
+  it('ignores invalid hydrated agent generations', () => {
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        generation: 1,
+        id: 'agent-1',
+      }),
+    });
+
+    hydrateAgentGeneration('agent-1', -1);
+    hydrateAgentGeneration('agent-1', 1.5);
+
+    expect(store.agents['agent-1']?.generation).toBe(1);
   });
 
   it('clears prompt dispatch state when an agent exits', () => {

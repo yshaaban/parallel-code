@@ -133,4 +133,62 @@ describe('task steps backend owner', () => {
     expect(getTaskStepsSnapshot('task-1')).toBeNull();
     expect(listTaskStepsSummarySnapshots()).toEqual([]);
   });
+
+  it('keeps existing steps state when saved workspace metadata is malformed', () => {
+    const worktreePath = createWorktreeRoot();
+    createdRoots.push(worktreePath);
+    const stepsDir = path.join(worktreePath, '.claude');
+    fs.mkdirSync(stepsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stepsDir, 'steps.json'),
+      JSON.stringify([{ summary: 'Waiting', status: 'awaiting_review', timestamp: '' }], null, 2),
+    );
+
+    registerTaskStepsTask({
+      taskId: 'task-1',
+      worktreePath,
+    });
+    expect(getTaskStepsSnapshot('task-1')).not.toBeNull();
+
+    syncTaskStepsFromSavedState(JSON.stringify({ tasks: null }));
+    syncTaskStepsFromSavedState(JSON.stringify({ tasks: { broken: null } }));
+
+    expect(getTaskStepsSnapshot('task-1')).not.toBeNull();
+
+    syncTaskStepsFromSavedState(JSON.stringify({ tasks: {} }));
+
+    expect(getTaskStepsSnapshot('task-1')).toBeNull();
+  });
+
+  it('skips malformed saved task steps entries while syncing valid neighbors', () => {
+    const oldWorktreePath = createWorktreeRoot();
+    const nextWorktreePath = createWorktreeRoot();
+    createdRoots.push(oldWorktreePath, nextWorktreePath);
+
+    registerTaskStepsTask({
+      taskId: 'task-old',
+      worktreePath: oldWorktreePath,
+    });
+    expect(getTaskStepsSnapshot('task-old')).not.toBeNull();
+
+    syncTaskStepsFromSavedState(
+      JSON.stringify({
+        tasks: {
+          broken: null,
+          'task-next': {
+            id: 'task-next',
+            stepsTracking: true,
+            worktreePath: nextWorktreePath,
+          },
+        },
+      }),
+    );
+
+    expect(getTaskStepsSnapshot('task-old')).toBeNull();
+    expect(getTaskStepsSnapshot('task-next')).toMatchObject({
+      state: 'waiting',
+      taskId: 'task-next',
+      trackingEnabled: true,
+    });
+  });
 });

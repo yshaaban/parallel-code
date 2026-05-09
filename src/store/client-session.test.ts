@@ -387,6 +387,25 @@ describe('client session state', () => {
     expect(store.activeAgentId).toBe('shell-agent-1');
   });
 
+  it('rejects malformed browser-local session records before restoring selection', () => {
+    for (const malformedSession of ['null', '[]', '"stale-session"']) {
+      sessionStorage.setItem('parallel-code-client-session', malformedSession);
+      setStore('activeTaskId', 'current-task');
+
+      expect(loadClientSessionState()).toBe(false);
+      expect(sessionStorage.getItem('parallel-code-client-session')).toBeNull();
+      expect(store.activeTaskId).toBe('current-task');
+    }
+  });
+
+  it('defaults malformed numeric browser-local session fields without rejecting the session', () => {
+    sessionStorage.setItem('parallel-code-client-session', '{"globalScale":1e999}');
+    setStore('globalScale', 1.25);
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.globalScale).toBe(1);
+  });
+
   it('treats browser session storage as unavailable when the document blocks access', () => {
     Object.defineProperty(globalThis, 'sessionStorage', {
       configurable: true,

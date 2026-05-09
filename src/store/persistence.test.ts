@@ -177,6 +177,145 @@ describe('persistence integration', () => {
     warnSpy.mockRestore();
   });
 
+  it('rejects malformed persisted state containers without mutating the store', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const malformedStates = [
+      { taskOrder: ['task-1'], tasks: null },
+      { taskOrder: ['task-1'], tasks: [] },
+      { taskOrder: [42], tasks: {} },
+      { collapsedTaskOrder: [42], taskOrder: [], tasks: {} },
+      { activeTaskId: 42, taskOrder: [], tasks: {} },
+    ];
+
+    for (const state of malformedStates) {
+      invokeMock.mockResolvedValueOnce(JSON.stringify(state));
+
+      await expect(loadState()).resolves.toBe(false);
+      expect(store.projects).toHaveLength(0);
+      expect(store.taskOrder).toHaveLength(0);
+      expect(markAgentSpawnedMock).not.toHaveBeenCalled();
+      expect(syncTerminalCounterMock).not.toHaveBeenCalled();
+    }
+    expect(warnSpy).toHaveBeenCalledWith('Invalid persisted state structure, skipping load');
+
+    warnSpy.mockRestore();
+  });
+
+  it('skips malformed persisted tasks while restoring valid neighboring tasks', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projectRoot: '/tmp/project',
+            projects: { invalid: true },
+            taskOrder: ['task-bad', 'task-good'],
+            collapsedTaskOrder: ['task-collapsed-bad', 'task-collapsed'],
+            tasks: {
+              'task-bad': null,
+              'task-collapsed-bad': {
+                id: 'task-collapsed-bad',
+                name: 'Collapsed Bad',
+                branchName: 'feature/collapsed-bad',
+                worktreePath: '/tmp/project/collapsed-bad',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+                collapsed: 'yes',
+              },
+              'task-good': {
+                id: 'task-good',
+                name: 'Task Good',
+                branchName: 'feature/task-good',
+                worktreePath: '/tmp/project/task-good',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+              },
+              'task-collapsed': {
+                id: 'task-collapsed',
+                name: 'Task Collapsed',
+                branchName: 'feature/task-collapsed',
+                worktreePath: '/tmp/project/task-collapsed',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+                collapsed: true,
+              },
+            },
+            activeTaskId: 'task-good',
+            sidebarVisible: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    await loadState();
+
+    expect(store.projects).toHaveLength(1);
+    expect(store.taskOrder).toEqual(['task-good']);
+    expect(store.collapsedTaskOrder).toEqual(['task-collapsed']);
+    expect(store.tasks['task-bad']).toBeUndefined();
+    expect(store.tasks['task-collapsed-bad']).toBeUndefined();
+    expect(store.tasks['task-good']).toMatchObject({
+      name: 'Task Good',
+      projectId: store.projects[0]?.id,
+    });
+    expect(store.tasks['task-collapsed']).toMatchObject({
+      collapsed: true,
+      projectId: store.projects[0]?.id,
+    });
+  });
+
+  it('falls back from stale active selection to the first restored panel', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [
+              { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+            ],
+            taskOrder: ['terminal-1', 'task-1'],
+            tasks: {
+              'task-1': {
+                id: 'task-1',
+                name: 'Task 1',
+                projectId: 'project-1',
+                branchName: 'feature/task-1',
+                worktreePath: '/tmp/project/task-1',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+              },
+            },
+            terminals: {
+              'terminal-1': {
+                id: 'terminal-1',
+                name: 'Shell 1',
+                agentId: 'terminal-agent-1',
+              },
+            },
+            activeTaskId: 'missing-panel',
+            sidebarVisible: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    await loadState();
+
+    expect(store.taskOrder).toEqual(['terminal-1', 'task-1']);
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.activeAgentId).toBe('terminal-agent-1');
+  });
+
   it('filters corrupted task ordering and prevents a task from being both active and collapsed', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.LoadAppState) {

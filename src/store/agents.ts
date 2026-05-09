@@ -2,6 +2,8 @@ import { produce } from 'solid-js/store';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import type { AgentDef, PtyExitData } from '../ipc/types';
 import { clearTaskPromptDispatch } from '../app/task-prompt-dispatch';
+import { createRandomId } from '../lib/random-id';
+import { isNonNegativeInteger } from '../lib/type-guards';
 import { store, setStore } from './core';
 import type { Agent, AgentStatus } from './types';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus';
@@ -10,7 +12,7 @@ export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promis
   const task = store.tasks[taskId];
   if (!task) return;
 
-  const agentId = crypto.randomUUID();
+  const agentId = createRandomId();
   const agent: Agent = {
     id: agentId,
     taskId,
@@ -90,7 +92,7 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
 }
 
 export function hydrateAgentGeneration(agentId: string, generation: number): void {
-  if (!Number.isInteger(generation) || generation < 0) {
+  if (!isNonNegativeInteger(generation)) {
     return;
   }
 

@@ -1,4 +1,19 @@
 import { assertNever } from '../lib/assert-never.js';
+import { isRemovedTaskScopedKindEvent } from './removed-task-event.js';
+import {
+  isArrayOf,
+  isNullableNonNegativeInteger,
+  isNullableString,
+  isNonNegativeInteger,
+  isOptionalNonNegativeInteger,
+  isOptionalString,
+  isRecord,
+  isStringArray,
+  isStringKeyOf,
+  isStringMember,
+  isStringTupleMember,
+  isTcpPortNumber,
+} from '../lib/type-guards.js';
 
 export interface WorktreeStatus {
   has_committed_changes: boolean;
@@ -51,20 +66,53 @@ export type ClassifiedGitStatusSyncEvent =
   | { event: GitStatusSyncRefreshEvent; kind: 'refresh' }
   | { event: GitStatusSyncSnapshotEvent; kind: 'snapshot' };
 
-export function isGitStatusSyncSnapshotEvent(
-  event: GitStatusSyncEvent,
-): event is GitStatusSyncSnapshotEvent {
+export function isWorktreeStatus(value: unknown): value is WorktreeStatus {
+  if (!isRecord(value)) {
+    return false;
+  }
+
   return (
-    typeof event.worktreePath === 'string' &&
-    typeof event.status === 'object' &&
-    event.status !== null
+    typeof value.has_committed_changes === 'boolean' &&
+    typeof value.has_uncommitted_changes === 'boolean'
   );
 }
 
-export function isGitStatusSyncRefreshEvent(
-  event: GitStatusSyncEvent,
-): event is GitStatusSyncRefreshEvent {
-  return !isGitStatusSyncSnapshotEvent(event);
+export function isGitStatusSyncSnapshotEvent(event: unknown): event is GitStatusSyncSnapshotEvent {
+  if (!isRecord(event)) {
+    return false;
+  }
+
+  return (
+    typeof event.worktreePath === 'string' &&
+    isWorktreeStatus(event.status) &&
+    isOptionalString(event.branchName) &&
+    isOptionalString(event.projectRoot) &&
+    isOptionalNonNegativeInteger(event.stateVersion)
+  );
+}
+
+export function isGitStatusSyncRefreshEvent(event: unknown): event is GitStatusSyncRefreshEvent {
+  if (
+    !isRecord(event) ||
+    event.status !== undefined ||
+    !isOptionalNonNegativeInteger(event.stateVersion)
+  ) {
+    return false;
+  }
+
+  if (typeof event.worktreePath === 'string') {
+    return isOptionalString(event.branchName) && isOptionalString(event.projectRoot);
+  }
+
+  if (typeof event.branchName === 'string') {
+    return typeof event.projectRoot === 'string' && event.worktreePath === undefined;
+  }
+
+  return typeof event.projectRoot === 'string' && event.worktreePath === undefined;
+}
+
+export function isGitStatusSyncEvent(value: unknown): value is GitStatusSyncEvent {
+  return isGitStatusSyncSnapshotEvent(value) || isGitStatusSyncRefreshEvent(value);
 }
 
 export function getGitStatusSyncEventKind(event: GitStatusSyncEvent): GitStatusSyncEventKind {
@@ -163,7 +211,95 @@ export interface TaskPortExposureCandidate {
   suggestion: string;
 }
 
+export type TaskPortProtocol = TaskExposedPort['protocol'] | TaskObservedPort['protocol'];
+export type TaskExposedPortSource = TaskExposedPort['source'];
+export type TaskObservedPortSource = TaskObservedPort['source'];
+
+const TASK_PREVIEW_AVAILABILITY_VALUES = {
+  available: true,
+  unavailable: true,
+  unknown: true,
+} satisfies Record<TaskPreviewAvailability, true>;
+
+const TASK_PORT_PROTOCOL_VALUES = {
+  http: true,
+  https: true,
+} satisfies Record<TaskPortProtocol, true>;
+
+const TASK_EXPOSED_PORT_SOURCE_VALUES = {
+  manual: true,
+  observed: true,
+} satisfies Record<TaskExposedPortSource, true>;
+
+const TASK_OBSERVED_PORT_SOURCE_VALUES = {
+  output: true,
+  rediscovery: true,
+} satisfies Record<TaskObservedPortSource, true>;
+
 const LOOPBACK_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/u;
+
+export function isTaskPreviewAvailability(value: unknown): value is TaskPreviewAvailability {
+  return isStringMember(value, TASK_PREVIEW_AVAILABILITY_VALUES);
+}
+
+export function isTaskPortProtocol(value: unknown): value is TaskPortProtocol {
+  return isStringMember(value, TASK_PORT_PROTOCOL_VALUES);
+}
+
+export function isTaskExposedPortSource(value: unknown): value is TaskExposedPortSource {
+  return isStringMember(value, TASK_EXPOSED_PORT_SOURCE_VALUES);
+}
+
+export function isTaskObservedPortSource(value: unknown): value is TaskObservedPortSource {
+  return isStringMember(value, TASK_OBSERVED_PORT_SOURCE_VALUES);
+}
+
+export function isTaskExposedPort(value: unknown): value is TaskExposedPort {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isTaskPreviewAvailability(value.availability) &&
+    isNullableString(value.host) &&
+    isNullableString(value.label) &&
+    isNullableNonNegativeInteger(value.lastVerifiedAt) &&
+    isTcpPortNumber(value.port) &&
+    isTaskPortProtocol(value.protocol) &&
+    isTaskExposedPortSource(value.source) &&
+    isNullableString(value.statusMessage) &&
+    isNonNegativeInteger(value.updatedAt) &&
+    isNullableString(value.verifiedHost)
+  );
+}
+
+export function isTaskObservedPort(value: unknown): value is TaskObservedPort {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.host) &&
+    isTcpPortNumber(value.port) &&
+    isTaskPortProtocol(value.protocol) &&
+    isTaskObservedPortSource(value.source) &&
+    typeof value.suggestion === 'string' &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
+export function isTaskPortSnapshot(value: unknown): value is TaskPortSnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.taskId === 'string' &&
+    isNonNegativeInteger(value.updatedAt) &&
+    isArrayOf(value.exposed, isTaskExposedPort) &&
+    isArrayOf(value.observed, isTaskObservedPort)
+  );
+}
 
 export function normalizeTaskPreviewHost(host: string | null | undefined): string | null {
   switch (host) {
@@ -234,6 +370,53 @@ export type TaskAttentionReason =
   | 'restoring'
   | 'quiet-too-long';
 
+const AGENT_SUPERVISION_STATE_VALUES = {
+  active: true,
+  'awaiting-input': true,
+  'exited-clean': true,
+  'exited-error': true,
+  'flow-controlled': true,
+  'idle-at-prompt': true,
+  paused: true,
+  quiet: true,
+  restoring: true,
+} satisfies Record<AgentSupervisionState, true>;
+
+const TASK_ATTENTION_REASON_VALUES = {
+  failed: true,
+  'flow-controlled': true,
+  paused: true,
+  'quiet-too-long': true,
+  'ready-for-next-step': true,
+  restoring: true,
+  'waiting-input': true,
+} satisfies Record<TaskAttentionReason, true>;
+
+export function isAgentSupervisionState(value: unknown): value is AgentSupervisionState {
+  return isStringMember(value, AGENT_SUPERVISION_STATE_VALUES);
+}
+
+export function isTaskAttentionReason(value: unknown): value is TaskAttentionReason {
+  return isStringMember(value, TASK_ATTENTION_REASON_VALUES);
+}
+
+export function isAgentSupervisionSnapshot(value: unknown): value is AgentSupervisionSnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.agentId === 'string' &&
+    (value.attentionReason === null || isTaskAttentionReason(value.attentionReason)) &&
+    typeof value.isShell === 'boolean' &&
+    isNullableNonNegativeInteger(value.lastOutputAt) &&
+    typeof value.preview === 'string' &&
+    isAgentSupervisionState(value.state) &&
+    typeof value.taskId === 'string' &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
 export interface AgentSupervisionSnapshot {
   agentId: string;
   attentionReason: TaskAttentionReason | null;
@@ -257,8 +440,6 @@ export type AgentSupervisionEvent = AgentSupervisionSnapshotEvent | RemovedAgent
 
 export const PAUSE_REASONS = ['manual', 'flow-control', 'restore'] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
-const PAUSE_REASON_SET: ReadonlySet<string> = new Set(PAUSE_REASONS);
-
 export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
 
 const RUNNING_REMOTE_AGENT_STATUS: Record<RemoteAgentStatus, boolean> = {
@@ -295,6 +476,48 @@ export interface RemoteAgent {
   taskMeta?: RemoteAgentTaskMeta;
 }
 
+const WORKTREE_OWNERSHIP_VALUES = {
+  external: true,
+  managed: true,
+} satisfies Record<NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>, true>;
+
+export function isRemoteAgentStatus(value: unknown): value is RemoteAgentStatus {
+  return isStringKeyOf(value, RUNNING_REMOTE_AGENT_STATUS);
+}
+
+function isRemoteAgentTaskMeta(value: unknown): value is RemoteAgentTaskMeta {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.agentDefId) &&
+    isNullableString(value.agentDefName) &&
+    isNullableString(value.branchName) &&
+    typeof value.directMode === 'boolean' &&
+    isNullableString(value.folderName) &&
+    isNullableString(value.lastPrompt) &&
+    (value.worktreeOwnership === undefined ||
+      isStringMember(value.worktreeOwnership, WORKTREE_OWNERSHIP_VALUES))
+  );
+}
+
+export function isRemoteAgent(value: unknown): value is RemoteAgent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.agentId === 'string' &&
+    typeof value.taskId === 'string' &&
+    typeof value.taskName === 'string' &&
+    isRemoteAgentStatus(value.status) &&
+    isNullableNonNegativeInteger(value.exitCode) &&
+    typeof value.lastLine === 'string' &&
+    (value.taskMeta === undefined || isRemoteAgentTaskMeta(value.taskMeta))
+  );
+}
+
 export interface AgentLifecycleEvent {
   event: 'spawn' | 'exit' | 'pause' | 'resume';
   agentId: string;
@@ -313,6 +536,11 @@ export interface RemotePresence {
 
 export type PeerPresenceVisibility = 'visible' | 'hidden';
 
+const PEER_PRESENCE_VISIBILITY_VALUES = {
+  hidden: true,
+  visible: true,
+} satisfies Record<PeerPresenceVisibility, true>;
+
 export interface PeerPresenceSnapshot {
   activeTaskId: string | null;
   clientId: string;
@@ -324,30 +552,24 @@ export interface PeerPresenceSnapshot {
   visibility: PeerPresenceVisibility;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
 function isPeerPresenceVisibility(value: unknown): value is PeerPresenceVisibility {
-  return value === 'hidden' || value === 'visible';
+  return isStringMember(value, PEER_PRESENCE_VISIBILITY_VALUES);
 }
 
 export function isPeerPresenceSnapshot(value: unknown): value is PeerPresenceSnapshot {
-  if (typeof value !== 'object' || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const candidate = value as Record<string, unknown>;
   return (
-    (typeof candidate.activeTaskId === 'string' || candidate.activeTaskId === null) &&
-    typeof candidate.clientId === 'string' &&
-    isStringArray(candidate.controllingAgentIds) &&
-    isStringArray(candidate.controllingTaskIds) &&
-    typeof candidate.displayName === 'string' &&
-    (typeof candidate.focusedSurface === 'string' || candidate.focusedSurface === null) &&
-    typeof candidate.lastSeenAt === 'number' &&
-    Number.isFinite(candidate.lastSeenAt) &&
-    isPeerPresenceVisibility(candidate.visibility)
+    isNullableString(value.activeTaskId) &&
+    typeof value.clientId === 'string' &&
+    isStringArray(value.controllingAgentIds) &&
+    isStringArray(value.controllingTaskIds) &&
+    typeof value.displayName === 'string' &&
+    isNullableString(value.focusedSurface) &&
+    isNonNegativeInteger(value.lastSeenAt) &&
+    isPeerPresenceVisibility(value.visibility)
   );
 }
 
@@ -388,6 +610,42 @@ export interface EnabledRemoteAccessStatus extends RemotePresence {
 
 export type RemoteAccessStatus = DisabledRemoteAccessStatus | EnabledRemoteAccessStatus;
 
+export function isRemotePresence(value: unknown): value is RemotePresence {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return isNonNegativeInteger(value.connectedClients) && isNonNegativeInteger(value.peerClients);
+}
+
+export function isRemoteAccessStatus(value: unknown): value is RemoteAccessStatus {
+  if (!isRecord(value) || !isRemotePresence(value) || !isTcpPortNumber(value.port)) {
+    return false;
+  }
+
+  if (value.enabled === false) {
+    return (
+      value.connectedClients === 0 &&
+      value.peerClients === 0 &&
+      value.tailscaleUrl === null &&
+      value.token === null &&
+      value.url === null &&
+      value.wifiUrl === null
+    );
+  }
+
+  if (value.enabled === true) {
+    return (
+      isNullableString(value.tailscaleUrl) &&
+      typeof value.token === 'string' &&
+      typeof value.url === 'string' &&
+      isNullableString(value.wifiUrl)
+    );
+  }
+
+  return false;
+}
+
 const REMOTE_AGENT_STATUS_BY_PAUSE_REASON: Record<
   PauseReason,
   Exclude<RemoteAgentStatus, 'running' | 'exited'>
@@ -425,9 +683,16 @@ export function isExitedRemoteAgentStatus(status: RemoteAgentStatus): status is 
 }
 
 export function isRemovedAgentSupervisionEvent(
-  event: AgentSupervisionEvent,
+  event: unknown,
 ): event is RemovedAgentSupervisionEvent {
-  return event.kind === 'removed';
+  return (
+    isRecord(event) &&
+    event.kind === 'removed' &&
+    event.removed === true &&
+    typeof event.agentId === 'string' &&
+    isNullableString(event.taskId) &&
+    isOptionalNonNegativeInteger(event.stateVersion)
+  );
 }
 
 export function isAgentSupervisionSnapshotEvent(
@@ -457,12 +722,44 @@ export function createRemovedAgentSupervisionEvent(
   };
 }
 
-export function isRemovedTaskPortsEvent(event: TaskPortsEvent): event is RemovedTaskPortsEvent {
-  return event.kind === 'removed';
+export function isAgentSupervisionEvent(value: unknown): value is AgentSupervisionEvent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (isRemovedAgentSupervisionEvent(value)) {
+    return true;
+  }
+
+  return (
+    value.kind === 'snapshot' &&
+    isAgentSupervisionSnapshot(value) &&
+    isOptionalNonNegativeInteger(value.stateVersion)
+  );
+}
+
+export function isRemovedTaskPortsEvent(event: unknown): event is RemovedTaskPortsEvent {
+  return isRemovedTaskScopedKindEvent(event);
 }
 
 export function isTaskPortsSnapshotEvent(event: TaskPortsEvent): event is TaskPortsSnapshotEvent {
   return event.kind === 'snapshot';
+}
+
+export function isTaskPortsEvent(value: unknown): value is TaskPortsEvent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (isRemovedTaskPortsEvent(value)) {
+    return true;
+  }
+
+  return (
+    value.kind === 'snapshot' &&
+    isTaskPortSnapshot(value) &&
+    isOptionalNonNegativeInteger(value.stateVersion)
+  );
 }
 
 export function createTaskPortsSnapshotEvent(snapshot: TaskPortSnapshot): TaskPortsSnapshotEvent {
@@ -511,5 +808,5 @@ export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean
 }
 
 export function isPauseReason(value: unknown): value is PauseReason {
-  return typeof value === 'string' && PAUSE_REASON_SET.has(value);
+  return isStringTupleMember(value, PAUSE_REASONS);
 }

@@ -1,32 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import type { DesktopSessionMainElement } from './desktop-session-types';
 import { getAppStartupSummary, resetAppStartupStatusForTests } from './app-startup-status';
 import { isBrowserColdBootstrapPending, resetBrowserStartupStateForTests } from './browser-startup';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from './runtime-diagnostics';
+import { isRecord } from '../lib/type-guards';
 import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 
 function isMeaningfulColdBootstrapProjectionForTest(projection: unknown): boolean {
-  if (typeof projection !== 'object' || projection === null) {
+  if (!isRecord(projection)) {
     return false;
   }
 
-  const candidate = projection as {
-    collapsedTaskOrder?: unknown[];
-    projects?: unknown[];
-    taskOrder?: unknown[];
-    tasks?: Record<string, unknown>;
-    terminals?: Record<string, unknown>;
-  };
-
   return (
-    (candidate.projects?.length ?? 0) > 0 ||
-    (candidate.taskOrder?.length ?? 0) > 0 ||
-    (candidate.collapsedTaskOrder?.length ?? 0) > 0 ||
-    Object.keys(candidate.tasks ?? {}).length > 0 ||
-    Object.keys(candidate.terminals ?? {}).length > 0
+    (Array.isArray(projection.projects) && projection.projects.length > 0) ||
+    (Array.isArray(projection.taskOrder) && projection.taskOrder.length > 0) ||
+    (Array.isArray(projection.collapsedTaskOrder) && projection.collapsedTaskOrder.length > 0) ||
+    (isRecord(projection.tasks) && Object.keys(projection.tasks).length > 0) ||
+    (isRecord(projection.terminals) && Object.keys(projection.terminals).length > 0)
   );
 }
 
@@ -55,6 +49,13 @@ function createMeaningfulColdBootstrapProjection() {
         worktreePath: '/tmp/bootstrap-project/task-bootstrap',
       },
     },
+  };
+}
+
+function createMainElementStub(): DesktopSessionMainElement {
+  return {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
   };
 }
 
@@ -631,10 +632,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -673,10 +671,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       windowFocused,
@@ -705,10 +700,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       windowFocused,
@@ -735,10 +727,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog,
       setWindowFocused: vi.fn(),
@@ -769,10 +758,7 @@ describe('desktop session startup sequencing', () => {
   it('refreshes browser notification capability on focus and visible tab restores', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       windowFocused: vi.fn(() => false),
@@ -820,10 +806,7 @@ describe('desktop session startup sequencing', () => {
   it('updates and clears the shared startup status during desktop startup', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       windowFocused: vi.fn(() => false),
@@ -848,10 +831,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -861,16 +841,21 @@ describe('desktop session startup sequencing', () => {
     expect(windowListeners.has(IPC.TaskPortsChanged)).toBe(true);
 
     const event = {
+      kind: 'snapshot',
       taskId: 'task-1',
       observed: [],
       exposed: [
         {
+          availability: 'unknown',
           host: null,
           label: 'Frontend',
+          lastVerifiedAt: null,
           port: 5173,
           protocol: 'http',
           source: 'manual',
+          statusMessage: null,
           updatedAt: 1_000,
+          verifiedHost: null,
         },
       ],
       updatedAt: 1_000,
@@ -915,10 +900,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -943,10 +925,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -995,10 +974,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1040,10 +1016,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1058,6 +1031,7 @@ describe('desktop session startup sequencing', () => {
       agentId: 'agent-1',
       attentionReason: 'waiting-input',
       isShell: false,
+      kind: 'snapshot',
       lastOutputAt: 1_000,
       preview: 'Proceed? [Y/n]',
       state: 'awaiting-input',
@@ -1107,10 +1081,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1131,10 +1102,7 @@ describe('desktop session startup sequencing', () => {
   it('uses the dedicated browser cold bootstrap instead of the electron startup fetch path', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1158,10 +1126,7 @@ describe('desktop session startup sequencing', () => {
   it('loads browser-local client session state after the cold bootstrap projection', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1189,10 +1154,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1217,10 +1179,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1246,10 +1205,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1275,10 +1231,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1301,10 +1254,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1330,10 +1280,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1355,10 +1302,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1397,10 +1341,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1450,10 +1391,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1483,10 +1421,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1516,10 +1451,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1557,10 +1489,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1633,10 +1562,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1646,15 +1572,16 @@ describe('desktop session startup sequencing', () => {
     expect(windowListeners.has(IPC.TaskReviewChanged)).toBe(true);
 
     const event = {
-      taskId: 'task-1',
-      projectId: 'project-1',
-      worktreePath: '/tmp/task-1',
       branchName: 'feature/task-1',
-      changedFileCount: 2,
-      hiddenHydraFileCount: 0,
-      source: 'git-status',
+      files: [],
+      projectId: 'project-1',
+      revisionId: 'rev-1',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 0,
+      totalRemoved: 0,
       updatedAt: 1_000,
-      revision: 'rev-1',
+      worktreePath: '/tmp/task-1',
     };
 
     windowListeners.get(IPC.TaskReviewChanged)?.(event);
@@ -1689,10 +1616,7 @@ describe('desktop session startup sequencing', () => {
   it('keeps browser review, convergence, and supervision listeners active after startup completes', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1704,36 +1628,46 @@ describe('desktop session startup sequencing', () => {
     });
 
     const reviewEvent = {
-      taskId: 'task-after-load',
-      projectId: 'project-1',
-      worktreePath: '/tmp/task-after-load',
       branchName: 'feature/task-after-load',
-      changedFileCount: 1,
-      hiddenHydraFileCount: 0,
-      source: 'git-status',
+      files: [],
+      projectId: 'project-1',
+      revisionId: 'rev-after-load',
+      source: 'worktree',
+      taskId: 'task-after-load',
+      totalAdded: 0,
+      totalRemoved: 0,
       updatedAt: 2_000,
-      revision: 'rev-after-load',
+      worktreePath: '/tmp/task-after-load',
     };
     const convergenceEvent = {
-      taskId: 'task-after-load',
-      projectId: 'project-1',
+      branchFiles: ['src/app.ts'],
       branchName: 'feature/task-after-load',
-      worktreePath: '/tmp/task-after-load',
-      readiness: 'review-ready',
+      changedFileCount: 1,
+      commitCount: 1,
+      conflictingFiles: [],
+      hasCommittedChanges: true,
+      hasUncommittedChanges: false,
+      mainAheadCount: 0,
+      overlapWarnings: [],
+      projectId: 'project-1',
+      state: 'review-ready',
       summary: 'Ready to review',
-      overlapTaskIds: [],
+      taskId: 'task-after-load',
+      totalAdded: 4,
+      totalRemoved: 0,
       updatedAt: 2_100,
-      revision: 'conv-after-load',
+      worktreePath: '/tmp/task-after-load',
     };
     const supervisionEvent = {
       agentId: 'agent-1',
-      taskId: 'task-after-load',
-      isShell: false,
-      state: 'awaiting-input',
       attentionReason: 'waiting-input',
-      preview: 'Proceed? [Y/n]',
-      updatedAt: 2_200,
+      isShell: false,
+      kind: 'snapshot',
       lastOutputAt: 2_190,
+      preview: 'Proceed? [Y/n]',
+      state: 'awaiting-input',
+      taskId: 'task-after-load',
+      updatedAt: 2_200,
     };
 
     windowListeners.get(IPC.TaskReviewChanged)?.(reviewEvent);
@@ -1750,10 +1684,7 @@ describe('desktop session startup sequencing', () => {
   it('attaches the browser runtime before loading the cold bootstrap payload', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1778,10 +1709,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1802,10 +1730,7 @@ describe('desktop session startup sequencing', () => {
   it('keeps electron git and remote listeners active after startup completes', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1826,7 +1751,7 @@ describe('desktop session startup sequencing', () => {
       peerClients: 0,
       port: 7777,
       tailscaleUrl: null,
-      token: null,
+      token: 'token',
       url: 'http://127.0.0.1:7777',
       wifiUrl: null,
     };
@@ -1873,10 +1798,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1919,10 +1841,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -1942,10 +1861,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -2002,10 +1918,7 @@ describe('desktop session startup sequencing', () => {
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -2027,10 +1940,7 @@ describe('desktop session startup sequencing', () => {
   it('saves electron app state when the pagehide lifecycle event fires', async () => {
     startDesktopAppSession({
       electronRuntime: true,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),
@@ -2052,10 +1962,7 @@ describe('desktop session startup sequencing', () => {
   it('saves browser workspace and client session state when the pagehide lifecycle event fires', async () => {
     startDesktopAppSession({
       electronRuntime: false,
-      mainElement: {
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      } as unknown as HTMLDivElement,
+      mainElement: createMainElementStub(),
       setConnectionBanner: vi.fn(),
       setPathInputDialog: vi.fn(),
       setWindowFocused: vi.fn(),

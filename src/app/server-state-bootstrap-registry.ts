@@ -1,10 +1,13 @@
 import type {
-  AnyServerStateBootstrapSnapshot,
   ServerStateBootstrapCategory,
   ServerStateBootstrapPayloadMap,
   ServerStateEventPayloadMap,
 } from '../domain/server-state-bootstrap';
-import { SERVER_STATE_BOOTSTRAP_CATEGORIES } from '../domain/server-state-bootstrap';
+import {
+  filterServerStateBootstrapSnapshots,
+  isServerStateEventPayload,
+  SERVER_STATE_BOOTSTRAP_CATEGORIES,
+} from '../domain/server-state-bootstrap';
 import type { TaskPortsEvent } from '../domain/server-state';
 import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 import {
@@ -20,6 +23,7 @@ import {
 } from '../lib/ipc-events';
 import { listenServerMessage, type BrowserServerMessage } from '../lib/ipc';
 import { assertNever } from '../lib/assert-never';
+import { isNonNegativeInteger, isRecord } from '../lib/type-guards';
 import {
   applyServerStateEvent,
   replaceServerStateSnapshot,
@@ -43,6 +47,11 @@ type ServerStateBootstrapGate = {
 };
 
 type BrowserTaskPortsServerMessage = Extract<BrowserServerMessage, { type: 'task-ports-changed' }>;
+type BrowserServerStateMessageTypeByCategory = {
+  'git-status': 'git-status-changed';
+  'remote-status': 'remote-status';
+};
+type BrowserServerStateEventCategory = keyof BrowserServerStateMessageTypeByCategory;
 
 interface ServerStateBootstrapRegistryEntry<TCategory extends ServerStateBootstrapCategory> {
   createDescriptor: () => ServerStateBootstrapCategoryDescriptor<TCategory>;
@@ -56,6 +65,9 @@ interface ServerStateBootstrapRegistryEntry<TCategory extends ServerStateBootstr
 type ServerStateBootstrapRegistry = {
   [TCategory in ServerStateBootstrapCategory]: ServerStateBootstrapRegistryEntry<TCategory>;
 };
+type ServerStateEventSource<TCategory extends ServerStateBootstrapCategory> = (
+  listener: (payload: ServerStateEventPayloadMap[TCategory]) => void,
+) => CleanupFn;
 
 function createServerStateCategoryDescriptor<TCategory extends ServerStateBootstrapCategory>(
   category: TCategory,
@@ -66,11 +78,49 @@ function createServerStateCategoryDescriptor<TCategory extends ServerStateBootst
   };
 }
 
+function mapServerStateBootstrapCategories<TValue>(
+  getValue: (category: ServerStateBootstrapCategory) => TValue,
+): Record<ServerStateBootstrapCategory, TValue> {
+  return Object.fromEntries(
+    SERVER_STATE_BOOTSTRAP_CATEGORIES.map((category) => [category, getValue(category)]),
+  ) as Record<ServerStateBootstrapCategory, TValue>;
+}
+
+function handleValidatedServerStateEvent<TCategory extends ServerStateBootstrapCategory>(
+  category: TCategory,
+  payload: unknown,
+  handle: (event: ServerStateEventPayloadMap[TCategory]) => void,
+): void {
+  if (isServerStateEventPayload(category, payload)) {
+    handle(payload);
+  }
+}
+
+function listenValidatedServerStateEvent<TCategory extends ServerStateBootstrapCategory>(
+  category: TCategory,
+  listenEvent: ServerStateEventSource<TCategory>,
+  handle: (event: ServerStateEventPayloadMap[TCategory]) => void,
+): CleanupFn {
+  return listenEvent((payload) => {
+    handleValidatedServerStateEvent(category, payload, handle);
+  });
+}
+
+function listenValidatedBrowserServerStateEvent<TCategory extends BrowserServerStateEventCategory>(
+  category: TCategory,
+  type: BrowserServerStateMessageTypeByCategory[TCategory],
+  handle: (event: ServerStateEventPayloadMap[TCategory]) => void,
+): CleanupFn {
+  return listenServerMessage(type, (message) => {
+    handleValidatedServerStateEvent(category, message, handle);
+  });
+}
+
 function withBrowserTaskPortsStateVersion(
   event: TaskPortsEvent,
   message: BrowserTaskPortsServerMessage,
 ): TaskPortsEvent {
-  if (typeof message.stateVersion !== 'number') {
+  if (!isNonNegativeInteger(message.stateVersion)) {
     return event;
   }
 
@@ -104,17 +154,18 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
   'agent-supervision': {
     createDescriptor: () => createServerStateCategoryDescriptor('agent-supervision'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenAgentSupervisionChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent('agent-supervision', listenAgentSupervisionChanged, handle),
   },
   'git-status': {
     createDescriptor: () => createServerStateCategoryDescriptor('git-status'),
     getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
-        return listenGitStatusChanged(handle);
+        return listenValidatedServerStateEvent('git-status', listenGitStatusChanged, handle);
       }
 
-      return listenServerMessage('git-status-changed', handle);
+      return listenValidatedBrowserServerStateEvent('git-status', 'git-status-changed', handle);
     },
   },
   'remote-status': {
@@ -122,10 +173,10 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
     getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
-        return listenRemoteStatusChanged(handle);
+        return listenValidatedServerStateEvent('remote-status', listenRemoteStatusChanged, handle);
       }
 
-      return listenServerMessage('remote-status', handle);
+      return listenValidatedBrowserServerStateEvent('remote-status', 'remote-status', handle);
     },
   },
   'peer-presence': {
@@ -136,38 +187,53 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
   'task-command-controller': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-command-controller'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenTaskCommandControllerChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent(
+        'task-command-controller',
+        listenTaskCommandControllerChanged,
+        handle,
+      ),
   },
   'task-convergence': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-convergence'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenTaskConvergenceChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent('task-convergence', listenTaskConvergenceChanged, handle),
   },
   'task-review': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-review'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenTaskReviewChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent('task-review', listenTaskReviewChanged, handle),
   },
   'task-review-signals': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-review-signals'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenTaskReviewSignalsChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent(
+        'task-review-signals',
+        listenTaskReviewSignalsChanged,
+        handle,
+      ),
   },
   'task-steps': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-steps'),
     getListenerScope: () => 'persistent',
-    listenEvent: (_runtime, handle) => listenTaskStepsChanged(handle),
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent('task-steps', listenTaskStepsChanged, handle),
   },
   'task-ports': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-ports'),
     getListenerScope: () => 'persistent',
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {
-        return listenTaskPortsChanged(handle);
+        return listenValidatedServerStateEvent('task-ports', listenTaskPortsChanged, handle);
       }
 
       return listenServerMessage('task-ports-changed', (message: BrowserTaskPortsServerMessage) => {
-        handle(toBrowserTaskPortsEvent(message));
+        if (isServerStateEventPayload('task-ports', message)) {
+          handle(toBrowserTaskPortsEvent(message));
+        }
       });
     },
   },
@@ -187,44 +253,26 @@ export function getServerStateListenerScope(
 export function getServerStateListenerScopes(
   runtime: ServerStateStartupRuntime,
 ): Record<ServerStateBootstrapCategory, ServerStateListenerScope> {
-  return {
-    'git-status': getServerStateListenerScope('git-status', runtime),
-    'remote-status': getServerStateListenerScope('remote-status', runtime),
-    'peer-presence': getServerStateListenerScope('peer-presence', runtime),
-    'task-command-controller': getServerStateListenerScope('task-command-controller', runtime),
-    'agent-supervision': getServerStateListenerScope('agent-supervision', runtime),
-    'task-convergence': getServerStateListenerScope('task-convergence', runtime),
-    'task-review': getServerStateListenerScope('task-review', runtime),
-    'task-review-signals': getServerStateListenerScope('task-review-signals', runtime),
-    'task-steps': getServerStateListenerScope('task-steps', runtime),
-    'task-ports': getServerStateListenerScope('task-ports', runtime),
-  };
+  return mapServerStateBootstrapCategories((category) =>
+    getServerStateListenerScope(category, runtime),
+  );
 }
 
 export function createServerStateBootstrapCategoryDescriptors(): ServerStateBootstrapCategoryDescriptors {
-  return {
-    'git-status': SERVER_STATE_BOOTSTRAP_REGISTRY['git-status'].createDescriptor(),
-    'remote-status': SERVER_STATE_BOOTSTRAP_REGISTRY['remote-status'].createDescriptor(),
-    'peer-presence': SERVER_STATE_BOOTSTRAP_REGISTRY['peer-presence'].createDescriptor(),
-    'task-command-controller':
-      SERVER_STATE_BOOTSTRAP_REGISTRY['task-command-controller'].createDescriptor(),
-    'agent-supervision': SERVER_STATE_BOOTSTRAP_REGISTRY['agent-supervision'].createDescriptor(),
-    'task-convergence': SERVER_STATE_BOOTSTRAP_REGISTRY['task-convergence'].createDescriptor(),
-    'task-review': SERVER_STATE_BOOTSTRAP_REGISTRY['task-review'].createDescriptor(),
-    'task-review-signals':
-      SERVER_STATE_BOOTSTRAP_REGISTRY['task-review-signals'].createDescriptor(),
-    'task-steps': SERVER_STATE_BOOTSTRAP_REGISTRY['task-steps'].createDescriptor(),
-    'task-ports': SERVER_STATE_BOOTSTRAP_REGISTRY['task-ports'].createDescriptor(),
-  };
+  return mapServerStateBootstrapCategories((category) =>
+    SERVER_STATE_BOOTSTRAP_REGISTRY[category].createDescriptor(),
+  ) as ServerStateBootstrapCategoryDescriptors;
 }
 
 function handleBrowserStateBootstrapMessage(
   startupGate: ServerStateBootstrapGate,
-  message: {
-    snapshots: ReadonlyArray<AnyServerStateBootstrapSnapshot>;
-  },
+  message: unknown,
 ): void {
-  for (const snapshot of message.snapshots) {
+  if (!isRecord(message) || !Array.isArray(message.snapshots)) {
+    return;
+  }
+
+  for (const snapshot of filterServerStateBootstrapSnapshots(message.snapshots)) {
     startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
   }
 }

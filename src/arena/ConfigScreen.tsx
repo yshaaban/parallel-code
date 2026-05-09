@@ -1,9 +1,10 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import { IPC } from '../../electron/ipc/channels';
 import { ProjectSelect } from '../components/ProjectSelect';
 import type { ArenaCompetitorInspectIssue, ArenaCompetitorInspectResult } from '../ipc/types.js';
 import { invoke } from '../lib/ipc';
+import { createRandomId } from '../lib/random-id';
 import { getProject, store } from '../store/store';
 import { saveArenaPresets } from './persistence';
 import {
@@ -99,7 +100,7 @@ function hasReadyPreflightResult(
   return getCompetitorInspectResult(inspectResults, competitorId)?.status === 'ready';
 }
 
-export function ConfigScreen() {
+export function ConfigScreen(): JSX.Element {
   const [presetName, setPresetName] = createSignal('');
   const [showPresetSave, setShowPresetSave] = createSignal(false);
   const [preparing, setPreparing] = createSignal(false);
@@ -206,7 +207,7 @@ export function ConfigScreen() {
           }
 
           return {
-            agentId: crypto.randomUUID(),
+            agentId: createRandomId(),
             branchName,
             command: competitor.command,
             endTime: null,

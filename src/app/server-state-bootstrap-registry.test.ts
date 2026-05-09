@@ -255,4 +255,91 @@ describe('server state bootstrap registry guardrails', () => {
     });
     expect(startupGate.handle).not.toHaveBeenCalled();
   });
+
+  it('drops malformed browser server-state messages before the startup gate', () => {
+    const startupGate = createStartupGate();
+    const listeners = createServerStateEventListeners(false, startupGate);
+
+    emitServerMessage('task-ports-changed', {
+      kind: 'removed',
+      removed: false,
+      taskId: 'task-1',
+    });
+    emitServerMessage('git-status-changed', {
+      status: {
+        has_committed_changes: true,
+      },
+      worktreePath: '/tmp/task-1',
+    });
+    emitServerMessage('state-bootstrap', {
+      snapshots: [
+        {
+          category: 'task-review',
+          mode: 'replace',
+          payload: [
+            {
+              branchName: 'feature/task-1',
+              files: [],
+              projectId: 'project-1',
+              revisionId: 'rev-1',
+              source: 'cache',
+              taskId: 'task-1',
+              totalAdded: 0,
+              totalRemoved: 0,
+              updatedAt: 10,
+              worktreePath: '/tmp/task-1',
+            },
+          ],
+          version: 1,
+        },
+      ],
+    });
+    emitServerMessage('state-bootstrap', {
+      snapshots: 'not-an-array',
+    });
+
+    expect(startupGate.handle).not.toHaveBeenCalled();
+    expect(startupGate.hydrate).not.toHaveBeenCalled();
+
+    listeners.cleanupPersistentListeners();
+  });
+
+  it('keeps valid browser bootstrap entries when sibling entries are malformed', () => {
+    const startupGate = createStartupGate();
+    const listeners = createServerStateEventListeners(false, startupGate);
+    const validTaskReview = {
+      branchName: 'feature/task-1',
+      files: [],
+      projectId: 'project-1',
+      revisionId: 'rev-1',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 0,
+      totalRemoved: 0,
+      updatedAt: 10,
+      worktreePath: '/tmp/task-1',
+    };
+
+    emitServerMessage('state-bootstrap', {
+      snapshots: [
+        {
+          category: 'task-review',
+          mode: 'replace',
+          payload: [
+            validTaskReview,
+            {
+              ...validTaskReview,
+              source: 'cache',
+              taskId: 'task-invalid',
+            },
+          ],
+          version: 2,
+        },
+      ],
+    });
+
+    expect(startupGate.hydrate).toHaveBeenCalledWith('task-review', [validTaskReview], 2);
+
+    listeners.cleanupPersistentListeners();
+  });
 });

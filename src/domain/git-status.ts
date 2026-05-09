@@ -1,3 +1,5 @@
+import { isStringTupleMember } from '../lib/type-guards.js';
+
 export const RAW_CHANGED_FILE_STATUSES = [
   'M',
   'A',
@@ -33,19 +35,16 @@ export type ChangedFileStatus = (typeof CHANGED_FILE_STATUSES)[number];
 export type ParsedDiffFileStatus = (typeof PARSED_DIFF_FILE_STATUSES)[number];
 export type ChangedFileStatusCategory = 'added' | 'deleted' | 'modified';
 
-const RAW_CHANGED_FILE_STATUS_SET: ReadonlySet<string> = new Set(RAW_CHANGED_FILE_STATUSES);
-const CHANGED_FILE_STATUS_SET: ReadonlySet<string> = new Set(CHANGED_FILE_STATUSES);
-
 export function normalizeRawChangedFileStatus(value: string): RawChangedFileStatus {
   return isRawChangedFileStatus(value) ? value : 'M';
 }
 
-export function isRawChangedFileStatus(value: string): value is RawChangedFileStatus {
-  return RAW_CHANGED_FILE_STATUS_SET.has(value);
+export function isRawChangedFileStatus(value: unknown): value is RawChangedFileStatus {
+  return isStringTupleMember(value, RAW_CHANGED_FILE_STATUSES);
 }
 
-export function isChangedFileStatus(value: string): value is ChangedFileStatus {
-  return CHANGED_FILE_STATUS_SET.has(value);
+export function isChangedFileStatus(value: unknown): value is ChangedFileStatus {
+  return isStringTupleMember(value, CHANGED_FILE_STATUSES);
 }
 
 export function getChangedFileStatusCategory(

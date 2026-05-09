@@ -157,3 +157,9 @@ export enum IPC {
   // Review
   GetProjectDiff = 'get_project_diff',
 }
+
+const IPC_CHANNELS = new Set<string>(Object.values(IPC));
+
+export function isIpcChannel(value: unknown): value is IPC {
+  return typeof value === 'string' && IPC_CHANNELS.has(value);
+}

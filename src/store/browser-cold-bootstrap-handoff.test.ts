@@ -15,6 +15,7 @@ const buildOptions = {
   currentAvailableAgents: [createTestAgentDef({ id: 'claude-code', name: 'Claude Code' })],
   currentCustomAgents: [],
 } as const;
+const browserColdBootstrapHandoffStorageKey = 'parallel-code-browser-cold-bootstrap-handoff';
 
 function createMemoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -101,7 +102,7 @@ describe('browser-cold-bootstrap-handoff', () => {
         }),
       },
     });
-    expect(sessionStorage.getItem('parallel-code-browser-cold-bootstrap-handoff')).toBeNull();
+    expect(sessionStorage.getItem(browserColdBootstrapHandoffStorageKey)).toBeNull();
     expect(window.name).toBe('');
   });
 
@@ -218,9 +219,32 @@ describe('browser-cold-bootstrap-handoff', () => {
     expect(window.name).toBe('');
   });
 
+  it('ignores malformed browser cold bootstrap handoff payloads', () => {
+    const malformedPayloads = [
+      'null',
+      '[]',
+      JSON.stringify({ capturedAtMs: Date.now() }),
+      JSON.stringify({
+        capturedAtMs: Number.POSITIVE_INFINITY,
+        workspaceStateJson: JSON.stringify({ projects: [] }),
+      }),
+      JSON.stringify({
+        capturedAtMs: Date.now(),
+        workspaceStateJson: { projects: [] },
+      }),
+    ];
+
+    for (const payload of malformedPayloads) {
+      sessionStorage.setItem(browserColdBootstrapHandoffStorageKey, payload);
+
+      expect(takeBrowserColdBootstrapHandoffProjection(buildOptions)).toBeNull();
+      expect(sessionStorage.getItem(browserColdBootstrapHandoffStorageKey)).toBeNull();
+    }
+  });
+
   it('ignores stale handoff snapshots', () => {
     sessionStorage.setItem(
-      'parallel-code-browser-cold-bootstrap-handoff',
+      browserColdBootstrapHandoffStorageKey,
       JSON.stringify({
         capturedAtMs: Date.now() - 20_000,
         workspaceStateJson: JSON.stringify({
@@ -262,7 +286,7 @@ describe('browser-cold-bootstrap-handoff', () => {
     const projection = takeBrowserColdBootstrapHandoffProjection(buildOptions);
 
     expect(projection).toBeNull();
-    expect(sessionStorage.getItem('parallel-code-browser-cold-bootstrap-handoff')).toBeNull();
+    expect(sessionStorage.getItem(browserColdBootstrapHandoffStorageKey)).toBeNull();
   });
 
   it('detects whether a cold bootstrap projection carries meaningful workspace state', () => {

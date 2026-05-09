@@ -1,6 +1,7 @@
 /** Runtime type assertion helpers for IPC handler args. */
 
 import { BadRequestError } from './errors.js';
+import { isInteger, isTcpPortNumber } from '../../src/lib/type-guards.js';
 
 type TypePredicate<T> = (val: unknown) => val is T;
 
@@ -19,12 +20,11 @@ export function assertString(val: unknown, label: string): asserts val is string
 }
 
 export function assertInt(val: unknown, label: string): asserts val is number {
-  assertType(
-    val,
-    label,
-    (v): v is number => typeof v === 'number' && Number.isInteger(v),
-    'an integer',
-  );
+  assertType(val, label, isInteger, 'an integer');
+}
+
+export function assertTcpPortNumber(val: unknown, label: string): asserts val is number {
+  assertType(val, label, isTcpPortNumber, 'an integer between 1 and 65535');
 }
 
 export function assertBoolean(val: unknown, label: string): asserts val is boolean {
@@ -68,8 +68,7 @@ export function assertOptionalInt(val: unknown, label: string): asserts val is n
   assertType(
     val,
     label,
-    (v): v is number | undefined =>
-      v === undefined || (typeof v === 'number' && Number.isInteger(v)),
+    (v): v is number | undefined => v === undefined || isInteger(v),
     'an integer or undefined',
   );
 }

@@ -4,10 +4,14 @@ import {
   createRemovedTaskStepsEvent,
   isTaskStepStatus,
   type TaskStepEntry,
+  type TaskStepStatus,
   type TaskStepsEvent,
   type TaskStepsSnapshot,
   type TaskStepsSummarySnapshot,
 } from '../../src/domain/task-steps.js';
+import { parseSavedStateTasksRecord } from '../../src/domain/saved-state-tasks.js';
+import { assertNever } from '../../src/lib/assert-never.js';
+import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
 
 interface TaskStepsMetadata {
   taskId: string;
@@ -55,10 +59,6 @@ function emitTaskStepsEvent(event: TaskStepsEvent): void {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function normalizeStepText(value: unknown): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
@@ -87,7 +87,7 @@ function normalizeIsoTimestamp(value: string | undefined): string | undefined {
   const normalizedValue =
     value.endsWith('Z') || /[+-]\d{2}:/.test(value.slice(-6)) ? value : `${value}Z`;
   const parsed = Date.parse(normalizedValue);
-  if (!Number.isFinite(parsed)) {
+  if (!isFiniteNumber(parsed)) {
     return undefined;
   }
 
@@ -151,19 +151,7 @@ function createTaskStepsSnapshot(
   metadata: TaskStepsMetadata,
   state: LoadedTaskStepsState,
 ): TaskStepsSnapshot {
-  const latestStatus = state.steps[state.steps.length - 1]?.status ?? null;
-  let snapshotState: TaskStepsSnapshot['state'];
-  if (state.errorMessage !== null) {
-    snapshotState = 'error';
-  } else if (state.steps.length === 0) {
-    snapshotState = 'waiting';
-  } else if (latestStatus === 'done') {
-    snapshotState = 'done';
-  } else if (latestStatus === 'awaiting_review') {
-    snapshotState = 'ready';
-  } else {
-    snapshotState = 'active';
-  }
+  const snapshotState = getTaskStepsSnapshotState(state);
 
   return {
     errorMessage: state.errorMessage,
@@ -174,6 +162,37 @@ function createTaskStepsSnapshot(
     trackingEnabled: true,
     updatedAt: Date.now(),
   };
+}
+
+function getTaskStepsSnapshotState(state: LoadedTaskStepsState): TaskStepsSnapshot['state'] {
+  if (state.errorMessage !== null) {
+    return 'error';
+  }
+
+  const latestStep = state.steps[state.steps.length - 1] ?? null;
+  if (!latestStep) {
+    return 'waiting';
+  }
+
+  return getTaskStepsSnapshotStateFromLatestStatus(latestStep.status);
+}
+
+function getTaskStepsSnapshotStateFromLatestStatus(
+  latestStatus: TaskStepStatus,
+): TaskStepsSnapshot['state'] {
+  switch (latestStatus) {
+    case 'awaiting_review':
+      return 'ready';
+    case 'done':
+      return 'done';
+    case 'implementing':
+    case 'investigating':
+    case 'starting':
+    case 'testing':
+      return 'active';
+    default:
+      return assertNever(latestStatus, 'Unhandled task step status');
+  }
 }
 
 function createTaskStepsSummary(snapshot: TaskStepsSnapshot): TaskStepsSummarySnapshot {
@@ -428,6 +447,18 @@ function attachStepsDirectoryWatcher(
   }
 }
 
+function normalizeTaskStepsWatcherFilename(filename: string | Buffer | null): string | null {
+  if (filename === null) {
+    return null;
+  }
+
+  if (typeof filename === 'string') {
+    return filename;
+  }
+
+  return filename.toString('utf8');
+}
+
 function startTaskStepsWatcher(taskId: string, worktreePath: string): void {
   stopTaskStepsWatcher(taskId);
   ensureStepsIgnored(worktreePath);
@@ -443,8 +474,7 @@ function startTaskStepsWatcher(taskId: string, worktreePath: string): void {
   };
 
   const onChange = (_event: string, filename: string | Buffer | null) => {
-    const normalizedFilename =
-      typeof filename === 'string' ? filename : (filename?.toString('utf8') ?? null);
+    const normalizedFilename = normalizeTaskStepsWatcherFilename(filename);
     if (normalizedFilename !== null && normalizedFilename !== 'steps.json') {
       return;
     }
@@ -510,39 +540,56 @@ export function stopTaskStepsWatcher(taskId: string): void {
   processedStepCounts.delete(taskId);
 }
 
-function collectTaskStepsMetadataFromSavedState(savedJson: string): TaskStepsMetadata[] {
-  try {
-    const parsed = JSON.parse(savedJson) as {
-      tasks?: Record<string, { id?: unknown; worktreePath?: unknown; stepsTracking?: unknown }>;
-    };
-    const tasks = parsed.tasks;
-    if (!tasks || typeof tasks !== 'object') {
-      return [];
-    }
+type ParsedTaskStepsMetadata =
+  | { kind: 'invalid' }
+  | { kind: 'valid'; metadata: TaskStepsMetadata[] };
 
-    const metadata: TaskStepsMetadata[] = [];
-    for (const task of Object.values(tasks)) {
-      if (!isRecord(task)) {
-        continue;
-      }
-      if (
-        task.stepsTracking !== true ||
-        typeof task.id !== 'string' ||
-        typeof task.worktreePath !== 'string'
-      ) {
-        continue;
-      }
-
-      metadata.push({
-        taskId: task.id,
-        worktreePath: task.worktreePath,
-      });
-    }
-
-    return metadata;
-  } catch {
-    return [];
+function parseTaskStepsMetadataEntry(task: unknown): TaskStepsMetadata | null | 'invalid' {
+  if (!isRecord(task)) {
+    return 'invalid';
   }
+  if (task.stepsTracking !== true) {
+    return null;
+  }
+  if (typeof task.id !== 'string' || typeof task.worktreePath !== 'string') {
+    return 'invalid';
+  }
+
+  return {
+    taskId: task.id,
+    worktreePath: task.worktreePath,
+  };
+}
+
+function collectTaskStepsMetadataFromSavedState(savedJson: string): ParsedTaskStepsMetadata {
+  const parsed = parseSavedStateTasksRecord(savedJson);
+  if (parsed.kind === 'invalid') {
+    return { kind: 'invalid' };
+  }
+  if (parsed.kind === 'missing') {
+    return { kind: 'valid', metadata: [] };
+  }
+
+  const metadata: TaskStepsMetadata[] = [];
+  let invalidTaskCount = 0;
+  for (const task of Object.values(parsed.tasks)) {
+    const parsedTask = parseTaskStepsMetadataEntry(task);
+    if (parsedTask === 'invalid') {
+      invalidTaskCount += 1;
+      continue;
+    }
+    if (parsedTask === null) {
+      continue;
+    }
+
+    metadata.push(parsedTask);
+  }
+
+  if (metadata.length === 0 && invalidTaskCount > 0) {
+    return { kind: 'invalid' };
+  }
+
+  return { kind: 'valid', metadata };
 }
 
 export function subscribeTaskSteps(listener: TaskStepsListener): () => void {
@@ -593,8 +640,7 @@ export function registerTaskStepsTask(metadata: TaskStepsMetadata): void {
   refreshTaskSteps(metadata.taskId);
 }
 
-export function syncTaskStepsFromSavedState(savedJson: string): void {
-  const nextMetadata = collectTaskStepsMetadataFromSavedState(savedJson);
+function syncTaskStepsMetadata(nextMetadata: ReadonlyArray<TaskStepsMetadata>): void {
   const nextTaskIds = new Set(nextMetadata.map((metadata) => metadata.taskId));
 
   for (const taskId of metadataByTaskId.keys()) {
@@ -612,10 +658,23 @@ export function syncTaskStepsFromSavedState(savedJson: string): void {
   }
 }
 
-export function restoreSavedTaskSteps(savedJson: string): void {
-  syncTaskStepsFromSavedState(savedJson);
+export function syncTaskStepsFromSavedState(savedJson: string): void {
+  const parsed = collectTaskStepsMetadataFromSavedState(savedJson);
+  if (parsed.kind === 'invalid') {
+    return;
+  }
 
-  for (const metadata of collectTaskStepsMetadataFromSavedState(savedJson)) {
+  syncTaskStepsMetadata(parsed.metadata);
+}
+
+export function restoreSavedTaskSteps(savedJson: string): void {
+  const parsed = collectTaskStepsMetadataFromSavedState(savedJson);
+  if (parsed.kind === 'invalid') {
+    return;
+  }
+
+  syncTaskStepsMetadata(parsed.metadata);
+  for (const metadata of parsed.metadata) {
     refreshTaskSteps(metadata.taskId);
   }
 }

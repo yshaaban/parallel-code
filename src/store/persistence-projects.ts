@@ -1,15 +1,38 @@
 import { randomPastelColor } from '../domain/project-colors.js';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
-import type { LegacyPersistedState } from './persistence-legacy-state.js';
+import { createRandomId } from '../lib/random-id.js';
+import { isRecord } from '../lib/type-guards.js';
+import { isPersistedTask, type LegacyPersistedState } from './persistence-legacy-state.js';
 import { buildProjectGitIsolationFields } from './task-git-isolation.js';
 import type { Project } from './types.js';
+
+type PersistedProjectInput = Omit<Project, 'color'> & { color?: string };
+
+function isPersistedProject(value: unknown): value is PersistedProjectInput {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.path === 'string' &&
+    (value.color === undefined || typeof value.color === 'string')
+  );
+}
+
+function getPersistedProjects(value: unknown): Project[] {
+  return Array.isArray(value)
+    ? value.filter(isPersistedProject).map((project) => ({
+        ...project,
+        color: project.color ?? '',
+      }))
+    : [];
+}
 
 export function parseSharedProjects(raw: LegacyPersistedState): {
   lastProjectId: string | null;
   projects: Project[];
 } {
-  let projects: Project[] = raw.projects ?? [];
-  let lastProjectId: string | null = raw.lastProjectId ?? null;
+  let projects = getPersistedProjects(raw.projects);
+  let lastProjectId = typeof raw.lastProjectId === 'string' ? raw.lastProjectId : null;
 
   for (const project of projects) {
     if (!project.color) {
@@ -25,10 +48,10 @@ export function parseSharedProjects(raw: LegacyPersistedState): {
     if (project.defaultTaskGitIsolation !== 'current-branch') delete project.defaultDirectMode;
   }
 
-  if (projects.length === 0 && raw.projectRoot) {
+  if (projects.length === 0 && typeof raw.projectRoot === 'string') {
     const segments = raw.projectRoot.split('/');
     const name = segments[segments.length - 1] || raw.projectRoot;
-    const id = crypto.randomUUID();
+    const id = createRandomId();
     projects = [
       {
         id,
@@ -40,9 +63,9 @@ export function parseSharedProjects(raw: LegacyPersistedState): {
     ];
     lastProjectId = id;
 
-    for (const taskId of raw.taskOrder) {
+    for (const taskId of new Set([...raw.taskOrder, ...(raw.collapsedTaskOrder ?? [])])) {
       const persistedTask = raw.tasks[taskId];
-      if (persistedTask && !persistedTask.projectId) {
+      if (isPersistedTask(persistedTask) && !persistedTask.projectId) {
         persistedTask.projectId = id;
       }
     }

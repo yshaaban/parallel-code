@@ -1,6 +1,7 @@
 import { createStore } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { createRandomId } from '../lib/random-id';
 import {
   isRunningBattleCompetitorStatus,
   type ArenaStore,
@@ -15,7 +16,7 @@ export const MAX_COMPETITORS = 4;
 export const MIN_COMPETITORS = 2;
 
 function makeEmptyCompetitor(): ArenaCompetitor {
-  return { id: crypto.randomUUID(), name: '', command: '' };
+  return { id: createRandomId(), name: '', command: '' };
 }
 
 const [state, setState] = createStore<ArenaStore>({
@@ -225,7 +226,7 @@ export async function deleteHistoryMatch(matchId: string): Promise<void> {
 
 export function applyPreset(preset: ArenaPreset): void {
   const competitors: ArenaCompetitor[] = preset.competitors.map((c) => ({
-    id: crypto.randomUUID(),
+    id: createRandomId(),
     name: c.name,
     command: c.command,
   }));
@@ -234,7 +235,7 @@ export function applyPreset(preset: ArenaPreset): void {
 
 export function saveCurrentAsPreset(name: string): void {
   const preset: ArenaPreset = {
-    id: crypto.randomUUID(),
+    id: createRandomId(),
     name,
     competitors: state.competitors
       .filter((c) => c.name.trim() && c.command.trim())

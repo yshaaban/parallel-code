@@ -14,10 +14,12 @@ import {
   isGitSshUrl,
   parseGitSshHost,
 } from '../../src/lib/git-ssh-url.js';
+import { isFiniteNumber } from '../../src/lib/type-guards.js';
 import { IPC } from './channels.js';
 import { listAgents } from './agents.js';
 import { BadRequestError } from './errors.js';
-import type { HandlerContext, IpcHandler } from './handler-context.js';
+import type { IpcHandlerMap } from './handlers.js';
+import type { HandlerContext } from './handler-context.js';
 import {
   requireDialog,
   requireRemoteAccess,
@@ -74,6 +76,7 @@ import {
   assertOptionalString,
   assertString,
   assertStringArray,
+  assertTcpPortNumber,
 } from './validate.js';
 
 const execFileAsync = promisify(execFile);
@@ -446,7 +449,7 @@ export function createSystemIpcHandlers(
     ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
     getTaskName: (taskId: string) => string;
   },
-): Partial<Record<IPC, IpcHandler>> {
+): IpcHandlerMap {
   return {
     [IPC.WindowFocus]: () => null,
     [IPC.WindowBlur]: () => null,
@@ -499,10 +502,9 @@ export function createSystemIpcHandlers(
 
         const current = loadWorkspaceStateForEnv(context);
         const currentRevision = current?.revision ?? 0;
-        const requestedBaseRevision =
-          typeof request.baseRevision === 'number' && Number.isFinite(request.baseRevision)
-            ? Math.max(0, Math.floor(request.baseRevision))
-            : currentRevision;
+        const requestedBaseRevision = isFiniteNumber(request.baseRevision)
+          ? Math.max(0, Math.floor(request.baseRevision))
+          : currentRevision;
 
         if (requestedBaseRevision !== currentRevision) {
           throw new BadRequestError('Workspace state revision conflict');
@@ -745,7 +747,7 @@ export function createSystemIpcHandlers(
       async (args) => {
         const request = args;
         if (request.port !== undefined) {
-          assertInt(request.port, 'port');
+          assertTcpPortNumber(request.port, 'port');
         }
 
         return startRemoteAccessWorkflow(requireRemoteAccess(context), {

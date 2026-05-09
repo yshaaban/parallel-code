@@ -4,6 +4,7 @@ import { randomPastelColor } from '../domain/project-colors.js';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
 import { invoke } from '../lib/ipc';
+import { createRandomId } from '../lib/random-id';
 import { store, setStore } from './core';
 import {
   buildProjectGitIsolationFields,
@@ -27,7 +28,7 @@ export function getProject(projectId: string): Project | undefined {
 }
 
 export function addProject(name: string, path: string): string {
-  const id = crypto.randomUUID();
+  const id = createRandomId();
   const color = randomPastelColor();
   const project: Project = {
     id,

@@ -1,15 +1,20 @@
 import type { AgentDef } from '../ipc/types.js';
+import { createRandomId } from '../lib/random-id.js';
 import { isNonEmptyString } from '../lib/type-guards.js';
 import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults.js';
-import type { LegacyPersistedState } from './persistence-legacy-state.js';
+import {
+  isPersistedTask,
+  type HydratablePersistedTask,
+  type LegacyPersistedState,
+} from './persistence-legacy-state.js';
 import { buildTaskGitIsolationFields, normalizeTaskBaseBranch } from './task-git-isolation.js';
-import type { PersistedTask, Task } from './types.js';
+import type { Task } from './types.js';
 
 interface HydratedTaskBuildOptions {
   availableAgents: AgentDef[];
   existingTask: Task | undefined;
   hydraCommand: string;
-  persistedTask: PersistedTask & { projectId?: string };
+  persistedTask: HydratablePersistedTask;
 }
 
 interface HydratedTaskBase {
@@ -36,7 +41,7 @@ function getPersistedCollapsedTaskOrder(raw: LegacyPersistedState): string[] {
 }
 
 function createHydratedShellAgentIds(
-  persistedTask: PersistedTask,
+  persistedTask: HydratablePersistedTask,
   existingTask: Task | undefined,
 ): string[] {
   let shellAgentIds = Array.isArray(persistedTask.shellAgentIds)
@@ -47,8 +52,8 @@ function createHydratedShellAgentIds(
     shellAgentIds = [...(existingTask?.shellAgentIds ?? [])];
   }
   if (shellAgentIds.length === 0) {
-    for (let index = 0; index < persistedTask.shellCount; index += 1) {
-      shellAgentIds.push(crypto.randomUUID());
+    for (let index = 0; index < (persistedTask.shellCount ?? 0); index += 1) {
+      shellAgentIds.push(createRandomId());
     }
   }
 
@@ -148,7 +153,7 @@ export function forEachHydratedPersistedTask(
 ): void {
   function visitTask(taskId: string, collapsed: boolean): void {
     const persistedTask = raw.tasks[taskId];
-    if (!persistedTask || (collapsed && !persistedTask.collapsed)) {
+    if (!isPersistedTask(persistedTask) || (collapsed && !persistedTask.collapsed)) {
       return;
     }
 

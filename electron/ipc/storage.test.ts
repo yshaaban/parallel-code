@@ -98,6 +98,18 @@ describe('loadTaskRegistryStateForEnv', () => {
     );
   });
 
+  it('rejects non-object app and workspace state before writing', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    expect(() => saveAppStateForEnv(env, '[]')).toThrow('Persisted state must be a JSON object');
+    expect(() => saveWorkspaceStateForEnv(env, 'null', 1)).toThrow(
+      'Persisted state must be a JSON object',
+    );
+    expect(fs.existsSync(getDevStoragePath(env, 'state.json'))).toBe(false);
+    expect(fs.existsSync(getDevStoragePath(env, 'workspace-state.json'))).toBe(false);
+  });
+
   it('cleans up temporary workspace state files when the rename step fails', () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -131,6 +143,26 @@ describe('loadTaskRegistryStateForEnv', () => {
 
     saveAppStateForEnv(env, JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Legacy' } } }));
     fs.writeFileSync(statePath, '{not-json', 'utf8');
+    fs.writeFileSync(
+      bakPath,
+      JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
+      'utf8',
+    );
+
+    expect(loadAppStateForEnv(env)).toBe(
+      JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
+    );
+  });
+
+  it('falls back to backup app state when the primary file is valid JSON but not an object', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const statePath = getDevStoragePath(env, 'state.json');
+    const bakPath = `${statePath}.bak`;
+
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '[]', 'utf8');
     fs.writeFileSync(
       bakPath,
       JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
@@ -198,6 +230,37 @@ describe('loadTaskRegistryStateForEnv', () => {
     expect(loadWorkspaceStateForEnv(env)).toEqual({
       json: JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
       revision: 7,
+    });
+  });
+
+  it('falls back to backup workspace state when the primary state payload is not an object', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const statePath = getDevStoragePath(env, 'workspace-state.json');
+    const bakPath = `${statePath}.bak`;
+
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        revision: 7,
+        state: [],
+      }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      bakPath,
+      JSON.stringify({
+        revision: 8,
+        state: { tasks: { one: { id: 'task-1', name: 'Backup' } } },
+      }),
+      'utf8',
+    );
+
+    expect(loadWorkspaceStateForEnv(env)).toEqual({
+      json: JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
+      revision: 8,
     });
   });
 });

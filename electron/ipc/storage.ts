@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
+import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
+
 export interface StorageEnv {
   userDataPath: string;
   isPackaged: boolean;
@@ -42,6 +44,15 @@ function writeFileAtomically(filePath: string, contents: string): void {
     removeFileIfExists(tmpPath);
     throw error;
   }
+}
+
+function parseStateJsonObject(json: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(json);
+  if (!isRecord(parsed)) {
+    throw new Error('Persisted state must be a JSON object');
+  }
+
+  return parsed;
 }
 
 function copyFileIfExists(sourcePath: string, destinationPath: string): void {
@@ -98,7 +109,7 @@ function readContentWithBackup<T>(
 }
 
 export function saveAppStateForEnv(env: StorageEnv, json: string): void {
-  JSON.parse(json);
+  parseStateJsonObject(json);
   saveStateFileWithBackup(getStatePath(env), json);
 }
 
@@ -107,13 +118,13 @@ export function loadAppStateForEnv(env: StorageEnv): string | null {
   const bakPath = `${statePath}.bak`;
 
   return readContentWithBackup(statePath, bakPath, (content) => {
-    JSON.parse(content);
+    parseStateJsonObject(content);
     return content;
   });
 }
 
 export function saveWorkspaceStateForEnv(env: StorageEnv, json: string, revision: number): void {
-  const state = JSON.parse(json);
+  const state = parseStateJsonObject(json);
   const payload = JSON.stringify({ revision, state });
   saveStateFileWithBackup(getWorkspaceStatePath(env), payload);
 }
@@ -126,16 +137,16 @@ export function loadWorkspaceStateForEnv(env: StorageEnv): {
   const bakPath = `${statePath}.bak`;
 
   return readContentWithBackup(statePath, bakPath, (content) => {
-    const parsed = JSON.parse(content) as {
-      revision?: unknown;
-      state?: unknown;
-    };
-    if (typeof parsed.revision !== 'number' || !Number.isFinite(parsed.revision)) {
+    const parsed = parseStateJsonObject(content);
+    if (!isFiniteNumber(parsed.revision)) {
+      return null;
+    }
+    if (!isRecord(parsed.state)) {
       return null;
     }
 
     return {
-      json: JSON.stringify(parsed.state ?? null),
+      json: JSON.stringify(parsed.state),
       revision: Math.max(0, Math.floor(parsed.revision)),
     };
   });

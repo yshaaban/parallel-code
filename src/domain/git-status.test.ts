@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getChangedFileStatusCategory,
   isChangedFileStatus,
+  isRawChangedFileStatus,
   normalizeRawChangedFileStatus,
 } from './git-status';
 
@@ -14,6 +15,8 @@ describe('git status domain helpers', () => {
   });
 
   it('recognizes the shared changed-file status domain', () => {
+    expect(isRawChangedFileStatus('R')).toBe(true);
+    expect(isRawChangedFileStatus('renamed')).toBe(false);
     expect(isChangedFileStatus('staged')).toBe(true);
     expect(isChangedFileStatus('?')).toBe(true);
     expect(isChangedFileStatus('renamed')).toBe(false);

@@ -2,7 +2,7 @@ import { produce, reconcile } from 'solid-js/store';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
-import { isNonEmptyString } from '../lib/type-guards';
+import { isFiniteNumber, isNonEmptyString, isRecord } from '../lib/type-guards';
 import {
   getSafeSessionStorage,
   getSafeStorageItem,
@@ -38,13 +38,11 @@ interface LoadClientSessionStateOptions {
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  return Object.values(value as Record<string, unknown>).every(
-    (entry) => typeof entry === 'string',
-  );
+  return Object.values(value).every((entry) => typeof entry === 'string');
 }
 
 function getSessionStorage(): Storage | null {
@@ -134,6 +132,15 @@ function getFallbackActiveTaskId(): string | null {
 
 function parseOptionalSessionId(value: unknown): string | null {
   return isNonEmptyString(value) ? value : null;
+}
+
+function parseClientSessionState(value: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function applyClientSessionTerminalPanels(terminalPanels: ClientSessionTerminalPanels): void {
@@ -234,10 +241,8 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
     return false;
   }
 
-  let raw: ClientSessionState;
-  try {
-    raw = JSON.parse(saved) as ClientSessionState;
-  } catch {
+  const raw = parseClientSessionState(saved);
+  if (!raw) {
     removeSafeStorageItem(storage, CLIENT_SESSION_STORAGE_KEY);
     return false;
   }
@@ -271,7 +276,7 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
   setStore('fontScales', isStringNumberRecord(raw.fontScales) ? raw.fontScales : {});
   setStore('panelSizes', isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {});
   setStore('focusedPanel', isStringRecord(raw.focusedPanel) ? raw.focusedPanel : {});
-  setStore('globalScale', typeof raw.globalScale === 'number' ? raw.globalScale : 1);
+  setStore('globalScale', isFiniteNumber(raw.globalScale) ? raw.globalScale : 1);
   setStore('showPlans', typeof raw.showPlans === 'boolean' ? raw.showPlans : true);
   setStore(
     'terminalHighLoadMode',

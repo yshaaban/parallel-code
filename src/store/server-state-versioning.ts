@@ -1,3 +1,5 @@
+import { isNonNegativeInteger } from '../lib/type-guards.js';
+
 export interface ServerStateVersionTracker {
   highestVersion: number;
   versionByKey: Map<string, number>;
@@ -5,10 +7,6 @@ export interface ServerStateVersionTracker {
 
 export interface ServerStateVersionedPayload {
   stateVersion?: number;
-}
-
-function isFiniteServerStateVersion(version: unknown): version is number {
-  return typeof version === 'number' && Number.isFinite(version);
 }
 
 export function createServerStateVersionTracker(): ServerStateVersionTracker {
@@ -21,7 +19,7 @@ export function createServerStateVersionTracker(): ServerStateVersionTracker {
 export function getServerStatePayloadVersion(
   payload: ServerStateVersionedPayload,
 ): number | undefined {
-  if (!isFiniteServerStateVersion(payload.stateVersion)) {
+  if (!isNonNegativeInteger(payload.stateVersion)) {
     return undefined;
   }
 
@@ -89,8 +87,7 @@ export function shouldApplyServerStateReplacement(
   version: number | undefined,
 ): boolean {
   return (
-    version === undefined ||
-    (isFiniteServerStateVersion(version) && version >= tracker.highestVersion)
+    version === undefined || (isNonNegativeInteger(version) && version >= tracker.highestVersion)
   );
 }
 
@@ -105,7 +102,7 @@ export function noteServerStateReplacement(
     return;
   }
 
-  if (!isFiniteServerStateVersion(version)) {
+  if (!isNonNegativeInteger(version)) {
     return;
   }
 

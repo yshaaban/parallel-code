@@ -11,7 +11,8 @@ import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-boot
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
-import { parsePersistedWindowState } from './persistence-legacy-state';
+import { isFiniteNumber } from '../lib/type-guards';
+import { isPersistedTask, parsePersistedWindowState } from './persistence-legacy-state';
 import {
   createDefaultSidebarSectionCollapsedState,
   normalizeSidebarSectionCollapsedState,
@@ -56,7 +57,7 @@ import {
   removeTerminalStoreState,
   reconcileTaskScopedStoreStateForExistingTasks,
 } from './task-state-cleanup';
-import type { Agent } from './types';
+import type { Agent, AppStore } from './types';
 
 function resetTransientPersistenceRuntimeState(): void {
   resetTaskStatusRuntimeState();
@@ -100,10 +101,10 @@ function getSharedWorkspaceTaskOrder(raw: {
   collapsedTaskOrder: string[];
   taskOrder: string[];
 } {
-  const taskOrder = raw.taskOrder.filter((taskId) => raw.tasks[taskId] !== undefined);
+  const taskOrder = raw.taskOrder.filter((taskId) => isPersistedTask(raw.tasks[taskId]));
   const activeTaskIds = new Set(taskOrder);
   const collapsedTaskOrder = (raw.collapsedTaskOrder ?? []).filter(
-    (taskId) => raw.tasks[taskId] !== undefined && !activeTaskIds.has(taskId),
+    (taskId) => isPersistedTask(raw.tasks[taskId]) && !activeTaskIds.has(taskId),
   );
 
   return {
@@ -128,6 +129,29 @@ function getLocalTerminalPanelOrder(): {
     collapsedTaskOrder: collapsedTerminalTaskOrder,
     taskOrder: activeTerminalTaskOrder,
   };
+}
+
+function getLoadedSelectionAgentId(storeState: AppStore, panelId: string): string | null {
+  return storeState.tasks[panelId]?.agentIds[0] ?? storeState.terminals[panelId]?.agentId ?? null;
+}
+
+function reconcileLoadedActiveSelection(storeState: AppStore, electronRuntime: boolean): void {
+  if (!electronRuntime) {
+    storeState.activeTaskId = null;
+    storeState.activeAgentId = null;
+    return;
+  }
+
+  const activePanelId = storeState.activeTaskId;
+  const selectedPanelId =
+    activePanelId && (storeState.tasks[activePanelId] || storeState.terminals[activePanelId])
+      ? activePanelId
+      : (storeState.taskOrder[0] ?? null);
+
+  storeState.activeTaskId = selectedPanelId;
+  storeState.activeAgentId = selectedPanelId
+    ? getLoadedSelectionAgentId(storeState, selectedPanelId)
+    : null;
 }
 
 export function applyLoadedStateJson(json: string): boolean {
@@ -192,7 +216,7 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.lastProjectId = context.lastProjectId;
       storeState.lastAgentId = lastAgentId;
       storeState.taskOrder = raw.taskOrder;
-      storeState.activeTaskId = electronRuntime ? raw.activeTaskId : null;
+      storeState.activeTaskId = electronRuntime ? (raw.activeTaskId ?? null) : null;
       storeState.sidebarVisible =
         electronRuntime && typeof raw.sidebarVisible === 'boolean' ? raw.sidebarVisible : true;
       storeState.fontScales =
@@ -200,7 +224,7 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.panelSizes =
         electronRuntime && isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {};
       storeState.globalScale =
-        electronRuntime && typeof raw.globalScale === 'number' ? raw.globalScale : 1;
+        electronRuntime && isFiniteNumber(raw.globalScale) ? raw.globalScale : 1;
       storeState.terminalFontSize = electronRuntime
         ? resolvePersistedTerminalFontSize(raw.terminalFontSize, DEFAULT_TERMINAL_FONT_SIZE)
         : DEFAULT_TERMINAL_FONT_SIZE;
@@ -291,13 +315,7 @@ export function applyLoadedStateJson(json: string): boolean {
 
       restorePersistedTerminals(storeState, raw);
       syncPersistedTaskVisibility(storeState, raw);
-
-      if (electronRuntime && storeState.activeTaskId) {
-        const activeTask = storeState.tasks[storeState.activeTaskId];
-        if (activeTask) {
-          storeState.activeAgentId = activeTask.agentIds[0] ?? null;
-        }
-      }
+      reconcileLoadedActiveSelection(storeState, electronRuntime);
     }),
   );
 

@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import { isStringTupleMember } from '../lib/type-guards.js';
 
 export const REMOTE_LIVE_IPC_EVENT_CHANNELS = [
   IPC.AgentSupervisionChanged,
@@ -12,10 +13,6 @@ export const REMOTE_LIVE_IPC_EVENT_CHANNELS = [
 
 export type RemoteLiveIpcEventChannel = (typeof REMOTE_LIVE_IPC_EVENT_CHANNELS)[number];
 
-const REMOTE_LIVE_IPC_EVENT_CHANNEL_SET: ReadonlySet<string> = new Set(
-  REMOTE_LIVE_IPC_EVENT_CHANNELS,
-);
-
 export function isRemoteLiveIpcEventChannel(channel: string): channel is RemoteLiveIpcEventChannel {
-  return REMOTE_LIVE_IPC_EVENT_CHANNEL_SET.has(channel);
+  return isStringTupleMember(channel, REMOTE_LIVE_IPC_EVENT_CHANNELS);
 }

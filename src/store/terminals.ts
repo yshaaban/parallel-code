@@ -2,6 +2,7 @@ import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { isTerminalCloseInProgress } from '../domain/task-closing';
+import { createRandomId } from '../lib/random-id';
 import { store, setStore, updateWindowTitle } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
@@ -48,8 +49,8 @@ export function createTerminal(): void {
   lastCreateTime = now;
 
   terminalCounter++;
-  const id = crypto.randomUUID();
-  const agentId = crypto.randomUUID();
+  const id = createRandomId();
+  const agentId = createRandomId();
   const name = `Terminal ${terminalCounter}`;
 
   const terminal: Terminal = { id, name, agentId };

@@ -14,10 +14,14 @@ import type {
 import type { ConnectionBanner } from '../runtime/browser-session';
 
 export type CleanupFn = () => void;
+export type DesktopSessionMainElement = Pick<
+  HTMLDivElement,
+  'addEventListener' | 'removeEventListener'
+>;
 
 export interface StartDesktopAppSessionOptions {
   electronRuntime: boolean;
-  mainElement: HTMLDivElement;
+  mainElement: DesktopSessionMainElement;
   setConnectionBanner: Setter<ConnectionBanner | null>;
   setPathInputDialog: (next: {
     open: boolean;

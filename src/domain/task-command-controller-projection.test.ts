@@ -3,6 +3,7 @@ import {
   applyTaskCommandControllerSnapshotRecord,
   areTaskCommandControllerStatesEqual,
   getTaskCommandControllerSnapshot,
+  isTaskCommandControllerSnapshot,
   normalizeTaskCommandControllerSnapshots,
   shouldApplyTaskCommandControllerSnapshot,
 } from './task-command-controller-projection';
@@ -86,6 +87,57 @@ describe('task-command controller projection', () => {
       taskId: 'task-1',
       version: 7,
     });
+  });
+
+  it('validates task-command controller snapshots from transport boundaries', () => {
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: 7,
+      }),
+    ).toBe(true);
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 8,
+      }),
+    ).toBe(true);
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: Number.NaN,
+      }),
+    ).toBe(false);
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: -1,
+      }),
+    ).toBe(false);
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: 1.5,
+      }),
+    ).toBe(false);
+    expect(
+      isTaskCommandControllerSnapshot({
+        action: false,
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: 7,
+      }),
+    ).toBe(false);
   });
 
   it('compares controller states by action and controller id only', () => {

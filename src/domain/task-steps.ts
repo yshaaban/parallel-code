@@ -1,3 +1,14 @@
+import {
+  isNullableString,
+  isNonNegativeInteger,
+  isOptionalNonNegativeInteger,
+  isOptionalString,
+  isRecord,
+  isStringArray,
+  isStringTupleMember,
+} from '../lib/type-guards.js';
+import { isRemovedTaskScopedEvent } from './removed-task-event.js';
+
 export const TASK_STEP_STATUSES = [
   'starting',
   'investigating',
@@ -56,12 +67,47 @@ export type TaskStepsEvent =
   | RemovedTaskStepsEvent
   | (TaskStepsSummarySnapshot & { stateVersion?: number });
 
-export function isTaskStepStatus(value: string): value is TaskStepStatus {
-  return TASK_STEP_STATUSES.some((status) => status === value);
+export function isTaskStepStatus(value: unknown): value is TaskStepStatus {
+  return isStringTupleMember(value, TASK_STEP_STATUSES);
 }
 
-export function isTaskStepsSummaryState(value: string): value is TaskStepsSummaryState {
-  return TASK_STEPS_SUMMARY_STATES.some((state) => state === value);
+export function isTaskStepsSummaryState(value: unknown): value is TaskStepsSummaryState {
+  return isStringTupleMember(value, TASK_STEPS_SUMMARY_STATES);
+}
+
+export function isTaskStepEntry(value: unknown): value is TaskStepEntry {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isOptionalString(value.agentId) &&
+    isOptionalString(value.detail) &&
+    (value.filesTouched === undefined || isStringArray(value.filesTouched)) &&
+    isOptionalString(value.next) &&
+    isTaskStepStatus(value.status) &&
+    typeof value.summary === 'string' &&
+    typeof value.timestamp === 'string'
+  );
+}
+
+export function isTaskStepsSummarySnapshot(value: unknown): value is TaskStepsSummarySnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.errorMessage) &&
+    (value.latestStep === null || isTaskStepEntry(value.latestStep)) &&
+    isNullableString(value.nextAction) &&
+    isNullableString(value.preview) &&
+    typeof value.revisionId === 'string' &&
+    isTaskStepsSummaryState(value.state) &&
+    isNonNegativeInteger(value.stepCount) &&
+    typeof value.taskId === 'string' &&
+    typeof value.trackingEnabled === 'boolean' &&
+    isNonNegativeInteger(value.updatedAt)
+  );
 }
 
 export function createRemovedTaskStepsEvent(taskId: string): RemovedTaskStepsEvent {
@@ -71,6 +117,18 @@ export function createRemovedTaskStepsEvent(taskId: string): RemovedTaskStepsEve
   };
 }
 
-export function isRemovedTaskStepsEvent(event: TaskStepsEvent): event is RemovedTaskStepsEvent {
-  return 'removed' in event && event.removed === true;
+export function isRemovedTaskStepsEvent(event: unknown): event is RemovedTaskStepsEvent {
+  return isRemovedTaskScopedEvent(event);
+}
+
+export function isTaskStepsEvent(value: unknown): value is TaskStepsEvent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (isRemovedTaskStepsEvent(value)) {
+    return true;
+  }
+
+  return isTaskStepsSummarySnapshot(value) && isOptionalNonNegativeInteger(value.stateVersion);
 }

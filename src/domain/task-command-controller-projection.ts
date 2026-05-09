@@ -1,4 +1,5 @@
-import { omitRecordKey } from '../lib/record-utils';
+import { omitRecordKey } from '../lib/record-utils.js';
+import { isNonNegativeInteger, isNullableString, isRecord } from '../lib/type-guards.js';
 import type { TaskCommandControllerSnapshot } from './server-state.js';
 
 export type TaskCommandControllerSnapshotRecord = Record<string, TaskCommandControllerSnapshot>;
@@ -17,6 +18,21 @@ export function shouldApplyTaskCommandControllerSnapshot(
   next: TaskCommandControllerSnapshot,
 ): boolean {
   return !previous || next.version >= previous.version;
+}
+
+export function isTaskCommandControllerSnapshot(
+  value: unknown,
+): value is TaskCommandControllerSnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.action) &&
+    isNullableString(value.controllerId) &&
+    typeof value.taskId === 'string' &&
+    isNonNegativeInteger(value.version)
+  );
 }
 
 export function shouldApplyTaskCommandControllerVersion(

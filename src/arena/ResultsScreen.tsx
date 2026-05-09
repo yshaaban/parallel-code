@@ -1,26 +1,27 @@
-import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
+import { For, Show, createMemo, createSignal, onMount, type JSX } from 'solid-js';
+import { IPC } from '../../electron/ipc/channels';
+import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
 import { ChangedFilesList } from '../components/ChangedFilesList';
 import { DiffViewerDialog } from '../components/DiffViewerDialog';
-import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
+import type { ChangedFile } from '../ipc/types';
+import { invoke } from '../lib/ipc';
+import { createRandomId } from '../lib/random-id';
+import { setNewTaskPrefillPrompt, store, toggleArena } from '../store/store';
 import { CommitDialog } from './CommitDialog';
 import { createMergeWorkflow } from './merge';
+import { saveArenaHistory } from './persistence';
 import {
-  arenaStore,
   addMatchToHistory,
-  updateHistoryRating,
+  arenaStore,
   resetForNewMatch,
   resetForRematch,
-  setPhase,
-  setBattleSaved,
   returnToHistory,
+  setBattleSaved,
+  setPhase,
+  updateHistoryRating,
 } from './store';
-import { saveArenaHistory } from './persistence';
-import { formatDuration } from './utils';
-import { invoke } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
-import { store, toggleArena, setNewTaskPrefillPrompt } from '../store/store';
 import type { ArenaMatch } from './types';
-import type { ChangedFile } from '../ipc/types';
+import { formatDuration } from './utils';
 
 function formatTime(startTime: number, endTime: number | null): string {
   if (endTime === null) return 'DNF';
@@ -31,7 +32,7 @@ function rankLabel(index: number): string {
   return ['1st', '2nd', '3rd', '4th'][index] ?? `${index + 1}th`;
 }
 
-export function ResultsScreen() {
+export function ResultsScreen(): JSX.Element {
   const isHistoryView = () => arenaStore.selectedHistoryMatch !== null;
   const projectLabel = createMemo(() => {
     const cwd = arenaStore.cwd;
@@ -131,10 +132,8 @@ export function ResultsScreen() {
   function setRating(competitorId: string, stars: number) {
     setRatings((prev) => ({ ...prev, [competitorId]: stars }));
 
-    // Persist rating to history — use selectedHistoryMatch for history views,
-    // or the most recent history entry for fresh battles
-    const match =
-      arenaStore.selectedHistoryMatch ?? (arenaStore.battleSaved ? arenaStore.history[0] : null);
+    const savedMatch = arenaStore.battleSaved ? arenaStore.history[0] : null;
+    const match = arenaStore.selectedHistoryMatch ?? savedMatch;
     if (match) {
       const idx = arenaStore.battle.findIndex((b) => b.id === competitorId);
       if (idx !== -1) {
@@ -147,7 +146,7 @@ export function ResultsScreen() {
   function saveResults() {
     if (arenaStore.battle.length === 0) return;
     const match: ArenaMatch = {
-      id: crypto.randomUUID(),
+      id: createRandomId(),
       date: new Date().toISOString(),
       prompt: arenaStore.prompt,
       cwd: arenaStore.cwd || null,
