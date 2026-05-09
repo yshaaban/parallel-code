@@ -1,4 +1,8 @@
-import type { ClientMessage, ServerMessage } from '../../electron/remote/protocol';
+import {
+  isServerMessage,
+  type ClientMessage,
+  type ServerMessage,
+} from '../../electron/remote/protocol';
 import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
 import { createWebSocketClientCore } from './websocket-client';
 
@@ -225,6 +229,7 @@ export function createBrowserControlClient(
       return getBrowserSocketUrl({ clientId, lastSeq });
     },
     isPongMessage: (message) => message.type === 'pong',
+    isIncomingMessage: isServerMessage,
     onAuthExpired: options.onAuthExpired,
     onBinaryMessage: (buffer) => {
       channelHandlers?.onBinaryMessage(buffer);

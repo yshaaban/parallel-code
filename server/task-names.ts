@@ -1,5 +1,7 @@
 import path from 'path';
 import type { RemoteAgentTaskMeta } from '../src/domain/server-state.js';
+import { parseSavedStateTasksRecord } from '../src/domain/saved-state-tasks.js';
+import { isRecord } from '../src/lib/type-guards.js';
 
 type RemoteWorktreeOwnership = NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>;
 
@@ -105,6 +107,62 @@ function getSavedAgentDef(task: SavedStateTask): SavedAgentDef | undefined {
   return task.agentDef ?? task.savedAgentDef;
 }
 
+function parseSavedAgentDef(value: unknown): SavedAgentDef | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return {
+    id: value.id,
+    name: value.name,
+  };
+}
+
+function parseSavedStateTask(value: unknown): SavedStateTask | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const agentDef = parseSavedAgentDef(value.agentDef);
+  const savedAgentDef = parseSavedAgentDef(value.savedAgentDef);
+
+  return {
+    branchName: value.branchName,
+    directMode: value.directMode,
+    id: value.id,
+    lastPrompt: value.lastPrompt,
+    name: value.name,
+    worktreeOwnership: value.worktreeOwnership,
+    worktreePath: value.worktreePath,
+    ...(agentDef ? { agentDef } : {}),
+    ...(savedAgentDef ? { savedAgentDef } : {}),
+  };
+}
+
+function parseSavedStateTasks(json: string): SavedStateTask[] | null {
+  const state = parseSavedStateTasksRecord(json);
+  if (state.kind === 'invalid' && state.reason === 'json') {
+    throw new Error('Malformed saved state JSON');
+  }
+  if (state.kind !== 'valid') {
+    return null;
+  }
+
+  const tasks: SavedStateTask[] = [];
+  let malformedTaskCount = 0;
+  for (const value of Object.values(state.tasks)) {
+    const task = parseSavedStateTask(value);
+    if (!task) {
+      malformedTaskCount += 1;
+      continue;
+    }
+
+    tasks.push(task);
+  }
+
+  return tasks.length > 0 || malformedTaskCount === 0 ? tasks : null;
+}
+
 function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
   if (typeof task.id !== 'string') {
     return null;
@@ -129,17 +187,15 @@ export function createTaskNameRegistry(): TaskNameRegistry {
 
   function syncFromSavedState(json: string): void {
     try {
-      const state = JSON.parse(json) as {
-        tasks?: Record<string, SavedStateTask>;
-      };
-      if (!state.tasks) {
+      const tasks = parseSavedStateTasks(json);
+      if (!tasks) {
         return;
       }
 
       const nextTaskNames = new Map<string, string>();
       const nextMetadata = new Map<string, RemoteAgentTaskMeta>();
 
-      for (const task of Object.values(state.tasks)) {
+      for (const task of tasks) {
         if (typeof task.id === 'string' && typeof task.name === 'string') {
           nextTaskNames.set(task.id, task.name);
         }

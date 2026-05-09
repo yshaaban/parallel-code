@@ -1,3 +1,5 @@
+import { isInteger, isRecord } from './type-guards.js';
+
 export type WebSocketConnectionState =
   | 'connecting'
   | 'connected'
@@ -76,6 +78,7 @@ export interface CreateWebSocketClientCoreOptions<
   clearToken?: () => void;
   createPingMessage?: () => OutgoingMessage;
   binaryType?: BinaryType;
+  isIncomingMessage?: (value: unknown) => value is IncomingMessage;
   isPongMessage?: (message: IncomingMessage) => boolean;
   onAuthenticated?: (socket: WebSocket) => void;
   onAuthExpired?: (error: Error) => void;
@@ -121,6 +124,20 @@ function getDefaultReconnectDelay(attempt: number): number {
 function getReconnectDelayWithJitter(attempt: number): number {
   const baseDelay = getDefaultReconnectDelay(attempt);
   return Math.floor(baseDelay * (0.8 + Math.random() * 0.4));
+}
+
+function isDefaultIncomingMessage<IncomingMessage extends { type: string }>(
+  value: unknown,
+): value is IncomingMessage {
+  return isRecord(value) && typeof value.type === 'string';
+}
+
+function getConnectState(nextState: ConnectState | undefined, hasConnected: boolean): ConnectState {
+  if (nextState !== undefined) {
+    return nextState;
+  }
+
+  return hasConnected ? 'reconnecting' : 'connecting';
 }
 
 export function createWebSocketClientCore<
@@ -194,7 +211,7 @@ export function createWebSocketClientCore<
 
   function shouldProcessMessage(message: IncomingMessage): boolean {
     const seq = (message as { seq?: unknown }).seq;
-    if (typeof seq !== 'number' || !Number.isInteger(seq)) return true;
+    if (!isInteger(seq)) return true;
     if (seq <= lastSeq) return false;
     lastSeq = seq;
     return true;
@@ -250,13 +267,19 @@ export function createWebSocketClientCore<
 
     if (typeof event.data !== 'string') return;
 
-    let message: IncomingMessage;
+    let parsed: unknown;
     try {
-      message = JSON.parse(event.data) as IncomingMessage;
+      parsed = JSON.parse(event.data);
     } catch {
       return;
     }
 
+    const isIncomingMessage = options.isIncomingMessage ?? isDefaultIncomingMessage;
+    if (!isIncomingMessage(parsed)) {
+      return;
+    }
+
+    const message = parsed;
     if (!shouldProcessMessage(message)) return;
     if (options.isPongMessage?.(message)) {
       recordPong();
@@ -295,16 +318,26 @@ export function createWebSocketClientCore<
       return connection.promise;
     }
 
-    const requiresAuthMessage = options.createAuthMessage !== undefined;
     const clientId = options.getClientId();
     const token = options.getToken?.() ?? null;
-    if (requiresAuthMessage && !token) {
-      const error = new Error('Missing auth token');
-      options.onMissingToken?.(error);
-      throw error;
+    let auth: null | {
+      createAuthMessage: NonNullable<typeof options.createAuthMessage>;
+      token: string;
+    } = null;
+    if (options.createAuthMessage !== undefined) {
+      if (!token) {
+        const error = new Error('Missing auth token');
+        options.onMissingToken?.(error);
+        throw error;
+      }
+
+      auth = {
+        createAuthMessage: options.createAuthMessage,
+        token,
+      };
     }
 
-    setState(nextState ?? (hasConnected ? 'reconnecting' : 'connecting'));
+    setState(getConnectState(nextState, hasConnected));
 
     const ws = new WebSocket(
       options.getSocketUrl({
@@ -347,11 +380,11 @@ export function createWebSocketClientCore<
     ws.onopen = () => {
       if (!isCurrentConnection(ws)) return;
 
-      if (options.createAuthMessage) {
-        const authMessage = options.createAuthMessage({
+      if (auth) {
+        const authMessage = auth.createAuthMessage({
           clientId,
           lastSeq,
-          token: token as string,
+          token: auth.token,
         });
         if (!trySendSerializedMessage(ws, authMessage)) {
           clearPromiseIfCurrent();

@@ -135,6 +135,46 @@ describe('terminal-attach-scheduler', () => {
     backgroundC.unregister();
   });
 
+  it('starts a foreground attach even when background attach budget is saturated', async () => {
+    const attachOrder: string[] = [];
+
+    const backgroundA = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-a');
+      },
+      getPriority: () => 2,
+      key: 'background-a',
+      taskId: 'task-background-a',
+    });
+    const backgroundB = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-b');
+      },
+      getPriority: () => 2,
+      key: 'background-b',
+      taskId: 'task-background-b',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['background-a', 'background-b']);
+
+    const selected = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('selected');
+      },
+      getPriority: () => 0,
+      key: 'selected-terminal',
+      taskId: 'task-selected',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['background-a', 'background-b', 'selected']);
+
+    backgroundA.unregister();
+    backgroundB.unregister();
+    selected.unregister();
+  });
+
   it('reorders pending attaches when a candidate priority changes before attachment', async () => {
     const attachOrder: string[] = [];
     let dynamicPriority = 2;

@@ -82,9 +82,10 @@ export async function startRemoteAccess(port?: number): Promise<RemoteAccessStar
   }
 
   const generation = bumpRemoteAccessGeneration();
-  const result = port
-    ? await invoke(IPC.StartRemoteServer, { port })
-    : await invoke(IPC.StartRemoteServer);
+  const result =
+    port !== undefined
+      ? await invoke(IPC.StartRemoteServer, { port })
+      : await invoke(IPC.StartRemoteServer);
   if (isCurrentRemoteAccessGeneration(generation)) {
     applyRemoteStatus(createStartedRemoteAccessStatus(result));
   }

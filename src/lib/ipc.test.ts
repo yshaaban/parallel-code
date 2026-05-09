@@ -81,13 +81,17 @@ describe('Channel', () => {
     constructor(_url: string) {
       queueMicrotask(() => {
         this.readyState = FailingWebSocket.CLOSED;
-        this.onerror?.call(this as unknown as WebSocket, {} as Event);
-        this.onclose?.call(this as unknown as WebSocket, { code: 1006 } as CloseEvent);
+        this.onerror?.call(this.asWebSocket(), {} as Event);
+        this.onclose?.call(this.asWebSocket(), { code: 1006 } as CloseEvent);
       });
     }
 
     close(): void {
       this.readyState = FailingWebSocket.CLOSED;
+    }
+
+    private asWebSocket(): WebSocket {
+      return this as unknown as WebSocket;
     }
 
     send(): void {}
@@ -120,12 +124,12 @@ describe('Channel', () => {
 
     open(): void {
       this.readyState = ControllableWebSocket.OPEN;
-      this.onopen?.call(this as unknown as WebSocket, {} as Event);
+      this.onopen?.call(this.asWebSocket(), {} as Event);
     }
 
     close(code = 1000): void {
       this.readyState = ControllableWebSocket.CLOSED;
-      this.onclose?.call(this as unknown as WebSocket, { code } as CloseEvent);
+      this.onclose?.call(this.asWebSocket(), { code } as CloseEvent);
     }
 
     send(payload: string): void {
@@ -133,21 +137,19 @@ describe('Channel', () => {
     }
 
     receiveText(message: unknown): void {
-      this.onmessage?.call(
-        this as unknown as WebSocket,
-        {
-          data: JSON.stringify(message),
-        } as MessageEvent<string>,
-      );
+      this.onmessage?.call(this.asWebSocket(), {
+        data: JSON.stringify(message),
+      } as MessageEvent<string>);
     }
 
     receiveBinary(buffer: ArrayBuffer): void {
-      this.onmessage?.call(
-        this as unknown as WebSocket,
-        {
-          data: buffer,
-        } as MessageEvent<ArrayBuffer>,
-      );
+      this.onmessage?.call(this.asWebSocket(), {
+        data: buffer,
+      } as MessageEvent<ArrayBuffer>);
+    }
+
+    private asWebSocket(): WebSocket {
+      return this as unknown as WebSocket;
     }
   }
 
@@ -557,16 +559,20 @@ describe('Channel', () => {
       constructor(_url: string) {
         queueMicrotask(() => {
           this.readyState = AuthExpiredWebSocket.OPEN;
-          this.onopen?.call(this as unknown as WebSocket, {} as Event);
+          this.onopen?.call(this.asWebSocket(), {} as Event);
           queueMicrotask(() => {
             this.readyState = AuthExpiredWebSocket.CLOSED;
-            this.onclose?.call(this as unknown as WebSocket, { code: 4001 } as CloseEvent);
+            this.onclose?.call(this.asWebSocket(), { code: 4001 } as CloseEvent);
           });
         });
       }
 
       close(): void {
         this.readyState = AuthExpiredWebSocket.CLOSED;
+      }
+
+      private asWebSocket(): WebSocket {
+        return this as unknown as WebSocket;
       }
 
       send(): void {}
@@ -1118,7 +1124,7 @@ describe('Channel', () => {
     cleanup();
   });
 
-  it('resolves terminal input after the socket send without waiting for an agent command result', async () => {
+  it('generates a request id and waits for backend acceptance when terminal input omits one', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: ControllableWebSocket,
@@ -1140,7 +1146,19 @@ describe('Channel', () => {
 
     await flushMicrotasks();
 
-    expect(await getPromiseState(inputPromise)).toBe('resolved');
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+    expect(await getPromiseState(inputPromise)).toBe('pending');
+
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId,
+      type: 'agent-command-result',
+    });
+    await expect(inputPromise).resolves.toBeUndefined();
     expect(socket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
   });
 
@@ -1378,6 +1396,28 @@ describe('Channel', () => {
     const { invoke } = await import('./ipc');
 
     await expect(invoke(IPC.ResetBackendRuntimeDiagnostics)).resolves.toBeUndefined();
+  });
+
+  it('accepts undefined browser HTTP IPC responses for cleanup_task_runtime', async () => {
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const { invoke } = await import('./ipc');
+
+    await expect(
+      invoke(IPC.CleanupTaskRuntime, {
+        agentIds: [],
+        removeTaskState: true,
+        taskId: 'task-1',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('queues browserFetch requests after a network error and retries them on the next drain tick', async () => {
@@ -1645,6 +1685,85 @@ describe('Channel', () => {
         retries: 1,
       },
     ]);
+
+    vi.useRealTimers();
+  });
+
+  it('replays only validated durable HTTP IPC requests from session storage', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    sessionStorageData.set(
+      'ipc-durable-queue',
+      JSON.stringify([
+        {
+          args: { agentId: 'agent-1' },
+          cmd: IPC.KillAgent,
+          retries: 1,
+        },
+        {
+          args: { agentId: 'agent-2', reason: 'manual' },
+          cmd: IPC.ResumeAgent,
+          retries: 0,
+        },
+        {
+          args: { agentId: 'agent-3', reason: 'flow-control' },
+          cmd: IPC.PauseAgent,
+          retries: 0,
+        },
+        {
+          args: { agentId: 'agent-4' },
+          cmd: IPC.CheckPathExists,
+          retries: 0,
+        },
+        {
+          args: {},
+          cmd: IPC.KillAgent,
+          retries: 0,
+        },
+        {
+          args: { agentId: 'agent-5', reason: 'manual' },
+          cmd: IPC.KillAgent,
+          retries: 0,
+        },
+        {
+          args: { agentId: 'agent-6', channelId: 42 },
+          cmd: IPC.ResumeAgent,
+          retries: 0,
+        },
+        {
+          args: { agentId: 'agent-7' },
+          cmd: IPC.KillAgent,
+          retries: 4,
+        },
+      ]),
+    );
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { getBrowserQueueDepth } = await import('./ipc');
+    expect(getBrowserQueueDepth()).toBe(2);
+
+    await flushQueuedBrowserHttpDrainTick();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      '/api/ipc/kill_agent',
+      '/api/ipc/resume_agent',
+    ]);
+    expect(fetchMock.mock.calls.map(([, init]) => init?.body)).toEqual([
+      JSON.stringify({ agentId: 'agent-1' }),
+      JSON.stringify({ agentId: 'agent-2', reason: 'manual' }),
+    ]);
+    expect(sessionStorageData.has('ipc-durable-queue')).toBe(false);
 
     vi.useRealTimers();
   });
@@ -1945,6 +2064,90 @@ describe('Channel', () => {
       socket.close();
     } finally {
       offAgentErrors();
+      offTransport();
+    }
+  });
+
+  it('ignores unknown browser websocket server messages', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { listenServerMessage, onBrowserTransportEvent } = await import('./ipc');
+    const transportEvents: string[] = [];
+    const agentErrors: string[] = [];
+    const offTransport = onBrowserTransportEvent((event) => {
+      transportEvents.push(event.kind);
+    });
+    const offAgentErrors = listenServerMessage('agent-error', (message) => {
+      agentErrors.push(message.message);
+    });
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      socket.open();
+      await flushMicrotasks();
+      const transportEventsBeforeUnknownMessage = [...transportEvents];
+
+      socket.receiveText({ type: 'future-server-event', payload: { ready: true } });
+      await flushMicrotasks();
+
+      expect(agentErrors).toEqual([]);
+      expect(transportEvents).toEqual(transportEventsBeforeUnknownMessage);
+      socket.close();
+    } finally {
+      offAgentErrors();
+      offTransport();
+    }
+  });
+
+  it('ignores malformed known browser websocket server messages', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { listenServerMessage, onBrowserTransportEvent } = await import('./ipc');
+    const transportEvents: string[] = [];
+    const agentErrors: string[] = [];
+    const agentSnapshots: number[] = [];
+    const gitStatusPaths: string[] = [];
+    const offTransport = onBrowserTransportEvent((event) => {
+      transportEvents.push(event.kind);
+    });
+    const offAgentErrors = listenServerMessage('agent-error', (message) => {
+      agentErrors.push(message.message);
+    });
+    const offAgents = listenServerMessage('agents', (message) => {
+      agentSnapshots.push(message.list.length);
+    });
+    const offGitStatus = listenServerMessage('git-status-changed', (message) => {
+      gitStatusPaths.push(message.worktreePath ?? '');
+    });
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      socket.open();
+      await flushMicrotasks();
+      const transportEventsBeforeMalformedMessages = [...transportEvents];
+
+      socket.receiveText({ type: 'agent-error', agentId: 'agent-1' });
+      socket.receiveText({ type: 'agents', list: [{ agentId: 'agent-1', status: 'mystery' }] });
+      socket.receiveText({ type: 'git-status-changed', worktreePath: 42 });
+      await flushMicrotasks();
+
+      expect(agentErrors).toEqual([]);
+      expect(agentSnapshots).toEqual([]);
+      expect(gitStatusPaths).toEqual([]);
+      expect(transportEvents).toEqual(transportEventsBeforeMalformedMessages);
+      socket.close();
+    } finally {
+      offAgentErrors();
+      offAgents();
+      offGitStatus();
       offTransport();
     }
   });

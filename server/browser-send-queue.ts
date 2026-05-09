@@ -22,6 +22,7 @@ export interface CreateBrowserSendQueueOptions<Client> {
 }
 
 export interface BrowserSendQueue<Client> {
+  cleanup: () => void;
   cleanupClient: (client: Client) => void;
   queueMessage: (client: Client, message: string) => boolean;
 }
@@ -32,6 +33,7 @@ export function createBrowserSendQueue<Client extends object>(
   options: CreateBrowserSendQueueOptions<Client>,
 ): BrowserSendQueue<Client> {
   const clientBatches = new WeakMap<Client, ClientBatch>();
+  const trackedClients = new Set<Client>();
   const flushIntervalMs = options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
 
   function flushClientBatch(client: Client): void {
@@ -69,6 +71,7 @@ export function createBrowserSendQueue<Client extends object>(
     if (!batch) {
       batch = { messages: [], timer: null };
       clientBatches.set(client, batch);
+      trackedClients.add(client);
     }
 
     batch.messages.push({
@@ -94,9 +97,17 @@ export function createBrowserSendQueue<Client extends object>(
       clearTimeout(batch.timer);
     }
     clientBatches.delete(client);
+    trackedClients.delete(client);
+  }
+
+  function cleanup(): void {
+    for (const client of trackedClients) {
+      cleanupClient(client);
+    }
   }
 
   return {
+    cleanup,
     cleanupClient,
     queueMessage,
   };

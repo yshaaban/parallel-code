@@ -26,6 +26,20 @@ interface InitialRemoteSessionState {
   shouldPrompt: boolean;
 }
 
+type RemoteTransition = 'none' | 'slide-left' | 'slide-right';
+
+type RemoteView =
+  | {
+      kind: 'list';
+      transition: RemoteTransition;
+    }
+  | {
+      agentId: string;
+      kind: 'detail';
+      taskName: string;
+      transition: RemoteTransition;
+    };
+
 function getInitialRemoteSessionState(): InitialRemoteSessionState {
   const storedDisplayName = getStoredDisplayName();
   if (storedDisplayName) {
@@ -41,7 +55,7 @@ function getInitialRemoteSessionState(): InitialRemoteSessionState {
   };
 }
 
-function getRemoteTransitionAnimation(transition: 'none' | 'slide-right' | 'slide-left'): string {
+function getRemoteTransitionAnimation(transition: RemoteTransition): string {
   if (transition === 'slide-right') {
     return 'slideInRight 0.25s ease-out both';
   }
@@ -52,27 +66,34 @@ function getRemoteTransitionAnimation(transition: 'none' | 'slide-right' | 'slid
 }
 
 export function App(): JSX.Element {
-  const [view, setView] = createSignal<'list' | 'detail'>('list');
-  const [detailAgentId, setDetailAgentId] = createSignal('');
-  const [detailTaskName, setDetailTaskName] = createSignal('');
+  const [remoteView, setRemoteView] = createSignal<RemoteView>({
+    kind: 'list',
+    transition: 'none',
+  });
   const [sessionName, setSessionName] = createSignal('');
   const [sessionNameDialogOpen, setSessionNameDialogOpen] = createSignal(false);
   const [busyTakeoverRequestIds, setBusyTakeoverRequestIds] = createSignal<Set<string>>(new Set());
-  const [transition, setTransition] = createSignal<'none' | 'slide-right' | 'slide-left'>('none');
 
-  const detailAgent = createMemo(
-    () => agents().find((agent) => agent.agentId === detailAgentId()) ?? null,
-  );
+  const detailView = createMemo(() => {
+    const view = remoteView();
+    return view.kind === 'detail' ? view : null;
+  });
+  const detailAgent = createMemo(() => {
+    const view = detailView();
+    if (!view) {
+      return null;
+    }
+
+    return agents().find((agent) => agent.agentId === view.agentId) ?? null;
+  });
   const activeTaskId = createMemo(() => {
-    if (view() !== 'detail') {
+    if (!detailView()) {
       return null;
     }
 
     return detailAgent()?.taskId ?? null;
   });
-  const focusedSurface = createMemo(() =>
-    view() === 'detail' ? 'remote-terminal' : 'remote-list',
-  );
+  const focusedSurface = createMemo(() => (detailView() ? 'remote-terminal' : 'remote-list'));
   const incomingTakeoverRequests = createMemo(() => getIncomingRemoteTakeoverRequests());
 
   createRemotePresenceRuntime({
@@ -105,16 +126,18 @@ export function App(): JSX.Element {
   });
 
   function selectAgent(id: string, name: string): void {
-    runNavigationTransition('slide-right', () => {
-      setDetailAgentId(id);
-      setDetailTaskName(name);
-      setView('detail');
+    setRemoteView({
+      agentId: id,
+      kind: 'detail',
+      taskName: name,
+      transition: 'slide-right',
     });
   }
 
   function goBack(): void {
-    runNavigationTransition('slide-left', () => {
-      setView('list');
+    setRemoteView({
+      kind: 'list',
+      transition: 'slide-left',
     });
   }
 
@@ -125,14 +148,6 @@ export function App(): JSX.Element {
   function saveSessionName(nextValue: string): void {
     setSessionName(setStoredDisplayName(nextValue));
     setSessionNameDialogOpen(false);
-  }
-
-  function runNavigationTransition(
-    fallbackDirection: 'slide-right' | 'slide-left',
-    update: () => void,
-  ): void {
-    setTransition(fallbackDirection);
-    update();
   }
 
   async function handleTakeoverResponse(requestId: string, approved: boolean): Promise<void> {
@@ -216,13 +231,18 @@ export function App(): JSX.Element {
         <div class="remote-shell__grid" />
         <div
           class="remote-shell__view"
-          onAnimationEnd={() => setTransition('none')}
+          onAnimationEnd={() =>
+            setRemoteView((view) => ({
+              ...view,
+              transition: 'none',
+            }))
+          }
           style={{
-            animation: getRemoteTransitionAnimation(transition()),
+            animation: getRemoteTransitionAnimation(remoteView().transition),
           }}
         >
           <Show
-            when={view() === 'detail'}
+            when={detailView()}
             fallback={
               <AgentList
                 onEditSessionName={openSessionNameDialog}
@@ -231,7 +251,9 @@ export function App(): JSX.Element {
               />
             }
           >
-            <AgentDetail agentId={detailAgentId()} taskName={detailTaskName()} onBack={goBack} />
+            {(view) => (
+              <AgentDetail agentId={view().agentId} taskName={view().taskName} onBack={goBack} />
+            )}
           </Show>
         </div>
       </div>

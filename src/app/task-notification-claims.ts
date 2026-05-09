@@ -4,6 +4,7 @@ import {
   getSafeStorageItem,
   setSafeStorageItem,
 } from '../lib/browser-storage';
+import { isNonNegativeInteger, isRecord } from '../lib/type-guards';
 
 const TASK_NOTIFICATION_CLAIM_STORAGE_KEY = 'parallel-code-task-notification-claims';
 const TASK_NOTIFICATION_TAB_ID_KEY = 'parallel-code-task-notification-tab-id';
@@ -37,15 +38,34 @@ function parseClaimStorage(
   }
 
   try {
-    const parsed = JSON.parse(value) as Record<string, TaskNotificationClaimRecord>;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) {
       return null;
     }
 
-    return parsed;
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, TaskNotificationClaimRecord] =>
+        isTaskNotificationClaimRecord(entry[1]),
+      ),
+    );
   } catch {
     return null;
   }
+}
+
+function isTaskNotificationClaimRecord(value: unknown): value is TaskNotificationClaimRecord {
+  return (
+    isRecord(value) && isNonNegativeInteger(value.expiresAt) && typeof value.ownerId === 'string'
+  );
+}
+
+function isTaskNotificationClaimMessage(value: unknown): value is TaskNotificationClaimMessage {
+  return (
+    isRecord(value) &&
+    typeof value.key === 'string' &&
+    isNonNegativeInteger(value.expiresAt) &&
+    typeof value.ownerId === 'string'
+  );
 }
 
 function readClaimStorage(): Record<string, TaskNotificationClaimRecord> {
@@ -92,14 +112,9 @@ export function createTaskNotificationClaimCoordinator(): {
       ? null
       : new BroadcastChannel(TASK_NOTIFICATION_CLAIM_CHANNEL);
 
-  channel?.addEventListener('message', (event: MessageEvent<TaskNotificationClaimMessage>) => {
+  channel?.addEventListener('message', (event: MessageEvent<unknown>) => {
     const message = event.data;
-    if (
-      !message ||
-      typeof message !== 'object' ||
-      typeof message.key !== 'string' ||
-      typeof message.expiresAt !== 'number'
-    ) {
+    if (!isTaskNotificationClaimMessage(message)) {
       return;
     }
 

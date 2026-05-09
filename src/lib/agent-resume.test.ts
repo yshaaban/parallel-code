@@ -3,6 +3,7 @@ import { createTestAgentDef } from '../test/store-test-helpers';
 import {
   buildAgentSpawnArgs,
   getAgentResumeStrategy,
+  isAgentResumeStrategy,
   shouldResumeAgentOnSpawn,
 } from './agent-resume';
 
@@ -64,13 +65,21 @@ describe('agent resume helpers', () => {
     expect(shouldResumeAgentOnSpawn(agent, true)).toBe(true);
   });
 
+  it('recognizes only supported persisted resume strategies', () => {
+    expect(isAgentResumeStrategy('none')).toBe(true);
+    expect(isAgentResumeStrategy('cli-args')).toBe(true);
+    expect(isAgentResumeStrategy('hydra-session')).toBe(true);
+    expect(isAgentResumeStrategy('shell')).toBe(false);
+    expect(isAgentResumeStrategy(undefined)).toBe(false);
+  });
+
   it('tolerates legacy persisted agent defs that are missing arg arrays', () => {
     const legacyAgent = {
       ...createTestAgentDef(),
       args: undefined,
       resume_args: undefined,
       skip_permissions_args: undefined,
-    } as unknown as ReturnType<typeof createTestAgentDef>;
+    };
 
     expect(getAgentResumeStrategy(legacyAgent)).toBe('none');
     expect(
@@ -79,6 +88,22 @@ describe('agent resume helpers', () => {
         skipPermissions: true,
       }),
     ).toEqual([]);
+  });
+
+  it('drops malformed legacy arg values before building spawn args', () => {
+    const legacyAgent = {
+      ...createTestAgentDef(),
+      args: ['run', 42],
+      resume_args: ['resume', null],
+      skip_permissions_args: ['--dangerous', false],
+    };
+
+    expect(
+      buildAgentSpawnArgs(legacyAgent, {
+        resumed: true,
+        skipPermissions: true,
+      }),
+    ).toEqual(['resume', '--dangerous']);
   });
 
   it('preserves duplicate positional args while still appending missing skip-permission args', () => {

@@ -8,24 +8,20 @@ import {
   isRemoteLiveIpcEventChannel,
   type RemoteLiveIpcEventChannel,
 } from '../domain/remote-live-ipc-events';
-import { isChangedFileStatus } from '../domain/git-status';
-import { filterPeerPresenceSnapshots } from '../domain/server-state';
-import type {
-  AgentSupervisionEvent,
-  AgentSupervisionSnapshot,
-  AgentSupervisionState,
-  PeerPresenceSnapshot,
-  TaskCommandControllerSnapshot,
-  TaskAttentionReason,
-  TaskPortSnapshot,
-} from '../domain/server-state';
-import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
-import type { TaskReviewEvent, TaskReviewSnapshot, TaskReviewSource } from '../domain/task-review';
-import { assertNever } from '../lib/assert-never';
+import { filterPeerPresenceSnapshots, isAgentSupervisionEvent } from '../domain/server-state';
+import type { PeerPresenceSnapshot, TaskCommandControllerSnapshot } from '../domain/server-state';
+import {
+  filterServerStateBootstrapSnapshots,
+  type AnyServerStateBootstrapSnapshot,
+  type ServerStateBootstrapCategory,
+} from '../domain/server-state-bootstrap';
+import { isTaskReviewEvent } from '../domain/task-review';
+import { isNonNegativeInteger } from '../lib/type-guards';
 import {
   applyTaskCommandControllerSnapshotRecord,
   areTaskCommandControllerStatesEqual,
   getTaskCommandControllerSnapshot,
+  isTaskCommandControllerSnapshot,
   normalizeTaskCommandControllerSnapshots,
   shouldApplyTaskCommandControllerVersion,
 } from '../domain/task-command-controller-projection';
@@ -45,14 +41,17 @@ import {
   resetRemoteTaskStateForTests,
 } from './remote-task-state';
 
-type RemoteIpcEventHandling =
-  | 'handle-agent-supervision'
-  | 'handle-task-command-controller'
-  | 'handle-task-review'
-  | 'ignore';
-
 type TaskCommandControllerChangeListener = (snapshot: TaskCommandControllerSnapshot) => void;
 type TaskCommandTakeoverResultListener = (message: TaskCommandTakeoverResultMessage) => void;
+type RemoteBootstrapSnapshotFor<TCategory extends ServerStateBootstrapCategory> = Extract<
+  AnyServerStateBootstrapSnapshot,
+  { category: TCategory }
+>;
+type RemoteBootstrapCategoryHandler<TCategory extends ServerStateBootstrapCategory> = (
+  snapshot: RemoteBootstrapSnapshotFor<TCategory>,
+) => void;
+type RemoteBootstrapSnapshotHandler = (snapshot: AnyServerStateBootstrapSnapshot) => void;
+type RemoteIpcEventHandler = (payload: unknown) => void;
 
 const [peerSessions, setPeerSessions] = createSignal<Record<string, PeerPresenceSnapshot>>({});
 const [taskCommandControllers, setTaskCommandControllers] = createSignal<
@@ -67,262 +66,6 @@ const taskCommandTakeoverResultListeners = new Set<TaskCommandTakeoverResultList
 
 let taskCommandControllerReplaceVersion = -1;
 const taskCommandControllerVersionByTaskId = new Map<string, number>();
-
-const REMOTE_LIVE_IPC_EVENT_HANDLING = {
-  [IPC.AgentSupervisionChanged]: 'handle-agent-supervision',
-  [IPC.GitStatusChanged]: 'ignore',
-  [IPC.TaskCommandControllerChanged]: 'handle-task-command-controller',
-  [IPC.TaskConvergenceChanged]: 'ignore',
-  [IPC.TaskReviewChanged]: 'handle-task-review',
-  [IPC.TaskReviewSignalsChanged]: 'ignore',
-  [IPC.TaskStepsChanged]: 'ignore',
-} as const satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandling>;
-
-const AGENT_SUPERVISION_STATE_SET: ReadonlySet<AgentSupervisionState> = new Set([
-  'active',
-  'awaiting-input',
-  'idle-at-prompt',
-  'quiet',
-  'paused',
-  'flow-controlled',
-  'restoring',
-  'exited-clean',
-  'exited-error',
-]);
-
-const TASK_ATTENTION_REASON_SET: ReadonlySet<TaskAttentionReason> = new Set([
-  'waiting-input',
-  'ready-for-next-step',
-  'failed',
-  'paused',
-  'flow-controlled',
-  'restoring',
-  'quiet-too-long',
-]);
-
-const TASK_REVIEW_SOURCE_SET: ReadonlySet<TaskReviewSource> = new Set([
-  'worktree',
-  'branch-fallback',
-  'unavailable',
-]);
-const TASK_PREVIEW_AVAILABILITY_SET: ReadonlySet<string> = new Set([
-  'unknown',
-  'available',
-  'unavailable',
-]);
-const TASK_PORT_PROTOCOL_SET: ReadonlySet<string> = new Set(['http', 'https']);
-const TASK_EXPOSED_PORT_SOURCE_SET: ReadonlySet<string> = new Set(['manual', 'observed']);
-const TASK_OBSERVED_PORT_SOURCE_SET: ReadonlySet<string> = new Set(['output', 'rediscovery']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isStringMember<T extends string>(value: unknown, members: ReadonlySet<T>): value is T {
-  return typeof value === 'string' && members.has(value as T);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isNullableFiniteNumber(value: unknown): value is number | null {
-  return value === null || isFiniteNumber(value);
-}
-
-function isNullableString(value: unknown): value is string | null {
-  return typeof value === 'string' || value === null;
-}
-
-function isAgentSupervisionState(value: unknown): value is AgentSupervisionState {
-  return isStringMember(value, AGENT_SUPERVISION_STATE_SET);
-}
-
-function isTaskAttentionReason(value: unknown): value is TaskAttentionReason {
-  return isStringMember(value, TASK_ATTENTION_REASON_SET);
-}
-
-function isNullableTaskAttentionReason(value: unknown): value is TaskAttentionReason | null {
-  return value === null || isTaskAttentionReason(value);
-}
-
-function isTaskReviewSource(value: unknown): value is TaskReviewSource {
-  return isStringMember(value, TASK_REVIEW_SOURCE_SET);
-}
-
-function isTaskPreviewAvailability(value: unknown): boolean {
-  return isStringMember(value, TASK_PREVIEW_AVAILABILITY_SET);
-}
-
-function isTaskPortProtocol(value: unknown): boolean {
-  return isStringMember(value, TASK_PORT_PROTOCOL_SET);
-}
-
-function isTaskExposedPortSource(value: unknown): boolean {
-  return isStringMember(value, TASK_EXPOSED_PORT_SOURCE_SET);
-}
-
-function isTaskObservedPortSource(value: unknown): boolean {
-  return isStringMember(value, TASK_OBSERVED_PORT_SOURCE_SET);
-}
-
-function isTaskReviewFilePayload(value: unknown): value is TaskReviewSnapshot['files'][number] {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.path === 'string' &&
-    typeof value.status === 'string' &&
-    isChangedFileStatus(value.status) &&
-    typeof value.committed === 'boolean' &&
-    isFiniteNumber(value.lines_added) &&
-    isFiniteNumber(value.lines_removed)
-  );
-}
-
-function isTaskExposedPortSnapshotPayload(
-  value: unknown,
-): value is TaskPortSnapshot['exposed'][number] {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    isTaskPreviewAvailability(value.availability) &&
-    isNullableString(value.host) &&
-    isNullableString(value.label) &&
-    isNullableFiniteNumber(value.lastVerifiedAt) &&
-    isFiniteNumber(value.port) &&
-    isTaskPortProtocol(value.protocol) &&
-    isTaskExposedPortSource(value.source) &&
-    isNullableString(value.statusMessage) &&
-    isFiniteNumber(value.updatedAt) &&
-    isNullableString(value.verifiedHost)
-  );
-}
-
-function isTaskObservedPortSnapshotPayload(
-  value: unknown,
-): value is TaskPortSnapshot['observed'][number] {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    isNullableString(value.host) &&
-    isFiniteNumber(value.port) &&
-    isTaskPortProtocol(value.protocol) &&
-    isTaskObservedPortSource(value.source) &&
-    typeof value.suggestion === 'string' &&
-    isFiniteNumber(value.updatedAt)
-  );
-}
-
-function isRemovedPayload(
-  payload: unknown,
-): payload is Record<string, unknown> & { removed: true } {
-  return isRecord(payload) && 'removed' in payload && payload.removed === true;
-}
-
-function isAgentSupervisionSnapshotPayload(payload: unknown): payload is AgentSupervisionSnapshot {
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  return (
-    typeof payload.agentId === 'string' &&
-    isNullableTaskAttentionReason(payload.attentionReason) &&
-    typeof payload.isShell === 'boolean' &&
-    isNullableFiniteNumber(payload.lastOutputAt) &&
-    typeof payload.preview === 'string' &&
-    isAgentSupervisionState(payload.state) &&
-    typeof payload.taskId === 'string' &&
-    isFiniteNumber(payload.updatedAt)
-  );
-}
-
-function isAgentSupervisionPayload(payload: unknown): payload is AgentSupervisionEvent {
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  if (isRemovedPayload(payload)) {
-    return (
-      payload.kind === 'removed' &&
-      typeof payload.agentId === 'string' &&
-      isNullableString(payload.taskId)
-    );
-  }
-
-  return payload.kind === 'snapshot' && isAgentSupervisionSnapshotPayload(payload);
-}
-
-function isTaskReviewSnapshotPayload(payload: unknown): payload is TaskReviewSnapshot {
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  return (
-    typeof payload.taskId === 'string' &&
-    typeof payload.branchName === 'string' &&
-    typeof payload.projectId === 'string' &&
-    typeof payload.revisionId === 'string' &&
-    Array.isArray(payload.files) &&
-    payload.files.every(isTaskReviewFilePayload) &&
-    isTaskReviewSource(payload.source) &&
-    isFiniteNumber(payload.totalAdded) &&
-    isFiniteNumber(payload.totalRemoved) &&
-    isFiniteNumber(payload.updatedAt) &&
-    typeof payload.worktreePath === 'string'
-  );
-}
-
-function isTaskReviewPayload(payload: unknown): payload is TaskReviewEvent {
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  if (isRemovedPayload(payload)) {
-    return typeof payload.taskId === 'string';
-  }
-
-  return isTaskReviewSnapshotPayload(payload);
-}
-
-function isTaskCommandControllerSnapshotPayload(
-  payload: unknown,
-): payload is TaskCommandControllerSnapshot {
-  if (typeof payload !== 'object' || payload === null) {
-    return false;
-  }
-
-  return (
-    'action' in payload &&
-    (typeof payload.action === 'string' || payload.action === null) &&
-    'controllerId' in payload &&
-    (typeof payload.controllerId === 'string' || payload.controllerId === null) &&
-    'taskId' in payload &&
-    typeof payload.taskId === 'string' &&
-    'version' in payload &&
-    isFiniteNumber(payload.version)
-  );
-}
-
-function isTaskPortsSnapshotPayload(payload: unknown): payload is TaskPortSnapshot {
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  return (
-    typeof payload.taskId === 'string' &&
-    isFiniteNumber(payload.updatedAt) &&
-    Array.isArray(payload.exposed) &&
-    payload.exposed.every(isTaskExposedPortSnapshotPayload) &&
-    Array.isArray(payload.observed) &&
-    payload.observed.every(isTaskObservedPortSnapshotPayload)
-  );
-}
 
 function sortPeerSessions(
   snapshots: ReadonlyArray<PeerPresenceSnapshot>,
@@ -388,7 +131,7 @@ function replaceTaskCommandControllerSnapshots(
   snapshots: ReadonlyArray<TaskCommandControllerSnapshot>,
   version: number,
 ): void {
-  if (!Number.isFinite(version)) {
+  if (!isNonNegativeInteger(version)) {
     return;
   }
   if (version < taskCommandControllerReplaceVersion) {
@@ -416,89 +159,144 @@ export function applyRemoteTaskCommandControllerChanged(
     return;
   }
 
-  setTaskCommandControllers((current) =>
-    applyTaskCommandControllerSnapshotRecord(current, snapshot),
-  );
+  const previousControllers = taskCommandControllers();
+  const previousController = previousControllers[snapshot.taskId] ?? null;
+  const nextController = snapshot.controllerId ? snapshot : null;
+  const stateChanged = !areTaskCommandControllerStatesEqual(previousController, nextController);
+  if (!stateChanged && snapshot.version <= currentVersion) {
+    return;
+  }
+
+  const nextControllers = applyTaskCommandControllerSnapshotRecord(previousControllers, snapshot);
+  if (nextControllers !== previousControllers) {
+    setTaskCommandControllers(nextControllers);
+  }
   taskCommandControllerVersionByTaskId.set(snapshot.taskId, snapshot.version);
+  taskCommandControllerReplaceVersion = Math.max(
+    taskCommandControllerReplaceVersion,
+    snapshot.version,
+  );
+
+  if (!stateChanged) {
+    return;
+  }
 
   for (const listener of taskCommandControllerChangeListeners) {
     listener(snapshot);
   }
 }
 
-export function applyRemoteStateBootstrap(
-  snapshots: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
+function replaceRemoteAgentSupervisionBootstrap(
+  snapshot: RemoteBootstrapSnapshotFor<'agent-supervision'>,
 ): void {
-  for (const snapshot of snapshots) {
-    switch (snapshot.category) {
-      case 'git-status':
-      case 'remote-status':
-      case 'task-convergence':
-        break;
-      case 'agent-supervision':
-        replaceRemoteAgentSupervisionSnapshots(
-          snapshot.payload.filter(isAgentSupervisionSnapshotPayload),
-          snapshot.version,
-        );
-        break;
-      case 'peer-presence':
-        replacePeerPresenceSnapshots(snapshot.payload);
-        break;
-      case 'task-command-controller':
-        replaceTaskCommandControllerSnapshots(
-          snapshot.payload.filter(isTaskCommandControllerSnapshotPayload),
-          snapshot.version,
-        );
-        break;
-      case 'task-review':
-        replaceRemoteTaskReviewSnapshots(
-          snapshot.payload.filter(isTaskReviewSnapshotPayload),
-          snapshot.version,
-        );
-        break;
-      case 'task-review-signals':
-        break;
-      case 'task-steps':
-        break;
-      case 'task-ports':
-        replaceRemoteTaskPortsSnapshots(
-          snapshot.payload.filter(isTaskPortsSnapshotPayload),
-          snapshot.version,
-        );
-        break;
-      default:
-        assertNever(snapshot, 'Unhandled remote bootstrap snapshot category');
+  replaceRemoteAgentSupervisionSnapshots(snapshot.payload, snapshot.version);
+}
+
+function replaceRemotePeerPresenceBootstrap(
+  snapshot: RemoteBootstrapSnapshotFor<'peer-presence'>,
+): void {
+  replacePeerPresenceSnapshots(snapshot.payload);
+}
+
+function replaceRemoteTaskCommandControllerBootstrap(
+  snapshot: RemoteBootstrapSnapshotFor<'task-command-controller'>,
+): void {
+  replaceTaskCommandControllerSnapshots(snapshot.payload, snapshot.version);
+}
+
+function replaceRemoteTaskReviewBootstrap(
+  snapshot: RemoteBootstrapSnapshotFor<'task-review'>,
+): void {
+  replaceRemoteTaskReviewSnapshots(snapshot.payload, snapshot.version);
+}
+
+function replaceRemoteTaskPortsBootstrap(snapshot: RemoteBootstrapSnapshotFor<'task-ports'>): void {
+  replaceRemoteTaskPortsSnapshots(snapshot.payload, snapshot.version);
+}
+
+function isRemoteBootstrapSnapshotCategory<TCategory extends ServerStateBootstrapCategory>(
+  snapshot: AnyServerStateBootstrapSnapshot,
+  category: TCategory,
+): snapshot is Extract<AnyServerStateBootstrapSnapshot, { category: TCategory }> {
+  return snapshot.category === category;
+}
+
+function createRemoteBootstrapSnapshotHandler<TCategory extends ServerStateBootstrapCategory>(
+  category: TCategory,
+  handle: RemoteBootstrapCategoryHandler<TCategory>,
+): RemoteBootstrapSnapshotHandler {
+  return (snapshot) => {
+    if (isRemoteBootstrapSnapshotCategory(snapshot, category)) {
+      handle(snapshot);
     }
+  };
+}
+
+const REMOTE_BOOTSTRAP_SNAPSHOT_HANDLERS = {
+  'agent-supervision': createRemoteBootstrapSnapshotHandler(
+    'agent-supervision',
+    replaceRemoteAgentSupervisionBootstrap,
+  ),
+  'git-status': null,
+  'peer-presence': createRemoteBootstrapSnapshotHandler(
+    'peer-presence',
+    replaceRemotePeerPresenceBootstrap,
+  ),
+  'remote-status': null,
+  'task-command-controller': createRemoteBootstrapSnapshotHandler(
+    'task-command-controller',
+    replaceRemoteTaskCommandControllerBootstrap,
+  ),
+  'task-convergence': null,
+  'task-ports': createRemoteBootstrapSnapshotHandler('task-ports', replaceRemoteTaskPortsBootstrap),
+  'task-review': createRemoteBootstrapSnapshotHandler(
+    'task-review',
+    replaceRemoteTaskReviewBootstrap,
+  ),
+  'task-review-signals': null,
+  'task-steps': null,
+} satisfies Record<ServerStateBootstrapCategory, RemoteBootstrapSnapshotHandler | null>;
+
+export function applyRemoteStateBootstrap(snapshots: ReadonlyArray<unknown>): void {
+  for (const snapshot of filterServerStateBootstrapSnapshots(snapshots)) {
+    REMOTE_BOOTSTRAP_SNAPSHOT_HANDLERS[snapshot.category]?.(snapshot);
   }
 }
+
+function handleRemoteAgentSupervisionIpcEvent(payload: unknown): void {
+  if (isAgentSupervisionEvent(payload)) {
+    applyRemoteAgentSupervisionChanged(payload);
+  }
+}
+
+function handleRemoteTaskCommandControllerIpcEvent(payload: unknown): void {
+  if (isTaskCommandControllerSnapshot(payload)) {
+    applyRemoteTaskCommandControllerChanged(payload);
+  }
+}
+
+function handleRemoteTaskReviewIpcEvent(payload: unknown): void {
+  if (isTaskReviewEvent(payload)) {
+    applyRemoteTaskReviewChanged(payload);
+  }
+}
+
+const REMOTE_LIVE_IPC_EVENT_HANDLERS = {
+  [IPC.AgentSupervisionChanged]: handleRemoteAgentSupervisionIpcEvent,
+  [IPC.GitStatusChanged]: null,
+  [IPC.TaskCommandControllerChanged]: handleRemoteTaskCommandControllerIpcEvent,
+  [IPC.TaskConvergenceChanged]: null,
+  [IPC.TaskReviewChanged]: handleRemoteTaskReviewIpcEvent,
+  [IPC.TaskReviewSignalsChanged]: null,
+  [IPC.TaskStepsChanged]: null,
+} satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandler | null>;
 
 export function applyRemoteIpcEvent(channel: string, payload: unknown): void {
   if (!isRemoteLiveIpcEventChannel(channel)) {
     return;
   }
 
-  const handling = REMOTE_LIVE_IPC_EVENT_HANDLING[channel];
-  switch (handling) {
-    case 'ignore':
-      return;
-    case 'handle-agent-supervision':
-      if (isAgentSupervisionPayload(payload)) {
-        applyRemoteAgentSupervisionChanged(payload);
-      }
-      return;
-    case 'handle-task-command-controller':
-      if (isTaskCommandControllerSnapshotPayload(payload)) {
-        applyRemoteTaskCommandControllerChanged(payload);
-      }
-      return;
-    case 'handle-task-review':
-      if (isTaskReviewPayload(payload)) {
-        applyRemoteTaskReviewChanged(payload);
-      }
-      return;
-  }
-
-  return assertNever(handling, 'Unhandled remote IPC event handling mode');
+  REMOTE_LIVE_IPC_EVENT_HANDLERS[channel]?.(payload);
 }
 
 export function replaceRemotePeerPresences(snapshots: ReadonlyArray<unknown>): void {

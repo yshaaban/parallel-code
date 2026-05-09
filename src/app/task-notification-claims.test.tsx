@@ -30,4 +30,40 @@ describe('task-notification-claims', () => {
     firstCoordinator.dispose();
     secondCoordinator.dispose();
   });
+
+  it('ignores malformed stored claims without blocking valid notification claims', () => {
+    clientIdQueueRef.current = ['tab-1'];
+    localStorage.setItem(
+      'parallel-code-task-notification-claims',
+      JSON.stringify({
+        'ready:invalid-null': null,
+        'ready:invalid-expiration': {
+          expiresAt: 'soon',
+          ownerId: 'tab-2',
+        },
+        'ready:invalid-negative-expiration': {
+          expiresAt: -1,
+          ownerId: 'tab-2',
+        },
+        'ready:invalid-fractional-expiration': {
+          expiresAt: Date.now() + 10_000.5,
+          ownerId: 'tab-2',
+        },
+        'ready:owned-by-other-tab': {
+          expiresAt: Date.now() + 10_000,
+          ownerId: 'tab-2',
+        },
+      }),
+    );
+
+    const coordinator = createTaskNotificationClaimCoordinator();
+
+    expect(coordinator.claim('ready:invalid-null')).toBe(true);
+    expect(coordinator.claim('ready:invalid-expiration')).toBe(true);
+    expect(coordinator.claim('ready:invalid-negative-expiration')).toBe(true);
+    expect(coordinator.claim('ready:invalid-fractional-expiration')).toBe(true);
+    expect(coordinator.claim('ready:owned-by-other-tab')).toBe(false);
+
+    coordinator.dispose();
+  });
 });

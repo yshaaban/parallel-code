@@ -3,6 +3,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { invoke, isElectronRuntime } from '../lib/ipc';
 import { hasShellPromptReadyInTail } from '../lib/prompt-detection';
+import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { saveBrowserWorkspaceState } from '../store/persistence';
 import { setTaskFocusedPanel } from '../store/focus';
@@ -30,7 +31,7 @@ function persistBrowserWorkspaceShellLayout(): void {
 }
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
-  const shellId = crypto.randomUUID();
+  const shellId = createRandomId();
   const task = store.tasks[taskId];
   if (!task) {
     return shellId;

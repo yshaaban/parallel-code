@@ -302,6 +302,21 @@ describe('remote access app workflow', () => {
     });
   });
 
+  it('forwards explicit electron ports instead of treating falsy values as omitted', async () => {
+    runtimeState.electronRuntime = true;
+    invokeMock.mockResolvedValue({
+      url: 'http://server',
+      wifiUrl: null,
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+
+    await startRemoteAccess(0);
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.StartRemoteServer, { port: 0 });
+  });
+
   it('applies pushed remote status snapshots and peer-count updates', () => {
     const enabledStatus = {
       enabled: true,

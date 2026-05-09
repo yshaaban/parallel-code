@@ -3,6 +3,7 @@ import {
   MAX_CLIENT_INPUT_DATA_LENGTH,
   type ClientMessage,
   type PauseReason,
+  type TaskControlContext,
 } from '../../electron/remote/protocol';
 import type {
   RendererInvokeChannel,
@@ -36,6 +37,7 @@ import {
   type BrowserTransportEvent,
 } from './browser-control-client';
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
+import { createRandomId } from './random-id';
 import { splitTerminalInputChunks } from './terminal-input-batching';
 import { isNonEmptyString } from './type-guards';
 import {
@@ -439,7 +441,7 @@ export function onBrowserAuthenticated(listener: () => void): () => void {
 
 export class Channel<T> {
   private browserChannelState: BrowserChannelState<T> | null = null;
-  private _id: string = crypto.randomUUID();
+  private _id: string = createRandomId();
   private _onmessage: ((msg: T) => void) | null = null;
 
   cleanup: (() => void) | null = null;
@@ -570,6 +572,18 @@ function splitBrowserInputData(data: string): string[] {
   return splitTerminalInputChunks(data, MAX_CLIENT_INPUT_DATA_LENGTH).map((chunk) => chunk.data);
 }
 
+function createBrowserTaskControlContext(options: {
+  controllerId?: string;
+  taskId?: string;
+}): TaskControlContext {
+  return options.controllerId && options.taskId
+    ? {
+        controllerId: options.controllerId,
+        taskId: options.taskId,
+      }
+    : {};
+}
+
 function createBrowserInputMessage(
   agentId: string,
   data: string,
@@ -584,9 +598,8 @@ function createBrowserInputMessage(
     type: 'input',
     agentId,
     data,
-    ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+    ...createBrowserTaskControlContext(options),
     ...(options.requestId ? { requestId: options.requestId } : {}),
-    ...(options.taskId ? { taskId: options.taskId } : {}),
     ...(options.trace ? { trace: options.trace } : {}),
   };
 }
@@ -639,7 +652,7 @@ function requestTerminalTraceClockSyncSamples(sampleCount: number): void {
   }
 
   for (let index = 0; index < sampleCount; index += 1) {
-    const requestId = crypto.randomUUID();
+    const requestId = createRandomId();
     const clientSentAtMs = getLocalTerminalTraceTimestampMs();
     pendingTerminalTraceClockSyncRequests.set(requestId, clientSentAtMs);
     if (
@@ -727,10 +740,9 @@ function createBrowserResizeMessage(
     type: 'resize',
     agentId: args.agentId,
     cols: args.cols,
-    ...(args.controllerId ? { controllerId: args.controllerId } : {}),
+    ...createBrowserTaskControlContext(args),
     requestId,
     rows: args.rows,
-    ...(args.taskId ? { taskId: args.taskId } : {}),
   };
 }
 
@@ -740,7 +752,7 @@ function getBrowserAgentCommandRequestId(
   chunkIndex: number,
 ): string {
   if (requestId === undefined) {
-    return crypto.randomUUID();
+    return createRandomId();
   }
 
   if (chunkCount === 1) {
@@ -885,7 +897,7 @@ async function browserInvoke(
       return undefined;
     }
     case IPC.ResizeAgent: {
-      const requestId = args.requestId ?? crypto.randomUUID();
+      const requestId = args.requestId ?? createRandomId();
       await sendBrowserAgentCommand(
         requestId,
         { agentId: args.agentId, command: 'resize' },
@@ -1080,17 +1092,7 @@ export async function sendTerminalInput(
     return;
   }
 
-  if (!request.requestId) {
-    await sendBrowserInput(request.agentId, request.data, {
-      awaitCommandResult: false,
-      ...(request.controllerId ? { controllerId: request.controllerId } : {}),
-      ...(request.taskId ? { taskId: request.taskId } : {}),
-      ...(request.trace ? { trace: request.trace } : {}),
-    });
-    return;
-  }
-
-  const requestId = request.requestId;
+  const requestId = request.requestId ?? createRandomId();
   await sendBrowserInput(request.agentId, request.data, {
     canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
     ...(request.controllerId ? { controllerId: request.controllerId } : {}),

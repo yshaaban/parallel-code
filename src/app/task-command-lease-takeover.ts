@@ -1,12 +1,13 @@
 import type { TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage } from '../../electron/remote/protocol';
 import { assertNever } from '../lib/assert-never';
 import { confirm } from '../lib/dialog';
+import { getFallbackDisplayName } from '../lib/display-name';
 import {
   isElectronRuntime,
   sendBrowserControlMessage,
   sendImmediateBrowserControlMessage,
 } from '../lib/ipc';
-import { getFallbackDisplayName } from '../lib/display-name';
+import { createRandomId } from '../lib/random-id';
 import { getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
 import { getPeerDisplayName } from '../store/peer-presence';
 import {
@@ -143,7 +144,7 @@ async function requestTaskCommandTakeover(
     return 'approved';
   }
 
-  const requestId = crypto.randomUUID();
+  const requestId = createRandomId();
   const resultPromise = createPendingTaskCommandTakeover(requestId);
 
   try {

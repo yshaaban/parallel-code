@@ -36,6 +36,7 @@ interface CreateBrowserControlDelayedSendsOptions {
 }
 
 export interface BrowserControlDelayedSends {
+  cleanup: () => void;
   clearClient: (client: WebSocket) => void;
   getPendingChannelSendState: (client: WebSocket) => PendingChannelSendState | null;
   sendChannelData: (client: WebSocket, data: string | Buffer) => boolean;
@@ -82,6 +83,7 @@ export function createBrowserControlDelayedSends(
   options: CreateBrowserControlDelayedSendsOptions,
 ): BrowserControlDelayedSends {
   const delayedClientSends = new WeakMap<WebSocket, DelayedClientSendState>();
+  const trackedClients = new Set<WebSocket>();
 
   function getDelayedClientSendState(client: WebSocket): DelayedClientSendState {
     let state = delayedClientSends.get(client);
@@ -95,6 +97,7 @@ export function createBrowserControlDelayedSends(
       totalBytes: 0,
     };
     delayedClientSends.set(client, state);
+    trackedClients.add(client);
     return state;
   }
 
@@ -108,6 +111,7 @@ export function createBrowserControlDelayedSends(
       clearTimeout(state.timer);
     }
     delayedClientSends.delete(client);
+    trackedClients.delete(client);
   }
 
   function sendSafely(
@@ -266,7 +270,14 @@ export function createBrowserControlDelayedSends(
     };
   }
 
+  function cleanup(): void {
+    for (const client of trackedClients) {
+      clearClient(client);
+    }
+  }
+
   return {
+    cleanup,
     clearClient,
     getPendingChannelSendState,
     sendChannelData,

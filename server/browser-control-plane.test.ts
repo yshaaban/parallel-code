@@ -16,7 +16,12 @@ import type { UpdatePresenceCommand } from '../electron/remote/protocol.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
-function createFakeClient(): { client: WebSocket; sent: unknown[] } {
+type FakeWebSocketClient = WebSocket & {
+  bufferedAmount: number;
+  readyState: WebSocket['readyState'];
+};
+
+function createFakeClient(): { client: FakeWebSocketClient; sent: unknown[] } {
   const sent: unknown[] = [];
   const client = {
     bufferedAmount: 0,
@@ -26,17 +31,20 @@ function createFakeClient(): { client: WebSocket; sent: unknown[] } {
       sent.push(typeof value === 'string' ? JSON.parse(value) : value);
     }),
     terminate: vi.fn(),
-  } as unknown as WebSocket;
+  } as unknown as FakeWebSocketClient;
 
   return { client, sent };
 }
 
-function setClientBufferedAmount(client: WebSocket, bufferedAmount: number): void {
-  (client as unknown as { bufferedAmount: number }).bufferedAmount = bufferedAmount;
+function setClientBufferedAmount(client: FakeWebSocketClient, bufferedAmount: number): void {
+  client.bufferedAmount = bufferedAmount;
 }
 
-function setClientReadyState(client: WebSocket, readyState: number): void {
-  (client as unknown as { readyState: number }).readyState = readyState;
+function setClientReadyState(
+  client: FakeWebSocketClient,
+  readyState: WebSocket['readyState'],
+): void {
+  client.readyState = readyState;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -1716,6 +1724,39 @@ describe('browser control plane', () => {
     });
     expect(vi.getTimerCount()).toBe(0);
   }, 10_000);
+
+  it('clears pending batched and delayed sends during control-plane cleanup', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateJitterMs: 0,
+      simulateLatencyMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+    const sentBeforeQueuedWork = sent.length;
+
+    controlPlane.emitGitStatusChanged({
+      worktreePath: '/tmp/task-cleanup',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    expect(controlPlane.sendChannelData(client, Buffer.from('late-channel-data'))).toBe(true);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    controlPlane.cleanup();
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.runOnlyPendingTimersAsync();
+    expect(sent).toHaveLength(sentBeforeQueuedWork);
+    expect(controlPlane.getPendingChannelSendState(client)).toBeNull();
+  });
 
   it('treats simulated packet loss as extra delay instead of dropping channel data', async () => {
     vi.useFakeTimers();

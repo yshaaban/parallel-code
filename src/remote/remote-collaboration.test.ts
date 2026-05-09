@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
-import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 
 vi.mock('./client-id', () => ({
   getRemoteClientId: vi.fn(() => 'remote-client-1234'),
@@ -58,6 +57,24 @@ describe('remote collaboration state', () => {
       isSelf: true,
       label: 'You typing',
     });
+  });
+
+  it('does not notify task-command controller listeners for unchanged renew snapshots', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeRemoteTaskCommandControllerChanges(listener);
+    const snapshot = {
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      taskId: 'task-1',
+      version: 1,
+    };
+
+    applyRemoteTaskCommandControllerChanged(snapshot);
+    applyRemoteTaskCommandControllerChanged(snapshot);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(getRemoteTaskCommandController('task-1')).toEqual(snapshot);
+    unsubscribe();
   });
 
   it('uses peer presence only for display cues when controller snapshots have not arrived yet', () => {
@@ -140,7 +157,7 @@ describe('remote collaboration state', () => {
         ],
         version: 1,
       },
-    ] as unknown as ReadonlyArray<AnyServerStateBootstrapSnapshot>);
+    ]);
 
     expect(getRemoteTaskPresenceOwnerStatus('task-good')).toEqual({
       action: 'type in the terminal',
@@ -354,6 +371,40 @@ describe('remote collaboration state', () => {
     expect(getRemoteTaskCommandController('task-1')).toBeNull();
   });
 
+  it('ignores invalid task-command controller replacement versions', () => {
+    applyRemoteStateBootstrap([
+      {
+        category: 'task-command-controller',
+        mode: 'replace',
+        payload: [
+          {
+            action: 'type in the terminal',
+            controllerId: 'peer-1',
+            taskId: 'task-1',
+            version: 1,
+          },
+        ],
+        version: -1,
+      },
+      {
+        category: 'task-command-controller',
+        mode: 'replace',
+        payload: [
+          {
+            action: 'type in the terminal',
+            controllerId: 'peer-2',
+            taskId: 'task-2',
+            version: 2,
+          },
+        ],
+        version: 1.5,
+      },
+    ]);
+
+    expect(getRemoteTaskCommandController('task-1')).toBeNull();
+    expect(getRemoteTaskCommandController('task-2')).toBeNull();
+  });
+
   it('explicitly ignores live ipc-event channels that the remote UI does not consume yet', () => {
     const listener = vi.fn();
     const cleanup = subscribeRemoteTaskCommandControllerChanges(listener);
@@ -413,6 +464,38 @@ describe('remote collaboration state', () => {
           },
         ],
         version: 4,
+      },
+    ]);
+
+    expect(getRemoteTaskControllerOwnerStatus('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'peer-new',
+      isSelf: false,
+      label: 'Another session typing',
+    });
+  });
+
+  it('ignores stale task-controller bootstrap payloads after newer live events', () => {
+    applyRemoteTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-new',
+      taskId: 'task-1',
+      version: 6,
+    });
+
+    applyRemoteStateBootstrap([
+      {
+        category: 'task-command-controller',
+        mode: 'replace',
+        payload: [
+          {
+            action: 'type in the terminal',
+            controllerId: 'peer-old',
+            taskId: 'task-1',
+            version: 5,
+          },
+        ],
+        version: 5,
       },
     ]);
 
@@ -569,7 +652,25 @@ describe('remote collaboration state', () => {
         ],
         version: 2,
       },
-    ] as unknown as ReadonlyArray<AnyServerStateBootstrapSnapshot>;
+      {
+        category: 'task-review',
+        mode: 'replace',
+        payload: 'not-an-array',
+        version: 3,
+      },
+      {
+        category: 'task-ports',
+        mode: 'replace',
+        payload: [],
+        version: Number.NaN,
+      },
+      {
+        category: 'unknown',
+        mode: 'replace',
+        payload: [],
+        version: 4,
+      },
+    ];
 
     applyRemoteStateBootstrap(snapshots);
 

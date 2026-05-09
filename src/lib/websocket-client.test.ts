@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isFiniteNumber, isRecord, isOptionalString } from './type-guards';
 import { createWebSocketClientCore, type WebSocketConnectionState } from './websocket-client';
 
 interface TestIncomingMessage {
@@ -11,6 +12,32 @@ interface TestOutgoingMessage {
   clientId?: string;
   lastSeq?: number;
   token?: string;
+}
+
+function parseTestOutgoingMessage(payload: string): TestOutgoingMessage {
+  const parsed: unknown = JSON.parse(payload);
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.type !== 'string' ||
+    !isOptionalString(parsed.clientId) ||
+    !isOptionalString(parsed.token) ||
+    !(parsed.lastSeq === undefined || isFiniteNumber(parsed.lastSeq))
+  ) {
+    throw new Error('invalid test outgoing websocket message');
+  }
+
+  const message: TestOutgoingMessage = { type: parsed.type };
+  if (parsed.clientId !== undefined) {
+    message.clientId = parsed.clientId;
+  }
+  if (parsed.lastSeq !== undefined) {
+    message.lastSeq = parsed.lastSeq;
+  }
+  if (parsed.token !== undefined) {
+    message.token = parsed.token;
+  }
+
+  return message;
 }
 
 class FakeWebSocket {
@@ -44,8 +71,12 @@ class FakeWebSocket {
   }
 
   receive(message: TestIncomingMessage): void {
+    this.receiveRaw(JSON.stringify(message));
+  }
+
+  receiveRaw(data: string): void {
     this.onmessage?.({
-      data: JSON.stringify(message),
+      data,
     } as MessageEvent<string>);
   }
 
@@ -55,7 +86,7 @@ class FakeWebSocket {
   }
 
   send(payload: string): void {
-    this.sent.push(JSON.parse(payload) as TestOutgoingMessage);
+    this.sent.push(parseTestOutgoingMessage(payload));
   }
 }
 
@@ -122,6 +153,77 @@ describe('createWebSocketClientCore', () => {
       { type: 'status', seq: 2 },
     ]);
     expect(client.getLastSeq()).toBe(2);
+  });
+
+  it('ignores parsed websocket payloads that are not typed message objects', async () => {
+    const received: TestIncomingMessage[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: (message) => {
+        received.push(message);
+      },
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    socket?.receiveRaw('null');
+    socket?.receiveRaw('[]');
+    socket?.receiveRaw('{}');
+    socket?.receiveRaw('{"type":42}');
+    socket?.receiveRaw('not-json');
+    expect(received).toEqual([]);
+
+    socket?.receive({ type: 'agents' });
+    expect(received).toEqual([{ type: 'agents' }]);
+  });
+
+  it('uses the supplied incoming-message guard before dispatching messages', async () => {
+    const received: TestIncomingMessage[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      isIncomingMessage: (value): value is TestIncomingMessage =>
+        isRecord(value) && value.type === 'accepted',
+      onMessage: (message) => {
+        received.push(message);
+      },
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    socket?.receive({ type: 'agents' });
+    socket?.receive({ type: 'accepted' });
+
+    expect(received).toEqual([{ type: 'accepted' }]);
+  });
+
+  it('passes token context to websocket URLs even when auth messages are not used', async () => {
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: ({ clientId, lastSeq, token }) =>
+        `ws://localhost/ws?clientId=${clientId}&lastSeq=${lastSeq}&token=${token ?? 'none'}`,
+      getToken: () => 'url-token',
+      onMessage: () => {},
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+
+    expect(socket?.url).toBe('ws://localhost/ws?clientId=client-1&lastSeq=-1&token=url-token');
+
+    socket?.open();
+    await connectPromise;
+    expect(socket?.sent).toEqual([]);
   });
 
   it('tracks pong round trips and disconnects after a missed pong timeout', async () => {

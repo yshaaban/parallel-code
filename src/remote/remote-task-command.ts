@@ -1,6 +1,12 @@
 import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { assertNever } from '../lib/assert-never';
 import {
+  getSafeSessionStorage,
+  getSafeStorageItem,
+  setSafeStorageItem,
+} from '../lib/browser-storage';
+import { createRandomId } from '../lib/random-id';
+import {
   acquireRemoteTaskCommandLease,
   releaseRemoteTaskCommandLease,
   renewRemoteTaskCommandLease,
@@ -17,10 +23,14 @@ import {
   bumpTaskCommandGeneration,
   clearSendQueues,
   clearTaskCommandGenerations,
+  getRetainedRemoteTaskCommandLeaseGeneration,
   getLocalTaskCommandLease,
   getLocalTaskCommandLeaseKeys,
   getOrCreateLocalTaskCommandLease,
   getSendQueue,
+  isRetainedRemoteTaskCommandLease,
+  markRemoteTaskCommandLeaseIdle,
+  markRemoteTaskCommandLeaseRetained,
   setSendQueue,
   deleteSendQueue,
   type RemoteTaskCommandLeaseState,
@@ -38,29 +48,37 @@ import {
   requestTaskTakeover,
   resetRemoteTaskCommandSubscriptionsForTests,
 } from './remote-task-command-subscriptions';
-import { sendWhenConnected } from './ws';
+import { send } from './ws';
 
 const REMOTE_LEASE_OWNER_ID_KEY = 'parallel-code-remote-lease-owner-id';
 const TASK_COMMAND_ACTION = 'type in the terminal';
 const TASK_COMMAND_LEASE_RENEW_MS = 5_000;
 const TASK_COMMAND_LEASE_IDLE_MS = 5_000;
+let runtimeRemoteLeaseOwnerId: string | null = null;
 
 type RemoteAcquireTaskCommandResult = Awaited<ReturnType<typeof acquireRemoteTaskCommandLease>>;
 type RemoteRenewTaskCommandResult = Awaited<ReturnType<typeof renewRemoteTaskCommandLease>>;
 type RemoteReleaseTaskCommandResult = Awaited<ReturnType<typeof releaseRemoteTaskCommandLease>>;
 
+function getRuntimeRemoteLeaseOwnerId(): string {
+  runtimeRemoteLeaseOwnerId ??= createRandomId();
+  return runtimeRemoteLeaseOwnerId;
+}
+
 function getRemoteLeaseOwnerId(): string {
-  if (typeof sessionStorage === 'undefined') {
-    return 'remote-lease-owner';
+  const storage = getSafeSessionStorage();
+  if (!storage) {
+    return getRuntimeRemoteLeaseOwnerId();
   }
 
-  const existingOwnerId = sessionStorage.getItem(REMOTE_LEASE_OWNER_ID_KEY);
+  const existingOwnerId = getSafeStorageItem(storage, REMOTE_LEASE_OWNER_ID_KEY);
   if (existingOwnerId) {
+    runtimeRemoteLeaseOwnerId = existingOwnerId;
     return existingOwnerId;
   }
 
-  const nextOwnerId = crypto.randomUUID();
-  sessionStorage.setItem(REMOTE_LEASE_OWNER_ID_KEY, nextOwnerId);
+  const nextOwnerId = getRuntimeRemoteLeaseOwnerId();
+  setSafeStorageItem(storage, REMOTE_LEASE_OWNER_ID_KEY, nextOwnerId);
   return nextOwnerId;
 }
 
@@ -82,13 +100,17 @@ function scheduleIdleRelease(taskId: string, lease: RemoteTaskCommandLeaseState)
   }, TASK_COMMAND_LEASE_IDLE_MS);
 }
 
-function markLeaseRetained(taskId: string, lease: RemoteTaskCommandLeaseState): void {
+function markLeaseRetained(
+  taskId: string,
+  lease: RemoteTaskCommandLeaseState,
+  leaseGeneration: number,
+): void {
   if (!hasRemoteTaskCommandTransportAvailability()) {
     return;
   }
 
   lease.releaseRequested = false;
-  lease.retained = true;
+  markRemoteTaskCommandLeaseRetained(lease, leaseGeneration);
   startRenewal(taskId, lease);
   releaseCompetingTypingLeases(taskId);
   scheduleIdleRelease(taskId, lease);
@@ -97,18 +119,26 @@ function markLeaseRetained(taskId: string, lease: RemoteTaskCommandLeaseState): 
 function startRenewal(taskId: string, lease: RemoteTaskCommandLeaseState): void {
   clearRenewTimer(lease);
   lease.renewTimer = setInterval(() => {
-    if (!lease.retained || lease.releaseRequested || !hasRetainedTaskCommandOwnership(taskId)) {
+    if (
+      !isRetainedRemoteTaskCommandLease(lease) ||
+      lease.releaseRequested ||
+      !hasRetainedTaskCommandOwnership(taskId)
+    ) {
       clearRenewTimer(lease);
       return;
     }
 
     void renewRemoteTaskCommandLease({
       clientId: getRemoteClientId(),
+      leaseGeneration: lease.ownership.leaseGeneration,
       ownerId: getRemoteLeaseOwnerId(),
       taskId,
     })
       .then((result: RemoteRenewTaskCommandResult) => {
         applyRemoteTaskCommandControllerChanged(result);
+        if (result.renewed) {
+          markRemoteTaskCommandLeaseRetained(lease, result.leaseGeneration);
+        }
         if (!result.renewed || !hasRetainedTaskCommandOwnership(taskId)) {
           clearRenewTimer(lease);
         }
@@ -141,8 +171,68 @@ async function acquireRemoteTaskCommand(
     ...(takeover ? { takeover: true } : {}),
     taskId,
   });
-  applyRemoteTaskCommandControllerChanged(result);
   return result;
+}
+
+async function releaseAcquiredRemoteTaskCommandLease(
+  taskId: string,
+  leaseGeneration: number,
+): Promise<void> {
+  if (!hasRemoteTaskCommandTransportAvailability()) {
+    return;
+  }
+
+  await releaseRemoteTaskCommandLease({
+    clientId: getRemoteClientId(),
+    leaseGeneration,
+    ownerId: getRemoteLeaseOwnerId(),
+    taskId,
+  })
+    .then((result: RemoteReleaseTaskCommandResult) => {
+      applyRemoteTaskCommandControllerChanged(result);
+    })
+    .catch(() => {});
+}
+
+async function cleanupUnretainedRemoteTaskCommandAcquire(
+  taskId: string,
+  attempt: ReturnType<typeof createRemoteTaskCommandAttempt>,
+  result: RemoteAcquireTaskCommandResult,
+): Promise<void> {
+  if (didAcquireRemoteTaskCommand(result)) {
+    await releaseAcquiredRemoteTaskCommandLease(taskId, result.leaseGeneration);
+  } else if (attempt && isRemoteTaskCommandAttemptCurrent(taskId, attempt)) {
+    applyRemoteTaskCommandControllerChanged(result);
+  }
+
+  cleanupReleasedTaskCommandLease(taskId);
+}
+
+async function acquireAndRetainTakeoverLease(taskId: string): Promise<boolean> {
+  const attempt = createRemoteTaskCommandAttempt(taskId);
+  if (!attempt) {
+    return false;
+  }
+
+  const lease = getOrCreateLocalTaskCommandLease(taskId);
+  lease.releaseRequested = false;
+
+  const result = await acquireRemoteTaskCommand(taskId, true);
+
+  const canRetainAcquiredLease =
+    didAcquireRemoteTaskCommand(result) &&
+    !lease.releaseRequested &&
+    getLocalTaskCommandLease(taskId) === lease &&
+    isRemoteTaskCommandAttemptCurrent(taskId, attempt);
+
+  if (!canRetainAcquiredLease) {
+    await cleanupUnretainedRemoteTaskCommandAcquire(taskId, attempt, result);
+    return false;
+  }
+
+  applyRemoteTaskCommandControllerChanged(result);
+  markLeaseRetained(taskId, lease, result.leaseGeneration);
+  return true;
 }
 
 async function retainRemoteTaskCommandLease(taskId: string): Promise<boolean> {
@@ -154,7 +244,11 @@ async function retainRemoteTaskCommandLease(taskId: string): Promise<boolean> {
 
   const lease = getOrCreateLocalTaskCommandLease(taskId);
 
-  if (lease.retained && !lease.releaseRequested && hasRetainedTaskCommandOwnership(taskId)) {
+  if (
+    isRetainedRemoteTaskCommandLease(lease) &&
+    !lease.releaseRequested &&
+    hasRetainedTaskCommandOwnership(taskId)
+  ) {
     scheduleIdleRelease(taskId, lease);
     return true;
   }
@@ -162,16 +256,22 @@ async function retainRemoteTaskCommandLease(taskId: string): Promise<boolean> {
   if (!lease.retainingPromise) {
     lease.releaseRequested = false;
     lease.retainingPromise = acquireRemoteTaskCommand(taskId, false)
-      .then((result) => {
+      .then(async (result) => {
         if (
           !didAcquireRemoteTaskCommand(result) ||
           lease.releaseRequested ||
           !isRemoteTaskCommandAttemptCurrent(taskId, attempt)
         ) {
+          await cleanupUnretainedRemoteTaskCommandAcquire(
+            taskId,
+            lease.releaseRequested ? null : attempt,
+            result,
+          );
           return false;
         }
 
-        markLeaseRetained(taskId, lease);
+        applyRemoteTaskCommandControllerChanged(result);
+        markLeaseRetained(taskId, lease, result.leaseGeneration);
         return true;
       })
       .catch(() => false)
@@ -182,7 +282,7 @@ async function retainRemoteTaskCommandLease(taskId: string): Promise<boolean> {
   }
 
   const acquired = await lease.retainingPromise;
-  if (!acquired || lease.releaseRequested || !lease.retained) {
+  if (!acquired || lease.releaseRequested || !isRetainedRemoteTaskCommandLease(lease)) {
     return false;
   }
 
@@ -278,14 +378,11 @@ export async function requestRemoteTaskTakeover(
   }
 
   if (force) {
-    const acquired = await acquireRemoteTaskCommand(taskId, true)
-      .then((result) => didAcquireRemoteTaskCommand(result))
-      .catch(() => false);
+    const acquired = await acquireAndRetainTakeoverLease(taskId).catch(() => false);
     if (!acquired) {
       return 'transport-unavailable';
     }
 
-    markLeaseRetained(taskId, getOrCreateLocalTaskCommandLease(taskId));
     return 'acquired';
   }
 
@@ -297,14 +394,11 @@ export async function requestRemoteTaskTakeover(
   switch (decision) {
     case 'approved':
     case 'owner-missing': {
-      const acquired = await acquireRemoteTaskCommand(taskId, true)
-        .then((result) => didAcquireRemoteTaskCommand(result))
-        .catch(() => false);
+      const acquired = await acquireAndRetainTakeoverLease(taskId).catch(() => false);
       if (!acquired) {
         return 'transport-unavailable';
       }
 
-      markLeaseRetained(taskId, getOrCreateLocalTaskCommandLease(taskId));
       return 'acquired';
     }
     case 'force-required':
@@ -334,17 +428,18 @@ export async function releaseRemoteTaskCommand(taskId: string): Promise<void> {
   }
 
   const refreshedLease = getLocalTaskCommandLease(taskId);
-  if (!refreshedLease) {
+  if (!refreshedLease || refreshedLease !== lease) {
     cleanupIdleTaskCommandSubscriptions();
     return;
   }
 
-  if (!refreshedLease.retained) {
+  const leaseGeneration = getRetainedRemoteTaskCommandLeaseGeneration(refreshedLease);
+  if (leaseGeneration === undefined) {
     cleanupReleasedTaskCommandLease(taskId);
     return;
   }
 
-  refreshedLease.retained = false;
+  markRemoteTaskCommandLeaseIdle(refreshedLease);
   if (!hasRemoteTaskCommandTransportAvailability()) {
     cleanupReleasedTaskCommandLease(taskId);
     return;
@@ -352,6 +447,7 @@ export async function releaseRemoteTaskCommand(taskId: string): Promise<void> {
 
   await releaseRemoteTaskCommandLease({
     clientId: getRemoteClientId(),
+    leaseGeneration,
     ownerId: getRemoteLeaseOwnerId(),
     taskId,
   })
@@ -366,7 +462,12 @@ export async function respondToRemoteTaskCommandTakeover(
   requestId: string,
   approved: boolean,
 ): Promise<boolean> {
-  return sendWhenConnected({
+  ensureRemoteTaskCommandSubscriptions();
+  if (!hasRemoteTaskCommandTransportAvailability()) {
+    return false;
+  }
+
+  return send({
     type: 'respond-task-command-takeover',
     approved,
     requestId,
@@ -407,4 +508,5 @@ export function resetRemoteTaskCommandStateForTests(): void {
   resetRemoteTaskCommandSubscriptionsForTests();
   clearSendQueues();
   clearTaskCommandGenerations();
+  runtimeRemoteLeaseOwnerId = null;
 }

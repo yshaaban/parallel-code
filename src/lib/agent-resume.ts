@@ -1,15 +1,32 @@
 import type { AgentDef, AgentResumeStrategy } from '../ipc/types.js';
 import { isHydraAgentDef } from './hydra.js';
+import { isStringMember } from './type-guards.js';
+
+type AgentResumeArgSource = Pick<AgentDef, 'adapter' | 'id' | 'resume_strategy'> & {
+  args?: unknown;
+  resume_args?: unknown;
+  skip_permissions_args?: unknown;
+};
+
+const AGENT_RESUME_STRATEGY_VALUES = {
+  'cli-args': true,
+  'hydra-session': true,
+  none: true,
+} satisfies Record<AgentResumeStrategy, true>;
 
 function getAgentArgs(args: unknown): string[] {
-  return Array.isArray(args) ? args : [];
+  if (!Array.isArray(args)) {
+    return [];
+  }
+
+  return args.filter((arg): arg is string => typeof arg === 'string');
 }
 
 export function isAgentResumeStrategy(value: unknown): value is AgentResumeStrategy {
-  return value === 'none' || value === 'cli-args' || value === 'hydra-session';
+  return isStringMember(value, AGENT_RESUME_STRATEGY_VALUES);
 }
 
-export function getAgentResumeStrategy(agentDef: AgentDef): AgentResumeStrategy {
+export function getAgentResumeStrategy(agentDef: AgentResumeArgSource): AgentResumeStrategy {
   if (isAgentResumeStrategy(agentDef.resume_strategy)) {
     return agentDef.resume_strategy;
   }
@@ -22,7 +39,7 @@ export function getAgentResumeStrategy(agentDef: AgentDef): AgentResumeStrategy 
 }
 
 export function buildAgentSpawnArgs(
-  agentDef: AgentDef,
+  agentDef: AgentResumeArgSource,
   options: {
     resumed: boolean;
     skipPermissions: boolean;
@@ -47,7 +64,10 @@ export function buildAgentSpawnArgs(
   return mergedArgs;
 }
 
-export function shouldResumeAgentOnSpawn(agentDef: AgentDef, resumed: boolean): boolean {
+export function shouldResumeAgentOnSpawn(
+  agentDef: AgentResumeArgSource,
+  resumed: boolean,
+): boolean {
   const resumeStrategy = getAgentResumeStrategy(agentDef);
   return resumed && resumeStrategy === 'hydra-session';
 }

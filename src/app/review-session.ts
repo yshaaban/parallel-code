@@ -1,5 +1,6 @@
 import { createSignal, type Accessor } from 'solid-js';
 
+import { createRandomId } from '../lib/random-id';
 import type { DiffLineAnchor } from '../store/types';
 
 export type ReviewInteractionMode = 'review' | 'ask';
@@ -70,7 +71,7 @@ interface CreateReviewSessionOptions {
 
 function createAnnotation(selection: ReviewSelection, comment: string): ReviewAnnotation {
   return {
-    id: crypto.randomUUID(),
+    id: createRandomId(),
     source: selection.source,
     ...(selection.lineBeginning ? { lineBeginning: selection.lineBeginning } : {}),
     startLine: selection.startLine,
@@ -83,7 +84,7 @@ function createAnnotation(selection: ReviewSelection, comment: string): ReviewAn
 
 function createQuestion(selection: ReviewSelection, question: string): ReviewQuestion {
   return {
-    id: crypto.randomUUID(),
+    id: createRandomId(),
     source: selection.source,
     afterLine: selection.afterLine ?? selection.endLine,
     question,

@@ -1,7 +1,5 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
-import { invoke } from '../lib/ipc';
-import { getRuntimeClientId } from '../lib/runtime-client-id';
 import {
   hasProjectCurrentBranchTask,
   hasTaskClosingState,
@@ -9,6 +7,9 @@ import {
   isTaskRemoving,
 } from '../domain/task-closing';
 import type { AgentDef } from '../ipc/types';
+import { invoke } from '../lib/ipc';
+import { createRandomId } from '../lib/random-id';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import {
   getProject,
@@ -217,7 +218,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 
-  const agentId = crypto.randomUUID();
+  const agentId = createRandomId();
   const resolvedGitIsolation = result.git_isolation ?? gitIsolation;
   const resolvedBaseBranch = result.base_branch ?? baseBranch;
   const task: Task = {
@@ -560,7 +561,7 @@ export async function uncollapseTask(taskId: string): Promise<void> {
 
   const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
     const savedDef = task.savedAgentDef;
-    const agentId = savedDef ? crypto.randomUUID() : null;
+    const agentId = savedDef ? createRandomId() : null;
 
     setStore(
       produce((state) => {

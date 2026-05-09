@@ -12,9 +12,11 @@ import type {
   WebSocketClientCore,
 } from '../lib/websocket-client';
 
+type CapturedRemoteServerMessage = ServerMessage | { type: string; [key: string]: unknown };
+
 const websocketState = vi.hoisted(() => ({
   ensureConnectedMock: vi.fn(async () => ({}) as WebSocket),
-  options: null as CreateWebSocketClientCoreOptions<ServerMessage, unknown> | null,
+  options: null as CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown> | null,
   sendAsyncMock: vi.fn(async () => {}),
   sendIfOpenMock: vi.fn(() => true),
 }));
@@ -56,7 +58,7 @@ vi.mock('./remote-task-state', () => ({
 vi.mock('../lib/websocket-client', () => ({
   createWebSocketClientCore: vi.fn(
     (
-      options: CreateWebSocketClientCoreOptions<ServerMessage, unknown>,
+      options: CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown>,
     ): WebSocketClientCore<unknown> => {
       websocketState.options = options;
       return {
@@ -113,7 +115,7 @@ function createScrollbackMessage(data: string): ScrollbackMessage {
 
 async function loadWsModule(): Promise<{
   module: typeof import('./ws');
-  options: CreateWebSocketClientCoreOptions<ServerMessage, unknown>;
+  options: CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown>;
 }> {
   vi.resetModules();
   websocketState.ensureConnectedMock.mockReset();
@@ -340,6 +342,88 @@ describe('remote ws projections', () => {
     expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
   });
 
+  it('ignores unknown remote server message types instead of dispatching them', async () => {
+    const { options } = await loadWsModule();
+
+    expect(() => {
+      options.onMessage({
+        type: 'future-server-event',
+        payload: { value: true },
+      });
+    }).not.toThrow();
+
+    expect(collaborationState.applyRemoteIpcEventMock).not.toHaveBeenCalled();
+    expect(collaborationState.applyRemoteStateBootstrapMock).not.toHaveBeenCalled();
+    expect(collaborationState.handleRemoteTakeoverResultMock).not.toHaveBeenCalled();
+    expect(collaborationState.replaceRemotePeerPresencesMock).not.toHaveBeenCalled();
+    expect(collaborationState.upsertIncomingRemoteTakeoverRequestMock).not.toHaveBeenCalled();
+    expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
+  });
+
+  it('drops malformed known remote server message types before dispatch', async () => {
+    const { options } = await loadWsModule();
+    const malformedMessages: CapturedRemoteServerMessage[] = [
+      { type: 'agents', list: [{ agentId: 'agent-1', status: 'mystery-state' }] },
+      { type: 'output', agentId: 'agent-1' },
+      { type: 'scrollback', agentId: 'agent-1', data: 'c25hcHNob3Q=' },
+      { type: 'scrollback', agentId: 'agent-1', data: 'c25hcHNob3Q=', cols: 0 },
+      { type: 'status', agentId: 'agent-1', status: 'running', exitCode: Number.NaN },
+      { type: 'status', agentId: 'agent-1', status: 'running', exitCode: 1.5 },
+      { type: 'peer-presences' },
+      {
+        type: 'task-command-takeover-request',
+        action: 'type in the terminal',
+        expiresAt: 10,
+        requestId: 'request-1',
+        requesterClientId: 'peer-1',
+      },
+      {
+        type: 'task-command-takeover-result',
+        decision: 'maybe',
+        requestId: 'request-1',
+        taskId: 'task-1',
+      },
+      { type: 'ipc-event', payload: {} },
+    ];
+
+    for (const message of malformedMessages) {
+      expect(() => options.onMessage(message)).not.toThrow();
+    }
+
+    expect(collaborationState.applyRemoteIpcEventMock).not.toHaveBeenCalled();
+    expect(collaborationState.applyRemoteStateBootstrapMock).not.toHaveBeenCalled();
+    expect(collaborationState.handleRemoteTakeoverResultMock).not.toHaveBeenCalled();
+    expect(collaborationState.replaceRemotePeerPresencesMock).not.toHaveBeenCalled();
+    expect(collaborationState.upsertIncomingRemoteTakeoverRequestMock).not.toHaveBeenCalled();
+    expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
+  });
+
+  it('applies only array state-bootstrap payloads from the websocket transport', async () => {
+    const { options } = await loadWsModule();
+    const snapshots = [
+      {
+        category: 'peer-presence',
+        mode: 'replace',
+        payload: [],
+        version: 1,
+      },
+    ];
+
+    options.onMessage({
+      type: 'state-bootstrap',
+      snapshots,
+    });
+    expect(collaborationState.applyRemoteStateBootstrapMock).toHaveBeenCalledWith(snapshots);
+
+    collaborationState.applyRemoteStateBootstrapMock.mockClear();
+    options.onMessage({
+      type: 'state-bootstrap',
+      snapshots: null,
+    });
+
+    expect(collaborationState.applyRemoteStateBootstrapMock).not.toHaveBeenCalled();
+  });
+
   it('applies direct task-port control messages because the remote list consumes preview availability', async () => {
     const { options } = await loadWsModule();
     const message: ServerMessage = {
@@ -378,7 +462,7 @@ describe('remote ws projections', () => {
       ],
       observed: [],
       updatedAt: 0,
-    } as unknown as ServerMessage;
+    };
 
     options.onMessage(message);
 
@@ -407,7 +491,7 @@ describe('remote ws projections', () => {
       ],
       observed: [],
       updatedAt: Number.POSITIVE_INFINITY,
-    } as unknown as ServerMessage;
+    };
 
     options.onMessage(message);
 

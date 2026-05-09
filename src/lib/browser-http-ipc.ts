@@ -11,6 +11,7 @@ import {
   removeSafeStorageItem,
   setSafeStorageItem,
 } from './browser-storage';
+import { hasOwnKey, isNonNegativeInteger, isRecord } from './type-guards';
 
 const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
@@ -22,10 +23,22 @@ const DEDUPED_PENDING_REQUESTS = new Set<RendererInvokeChannel>([
   IPC.SaveWorkspaceState,
   IPC.LoadWorkspaceState,
 ]);
+const KEEPALIVE_REQUESTS = new Set<RendererInvokeChannel>([
+  IPC.DetachAgentOutput,
+  IPC.SaveAppState,
+  IPC.SaveWorkspaceState,
+]);
 const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
+const KILL_AGENT_DURABLE_ARG_KEYS = new Set(['agentId']);
+const PAUSE_RESUME_DURABLE_ARG_KEYS = new Set(['agentId', 'channelId', 'reason']);
 
 type BrowserInvokeRequest = RendererInvokeRequestMap[RendererInvokeChannel];
+type DurableControlChannel = IPC.KillAgent | IPC.PauseAgent | IPC.ResumeAgent;
+type DurableControlRequestConfig<TChannel extends DurableControlChannel> = {
+  isArgs: (args: unknown) => args is RendererInvokeRequestMap[TChannel];
+  isDurable: (args: BrowserInvokeRequest | undefined) => boolean;
+};
 type UndefinedRendererInvokeChannel = {
   [TChannel in RendererInvokeChannel]: RendererInvokeResponseMap[TChannel] extends undefined
     ? TChannel
@@ -50,36 +63,39 @@ type BrowserInvokeResponseEnvelope<TChannel extends RendererInvokeChannel> =
       error?: string;
     };
 
-const UNDEFINED_RENDERER_INVOKE_CHANNELS = new Set<UndefinedRendererInvokeChannel>([
-  IPC.CommitAll,
-  IPC.DeleteTask,
-  IPC.DetachAgentOutput,
-  IPC.DiscardUncommitted,
-  IPC.KillAgent,
-  IPC.KillAllAgents,
-  IPC.PauseAgent,
-  IPC.PushTask,
-  IPC.RebaseTask,
-  IPC.RemoveArenaWorktree,
-  IPC.ResetBackendRuntimeDiagnostics,
-  IPC.ResizeAgent,
-  IPC.ResumeAgent,
-  IPC.SaveAppState,
-  IPC.SaveArenaData,
-  IPC.ShellOpenInEditor,
-  IPC.ShellReveal,
-  IPC.StopRemoteServer,
-  IPC.WindowClose,
-  IPC.WindowForceClose,
-  IPC.WindowHide,
-  IPC.WindowMaximize,
-  IPC.WindowMinimize,
-  IPC.WindowSetPosition,
-  IPC.WindowSetSize,
-  IPC.WindowToggleMaximize,
-  IPC.WindowUnmaximize,
-  IPC.WriteToAgent,
-]);
+const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
+  [IPC.CleanupTaskRuntime]: true,
+  [IPC.CommitAll]: true,
+  [IPC.DeleteTask]: true,
+  [IPC.DetachAgentOutput]: true,
+  [IPC.DiscardUncommitted]: true,
+  [IPC.KillAgent]: true,
+  [IPC.KillAllAgents]: true,
+  [IPC.LogFromRenderer]: true,
+  [IPC.PauseAgent]: true,
+  [IPC.PushTask]: true,
+  [IPC.RebaseTask]: true,
+  [IPC.RemoveArenaWorktree]: true,
+  [IPC.ResetBackendRuntimeDiagnostics]: true,
+  [IPC.ResizeAgent]: true,
+  [IPC.ResumeAgent]: true,
+  [IPC.SaveAppState]: true,
+  [IPC.SaveArenaData]: true,
+  [IPC.ShellOpenInEditor]: true,
+  [IPC.ShellReveal]: true,
+  [IPC.ShowNotification]: true,
+  [IPC.StopRemoteServer]: true,
+  [IPC.WindowClose]: true,
+  [IPC.WindowForceClose]: true,
+  [IPC.WindowHide]: true,
+  [IPC.WindowMaximize]: true,
+  [IPC.WindowMinimize]: true,
+  [IPC.WindowSetPosition]: true,
+  [IPC.WindowSetSize]: true,
+  [IPC.WindowToggleMaximize]: true,
+  [IPC.WindowUnmaximize]: true,
+  [IPC.WriteToAgent]: true,
+} satisfies Record<UndefinedRendererInvokeChannel, true>;
 
 export interface BrowserHttpIpcClient {
   clearDurableQueueStorage: () => void;
@@ -122,28 +138,12 @@ class BrowserHttpIpcResetError extends Error {
   }
 }
 
-function getRequestReason(args: BrowserInvokeRequest | undefined): unknown {
+function getRequestReason(args: unknown): unknown {
   if (!args || typeof args !== 'object' || !('reason' in args)) {
     return undefined;
   }
 
   return args.reason;
-}
-
-function isDurablePendingRequest(
-  cmd: RendererInvokeChannel,
-  args: BrowserInvokeRequest | undefined,
-): boolean {
-  if (cmd === IPC.KillAgent) {
-    return true;
-  }
-
-  if (cmd !== IPC.PauseAgent && cmd !== IPC.ResumeAgent) {
-    return false;
-  }
-
-  const reason = getRequestReason(args);
-  return reason === undefined || reason === 'manual';
 }
 
 function getPendingRequestRetryDelay(retries: number): number {
@@ -153,10 +153,125 @@ function getPendingRequestRetryDelay(retries: number): number {
   );
 }
 
-interface StoredPendingRequest {
-  args?: BrowserInvokeRequest;
-  cmd: RendererInvokeChannel;
+interface StoredDurableRequest<TChannel extends DurableControlChannel = DurableControlChannel> {
+  args: RendererInvokeRequestMap[TChannel];
+  cmd: TChannel;
   retries: number;
+}
+
+function hasOnlyStoredDurableArgKeys(
+  allowedKeys: ReadonlySet<string>,
+  args: Record<string, unknown>,
+): boolean {
+  return Object.keys(args).every((key) => allowedKeys.has(key));
+}
+
+function isAgentIdOnlyDurableControlArgs(
+  args: unknown,
+  allowedKeys: ReadonlySet<string>,
+): args is RendererInvokeRequestMap[IPC.KillAgent] {
+  return (
+    isRecord(args) &&
+    hasOnlyStoredDurableArgKeys(allowedKeys, args) &&
+    typeof args.agentId === 'string'
+  );
+}
+
+function isManualPauseResumeDurableControlArgs<TChannel extends IPC.PauseAgent | IPC.ResumeAgent>(
+  args: unknown,
+  allowedKeys: ReadonlySet<string>,
+): args is RendererInvokeRequestMap[TChannel] {
+  return (
+    isRecord(args) &&
+    hasOnlyStoredDurableArgKeys(allowedKeys, args) &&
+    typeof args.agentId === 'string' &&
+    (args.channelId === undefined || typeof args.channelId === 'string') &&
+    (args.reason === undefined || args.reason === 'manual')
+  );
+}
+
+function isManualControlRequest(args: BrowserInvokeRequest | undefined): boolean {
+  const reason = getRequestReason(args);
+  return reason === undefined || reason === 'manual';
+}
+
+function createDurableControlRequestConfig<TChannel extends DurableControlChannel>(
+  isArgs: (args: unknown) => args is RendererInvokeRequestMap[TChannel],
+  isDurable: (args: BrowserInvokeRequest | undefined) => boolean,
+): DurableControlRequestConfig<TChannel> {
+  return {
+    isArgs,
+    isDurable,
+  };
+}
+
+const DURABLE_CONTROL_REQUESTS = {
+  [IPC.KillAgent]: createDurableControlRequestConfig(
+    (args) => isAgentIdOnlyDurableControlArgs(args, KILL_AGENT_DURABLE_ARG_KEYS),
+    () => true,
+  ),
+  [IPC.PauseAgent]: createDurableControlRequestConfig(
+    (args) =>
+      isManualPauseResumeDurableControlArgs<IPC.PauseAgent>(args, PAUSE_RESUME_DURABLE_ARG_KEYS),
+    isManualControlRequest,
+  ),
+  [IPC.ResumeAgent]: createDurableControlRequestConfig(
+    (args) =>
+      isManualPauseResumeDurableControlArgs<IPC.ResumeAgent>(args, PAUSE_RESUME_DURABLE_ARG_KEYS),
+    isManualControlRequest,
+  ),
+} satisfies {
+  [TChannel in DurableControlChannel]: DurableControlRequestConfig<TChannel>;
+};
+
+function isDurableControlChannel(channel: unknown): channel is DurableControlChannel {
+  return (
+    typeof channel === 'string' &&
+    Object.prototype.hasOwnProperty.call(DURABLE_CONTROL_REQUESTS, channel)
+  );
+}
+
+function getDurableControlRequestConfig(
+  cmd: DurableControlChannel,
+): DurableControlRequestConfig<DurableControlChannel> {
+  return DURABLE_CONTROL_REQUESTS[cmd];
+}
+
+function isDurablePendingRequest(
+  cmd: RendererInvokeChannel,
+  args: BrowserInvokeRequest | undefined,
+): boolean {
+  return isDurableControlChannel(cmd) && getDurableControlRequestConfig(cmd).isDurable(args);
+}
+
+function parseStoredDurableRequest(value: unknown): StoredDurableRequest | null {
+  if (!isRecord(value) || !isNonNegativeInteger(value.retries) || value.retries > MAX_RETRIES) {
+    return null;
+  }
+
+  if (!isDurableControlChannel(value.cmd)) {
+    return null;
+  }
+
+  const config = getDurableControlRequestConfig(value.cmd);
+  return config.isArgs(value.args)
+    ? {
+        args: value.args,
+        cmd: value.cmd,
+        retries: value.retries,
+      }
+    : null;
+}
+
+function parseStoredDurableQueue(stored: string): StoredDurableRequest[] {
+  const parsed: unknown = JSON.parse(stored);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed
+    .map(parseStoredDurableRequest)
+    .filter((request): request is StoredDurableRequest => request !== null);
 }
 
 async function readResponseEnvelope<TChannel extends RendererInvokeChannel>(
@@ -173,7 +288,7 @@ async function readResponseEnvelope<TChannel extends RendererInvokeChannel>(
 function isUndefinedRendererInvokeChannel(
   channel: RendererInvokeChannel,
 ): channel is UndefinedRendererInvokeChannel {
-  return UNDEFINED_RENDERER_INVOKE_CHANNELS.has(channel as UndefinedRendererInvokeChannel);
+  return hasOwnKey(UNDEFINED_RENDERER_INVOKE_CHANNELS, channel);
 }
 
 function getResponseResult<TChannel extends RendererInvokeChannel>(
@@ -383,7 +498,7 @@ export function createBrowserHttpIpcClient(
     }
 
     try {
-      const durableRequests = JSON.parse(stored) as StoredPendingRequest[];
+      const durableRequests = parseStoredDurableQueue(stored);
 
       for (const request of durableRequests) {
         enqueuePendingRequest({
@@ -419,10 +534,7 @@ export function createBrowserHttpIpcClient(
         response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
           method: 'POST',
           credentials: 'same-origin',
-          keepalive:
-            cmd === IPC.SaveAppState ||
-            cmd === IPC.SaveWorkspaceState ||
-            cmd === IPC.DetachAgentOutput,
+          keepalive: KEEPALIVE_REQUESTS.has(cmd),
           headers: {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),

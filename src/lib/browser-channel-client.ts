@@ -1,4 +1,5 @@
 import type { ClientMessage } from '../../electron/remote/protocol';
+import { createRandomId } from './random-id';
 
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
@@ -118,7 +119,7 @@ export function createBrowserChannelClient(
   }
 
   function createChannel<T>(): BrowserChannelState<T> {
-    const channelId = crypto.randomUUID();
+    const channelId = createRandomId();
     let onMessage: ((message: T) => void) | null = null;
 
     channelListeners.set(channelId, (message: unknown) => {

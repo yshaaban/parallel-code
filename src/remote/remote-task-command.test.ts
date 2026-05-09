@@ -52,6 +52,13 @@ const mockState = vi.hoisted(() => {
     releaseRemoteTaskCommandLeaseMock: vi.fn(),
     renewRemoteTaskCommandLeaseMock: vi.fn(),
     resizeRemoteAgentMock: vi.fn(),
+    sendIfOpenMock: vi.fn((message: ClientMessage) => {
+      if (mockState.connectionStatus !== 'connected') {
+        return false;
+      }
+
+      return mockState.sendMock(message);
+    }),
     sendMock: vi.fn((message: ClientMessage) => {
       if (message.type === 'request-task-command-takeover') {
         queueMicrotask(() => {
@@ -116,6 +123,7 @@ vi.mock('./remote-collaboration', () => ({
 }));
 
 vi.mock('./ws', () => ({
+  send: mockState.sendIfOpenMock,
   sendWhenConnected: mockState.sendWhenConnectedMock,
   subscribeRemoteConnectionStatus: vi.fn(
     (listener: (status: 'connected' | 'connecting' | 'disconnected' | 'reconnecting') => void) => {
@@ -145,7 +153,32 @@ function emitConnectionStatus(
   }
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason?: unknown) => void;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
+
+async function flushMicrotasks(rounds = 4): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('remote task command control', () => {
+  const originalSessionStorageDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'sessionStorage',
+  );
+
   beforeEach(() => {
     vi.clearAllMocks();
     resetRemoteTaskCommandStateForTests();
@@ -157,6 +190,7 @@ describe('remote task command control', () => {
       acquired: true,
       action: 'type in the terminal',
       controllerId: 'remote-client-1234',
+      leaseGeneration: 2,
       taskId: 'task-1',
       version: 2,
     });
@@ -170,10 +204,18 @@ describe('remote task command control', () => {
       renewed: true,
       action: 'type in the terminal',
       controllerId: 'remote-client-1234',
+      leaseGeneration: 3,
       taskId: 'task-1',
       version: 3,
     });
     mockState.writeRemoteAgentMock.mockResolvedValue(undefined);
+    mockState.sendIfOpenMock.mockImplementation((message: ClientMessage) => {
+      if (mockState.connectionStatus !== 'connected') {
+        return false;
+      }
+
+      return mockState.sendMock(message);
+    });
     mockState.sendWhenConnectedMock.mockImplementation(async (message: ClientMessage) =>
       mockState.sendMock(message),
     );
@@ -181,6 +223,11 @@ describe('remote task command control', () => {
 
   afterEach(() => {
     resetRemoteTaskCommandStateForTests();
+    if (originalSessionStorageDescriptor) {
+      Object.defineProperty(globalThis, 'sessionStorage', originalSessionStorageDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, 'sessionStorage');
+    }
   });
 
   it('acquires a lease before sending remote terminal input', async () => {
@@ -205,6 +252,23 @@ describe('remote task command control', () => {
       data: 'pwd\r',
       taskId: 'task-1',
     });
+  });
+
+  it('keeps a stable remote lease owner when browser session storage is unavailable', async () => {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      },
+    });
+
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(true);
+    await releaseRemoteTaskCommand('task-1');
+
+    const acquireOwnerId = mockState.acquireRemoteTaskCommandLeaseMock.mock.calls[0]?.[0].ownerId;
+    const releaseOwnerId = mockState.releaseRemoteTaskCommandLeaseMock.mock.calls[0]?.[0].ownerId;
+    expect(acquireOwnerId).toEqual(expect.any(String));
+    expect(releaseOwnerId).toBe(acquireOwnerId);
   });
 
   it('allows terminal input while the remote transport is still connecting', async () => {
@@ -259,13 +323,62 @@ describe('remote task command control', () => {
     );
   });
 
-  it('waits for reconnect before sending takeover responses', async () => {
+  it('releases an acquired takeover lease when local release wins the in-flight acquire race', async () => {
+    mockState.currentControllerOwnerStatus = {
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      isSelf: false,
+      label: 'Ivan typing',
+    };
+    const acquire = createDeferred<{
+      acquired: boolean;
+      action: string;
+      controllerId: string;
+      leaseGeneration: number;
+      taskId: string;
+      version: number;
+    }>();
+    mockState.acquireRemoteTaskCommandLeaseMock.mockReturnValueOnce(acquire.promise);
+
+    const takeoverPromise = requestRemoteTaskTakeover('task-1', true);
+    await flushMicrotasks();
+    expect(mockState.acquireRemoteTaskCommandLeaseMock).toHaveBeenCalledTimes(1);
+
+    await releaseRemoteTaskCommand('task-1');
+    acquire.resolve({
+      acquired: true,
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      leaseGeneration: 9,
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    await expect(takeoverPromise).resolves.toBe('transport-unavailable');
+    expect(mockState.releaseRemoteTaskCommandLeaseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseGeneration: 9,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('sends takeover responses only on the current open transport', async () => {
     await expect(respondToRemoteTaskCommandTakeover('request-1', true)).resolves.toBe(true);
-    expect(mockState.sendWhenConnectedMock).toHaveBeenCalledWith({
+    expect(mockState.sendIfOpenMock).toHaveBeenCalledWith({
       approved: true,
       requestId: 'request-1',
       type: 'respond-task-command-takeover',
     });
+    expect(mockState.sendWhenConnectedMock).not.toHaveBeenCalled();
+  });
+
+  it('does not queue takeover responses while the remote transport is reconnecting', async () => {
+    emitConnectionStatus('reconnecting');
+
+    await expect(respondToRemoteTaskCommandTakeover('request-1', true)).resolves.toBe(false);
+    expect(mockState.sendIfOpenMock).not.toHaveBeenCalled();
+    expect(mockState.sendWhenConnectedMock).not.toHaveBeenCalled();
   });
 
   it('returns false when the remote write fails instead of rejecting the detail view caller', async () => {
@@ -301,6 +414,55 @@ describe('remote task command control', () => {
     await expect(sendPromise).resolves.toBe(false);
     expect(mockState.acquireRemoteTaskCommandLeaseMock).not.toHaveBeenCalled();
     expect(mockState.writeRemoteAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('releases an acquired backend lease when local release wins the in-flight acquire race', async () => {
+    const acquire = createDeferred<{
+      acquired: boolean;
+      action: string;
+      controllerId: string;
+      leaseGeneration: number;
+      taskId: string;
+      version: number;
+    }>();
+    mockState.acquireRemoteTaskCommandLeaseMock.mockReturnValueOnce(acquire.promise);
+
+    const sendPromise = sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r');
+    await flushMicrotasks();
+    expect(mockState.acquireRemoteTaskCommandLeaseMock).toHaveBeenCalledTimes(1);
+
+    const releasePromise = releaseRemoteTaskCommand('task-1');
+    acquire.resolve({
+      acquired: true,
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      leaseGeneration: 7,
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    await expect(sendPromise).resolves.toBe(false);
+    await releasePromise;
+    expect(mockState.writeRemoteAgentMock).not.toHaveBeenCalled();
+    expect(mockState.releaseRemoteTaskCommandLeaseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseGeneration: 7,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('uses the acquired lease generation when releasing a retained remote lease', async () => {
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(true);
+
+    await releaseRemoteTaskCommand('task-1');
+
+    expect(mockState.releaseRemoteTaskCommandLeaseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseGeneration: 2,
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('clears incoming takeover requests when resetting remote task-command state for tests', () => {

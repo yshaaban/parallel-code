@@ -4,6 +4,7 @@ import {
   getSafeStorageItem,
   setSafeStorageItem,
 } from './browser-storage';
+import { createRandomId } from './random-id';
 
 const runtimeFallbackClientIds = new Map<string, string>();
 
@@ -12,11 +13,14 @@ function getClientStorage(): Storage | null {
 }
 
 function createRuntimeFallbackClientId(fallbackClientId: string): string {
-  if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
+  if (
+    typeof crypto === 'undefined' ||
+    (typeof crypto.randomUUID !== 'function' && typeof crypto.getRandomValues !== 'function')
+  ) {
     return fallbackClientId;
   }
 
-  return crypto.randomUUID();
+  return createRandomId();
 }
 
 function getOrCreateRuntimeFallbackClientId(storageKey: string, fallbackClientId: string): string {

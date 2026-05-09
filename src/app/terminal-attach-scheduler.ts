@@ -42,10 +42,6 @@ function listPendingTerminalAttachCandidates(): TerminalAttachCandidate[] {
     .sort(sortTerminalAttachCandidates);
 }
 
-function canAttachMoreTerminals(): boolean {
-  return activeTerminalAttachKeys.size < MAX_CONCURRENT_TERMINAL_ATTACHES;
-}
-
 function countActiveForegroundTerminalAttaches(): number {
   let foregroundCount = 0;
 
@@ -63,11 +59,15 @@ function countActiveForegroundTerminalAttaches(): number {
   return foregroundCount;
 }
 
-function drainTerminalAttachQueue(): void {
-  if (!canAttachMoreTerminals()) {
-    return;
+function canAttachTerminalCandidate(candidate: TerminalAttachCandidate): boolean {
+  if (isForegroundTerminalAttachPriority(candidate.getPriority())) {
+    return countActiveForegroundTerminalAttaches() < MAX_CONCURRENT_FOREGROUND_ATTACHES;
   }
 
+  return activeTerminalAttachKeys.size < MAX_CONCURRENT_TERMINAL_ATTACHES;
+}
+
+function drainTerminalAttachQueue(): void {
   const pendingCandidates = listPendingTerminalAttachCandidates();
   const highestPendingCandidate = pendingCandidates[0];
   const shouldSerializeForeground =
@@ -75,7 +75,7 @@ function drainTerminalAttachQueue(): void {
     isForegroundTerminalAttachPriority(highestPendingCandidate.getPriority());
 
   for (const candidate of pendingCandidates) {
-    if (!canAttachMoreTerminals()) {
+    if (!canAttachTerminalCandidate(candidate)) {
       break;
     }
 
@@ -87,13 +87,6 @@ function drainTerminalAttachQueue(): void {
     }
 
     if (shouldSerializeForeground && !isForegroundTerminalAttachPriority(candidate.getPriority())) {
-      break;
-    }
-
-    if (
-      isForegroundTerminalAttachPriority(candidate.getPriority()) &&
-      countActiveForegroundTerminalAttaches() >= MAX_CONCURRENT_FOREGROUND_ATTACHES
-    ) {
       break;
     }
 

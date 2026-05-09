@@ -4,7 +4,7 @@ import {
   isTaskAndTransportAttemptCurrent,
 } from '../domain/task-command-lease-runtime-primitives';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
-import { assertNever } from '../lib/assert-never';
+import { createRandomId } from '../lib/random-id';
 import { getRemoteClientId } from './client-id';
 import {
   clearIncomingRemoteTakeoverRequests,
@@ -24,6 +24,8 @@ import {
   getTaskCommandGeneration,
   hasLocalTaskCommandLeases,
   hasPendingTakeovers,
+  isRetainedRemoteTaskCommandLease,
+  markRemoteTaskCommandLeaseIdle,
   setPendingTakeover,
   type RemoteTaskCommandAttempt,
   type RemoteTaskCommandLeaseState,
@@ -33,6 +35,12 @@ import { sendWhenConnected, subscribeRemoteConnectionStatus, type ConnectionStat
 
 const TASK_COMMAND_ACTION = 'type in the terminal';
 const TASK_COMMAND_TAKEOVER_TIMEOUT_MS = 10_000;
+const REMOTE_TASK_COMMAND_TRANSPORT_UNAVAILABLE_STATE = {
+  connected: false,
+  connecting: false,
+  disconnected: true,
+  reconnecting: true,
+} satisfies Record<ConnectionStatus, boolean>;
 
 let removeTaskCommandControllerSubscription: (() => void) | null = null;
 let removeTaskCommandTakeoverResultSubscription: (() => void) | null = null;
@@ -84,7 +92,7 @@ export function cleanupIdleTaskCommandSubscriptions(): void {
 
 export function cleanupReleasedTaskCommandLease(taskId: string): void {
   const lease = getLocalTaskCommandLease(taskId);
-  if (!lease || lease.retainingPromise || lease.retained) {
+  if (!lease || lease.retainingPromise || isRetainedRemoteTaskCommandLease(lease)) {
     return;
   }
 
@@ -133,7 +141,7 @@ export function invalidateLocalTaskCommandLease(
   taskId: string,
   lease: RemoteTaskCommandLeaseState,
 ): void {
-  lease.retained = false;
+  markRemoteTaskCommandLeaseIdle(lease);
   lease.releaseRequested = false;
   clearTaskCommandLeaseTimers(lease);
   invalidateReleasedTaskCommandLease(taskId);
@@ -184,16 +192,7 @@ function handleRemoteTaskCommandTransportConnected(): void {
 }
 
 function isRemoteTaskCommandTransportUnavailableState(nextStatus: ConnectionStatus): boolean {
-  switch (nextStatus) {
-    case 'connected':
-    case 'connecting':
-      return false;
-    case 'disconnected':
-    case 'reconnecting':
-      return true;
-  }
-
-  return assertNever(nextStatus, 'Unhandled remote task-command connection status');
+  return REMOTE_TASK_COMMAND_TRANSPORT_UNAVAILABLE_STATE[nextStatus];
 }
 
 function handleTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
@@ -257,7 +256,7 @@ export async function requestTaskTakeover(
   targetControllerId: string,
   requesterOwnerId?: string,
 ): Promise<RemoteTakeoverDecision> {
-  const requestId = crypto.randomUUID();
+  const requestId = createRandomId();
   const resultPromise = createPendingTakeover(requestId);
   const sent = await sendWhenConnected({
     type: 'request-task-command-takeover',

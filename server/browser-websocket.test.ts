@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
+import type { WebSocketTransport } from '../electron/remote/ws-transport.js';
+import type {
+  BrowserWebSocketServer,
+  RegisterBrowserWebSocketServerOptions,
+} from './browser-websocket.js';
 
 const {
   canResizeTaskTerminalMock,
@@ -11,6 +16,15 @@ const {
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
   writeToAgentMock: vi.fn(),
 }));
+
+const AGENT_INPUT_MESSAGE = JSON.stringify({
+  agentId: 'agent-1',
+  controllerId: 'client-1',
+  data: 'pwd\\n',
+  requestId: 'request-1',
+  taskId: 'task-1',
+  type: 'input',
+});
 
 vi.mock('../electron/ipc/pty.js', () => ({
   getAgentCols: vi.fn(() => 80),
@@ -44,10 +58,6 @@ type FakeClient = WebSocket &
     readyState: WebSocket['readyState'];
   };
 
-interface FakeWebSocketServer extends EventEmitter {
-  clients: Set<FakeClient>;
-}
-
 function createFakeClient(): FakeClient {
   const emitter = new EventEmitter();
   const client = emitter as FakeClient;
@@ -59,10 +69,109 @@ function createFakeClient(): FakeClient {
   return client;
 }
 
-function createFakeWebSocketServer(): FakeWebSocketServer {
-  const server = new EventEmitter() as FakeWebSocketServer;
-  server.clients = new Set();
-  return server;
+function createFakeWebSocketServer(): WebSocketServer {
+  return new WebSocketServer({ noServer: true });
+}
+
+function createTestTransport(
+  overrides: Partial<WebSocketTransport<WebSocket>> = {},
+): WebSocketTransport<WebSocket> {
+  return {
+    authenticateClient: vi.fn(
+      (_client, clientId = 'client-1') => ({ ok: true, clientId }) as const,
+    ),
+    broadcast: vi.fn(),
+    broadcastControl: vi.fn(),
+    cleanupClient: vi.fn(),
+    claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' }) as const),
+    getAgentControllerId: vi.fn(() => null),
+    getAuthenticatedClientCount: vi.fn(() => 1),
+    getClientId: vi.fn(() => 'client-1'),
+    getLatestControlEventSeq: vi.fn(() => 0),
+    hasClientId: vi.fn(() => true),
+    isAuthenticated: vi.fn(() => true),
+    notePong: vi.fn(),
+    releaseAgentControl: vi.fn(),
+    replayControlEvents: vi.fn(),
+    scheduleAuthTimeout: vi.fn(),
+    sendAgentControllers: vi.fn(),
+    sendMessage: vi.fn(() => ({ ok: true }) as const),
+    sendToClientId: vi.fn(() => true),
+    startHeartbeat: vi.fn(),
+    stopHeartbeat: vi.fn(),
+    ...overrides,
+  };
+}
+
+function createTestChannels(): RegisterBrowserWebSocketServerOptions['channels'] {
+  return {
+    bindChannel: vi.fn(),
+    cleanup: vi.fn(),
+    cleanupClient: vi.fn(),
+    sendChannelMessage: vi.fn(),
+    unbindChannel: vi.fn(),
+  };
+}
+
+function createRegisterOptions(
+  overrides: Partial<RegisterBrowserWebSocketServerOptions> &
+    Pick<RegisterBrowserWebSocketServerOptions, 'wss'>,
+): RegisterBrowserWebSocketServerOptions {
+  return {
+    authenticateConnection: vi.fn(() => true),
+    broadcastRemoteStatus: vi.fn(),
+    channels: createTestChannels(),
+    cleanupClientState: vi.fn(),
+    isAllowedBrowserOrigin: vi.fn(() => true),
+    isAuthorizedRequest: vi.fn(() => true),
+    requestTaskCommandTakeover: vi.fn(),
+    respondTaskCommandTakeover: vi.fn(),
+    safeCompareToken: vi.fn(() => true),
+    sendAgentError: vi.fn(),
+    sendMessage: vi.fn(() => true),
+    transport: createTestTransport(),
+    updatePeerPresence: vi.fn(),
+    ...overrides,
+  };
+}
+
+interface ClientIdTracking {
+  authenticateConnection: RegisterBrowserWebSocketServerOptions['authenticateConnection'];
+  clientIds: Map<WebSocket, string>;
+  transport: WebSocketTransport<WebSocket>;
+}
+
+function createClientIdTracking(): ClientIdTracking {
+  const clientIds = new Map<WebSocket, string>();
+  return {
+    authenticateConnection: vi.fn((client: WebSocket, clientId?: string) => {
+      if (clientId) {
+        clientIds.set(client, clientId);
+      }
+      return true;
+    }),
+    clientIds,
+    transport: createTestTransport({
+      getAuthenticatedClientCount: vi.fn(() => clientIds.size),
+      getClientId: vi.fn((client) => clientIds.get(client) ?? null),
+      hasClientId: vi.fn((clientId) =>
+        Array.from(clientIds.values()).some((currentId) => currentId === clientId),
+      ),
+    }),
+  };
+}
+
+function cleanupTrackedClient(
+  tracking: ClientIdTracking,
+  browserSocketServer: BrowserWebSocketServer | null,
+  currentClient: FakeClient,
+): void {
+  const clientId = tracking.clientIds.get(currentClient) ?? null;
+  browserSocketServer?.cleanupClient(currentClient);
+  tracking.clientIds.delete(currentClient);
+  if (clientId && !Array.from(tracking.clientIds.values()).includes(clientId)) {
+    browserSocketServer?.pruneDisconnectedAgentCommandResults();
+  }
 }
 
 describe('registerBrowserWebSocketServer', () => {
@@ -79,50 +188,17 @@ describe('registerBrowserWebSocketServer', () => {
     const client = createFakeClient();
     const wss = createFakeWebSocketServer();
     wss.clients.add(client);
-    let browserSocketServer: {
-      cleanupClient: (currentClient: FakeClient) => void;
-      pruneDisconnectedAgentCommandResults: () => void;
-    } | null = null;
+    let browserSocketServer: BrowserWebSocketServer | null = null;
     const cleanupClientState = vi.fn((currentClient: FakeClient) => {
       browserSocketServer?.cleanupClient(currentClient);
     });
 
-    browserSocketServer = registerBrowserWebSocketServer({
-      authenticateConnection: vi.fn(() => true),
-      broadcastRemoteStatus: vi.fn(),
-      channels: {
-        bindChannel: vi.fn(),
-        cleanup: vi.fn(),
-        cleanupClient: vi.fn(),
-        sendChannelMessage: vi.fn(),
-        unbindChannel: vi.fn(),
-      },
-      cleanupClientState,
-      isAllowedBrowserOrigin: vi.fn(() => true),
-      isAuthorizedRequest: vi.fn(() => true),
-      requestTaskCommandTakeover: vi.fn(),
-      respondTaskCommandTakeover: vi.fn(),
-      safeCompareToken: vi.fn(() => true),
-      sendAgentError: vi.fn(),
-      sendMessage: vi.fn(() => true),
-      transport: {
-        claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' })),
-        getClientId: vi.fn(() => 'client-1'),
-        getClientSocketById: vi.fn(),
-        getConnectedClientCount: vi.fn(() => 1),
-        getPeerConnectedClientCount: vi.fn(() => 0),
-        getPeerPresenceVersion: vi.fn(() => 0),
-        getServerInfo: vi.fn(),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-      } as never,
-      updatePeerPresence: vi.fn(),
-      wss: wss as never,
-    });
+    browserSocketServer = registerBrowserWebSocketServer(
+      createRegisterOptions({
+        cleanupClientState,
+        wss,
+      }),
+    );
 
     wss.emit('connection', client, {
       headers: { host: 'localhost' },
@@ -143,37 +219,11 @@ describe('registerBrowserWebSocketServer', () => {
     const wss = createFakeWebSocketServer();
     wss.clients.add(client);
 
-    registerBrowserWebSocketServer({
-      authenticateConnection: vi.fn(() => true),
-      broadcastRemoteStatus: vi.fn(),
-      channels: {
-        bindChannel: vi.fn(),
-        cleanup: vi.fn(),
-        cleanupClient: vi.fn(),
-        sendChannelMessage: vi.fn(),
-        unbindChannel: vi.fn(),
-      },
-      cleanupClientState: vi.fn(),
-      isAllowedBrowserOrigin: vi.fn(() => true),
-      isAuthorizedRequest: vi.fn(() => true),
-      requestTaskCommandTakeover: vi.fn(),
-      respondTaskCommandTakeover: vi.fn(),
-      safeCompareToken: vi.fn(() => true),
-      sendAgentError: vi.fn(),
-      sendMessage: vi.fn(() => true),
-      transport: {
-        claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' })),
-        getClientId: vi.fn(() => 'client-1'),
-        hasClientId: vi.fn(() => true),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-      } as never,
-      updatePeerPresence: vi.fn(),
-      wss: wss as never,
-    });
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        wss,
+      }),
+    );
 
     wss.emit('connection', client, {
       headers: { host: 'localhost' },
@@ -183,66 +233,69 @@ describe('registerBrowserWebSocketServer', () => {
     expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
   });
 
+  it('ignores invalid websocket URL replay cursors before authenticating', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const authenticateConnection = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good&clientId=client-1&lastSeq=-2',
+    });
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-1', undefined);
+  });
+
+  it('ignores malformed websocket URLs before authenticating', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const authenticateConnection = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: 'http://%',
+    });
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, undefined, undefined);
+  });
+
   it('dedupes cached agent command results across reconnect with the same client id', async () => {
     const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
     const wss = createFakeWebSocketServer();
     const sendMessage = vi.fn(() => true);
-    const clientIds = new Map<FakeClient, string>();
-    let browserSocketServer: {
-      cleanupClient: (currentClient: FakeClient) => void;
-      pruneDisconnectedAgentCommandResults: () => void;
-    } | null = null;
+    const tracking = createClientIdTracking();
+    let browserSocketServer: BrowserWebSocketServer | null = null;
     const cleanupClientState = vi.fn((currentClient: FakeClient) => {
-      const clientId = clientIds.get(currentClient) ?? null;
-      browserSocketServer?.cleanupClient(currentClient);
-      clientIds.delete(currentClient);
-      if (clientId && !Array.from(clientIds.values()).includes(clientId)) {
-        browserSocketServer?.pruneDisconnectedAgentCommandResults();
-      }
+      cleanupTrackedClient(tracking, browserSocketServer, currentClient);
     });
 
-    browserSocketServer = registerBrowserWebSocketServer({
-      authenticateConnection: vi.fn((client: FakeClient, clientId?: string) => {
-        if (clientId) {
-          clientIds.set(client, clientId);
-        }
-        return true;
+    browserSocketServer = registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection: tracking.authenticateConnection,
+        cleanupClientState,
+        sendMessage,
+        transport: tracking.transport,
+        wss,
       }),
-      broadcastRemoteStatus: vi.fn(),
-      channels: {
-        bindChannel: vi.fn(),
-        cleanup: vi.fn(),
-        cleanupClient: vi.fn(),
-        sendChannelMessage: vi.fn(),
-        unbindChannel: vi.fn(),
-      },
-      cleanupClientState,
-      isAllowedBrowserOrigin: vi.fn(() => true),
-      isAuthorizedRequest: vi.fn(() => true),
-      requestTaskCommandTakeover: vi.fn(),
-      respondTaskCommandTakeover: vi.fn(),
-      safeCompareToken: vi.fn(() => true),
-      sendAgentError: vi.fn(),
-      sendMessage,
-      transport: {
-        claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' })),
-        getClientId: vi.fn((client: FakeClient) => clientIds.get(client) ?? null),
-        getConnectedClientCount: vi.fn(() => clientIds.size),
-        getPeerConnectedClientCount: vi.fn(() => 0),
-        getPeerPresenceVersion: vi.fn(() => 0),
-        getServerInfo: vi.fn(),
-        hasClientId: vi.fn((clientId: string) =>
-          Array.from(clientIds.values()).some((currentId) => currentId === clientId),
-        ),
-        isAuthenticated: vi.fn(() => true),
-        notePong: vi.fn(),
-        releaseAgentControl: vi.fn(),
-        replayControlEvents: vi.fn(),
-        scheduleAuthTimeout: vi.fn(),
-      } as never,
-      updatePeerPresence: vi.fn(),
-      wss: wss as never,
-    });
+    );
 
     const firstClient = createFakeClient();
     wss.clients.add(firstClient);
@@ -251,17 +304,8 @@ describe('registerBrowserWebSocketServer', () => {
       url: '/?token=good&clientId=client-1&lastSeq=-1',
     });
 
-    const inputMessage = JSON.stringify({
-      agentId: 'agent-1',
-      controllerId: 'client-1',
-      data: 'pwd\\n',
-      requestId: 'request-1',
-      taskId: 'task-1',
-      type: 'input',
-    });
-
-    firstClient.emit('message', inputMessage);
-    firstClient.emit('message', inputMessage);
+    firstClient.emit('message', AGENT_INPUT_MESSAGE);
+    firstClient.emit('message', AGENT_INPUT_MESSAGE);
 
     expect(writeToAgentMock).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledTimes(2);
@@ -275,7 +319,7 @@ describe('registerBrowserWebSocketServer', () => {
       url: '/?token=good&clientId=client-1&lastSeq=-1',
     });
 
-    secondClient.emit('message', inputMessage);
+    secondClient.emit('message', AGENT_INPUT_MESSAGE);
 
     expect(writeToAgentMock).toHaveBeenCalledTimes(1);
     expect(cleanupClientState).toHaveBeenCalledWith(firstClient);
@@ -289,7 +333,7 @@ describe('registerBrowserWebSocketServer', () => {
       url: '/?token=good&clientId=client-1&lastSeq=-1',
     });
 
-    thirdClient.emit('message', inputMessage);
+    thirdClient.emit('message', AGENT_INPUT_MESSAGE);
 
     expect(writeToAgentMock).toHaveBeenCalledTimes(1);
   });
@@ -300,62 +344,21 @@ describe('registerBrowserWebSocketServer', () => {
       const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
       const wss = createFakeWebSocketServer();
       const sendMessage = vi.fn(() => true);
-      const clientIds = new Map<FakeClient, string>();
-      let browserSocketServer: {
-        cleanupClient: (currentClient: FakeClient) => void;
-        pruneDisconnectedAgentCommandResults: () => void;
-      } | null = null;
+      const tracking = createClientIdTracking();
+      let browserSocketServer: BrowserWebSocketServer | null = null;
       const cleanupClientState = vi.fn((currentClient: FakeClient) => {
-        const clientId = clientIds.get(currentClient) ?? null;
-        browserSocketServer?.cleanupClient(currentClient);
-        clientIds.delete(currentClient);
-        if (clientId && !Array.from(clientIds.values()).includes(clientId)) {
-          browserSocketServer?.pruneDisconnectedAgentCommandResults();
-        }
+        cleanupTrackedClient(tracking, browserSocketServer, currentClient);
       });
 
-      browserSocketServer = registerBrowserWebSocketServer({
-        authenticateConnection: vi.fn((client: FakeClient, clientId?: string) => {
-          if (clientId) {
-            clientIds.set(client, clientId);
-          }
-          return true;
+      browserSocketServer = registerBrowserWebSocketServer(
+        createRegisterOptions({
+          authenticateConnection: tracking.authenticateConnection,
+          cleanupClientState,
+          sendMessage,
+          transport: tracking.transport,
+          wss,
         }),
-        broadcastRemoteStatus: vi.fn(),
-        channels: {
-          bindChannel: vi.fn(),
-          cleanup: vi.fn(),
-          cleanupClient: vi.fn(),
-          sendChannelMessage: vi.fn(),
-          unbindChannel: vi.fn(),
-        },
-        cleanupClientState,
-        isAllowedBrowserOrigin: vi.fn(() => true),
-        isAuthorizedRequest: vi.fn(() => true),
-        requestTaskCommandTakeover: vi.fn(),
-        respondTaskCommandTakeover: vi.fn(),
-        safeCompareToken: vi.fn(() => true),
-        sendAgentError: vi.fn(),
-        sendMessage,
-        transport: {
-          claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' })),
-          getClientId: vi.fn((client: FakeClient) => clientIds.get(client) ?? null),
-          getConnectedClientCount: vi.fn(() => clientIds.size),
-          getPeerConnectedClientCount: vi.fn(() => 0),
-          getPeerPresenceVersion: vi.fn(() => 0),
-          getServerInfo: vi.fn(),
-          hasClientId: vi.fn((clientId: string) =>
-            Array.from(clientIds.values()).some((currentId) => currentId === clientId),
-          ),
-          isAuthenticated: vi.fn(() => true),
-          notePong: vi.fn(),
-          releaseAgentControl: vi.fn(),
-          replayControlEvents: vi.fn(),
-          scheduleAuthTimeout: vi.fn(),
-        } as never,
-        updatePeerPresence: vi.fn(),
-        wss: wss as never,
-      });
+      );
 
       const client = createFakeClient();
       wss.clients.add(client);
@@ -364,21 +367,44 @@ describe('registerBrowserWebSocketServer', () => {
         url: '/?token=good&clientId=client-1&lastSeq=-1',
       });
 
-      const inputMessage = JSON.stringify({
-        agentId: 'agent-1',
-        controllerId: 'client-1',
-        data: 'pwd\\n',
-        requestId: 'request-1',
-        taskId: 'task-1',
-        type: 'input',
-      });
-
-      client.emit('message', inputMessage);
+      client.emit('message', AGENT_INPUT_MESSAGE);
       expect(writeToAgentMock).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBeGreaterThan(0);
 
       client.emit('close');
       await vi.advanceTimersByTimeAsync(15_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears cached agent command result timers during websocket cleanup', async () => {
+    vi.useFakeTimers();
+    try {
+      const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+      const wss = createFakeWebSocketServer();
+      const tracking = createClientIdTracking();
+      const browserSocketServer = registerBrowserWebSocketServer(
+        createRegisterOptions({
+          authenticateConnection: tracking.authenticateConnection,
+          transport: tracking.transport,
+          wss,
+        }),
+      );
+      const client = createFakeClient();
+
+      wss.clients.add(client);
+      wss.emit('connection', client, {
+        headers: { host: 'localhost' },
+        url: '/?token=good&clientId=client-1&lastSeq=-1',
+      });
+      client.emit('message', AGENT_INPUT_MESSAGE);
+
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      browserSocketServer.cleanup();
+
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

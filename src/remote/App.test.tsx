@@ -137,6 +137,34 @@ describe('remote App session naming', () => {
     });
   });
 
+  it('re-enables takeover actions when the response cannot be sent', async () => {
+    getStoredDisplayNameMock.mockReturnValue('Already Named');
+    respondToRemoteTaskCommandTakeoverMock.mockResolvedValueOnce(false);
+    getIncomingRemoteTakeoverRequestsMock.mockReturnValue([
+      {
+        action: 'type in the terminal',
+        expiresAt: Date.now() + 10_000,
+        requestId: 'request-1',
+        requesterClientId: 'desktop-observer',
+        requesterDisplayName: 'Desktop Observer',
+        taskId: 'task-1',
+        type: 'task-command-takeover-request',
+      },
+    ]);
+
+    render(() => <App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    await waitFor(() => {
+      expect(respondToRemoteTaskCommandTakeoverMock).toHaveBeenCalledWith('request-1', true);
+    });
+    await waitFor(() => {
+      const allowButton = screen.getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      expect(allowButton.disabled).toBe(false);
+    });
+  });
+
   it('renders the full queued takeover request list and responds per request', async () => {
     getStoredDisplayNameMock.mockReturnValue('Already Named');
     getIncomingRemoteTakeoverRequestsMock.mockReturnValue([

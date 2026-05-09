@@ -28,6 +28,34 @@ describe('createTaskNameRegistry', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores malformed saved task containers without replacing existing names', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.setTaskName('task-123', 'Alpha');
+    registry.syncFromSavedState(JSON.stringify({ tasks: null }));
+    registry.syncFromSavedState(JSON.stringify({ tasks: [null] }));
+    registry.syncFromSavedState(JSON.stringify({ tasks: { one: null } }));
+
+    expect(registry.getTaskName('task-123')).toBe('Alpha');
+  });
+
+  it('skips malformed saved task entries while loading valid neighbors', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          broken: null,
+          one: { id: 'task-123', name: 'Alpha' },
+          two: [],
+        },
+      }),
+    );
+
+    expect(registry.getTaskName('task-123')).toBe('Alpha');
+    expect(registry.getTaskName('task-broken')).toBe('broken');
+  });
+
   it('supports direct updates and deletion', () => {
     const registry = createTaskNameRegistry();
 

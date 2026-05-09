@@ -1,26 +1,41 @@
 import express from 'express';
-import { IPC } from '../electron/ipc/channels.js';
-import { BadRequestError } from '../electron/ipc/handlers.js';
+import { isIpcChannel } from '../electron/ipc/channels.js';
+import { BadRequestError, type IpcHandlerMap } from '../electron/ipc/handlers.js';
 import { NotFoundError } from '../electron/ipc/errors.js';
-import { getAgentMeta } from '../electron/ipc/pty.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
-import {
-  createGitStatusSyncRefreshEvent,
-  type GitStatusSyncEvent,
-} from '../src/domain/server-state.js';
+import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
+import { isRecord } from '../src/lib/type-guards.js';
+import { runBrowserIpcCommandSideEffects } from './browser-ipc-command-side-effects.js';
+import { normalizeBrowserIpcTaskCommandArgs } from './browser-ipc-task-command-args.js';
 import type { TaskNameRegistry } from './task-names.js';
 
 // Browser HTTP command/query plane. This owns the request/response IPC surface
 // and emits follow-up control-plane broadcasts when command-side state changes.
 
-type IpcHandler = (args?: Record<string, unknown>) => Promise<unknown> | unknown;
+const IPC_REQUEST_BODY_ERROR = 'IPC request body must be a JSON object';
+
+function isBadJsonRequestBodyError(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    (error.status === 400 || error.statusCode === 400) &&
+    typeof error.message === 'string'
+  );
+}
+
+function parseRequestBody(value: unknown): Record<string, unknown> | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return isRecord(value) ? value : null;
+}
 
 export interface RegisterBrowserIpcRoutesOptions {
   app: express.Express;
   broadcastControl: (message: ServerMessage) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
-  handlers: Partial<Record<IPC, IpcHandler>>;
+  handlers: IpcHandlerMap;
   isAuthorizedRequest: (req: express.Request) => boolean;
   isAllowedMutationRequest: (req: express.Request) => boolean;
   removeGitStatus?: (worktreePath: string) => void;
@@ -29,6 +44,17 @@ export interface RegisterBrowserIpcRoutesOptions {
 
 export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOptions): void {
   options.app.use('/api', express.json({ limit: '1mb' }));
+  options.app.use(
+    '/api',
+    (error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (isBadJsonRequestBodyError(error)) {
+        res.status(400).json({ error: IPC_REQUEST_BODY_ERROR });
+        return;
+      }
+
+      next(error);
+    },
+  );
 
   function getBrowserClientId(req: express.Request): string | null {
     const headerValue = req.header(BROWSER_CLIENT_ID_HEADER);
@@ -38,83 +64,6 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
 
     const clientId = headerValue.trim();
     return clientId.length > 0 ? clientId : null;
-  }
-
-  function resolveTaskCommandTaskId(args: Record<string, unknown>): string | undefined {
-    if (typeof args.taskId === 'string') {
-      return args.taskId;
-    }
-
-    if (typeof args.agentId !== 'string') {
-      return undefined;
-    }
-
-    return getAgentMeta(args.agentId)?.taskId;
-  }
-
-  function normalizeTaskCommandArgs(
-    channel: IPC,
-    args: Record<string, unknown> | undefined,
-    browserClientId: string | null,
-  ): Record<string, unknown> | undefined {
-    if (!args || !browserClientId) {
-      return args;
-    }
-
-    switch (channel) {
-      case IPC.SpawnAgent:
-        return {
-          ...args,
-          controllerId: browserClientId,
-        };
-      case IPC.ResizeAgent:
-      case IPC.WriteToAgent: {
-        const taskId = resolveTaskCommandTaskId(args);
-
-        return {
-          ...args,
-          controllerId: browserClientId,
-          ...(typeof taskId === 'string' ? { taskId } : {}),
-        };
-      }
-      default:
-        return args;
-    }
-  }
-
-  function emitGitStatusRefresh(scope: {
-    branchName?: string | undefined;
-    projectRoot?: string | undefined;
-    worktreePath?: string | undefined;
-  }): void {
-    if (typeof scope.worktreePath === 'string') {
-      options.emitGitStatusChanged(
-        createGitStatusSyncRefreshEvent({
-          ...(typeof scope.branchName === 'string' ? { branchName: scope.branchName } : {}),
-          ...(typeof scope.projectRoot === 'string' ? { projectRoot: scope.projectRoot } : {}),
-          worktreePath: scope.worktreePath,
-        }),
-      );
-      return;
-    }
-
-    if (typeof scope.branchName === 'string' && typeof scope.projectRoot === 'string') {
-      options.emitGitStatusChanged(
-        createGitStatusSyncRefreshEvent({
-          branchName: scope.branchName,
-          projectRoot: scope.projectRoot,
-        }),
-      );
-      return;
-    }
-
-    if (typeof scope.projectRoot === 'string') {
-      options.emitGitStatusChanged(
-        createGitStatusSyncRefreshEvent({
-          projectRoot: scope.projectRoot,
-        }),
-      );
-    }
   }
 
   options.app.post('/api/ipc/:channel', async (req, res) => {
@@ -127,7 +76,12 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
       return;
     }
 
-    const channel = req.params.channel as IPC;
+    if (!isIpcChannel(req.params.channel)) {
+      res.status(404).json({ error: 'unknown ipc channel' });
+      return;
+    }
+    const channel = req.params.channel;
+
     const handler = options.handlers[channel];
     if (!handler) {
       res.status(404).json({ error: 'unknown ipc channel' });
@@ -135,106 +89,15 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
     }
 
     try {
+      const body = parseRequestBody(req.body);
+      if (body === null) {
+        throw new BadRequestError(IPC_REQUEST_BODY_ERROR);
+      }
+
       const browserClientId = getBrowserClientId(req);
-      const args = normalizeTaskCommandArgs(
-        channel,
-        (req.body ?? undefined) as Record<string, unknown> | undefined,
-        browserClientId,
-      );
+      const args = normalizeBrowserIpcTaskCommandArgs(channel, body, browserClientId);
       const result = await handler(args);
-
-      if (channel === IPC.SaveAppState) {
-        const body = req.body as { json?: string } | undefined;
-        if (typeof body?.json === 'string') {
-          options.taskNames.syncFromSavedState(body.json);
-        }
-      }
-
-      if (channel === IPC.CreateTask) {
-        const body = req.body as
-          | {
-              agentDefId?: string;
-              agentDefName?: string;
-              directMode?: boolean;
-              gitIsolation?: string;
-              githubUrl?: string;
-              name?: string;
-            }
-          | undefined;
-        const created = result as {
-          id?: string;
-          branch_name?: string;
-          git_isolation?: string;
-          worktree_path?: string;
-        };
-        if (created.id) {
-          const directMode =
-            created.git_isolation === 'current-branch' ||
-            body?.gitIsolation === 'current-branch' ||
-            body?.directMode === true;
-          options.taskNames.registerCreatedTask(created.id, {
-            agentDefId: typeof body?.agentDefId === 'string' ? body.agentDefId : null,
-            agentDefName: typeof body?.agentDefName === 'string' ? body.agentDefName : null,
-            branchName: typeof created.branch_name === 'string' ? created.branch_name : null,
-            directMode,
-            taskName: typeof body?.name === 'string' ? body.name : null,
-            worktreePath: typeof created.worktree_path === 'string' ? created.worktree_path : null,
-            worktreeOwnership:
-              created.git_isolation === 'existing-worktree' ? 'external' : 'managed',
-          });
-          options.broadcastControl({
-            type: 'task-event',
-            event: 'created',
-            taskId: created.id,
-            ...(typeof body?.name === 'string' ? { name: body.name } : {}),
-            ...(typeof created.branch_name === 'string' ? { branchName: created.branch_name } : {}),
-            ...(typeof created.worktree_path === 'string'
-              ? { worktreePath: created.worktree_path }
-              : {}),
-          });
-        }
-      }
-
-      if (channel === IPC.DeleteTask) {
-        const body = req.body as
-          | { taskId?: string; branchName?: string; projectRoot?: string; worktreePath?: string }
-          | undefined;
-        if (typeof body?.taskId === 'string') {
-          options.taskNames.deleteTask(body.taskId);
-          options.broadcastControl({
-            type: 'task-event',
-            event: 'deleted',
-            taskId: body.taskId,
-            ...(typeof body.branchName === 'string' ? { branchName: body.branchName } : {}),
-            ...(typeof body.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
-          });
-        }
-        if (typeof body?.worktreePath === 'string') {
-          emitGitStatusRefresh({
-            branchName: body.branchName,
-            projectRoot: body.projectRoot,
-            worktreePath: body.worktreePath,
-          });
-          options.removeGitStatus?.(body.worktreePath);
-        } else if (typeof body?.branchName === 'string' && typeof body.projectRoot === 'string') {
-          emitGitStatusRefresh({
-            branchName: body.branchName,
-            projectRoot: body.projectRoot,
-          });
-        } else if (typeof body?.projectRoot === 'string') {
-          emitGitStatusRefresh({
-            projectRoot: body.projectRoot,
-          });
-        }
-      }
-
-      if (channel === IPC.MergeTask || channel === IPC.PushTask) {
-        const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
-        emitGitStatusRefresh({
-          branchName: body?.branchName,
-          projectRoot: body?.projectRoot,
-        });
-      }
+      runBrowserIpcCommandSideEffects(options, channel, body, result);
 
       res.json({ result });
     } catch (error) {

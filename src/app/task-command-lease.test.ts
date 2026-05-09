@@ -64,6 +64,23 @@ const {
       return;
     }
 
+    if (
+      args.length === 4 &&
+      typeof args[0] === 'string' &&
+      typeof args[1] === 'string' &&
+      typeof args[2] === 'string'
+    ) {
+      const storeKey = args[0] as keyof typeof storeState;
+      const record = storeState[storeKey] as Record<string, Record<string, unknown>>;
+      const entry = record[args[1]];
+      if (!entry) {
+        throw new Error(`Missing nested setStore entry: ${JSON.stringify(args)}`);
+      }
+
+      entry[args[2]] = args[3];
+      return;
+    }
+
     throw new Error(`Unexpected setStore arguments: ${JSON.stringify(args)}`);
   }),
   storeState: {

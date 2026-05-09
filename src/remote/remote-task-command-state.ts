@@ -1,11 +1,25 @@
 import type { TaskCommandTakeoverResultMessage } from '../../electron/remote/protocol';
 
+type RemoteTaskCommandLeaseOwnership =
+  | {
+      leaseGeneration?: undefined;
+      status: 'idle';
+    }
+  | {
+      leaseGeneration: number;
+      status: 'retained';
+    };
+
 export interface RemoteTaskCommandLeaseState {
   idleTimer: ReturnType<typeof setTimeout> | undefined;
+  ownership: RemoteTaskCommandLeaseOwnership;
   releaseRequested: boolean;
   renewTimer: ReturnType<typeof setInterval> | undefined;
   retainingPromise: Promise<boolean> | undefined;
-  retained: boolean;
+}
+
+export interface RetainedRemoteTaskCommandLeaseState extends RemoteTaskCommandLeaseState {
+  ownership: Extract<RemoteTaskCommandLeaseOwnership, { status: 'retained' }>;
 }
 
 export interface RemoteTaskCommandAttempt {
@@ -35,13 +49,39 @@ export function getOrCreateLocalTaskCommandLease(taskId: string): RemoteTaskComm
 
   const nextLease: RemoteTaskCommandLeaseState = {
     idleTimer: undefined,
+    ownership: { status: 'idle' },
     releaseRequested: false,
     renewTimer: undefined,
     retainingPromise: undefined,
-    retained: false,
   };
   localTaskCommandLeases.set(taskId, nextLease);
   return nextLease;
+}
+
+export function isRetainedRemoteTaskCommandLease(
+  lease: RemoteTaskCommandLeaseState,
+): lease is RetainedRemoteTaskCommandLeaseState {
+  return lease.ownership.status === 'retained';
+}
+
+export function getRetainedRemoteTaskCommandLeaseGeneration(
+  lease: RemoteTaskCommandLeaseState,
+): number | undefined {
+  return isRetainedRemoteTaskCommandLease(lease) ? lease.ownership.leaseGeneration : undefined;
+}
+
+export function markRemoteTaskCommandLeaseRetained(
+  lease: RemoteTaskCommandLeaseState,
+  leaseGeneration: number,
+): void {
+  lease.ownership = {
+    leaseGeneration,
+    status: 'retained',
+  };
+}
+
+export function markRemoteTaskCommandLeaseIdle(lease: RemoteTaskCommandLeaseState): void {
+  lease.ownership = { status: 'idle' };
 }
 
 export function getLocalTaskCommandLease(taskId: string): RemoteTaskCommandLeaseState | undefined {
