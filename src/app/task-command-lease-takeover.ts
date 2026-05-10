@@ -187,6 +187,7 @@ export async function respondToIncomingTaskCommandTakeover(
       approved,
       requestId: request.requestId,
     });
+    clearIncomingTaskTakeoverRequest(request.requestId);
     return true;
   } catch {
     return false;

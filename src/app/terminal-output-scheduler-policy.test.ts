@@ -97,7 +97,7 @@ describe('terminal-output-scheduler-policy', () => {
     unregisterVisibleTerminals(visibleRegistrations);
   });
 
-  it('keeps non-focused visible terminals in bounded yield mode during typing-critical input', () => {
+  it('keeps active-visible bounded and blocks visible-background during typing-critical input', () => {
     const visibleRegistrations = registerVisibleTerminals(2);
     noteTerminalFocusedInput('task-focused', 'agent-focused');
     completeTerminalFocusedInputEcho('task-focused', 'agent-focused');
@@ -111,8 +111,8 @@ describe('terminal-output-scheduler-policy', () => {
       candidateLimit: 1,
     });
     expect(getPriorityThrottle('visible-background', 'visible')).toEqual({
-      budgetScale: 0.0625,
-      candidateLimit: 1,
+      budgetScale: 0,
+      candidateLimit: 0,
     });
 
     unregisterVisibleTerminals(visibleRegistrations);
@@ -166,7 +166,7 @@ describe('terminal-output-scheduler-policy', () => {
     unregisterVisibleTerminals(visibleRegistrations);
   });
 
-  it('does not restore the minimum visible-background budget floor during typing-critical yielding', () => {
+  it('does not restore the minimum visible-background budget floor while typing-critical output is blocked', () => {
     const visibleRegistrations = registerVisibleTerminals(2);
     noteTerminalFocusedInput('task-focused', 'agent-focused');
     completeTerminalFocusedInputEcho('task-focused', 'agent-focused');
@@ -179,10 +179,9 @@ describe('terminal-output-scheduler-policy', () => {
       getVisibleDrainBudgetContext('visible', 2, 4_096, false),
     );
 
-    expect(drainPlan.candidateLimit).toBe(1);
+    expect(drainPlan.candidateLimit).toBe(0);
     expect(drainPlan.priorityFrameBudget).toBe(1_024);
-    expect(drainPlan.remainingPriorityBudget).toBeLessThan(1_024);
-    expect(drainPlan.remainingPriorityBudget).toBeGreaterThan(0);
+    expect(drainPlan.remainingPriorityBudget).toBe(0);
 
     unregisterVisibleTerminals(visibleRegistrations);
   });

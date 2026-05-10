@@ -754,8 +754,14 @@ function parseTerminalInputTraceMessage(
     return null;
   }
 
+  const echoText = value.echoText;
+  if (echoText !== undefined && !isStringWithMaxLength(echoText, 512)) {
+    return null;
+  }
+
   return {
     bufferedAtMs: value.bufferedAtMs,
+    ...(echoText !== undefined ? { echoText } : {}),
     inputChars: value.inputChars,
     inputKind: value.inputKind,
     sendStartedAtMs: value.sendStartedAtMs,
@@ -994,7 +1000,9 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           !isStringWithMaxLength(msg.agentId, 100) ||
           !isStringWithMaxLength(msg.requestId, 120) ||
           !isFiniteTimestamp(msg.outputReceivedAtMs) ||
-          !isFiniteTimestamp(msg.outputRenderedAtMs)
+          !isFiniteTimestamp(msg.outputRenderedAtMs) ||
+          (msg.outputTransportReceivedAtMs !== undefined &&
+            !isFiniteTimestamp(msg.outputTransportReceivedAtMs))
         ) {
           return null;
         }
@@ -1003,6 +1011,9 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           agentId: msg.agentId,
           outputReceivedAtMs: msg.outputReceivedAtMs,
           outputRenderedAtMs: msg.outputRenderedAtMs,
+          ...(msg.outputTransportReceivedAtMs !== undefined
+            ? { outputTransportReceivedAtMs: msg.outputTransportReceivedAtMs }
+            : {}),
           requestId: msg.requestId,
         };
 

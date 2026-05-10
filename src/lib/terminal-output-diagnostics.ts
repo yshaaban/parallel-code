@@ -55,9 +55,12 @@ interface TerminalOutputRouteSnapshot {
 }
 
 interface TerminalOutputWriteSnapshot {
+  active: TerminalOutputActiveWriteSnapshot | null;
   calls: number;
   directCalls: number;
   directWriteBytes: number;
+  durationMs: NumericDiagnosticsStats;
+  finalizationDurationMs: NumericDiagnosticsStats;
   intervalMs: NumericDiagnosticsStats;
   queuedCalls: number;
   queuedWriteBytes: number;
@@ -65,10 +68,30 @@ interface TerminalOutputWriteSnapshot {
 }
 
 export interface TerminalOutputDiagnosticsSummarySnapshot {
+  activeWrites: {
+    byLane: Record<TerminalOutputDiagnosticsLane, TerminalOutputActiveWriteCounters>;
+    byPriority: Record<TerminalOutputPriority, TerminalOutputActiveWriteCounters>;
+    bySource: Record<TerminalOutputRoute, TerminalOutputActiveWriteCounters>;
+    total: TerminalOutputActiveWriteCounters;
+  };
   queueAgeMs: {
     byLane: Record<TerminalOutputDiagnosticsLane, NumericDiagnosticsTotal>;
     byPriority: Record<TerminalOutputPriority, NumericDiagnosticsTotal>;
     bySource: Record<TerminalOutputRoute, NumericDiagnosticsTotal>;
+  };
+  writeDurationMs: {
+    byLane: Record<TerminalOutputDiagnosticsLane, NumericDiagnosticsTotal>;
+    byPriority: Record<TerminalOutputPriority, NumericDiagnosticsTotal>;
+    byShape: Record<TerminalOutputWriteShape, NumericDiagnosticsTotal>;
+    bySource: Record<TerminalOutputRoute, NumericDiagnosticsTotal>;
+    total: NumericDiagnosticsTotal;
+  };
+  writeFinalizationDurationMs: {
+    byLane: Record<TerminalOutputDiagnosticsLane, NumericDiagnosticsTotal>;
+    byPriority: Record<TerminalOutputPriority, NumericDiagnosticsTotal>;
+    byShape: Record<TerminalOutputWriteShape, NumericDiagnosticsTotal>;
+    bySource: Record<TerminalOutputRoute, NumericDiagnosticsTotal>;
+    total: NumericDiagnosticsTotal;
   };
   routed: {
     byLane: Record<TerminalOutputDiagnosticsLane, TerminalOutputRouteCounters>;
@@ -84,6 +107,7 @@ export interface TerminalOutputDiagnosticsSummarySnapshot {
   writes: {
     byLane: Record<TerminalOutputDiagnosticsLane, TerminalOutputWriteCounters>;
     byPriority: Record<TerminalOutputPriority, TerminalOutputWriteCounters>;
+    byShape: Record<TerminalOutputWriteShape, TerminalOutputWriteCounters>;
     bySource: Record<TerminalOutputRoute, TerminalOutputWriteCounters>;
     totalBytes: number;
     totalCalls: number;
@@ -91,7 +115,32 @@ export interface TerminalOutputDiagnosticsSummarySnapshot {
 }
 
 export interface TerminalOutputUiFluidityCountersSnapshot {
+  activeWriteAgeMs: {
+    activeVisible: NumericDiagnosticsTotal;
+    direct: NumericDiagnosticsTotal;
+    focused: NumericDiagnosticsTotal;
+    hidden: NumericDiagnosticsTotal;
+    queued: NumericDiagnosticsTotal;
+    switchTargetVisible: NumericDiagnosticsTotal;
+    total: NumericDiagnosticsTotal;
+    visible: NumericDiagnosticsTotal;
+    visibleBackground: NumericDiagnosticsTotal;
+  };
+  activeWritesStartedBeforeBoundary: TerminalOutputUiFluidityActiveWriteCounters;
+  activeWritesStartedSinceBoundary: TerminalOutputUiFluidityActiveWriteCounters;
+  activeWriteCount: {
+    activeVisible: number;
+    direct: number;
+    focused: number;
+    hidden: number;
+    queued: number;
+    switchTargetVisible: number;
+    total: number;
+    visible: number;
+    visibleBackground: number;
+  };
   activeVisibleBytes: number;
+  controlWriteBytes: number;
   directWriteBytes: number;
   directWriteCalls: number;
   focusedBytes: number;
@@ -107,16 +156,68 @@ export interface TerminalOutputUiFluidityCountersSnapshot {
   };
   queuedWriteBytes: number;
   queuedWriteCalls: number;
+  plainWriteBytes: number;
+  redrawControlWriteBytes: number;
   suppressedBytes: number;
   switchTargetVisibleBytes: number;
   totalBytes: number;
   totalCalls: number;
   visibleBackgroundBytes: number;
   visibleBytes: number;
+  writeDurationMs: {
+    activeVisible: NumericDiagnosticsTotal;
+    control: NumericDiagnosticsTotal;
+    direct: NumericDiagnosticsTotal;
+    focused: NumericDiagnosticsTotal;
+    hidden: NumericDiagnosticsTotal;
+    plain: NumericDiagnosticsTotal;
+    queued: NumericDiagnosticsTotal;
+    redrawControl: NumericDiagnosticsTotal;
+    switchTargetVisible: NumericDiagnosticsTotal;
+    total: NumericDiagnosticsTotal;
+    visible: NumericDiagnosticsTotal;
+    visibleBackground: NumericDiagnosticsTotal;
+  };
+  writeFinalizationDurationMs: {
+    activeVisible: NumericDiagnosticsTotal;
+    control: NumericDiagnosticsTotal;
+    direct: NumericDiagnosticsTotal;
+    focused: NumericDiagnosticsTotal;
+    hidden: NumericDiagnosticsTotal;
+    plain: NumericDiagnosticsTotal;
+    queued: NumericDiagnosticsTotal;
+    redrawControl: NumericDiagnosticsTotal;
+    switchTargetVisible: NumericDiagnosticsTotal;
+    total: NumericDiagnosticsTotal;
+    visible: NumericDiagnosticsTotal;
+    visibleBackground: NumericDiagnosticsTotal;
+  };
 }
 
 export type TerminalOutputRoute = 'direct' | 'queued';
 export type TerminalOutputDiagnosticsLane = 'focused' | 'hidden' | 'visible';
+export type TerminalOutputWriteShape = 'control' | 'plain' | 'redraw-control';
+
+export interface TerminalOutputUiFluidityActiveWriteCounters {
+  activeVisible: TerminalOutputActiveWriteCounters;
+  direct: TerminalOutputActiveWriteCounters;
+  focused: TerminalOutputActiveWriteCounters;
+  hidden: TerminalOutputActiveWriteCounters;
+  queued: TerminalOutputActiveWriteCounters;
+  switchTargetVisible: TerminalOutputActiveWriteCounters;
+  total: TerminalOutputActiveWriteCounters;
+  visible: TerminalOutputActiveWriteCounters;
+  visibleBackground: TerminalOutputActiveWriteCounters;
+}
+
+type TerminalOutputActiveWritesSummary = TerminalOutputDiagnosticsSummarySnapshot['activeWrites'];
+type TerminalOutputDurationSummary = TerminalOutputDiagnosticsSummarySnapshot['writeDurationMs'];
+type TerminalOutputUiFluidityActiveWriteAgeSnapshot =
+  TerminalOutputUiFluidityCountersSnapshot['activeWriteAgeMs'];
+type TerminalOutputUiFluidityActiveWriteCountSnapshot =
+  TerminalOutputUiFluidityCountersSnapshot['activeWriteCount'];
+type TerminalOutputUiFluidityDurationCounters =
+  TerminalOutputUiFluidityCountersSnapshot['writeDurationMs'];
 
 interface TerminalOutputRouteRecord {
   bytes: number[];
@@ -137,16 +238,42 @@ export interface TerminalOutputWriteCounters {
   calls: number;
 }
 
+export interface TerminalOutputActiveWriteCounters {
+  ageMs: NumericDiagnosticsTotal;
+  bytes: number;
+  count: number;
+}
+
 export interface TerminalOutputRouteCounters {
   bytes: number;
   chunks: number;
 }
 
+interface TerminalOutputActiveWriteRecord {
+  bytes: number;
+  priority: TerminalOutputPriority;
+  shape: TerminalOutputWriteShape;
+  source: TerminalOutputRoute;
+  startedAtMs: number;
+}
+
+interface TerminalOutputActiveWriteSnapshot {
+  bytes: number;
+  durationMs: number;
+  priority: TerminalOutputPriority;
+  shape: TerminalOutputWriteShape;
+  source: TerminalOutputRoute;
+}
+
 interface TerminalOutputWriteRecord {
+  active: TerminalOutputActiveWriteRecord[];
   calls: number;
   directCalls: number;
   directWriteBytes: number;
+  durations: number[];
+  finalizationDurations: number[];
   intervals: number[];
+  lastCompletedShape: TerminalOutputWriteShape | null;
   lastWriteAt: number;
   queuedCalls: number;
   queuedWriteBytes: number;
@@ -220,6 +347,23 @@ interface RecordTerminalOutputWriteOptions {
   taskId: string;
 }
 
+interface RecordTerminalOutputWriteCompletionOptions {
+  agentId: string;
+  durationMs: number;
+  priority: TerminalOutputPriority;
+  source: TerminalOutputRoute;
+  taskId: string;
+}
+
+interface RecordTerminalOutputWriteFinalizationOptions {
+  agentId: string;
+  durationMs: number;
+  priority: TerminalOutputPriority;
+  shape?: TerminalOutputWriteShape | null;
+  source: TerminalOutputRoute;
+  taskId: string;
+}
+
 interface RecordTerminalOutputSuppressedOptions {
   agentId: string;
   chunkLength: number;
@@ -227,10 +371,15 @@ interface RecordTerminalOutputSuppressedOptions {
   taskId: string;
 }
 
+interface TerminalOutputUiFluidityCountersOptions {
+  activeWriteBoundaryStartedAtMs?: number | null;
+}
+
 declare global {
   interface Window {
     __PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__?: boolean;
     __TERMINAL_OUTPUT_DIAGNOSTICS__?: boolean;
+    __TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__?: boolean;
     __parallelCodeTerminalOutputDiagnostics?: {
       getSnapshot: () => TerminalOutputDiagnosticsSnapshot;
       reset: () => void;
@@ -252,6 +401,11 @@ const TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES: readonly TerminalOutputPriority[] =
   'hidden',
 ];
 const TERMINAL_OUTPUT_ROUTES: readonly TerminalOutputRoute[] = ['direct', 'queued'];
+const TERMINAL_OUTPUT_WRITE_SHAPES: readonly TerminalOutputWriteShape[] = [
+  'plain',
+  'control',
+  'redraw-control',
+];
 const CLEAR_LINE_PATTERN = new RegExp(String.raw`\u001b\[(?:0|1|2)?K`, 'gu');
 const CURSOR_POSITION_PATTERN = new RegExp(String.raw`\u001b\[[0-9;]*[Hf]`, 'gu');
 const SAVE_RESTORE_PATTERN = new RegExp(String.raw`\u001b(?:7|8|\[s|\[u)`, 'gu');
@@ -290,6 +444,14 @@ function createTerminalOutputRouteCounters(): TerminalOutputRouteCounters {
   };
 }
 
+function createTerminalOutputActiveWriteCounters(): TerminalOutputActiveWriteCounters {
+  return {
+    ageMs: createNumericDiagnosticsTotal(),
+    bytes: 0,
+    count: 0,
+  };
+}
+
 function createRecordFromEntries<Key extends string, Value>(
   keys: readonly Key[],
   createValue: () => Value,
@@ -323,6 +485,13 @@ function createNumericDiagnosticsTotalsByPriority(): Record<
     TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES,
     createNumericDiagnosticsTotal,
   );
+}
+
+function createNumericDiagnosticsTotalsByShape(): Record<
+  TerminalOutputWriteShape,
+  NumericDiagnosticsTotal
+> {
+  return createRecordFromEntries(TERMINAL_OUTPUT_WRITE_SHAPES, createNumericDiagnosticsTotal);
 }
 
 function createRouteCountersByLane(): Record<
@@ -373,13 +542,69 @@ function createWriteCountersByPriority(): Record<
   );
 }
 
+function createWriteCountersByShape(): Record<
+  TerminalOutputWriteShape,
+  TerminalOutputWriteCounters
+> {
+  return createRecordFromEntries(TERMINAL_OUTPUT_WRITE_SHAPES, createTerminalOutputWriteCounters);
+}
+
+function createActiveWriteCountersByLane(): Record<
+  TerminalOutputDiagnosticsLane,
+  TerminalOutputActiveWriteCounters
+> {
+  return createRecordFromEntries(
+    TERMINAL_OUTPUT_DIAGNOSTIC_LANES,
+    createTerminalOutputActiveWriteCounters,
+  );
+}
+
+function createActiveWriteCountersBySource(): Record<
+  TerminalOutputRoute,
+  TerminalOutputActiveWriteCounters
+> {
+  return createRecordFromEntries(TERMINAL_OUTPUT_ROUTES, createTerminalOutputActiveWriteCounters);
+}
+
+function createActiveWriteCountersByPriority(): Record<
+  TerminalOutputPriority,
+  TerminalOutputActiveWriteCounters
+> {
+  return createRecordFromEntries(
+    TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES,
+    createTerminalOutputActiveWriteCounters,
+  );
+}
+
+function createEmptyTerminalOutputActiveWritesSummary(): TerminalOutputActiveWritesSummary {
+  return {
+    byLane: createActiveWriteCountersByLane(),
+    byPriority: createActiveWriteCountersByPriority(),
+    bySource: createActiveWriteCountersBySource(),
+    total: createTerminalOutputActiveWriteCounters(),
+  };
+}
+
+function createTerminalOutputDurationSummary(): TerminalOutputDurationSummary {
+  return {
+    byLane: createNumericDiagnosticsTotalsByLane(),
+    byPriority: createNumericDiagnosticsTotalsByPriority(),
+    byShape: createNumericDiagnosticsTotalsByShape(),
+    bySource: createNumericDiagnosticsTotalsByRoute(),
+    total: createNumericDiagnosticsTotal(),
+  };
+}
+
 function createTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnosticsSummarySnapshot {
   return {
+    activeWrites: createEmptyTerminalOutputActiveWritesSummary(),
     queueAgeMs: {
       byLane: createNumericDiagnosticsTotalsByLane(),
       byPriority: createNumericDiagnosticsTotalsByPriority(),
       bySource: createNumericDiagnosticsTotalsByRoute(),
     },
+    writeDurationMs: createTerminalOutputDurationSummary(),
+    writeFinalizationDurationMs: createTerminalOutputDurationSummary(),
     routed: {
       byLane: createRouteCountersByLane(),
       byPriority: createRouteCountersByPriority(),
@@ -394,6 +619,7 @@ function createTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnosticsSumm
     writes: {
       byLane: createWriteCountersByLane(),
       byPriority: createWriteCountersByPriority(),
+      byShape: createWriteCountersByShape(),
       bySource: createWriteCountersBySource(),
       totalBytes: 0,
       totalCalls: 0,
@@ -490,10 +716,14 @@ function createTerminalRecord(
     suppressed: createTerminalOutputRouteCounters(),
     taskId,
     writes: {
+      active: [],
       calls: 0,
       directCalls: 0,
       directWriteBytes: 0,
+      durations: [],
+      finalizationDurations: [],
       intervals: [],
+      lastCompletedShape: null,
       lastWriteAt: 0,
       queuedCalls: 0,
       queuedWriteBytes: 0,
@@ -528,14 +758,29 @@ function mayContainTrackedControlSequence(chunk: Uint8Array): boolean {
   return false;
 }
 
+function shouldCaptureVisibleLineDiagnostics(): boolean {
+  return (
+    typeof window !== 'undefined' && window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ === true
+  );
+}
+
 function readVisibleTerminalLines(term: Pick<Terminal, 'buffer' | 'rows'>): {
   cursorX: number;
   cursorY: number;
-  lines: string[];
+  lines: string[] | null;
   viewportY: number;
 } {
   const activeBuffer = term.buffer.active;
   const viewportY = activeBuffer.viewportY;
+  if (!shouldCaptureVisibleLineDiagnostics()) {
+    return {
+      cursorX: activeBuffer.cursorX,
+      cursorY: activeBuffer.cursorY,
+      lines: null,
+      viewportY,
+    };
+  }
+
   const lines: string[] = [];
 
   for (let index = 0; index < term.rows; index += 1) {
@@ -553,9 +798,9 @@ function readVisibleTerminalLines(term: Pick<Terminal, 'buffer' | 'rows'>): {
 
 function countChangedVisibleLines(
   previousLines: readonly string[] | null,
-  nextLines: readonly string[],
+  nextLines: readonly string[] | null,
 ): number {
-  if (!previousLines) {
+  if (!previousLines || !nextLines) {
     return 0;
   }
 
@@ -604,6 +849,56 @@ function cloneNumericDiagnosticsTotal(totals: NumericDiagnosticsTotal): NumericD
   };
 }
 
+function cloneActiveWriteCounters(
+  counters: TerminalOutputActiveWriteCounters,
+): TerminalOutputActiveWriteCounters {
+  return {
+    ageMs: cloneNumericDiagnosticsTotal(counters.ageMs),
+    bytes: counters.bytes,
+    count: counters.count,
+  };
+}
+
+function cloneActiveWriteCountersRecord<Key extends string>(
+  record: Record<Key, TerminalOutputActiveWriteCounters>,
+  keys: readonly Key[],
+): Record<Key, TerminalOutputActiveWriteCounters> {
+  const clone = {} as Record<Key, TerminalOutputActiveWriteCounters>;
+  for (const key of keys) {
+    clone[key] = cloneActiveWriteCounters(record[key]);
+  }
+  return clone;
+}
+
+function cloneTerminalOutputActiveWritesSummary(
+  activeWrites: TerminalOutputActiveWritesSummary,
+): TerminalOutputActiveWritesSummary {
+  return {
+    byLane: cloneActiveWriteCountersRecord(activeWrites.byLane, TERMINAL_OUTPUT_DIAGNOSTIC_LANES),
+    byPriority: cloneActiveWriteCountersRecord(
+      activeWrites.byPriority,
+      TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES,
+    ),
+    bySource: cloneActiveWriteCountersRecord(activeWrites.bySource, TERMINAL_OUTPUT_ROUTES),
+    total: cloneActiveWriteCounters(activeWrites.total),
+  };
+}
+
+function cloneTerminalOutputDurationSummary(
+  durationSummary: TerminalOutputDurationSummary,
+): TerminalOutputDurationSummary {
+  return {
+    byLane: cloneRecordValues(durationSummary.byLane, TERMINAL_OUTPUT_DIAGNOSTIC_LANES),
+    byPriority: cloneRecordValues(
+      durationSummary.byPriority,
+      TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES,
+    ),
+    byShape: cloneRecordValues(durationSummary.byShape, TERMINAL_OUTPUT_WRITE_SHAPES),
+    bySource: cloneRecordValues(durationSummary.bySource, TERMINAL_OUTPUT_ROUTES),
+    total: cloneNumericDiagnosticsTotal(durationSummary.total),
+  };
+}
+
 function recordNumericDiagnosticsTotal(
   totals: NumericDiagnosticsTotal,
   value: number | undefined,
@@ -619,9 +914,194 @@ function recordNumericDiagnosticsTotal(
   }
 }
 
-function recordControlSequences(record: TerminalOutputTerminalRecord, chunk: Uint8Array): void {
+function recordTerminalOutputDurationSummary(
+  durationSummary: TerminalOutputDurationSummary,
+  lane: TerminalOutputDiagnosticsLane,
+  priority: TerminalOutputPriority,
+  source: TerminalOutputRoute,
+  shape: TerminalOutputWriteShape,
+  durationMs: number,
+): void {
+  recordNumericDiagnosticsTotal(durationSummary.byLane[lane], durationMs);
+  recordNumericDiagnosticsTotal(durationSummary.byPriority[priority], durationMs);
+  recordNumericDiagnosticsTotal(durationSummary.byShape[shape], durationMs);
+  recordNumericDiagnosticsTotal(durationSummary.bySource[source], durationMs);
+  recordNumericDiagnosticsTotal(durationSummary.total, durationMs);
+}
+
+function recordActiveWriteCounters(
+  counters: TerminalOutputActiveWriteCounters,
+  activeWrite: TerminalOutputActiveWriteRecord,
+  durationMs: number,
+): void {
+  counters.bytes += activeWrite.bytes;
+  counters.count += 1;
+  recordNumericDiagnosticsTotal(counters.ageMs, durationMs);
+}
+
+function createTerminalOutputActiveWritesSummary(options?: {
+  startedAtFilter?: (startedAtMs: number) => boolean;
+}): TerminalOutputActiveWritesSummary {
+  const activeWrites = createEmptyTerminalOutputActiveWritesSummary();
+  const now = typeof performance === 'undefined' ? 0 : performance.now();
+
+  for (const record of outputDiagnostics.values()) {
+    for (const activeWrite of record.writes.active) {
+      if (options?.startedAtFilter && !options.startedAtFilter(activeWrite.startedAtMs)) {
+        continue;
+      }
+
+      const lane = getTerminalOutputDiagnosticsLane(activeWrite.priority);
+      const durationMs = Math.max(0, now - activeWrite.startedAtMs);
+      recordActiveWriteCounters(activeWrites.byLane[lane], activeWrite, durationMs);
+      recordActiveWriteCounters(
+        activeWrites.byPriority[activeWrite.priority],
+        activeWrite,
+        durationMs,
+      );
+      recordActiveWriteCounters(activeWrites.bySource[activeWrite.source], activeWrite, durationMs);
+      recordActiveWriteCounters(activeWrites.total, activeWrite, durationMs);
+    }
+  }
+
+  return activeWrites;
+}
+
+function getOldestActiveWrite(
+  record: TerminalOutputWriteRecord,
+): TerminalOutputActiveWriteRecord | null {
+  return record.active[0] ?? null;
+}
+
+function createActiveWriteSnapshot(
+  activeWrite: TerminalOutputActiveWriteRecord | null,
+): TerminalOutputActiveWriteSnapshot | null {
+  if (activeWrite === null) {
+    return null;
+  }
+
+  return {
+    bytes: activeWrite.bytes,
+    durationMs: Math.max(0, performance.now() - activeWrite.startedAtMs),
+    priority: activeWrite.priority,
+    shape: activeWrite.shape,
+    source: activeWrite.source,
+  };
+}
+
+function cloneUiFluidityActiveWriteCounters(
+  activeWrites: TerminalOutputActiveWritesSummary,
+): TerminalOutputUiFluidityActiveWriteCounters {
+  return {
+    activeVisible: cloneActiveWriteCounters(activeWrites.byPriority['active-visible']),
+    direct: cloneActiveWriteCounters(activeWrites.bySource.direct),
+    focused: cloneActiveWriteCounters(activeWrites.byPriority.focused),
+    hidden: cloneActiveWriteCounters(activeWrites.byLane.hidden),
+    queued: cloneActiveWriteCounters(activeWrites.bySource.queued),
+    switchTargetVisible: cloneActiveWriteCounters(activeWrites.byPriority['switch-target-visible']),
+    total: cloneActiveWriteCounters(activeWrites.total),
+    visible: cloneActiveWriteCounters(activeWrites.byLane.visible),
+    visibleBackground: cloneActiveWriteCounters(activeWrites.byPriority['visible-background']),
+  };
+}
+
+function cloneUiFluidityActiveWriteAgeTotals(
+  activeWrites: TerminalOutputActiveWritesSummary,
+): TerminalOutputUiFluidityActiveWriteAgeSnapshot {
+  return {
+    activeVisible: cloneNumericDiagnosticsTotal(activeWrites.byPriority['active-visible'].ageMs),
+    direct: cloneNumericDiagnosticsTotal(activeWrites.bySource.direct.ageMs),
+    focused: cloneNumericDiagnosticsTotal(activeWrites.byPriority.focused.ageMs),
+    hidden: cloneNumericDiagnosticsTotal(activeWrites.byLane.hidden.ageMs),
+    queued: cloneNumericDiagnosticsTotal(activeWrites.bySource.queued.ageMs),
+    switchTargetVisible: cloneNumericDiagnosticsTotal(
+      activeWrites.byPriority['switch-target-visible'].ageMs,
+    ),
+    total: cloneNumericDiagnosticsTotal(activeWrites.total.ageMs),
+    visible: cloneNumericDiagnosticsTotal(activeWrites.byLane.visible.ageMs),
+    visibleBackground: cloneNumericDiagnosticsTotal(
+      activeWrites.byPriority['visible-background'].ageMs,
+    ),
+  };
+}
+
+function getUiFluidityActiveWriteCounts(
+  activeWrites: TerminalOutputActiveWritesSummary,
+): TerminalOutputUiFluidityActiveWriteCountSnapshot {
+  return {
+    activeVisible: activeWrites.byPriority['active-visible'].count,
+    direct: activeWrites.bySource.direct.count,
+    focused: activeWrites.byPriority.focused.count,
+    hidden: activeWrites.byLane.hidden.count,
+    queued: activeWrites.bySource.queued.count,
+    switchTargetVisible: activeWrites.byPriority['switch-target-visible'].count,
+    total: activeWrites.total.count,
+    visible: activeWrites.byLane.visible.count,
+    visibleBackground: activeWrites.byPriority['visible-background'].count,
+  };
+}
+
+function cloneUiFluidityDurationCounters(
+  durationSummary: TerminalOutputDurationSummary,
+): TerminalOutputUiFluidityDurationCounters {
+  return {
+    activeVisible: cloneNumericDiagnosticsTotal(durationSummary.byPriority['active-visible']),
+    control: cloneNumericDiagnosticsTotal(durationSummary.byShape.control),
+    direct: cloneNumericDiagnosticsTotal(durationSummary.bySource.direct),
+    focused: cloneNumericDiagnosticsTotal(durationSummary.byPriority.focused),
+    hidden: cloneNumericDiagnosticsTotal(durationSummary.byLane.hidden),
+    plain: cloneNumericDiagnosticsTotal(durationSummary.byShape.plain),
+    queued: cloneNumericDiagnosticsTotal(durationSummary.bySource.queued),
+    redrawControl: cloneNumericDiagnosticsTotal(durationSummary.byShape['redraw-control']),
+    switchTargetVisible: cloneNumericDiagnosticsTotal(
+      durationSummary.byPriority['switch-target-visible'],
+    ),
+    total: cloneNumericDiagnosticsTotal(durationSummary.total),
+    visible: cloneNumericDiagnosticsTotal(durationSummary.byLane.visible),
+    visibleBackground: cloneNumericDiagnosticsTotal(
+      durationSummary.byPriority['visible-background'],
+    ),
+  };
+}
+
+function createBoundaryActiveWriteSummaries(boundaryStartedAtMs: number | null | undefined): {
+  startedBeforeBoundary: TerminalOutputActiveWritesSummary;
+  startedSinceBoundary: TerminalOutputActiveWritesSummary;
+} {
+  if (boundaryStartedAtMs === null || boundaryStartedAtMs === undefined) {
+    return {
+      startedBeforeBoundary: createEmptyTerminalOutputActiveWritesSummary(),
+      startedSinceBoundary: createEmptyTerminalOutputActiveWritesSummary(),
+    };
+  }
+
+  return {
+    startedBeforeBoundary: createTerminalOutputActiveWritesSummary({
+      startedAtFilter: (startedAtMs) => startedAtMs < boundaryStartedAtMs,
+    }),
+    startedSinceBoundary: createTerminalOutputActiveWritesSummary({
+      startedAtFilter: (startedAtMs) => startedAtMs >= boundaryStartedAtMs,
+    }),
+  };
+}
+
+interface TerminalOutputControlAnalysis {
+  carriageReturnCount: number;
+  clearLineCount: number;
+  cursorPositionCount: number;
+  saveRestoreCount: number;
+  shape: TerminalOutputWriteShape;
+}
+
+function analyzeControlSequences(chunk: Uint8Array): TerminalOutputControlAnalysis {
   if (chunk.length === 0 || !mayContainTrackedControlSequence(chunk)) {
-    return;
+    return {
+      carriageReturnCount: 0,
+      clearLineCount: 0,
+      cursorPositionCount: 0,
+      saveRestoreCount: 0,
+      shape: 'plain',
+    };
   }
 
   const text = decoder.decode(chunk);
@@ -629,29 +1109,46 @@ function recordControlSequences(record: TerminalOutputTerminalRecord, chunk: Uin
   const clearLineCount = countMatches(text, CLEAR_LINE_PATTERN);
   const cursorPositionCount = countMatches(text, CURSOR_POSITION_PATTERN);
   const saveRestoreCount = countMatches(text, SAVE_RESTORE_PATTERN);
-
-  if (carriageReturnCount > 0) {
-    record.control.carriageReturnChunks += 1;
-    record.control.carriageReturnCount += carriageReturnCount;
-  }
-  if (clearLineCount > 0) {
-    record.control.clearLineChunks += 1;
-    record.control.clearLineCount += clearLineCount;
-  }
-  if (cursorPositionCount > 0) {
-    record.control.cursorPositionChunks += 1;
-    record.control.cursorPositionCount += cursorPositionCount;
-  }
-  if (saveRestoreCount > 0) {
-    record.control.saveRestoreChunks += 1;
-    record.control.saveRestoreCount += saveRestoreCount;
-  }
-  if (
+  const hasRedrawControl =
     carriageReturnCount > 0 ||
     clearLineCount > 0 ||
     cursorPositionCount > 0 ||
-    saveRestoreCount > 0
-  ) {
+    saveRestoreCount > 0;
+
+  return {
+    carriageReturnCount,
+    clearLineCount,
+    cursorPositionCount,
+    saveRestoreCount,
+    shape: hasRedrawControl ? 'redraw-control' : 'control',
+  };
+}
+
+function recordControlSequences(
+  record: TerminalOutputTerminalRecord,
+  analysis: TerminalOutputControlAnalysis,
+): void {
+  if (analysis.shape === 'plain') {
+    return;
+  }
+
+  if (analysis.carriageReturnCount > 0) {
+    record.control.carriageReturnChunks += 1;
+    record.control.carriageReturnCount += analysis.carriageReturnCount;
+  }
+  if (analysis.clearLineCount > 0) {
+    record.control.clearLineChunks += 1;
+    record.control.clearLineCount += analysis.clearLineCount;
+  }
+  if (analysis.cursorPositionCount > 0) {
+    record.control.cursorPositionChunks += 1;
+    record.control.cursorPositionCount += analysis.cursorPositionCount;
+  }
+  if (analysis.saveRestoreCount > 0) {
+    record.control.saveRestoreChunks += 1;
+    record.control.saveRestoreCount += analysis.saveRestoreCount;
+  }
+  if (analysis.shape === 'redraw-control') {
     record.control.redrawChunks += 1;
   }
 }
@@ -706,7 +1203,16 @@ export function recordTerminalOutputWrite(options: RecordTerminalOutputWriteOpti
   const now = performance.now();
   const record = getTerminalRecord(options.taskId, options.agentId);
   const lane = getTerminalOutputDiagnosticsLane(options.priority);
+  const controlAnalysis = analyzeControlSequences(options.chunk);
+  const shape = controlAnalysis.shape;
   record.priority = options.priority;
+  record.writes.active.push({
+    bytes: options.chunk.length,
+    priority: options.priority,
+    shape,
+    source: options.source,
+    startedAtMs: now,
+  });
   if (record.writes.lastWriteAt > 0) {
     pushSample(record.writes.intervals, Math.max(0, now - record.writes.lastWriteAt));
   }
@@ -718,6 +1224,8 @@ export function recordTerminalOutputWrite(options: RecordTerminalOutputWriteOpti
   terminalOutputSummary.writes.byLane[lane].bytes += options.chunk.length;
   terminalOutputSummary.writes.byPriority[options.priority].calls += 1;
   terminalOutputSummary.writes.byPriority[options.priority].bytes += options.chunk.length;
+  terminalOutputSummary.writes.byShape[shape].calls += 1;
+  terminalOutputSummary.writes.byShape[shape].bytes += options.chunk.length;
   terminalOutputSummary.writes.bySource[options.source].calls += 1;
   terminalOutputSummary.writes.bySource[options.source].bytes += options.chunk.length;
   pushSample(record.writes.sizes, options.chunk.length);
@@ -737,7 +1245,58 @@ export function recordTerminalOutputWrite(options: RecordTerminalOutputWriteOpti
     terminalOutputSummary.queueAgeMs.bySource[options.source],
     options.queueAgeMs,
   );
-  recordControlSequences(record, options.chunk);
+  recordControlSequences(record, controlAnalysis);
+}
+
+export function recordTerminalOutputWriteCompletion(
+  options: RecordTerminalOutputWriteCompletionOptions,
+): TerminalOutputWriteShape | null {
+  if (!isTerminalOutputDiagnosticsEnabled()) {
+    return null;
+  }
+
+  attachDiagnosticsStore();
+  const durationMs = Math.max(0, options.durationMs);
+  const record = getTerminalRecord(options.taskId, options.agentId);
+  const lane = getTerminalOutputDiagnosticsLane(options.priority);
+  const completedWrite = record.writes.active.shift() ?? null;
+  const shape = completedWrite?.shape ?? record.writes.lastCompletedShape ?? 'plain';
+  record.priority = options.priority;
+  record.writes.lastCompletedShape = shape;
+  pushSample(record.writes.durations, durationMs);
+  recordTerminalOutputDurationSummary(
+    terminalOutputSummary.writeDurationMs,
+    lane,
+    options.priority,
+    options.source,
+    shape,
+    durationMs,
+  );
+  return shape;
+}
+
+export function recordTerminalOutputWriteFinalization(
+  options: RecordTerminalOutputWriteFinalizationOptions,
+): void {
+  if (!isTerminalOutputDiagnosticsEnabled()) {
+    return;
+  }
+
+  attachDiagnosticsStore();
+  const durationMs = Math.max(0, options.durationMs);
+  const record = getTerminalRecord(options.taskId, options.agentId);
+  const lane = getTerminalOutputDiagnosticsLane(options.priority);
+  const shape = options.shape ?? record.writes.lastCompletedShape ?? 'plain';
+  record.priority = options.priority;
+  pushSample(record.writes.finalizationDurations, durationMs);
+  recordTerminalOutputDurationSummary(
+    terminalOutputSummary.writeFinalizationDurationMs,
+    lane,
+    options.priority,
+    options.source,
+    shape,
+    durationMs,
+  );
 }
 
 export function recordTerminalRenderEvent(options: {
@@ -818,7 +1377,10 @@ export function recordTerminalOutputSuppressed(
 }
 
 export function getTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnosticsSummarySnapshot {
+  const activeWrites = createTerminalOutputActiveWritesSummary();
+
   return {
+    activeWrites: cloneTerminalOutputActiveWritesSummary(activeWrites),
     queueAgeMs: {
       byLane: cloneRecordValues(
         terminalOutputSummary.queueAgeMs.byLane,
@@ -833,6 +1395,10 @@ export function getTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnostics
         TERMINAL_OUTPUT_ROUTES,
       ),
     },
+    writeDurationMs: cloneTerminalOutputDurationSummary(terminalOutputSummary.writeDurationMs),
+    writeFinalizationDurationMs: cloneTerminalOutputDurationSummary(
+      terminalOutputSummary.writeFinalizationDurationMs,
+    ),
     routed: {
       byLane: cloneRecordValues(
         terminalOutputSummary.routed.byLane,
@@ -865,6 +1431,10 @@ export function getTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnostics
         terminalOutputSummary.writes.byPriority,
         TERMINAL_OUTPUT_DIAGNOSTIC_PRIORITIES,
       ),
+      byShape: cloneRecordValues(
+        terminalOutputSummary.writes.byShape,
+        TERMINAL_OUTPUT_WRITE_SHAPES,
+      ),
       bySource: cloneRecordValues(terminalOutputSummary.writes.bySource, TERMINAL_OUTPUT_ROUTES),
       totalBytes: terminalOutputSummary.writes.totalBytes,
       totalCalls: terminalOutputSummary.writes.totalCalls,
@@ -872,9 +1442,25 @@ export function getTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnostics
   };
 }
 
-export function getTerminalOutputUiFluidityCountersSnapshot(): TerminalOutputUiFluidityCountersSnapshot {
+export function getTerminalOutputUiFluidityCountersSnapshot(
+  options?: TerminalOutputUiFluidityCountersOptions,
+): TerminalOutputUiFluidityCountersSnapshot {
+  const activeWrites = createTerminalOutputActiveWritesSummary();
+  const boundaryActiveWrites = createBoundaryActiveWriteSummaries(
+    options?.activeWriteBoundaryStartedAtMs,
+  );
+
   return {
+    activeWriteAgeMs: cloneUiFluidityActiveWriteAgeTotals(activeWrites),
+    activeWritesStartedBeforeBoundary: cloneUiFluidityActiveWriteCounters(
+      boundaryActiveWrites.startedBeforeBoundary,
+    ),
+    activeWritesStartedSinceBoundary: cloneUiFluidityActiveWriteCounters(
+      boundaryActiveWrites.startedSinceBoundary,
+    ),
+    activeWriteCount: getUiFluidityActiveWriteCounts(activeWrites),
     activeVisibleBytes: terminalOutputSummary.writes.byPriority['active-visible'].bytes,
+    controlWriteBytes: terminalOutputSummary.writes.byShape.control.bytes,
     directWriteBytes: terminalOutputSummary.writes.bySource.direct.bytes,
     directWriteCalls: terminalOutputSummary.writes.bySource.direct.calls,
     focusedBytes: terminalOutputSummary.writes.byPriority.focused.bytes,
@@ -894,8 +1480,10 @@ export function getTerminalOutputUiFluidityCountersSnapshot(): TerminalOutputUiF
         terminalOutputSummary.queueAgeMs.byPriority['visible-background'],
       ),
     },
+    plainWriteBytes: terminalOutputSummary.writes.byShape.plain.bytes,
     queuedWriteBytes: terminalOutputSummary.writes.bySource.queued.bytes,
     queuedWriteCalls: terminalOutputSummary.writes.bySource.queued.calls,
+    redrawControlWriteBytes: terminalOutputSummary.writes.byShape['redraw-control'].bytes,
     suppressedBytes: terminalOutputSummary.suppressed.totalBytes,
     switchTargetVisibleBytes:
       terminalOutputSummary.writes.byPriority['switch-target-visible'].bytes,
@@ -903,53 +1491,64 @@ export function getTerminalOutputUiFluidityCountersSnapshot(): TerminalOutputUiF
     totalCalls: terminalOutputSummary.writes.totalCalls,
     visibleBackgroundBytes: terminalOutputSummary.writes.byPriority['visible-background'].bytes,
     visibleBytes: terminalOutputSummary.writes.byLane.visible.bytes,
+    writeDurationMs: cloneUiFluidityDurationCounters(terminalOutputSummary.writeDurationMs),
+    writeFinalizationDurationMs: cloneUiFluidityDurationCounters(
+      terminalOutputSummary.writeFinalizationDurationMs,
+    ),
   };
 }
 
 export function getTerminalOutputDiagnosticsSnapshot(): TerminalOutputDiagnosticsSnapshot {
   return {
     summary: getTerminalOutputDiagnosticsSummary(),
-    terminals: [...outputDiagnostics.values()].map((record) => ({
-      agentId: record.agentId,
-      control: { ...record.control },
-      key: record.key,
-      priority: record.priority,
-      render: {
-        changedVisibleLines: createNumericStats(record.render.changedVisibleLines),
-        currentCursorX: record.render.lastCursorX,
-        currentCursorY: record.render.lastCursorY,
-        currentViewportY: record.render.lastViewportY,
-        currentVisibleLines:
-          record.render.lastVisibleLines === null ? null : [...record.render.lastVisibleLines],
-        cursorRowJump: createNumericStats(record.render.cursorRowJump),
-        maxChangedVisibleLines: record.render.maxChangedVisibleLines,
-        maxCursorRowJump: record.render.maxCursorRowJump,
-        maxRowSpan: record.render.maxRowSpan,
-        maxViewportJumpRows: record.render.maxViewportJumpRows,
-        renderCalls: record.render.renderCalls,
-        resizeEvents: record.render.resizeEvents,
-        rowSpan: createNumericStats(record.render.rowSpan),
-        viewportJumpRows: createNumericStats(record.render.viewportJumpRows),
-      },
-      routed: {
-        directBytes: record.routed.directBytes,
-        directChunks: record.routed.directChunks,
-        queuedBytes: record.routed.queuedBytes,
-        queuedChunks: record.routed.queuedChunks,
-        sizeBytes: createNumericStats(record.routed.bytes),
-      },
-      suppressed: { ...record.suppressed },
-      taskId: record.taskId,
-      writes: {
-        calls: record.writes.calls,
-        directCalls: record.writes.directCalls,
-        directWriteBytes: record.writes.directWriteBytes,
-        intervalMs: createNumericStats(record.writes.intervals),
-        queuedCalls: record.writes.queuedCalls,
-        queuedWriteBytes: record.writes.queuedWriteBytes,
-        sizeBytes: createNumericStats(record.writes.sizes),
-      },
-    })),
+    terminals: [...outputDiagnostics.values()].map((record) => {
+      const activeWrite = getOldestActiveWrite(record.writes);
+
+      return {
+        agentId: record.agentId,
+        control: { ...record.control },
+        key: record.key,
+        priority: record.priority,
+        render: {
+          changedVisibleLines: createNumericStats(record.render.changedVisibleLines),
+          currentCursorX: record.render.lastCursorX,
+          currentCursorY: record.render.lastCursorY,
+          currentViewportY: record.render.lastViewportY,
+          currentVisibleLines:
+            record.render.lastVisibleLines === null ? null : [...record.render.lastVisibleLines],
+          cursorRowJump: createNumericStats(record.render.cursorRowJump),
+          maxChangedVisibleLines: record.render.maxChangedVisibleLines,
+          maxCursorRowJump: record.render.maxCursorRowJump,
+          maxRowSpan: record.render.maxRowSpan,
+          maxViewportJumpRows: record.render.maxViewportJumpRows,
+          renderCalls: record.render.renderCalls,
+          resizeEvents: record.render.resizeEvents,
+          rowSpan: createNumericStats(record.render.rowSpan),
+          viewportJumpRows: createNumericStats(record.render.viewportJumpRows),
+        },
+        routed: {
+          directBytes: record.routed.directBytes,
+          directChunks: record.routed.directChunks,
+          queuedBytes: record.routed.queuedBytes,
+          queuedChunks: record.routed.queuedChunks,
+          sizeBytes: createNumericStats(record.routed.bytes),
+        },
+        suppressed: { ...record.suppressed },
+        taskId: record.taskId,
+        writes: {
+          active: createActiveWriteSnapshot(activeWrite),
+          calls: record.writes.calls,
+          directCalls: record.writes.directCalls,
+          directWriteBytes: record.writes.directWriteBytes,
+          durationMs: createNumericStats(record.writes.durations),
+          finalizationDurationMs: createNumericStats(record.writes.finalizationDurations),
+          intervalMs: createNumericStats(record.writes.intervals),
+          queuedCalls: record.writes.queuedCalls,
+          queuedWriteBytes: record.writes.queuedWriteBytes,
+          sizeBytes: createNumericStats(record.writes.sizes),
+        },
+      };
+    }),
   };
 }
 

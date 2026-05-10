@@ -1,6 +1,7 @@
 import {
   recordTerminalInputTraceClientDisconnected,
   recordTerminalInputTraceClientUpdate,
+  recordTerminalInputTraceCommandResultSent,
   recordTerminalInputTraceFailure,
   recordTerminalInputTraceServerReceived,
 } from '../electron/ipc/runtime-diagnostics.js';
@@ -16,6 +17,7 @@ type TerminalInputTraceClockSyncMessage = Extract<
   { type: 'terminal-input-trace-clock-sync' }
 >;
 type TerminalInputTraceCommand = Extract<ClientMessage, { type: 'terminal-input-trace' }>;
+type AgentCommandResultMessage = Extract<ServerMessage, { type: 'agent-command-result' }>;
 
 interface BrowserTerminalInputTraceRequest {
   clientId: string | null;
@@ -101,6 +103,17 @@ export function recordBrowserTerminalInputClientUpdate(
   record: typeof recordTerminalInputTraceClientUpdate = recordTerminalInputTraceClientUpdate,
 ): void {
   record(message);
+}
+
+export function recordBrowserTerminalInputCommandResultSent(
+  message: AgentCommandResultMessage,
+  record: typeof recordTerminalInputTraceCommandResultSent = recordTerminalInputTraceCommandResultSent,
+): void {
+  if (message.command !== 'input') {
+    return;
+  }
+
+  record(message.agentId, message.requestId);
 }
 
 export function createBrowserTerminalInputTraceClockSyncMessage(

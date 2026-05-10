@@ -12,6 +12,7 @@ import {
 } from '../../app/terminal-frame-pressure';
 import {
   isTerminalFocusedInputActive,
+  isTerminalFocusedInputEchoReservationActive,
   noteTerminalFocusedInput,
   resetTerminalFocusedInputForTests,
 } from '../../app/terminal-focused-input';
@@ -295,6 +296,12 @@ describe('terminal-output-pipeline', () => {
   });
 
   it('ignores late write completion lifecycle side effects after cleanup', () => {
+    (
+      globalThis.window as typeof globalThis.window & {
+        __TERMINAL_OUTPUT_DIAGNOSTICS__?: boolean;
+      }
+    ).__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+
     const pendingWriteCallbacks: Array<() => void> = [];
     let disposed = false;
     const markTerminalReady = vi.fn();
@@ -330,6 +337,7 @@ describe('terminal-output-pipeline', () => {
 
     pipeline.enqueueOutput(encoder.encode('late output'));
     expect(pendingWriteCallbacks).toHaveLength(1);
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.activeWrites.total.count).toBe(1);
 
     disposed = true;
     pipeline.cleanup();
@@ -339,6 +347,8 @@ describe('terminal-output-pipeline', () => {
     expect(onChunkRendered).not.toHaveBeenCalled();
     expect(markTerminalReady).not.toHaveBeenCalled();
     expect(onQueueEmpty).not.toHaveBeenCalled();
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.activeWrites.total.count).toBe(0);
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.writeDurationMs.total.count).toBe(1);
   });
 
   it('builds recovery request state from rendered history plus queued local output', () => {
@@ -484,6 +494,8 @@ describe('terminal-output-pipeline', () => {
     );
     expect(coalescedTerminal?.writes.calls).toBe(2);
     expect(coalescedSnapshot.summary.queueAgeMs.bySource.queued.count).toBe(1);
+    expect(coalescedSnapshot.summary.writeDurationMs.bySource.queued.count).toBe(1);
+    expect(coalescedSnapshot.summary.writeDurationMs.total.count).toBe(2);
     coalescedHarness.pipeline.cleanup();
 
     resetTerminalOutputDiagnostics();
@@ -511,6 +523,8 @@ describe('terminal-output-pipeline', () => {
     const splitTerminal = splitSnapshot.terminals.find((entry) => entry.agentId === 'agent-1');
     expect(splitTerminal?.writes.calls).toBe(5);
     expect(splitSnapshot.summary.queueAgeMs.bySource.queued.count).toBe(4);
+    expect(splitSnapshot.summary.writeDurationMs.bySource.queued.count).toBe(4);
+    expect(splitSnapshot.summary.writeDurationMs.total.count).toBe(5);
     expect(splitTerminal?.writes.calls ?? Number.POSITIVE_INFINITY).toBeLessThan(8);
     expect(splitTerminal?.writes.calls ?? 0).toBeGreaterThan(coalescedTerminal?.writes.calls ?? 0);
     expect(splitSnapshot.summary.queueAgeMs.bySource.queued.max).toBeGreaterThan(
@@ -543,15 +557,16 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('keeps the focused-input window alive while clearing the first-echo reservation on the first focused write', () => {
+  it('clears the focused-input echo reservation on focused output when no traced echo is pending', () => {
     const { pipeline } = createPipeline();
 
     noteTerminalFocusedInput('task-1', 'agent-1');
-    expect(isTerminalFocusedInputActive('task-1', 'agent-1')).toBe(true);
+    expect(isTerminalFocusedInputEchoReservationActive('task-1', 'agent-1')).toBe(true);
 
     pipeline.enqueueOutput(encoder.encode('prompt> ok'));
 
     expect(isTerminalFocusedInputActive('task-1', 'agent-1')).toBe(true);
+    expect(isTerminalFocusedInputEchoReservationActive('task-1', 'agent-1')).toBe(false);
     pipeline.cleanup();
   });
 
@@ -1347,6 +1362,53 @@ describe('terminal-output-pipeline', () => {
 
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
     pipeline.flushOutputQueueSlice(16 * 1024);
+
+    expect(writes[0]?.length).toBe(1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('uses the built-in high load mode sparse switch echo cap', () => {
+    Reflect.deleteProperty(window, '__PARALLEL_CODE_TERMINAL_EXPERIMENTS__');
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+
+    const visibleRegistrations = registerVisibleTerminals(2);
+    const { finishNextWrite, markLocalInputObserved, pipeline, writes } =
+      createPipelineWithManualWrites('focused');
+
+    markLocalInputObserved();
+    beginTerminalSwitchEchoGrace('task-1', 180);
+    activateTerminalSwitchEchoGrace('task-1');
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
+    vi.advanceTimersToNextTimer();
+
+    expect(writes[0]?.length).toBe(8 * 1024);
+
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[1]?.length).toBe(40_000 - 8 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('scales visible background writes under built-in high load pressure at two visible terminals', () => {
+    Reflect.deleteProperty(window, '__PARALLEL_CODE_TERMINAL_EXPERIMENTS__');
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+    setTerminalFramePressureLevelForTests('critical');
+
+    const visibleRegistrations = registerVisibleTerminals(2);
+    const { finishNextWrite, pipeline, writes } =
+      createPipelineWithManualWrites('visible-background');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
+    vi.advanceTimersToNextTimer();
 
     expect(writes[0]?.length).toBe(1024);
 

@@ -52,6 +52,7 @@ class FakeWebSocket {
   onerror: (() => void) | null = null;
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   onopen: (() => void) | null = null;
+  bufferedAmount = 0;
   readyState = FakeWebSocket.CONNECTING;
   sent: TestOutgoingMessage[] = [];
   url: string;
@@ -153,6 +154,35 @@ describe('createWebSocketClientCore', () => {
       { type: 'status', seq: 2 },
     ]);
     expect(client.getLastSeq()).toBe(2);
+  });
+
+  it('reports the active socket buffered amount only while open', async () => {
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: () => {},
+      shouldReconnect: () => false,
+    });
+
+    expect(client.getBufferedAmount()).toBe(0);
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error('expected websocket instance');
+    }
+    socket.bufferedAmount = 256;
+    socket.open();
+    await connectPromise;
+
+    expect(client.getBufferedAmount()).toBe(256);
+
+    socket.bufferedAmount = 512;
+    expect(client.getBufferedAmount()).toBe(512);
+
+    socket.close();
+
+    expect(client.getBufferedAmount()).toBe(0);
   });
 
   it('ignores parsed websocket payloads that are not typed message objects', async () => {

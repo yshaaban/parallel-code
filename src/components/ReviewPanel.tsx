@@ -367,6 +367,8 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
 
   return (
     <div
+      data-review-mode={controller.mode()}
+      data-review-panel="true"
       style={{
         display: 'flex',
         'flex-direction': 'column',

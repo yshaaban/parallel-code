@@ -444,13 +444,16 @@ import { startDesktopAppSession } from './desktop-session';
 
 function createDeferred<T>(): {
   promise: Promise<T>;
+  reject: (reason?: unknown) => void;
   resolve: (value: T | PromiseLike<T>) => void;
 } {
+  let reject!: (reason?: unknown) => void;
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    reject = innerReject;
     resolve = innerResolve;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 async function flushResolvedPromises(iterations = 12): Promise<void> {
@@ -1188,9 +1191,17 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
       expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
       expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
       expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+        takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
+          Number.POSITIVE_INFINITY,
+      );
+      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+        loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
     });
 
     cleanup();
@@ -1400,12 +1411,17 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
       expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
       expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
         handoffProjection,
         0,
       );
       expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+        takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
+          Number.POSITIVE_INFINITY,
+      );
     });
 
     cleanup();
@@ -1703,6 +1719,68 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
+  it('does not block browser cold bootstrap on the agent catalog refresh', async () => {
+    vi.useFakeTimers();
+    const deferredAgents = createDeferred<undefined>();
+    loadAgentsMock.mockReturnValueOnce(deferredAgents.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+    });
+    expect(loadAgentsMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    expect(fetchBrowserColdBootstrapMock.mock.invocationCallOrder[0]).toBeLessThan(
+      loadAgentsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+
+    deferredAgents.resolve(undefined);
+    await deferredAgents.promise;
+    cleanup();
+  });
+
+  it('handles failed background browser agent catalog refreshes', async () => {
+    vi.useFakeTimers();
+    const refreshError = new Error('agent catalog unavailable');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    loadAgentsMock.mockRejectedValueOnce(refreshError);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          'Failed to refresh browser agent catalog during startup:',
+          refreshError,
+        );
+      });
+    } finally {
+      cleanup();
+      warnSpy.mockRestore();
+    }
+  });
+
   it('does not block browser startup on project path validation', async () => {
     const deferredValidation = createDeferred<undefined>();
     validateProjectPathsMock.mockReturnValueOnce(deferredValidation.promise);
@@ -1724,6 +1802,32 @@ describe('desktop session startup sequencing', () => {
 
     deferredValidation.resolve(undefined);
     await flushResolvedPromises();
+    cleanup();
+  });
+
+  it('does not block browser startup on browser window-state capture', async () => {
+    const deferredCapture = createDeferred<undefined>();
+    captureWindowStateMock.mockReturnValueOnce(deferredCapture.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(setupAutosaveMock).toHaveBeenCalled();
+      expect(registerCloseRequestedHandlerMock).toHaveBeenCalled();
+    });
+
+    expect(restoreWindowStateMock).not.toHaveBeenCalled();
+    expect(captureWindowStateMock).toHaveBeenCalledTimes(1);
+
+    deferredCapture.resolve(undefined);
+    await deferredCapture.promise;
     cleanup();
   });
 

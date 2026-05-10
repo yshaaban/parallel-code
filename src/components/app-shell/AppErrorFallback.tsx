@@ -19,7 +19,7 @@ export function AppErrorFallback(props: AppErrorFallbackProps): JSX.Element {
         gap: '16px',
         background: theme.bg,
         color: theme.fg,
-        'font-family': "var(--font-ui, 'Sora', sans-serif)",
+        'font-family': 'var(--font-ui, ui-sans-serif, sans-serif)',
       }}
     >
       <div style={{ 'font-size': '18px', 'font-weight': '600', color: theme.error }}>

@@ -7,6 +7,7 @@ import type {
   TerminalInputTraceStageTimes,
   TerminalInputTraceSummary,
 } from '../../src/domain/terminal-input-tracing.js';
+import { stripAnsi } from '../../src/lib/prompt-detection.js';
 
 export type PreviewProbeFailureReason = 'connection-error' | 'timeout';
 
@@ -29,6 +30,7 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     delayedQueueMaxAgeMs: number;
     delayedQueueMaxBytes: number;
     delayedQueueMaxDepth: number;
+    maxBufferedAmountBytes: number;
     notOpenRejects: number;
     sendErrors: number;
   };
@@ -89,9 +91,11 @@ let backendRuntimeDiagnosticsGeneration = 0;
 const MAX_COMPLETED_TERMINAL_INPUT_TRACES = 200;
 const MAX_ACTIVE_TERMINAL_INPUT_TRACES = 512;
 const TERMINAL_INPUT_TRACE_TIMEOUT_MS = 30_000;
+const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
 
 const activeTerminalInputTraces = new Map<string, TerminalInputTraceSample>();
 const completedTerminalInputTraces: TerminalInputTraceSample[] = [];
+const terminalInputTraceOutputTails = new Map<string, string>();
 let droppedTerminalInputTraces = 0;
 
 function getTraceNowMs(): number {
@@ -104,11 +108,15 @@ function createTraceKey(agentId: string, requestId: string): string {
 
 function createEmptyTraceStageTimes(): TerminalInputTraceStageTimes {
   return {
+    backendOutputFlushedAtMs: null,
     bufferedAtMs: null,
+    commandResultSentAtMs: null,
     outputReceivedAtMs: null,
     outputRenderedAtMs: null,
+    outputTransportReceivedAtMs: null,
     ptyEnqueuedAtMs: null,
     ptyFlushedAtMs: null,
+    ptyOutputReceivedAtMs: null,
     ptyWrittenAtMs: null,
     sendStartedAtMs: null,
     serverReceivedAtMs: null,
@@ -129,10 +137,17 @@ function createEmptyNumericTraceSummary(): NumericTraceSummary {
 
 function createEmptyTerminalInputTraceSummary(): TerminalInputTraceSummary {
   return {
+    backendOutputBufferMs: createEmptyNumericTraceSummary(),
+    browserChannelDispatchMs: createEmptyNumericTraceSummary(),
+    browserDeliveryMs: createEmptyNumericTraceSummary(),
+    browserTransportDeliveryMs: createEmptyNumericTraceSummary(),
     clientBufferMs: createEmptyNumericTraceSummary(),
     clientSendMs: createEmptyNumericTraceSummary(),
+    commandAckMs: createEmptyNumericTraceSummary(),
     count: 0,
     endToEndMs: createEmptyNumericTraceSummary(),
+    ptyEchoMs: createEmptyNumericTraceSummary(),
+    ptyWriteToCommandAckMs: createEmptyNumericTraceSummary(),
     renderMs: createEmptyNumericTraceSummary(),
     sendToEchoMs: createEmptyNumericTraceSummary(),
     serverQueueMs: createEmptyNumericTraceSummary(),
@@ -170,6 +185,22 @@ function pushCompletedTerminalInputTrace(sample: TerminalInputTraceSample): void
   }
 }
 
+function hasActiveTerminalInputTraceForAgent(agentId: string): boolean {
+  for (const sample of activeTerminalInputTraces.values()) {
+    if (sample.agentId === agentId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function pruneTerminalInputTraceOutputTail(agentId: string): void {
+  if (!hasActiveTerminalInputTraceForAgent(agentId)) {
+    terminalInputTraceOutputTails.delete(agentId);
+  }
+}
+
 function finalizeTerminalInputTrace(
   traceKey: string,
   update: (sample: TerminalInputTraceSample) => TerminalInputTraceSample,
@@ -181,6 +212,7 @@ function finalizeTerminalInputTrace(
 
   activeTerminalInputTraces.delete(traceKey);
   pushCompletedTerminalInputTrace(update(sample));
+  pruneTerminalInputTraceOutputTail(sample.agentId);
 }
 
 function trimActiveTerminalInputTraces(): void {
@@ -214,8 +246,15 @@ function pruneExpiredTerminalInputTraces(): void {
 function buildTerminalInputTraceSummary(
   samples: readonly TerminalInputTraceSample[],
 ): TerminalInputTraceSummary {
+  const backendOutputBufferMs: number[] = [];
+  const browserChannelDispatchMs: number[] = [];
+  const browserDeliveryMs: number[] = [];
+  const browserTransportDeliveryMs: number[] = [];
   const clientBufferMs: number[] = [];
   const clientSendMs: number[] = [];
+  const commandAckMs: number[] = [];
+  const ptyEchoMs: number[] = [];
+  const ptyWriteToCommandAckMs: number[] = [];
   const serverQueueMs: number[] = [];
   const sendToEchoMs: number[] = [];
   const transportResidualMs: number[] = [];
@@ -228,9 +267,13 @@ function buildTerminalInputTraceSummary(
     }
 
     const {
+      backendOutputFlushedAtMs,
       bufferedAtMs,
+      commandResultSentAtMs,
       outputReceivedAtMs,
       outputRenderedAtMs,
+      outputTransportReceivedAtMs,
+      ptyOutputReceivedAtMs,
       ptyWrittenAtMs,
       sendStartedAtMs,
       serverReceivedAtMs,
@@ -247,6 +290,36 @@ function buildTerminalInputTraceSummary(
 
     if (serverReceivedAtMs !== null && ptyWrittenAtMs !== null) {
       serverQueueMs.push(Math.max(0, ptyWrittenAtMs - serverReceivedAtMs));
+    }
+
+    if (serverReceivedAtMs !== null && commandResultSentAtMs !== null) {
+      commandAckMs.push(Math.max(0, commandResultSentAtMs - serverReceivedAtMs));
+    }
+
+    if (ptyWrittenAtMs !== null && commandResultSentAtMs !== null) {
+      ptyWriteToCommandAckMs.push(Math.max(0, commandResultSentAtMs - ptyWrittenAtMs));
+    }
+
+    if (ptyWrittenAtMs !== null && ptyOutputReceivedAtMs !== null) {
+      ptyEchoMs.push(Math.max(0, ptyOutputReceivedAtMs - ptyWrittenAtMs));
+    }
+
+    if (ptyOutputReceivedAtMs !== null && backendOutputFlushedAtMs !== null) {
+      backendOutputBufferMs.push(Math.max(0, backendOutputFlushedAtMs - ptyOutputReceivedAtMs));
+    }
+
+    if (backendOutputFlushedAtMs !== null && outputReceivedAtMs !== null) {
+      browserDeliveryMs.push(Math.max(0, outputReceivedAtMs - backendOutputFlushedAtMs));
+    }
+
+    if (backendOutputFlushedAtMs !== null && outputTransportReceivedAtMs !== null) {
+      browserTransportDeliveryMs.push(
+        Math.max(0, outputTransportReceivedAtMs - backendOutputFlushedAtMs),
+      );
+    }
+
+    if (outputTransportReceivedAtMs !== null && outputReceivedAtMs !== null) {
+      browserChannelDispatchMs.push(Math.max(0, outputReceivedAtMs - outputTransportReceivedAtMs));
     }
 
     if (sendStartedAtMs !== null && outputReceivedAtMs !== null) {
@@ -268,10 +341,17 @@ function buildTerminalInputTraceSummary(
   }
 
   return {
+    backendOutputBufferMs: createTraceSummary(backendOutputBufferMs),
+    browserChannelDispatchMs: createTraceSummary(browserChannelDispatchMs),
+    browserDeliveryMs: createTraceSummary(browserDeliveryMs),
+    browserTransportDeliveryMs: createTraceSummary(browserTransportDeliveryMs),
     clientBufferMs: createTraceSummary(clientBufferMs),
     clientSendMs: createTraceSummary(clientSendMs),
+    commandAckMs: createTraceSummary(commandAckMs),
     count: samples.filter((sample) => sample.completed).length,
     endToEndMs: createTraceSummary(endToEndMs),
+    ptyEchoMs: createTraceSummary(ptyEchoMs),
+    ptyWriteToCommandAckMs: createTraceSummary(ptyWriteToCommandAckMs),
     renderMs: createTraceSummary(renderMs),
     sendToEchoMs: createTraceSummary(sendToEchoMs),
     serverQueueMs: createTraceSummary(serverQueueMs),
@@ -299,6 +379,7 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       delayedQueueMaxAgeMs: 0,
       delayedQueueMaxBytes: 0,
       delayedQueueMaxDepth: 0,
+      maxBufferedAmountBytes: 0,
       notOpenRejects: 0,
       sendErrors: 0,
     },
@@ -365,6 +446,7 @@ export function resetBackendRuntimeDiagnostics(): void {
   backendRuntimeDiagnosticsGeneration += 1;
   activeTerminalInputTraces.clear();
   completedTerminalInputTraces.length = 0;
+  terminalInputTraceOutputTails.clear();
   droppedTerminalInputTraces = 0;
 }
 
@@ -412,6 +494,7 @@ export function recordTerminalInputTraceServerReceived(details: {
     agentId: details.agentId,
     clientId: details.clientId,
     completed: false,
+    echoText: details.trace.echoText ?? null,
     failureReason: null,
     inputChars: details.trace.inputChars,
     inputKind: details.trace.inputKind,
@@ -475,6 +558,90 @@ export function recordTerminalInputTracePtyWritten(agentId: string, requestId: s
   sample.stages.ptyWrittenAtMs = getTraceNowMs();
 }
 
+export function recordTerminalInputTraceCommandResultSent(
+  agentId: string,
+  requestId: string,
+): void {
+  const sample = activeTerminalInputTraces.get(createTraceKey(agentId, requestId));
+  if (!sample || sample.stages.commandResultSentAtMs !== null) {
+    return;
+  }
+
+  sample.stages.commandResultSentAtMs = getTraceNowMs();
+}
+
+function updateTerminalInputTraceOutputTail(agentId: string, outputText: string): string {
+  const visibleOutputText = stripAnsi(outputText).replace(/\r/g, '');
+  const nextTail = `${terminalInputTraceOutputTails.get(agentId) ?? ''}${visibleOutputText}`.slice(
+    -INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS,
+  );
+  terminalInputTraceOutputTails.set(agentId, nextTail);
+  return nextTail;
+}
+
+function getTerminalInputTraceOutputTail(agentId: string, outputText: string): string {
+  if (terminalInputTraceOutputTails.has(agentId)) {
+    return terminalInputTraceOutputTails.get(agentId) ?? '';
+  }
+
+  return updateTerminalInputTraceOutputTail(agentId, outputText);
+}
+
+function traceEchoTextMatches(
+  sample: TerminalInputTraceSample,
+  visibleOutputTail: string,
+): boolean {
+  return sample.echoText !== null && visibleOutputTail.includes(sample.echoText);
+}
+
+export function recordTerminalInputTracePtyOutput(agentId: string, outputText: string): void {
+  if (outputText.length === 0 || !hasActiveTerminalInputTraceForAgent(agentId)) {
+    return;
+  }
+
+  const visibleOutputTail = updateTerminalInputTraceOutputTail(agentId, outputText);
+  const now = getTraceNowMs();
+  for (const sample of activeTerminalInputTraces.values()) {
+    if (
+      sample.agentId !== agentId ||
+      sample.stages.ptyWrittenAtMs === null ||
+      sample.stages.ptyOutputReceivedAtMs !== null ||
+      !traceEchoTextMatches(sample, visibleOutputTail)
+    ) {
+      continue;
+    }
+
+    sample.stages.ptyOutputReceivedAtMs = now;
+  }
+}
+
+export function recordTerminalInputTraceBackendOutputFlushed(
+  agentId: string,
+  outputText: string,
+): void {
+  if (outputText.length === 0 || !hasActiveTerminalInputTraceForAgent(agentId)) {
+    return;
+  }
+
+  const visibleOutputTail = getTerminalInputTraceOutputTail(agentId, outputText);
+  const now = getTraceNowMs();
+  for (const sample of activeTerminalInputTraces.values()) {
+    if (
+      sample.agentId !== agentId ||
+      sample.stages.ptyWrittenAtMs === null ||
+      !traceEchoTextMatches(sample, visibleOutputTail) ||
+      sample.stages.backendOutputFlushedAtMs !== null
+    ) {
+      continue;
+    }
+
+    if (sample.stages.ptyOutputReceivedAtMs === null) {
+      sample.stages.ptyOutputReceivedAtMs = now;
+    }
+    sample.stages.backendOutputFlushedAtMs = now;
+  }
+}
+
 export function recordTerminalInputTraceFailure(
   agentId: string,
   requestId: string,
@@ -495,6 +662,7 @@ export function recordTerminalInputTraceClientUpdate(update: TerminalInputTraceC
       ...sample.stages,
       outputReceivedAtMs: update.outputReceivedAtMs,
       outputRenderedAtMs: update.outputRenderedAtMs,
+      outputTransportReceivedAtMs: update.outputTransportReceivedAtMs ?? null,
     },
   }));
 }
@@ -746,5 +914,24 @@ export function recordBrowserControlDelayedQueue(
 
   if (queueAgeMs > backendRuntimeDiagnostics.browserControl.delayedQueueMaxAgeMs) {
     backendRuntimeDiagnostics.browserControl.delayedQueueMaxAgeMs = queueAgeMs;
+  }
+}
+
+export function recordBrowserControlBufferedAmount(
+  bufferedAmountBytes: number,
+  details?: { generation?: number },
+): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
+  if (
+    Number.isFinite(bufferedAmountBytes) &&
+    bufferedAmountBytes > backendRuntimeDiagnostics.browserControl.maxBufferedAmountBytes
+  ) {
+    backendRuntimeDiagnostics.browserControl.maxBufferedAmountBytes = bufferedAmountBytes;
   }
 }

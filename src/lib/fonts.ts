@@ -19,8 +19,7 @@ export function getTerminalFontFamily(font: TerminalFont): string {
   return `'${font}', monospace`;
 }
 
-/** Fonts loaded via Google Fonts — always available regardless of local install. */
-const WEB_FONTS: ReadonlySet<TerminalFont> = new Set(['JetBrains Mono']);
+const WEB_FONTS: ReadonlySet<TerminalFont> = new Set();
 
 /** Returns the subset of TERMINAL_FONTS that are installed on this system. Cached after first call. */
 let availableCache: TerminalFont[] | null = null;

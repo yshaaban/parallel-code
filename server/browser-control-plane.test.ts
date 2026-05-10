@@ -1571,6 +1571,7 @@ describe('browser control plane', () => {
 
     expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
       backpressureRejects: 1,
+      maxBufferedAmountBytes: 2_000_000,
       notOpenRejects: 1,
       sendErrors: 0,
     });

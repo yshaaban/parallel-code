@@ -15,8 +15,8 @@ import {
 } from '../store/store';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
-import { TerminalView } from './TerminalView';
 import { ScalablePanel } from './ScalablePanel';
+import { TerminalView } from './TerminalView';
 import { theme } from '../lib/theme';
 import { handleDragReorder, type DragSessionCleanup } from '../lib/drag-reorder';
 import type { Terminal } from '../store/types';

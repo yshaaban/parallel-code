@@ -139,6 +139,36 @@ describe('browser agent command runner', () => {
     expect(sendAgentError).not.toHaveBeenCalled();
   });
 
+  it('notifies after request-tracked results are sent successfully', () => {
+    const onAgentCommandResultSent = vi.fn();
+    const request = createRequest();
+    const { runner } = createRunner({ onAgentCommandResultSent });
+
+    runner.run(CLIENT, 'agent-1', 'write', vi.fn(), true, { request });
+
+    expect(onAgentCommandResultSent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accepted: true,
+        agentId: 'agent-1',
+        command: 'input',
+        requestId: 'request-1',
+      }),
+    );
+  });
+
+  it('does not notify when request-tracked result send fails', () => {
+    const onAgentCommandResultSent = vi.fn();
+    const request = createRequest();
+    const { runner } = createRunner({
+      onAgentCommandResultSent,
+      sendMessage: vi.fn(() => false),
+    });
+
+    runner.run(CLIENT, 'agent-1', 'write', vi.fn(), true, { request });
+
+    expect(onAgentCommandResultSent).not.toHaveBeenCalled();
+  });
+
   it('falls back to agent-error when task-control failure is not request-tracked', () => {
     const sendAgentError = vi.fn();
     const { runner } = createRunner({ sendAgentError });

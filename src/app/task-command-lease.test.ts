@@ -1548,10 +1548,7 @@ describe('task command lease helper', () => {
       requestId: 'request-1',
       type: 'respond-task-command-takeover',
     });
-    expect(Object.keys(storeState.incomingTaskTakeoverRequests)).toEqual([
-      'request-1',
-      'request-2',
-    ]);
+    expect(Object.keys(storeState.incomingTaskTakeoverRequests)).toEqual(['request-2']);
 
     handleTaskCommandTakeoverResult({
       decision: 'approved',
@@ -1568,6 +1565,7 @@ describe('task command lease helper', () => {
     });
 
     await expect(respondToIncomingTaskCommandTakeover('request-2', false)).resolves.toBe(true);
+    expect(storeState.incomingTaskTakeoverRequests).toEqual({});
 
     handleTaskCommandTakeoverResult({
       decision: 'denied',
@@ -1598,6 +1596,7 @@ describe('task command lease helper', () => {
       type: 'respond-task-command-takeover',
     });
     expect(sendImmediateBrowserControlMessageMock).not.toHaveBeenCalled();
+    expect(storeState.incomingTaskTakeoverRequests).toEqual({});
 
     handleTaskCommandTakeoverResult({
       decision: 'approved',

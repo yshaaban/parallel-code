@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import type { PauseReason } from '../domain/server-state';
-import { parseBrowserBinaryChannelFrame } from './browser-channel-client';
+import {
+  createBrowserChannelClient,
+  getBrowserChannelMessageTiming,
+  parseBrowserBinaryChannelFrame,
+} from './browser-channel-client';
 
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 
@@ -50,6 +54,29 @@ describe('parseBrowserBinaryChannelFrame', () => {
       parseBrowserBinaryChannelFrame(createBinaryFrame('zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz')),
     ).toBe(null);
     expect(warn).toHaveBeenCalledWith('[ipc] Ignoring malformed channel frame header');
+  });
+
+  it('records browser channel binary receive timing before listener dispatch', async () => {
+    const client = createBrowserChannelClient({
+      sendCommand: vi.fn(async () => {}),
+    });
+    const channel = client.createChannel<{ data: Uint8Array; type: 'Data' }>();
+    client.handleChannelBound(channel.id);
+    let capturedTiming: ReturnType<typeof getBrowserChannelMessageTiming> = null;
+
+    channel.setOnMessage((message) => {
+      capturedTiming = getBrowserChannelMessageTiming(message);
+    });
+
+    client.handleBinaryMessage(createBinaryFrame(channel.id, 'hello'));
+
+    expect(capturedTiming).toEqual(
+      expect.objectContaining({
+        receivedAtMs: expect.any(Number),
+      }),
+    );
+
+    channel.cleanup();
   });
 });
 
@@ -1139,10 +1166,14 @@ describe('Channel', () => {
     socket.receiveText({ type: 'agents', list: [] });
     await flushMicrotasks();
 
-    const inputPromise = sendTerminalInput({
-      agentId: 'agent-1',
-      data: 'echo terminal-path\n',
-    });
+    const onBrowserCommandResultReceived = vi.fn();
+    const inputPromise = sendTerminalInput(
+      {
+        agentId: 'agent-1',
+        data: 'echo terminal-path\n',
+      },
+      { onBrowserCommandResultReceived },
+    );
 
     await flushMicrotasks();
 
@@ -1159,6 +1190,7 @@ describe('Channel', () => {
       type: 'agent-command-result',
     });
     await expect(inputPromise).resolves.toBeUndefined();
+    expect(onBrowserCommandResultReceived).toHaveBeenCalledWith(expect.any(Number));
     expect(socket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
   });
 

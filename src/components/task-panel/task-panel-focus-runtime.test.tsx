@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTaskPanelFocusRuntime } from './task-panel-focus-runtime';
 
 function FocusRuntimeHarness(props: {
+  getDefaultFocusedPanel?: (taskId: string) => string;
   getPanelRef?: () => HTMLDivElement | undefined;
   getPromptRef?: () => HTMLTextAreaElement | undefined;
   getStoredTaskFocusedPanel?: (taskId: string) => string | null;
@@ -15,6 +16,8 @@ function FocusRuntimeHarness(props: {
   unregisterFocusFn: (id: string) => void;
 }): null {
   const registerFocusFn = untrack(() => props.registerFocusFn);
+  const getDefaultFocusedPanel =
+    untrack(() => props.getDefaultFocusedPanel) ?? (() => 'ai-terminal');
   const getPanelRef = untrack(() => props.getPanelRef) ?? (() => undefined);
   const getPromptRef = untrack(() => props.getPromptRef) ?? (() => undefined);
   const getStoredTaskFocusedPanel = untrack(() => props.getStoredTaskFocusedPanel) ?? (() => null);
@@ -24,6 +27,7 @@ function FocusRuntimeHarness(props: {
 
   createTaskPanelFocusRuntime({
     getChangedFilesRef: () => undefined,
+    getDefaultFocusedPanel,
     getNotesRef: () => undefined,
     getPanelRef,
     getPlanContent: () => undefined,
@@ -74,18 +78,14 @@ describe('task-panel focus runtime', () => {
     expect(unregisterFocusFn).toHaveBeenCalledWith('task-1:prompt');
   });
 
-  it('cancels delayed default prompt focus when the task becomes inactive', async () => {
+  it('focuses the default panel when the task has no stored focused panel', async () => {
     vi.useFakeTimers();
     const registerFocusFn = vi.fn();
     const unregisterFocusFn = vi.fn();
     const triggerFocus = vi.fn();
-    const promptFocus = vi.fn();
-    const [isActive, setIsActive] = createSignal(true);
 
     render(() => (
       <FocusRuntimeHarness
-        getPromptRef={() => ({ focus: promptFocus }) as unknown as HTMLTextAreaElement}
-        isActive={isActive()}
         taskId={() => 'task-1'}
         registerFocusFn={registerFocusFn}
         triggerFocus={triggerFocus}
@@ -93,9 +93,59 @@ describe('task-panel focus runtime', () => {
       />
     ));
 
-    setIsActive(false);
+    expect(triggerFocus).not.toHaveBeenCalledWith('task-1:ai-terminal');
     await vi.runAllTimersAsync();
 
-    expect(promptFocus).not.toHaveBeenCalled();
+    expect(triggerFocus).toHaveBeenCalledWith('task-1:ai-terminal');
+  });
+
+  it('does not steal focus from an already focused child control', async () => {
+    vi.useFakeTimers();
+    const panel = document.createElement('div');
+    const child = document.createElement('button');
+    const registerFocusFn = vi.fn();
+    const unregisterFocusFn = vi.fn();
+    const triggerFocus = vi.fn();
+
+    panel.append(child);
+    document.body.append(panel);
+    child.focus();
+
+    try {
+      render(() => (
+        <FocusRuntimeHarness
+          getPanelRef={() => panel}
+          taskId={() => 'task-1'}
+          registerFocusFn={registerFocusFn}
+          triggerFocus={triggerFocus}
+          unregisterFocusFn={unregisterFocusFn}
+        />
+      ));
+
+      await vi.runAllTimersAsync();
+
+      expect(triggerFocus).not.toHaveBeenCalledWith('task-1:ai-terminal');
+    } finally {
+      panel.remove();
+    }
+  });
+
+  it('prefers stored focus over the default panel', () => {
+    const registerFocusFn = vi.fn();
+    const unregisterFocusFn = vi.fn();
+    const triggerFocus = vi.fn();
+
+    render(() => (
+      <FocusRuntimeHarness
+        getDefaultFocusedPanel={() => 'ai-terminal'}
+        getStoredTaskFocusedPanel={() => 'prompt'}
+        taskId={() => 'task-1'}
+        registerFocusFn={registerFocusFn}
+        triggerFocus={triggerFocus}
+        unregisterFocusFn={unregisterFocusFn}
+      />
+    ));
+
+    expect(triggerFocus).toHaveBeenCalledWith('task-1:prompt');
   });
 });

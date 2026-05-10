@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getBackendRuntimeDiagnosticsGeneration,
   getBackendRuntimeDiagnosticsSnapshot,
+  recordBrowserControlBufferedAmount,
   recordBrowserControlDelayedQueue,
   recordBrowserControlSendResult,
   recordPreviewProbeResult,
+  recordTerminalInputTraceBackendOutputFlushed,
+  recordTerminalInputTraceCommandResultSent,
   recordTerminalInputTraceFailure,
   recordTerminalInputTracePtyEnqueued,
+  recordTerminalInputTracePtyOutput,
+  recordTerminalInputTracePtyWritten,
+  recordTerminalInputTraceClientUpdate,
   recordTerminalInputTraceServerReceived,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
@@ -68,6 +74,50 @@ describe('backend runtime diagnostics terminal input tracing', () => {
     expect(stages?.serverReceivedAtMs).not.toBeNull();
     expect(stages?.ptyEnqueuedAtMs).not.toBeNull();
     expect(stages?.serverReceivedAtMs).toBeLessThan(stages?.ptyEnqueuedAtMs ?? 0);
+  });
+
+  it('splits backend echo, backend flush, browser delivery, and render timing for input traces', () => {
+    recordTerminalInputTraceServerReceived({
+      agentId: 'agent-1',
+      clientId: 'client-1',
+      inputPreview: 'pwd',
+      requestId: 'request-1',
+      taskId: 'task-1',
+      trace: {
+        bufferedAtMs: 1_000,
+        echoText: 'pwd',
+        inputChars: 4,
+        inputKind: 'interactive',
+        sendStartedAtMs: 1_001,
+        startedAtMs: 999,
+      },
+    });
+    recordTerminalInputTracePtyEnqueued('agent-1', 'request-1');
+    recordTerminalInputTracePtyWritten('agent-1', 'request-1');
+    recordTerminalInputTraceCommandResultSent('agent-1', 'request-1');
+    recordTerminalInputTracePtyOutput('agent-1', '\u001b[32mpwd\u001b[0m\r\n');
+    recordTerminalInputTraceBackendOutputFlushed('agent-1', 'pwd\r\n');
+    recordTerminalInputTraceClientUpdate({
+      agentId: 'agent-1',
+      outputReceivedAtMs: 1_050,
+      outputRenderedAtMs: 1_060,
+      outputTransportReceivedAtMs: 1_045,
+      requestId: 'request-1',
+    });
+
+    const diagnostics = getBackendRuntimeDiagnosticsSnapshot();
+    const stages = diagnostics.terminalInputTracing.completedTraces[0]?.stages;
+
+    expect(stages?.ptyOutputReceivedAtMs).not.toBeNull();
+    expect(stages?.backendOutputFlushedAtMs).not.toBeNull();
+    expect(diagnostics.terminalInputTracing.summary.ptyEchoMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.commandAckMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.ptyWriteToCommandAckMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.backendOutputBufferMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.browserDeliveryMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.browserTransportDeliveryMs.count).toBe(1);
+    expect(diagnostics.terminalInputTracing.summary.browserChannelDispatchMs.p95).toBe(5);
+    expect(diagnostics.terminalInputTracing.summary.renderMs.p95).toBe(10);
   });
 
   it('classifies preview probe failure diagnostics and clears stale failure reason after success', () => {
@@ -143,10 +193,16 @@ describe('backend runtime diagnostics terminal input tracing', () => {
     recordBrowserControlDelayedQueue(4, 128_000, 250, {
       generation: previousGeneration,
     });
+    recordBrowserControlBufferedAmount(96_000, {
+      generation: previousGeneration,
+    });
     recordBrowserControlSendResult('not-open', {
       generation: getBackendRuntimeDiagnosticsGeneration(),
     });
     recordBrowserControlDelayedQueue(2, 64_000, 125, {
+      generation: getBackendRuntimeDiagnosticsGeneration(),
+    });
+    recordBrowserControlBufferedAmount(32_000, {
       generation: getBackendRuntimeDiagnosticsGeneration(),
     });
 
@@ -155,6 +211,7 @@ describe('backend runtime diagnostics terminal input tracing', () => {
       delayedQueueMaxAgeMs: 125,
       delayedQueueMaxBytes: 64_000,
       delayedQueueMaxDepth: 2,
+      maxBufferedAmountBytes: 32_000,
       notOpenRejects: 1,
     });
   });

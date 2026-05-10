@@ -17,6 +17,7 @@ import {
   ensureBrowserPagehideTracking,
   isBrowserPagehidePending,
 } from '../../lib/browser-pagehide';
+import { getBrowserChannelMessageTiming } from '../../lib/browser-channel-client';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../../lib/dispatch-by-type';
 import { getTerminalFontFamily } from '../../lib/fonts';
 import {
@@ -441,9 +442,18 @@ export interface TerminalSession {
   updateOutputPriority(): void;
 }
 
+export type TerminalAttachMilestone =
+  | 'attach-fit-ready'
+  | 'attach-recovery-settled'
+  | 'attach-recovery-started'
+  | 'channel-ready'
+  | 'spawn-requested'
+  | 'spawn-resolved';
+
 export interface StartTerminalSessionOptions {
   canAcceptInput?: () => boolean;
   containerRef: HTMLDivElement;
+  outputChannel?: Channel<PtyOutput>;
   getOutputPriority: () => TerminalOutputPriority;
   getStartupPaintRole?: () => 'hidden' | 'selected' | 'visible-sibling';
   getRenderHibernationDelayMs?: () => number | null;
@@ -457,6 +467,7 @@ export interface StartTerminalSessionOptions {
   };
   isSelectedRecoveryProtected?: () => boolean;
   onAttachBound?: () => void;
+  onAttachMilestone?: (milestone: TerminalAttachMilestone) => void;
   onBlockedInputAttempt?: () => void;
   onPaintReadyChange?: (isPaintReady: boolean) => void;
   onStartupFitExecuted?: (details: {
@@ -515,7 +526,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const browserMode = !isElectronRuntime();
   const runtimeClientId = getRuntimeClientId();
   const cleanupCallbacks: Array<() => void> = [];
-  const outputChannel = new Channel<PtyOutput>();
+  const outputChannel = options.outputChannel ?? new Channel<PtyOutput>();
 
   if (browserMode) {
     ensureBrowserPagehideTracking();
@@ -1385,11 +1396,19 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     Data(message: Extract<PtyOutput, { type: 'Data' }>): void {
       const receiveTs = recordOutputReceived();
       const outputReceivedAtMs = getTerminalTraceTimestampMs();
+      const channelTiming = getBrowserChannelMessageTiming(message);
+      const outputTransportReceivedAtMs = channelTiming
+        ? outputReceivedAtMs - Math.max(0, performance.now() - channelTiming.receivedAtMs)
+        : undefined;
       const decoded = decodeTerminalOutputData(message.data);
       if (hasPendingProbes()) {
         detectProbeInOutput(PROBE_TEXT_DECODER.decode(decoded));
       }
-      inputPipeline.detectPendingInputTraceEcho(decoded, outputReceivedAtMs);
+      inputPipeline.detectPendingInputTraceEcho(
+        decoded,
+        outputReceivedAtMs,
+        outputTransportReceivedAtMs,
+      );
       outputPipeline.enqueueOutput(decoded, receiveTs);
       if (!initialCommandSent && props.initialCommand) {
         initialCommandSent = true;
@@ -1646,11 +1665,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return;
       }
 
+      options.onAttachMilestone?.('channel-ready');
       setStatus('attaching');
       const attachFitReady = await waitForTerminalFitReady('attach');
       if (!attachFitReady || disposed) {
         return;
       }
+      options.onAttachMilestone?.('attach-fit-ready');
+      options.onAttachMilestone?.('spawn-requested');
       const spawnResult = await invoke(IPC.SpawnAgent, {
         adapter: props.adapter,
         agentId,
@@ -1671,6 +1693,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return;
       }
 
+      options.onAttachMilestone?.('spawn-resolved');
       spawnReady = true;
       markAttachBound();
       void waitForTerminalFitReady('spawn-ready');
@@ -1681,8 +1704,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           setSelectedAttachRecoveryPending(true);
         }
         try {
+          options.onAttachMilestone?.('attach-recovery-started');
           await recoveryRuntime.restoreTerminalOutput('attach');
         } finally {
+          options.onAttachMilestone?.('attach-recovery-settled');
           if (shouldPrioritizeSelectedAttachRecovery && !disposed) {
             setSelectedAttachRecoveryPending(false);
           }

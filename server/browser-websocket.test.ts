@@ -46,6 +46,7 @@ vi.mock('../electron/ipc/task-command-leases.js', () => ({
 vi.mock('../electron/ipc/runtime-diagnostics.js', () => ({
   recordTerminalInputTraceClientDisconnected: recordTerminalInputTraceClientDisconnectedMock,
   recordTerminalInputTraceClientUpdate: vi.fn(),
+  recordTerminalInputTraceCommandResultSent: vi.fn(),
   recordTerminalInputTraceFailure: vi.fn(),
   recordTerminalInputTraceServerReceived: vi.fn(),
 }));

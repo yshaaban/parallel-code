@@ -1,3 +1,5 @@
+import { produce } from 'solid-js/store';
+import { deleteRecordEntry } from '../lib/record-utils';
 import { setStore, store } from './core';
 import type { IncomingTaskTakeoverRequest } from './types';
 
@@ -10,11 +12,11 @@ export function clearIncomingTaskTakeoverRequest(requestId: string): void {
     return;
   }
 
-  setStore('incomingTaskTakeoverRequests', (currentRequests) => {
-    const nextRequests = { ...currentRequests };
-    delete nextRequests[requestId];
-    return nextRequests;
-  });
+  setStore(
+    produce((storeState) => {
+      deleteRecordEntry(storeState.incomingTaskTakeoverRequests, requestId);
+    }),
+  );
 }
 
 export function clearIncomingTaskTakeoverRequests(): void {
@@ -22,7 +24,13 @@ export function clearIncomingTaskTakeoverRequests(): void {
     return;
   }
 
-  setStore('incomingTaskTakeoverRequests', {});
+  setStore(
+    produce((storeState) => {
+      for (const requestId of Object.keys(storeState.incomingTaskTakeoverRequests)) {
+        deleteRecordEntry(storeState.incomingTaskTakeoverRequests, requestId);
+      }
+    }),
+  );
 }
 
 export function hasIncomingTaskTakeoverRequests(): boolean {

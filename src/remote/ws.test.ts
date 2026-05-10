@@ -64,6 +64,7 @@ vi.mock('../lib/websocket-client', () => ({
       return {
         disconnect: vi.fn(),
         ensureConnected: websocketState.ensureConnectedMock,
+        getBufferedAmount: () => 0,
         getLastRttMs: () => null,
         getLastSeq: () => -1,
         getState: () => 'disconnected',

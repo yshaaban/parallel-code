@@ -1,12 +1,15 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getTerminalOutputDiagnosticsSnapshot,
+  getTerminalOutputUiFluidityCountersSnapshot,
   recordTerminalRenderEvent,
   recordTerminalRenderResize,
   recordTerminalOutputRoute,
   recordTerminalOutputSuppressed,
   recordTerminalOutputWrite,
+  recordTerminalOutputWriteCompletion,
+  recordTerminalOutputWriteFinalization,
   resetTerminalOutputDiagnostics,
 } from './terminal-output-diagnostics';
 
@@ -49,6 +52,20 @@ describe('terminal-output-diagnostics', () => {
       source: 'direct',
       taskId: 'task-1',
     });
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-1',
+      durationMs: 7,
+      priority: 'focused',
+      source: 'direct',
+      taskId: 'task-1',
+    });
+    recordTerminalOutputWriteFinalization({
+      agentId: 'agent-1',
+      durationMs: 2,
+      priority: 'focused',
+      source: 'direct',
+      taskId: 'task-1',
+    });
     recordTerminalOutputRoute({
       agentId: 'agent-1',
       chunkLength: 64,
@@ -64,6 +81,20 @@ describe('terminal-output-diagnostics', () => {
       source: 'queued',
       taskId: 'task-1',
     });
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-1',
+      durationMs: 11,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-1',
+    });
+    recordTerminalOutputWriteFinalization({
+      agentId: 'agent-1',
+      durationMs: 3,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-1',
+    });
     recordTerminalOutputSuppressed({
       agentId: 'agent-1',
       chunkLength: 19,
@@ -73,6 +104,69 @@ describe('terminal-output-diagnostics', () => {
 
     expect(getTerminalOutputDiagnosticsSnapshot()).toEqual({
       summary: {
+        activeWrites: {
+          byLane: {
+            focused: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            hidden: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            visible: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+          },
+          byPriority: {
+            'active-visible': {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            focused: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            hidden: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            'switch-target-visible': {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            'visible-background': {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+          },
+          bySource: {
+            direct: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+            queued: {
+              ageMs: { count: 0, max: 0, total: 0 },
+              bytes: 0,
+              count: 0,
+            },
+          },
+          total: {
+            ageMs: { count: 0, max: 0, total: 0 },
+            bytes: 0,
+            count: 0,
+          },
+        },
         queueAgeMs: {
           byLane: {
             focused: {
@@ -129,6 +223,166 @@ describe('terminal-output-diagnostics', () => {
               max: 24,
               total: 24,
             },
+          },
+        },
+        writeDurationMs: {
+          byLane: {
+            focused: {
+              count: 2,
+              max: 11,
+              total: 18,
+            },
+            hidden: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            visible: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+          },
+          byPriority: {
+            'active-visible': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            focused: {
+              count: 2,
+              max: 11,
+              total: 18,
+            },
+            hidden: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'switch-target-visible': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'visible-background': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+          },
+          byShape: {
+            control: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            plain: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'redraw-control': {
+              count: 2,
+              max: 11,
+              total: 18,
+            },
+          },
+          bySource: {
+            direct: {
+              count: 1,
+              max: 7,
+              total: 7,
+            },
+            queued: {
+              count: 1,
+              max: 11,
+              total: 11,
+            },
+          },
+          total: {
+            count: 2,
+            max: 11,
+            total: 18,
+          },
+        },
+        writeFinalizationDurationMs: {
+          byLane: {
+            focused: {
+              count: 2,
+              max: 3,
+              total: 5,
+            },
+            hidden: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            visible: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+          },
+          byPriority: {
+            'active-visible': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            focused: {
+              count: 2,
+              max: 3,
+              total: 5,
+            },
+            hidden: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'switch-target-visible': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'visible-background': {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+          },
+          byShape: {
+            control: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            plain: {
+              count: 0,
+              max: 0,
+              total: 0,
+            },
+            'redraw-control': {
+              count: 2,
+              max: 3,
+              total: 5,
+            },
+          },
+          bySource: {
+            direct: {
+              count: 1,
+              max: 2,
+              total: 2,
+            },
+            queued: {
+              count: 1,
+              max: 3,
+              total: 3,
+            },
+          },
+          total: {
+            count: 2,
+            max: 3,
+            total: 5,
           },
         },
         routed: {
@@ -256,6 +510,20 @@ describe('terminal-output-diagnostics', () => {
               calls: 0,
             },
           },
+          byShape: {
+            control: {
+              bytes: 0,
+              calls: 0,
+            },
+            plain: {
+              bytes: 0,
+              calls: 0,
+            },
+            'redraw-control': {
+              bytes: 40,
+              calls: 2,
+            },
+          },
           bySource: {
             direct: {
               bytes: 23,
@@ -311,6 +579,16 @@ describe('terminal-output-diagnostics', () => {
             calls: 2,
             directCalls: 1,
             directWriteBytes: 23,
+            durationMs: expect.objectContaining({
+              count: 2,
+              p50: 7,
+              p95: 11,
+            }),
+            finalizationDurationMs: expect.objectContaining({
+              count: 2,
+              p50: 2,
+              p95: 3,
+            }),
             queuedCalls: 1,
             queuedWriteBytes: 17,
             intervalMs: expect.objectContaining({
@@ -324,6 +602,59 @@ describe('terminal-output-diagnostics', () => {
         },
       ],
     });
+  });
+
+  it('samples active terminal writes before completion', () => {
+    recordTerminalOutputWrite({
+      agentId: 'agent-active',
+      chunk: new TextEncoder().encode('visible background output'),
+      priority: 'visible-background',
+      queueAgeMs: 18,
+      source: 'queued',
+      taskId: 'task-active',
+    });
+
+    const activeSnapshot = getTerminalOutputDiagnosticsSnapshot();
+    const uiCounters = getTerminalOutputUiFluidityCountersSnapshot();
+    const terminal = activeSnapshot.terminals.find((entry) => entry.agentId === 'agent-active');
+
+    expect(activeSnapshot.summary.activeWrites.total).toEqual({
+      ageMs: {
+        count: 1,
+        max: 5,
+        total: 5,
+      },
+      bytes: 25,
+      count: 1,
+    });
+    expect(activeSnapshot.summary.activeWrites.byPriority['visible-background']).toEqual({
+      ageMs: {
+        count: 1,
+        max: 5,
+        total: 5,
+      },
+      bytes: 25,
+      count: 1,
+    });
+    expect(uiCounters.activeWriteCount.visibleBackground).toBe(1);
+    expect(uiCounters.activeWriteAgeMs.visibleBackground.max).toBe(15);
+    expect(terminal?.writes.active).toEqual({
+      bytes: 25,
+      durationMs: 10,
+      priority: 'visible-background',
+      shape: 'plain',
+      source: 'queued',
+    });
+
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-active',
+      durationMs: 21,
+      priority: 'visible-background',
+      source: 'queued',
+      taskId: 'task-active',
+    });
+
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.activeWrites.total.count).toBe(0);
   });
 
   it('tracks switch-target-visible output in the visible lane and by-priority rollups', () => {
@@ -365,9 +696,10 @@ describe('terminal-output-diagnostics', () => {
   });
 
   it('skips redraw-control analysis for plain output without escape or carriage-return bytes', () => {
+    const chunk = new TextEncoder().encode('plain additive output\nnext line\n');
     recordTerminalOutputWrite({
       agentId: 'agent-plain',
-      chunk: new TextEncoder().encode('plain additive output\nnext line\n'),
+      chunk,
       priority: 'focused',
       queueAgeMs: 10,
       source: 'queued',
@@ -389,9 +721,149 @@ describe('terminal-output-diagnostics', () => {
       saveRestoreChunks: 0,
       saveRestoreCount: 0,
     });
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.writes.byShape.plain).toEqual({
+      bytes: chunk.length,
+      calls: 1,
+    });
+  });
+
+  it('separates non-redraw terminal control output from redraw-control writes', () => {
+    const chunk = new TextEncoder().encode('\x1b[31mcolored output\x1b[0m');
+
+    recordTerminalOutputWrite({
+      agentId: 'agent-control',
+      chunk,
+      priority: 'focused',
+      queueAgeMs: 8,
+      source: 'queued',
+      taskId: 'task-control',
+    });
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-control',
+      durationMs: 4,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-control',
+    });
+    recordTerminalOutputWriteFinalization({
+      agentId: 'agent-control',
+      durationMs: 1,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-control',
+    });
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-control');
+
+    expect(snapshot.summary.writes.byShape.control).toEqual({
+      bytes: chunk.length,
+      calls: 1,
+    });
+    expect(snapshot.summary.writeDurationMs.byShape.control).toEqual({
+      count: 1,
+      max: 4,
+      total: 4,
+    });
+    expect(snapshot.summary.writeFinalizationDurationMs.byShape.control).toEqual({
+      count: 1,
+      max: 1,
+      total: 1,
+    });
+    expect(terminal?.control.redrawChunks).toBe(0);
+  });
+
+  it('attributes overlapping write completions to the matching active write shape', () => {
+    recordTerminalOutputWrite({
+      agentId: 'agent-overlap',
+      chunk: new TextEncoder().encode('plain output\n'),
+      priority: 'focused',
+      queueAgeMs: 1,
+      source: 'queued',
+      taskId: 'task-overlap',
+    });
+    recordTerminalOutputWrite({
+      agentId: 'agent-overlap',
+      chunk: new TextEncoder().encode('\r\x1b[2Kspinner'),
+      priority: 'focused',
+      queueAgeMs: 2,
+      source: 'queued',
+      taskId: 'task-overlap',
+    });
+
+    expect(getTerminalOutputDiagnosticsSnapshot().summary.activeWrites.total.count).toBe(2);
+
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-overlap',
+      durationMs: 9,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-overlap',
+    });
+    recordTerminalOutputWriteCompletion({
+      agentId: 'agent-overlap',
+      durationMs: 17,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-overlap',
+    });
+
+    const summary = getTerminalOutputDiagnosticsSnapshot().summary;
+    expect(summary.writeDurationMs.byShape.plain).toEqual({
+      count: 1,
+      max: 9,
+      total: 9,
+    });
+    expect(summary.writeDurationMs.byShape['redraw-control']).toEqual({
+      count: 1,
+      max: 17,
+      total: 17,
+    });
+    expect(summary.activeWrites.total.count).toBe(0);
+  });
+
+  it('keeps visible line capture opt-in for low-overhead performance profiling', () => {
+    const getLine = vi.fn();
+    const term = {
+      buffer: {
+        active: {
+          cursorX: 3,
+          cursorY: 1,
+          getLine,
+          viewportY: 4,
+        },
+      },
+      rows: 3,
+    } as unknown as Parameters<typeof recordTerminalRenderEvent>[0]['term'];
+
+    recordTerminalRenderEvent({
+      agentId: 'agent-render',
+      endRow: 2,
+      startRow: 0,
+      taskId: 'task-render',
+      term,
+    });
+
+    const terminal = getTerminalOutputDiagnosticsSnapshot().terminals.find(
+      (entry) => entry.key === 'task-render:agent-render',
+    );
+
+    expect(getLine).not.toHaveBeenCalled();
+    expect(terminal?.render).toEqual(
+      expect.objectContaining({
+        changedVisibleLines: expect.objectContaining({ count: 1, max: 0 }),
+        currentCursorX: 3,
+        currentCursorY: 1,
+        currentViewportY: 4,
+        currentVisibleLines: null,
+        maxChangedVisibleLines: 0,
+        renderCalls: 1,
+      }),
+    );
   });
 
   it('tracks visible line churn, viewport jumps, cursor movement, and resize events', () => {
+    window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
     const lines = ['one', 'two', 'three', 'four'];
     const activeBuffer = {
       cursorX: 3,

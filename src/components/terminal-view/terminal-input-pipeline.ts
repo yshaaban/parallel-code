@@ -12,7 +12,12 @@ import { createRandomId } from '../../lib/random-id';
 import {
   getTerminalTraceTimestampMs,
   hasTerminalTraceClockAlignment,
+  recordInputAccepted,
   recordInputBuffered,
+  recordInputCommandResultReceived,
+  recordInputDispatched,
+  recordInputLeaseRequested,
+  recordInputLeaseResolved,
   recordInputQueued,
   recordInputSent,
 } from '../../lib/terminalLatency';
@@ -22,7 +27,7 @@ import { activateTerminalSwitchEchoGrace } from '../../app/terminal-switch-echo-
 import {
   createTaskCommandLeaseSession,
   hasTaskCommandLeaseTransportAvailability,
-} from '../../app/task-command-lease';
+} from '../../app/task-command-lease-session';
 import {
   isRendererRuntimeDiagnosticsEnabled,
   recordTerminalInputBatchSent,
@@ -58,6 +63,7 @@ const RESIZE_FLUSH_DELAY_MS = 48;
 const ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS = 120;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
+const INPUT_TRACE_BACKEND_ECHO_TEXT_MAX_CHARS = 512;
 const KEYBOARD_TRACE_START_MAX_AGE_MS = 250;
 const INPUT_TRACE_TEXT_DECODER = new TextDecoder();
 
@@ -126,7 +132,11 @@ type TerminalResizeState =
 
 export interface TerminalInputPipeline {
   cleanup(): void;
-  detectPendingInputTraceEcho(chunk: Uint8Array, outputReceivedAtMs: number): void;
+  detectPendingInputTraceEcho(
+    chunk: Uint8Array,
+    outputReceivedAtMs: number,
+    outputTransportReceivedAtMs?: number,
+  ): void;
   drainInputQueue(): void;
   enqueueProgrammaticInput(data: string): void;
   finalizePendingInputTraceEchoes(outputRenderedAtMs: number): void;
@@ -201,6 +211,10 @@ function getTraceEchoText(data: string): string | null {
     .join('')
     .replace(/\r/g, '');
   return printableText.length > 0 ? printableText : null;
+}
+
+function getBackendTraceEchoText(echoText: string): string | undefined {
+  return echoText.length <= INPUT_TRACE_BACKEND_ECHO_TEXT_MAX_CHARS ? echoText : undefined;
 }
 
 function getControlTracePrefix(event: KeyboardTraceEventLike): string | null {
@@ -311,6 +325,7 @@ export function createTerminalInputPipeline(
     {
       expectedText: string;
       outputReceivedAtMs: number | null;
+      outputTransportReceivedAtMs: number | null;
     }
   >();
   const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal', {
@@ -651,7 +666,11 @@ export function createTerminalInputPipeline(
     }
   }
 
-  function detectPendingInputTraceEcho(chunk: Uint8Array, outputReceivedAtMs: number): void {
+  function detectPendingInputTraceEcho(
+    chunk: Uint8Array,
+    outputReceivedAtMs: number,
+    outputTransportReceivedAtMs?: number,
+  ): void {
     if (pendingInputTraceEchoes.size === 0) {
       return;
     }
@@ -671,6 +690,7 @@ export function createTerminalInputPipeline(
       }
 
       pendingTrace.outputReceivedAtMs = outputReceivedAtMs;
+      pendingTrace.outputTransportReceivedAtMs = outputTransportReceivedAtMs ?? null;
       searchStartIndex = matchIndex + pendingTrace.expectedText.length;
     }
   }
@@ -686,6 +706,9 @@ export function createTerminalInputPipeline(
         agentId,
         outputReceivedAtMs,
         outputRenderedAtMs,
+        ...(pendingTrace.outputTransportReceivedAtMs !== null
+          ? { outputTransportReceivedAtMs: pendingTrace.outputTransportReceivedAtMs }
+          : {}),
         requestId,
       });
       pendingInputTraceEchoes.delete(requestId);
@@ -790,12 +813,16 @@ export function createTerminalInputPipeline(
   }
 
   function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
+    const inputDispatchedAt = recordInputDispatched(batch.queuedAt);
     const sendStartedAtMs = getTerminalTraceTimestampMs();
     if (batch.inputKind !== 'paste') {
       noteTerminalFocusedInput(taskId, agentId);
       activateTerminalSwitchEchoGrace(taskId);
       options.armInteractiveEchoFastPath();
     }
+    const backendEchoText = batch.traceEchoText
+      ? getBackendTraceEchoText(batch.traceEchoText)
+      : undefined;
     const trace =
       batch.traceEchoText &&
       batch.bufferedAtMs >= 0 &&
@@ -803,6 +830,7 @@ export function createTerminalInputPipeline(
       hasTerminalTraceClockAlignment()
         ? {
             bufferedAtMs: batch.bufferedAtMs,
+            ...(backendEchoText ? { echoText: backendEchoText } : {}),
             inputChars: batch.batch.length,
             inputKind: batch.inputKind,
             sendStartedAtMs,
@@ -814,18 +842,31 @@ export function createTerminalInputPipeline(
       pendingInputTraceEchoes.set(batch.requestId, {
         expectedText: batch.traceEchoText,
         outputReceivedAtMs: null,
+        outputTransportReceivedAtMs: null,
       });
     }
 
-    return sendTerminalInput({
-      agentId,
-      controllerId: runtimeClientId,
-      data: batch.batch,
-      requestId: batch.requestId,
-      taskId,
-      ...(trace ? { trace } : {}),
-    }).then(() => {
+    let commandResultReceivedAtMs = -1;
+    return sendTerminalInput(
+      {
+        agentId,
+        controllerId: runtimeClientId,
+        data: batch.batch,
+        requestId: batch.requestId,
+        taskId,
+        ...(trace ? { trace } : {}),
+      },
+      {
+        onBrowserCommandResultReceived: (receivedAtMs) => {
+          commandResultReceivedAtMs = recordInputCommandResultReceived(
+            inputDispatchedAt,
+            receivedAtMs,
+          );
+        },
+      },
+    ).then(() => {
       recordInputSent(batch.queuedAt);
+      recordInputAccepted(inputDispatchedAt, commandResultReceivedAtMs);
       recordTerminalInputBatchSent(batch.batch.length);
       return true;
     });
@@ -911,8 +952,10 @@ export function createTerminalInputPipeline(
     }
 
     const inputGeneration = inputLifecycleGeneration;
+    const inputLeaseRequestedAt = recordInputLeaseRequested();
     ensureInputLease()
       .then((acquired) => {
+        recordInputLeaseResolved(inputLeaseRequestedAt);
         if (inputGeneration !== inputLifecycleGeneration || !isTerminalInputRetryAllowed()) {
           return;
         }
@@ -943,6 +986,7 @@ export function createTerminalInputPipeline(
         }
       })
       .catch((error) => {
+        recordInputLeaseResolved(inputLeaseRequestedAt);
         if (
           inputGeneration !== inputLifecycleGeneration ||
           !isTerminalInputRetryAllowed() ||

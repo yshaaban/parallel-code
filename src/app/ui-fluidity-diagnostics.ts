@@ -38,6 +38,7 @@ import {
   resetTerminalOutputDiagnostics,
   type NumericDiagnosticsTotal,
   type TerminalOutputDiagnosticsSummarySnapshot,
+  type TerminalOutputUiFluidityActiveWriteCounters,
 } from '../lib/terminal-output-diagnostics';
 import { getWebglPoolRuntimeSnapshot } from '../lib/webglPool';
 
@@ -79,34 +80,93 @@ export interface UiFluidityDiagnosticsSnapshot {
   };
   terminalOutput: TerminalOutputDiagnosticsSummarySnapshot;
   terminalOutputPerFrame: {
+    activeWriteAgeMs: NumericSampleStats;
+    activeWriteCount: NumericSampleStats;
     activeVisibleBytes: NumericSampleStats;
     activeVisibleQueueAgeMs: NumericSampleStats;
+    activeVisibleWriteDurationMs: NumericSampleStats;
+    activeVisibleWriteFinalizationDurationMs: NumericSampleStats;
+    controlWriteBytes: NumericSampleStats;
+    controlWriteDurationMs: NumericSampleStats;
     directWriteBytes: NumericSampleStats;
     directWriteCalls: NumericSampleStats;
     focusedQueueAgeMs: NumericSampleStats;
     focusedWriteBytes: NumericSampleStats;
+    focusedWriteDurationMs: NumericSampleStats;
+    focusedWriteFinalizationDurationMs: NumericSampleStats;
     hiddenBytes: NumericSampleStats;
     hiddenQueueAgeMs: NumericSampleStats;
+    nonTargetVisibleActiveWriteAgeMs: NumericSampleStats;
+    nonTargetVisibleActiveWriteCount: NumericSampleStats;
     nonTargetVisibleBytes: NumericSampleStats;
+    plainWriteBytes: NumericSampleStats;
+    plainWriteDurationMs: NumericSampleStats;
     queuedWriteBytes: NumericSampleStats;
     queuedWriteCalls: NumericSampleStats;
+    queuedWriteDurationMs: NumericSampleStats;
+    queuedWriteFinalizationDurationMs: NumericSampleStats;
     queuedQueueAgeMs: NumericSampleStats;
+    redrawControlWriteBytes: NumericSampleStats;
+    redrawControlWriteDurationMs: NumericSampleStats;
     suppressedBytes: NumericSampleStats;
     switchTargetVisibleBytes: NumericSampleStats;
     switchTargetVisibleQueueAgeMs: NumericSampleStats;
     visibleBytes: NumericSampleStats;
+    visibleBackgroundActiveWriteAgeMs: NumericSampleStats;
+    visibleBackgroundActiveWriteCount: NumericSampleStats;
     visibleBackgroundBytes: NumericSampleStats;
     visibleBackgroundQueueAgeMs: NumericSampleStats;
+    visibleBackgroundWriteDurationMs: NumericSampleStats;
+    visibleBackgroundWriteFinalizationDurationMs: NumericSampleStats;
     visibleQueueAgeMs: NumericSampleStats;
     writeBytes: NumericSampleStats;
     writeCalls: NumericSampleStats;
+    writeDurationMs: NumericSampleStats;
+    writeFinalizationDurationMs: NumericSampleStats;
   };
   terminalOutputDuringFocusedInputPerFrame: {
+    activeWriteAgeMs: NumericSampleStats;
+    activeWriteCount: NumericSampleStats;
+    activeVisibleBytes: NumericSampleStats;
+    activeVisibleQueueAgeMs: NumericSampleStats;
+    controlWriteBytes: NumericSampleStats;
+    controlWriteDurationMs: NumericSampleStats;
+    directWriteBytes: NumericSampleStats;
+    directWriteCalls: NumericSampleStats;
     focusedWriteBytes: NumericSampleStats;
     hiddenBytes: NumericSampleStats;
+    nonTargetVisibleActiveWriteAgeMs: NumericSampleStats;
+    nonTargetVisibleActiveWriteCount: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedBeforeInputAgeMs: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedBeforeInputBytes: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedBeforeInputCount: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedDuringInputAgeMs: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedDuringInputBytes: NumericSampleStats;
+    nonTargetVisibleActiveWriteStartedDuringInputCount: NumericSampleStats;
     nonTargetVisibleBytes: NumericSampleStats;
+    nonTargetVisibleWriteDurationMs: NumericSampleStats;
+    nonTargetVisibleWriteFinalizationDurationMs: NumericSampleStats;
+    plainWriteBytes: NumericSampleStats;
+    plainWriteDurationMs: NumericSampleStats;
+    queuedWriteBytes: NumericSampleStats;
+    queuedWriteCalls: NumericSampleStats;
     queuedQueueAgeMs: NumericSampleStats;
+    redrawControlWriteBytes: NumericSampleStats;
+    redrawControlWriteDurationMs: NumericSampleStats;
+    visibleBackgroundActiveWriteAgeMs: NumericSampleStats;
+    visibleBackgroundActiveWriteCount: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedBeforeInputAgeMs: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedBeforeInputBytes: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedBeforeInputCount: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedDuringInputAgeMs: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedDuringInputBytes: NumericSampleStats;
+    visibleBackgroundActiveWriteStartedDuringInputCount: NumericSampleStats;
     visibleBackgroundBytes: NumericSampleStats;
+    visibleBackgroundQueueAgeMs: NumericSampleStats;
+    visibleBackgroundWriteDurationMs: NumericSampleStats;
+    visibleBackgroundWriteFinalizationDurationMs: NumericSampleStats;
+    writeDurationMs: NumericSampleStats;
+    writeFinalizationDurationMs: NumericSampleStats;
   };
 }
 
@@ -194,13 +254,36 @@ interface UiFluiditySwitchWindowPhaseSnapshot {
 
 interface UiFluidityCounters {
   output: {
+    activeWriteAgeMs: {
+      activeVisible: NumericDiagnosticsTotal;
+      focused: NumericDiagnosticsTotal;
+      hidden: NumericDiagnosticsTotal;
+      switchTargetVisible: NumericDiagnosticsTotal;
+      total: NumericDiagnosticsTotal;
+      visible: NumericDiagnosticsTotal;
+      visibleBackground: NumericDiagnosticsTotal;
+    };
+    activeWritesStartedBeforeFocusedInput: TerminalOutputUiFluidityActiveWriteCounters;
+    activeWritesStartedSinceFocusedInput: TerminalOutputUiFluidityActiveWriteCounters;
+    activeWriteCount: {
+      activeVisible: number;
+      focused: number;
+      hidden: number;
+      switchTargetVisible: number;
+      total: number;
+      visible: number;
+      visibleBackground: number;
+    };
     activeVisibleBytes: number;
+    controlWriteBytes: number;
     directWriteBytes: number;
     directWriteCalls: number;
     hiddenBytes: number;
     nonTargetVisibleBytes: number;
     queuedWriteBytes: number;
     queuedWriteCalls: number;
+    plainWriteBytes: number;
+    redrawControlWriteBytes: number;
     suppressedBytes: number;
     queueAge: {
       activeVisible: NumericDiagnosticsTotal;
@@ -210,6 +293,34 @@ interface UiFluidityCounters {
       switchTargetVisible: NumericDiagnosticsTotal;
       visibleBackground: NumericDiagnosticsTotal;
       visible: NumericDiagnosticsTotal;
+    };
+    writeDurationMs: {
+      activeVisible: NumericDiagnosticsTotal;
+      control: NumericDiagnosticsTotal;
+      direct: NumericDiagnosticsTotal;
+      focused: NumericDiagnosticsTotal;
+      hidden: NumericDiagnosticsTotal;
+      plain: NumericDiagnosticsTotal;
+      queued: NumericDiagnosticsTotal;
+      redrawControl: NumericDiagnosticsTotal;
+      switchTargetVisible: NumericDiagnosticsTotal;
+      total: NumericDiagnosticsTotal;
+      visible: NumericDiagnosticsTotal;
+      visibleBackground: NumericDiagnosticsTotal;
+    };
+    writeFinalizationDurationMs: {
+      activeVisible: NumericDiagnosticsTotal;
+      control: NumericDiagnosticsTotal;
+      direct: NumericDiagnosticsTotal;
+      focused: NumericDiagnosticsTotal;
+      hidden: NumericDiagnosticsTotal;
+      plain: NumericDiagnosticsTotal;
+      queued: NumericDiagnosticsTotal;
+      redrawControl: NumericDiagnosticsTotal;
+      switchTargetVisible: NumericDiagnosticsTotal;
+      total: NumericDiagnosticsTotal;
+      visible: NumericDiagnosticsTotal;
+      visibleBackground: NumericDiagnosticsTotal;
     };
     focusedBytes: number;
     switchTargetVisibleBytes: number;
@@ -230,8 +341,14 @@ interface UiFluidityCounters {
 interface UiFluidityState {
   activeSwitchEchoGrace: UiFluiditySwitchEchoGraceState | null;
   activeSwitchWindow: UiFluiditySwitchWindowState | null;
+  activeWriteAgeMsPerFrame: number[];
+  activeWriteCountPerFrame: number[];
   activeVisibleBytesPerFrame: number[];
   activeVisibleQueueAgeMsPerFrame: number[];
+  activeVisibleWriteDurationMsPerFrame: number[];
+  activeVisibleWriteFinalizationDurationMsPerFrame: number[];
+  controlWriteBytesPerFrame: number[];
+  controlWriteDurationMsPerFrame: number[];
   activeWebglContextsPerFrame: number[];
   frameGapMs: number[];
   frameOverBudget16ms: number;
@@ -240,17 +357,60 @@ interface UiFluidityState {
   framePressureCounts: Record<TerminalFramePressureLevel, number>;
   directWriteBytesPerFrame: number[];
   directWriteCallsPerFrame: number[];
+  focusedInputActiveVisibleBytesPerFrame: number[];
+  focusedInputActiveVisibleQueueAgeMsPerFrame: number[];
+  focusedInputActiveWriteAgeMsPerFrame: number[];
+  focusedInputActiveWriteCountPerFrame: number[];
+  focusedInputControlWriteBytesPerFrame: number[];
+  focusedInputControlWriteDurationMsPerFrame: number[];
+  focusedInputDirectWriteBytesPerFrame: number[];
+  focusedInputDirectWriteCallsPerFrame: number[];
   focusedInputFocusedWriteBytesPerFrame: number[];
   focusedInputHiddenBytesPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteAgeMsPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteCountPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedBeforeInputAgeMsPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedBeforeInputBytesPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedBeforeInputCountPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedDuringInputAgeMsPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedDuringInputBytesPerFrame: number[];
+  focusedInputNonTargetVisibleActiveWriteStartedDuringInputCountPerFrame: number[];
   focusedInputNonTargetVisibleBytesPerFrame: number[];
+  focusedInputNonTargetVisibleWriteDurationMsPerFrame: number[];
+  focusedInputNonTargetVisibleWriteFinalizationDurationMsPerFrame: number[];
+  focusedInputPlainWriteBytesPerFrame: number[];
+  focusedInputPlainWriteDurationMsPerFrame: number[];
+  focusedInputQueuedWriteBytesPerFrame: number[];
+  focusedInputQueuedWriteCallsPerFrame: number[];
   focusedInputQueuedQueueAgeMsPerFrame: number[];
+  focusedInputRedrawControlWriteBytesPerFrame: number[];
+  focusedInputRedrawControlWriteDurationMsPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteAgeMsPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteCountPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedBeforeInputAgeMsPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedBeforeInputBytesPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedBeforeInputCountPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedDuringInputAgeMsPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedDuringInputBytesPerFrame: number[];
+  focusedInputVisibleBackgroundActiveWriteStartedDuringInputCountPerFrame: number[];
   focusedInputVisibleBackgroundBytesPerFrame: number[];
+  focusedInputVisibleBackgroundQueueAgeMsPerFrame: number[];
+  focusedInputVisibleBackgroundWriteDurationMsPerFrame: number[];
+  focusedInputVisibleBackgroundWriteFinalizationDurationMsPerFrame: number[];
+  focusedInputWriteDurationMsPerFrame: number[];
+  focusedInputWriteFinalizationDurationMsPerFrame: number[];
   focusedWriteBytesPerFrame: number[];
+  focusedWriteDurationMsPerFrame: number[];
+  focusedWriteFinalizationDurationMsPerFrame: number[];
   hiddenBytesPerFrame: number[];
   hiddenQueueAgeMsPerFrame: number[];
   lastFrameAtMs: number | null;
   longTaskDurationMs: number[];
+  nonTargetVisibleActiveWriteAgeMsPerFrame: number[];
+  nonTargetVisibleActiveWriteCountPerFrame: number[];
   nonTargetVisibleBytesPerFrame: number[];
+  plainWriteBytesPerFrame: number[];
+  plainWriteDurationMsPerFrame: number[];
   lastCompletedSwitchWindow: UiFluiditySwitchWindowSnapshot | null;
   lastCompletedSwitchEchoGrace: UiFluiditySwitchEchoGraceSnapshot | null;
   lastObservedSwitchEchoGraceCompletion: TerminalSwitchEchoGraceCompletion | null;
@@ -259,7 +419,11 @@ interface UiFluidityState {
   previousCounters: UiFluidityCounters | null;
   queuedWriteBytesPerFrame: number[];
   queuedWriteCallsPerFrame: number[];
+  queuedWriteDurationMsPerFrame: number[];
+  queuedWriteFinalizationDurationMsPerFrame: number[];
   queuedQueueAgeMsPerFrame: number[];
+  redrawControlWriteBytesPerFrame: number[];
+  redrawControlWriteDurationMsPerFrame: number[];
   suppressedBytesPerFrame: number[];
   switchTargetVisibleBytesPerFrame: number[];
   switchTargetVisibleQueueAgeMsPerFrame: number[];
@@ -268,11 +432,17 @@ interface UiFluidityState {
   schedulerScanDurationMsPerFrame: number[];
   visibleWebglContextsPerFrame: number[];
   visibleBytesPerFrame: number[];
+  visibleBackgroundActiveWriteAgeMsPerFrame: number[];
+  visibleBackgroundActiveWriteCountPerFrame: number[];
   visibleBackgroundBytesPerFrame: number[];
   visibleBackgroundQueueAgeMsPerFrame: number[];
+  visibleBackgroundWriteDurationMsPerFrame: number[];
+  visibleBackgroundWriteFinalizationDurationMsPerFrame: number[];
   visibleQueueAgeMsPerFrame: number[];
   writeBytesPerFrame: number[];
   writeCallsPerFrame: number[];
+  writeDurationMsPerFrame: number[];
+  writeFinalizationDurationMsPerFrame: number[];
   focusedQueueAgeMsPerFrame: number[];
   agentAnalysisDurationMsPerFrame: number[];
 }
@@ -314,19 +484,64 @@ function createUiFluidityState(): UiFluidityState {
   return {
     activeSwitchEchoGrace: null,
     activeSwitchWindow: null,
+    activeWriteAgeMsPerFrame: [],
+    activeWriteCountPerFrame: [],
     activeVisibleBytesPerFrame: [],
     activeVisibleQueueAgeMsPerFrame: [],
+    activeVisibleWriteDurationMsPerFrame: [],
+    activeVisibleWriteFinalizationDurationMsPerFrame: [],
     activeWebglContextsPerFrame: [],
     agentAnalysisDurationMsPerFrame: [],
+    controlWriteBytesPerFrame: [],
+    controlWriteDurationMsPerFrame: [],
     directWriteBytesPerFrame: [],
     directWriteCallsPerFrame: [],
+    focusedInputActiveVisibleBytesPerFrame: [],
+    focusedInputActiveVisibleQueueAgeMsPerFrame: [],
+    focusedInputActiveWriteAgeMsPerFrame: [],
+    focusedInputActiveWriteCountPerFrame: [],
+    focusedInputControlWriteBytesPerFrame: [],
+    focusedInputControlWriteDurationMsPerFrame: [],
+    focusedInputDirectWriteBytesPerFrame: [],
+    focusedInputDirectWriteCallsPerFrame: [],
     focusedInputFocusedWriteBytesPerFrame: [],
     focusedInputHiddenBytesPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteAgeMsPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteCountPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedBeforeInputAgeMsPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedBeforeInputBytesPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedBeforeInputCountPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedDuringInputAgeMsPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedDuringInputBytesPerFrame: [],
+    focusedInputNonTargetVisibleActiveWriteStartedDuringInputCountPerFrame: [],
     focusedInputNonTargetVisibleBytesPerFrame: [],
+    focusedInputNonTargetVisibleWriteDurationMsPerFrame: [],
+    focusedInputNonTargetVisibleWriteFinalizationDurationMsPerFrame: [],
+    focusedInputPlainWriteBytesPerFrame: [],
+    focusedInputPlainWriteDurationMsPerFrame: [],
+    focusedInputQueuedWriteBytesPerFrame: [],
+    focusedInputQueuedWriteCallsPerFrame: [],
     focusedInputQueuedQueueAgeMsPerFrame: [],
+    focusedInputRedrawControlWriteBytesPerFrame: [],
+    focusedInputRedrawControlWriteDurationMsPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteAgeMsPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteCountPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedBeforeInputAgeMsPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedBeforeInputBytesPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedBeforeInputCountPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedDuringInputAgeMsPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedDuringInputBytesPerFrame: [],
+    focusedInputVisibleBackgroundActiveWriteStartedDuringInputCountPerFrame: [],
     focusedInputVisibleBackgroundBytesPerFrame: [],
+    focusedInputVisibleBackgroundQueueAgeMsPerFrame: [],
+    focusedInputVisibleBackgroundWriteDurationMsPerFrame: [],
+    focusedInputVisibleBackgroundWriteFinalizationDurationMsPerFrame: [],
+    focusedInputWriteDurationMsPerFrame: [],
+    focusedInputWriteFinalizationDurationMsPerFrame: [],
     focusedQueueAgeMsPerFrame: [],
     focusedWriteBytesPerFrame: [],
+    focusedWriteDurationMsPerFrame: [],
+    focusedWriteFinalizationDurationMsPerFrame: [],
     frameGapMs: [],
     frameOverBudget16ms: 0,
     frameOverBudget33ms: 0,
@@ -344,12 +559,20 @@ function createUiFluidityState(): UiFluidityState {
     lastObservedSwitchEchoGraceCompletion: null,
     lastObservedSwitchWindowCompletion: null,
     longTaskDurationMs: [],
+    nonTargetVisibleActiveWriteAgeMsPerFrame: [],
+    nonTargetVisibleActiveWriteCountPerFrame: [],
     nonTargetVisibleBytesPerFrame: [],
     ownerDurationMsPerFrame: [],
+    plainWriteBytesPerFrame: [],
+    plainWriteDurationMsPerFrame: [],
     previousCounters: null,
     queuedWriteBytesPerFrame: [],
     queuedWriteCallsPerFrame: [],
+    queuedWriteDurationMsPerFrame: [],
+    queuedWriteFinalizationDurationMsPerFrame: [],
     queuedQueueAgeMsPerFrame: [],
+    redrawControlWriteBytesPerFrame: [],
+    redrawControlWriteDurationMsPerFrame: [],
     suppressedBytesPerFrame: [],
     switchTargetVisibleBytesPerFrame: [],
     switchTargetVisibleQueueAgeMsPerFrame: [],
@@ -358,11 +581,17 @@ function createUiFluidityState(): UiFluidityState {
     schedulerScanDurationMsPerFrame: [],
     visibleWebglContextsPerFrame: [],
     visibleBytesPerFrame: [],
+    visibleBackgroundActiveWriteAgeMsPerFrame: [],
+    visibleBackgroundActiveWriteCountPerFrame: [],
     visibleBackgroundBytesPerFrame: [],
     visibleBackgroundQueueAgeMsPerFrame: [],
+    visibleBackgroundWriteDurationMsPerFrame: [],
+    visibleBackgroundWriteFinalizationDurationMsPerFrame: [],
     visibleQueueAgeMsPerFrame: [],
     writeBytesPerFrame: [],
     writeCallsPerFrame: [],
+    writeDurationMsPerFrame: [],
+    writeFinalizationDurationMsPerFrame: [],
   };
 }
 
@@ -432,6 +661,45 @@ function getAverageFromDiagnosticsTotal(totals: NumericDiagnosticsTotal): number
   return totals.total / totals.count;
 }
 
+function getDiagnosticsTotalDelta(
+  current: NumericDiagnosticsTotal,
+  previous: NumericDiagnosticsTotal,
+): number {
+  return getNumericDiagnosticsDelta(current, previous).total;
+}
+
+function getFocusedInputStartedAtMs(
+  focusedInputSnapshot: TerminalFocusedInputSnapshot,
+): number | null {
+  if (
+    !focusedInputSnapshot.active ||
+    typeof performance === 'undefined' ||
+    typeof performance.now !== 'function'
+  ) {
+    return null;
+  }
+
+  return Math.max(0, performance.now() - focusedInputSnapshot.ageMs);
+}
+
+function getNonTargetVisibleActiveWriteAgeMs(
+  counters: TerminalOutputUiFluidityActiveWriteCounters,
+): number {
+  return Math.max(counters.activeVisible.ageMs.max, counters.visibleBackground.ageMs.max);
+}
+
+function getNonTargetVisibleActiveWriteCount(
+  counters: TerminalOutputUiFluidityActiveWriteCounters,
+): number {
+  return counters.activeVisible.count + counters.visibleBackground.count;
+}
+
+function getNonTargetVisibleActiveWriteBytes(
+  counters: TerminalOutputUiFluidityActiveWriteCounters,
+): number {
+  return counters.activeVisible.bytes + counters.visibleBackground.bytes;
+}
+
 function recordFrameOutputCounters(
   currentCounters: UiFluidityCounters,
   previousCounters: UiFluidityCounters,
@@ -479,15 +747,95 @@ function recordFrameOutputCounters(
       previousCounters.output.queueAge.switchTargetVisible,
     ),
   );
+  const activeVisibleWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.activeVisible,
+    previousCounters.output.writeDurationMs.activeVisible,
+  );
+  const activeVisibleWriteFinalizationDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeFinalizationDurationMs.activeVisible,
+    previousCounters.output.writeFinalizationDurationMs.activeVisible,
+  );
+  const controlWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.control,
+    previousCounters.output.writeDurationMs.control,
+  );
+  const focusedWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.focused,
+    previousCounters.output.writeDurationMs.focused,
+  );
+  const focusedWriteFinalizationDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeFinalizationDurationMs.focused,
+    previousCounters.output.writeFinalizationDurationMs.focused,
+  );
+  const queuedWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.queued,
+    previousCounters.output.writeDurationMs.queued,
+  );
+  const queuedWriteFinalizationDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeFinalizationDurationMs.queued,
+    previousCounters.output.writeFinalizationDurationMs.queued,
+  );
+  const plainWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.plain,
+    previousCounters.output.writeDurationMs.plain,
+  );
+  const redrawControlWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.redrawControl,
+    previousCounters.output.writeDurationMs.redrawControl,
+  );
+  const visibleBackgroundWriteDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.visibleBackground,
+    previousCounters.output.writeDurationMs.visibleBackground,
+  );
+  const visibleBackgroundWriteFinalizationDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeFinalizationDurationMs.visibleBackground,
+    previousCounters.output.writeFinalizationDurationMs.visibleBackground,
+  );
+  const writeDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeDurationMs.total,
+    previousCounters.output.writeDurationMs.total,
+  );
+  const writeFinalizationDurationMs = getDiagnosticsTotalDelta(
+    currentCounters.output.writeFinalizationDurationMs.total,
+    previousCounters.output.writeFinalizationDurationMs.total,
+  );
+  const nonTargetVisibleWriteDurationMs =
+    activeVisibleWriteDurationMs + visibleBackgroundWriteDurationMs;
+  const nonTargetVisibleWriteFinalizationDurationMs =
+    activeVisibleWriteFinalizationDurationMs + visibleBackgroundWriteFinalizationDurationMs;
+  const activeWriteAgeMs = currentCounters.output.activeWriteAgeMs.total.max;
+  const activeWriteCount = currentCounters.output.activeWriteCount.total;
+  const visibleBackgroundActiveWriteAgeMs =
+    currentCounters.output.activeWriteAgeMs.visibleBackground.max;
+  const visibleBackgroundActiveWriteCount =
+    currentCounters.output.activeWriteCount.visibleBackground;
+  const nonTargetVisibleActiveWriteAgeMs = Math.max(
+    currentCounters.output.activeWriteAgeMs.activeVisible.max,
+    visibleBackgroundActiveWriteAgeMs,
+  );
+  const nonTargetVisibleActiveWriteCount =
+    currentCounters.output.activeWriteCount.activeVisible + visibleBackgroundActiveWriteCount;
+  const startedBeforeFocusedInput = currentCounters.output.activeWritesStartedBeforeFocusedInput;
+  const startedSinceFocusedInput = currentCounters.output.activeWritesStartedSinceFocusedInput;
 
   pushSample(
     state.writeCallsPerFrame,
     getPositiveDelta(currentCounters.output.totalCalls, previousCounters.output.totalCalls),
   );
+  pushSample(state.writeDurationMsPerFrame, writeDurationMs);
+  pushSample(state.writeFinalizationDurationMsPerFrame, writeFinalizationDurationMs);
   pushSample(
     state.writeBytesPerFrame,
     getPositiveDelta(currentCounters.output.totalBytes, previousCounters.output.totalBytes),
   );
+  pushSample(
+    state.controlWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.controlWriteBytes,
+      previousCounters.output.controlWriteBytes,
+    ),
+  );
+  pushSample(state.controlWriteDurationMsPerFrame, controlWriteDurationMs);
   pushSample(
     state.directWriteCallsPerFrame,
     getPositiveDelta(
@@ -517,6 +865,30 @@ function recordFrameOutputCounters(
     ),
   );
   pushSample(
+    state.plainWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.plainWriteBytes,
+      previousCounters.output.plainWriteBytes,
+    ),
+  );
+  pushSample(state.plainWriteDurationMsPerFrame, plainWriteDurationMs);
+  pushSample(state.queuedWriteDurationMsPerFrame, queuedWriteDurationMs);
+  pushSample(state.queuedWriteFinalizationDurationMsPerFrame, queuedWriteFinalizationDurationMs);
+  pushSample(
+    state.redrawControlWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.redrawControlWriteBytes,
+      previousCounters.output.redrawControlWriteBytes,
+    ),
+  );
+  pushSample(state.redrawControlWriteDurationMsPerFrame, redrawControlWriteDurationMs);
+  pushSample(state.activeWriteAgeMsPerFrame, activeWriteAgeMs);
+  pushSample(state.activeWriteCountPerFrame, activeWriteCount);
+  pushSample(state.nonTargetVisibleActiveWriteAgeMsPerFrame, nonTargetVisibleActiveWriteAgeMs);
+  pushSample(state.nonTargetVisibleActiveWriteCountPerFrame, nonTargetVisibleActiveWriteCount);
+  pushSample(state.visibleBackgroundActiveWriteAgeMsPerFrame, visibleBackgroundActiveWriteAgeMs);
+  pushSample(state.visibleBackgroundActiveWriteCountPerFrame, visibleBackgroundActiveWriteCount);
+  pushSample(
     state.suppressedBytesPerFrame,
     getPositiveDelta(
       currentCounters.output.suppressedBytes,
@@ -527,12 +899,19 @@ function recordFrameOutputCounters(
     state.focusedWriteBytesPerFrame,
     getPositiveDelta(currentCounters.output.focusedBytes, previousCounters.output.focusedBytes),
   );
+  pushSample(state.focusedWriteDurationMsPerFrame, focusedWriteDurationMs);
+  pushSample(state.focusedWriteFinalizationDurationMsPerFrame, focusedWriteFinalizationDurationMs);
   pushSample(
     state.activeVisibleBytesPerFrame,
     getPositiveDelta(
       currentCounters.output.activeVisibleBytes,
       previousCounters.output.activeVisibleBytes,
     ),
+  );
+  pushSample(state.activeVisibleWriteDurationMsPerFrame, activeVisibleWriteDurationMs);
+  pushSample(
+    state.activeVisibleWriteFinalizationDurationMsPerFrame,
+    activeVisibleWriteFinalizationDurationMs,
   );
   pushSample(
     state.visibleBytesPerFrame,
@@ -544,6 +923,11 @@ function recordFrameOutputCounters(
       currentCounters.output.visibleBackgroundBytes,
       previousCounters.output.visibleBackgroundBytes,
     ),
+  );
+  pushSample(state.visibleBackgroundWriteDurationMsPerFrame, visibleBackgroundWriteDurationMs);
+  pushSample(
+    state.visibleBackgroundWriteFinalizationDurationMsPerFrame,
+    visibleBackgroundWriteFinalizationDurationMs,
   );
   pushSample(
     state.switchTargetVisibleBytesPerFrame,
@@ -580,6 +964,13 @@ function recordFrameOutputCounters(
     getPositiveDelta(currentCounters.output.focusedBytes, previousCounters.output.focusedBytes),
   );
   pushSample(
+    state.focusedInputActiveVisibleBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.activeVisibleBytes,
+      previousCounters.output.activeVisibleBytes,
+    ),
+  );
+  pushSample(
     state.focusedInputHiddenBytesPerFrame,
     getPositiveDelta(currentCounters.output.hiddenBytes, previousCounters.output.hiddenBytes),
   );
@@ -590,6 +981,135 @@ function recordFrameOutputCounters(
       previousCounters.output.nonTargetVisibleBytes,
     ),
   );
+  pushSample(
+    state.focusedInputDirectWriteCallsPerFrame,
+    getPositiveDelta(
+      currentCounters.output.directWriteCalls,
+      previousCounters.output.directWriteCalls,
+    ),
+  );
+  pushSample(
+    state.focusedInputDirectWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.directWriteBytes,
+      previousCounters.output.directWriteBytes,
+    ),
+  );
+  pushSample(
+    state.focusedInputControlWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.controlWriteBytes,
+      previousCounters.output.controlWriteBytes,
+    ),
+  );
+  pushSample(state.focusedInputControlWriteDurationMsPerFrame, controlWriteDurationMs);
+  pushSample(
+    state.focusedInputQueuedWriteCallsPerFrame,
+    getPositiveDelta(
+      currentCounters.output.queuedWriteCalls,
+      previousCounters.output.queuedWriteCalls,
+    ),
+  );
+  pushSample(
+    state.focusedInputQueuedWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.queuedWriteBytes,
+      previousCounters.output.queuedWriteBytes,
+    ),
+  );
+  pushSample(
+    state.focusedInputPlainWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.plainWriteBytes,
+      previousCounters.output.plainWriteBytes,
+    ),
+  );
+  pushSample(state.focusedInputPlainWriteDurationMsPerFrame, plainWriteDurationMs);
+  pushSample(
+    state.focusedInputRedrawControlWriteBytesPerFrame,
+    getPositiveDelta(
+      currentCounters.output.redrawControlWriteBytes,
+      previousCounters.output.redrawControlWriteBytes,
+    ),
+  );
+  pushSample(state.focusedInputRedrawControlWriteDurationMsPerFrame, redrawControlWriteDurationMs);
+  pushSample(state.focusedInputWriteDurationMsPerFrame, writeDurationMs);
+  pushSample(state.focusedInputWriteFinalizationDurationMsPerFrame, writeFinalizationDurationMs);
+  pushSample(
+    state.focusedInputNonTargetVisibleWriteDurationMsPerFrame,
+    nonTargetVisibleWriteDurationMs,
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleWriteFinalizationDurationMsPerFrame,
+    nonTargetVisibleWriteFinalizationDurationMs,
+  );
+  pushSample(state.focusedInputActiveWriteAgeMsPerFrame, activeWriteAgeMs);
+  pushSample(state.focusedInputActiveWriteCountPerFrame, activeWriteCount);
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteAgeMsPerFrame,
+    nonTargetVisibleActiveWriteAgeMs,
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteCountPerFrame,
+    nonTargetVisibleActiveWriteCount,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteAgeMsPerFrame,
+    visibleBackgroundActiveWriteAgeMs,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteCountPerFrame,
+    visibleBackgroundActiveWriteCount,
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputAgeMsPerFrame,
+    getNonTargetVisibleActiveWriteAgeMs(startedBeforeFocusedInput),
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputBytesPerFrame,
+    getNonTargetVisibleActiveWriteBytes(startedBeforeFocusedInput),
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputCountPerFrame,
+    getNonTargetVisibleActiveWriteCount(startedBeforeFocusedInput),
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputAgeMsPerFrame,
+    getNonTargetVisibleActiveWriteAgeMs(startedSinceFocusedInput),
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputBytesPerFrame,
+    getNonTargetVisibleActiveWriteBytes(startedSinceFocusedInput),
+  );
+  pushSample(
+    state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputCountPerFrame,
+    getNonTargetVisibleActiveWriteCount(startedSinceFocusedInput),
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputAgeMsPerFrame,
+    startedBeforeFocusedInput.visibleBackground.ageMs.max,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputBytesPerFrame,
+    startedBeforeFocusedInput.visibleBackground.bytes,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputCountPerFrame,
+    startedBeforeFocusedInput.visibleBackground.count,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputAgeMsPerFrame,
+    startedSinceFocusedInput.visibleBackground.ageMs.max,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputBytesPerFrame,
+    startedSinceFocusedInput.visibleBackground.bytes,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputCountPerFrame,
+    startedSinceFocusedInput.visibleBackground.count,
+  );
+  pushSample(state.focusedInputActiveVisibleQueueAgeMsPerFrame, activeVisibleQueueAge);
   pushSample(state.focusedInputQueuedQueueAgeMsPerFrame, queuedQueueAge);
   pushSample(
     state.focusedInputVisibleBackgroundBytesPerFrame,
@@ -598,6 +1118,15 @@ function recordFrameOutputCounters(
       previousCounters.output.visibleBackgroundBytes,
     ),
   );
+  pushSample(
+    state.focusedInputVisibleBackgroundWriteDurationMsPerFrame,
+    visibleBackgroundWriteDurationMs,
+  );
+  pushSample(
+    state.focusedInputVisibleBackgroundWriteFinalizationDurationMsPerFrame,
+    visibleBackgroundWriteFinalizationDurationMs,
+  );
+  pushSample(state.focusedInputVisibleBackgroundQueueAgeMsPerFrame, visibleBackgroundQueueAge);
 }
 
 function recordFrameRuntimeCounters(
@@ -666,23 +1195,53 @@ function areSwitchEchoGraceCompletionsEqual(
   );
 }
 
-function getUiFluidityCounters(): UiFluidityCounters {
-  const terminalOutputSummary = getTerminalOutputUiFluidityCountersSnapshot();
+function getUiFluidityCounters(
+  focusedInputSnapshot = getTerminalFocusedInputSnapshot(),
+): UiFluidityCounters {
+  const terminalOutputSummary = getTerminalOutputUiFluidityCountersSnapshot({
+    activeWriteBoundaryStartedAtMs: getFocusedInputStartedAtMs(focusedInputSnapshot),
+  });
   const rendererRuntime = getRendererRuntimeUiFluidityCountersSnapshot();
   const webglPoolSnapshot = getWebglPoolRuntimeSnapshot();
 
   return {
     output: {
+      activeWriteAgeMs: {
+        activeVisible: terminalOutputSummary.activeWriteAgeMs.activeVisible,
+        focused: terminalOutputSummary.activeWriteAgeMs.focused,
+        hidden: terminalOutputSummary.activeWriteAgeMs.hidden,
+        switchTargetVisible: terminalOutputSummary.activeWriteAgeMs.switchTargetVisible,
+        total: terminalOutputSummary.activeWriteAgeMs.total,
+        visible: terminalOutputSummary.activeWriteAgeMs.visible,
+        visibleBackground: terminalOutputSummary.activeWriteAgeMs.visibleBackground,
+      },
+      activeWritesStartedBeforeFocusedInput:
+        terminalOutputSummary.activeWritesStartedBeforeBoundary,
+      activeWritesStartedSinceFocusedInput: terminalOutputSummary.activeWritesStartedSinceBoundary,
+      activeWriteCount: {
+        activeVisible: terminalOutputSummary.activeWriteCount.activeVisible,
+        focused: terminalOutputSummary.activeWriteCount.focused,
+        hidden: terminalOutputSummary.activeWriteCount.hidden,
+        switchTargetVisible: terminalOutputSummary.activeWriteCount.switchTargetVisible,
+        total: terminalOutputSummary.activeWriteCount.total,
+        visible: terminalOutputSummary.activeWriteCount.visible,
+        visibleBackground: terminalOutputSummary.activeWriteCount.visibleBackground,
+      },
       activeVisibleBytes: terminalOutputSummary.activeVisibleBytes,
+      controlWriteBytes: terminalOutputSummary.controlWriteBytes,
       directWriteBytes: terminalOutputSummary.directWriteBytes,
       directWriteCalls: terminalOutputSummary.directWriteCalls,
       hiddenBytes: terminalOutputSummary.hiddenBytes,
       nonTargetVisibleBytes:
         terminalOutputSummary.activeVisibleBytes + terminalOutputSummary.visibleBackgroundBytes,
+      plainWriteBytes: terminalOutputSummary.plainWriteBytes,
       queuedWriteBytes: terminalOutputSummary.queuedWriteBytes,
       queuedWriteCalls: terminalOutputSummary.queuedWriteCalls,
+      redrawControlWriteBytes: terminalOutputSummary.redrawControlWriteBytes,
       suppressedBytes: terminalOutputSummary.suppressedBytes,
       queueAge: terminalOutputSummary.queueAge,
+      writeDurationMs: terminalOutputSummary.writeDurationMs,
+      writeFinalizationDurationMs: terminalOutputSummary.writeFinalizationDurationMs,
       focusedBytes: terminalOutputSummary.focusedBytes,
       switchTargetVisibleBytes: terminalOutputSummary.switchTargetVisibleBytes,
       totalBytes: terminalOutputSummary.totalBytes,
@@ -1173,8 +1732,8 @@ function sampleUiFluidityFrame(frameTimeMs: number): void {
     return;
   }
 
-  const currentCounters = getUiFluidityCounters();
   const focusedInputSnapshot = getTerminalFocusedInputSnapshot();
+  const currentCounters = getUiFluidityCounters(focusedInputSnapshot);
   syncUiFluiditySwitchEchoGraceObservation(currentCounters);
   syncUiFluiditySwitchWindowObservation(currentCounters);
   const previousCounters = state.previousCounters;
@@ -1252,7 +1811,8 @@ export function resetUiFluidityDiagnostics(): void {
 }
 
 export function getUiFluidityDiagnosticsSnapshot(): UiFluidityDiagnosticsSnapshot {
-  const currentCounters = getUiFluidityCounters();
+  const focusedInputSnapshot = getTerminalFocusedInputSnapshot();
+  const currentCounters = getUiFluidityCounters(focusedInputSnapshot);
   syncUiFluiditySwitchEchoGraceObservation(currentCounters);
   syncUiFluiditySwitchWindowObservation(currentCounters);
   const switchEchoGraceSnapshot = state.activeSwitchEchoGrace
@@ -1282,7 +1842,7 @@ export function getUiFluidityDiagnosticsSnapshot(): UiFluidityDiagnosticsSnapsho
       overBudget50ms: state.frameOverBudget50ms,
       pressureCounts: { ...state.framePressureCounts },
     },
-    focusedInput: getTerminalFocusedInputSnapshot(),
+    focusedInput: focusedInputSnapshot,
     longTasks: {
       durationMs: createNumericSampleStats(state.longTaskDurationMs),
       recent: [...state.recentLongTasks],
@@ -1302,41 +1862,178 @@ export function getUiFluidityDiagnosticsSnapshot(): UiFluidityDiagnosticsSnapsho
     },
     terminalOutput: getTerminalOutputDiagnosticsSummary(),
     terminalOutputPerFrame: {
+      activeWriteAgeMs: createNumericSampleStats(state.activeWriteAgeMsPerFrame),
+      activeWriteCount: createNumericSampleStats(state.activeWriteCountPerFrame),
       activeVisibleBytes: createNumericSampleStats(state.activeVisibleBytesPerFrame),
       activeVisibleQueueAgeMs: createNumericSampleStats(state.activeVisibleQueueAgeMsPerFrame),
+      activeVisibleWriteDurationMs: createNumericSampleStats(
+        state.activeVisibleWriteDurationMsPerFrame,
+      ),
+      activeVisibleWriteFinalizationDurationMs: createNumericSampleStats(
+        state.activeVisibleWriteFinalizationDurationMsPerFrame,
+      ),
+      controlWriteBytes: createNumericSampleStats(state.controlWriteBytesPerFrame),
+      controlWriteDurationMs: createNumericSampleStats(state.controlWriteDurationMsPerFrame),
       directWriteBytes: createNumericSampleStats(state.directWriteBytesPerFrame),
       directWriteCalls: createNumericSampleStats(state.directWriteCallsPerFrame),
       focusedQueueAgeMs: createNumericSampleStats(state.focusedQueueAgeMsPerFrame),
       focusedWriteBytes: createNumericSampleStats(state.focusedWriteBytesPerFrame),
+      focusedWriteDurationMs: createNumericSampleStats(state.focusedWriteDurationMsPerFrame),
+      focusedWriteFinalizationDurationMs: createNumericSampleStats(
+        state.focusedWriteFinalizationDurationMsPerFrame,
+      ),
       hiddenBytes: createNumericSampleStats(state.hiddenBytesPerFrame),
       hiddenQueueAgeMs: createNumericSampleStats(state.hiddenQueueAgeMsPerFrame),
+      nonTargetVisibleActiveWriteAgeMs: createNumericSampleStats(
+        state.nonTargetVisibleActiveWriteAgeMsPerFrame,
+      ),
+      nonTargetVisibleActiveWriteCount: createNumericSampleStats(
+        state.nonTargetVisibleActiveWriteCountPerFrame,
+      ),
       nonTargetVisibleBytes: createNumericSampleStats(state.nonTargetVisibleBytesPerFrame),
+      plainWriteBytes: createNumericSampleStats(state.plainWriteBytesPerFrame),
+      plainWriteDurationMs: createNumericSampleStats(state.plainWriteDurationMsPerFrame),
       queuedWriteBytes: createNumericSampleStats(state.queuedWriteBytesPerFrame),
       queuedWriteCalls: createNumericSampleStats(state.queuedWriteCallsPerFrame),
+      queuedWriteDurationMs: createNumericSampleStats(state.queuedWriteDurationMsPerFrame),
+      queuedWriteFinalizationDurationMs: createNumericSampleStats(
+        state.queuedWriteFinalizationDurationMsPerFrame,
+      ),
       queuedQueueAgeMs: createNumericSampleStats(state.queuedQueueAgeMsPerFrame),
+      redrawControlWriteBytes: createNumericSampleStats(state.redrawControlWriteBytesPerFrame),
+      redrawControlWriteDurationMs: createNumericSampleStats(
+        state.redrawControlWriteDurationMsPerFrame,
+      ),
       suppressedBytes: createNumericSampleStats(state.suppressedBytesPerFrame),
       switchTargetVisibleBytes: createNumericSampleStats(state.switchTargetVisibleBytesPerFrame),
       switchTargetVisibleQueueAgeMs: createNumericSampleStats(
         state.switchTargetVisibleQueueAgeMsPerFrame,
       ),
       visibleBytes: createNumericSampleStats(state.visibleBytesPerFrame),
+      visibleBackgroundActiveWriteAgeMs: createNumericSampleStats(
+        state.visibleBackgroundActiveWriteAgeMsPerFrame,
+      ),
+      visibleBackgroundActiveWriteCount: createNumericSampleStats(
+        state.visibleBackgroundActiveWriteCountPerFrame,
+      ),
       visibleBackgroundBytes: createNumericSampleStats(state.visibleBackgroundBytesPerFrame),
       visibleBackgroundQueueAgeMs: createNumericSampleStats(
         state.visibleBackgroundQueueAgeMsPerFrame,
       ),
+      visibleBackgroundWriteDurationMs: createNumericSampleStats(
+        state.visibleBackgroundWriteDurationMsPerFrame,
+      ),
+      visibleBackgroundWriteFinalizationDurationMs: createNumericSampleStats(
+        state.visibleBackgroundWriteFinalizationDurationMsPerFrame,
+      ),
       visibleQueueAgeMs: createNumericSampleStats(state.visibleQueueAgeMsPerFrame),
       writeBytes: createNumericSampleStats(state.writeBytesPerFrame),
       writeCalls: createNumericSampleStats(state.writeCallsPerFrame),
+      writeDurationMs: createNumericSampleStats(state.writeDurationMsPerFrame),
+      writeFinalizationDurationMs: createNumericSampleStats(
+        state.writeFinalizationDurationMsPerFrame,
+      ),
     },
     terminalOutputDuringFocusedInputPerFrame: {
+      activeWriteAgeMs: createNumericSampleStats(state.focusedInputActiveWriteAgeMsPerFrame),
+      activeWriteCount: createNumericSampleStats(state.focusedInputActiveWriteCountPerFrame),
+      activeVisibleBytes: createNumericSampleStats(state.focusedInputActiveVisibleBytesPerFrame),
+      activeVisibleQueueAgeMs: createNumericSampleStats(
+        state.focusedInputActiveVisibleQueueAgeMsPerFrame,
+      ),
+      controlWriteBytes: createNumericSampleStats(state.focusedInputControlWriteBytesPerFrame),
+      controlWriteDurationMs: createNumericSampleStats(
+        state.focusedInputControlWriteDurationMsPerFrame,
+      ),
+      directWriteBytes: createNumericSampleStats(state.focusedInputDirectWriteBytesPerFrame),
+      directWriteCalls: createNumericSampleStats(state.focusedInputDirectWriteCallsPerFrame),
       focusedWriteBytes: createNumericSampleStats(state.focusedInputFocusedWriteBytesPerFrame),
       hiddenBytes: createNumericSampleStats(state.focusedInputHiddenBytesPerFrame),
+      nonTargetVisibleActiveWriteAgeMs: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteAgeMsPerFrame,
+      ),
+      nonTargetVisibleActiveWriteCount: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteCountPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputAgeMs: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputAgeMsPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputBytes: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputBytesPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputCount: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedBeforeInputCountPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputAgeMs: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputAgeMsPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputBytes: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputBytesPerFrame,
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputCount: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleActiveWriteStartedDuringInputCountPerFrame,
+      ),
       nonTargetVisibleBytes: createNumericSampleStats(
         state.focusedInputNonTargetVisibleBytesPerFrame,
       ),
+      nonTargetVisibleWriteDurationMs: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleWriteDurationMsPerFrame,
+      ),
+      nonTargetVisibleWriteFinalizationDurationMs: createNumericSampleStats(
+        state.focusedInputNonTargetVisibleWriteFinalizationDurationMsPerFrame,
+      ),
+      plainWriteBytes: createNumericSampleStats(state.focusedInputPlainWriteBytesPerFrame),
+      plainWriteDurationMs: createNumericSampleStats(
+        state.focusedInputPlainWriteDurationMsPerFrame,
+      ),
+      queuedWriteBytes: createNumericSampleStats(state.focusedInputQueuedWriteBytesPerFrame),
+      queuedWriteCalls: createNumericSampleStats(state.focusedInputQueuedWriteCallsPerFrame),
       queuedQueueAgeMs: createNumericSampleStats(state.focusedInputQueuedQueueAgeMsPerFrame),
+      redrawControlWriteBytes: createNumericSampleStats(
+        state.focusedInputRedrawControlWriteBytesPerFrame,
+      ),
+      redrawControlWriteDurationMs: createNumericSampleStats(
+        state.focusedInputRedrawControlWriteDurationMsPerFrame,
+      ),
+      visibleBackgroundActiveWriteAgeMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteAgeMsPerFrame,
+      ),
+      visibleBackgroundActiveWriteCount: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteCountPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputAgeMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputAgeMsPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputBytes: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputBytesPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputCount: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedBeforeInputCountPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputAgeMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputAgeMsPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputBytes: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputBytesPerFrame,
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputCount: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundActiveWriteStartedDuringInputCountPerFrame,
+      ),
       visibleBackgroundBytes: createNumericSampleStats(
         state.focusedInputVisibleBackgroundBytesPerFrame,
+      ),
+      visibleBackgroundQueueAgeMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundQueueAgeMsPerFrame,
+      ),
+      visibleBackgroundWriteDurationMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundWriteDurationMsPerFrame,
+      ),
+      visibleBackgroundWriteFinalizationDurationMs: createNumericSampleStats(
+        state.focusedInputVisibleBackgroundWriteFinalizationDurationMsPerFrame,
+      ),
+      writeDurationMs: createNumericSampleStats(state.focusedInputWriteDurationMsPerFrame),
+      writeFinalizationDurationMs: createNumericSampleStats(
+        state.focusedInputWriteFinalizationDurationMsPerFrame,
       ),
     },
   };

@@ -21,7 +21,9 @@ import {
   recordPtyInputFlush,
   recordPtyInputEnqueue,
   recordPtyInputQueueCleared,
+  recordTerminalInputTraceBackendOutputFlushed,
   recordTerminalInputTraceFailure,
+  recordTerminalInputTracePtyOutput,
   recordTerminalInputTraceServerReceived,
   recordTerminalInputTracePtyEnqueued,
   recordTerminalInputTracePtyFlushed,
@@ -182,7 +184,9 @@ function flushSessionBatch(session: PtySession): void {
     return;
   }
 
-  const encoded = session.batchBuf.subarray(0, session.batchOffset).toString('base64');
+  const batch = session.batchBuf.subarray(0, session.batchOffset);
+  recordTerminalInputTraceBackendOutputFlushed(session.agentId, batch.toString('utf8'));
+  const encoded = batch.toString('base64');
   sendToAttachedChannels(session, { type: 'Data', data: encoded });
   for (const sub of session.subscribers) {
     sub(encoded);
@@ -724,6 +728,7 @@ export function spawnAgent(
     session.outputCursor += chunk.length;
     recordAgentOutput(args.agentId, data);
     observeTaskPortsFromOutput(session.taskId, data);
+    recordTerminalInputTracePtyOutput(args.agentId, data);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);

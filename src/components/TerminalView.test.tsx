@@ -91,6 +91,10 @@ vi.mock('./terminal-view/terminal-session', () => ({
   startTerminalSession: startTerminalSessionMock,
 }));
 
+vi.mock('./terminal-view/terminal-session-loader', () => ({
+  startLoadedTerminalSession: startTerminalSessionMock,
+}));
+
 vi.mock('../lib/fonts', () => ({
   DEFAULT_TERMINAL_FONT: 'JetBrains Mono',
   getTerminalFontFamily: getTerminalFontFamilyMock,
@@ -153,6 +157,7 @@ type MockSessionOptions = Pick<
   | 'getRenderHibernationDelayMs'
   | 'isSelectedRecoveryProtected'
   | 'onAttachBound'
+  | 'onAttachMilestone'
   | 'onBlockedInputAttempt'
   | 'onPaintReadyChange'
   | 'onStartupRenderEvent'
@@ -287,6 +292,7 @@ describe('TerminalView', () => {
     requestInputTakeoverMock.mockResolvedValue(true);
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
     delete window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__;
+    delete window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__;
     delete window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__;
     syncTerminalHighLoadMode(false);
     resetTerminalPerformanceExperimentConfigForTests();
@@ -306,6 +312,7 @@ describe('TerminalView', () => {
     requestInputTakeoverMock.mockReset();
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
     delete window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__;
+    delete window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__;
     delete window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__;
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -899,7 +906,7 @@ describe('TerminalView', () => {
     delayedAttach?.();
 
     expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
-    expect(updateOutputPriorityMock).toHaveBeenCalledTimes(1);
+    expect(updateOutputPriorityMock).toHaveBeenCalled();
     expect(
       (
         startTerminalSessionMock.mock.results[0]?.value as {
@@ -907,6 +914,61 @@ describe('TerminalView', () => {
         }
       ).term.options.cursorBlink,
     ).toBe(false);
+  });
+
+  it('clears failed lazy session attach state so priority changes can retry', async () => {
+    const loadError = new Error('terminal runtime chunk failed');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const unregisterMocks: Array<ReturnType<typeof vi.fn>> = [];
+    const [focused, setFocused] = createSignal(true);
+
+    startTerminalSessionMock
+      .mockRejectedValueOnce(loadError)
+      .mockReturnValueOnce(createMockTerminalSession());
+    registerTerminalAttachCandidateMock.mockImplementation(
+      (options: { attach: () => void; getPriority: () => number }) => {
+        const unregister = vi.fn();
+        unregisterMocks.push(unregister);
+        void options.getPriority();
+        options.attach();
+        return {
+          release: vi.fn(),
+          unregister,
+          updatePriority: vi.fn(),
+        };
+      },
+    );
+    setStore('activeTaskId', 'task-1');
+
+    try {
+      render(() => (
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused={focused()}
+        />
+      ));
+
+      await vi.waitFor(() => {
+        expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+        expect(unregisterMocks[0]).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith('Failed to load terminal runtime:', loadError);
+      });
+
+      setFocused(false);
+      await Promise.resolve();
+      setFocused(true);
+
+      await vi.waitFor(() => {
+        expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+      });
+      expect(unregisterMocks).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('flushes the trailing PTY resize when panel dragging ends', async () => {
@@ -1064,6 +1126,43 @@ describe('TerminalView', () => {
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
     expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('hot-hidden-live');
     expect(sessionCleanupMock).not.toHaveBeenCalled();
+    expect(getLastSessionOptions()?.getRenderHibernationDelayMs?.()).toBe(75);
+  });
+
+  it('preserves hidden render hibernation in the built-in high load mode profile', async () => {
+    let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallback = callback;
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    syncTerminalHighLoadMode(true);
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-2');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+    intersectionCallback?.([{ isIntersecting: false }]);
+    await Promise.resolve();
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('cold-hidden');
     expect(getLastSessionOptions()?.getRenderHibernationDelayMs?.()).toBe(75);
   });
 
@@ -1600,6 +1699,54 @@ describe('TerminalView', () => {
       getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.logicalToPaintReadyDelayLastMs
         .selected,
     ).toBe(50);
+  });
+
+  it('records terminal attach milestones for scorecard diagnostics', () => {
+    window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ = {};
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    const options = getLastSessionOptions();
+    options?.onAttachMilestone?.('channel-ready');
+    options?.onAttachMilestone?.('attach-fit-ready');
+    options?.onAttachMilestone?.('spawn-requested');
+    options?.onAttachMilestone?.('spawn-resolved');
+    getLastAttachBoundHandler()?.();
+    options?.onAttachMilestone?.('attach-recovery-started');
+    options?.onAttachMilestone?.('attach-recovery-settled');
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+
+    expect(window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__['task-1:agent-1']).toEqual(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        attachBoundAtMs: expect.any(Number),
+        attachFitReadyAtMs: expect.any(Number),
+        attachQueuedAtMs: expect.any(Number),
+        attachStartedAtMs: expect.any(Number),
+        channelReadyAtMs: expect.any(Number),
+        key: 'task-1:agent-1',
+        paintReadyAtMs: expect.any(Number),
+        readyAtMs: expect.any(Number),
+        recoverySettledAtMs: expect.any(Number),
+        recoveryStartedAtMs: expect.any(Number),
+        selectedInteractiveAtMs: expect.any(Number),
+        spawnRequestedAtMs: expect.any(Number),
+        spawnResolvedAtMs: expect.any(Number),
+        status: 'ready',
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('keeps the live terminal surface visually masked while attach or restore loading is visible', () => {

@@ -94,6 +94,7 @@ export interface CreateWebSocketClientCoreOptions<
 export interface WebSocketClientCore<OutgoingMessage> {
   disconnect: (nextState?: WebSocketConnectionState) => void;
   ensureConnected: (nextState?: ConnectState) => Promise<WebSocket>;
+  getBufferedAmount: () => number;
   getLastRttMs: () => number | null;
   getLastSeq: () => number;
   getState: () => WebSocketConnectionState;
@@ -522,9 +523,18 @@ export function createWebSocketClientCore<
     return lastRttMs;
   }
 
+  function getBufferedAmount(): number {
+    if (connection.kind !== 'connected' || connection.socket.readyState !== WebSocket.OPEN) {
+      return 0;
+    }
+
+    return connection.socket.bufferedAmount;
+  }
+
   return {
     disconnect,
     ensureConnected,
+    getBufferedAmount,
     getLastRttMs,
     getLastSeq,
     getState,

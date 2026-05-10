@@ -158,6 +158,8 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
               ref={(el) => {
                 rowRefs[index()] = el;
               }}
+              data-review-file-path={file.path}
+              data-review-file-row="true"
               onClick={() => props.onSelect(index())}
               style={{
                 padding: '2px 6px',

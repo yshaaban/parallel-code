@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import {
   getBackendRuntimeDiagnosticsGeneration,
+  recordBrowserControlBufferedAmount,
   recordBrowserControlDelayedQueue,
   recordBrowserControlSendResult,
 } from '../electron/ipc/runtime-diagnostics.js';
@@ -55,6 +56,13 @@ function createDiagnosticsGenerationDetails(
   generation: number | undefined,
 ): { generation: number } | undefined {
   return generation === undefined ? undefined : { generation };
+}
+
+function recordClientBufferedAmount(client: WebSocket, generation?: number): void {
+  recordBrowserControlBufferedAmount(
+    client.bufferedAmount,
+    createDiagnosticsGenerationDetails(generation),
+  );
 }
 
 function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
@@ -120,6 +128,7 @@ export function createBrowserControlDelayedSends(
     diagnosticsGeneration?: number,
   ): SendTextResult {
     const diagnosticsDetails = createDiagnosticsGenerationDetails(diagnosticsGeneration);
+    recordClientBufferedAmount(client, diagnosticsGeneration);
     if (client.readyState !== WebSocket.OPEN) {
       recordBrowserControlSendResult('not-open', diagnosticsDetails);
       options.onInactiveClient(client);
@@ -228,6 +237,7 @@ export function createBrowserControlDelayedSends(
 
     const state = getDelayedClientSendState(client);
     const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
+    recordClientBufferedAmount(client, diagnosticsGeneration);
     const sizeBytes = getDataSizeBytes(data);
     const bufferedBytes = state.totalBytes + client.bufferedAmount + sizeBytes;
     if (bufferedBytes > WS_BACKPRESSURE_MAX_BYTES) {

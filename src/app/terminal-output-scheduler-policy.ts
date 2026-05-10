@@ -47,7 +47,6 @@ const MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES = 1_024;
 const TYPING_CRITICAL_ECHO_RESERVATION_FOCUSED_BUDGET_SCALE = 2;
 const TYPING_CRITICAL_NON_TARGET_VISIBLE_CANDIDATE_LIMIT = 1;
 const TYPING_CRITICAL_ACTIVE_VISIBLE_BUDGET_SCALE = 0.125;
-const TYPING_CRITICAL_BACKGROUND_BUDGET_SCALE = 0.0625;
 const TYPING_CRITICAL_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES = 1_024;
 
 function getScaledBudget(scale: number | null): number {
@@ -352,8 +351,8 @@ export function getPriorityThrottle(
         };
       case 'visible-background':
         return {
-          budgetScale: TYPING_CRITICAL_BACKGROUND_BUDGET_SCALE,
-          candidateLimit: TYPING_CRITICAL_NON_TARGET_VISIBLE_CANDIDATE_LIMIT,
+          budgetScale: 0,
+          candidateLimit: 0,
         };
       case 'hidden':
         return getUnboundedThrottle(pressureScale);

@@ -56,6 +56,7 @@ interface DesktopSessionBootstrapController {
 
 const BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS = [75, 200];
 const BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS = [150, 300, 600];
+const BROWSER_AGENT_CATALOG_REFRESH_DELAY_MS = 2_000;
 
 interface BrowserColdBootstrapFetchResult {
   lastError: unknown | null;
@@ -311,6 +312,37 @@ function validateProjectPathsInBackground(): void {
   });
 }
 
+function captureBrowserWindowStateInBackground(sessionRuntime: DesktopSessionRuntime): void {
+  void sessionRuntime.captureWindowState().catch((error) => {
+    console.warn('Failed to capture browser window state during startup:', error);
+  });
+}
+
+function refreshBrowserAgentCatalogInBackground(): Promise<void> {
+  emitStartupBreadcrumb('desktop-startup:browser-agents-refresh-start');
+  return loadAgents()
+    .then(() => {
+      emitStartupBreadcrumb('desktop-startup:browser-agents-refresh-complete');
+    })
+    .catch((error) => {
+      console.warn('Failed to refresh browser agent catalog during startup:', error);
+    });
+}
+
+function scheduleBrowserAgentCatalogRefresh(
+  startupTimerController: DesktopSessionStartupTimerController,
+  isDisposed: () => boolean,
+  ensureBrowserAgentCatalogRefresh: () => Promise<void>,
+): void {
+  startupTimerController.schedule(() => {
+    if (isDisposed()) {
+      return;
+    }
+
+    void ensureBrowserAgentCatalogRefresh();
+  }, BROWSER_AGENT_CATALOG_REFRESH_DELAY_MS);
+}
+
 async function restorePersistedPlanContent(): Promise<void> {
   const taskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
   const restoreRequests = taskIds
@@ -360,6 +392,12 @@ export async function runDesktopSessionStartup(
     },
     disposeCleanup,
   );
+  let browserAgentCatalogRefreshPromise: Promise<void> | null = null;
+  function ensureBrowserAgentCatalogRefresh(): Promise<void> {
+    browserAgentCatalogRefreshPromise ??= refreshBrowserAgentCatalogInBackground();
+    return browserAgentCatalogRefreshPromise;
+  }
+
   setAppStartupStatus('bootstrapping', 'Loading workspace and session state');
   const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync, {
     onRestoreCompleted: taskNotificationRuntime.arm,
@@ -373,9 +411,11 @@ export async function runDesktopSessionStartup(
   void sessionRuntime.syncWindowMaximized();
   sessionRuntime.registerWindowEventListeners();
 
-  await loadAgents();
-  emitStartupBreadcrumb('desktop-startup:agents-loaded');
-  if (isDisposed()) return;
+  if (options.electronRuntime) {
+    await loadAgents();
+    emitStartupBreadcrumb('desktop-startup:agents-loaded');
+    if (isDisposed()) return;
+  }
 
   if (!options.electronRuntime) {
     resources.cleanupBrowserRuntime = replaceDesktopSessionResource(
@@ -409,6 +449,11 @@ export async function runDesktopSessionStartup(
     let usedHandoffProjection = false;
 
     if (!appliedWorkspaceProjection) {
+      await ensureBrowserAgentCatalogRefresh();
+      if (isDisposed()) {
+        return;
+      }
+
       const coldBootstrapHandoffProjection = takeBrowserColdBootstrapHandoffProjection({
         currentAvailableAgents: store.availableAgents,
         currentCustomAgents: store.customAgents,
@@ -502,13 +547,18 @@ export async function runDesktopSessionStartup(
     emitStartupBreadcrumb('desktop-startup:after-schedule-project-path-validation');
   }
 
-  await sessionRuntime.restoreWindowState();
-  emitStartupBreadcrumb('desktop-startup:after-restore-window-state');
-  if (isDisposed()) return;
+  if (options.electronRuntime) {
+    await sessionRuntime.restoreWindowState();
+    emitStartupBreadcrumb('desktop-startup:after-restore-window-state');
+    if (isDisposed()) return;
 
-  await sessionRuntime.captureWindowState();
-  emitStartupBreadcrumb('desktop-startup:after-capture-window-state');
-  if (isDisposed()) return;
+    await sessionRuntime.captureWindowState();
+    emitStartupBreadcrumb('desktop-startup:after-capture-window-state');
+    if (isDisposed()) return;
+  } else {
+    captureBrowserWindowStateInBackground(sessionRuntime);
+    emitStartupBreadcrumb('desktop-startup:after-schedule-window-state-capture');
+  }
 
   setupAutosave();
   emitStartupBreadcrumb('desktop-startup:after-setup-autosave');
@@ -541,6 +591,11 @@ export async function runDesktopSessionStartup(
   clearAppStartupStatus();
   emitStartupBreadcrumb('desktop-startup:complete');
   if (!options.electronRuntime) {
+    scheduleBrowserAgentCatalogRefresh(
+      startupTimerController,
+      isDisposed,
+      ensureBrowserAgentCatalogRefresh,
+    );
     startupTimerController.schedule(() => {
       if (isDisposed()) {
         return;

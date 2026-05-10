@@ -43,6 +43,7 @@ import {
   clearPendingAction,
   clearPrefillPrompt,
   getProject,
+  getTaskFocusedPanel,
   getTaskActivityStatus,
   getStoredTaskFocusedPanel,
   isTaskPanelFocused,
@@ -174,6 +175,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
 
   createTaskPanelFocusRuntime({
     getChangedFilesRef: () => changedFilesRef,
+    getDefaultFocusedPanel: getTaskFocusedPanel,
     getNotesRef: () => notesRef,
     getPanelRef: () => panelRef,
     getPlanContent: () => props.task.planContent,

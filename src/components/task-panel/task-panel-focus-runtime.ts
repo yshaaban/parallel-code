@@ -4,6 +4,7 @@ import type { EditableTextHandle } from '../EditableText';
 interface TaskPanelFocusRuntimeOptions {
   getChangedFilesRef: () => HTMLDivElement | undefined;
   getNotesRef: () => HTMLTextAreaElement | undefined;
+  getDefaultFocusedPanel: (taskId: string) => string;
   getPanelRef: () => HTMLDivElement | undefined;
   getPlanContent: () => string | undefined;
   getPlanFocusRef: () => HTMLDivElement | undefined;
@@ -27,6 +28,18 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
   function getFocusTargetId(panelId: string): string {
     return `${options.taskId()}:${panelId}`;
   }
+
+  let defaultFocusTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearDefaultFocusTimer(): void {
+    if (defaultFocusTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(defaultFocusTimer);
+    defaultFocusTimer = undefined;
+  }
+
+  onCleanup(clearDefaultFocusTimer);
 
   onMount(() => {
     const titleTargetId = getFocusTargetId('title');
@@ -62,52 +75,38 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
 
   createEffect(() => {
     if (!options.isActive()) {
+      clearDefaultFocusTimer();
       return;
     }
 
-    const focusedPanel = options.getStoredTaskFocusedPanel(options.taskId());
-    if (focusedPanel) {
-      options.triggerFocus(getFocusTargetId(focusedPanel));
-    }
-  });
-
-  let autoFocusTimer: ReturnType<typeof setTimeout> | undefined;
-  function clearAutoFocusTimer(): void {
-    if (autoFocusTimer !== undefined) {
-      clearTimeout(autoFocusTimer);
-      autoFocusTimer = undefined;
-    }
-  }
-
-  onCleanup(clearAutoFocusTimer);
-
-  createEffect(() => {
-    if (!options.isActive()) {
-      clearAutoFocusTimer();
+    const taskId = options.taskId();
+    const storedFocusedPanel = options.getStoredTaskFocusedPanel(taskId);
+    if (storedFocusedPanel) {
+      clearDefaultFocusTimer();
+      options.triggerFocus(getFocusTargetId(storedFocusedPanel));
       return;
     }
 
-    if (options.getStoredTaskFocusedPanel(options.taskId()) !== null) {
-      return;
-    }
-
-    if (autoFocusTimer !== undefined) {
-      clearAutoFocusTimer();
-    }
-
-    autoFocusTimer = setTimeout(() => {
-      autoFocusTimer = undefined;
+    clearDefaultFocusTimer();
+    defaultFocusTimer = setTimeout(() => {
+      defaultFocusTimer = undefined;
       if (!options.isActive()) {
         return;
       }
 
-      const panelRef = options.getPanelRef();
-      if (
-        options.getStoredTaskFocusedPanel(options.taskId()) === null &&
-        (!panelRef || !panelRef.contains(document.activeElement))
-      ) {
-        options.getPromptRef()?.focus();
+      const currentTaskId = options.taskId();
+      const currentStoredFocusedPanel = options.getStoredTaskFocusedPanel(currentTaskId);
+      if (currentStoredFocusedPanel) {
+        options.triggerFocus(getFocusTargetId(currentStoredFocusedPanel));
+        return;
       }
+
+      const panelRef = options.getPanelRef();
+      if (panelRef?.contains(document.activeElement)) {
+        return;
+      }
+
+      options.triggerFocus(getFocusTargetId(options.getDefaultFocusedPanel(currentTaskId)));
     }, 0);
   });
 }

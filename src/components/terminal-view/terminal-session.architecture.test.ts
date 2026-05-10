@@ -6,6 +6,14 @@ const terminalSessionSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/terminal-view/terminal-session.ts'),
   'utf8',
 );
+const terminalSessionLoaderSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/terminal-view/terminal-session-loader.ts'),
+  'utf8',
+);
+const terminalViewSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/TerminalView.tsx'),
+  'utf8',
+);
 const webglPoolSource = readFileSync(path.resolve(process.cwd(), 'src/lib/webglPool.ts'), 'utf8');
 
 describe('terminal session architecture guardrails', () => {
@@ -28,5 +36,28 @@ describe('terminal session architecture guardrails', () => {
     expect(webglPoolSource).toContain("import('@xterm/addon-webgl')");
     expect(webglPoolSource).toContain("import type { WebglAddon } from '@xterm/addon-webgl'");
     expect(webglPoolSource).not.toMatch(/import\s+\{[^}]*WebglAddon/u);
+  });
+
+  it('keeps the terminal implementation behind an explicit startup loader', () => {
+    expect(terminalViewSource).toContain("from './terminal-view/terminal-session-loader'");
+    expect(terminalViewSource).toContain('TerminalSession');
+    expect(terminalViewSource).toContain('TerminalAttachMilestone');
+    expect(terminalViewSource).not.toContain(
+      "import { startTerminalSession } from './terminal-view/terminal-session'",
+    );
+    expect(terminalSessionLoaderSource).toContain("import('./terminal-session')");
+    expect(terminalSessionLoaderSource).toContain('emitStartupBreadcrumb');
+    expect(terminalSessionLoaderSource).toContain('import type {');
+    expect(terminalSessionLoaderSource).toContain('StartTerminalSessionOptions');
+    expect(terminalSessionLoaderSource).toContain('TerminalSession');
+  });
+
+  it('prebinds browser output channels while the lazy terminal module loads', () => {
+    expect(terminalSessionLoaderSource).toContain('new Channel<PtyOutput>()');
+    expect(terminalSessionLoaderSource).toContain('outputChannel.dispose()');
+    expect(terminalSessionSource).toContain('outputChannel?: Channel<PtyOutput>');
+    expect(terminalSessionSource).toContain(
+      'const outputChannel = options.outputChannel ?? new Channel<PtyOutput>()',
+    );
   });
 });

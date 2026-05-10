@@ -1,7 +1,9 @@
 import { IPC } from '../../../electron/ipc/channels';
 import { invoke } from '../../lib/ipc';
 import {
+  detectRenderedProbeInOutput,
   getTerminalTraceTimestampMs,
+  hasPendingProbeRenders,
   recordFlowRequest,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
@@ -22,9 +24,12 @@ import {
 import { isTerminalSwitchWindowActive } from '../../app/terminal-switch-window';
 import {
   recordTerminalOutputRoute,
-  type TerminalOutputRoute,
   recordTerminalOutputSuppressed,
   recordTerminalOutputWrite,
+  recordTerminalOutputWriteCompletion,
+  recordTerminalOutputWriteFinalization,
+  type TerminalOutputRoute,
+  type TerminalOutputWriteShape,
 } from '../../lib/terminal-output-diagnostics';
 import {
   getTerminalExperimentDenseOverloadPressureWriteBatchLimitScale,
@@ -61,6 +66,7 @@ const FOCUSED_PRE_INPUT_WRITE_BATCH_LIMIT_BYTES = 64 * 1024;
 const FOCUSED_STARTUP_QUEUED_STATUS_FLUSH_DELAY_MS = 40;
 const TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
+const PROBE_TEXT_DECODER = new TextDecoder();
 
 export const FLOW_HIGH = 256 * 1024;
 export const FLOW_LOW = 32 * 1024;
@@ -859,11 +865,13 @@ export function createTerminalOutputPipeline(
     source: TerminalOutputRoute,
   ): void {
     outputWriteInFlight = true;
+    const writeStartedAtMs = performance.now();
+    const writePriority = getOutputPriority();
     const queueAgeMs = receiveTs > 0 ? Math.max(0, performance.now() - receiveTs) : undefined;
     recordTerminalOutputWrite({
       agentId,
       chunk,
-      priority: getOutputPriority(),
+      priority: writePriority,
       queueAgeMs,
       source,
       taskId,
@@ -879,44 +887,68 @@ export function createTerminalOutputPipeline(
       clearOutputWriteWatchdog();
       outputWriteInFlight = false;
       watermark = Math.max(watermark - chunk.length, 0);
-      if (options.isDisposed()) {
-        return;
-      }
 
-      renderedOutputCursor += chunk.length;
-      appendRenderedOutputHistory(chunk);
-      recordOutputWritten(receiveTs);
-      options.onChunkRendered(getTerminalTraceTimestampMs(), renderedOutputCursor, chunk.length);
-      if (chunk.length > 0) {
-        options.markTerminalReady();
-        if (isFocusedOutputPriority()) {
-          completeTerminalFocusedInputEcho(taskId, agentId);
-          completeTerminalSwitchEchoGrace(taskId);
-        }
-      }
-      if (watermark < FLOW_LOW && isFlowPauseApplied()) {
-        requestPtyResume();
-      }
-      dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
-      if (outputQueue.length > 0) {
-        if (shouldFlushFocusedStartupOutputNextFrame()) {
-          scheduleFocusedStartupFlushNextFrame();
+      const finalizationStartedAtMs = performance.now();
+      let completedWriteShape: TerminalOutputWriteShape | null = null;
+      try {
+        completedWriteShape = recordTerminalOutputWriteCompletion({
+          agentId,
+          durationMs: Math.max(0, finalizationStartedAtMs - writeStartedAtMs),
+          priority: writePriority,
+          source,
+          taskId,
+        });
+        if (options.isDisposed()) {
           return;
         }
 
-        if (shouldDrainQueuedInteractiveEchoImmediately()) {
-          if (flushNextQueuedInteractiveEchoChunk()) {
-            return;
+        renderedOutputCursor += chunk.length;
+        appendRenderedOutputHistory(chunk);
+        recordOutputWritten(receiveTs);
+        if (hasPendingProbeRenders()) {
+          detectRenderedProbeInOutput(PROBE_TEXT_DECODER.decode(chunk));
+        }
+        options.onChunkRendered(getTerminalTraceTimestampMs(), renderedOutputCursor, chunk.length);
+        if (chunk.length > 0) {
+          options.markTerminalReady();
+          if (isFocusedOutputPriority()) {
+            completeTerminalFocusedInputEcho(taskId, agentId);
+            completeTerminalSwitchEchoGrace(taskId);
           }
         }
+        if (watermark < FLOW_LOW && isFlowPauseApplied()) {
+          requestPtyResume();
+        }
+        dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
+        if (outputQueue.length > 0) {
+          if (shouldFlushFocusedStartupOutputNextFrame()) {
+            scheduleFocusedStartupFlushNextFrame();
+            return;
+          }
 
-        scheduleQueuedOutputFlush();
-        return;
+          if (shouldDrainQueuedInteractiveEchoImmediately()) {
+            if (flushNextQueuedInteractiveEchoChunk()) {
+              return;
+            }
+          }
+
+          scheduleQueuedOutputFlush();
+          return;
+        }
+
+        hasCompletedInitialQueueDrain = true;
+        queuedRedrawControlSinceDrainStart = false;
+        options.onQueueEmpty();
+      } finally {
+        recordTerminalOutputWriteFinalization({
+          agentId,
+          durationMs: Math.max(0, performance.now() - finalizationStartedAtMs),
+          priority: writePriority,
+          shape: completedWriteShape,
+          source,
+          taskId,
+        });
       }
-
-      hasCompletedInitialQueueDrain = true;
-      queuedRedrawControlSinceDrainStart = false;
-      options.onQueueEmpty();
     };
 
     outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
@@ -1187,6 +1219,7 @@ export function createTerminalOutputPipeline(
       redrawControlTracker.reset();
       if (flowRetryTimer !== undefined) {
         clearTimeout(flowRetryTimer);
+        flowRetryTimer = undefined;
       }
     },
     clearOutputWriteWatchdog,

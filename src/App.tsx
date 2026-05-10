@@ -69,6 +69,7 @@ import { createGitHubDragDropRuntime } from './runtime/drag-drop';
 import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
 import { emitStartupBreadcrumb } from './app/startup-breadcrumbs';
 import { lazyNamed } from './lib/lazy-named';
+import { preloadTerminalSessionModule } from './components/terminal-view/terminal-session-loader';
 
 const ArenaOverlay = lazyNamed(() => import('./arena/ArenaOverlay'), 'ArenaOverlay');
 const HelpDialog = lazyNamed(() => import('./components/HelpDialog'), 'HelpDialog');
@@ -135,6 +136,15 @@ function getInitialDisplayName(electronRuntime: boolean): string {
   }
 
   return getStoredDisplayName() ?? '';
+}
+
+function scheduleAppShellPaintedBreadcrumb(): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      emitStartupBreadcrumb('app-shell:painted');
+      preloadTerminalSessionModule();
+    });
+  });
 }
 
 function App(): JSX.Element {
@@ -263,6 +273,7 @@ function App(): JSX.Element {
 
   onMount(() => {
     emitStartupBreadcrumb('App:onMount:start');
+    scheduleAppShellPaintedBreadcrumb();
     registerConfirmNotifier(() => {
       setShowConfirm(Boolean(getPendingConfirm()));
     });
@@ -323,7 +334,7 @@ function App(): JSX.Element {
           position: 'relative',
           background: theme.bg,
           color: theme.fg,
-          'font-family': "var(--font-ui, 'Sora', sans-serif)",
+          'font-family': 'var(--font-ui, ui-sans-serif, sans-serif)',
           'font-size': '13px',
           overflow: 'hidden',
         }}

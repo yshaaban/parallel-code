@@ -8,7 +8,7 @@ vi.mock('../../lib/ipc', () => ({
   sendTerminalInputTraceUpdate: vi.fn(),
 }));
 
-vi.mock('../../app/task-command-lease', () => ({
+vi.mock('../../app/task-command-lease-session', () => ({
   createTaskCommandLeaseSession: vi.fn(() => ({
     acquire: vi.fn(async () => true),
     cleanup: vi.fn(),
@@ -40,6 +40,7 @@ import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from '../../app/runtime-diagnostics';
+import { getInputStageStats, resetInputStageSamples } from '../../lib/terminalLatency';
 import {
   resetTerminalTraceClockAlignmentForTests,
   setTerminalTraceClockAlignment,
@@ -139,6 +140,7 @@ describe('terminal-input-pipeline', () => {
       },
     });
     resetRendererRuntimeDiagnostics();
+    resetInputStageSamples();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
     resetTaskCommandControllersForPipelineTests();
@@ -149,6 +151,7 @@ describe('terminal-input-pipeline', () => {
 
   afterEach(() => {
     resetRendererRuntimeDiagnostics();
+    resetInputStageSamples();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
     vi.runOnlyPendingTimers();
@@ -245,6 +248,9 @@ describe('terminal-input-pipeline', () => {
         data: 'start\n',
         taskId: 'task-1',
       }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
+      }),
     );
 
     pipeline.cleanup();
@@ -287,7 +293,7 @@ describe('terminal-input-pipeline', () => {
       .filter((requestId): requestId is string => typeof requestId === 'string');
     expect(requestIds).toHaveLength(2);
 
-    pipeline.detectPendingInputTraceEcho(new TextEncoder().encode('b'), 100);
+    pipeline.detectPendingInputTraceEcho(new TextEncoder().encode('b'), 100, 95);
     pipeline.finalizePendingInputTraceEchoes(110);
 
     expect(vi.mocked(sendTerminalInputTraceUpdate)).toHaveBeenCalledTimes(1);
@@ -295,6 +301,7 @@ describe('terminal-input-pipeline', () => {
       agentId: 'agent-1',
       outputReceivedAtMs: 100,
       outputRenderedAtMs: 110,
+      outputTransportReceivedAtMs: 95,
       requestId: requestIds[1],
     });
 
@@ -531,6 +538,9 @@ describe('terminal-input-pipeline', () => {
         data: 'buffered while restoring',
         taskId: 'task-1',
       }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
+      }),
     );
 
     pipeline.cleanup();
@@ -579,6 +589,9 @@ describe('terminal-input-pipeline', () => {
         agentId: 'agent-1',
         data: 'abc',
         taskId: 'task-1',
+      }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
       }),
     );
 
@@ -669,6 +682,9 @@ describe('terminal-input-pipeline', () => {
         data: 'a',
         taskId: 'task-1',
       }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
+      }),
     );
 
     pipeline.handleTerminalData('b');
@@ -744,6 +760,9 @@ describe('terminal-input-pipeline', () => {
         data: 'abcd',
         taskId: 'task-1',
       }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
+      }),
     );
     expect(vi.mocked(sendTerminalInput)).toHaveBeenNthCalledWith(
       2,
@@ -751,6 +770,9 @@ describe('terminal-input-pipeline', () => {
         agentId: 'agent-1',
         data: 'e',
         taskId: 'task-1',
+      }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
       }),
     );
 
@@ -815,6 +837,9 @@ describe('terminal-input-pipeline', () => {
         agentId: 'agent-1',
         data: 'abc',
         taskId: 'task-1',
+      }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
       }),
     );
 
@@ -916,6 +941,56 @@ describe('terminal-input-pipeline', () => {
         data: 'echo retry after reconnect',
         taskId: 'task-1',
       }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('records task-command lease wait separately from input dispatch timing', async () => {
+    window.__TERMINAL_PERF__ = true;
+    const acquireDeferred = createDeferred<boolean>();
+    mockNextTaskCommandLeaseSession({
+      acquire: vi.fn(() => acquireDeferred.promise),
+    });
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('a');
+    await vi.advanceTimersByTimeAsync(9);
+    expect(sendTerminalInput).not.toHaveBeenCalled();
+
+    acquireDeferred.resolve(true);
+    await flushMicrotasks();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(getInputStageStats().leaseWait).toEqual(
+      expect.objectContaining({
+        count: 1,
+        p50: 9,
+        p95: 9,
+      }),
     );
 
     pipeline.cleanup();
@@ -965,6 +1040,9 @@ describe('terminal-input-pipeline', () => {
         agentId: 'agent-1',
         data: 'abc',
         taskId: 'task-1',
+      }),
+      expect.objectContaining({
+        onBrowserCommandResultReceived: expect.any(Function),
       }),
     );
 

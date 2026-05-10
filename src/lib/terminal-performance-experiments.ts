@@ -359,6 +359,14 @@ const HIGH_LOAD_MODE_DENSE_PRESSURE_FOCUSED_BUDGET_SCALES = Object.freeze({
   critical: 1.5,
   elevated: 1.25,
 });
+const HIGH_LOAD_MODE_PRESSURE_NON_TARGET_VISIBLE_FRAME_BUDGET_SCALES = Object.freeze({
+  critical: 0.125,
+  elevated: 0.375,
+});
+const HIGH_LOAD_MODE_PRESSURE_VISIBLE_BACKGROUND_WRITE_BATCH_LIMIT_SCALES = Object.freeze({
+  critical: 0.125,
+  elevated: 0.375,
+});
 const HIGH_LOAD_MODE_SWITCH_TARGET_WINDOW_MS = 250;
 const HIGH_LOAD_MODE_DENSE_FALLBACK_WRITE_BATCH_LIMIT_OVERRIDES = Object.freeze({
   'active-visible': 8 * 1024,
@@ -375,13 +383,18 @@ const HIGH_LOAD_MODE_MULTI_VISIBLE_WRITE_BATCH_LIMIT_OVERRIDES = Object.freeze({
   'visible-background': 8 * 1024,
 });
 const HIGH_LOAD_MODE_MULTI_VISIBLE_SWITCH_TARGET_RESERVE_BYTES = 24 * 1024;
+const HIGH_LOAD_MODE_HIDDEN_TERMINAL_HIBERNATION_DELAY_MS =
+  DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG.hiddenTerminalHibernationDelayMs;
+const HIGH_LOAD_MODE_SPARSE_SWITCH_POST_INPUT_READY_ECHO_GRACE_MS = 180;
+const HIGH_LOAD_MODE_SPARSE_SWITCH_FIRST_FOCUSED_WRITE_BATCH_LIMIT_BYTES = 8 * 1024;
 
-const HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG: Readonly<TerminalPerformanceShippedPolicyConfigInput> =
+const HIGH_LOAD_MODE_PRODUCT_CONFIG: Readonly<TerminalPerformanceExperimentConfigInput> =
   Object.freeze({
     adaptiveVisibleBackgroundMinimumVisibleCount: 2,
     adaptiveVisibleBackgroundThrottleMode: 'moderate',
     focusedPreemptionDrainScope: 'focused',
     focusedPreemptionWindowMs: 150,
+    hiddenTerminalHibernationDelayMs: HIGH_LOAD_MODE_HIDDEN_TERMINAL_HIBERNATION_DELAY_MS ?? 75,
     label: 'high_load_mode',
     multiVisiblePressureMinimumVisibleCount: 4,
     multiVisiblePressureNonTargetVisibleFrameBudgetScales: Object.freeze({
@@ -409,6 +422,16 @@ const HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG: Readonly<TerminalPerformanceShippedP
       dense: HIGH_LOAD_MODE_DENSE_FALLBACK_WRITE_BATCH_LIMIT_OVERRIDES,
     }),
     switchTargetWindowMs: HIGH_LOAD_MODE_SWITCH_TARGET_WINDOW_MS,
+    visibleCountSwitchPostInputReadyEchoGraceMs: Object.freeze({
+      [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]:
+        HIGH_LOAD_MODE_SPARSE_SWITCH_POST_INPUT_READY_ECHO_GRACE_MS,
+      '1': HIGH_LOAD_MODE_SPARSE_SWITCH_POST_INPUT_READY_ECHO_GRACE_MS,
+    }),
+    visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes: Object.freeze({
+      [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]:
+        HIGH_LOAD_MODE_SPARSE_SWITCH_FIRST_FOCUSED_WRITE_BATCH_LIMIT_BYTES,
+      '1': HIGH_LOAD_MODE_SPARSE_SWITCH_FIRST_FOCUSED_WRITE_BATCH_LIMIT_BYTES,
+    }),
     visibleCountLaneFrameBudgetOverrides: Object.freeze({
       [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]: Object.freeze({
         visible: HIGH_LOAD_MODE_MULTI_VISIBLE_LANE_FRAME_BUDGET_BYTES,
@@ -423,12 +446,23 @@ const HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG: Readonly<TerminalPerformanceShippedP
       [HIGH_LOAD_MODE_DENSE_VISIBLE_COUNT]:
         HIGH_LOAD_MODE_MULTI_VISIBLE_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES,
     }),
+    visibleCountPressureNonTargetVisibleFrameBudgetScales: Object.freeze({
+      [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]:
+        HIGH_LOAD_MODE_PRESSURE_NON_TARGET_VISIBLE_FRAME_BUDGET_SCALES,
+    }),
     visibleCountPressureDrainBudgetScales: Object.freeze({
+      [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]: Object.freeze({
+        focused: HIGH_LOAD_MODE_DENSE_PRESSURE_FOCUSED_BUDGET_SCALES,
+      }),
       [HIGH_LOAD_MODE_DENSE_VISIBLE_COUNT]: Object.freeze({
         focused: HIGH_LOAD_MODE_DENSE_PRESSURE_FOCUSED_BUDGET_SCALES,
       }),
     }),
     visibleCountPressureWriteBatchLimitScales: Object.freeze({
+      [HIGH_LOAD_MODE_FEW_VISIBLE_COUNT]: Object.freeze({
+        focused: HIGH_LOAD_MODE_DENSE_PRESSURE_FOCUSED_BUDGET_SCALES,
+        'visible-background': HIGH_LOAD_MODE_PRESSURE_VISIBLE_BACKGROUND_WRITE_BATCH_LIMIT_SCALES,
+      }),
       [HIGH_LOAD_MODE_DENSE_VISIBLE_COUNT]: Object.freeze({
         focused: HIGH_LOAD_MODE_DENSE_PRESSURE_FOCUSED_BUDGET_SCALES,
       }),
@@ -1085,7 +1119,7 @@ function getTerminalPerformanceExperimentConfigInput(
   }
 
   if (highLoadModeEnabled) {
-    return HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG;
+    return HIGH_LOAD_MODE_PRODUCT_CONFIG;
   }
 
   return undefined;

@@ -55,11 +55,26 @@ function getLanguage(filePath: string): string {
   return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext';
 }
 
+function isReviewDiffReady(
+  loading: boolean,
+  diff: FileDiffResult | null,
+  selectedFile: ChangedFile | undefined,
+): boolean {
+  return !loading && diff !== null && selectedFile !== undefined;
+}
+
 export function ReviewPanelDiffPane(props: ReviewPanelDiffPaneProps): JSX.Element {
+  const diffReady = (): boolean => isReviewDiffReady(props.loading, props.diff, props.selectedFile);
+
   return (
-    <div style={{ flex: '1', overflow: 'hidden', display: 'flex' }}>
+    <div
+      data-review-diff-pane="true"
+      data-review-diff-ready={diffReady() ? 'true' : 'false'}
+      data-review-diff-file={props.selectedFile?.path ?? undefined}
+      style={{ flex: '1', overflow: 'hidden', display: 'flex' }}
+    >
       <Show
-        when={!props.loading && props.diff && props.selectedFile}
+        when={diffReady()}
         fallback={
           <div
             style={{

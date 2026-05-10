@@ -32,6 +32,7 @@ export interface CreateBrowserAgentCommandRunnerOptions<Client> {
   ) => boolean;
   claimAgentControl: (client: Client, agentId: string) => ClaimAgentControlResult;
   releaseAgentControl: (agentId: string, controllerId?: string) => void;
+  onAgentCommandResultSent?: (result: AgentCommandResult) => void;
   sendAgentError: (
     client: Client,
     agentId: string,
@@ -97,7 +98,9 @@ export function createBrowserAgentCommandRunner<Client>(
 
   function sendAgentCommandResult(client: Client, result: AgentCommandResult): void {
     options.agentCommandResults.cache(client, result);
-    options.sendMessage(client, result);
+    if (options.sendMessage(client, result)) {
+      options.onAgentCommandResultSent?.(result);
+    }
   }
 
   function sendRequestedAgentCommandResult(

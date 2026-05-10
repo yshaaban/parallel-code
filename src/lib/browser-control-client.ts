@@ -44,6 +44,7 @@ export interface BrowserControlClient {
   bindLifecycle: () => void;
   disconnect: (nextState?: BrowserControlConnectionState) => void;
   expireSession: () => void;
+  getBufferedAmount: () => number;
   getConnectionState: () => BrowserControlConnectionState;
   emitError: (message: string) => void;
   ensureConnected: () => Promise<WebSocket>;
@@ -393,6 +394,7 @@ export function createBrowserControlClient(
     bindLifecycle,
     disconnect: browserSocketClient.disconnect,
     expireSession: () => browserSocketClient.disconnect('auth-expired'),
+    getBufferedAmount: browserSocketClient.getBufferedAmount,
     getConnectionState: () => browserConnectionState,
     emitError,
     ensureConnected,

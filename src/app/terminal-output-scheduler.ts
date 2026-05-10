@@ -21,7 +21,10 @@ import {
   isTerminalSwitchWindowTargetRecoveryActive,
   isTerminalSwitchTargetTask,
 } from './terminal-switch-window';
-import { isTerminalInteractivityCriticalActive } from './terminal-interactivity-governor';
+import {
+  isTerminalInteractivityCriticalActive,
+  subscribeTerminalInteractivityChanges,
+} from './terminal-interactivity-governor';
 import {
   getTerminalOutputPriorityOrder,
   type TerminalOutputPriority,
@@ -86,6 +89,7 @@ const TERMINAL_OUTPUT_PRIORITY_BANDS: readonly TerminalOutputPriority[] = [
 
 let scheduledDrain: ScheduledHandle | null = null;
 let focusedTerminalOutputPreemptionUntilAt = 0;
+let terminalInteractivityUnsubscribe: (() => void) | undefined;
 
 function hasFocusedTerminalOutputPreemptionWindow(): boolean {
   return performance.now() <= focusedTerminalOutputPreemptionUntilAt;
@@ -516,6 +520,20 @@ function scheduleTerminalOutputDrain(): void {
   };
 }
 
+function ensureTerminalOutputSchedulerSubscriptions(): void {
+  if (terminalInteractivityUnsubscribe !== undefined) {
+    return;
+  }
+
+  terminalInteractivityUnsubscribe = subscribeTerminalInteractivityChanges(() => {
+    if (!hasPendingTerminalOutput()) {
+      return;
+    }
+
+    scheduleTerminalOutputDrain();
+  });
+}
+
 function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
   const startedAtMs = performance.now();
   clearScheduledDrain();
@@ -673,6 +691,7 @@ export function registerTerminalOutputCandidate(
     candidate.canDrainNow = canDrainNow;
   }
   terminalOutputCandidates.set(key, candidate);
+  ensureTerminalOutputSchedulerSubscriptions();
   recordTerminalOutputSchedulerCandidateCount(terminalOutputCandidates.size);
 
   function requestDrain(): void {
@@ -759,6 +778,8 @@ export function getTerminalOutputPacingSnapshot(): TerminalOutputPacingSnapshot 
 }
 
 export function resetTerminalOutputSchedulerForTests(): void {
+  terminalInteractivityUnsubscribe?.();
+  terminalInteractivityUnsubscribe = undefined;
   terminalOutputCandidates.clear();
   lastDrainedKeyByPriority.clear();
   clearScheduledDrain();

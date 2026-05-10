@@ -17,6 +17,10 @@ export interface BrowserBinaryChannelFrame {
   data: Uint8Array;
 }
 
+export interface BrowserChannelMessageTiming {
+  receivedAtMs: number;
+}
+
 export interface BrowserChannelState<T> {
   cleanup: () => void;
   id: string;
@@ -38,6 +42,8 @@ export interface BrowserChannelClient {
 export interface CreateBrowserChannelClientOptions {
   sendCommand: (message: ClientMessage) => Promise<void>;
 }
+
+const browserChannelMessageTimings = new WeakMap<object, BrowserChannelMessageTiming>();
 
 function ignoreErrorAsync<T>(promise: Promise<T>): void {
   void promise.catch(() => {});
@@ -92,15 +98,18 @@ export function createBrowserChannelClient(
   }
 
   function handleBinaryMessage(buffer: ArrayBuffer): void {
+    const receivedAtMs = performance.now();
     const message = parseBrowserBinaryChannelFrame(buffer);
     if (!message) {
       return;
     }
 
-    handleChannelPayload(message.channelId, {
+    const payload = {
       type: 'Data',
       data: message.data,
-    });
+    };
+    browserChannelMessageTimings.set(payload, { receivedAtMs });
+    handleChannelPayload(message.channelId, payload);
   }
 
   function hasBoundChannels(): boolean {
@@ -170,4 +179,14 @@ export function createBrowserChannelClient(
     rebindChannels,
     resetForTests,
   };
+}
+
+export function getBrowserChannelMessageTiming(
+  message: unknown,
+): BrowserChannelMessageTiming | null {
+  if (typeof message !== 'object' || message === null) {
+    return null;
+  }
+
+  return browserChannelMessageTimings.get(message) ?? null;
 }

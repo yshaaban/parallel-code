@@ -1,6 +1,9 @@
 import type { Setter } from 'solid-js';
 
-import { handleTaskCommandTakeoverResult } from './task-command-lease';
+import {
+  handleIncomingTaskCommandTakeoverRequest,
+  handleTaskCommandTakeoverResult,
+} from './task-command-lease';
 import type {
   BrowserRuntimeCleanupOptions,
   CleanupFn,
@@ -20,7 +23,6 @@ import {
 } from '../store/task-command-controllers';
 import { replacePeerSessions } from '../store/peer-presence';
 import { showNotification } from '../store/notification';
-import { upsertIncomingTaskTakeoverRequest } from '../store/task-command-takeovers';
 
 type BrowserRuntimeRegistrationOptions = Parameters<typeof registerBrowserAppRuntime>[0];
 
@@ -46,7 +48,7 @@ export function createBrowserRuntimeOptions(
     onAgentLifecycle: handleAgentLifecycleMessage,
     onPeerPresence: replacePeerSessions,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
-    onTaskCommandTakeoverRequest: upsertIncomingTaskTakeoverRequest,
+    onTaskCommandTakeoverRequest: handleIncomingTaskCommandTakeoverRequest,
     onTaskCommandTakeoverResult: handleTaskCommandTakeoverResult,
     replaceTaskCommandControllers,
     reconcileRunningAgentIds,

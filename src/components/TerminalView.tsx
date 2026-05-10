@@ -2,6 +2,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createRenderEffect,
   createSignal,
   onCleanup,
   onMount,
@@ -31,7 +32,7 @@ import {
   recordTerminalStartupRenderEvent,
   recordTerminalStartupWrite,
 } from '../app/runtime-diagnostics';
-import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
+import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease-session';
 import { isPanelResizeDragging } from '../app/panel-resize-drag';
 import { setTaskFocusedPanelState, store } from '../store/store';
 import { loadTaskCommandControllers } from '../store/task-command-controllers';
@@ -54,6 +55,7 @@ import {
   requestTerminalOutputDrain,
 } from '../app/terminal-output-scheduler';
 import { markBrowserStartupSelectedTerminalReady } from '../app/browser-startup';
+import { emitStartupBreadcrumb } from '../app/startup-breadcrumbs';
 import { subscribeTerminalPrewarm } from '../app/terminal-prewarm';
 import { subscribeTerminalDenseOverloadChanges } from '../app/terminal-dense-overload';
 import {
@@ -92,7 +94,8 @@ import {
   cancelTerminalSwitchEchoGrace,
 } from '../app/terminal-switch-echo-grace';
 import { getVisibleTerminalCount, registerTerminalVisibility } from '../app/terminal-visible-set';
-import { startTerminalSession } from './terminal-view/terminal-session';
+import { startLoadedTerminalSession } from './terminal-view/terminal-session-loader';
+import type { TerminalAttachMilestone, TerminalSession } from './terminal-view/terminal-session';
 import type {
   TerminalPresentationMode,
   TerminalViewProps,
@@ -163,14 +166,31 @@ function getRoundedPerformanceNow(): number {
   return Math.round(performance.now() * 100) / 100;
 }
 
+type TerminalAttachTraceStatus =
+  | TerminalViewStatus
+  | 'channel-ready'
+  | 'fit-ready'
+  | 'queued'
+  | 'recovering'
+  | 'spawned'
+  | 'spawning';
+
 interface TerminalAttachTraceEntry {
   agentId: string;
   attachBoundAtMs: number | null;
+  attachFitReadyAtMs: number | null;
   attachQueuedAtMs: number;
   attachStartedAtMs: number | null;
+  channelReadyAtMs: number | null;
   key: string;
+  paintReadyAtMs: number | null;
   readyAtMs: number | null;
-  status: TerminalViewStatus | 'queued';
+  recoverySettledAtMs: number | null;
+  recoveryStartedAtMs: number | null;
+  selectedInteractiveAtMs: number | null;
+  spawnRequestedAtMs: number | null;
+  spawnResolvedAtMs: number | null;
+  status: TerminalAttachTraceStatus;
   taskId: string;
 }
 
@@ -201,10 +221,18 @@ function beginTerminalAttachTraceEntry(
   const nextEntry: TerminalAttachTraceEntry = {
     agentId,
     attachBoundAtMs: null,
+    attachFitReadyAtMs: null,
     attachQueuedAtMs: getRoundedPerformanceNow(),
     attachStartedAtMs: null,
+    channelReadyAtMs: null,
     key,
+    paintReadyAtMs: null,
     readyAtMs: null,
+    recoverySettledAtMs: null,
+    recoveryStartedAtMs: null,
+    selectedInteractiveAtMs: null,
+    spawnRequestedAtMs: null,
+    spawnResolvedAtMs: null,
     status: 'queued',
     taskId,
   };
@@ -228,6 +256,39 @@ function updateTerminalAttachTrace(
   }
 
   updater(existingEntry);
+}
+
+function recordTerminalAttachMilestone(key: string, milestone: TerminalAttachMilestone): void {
+  const atMs = getRoundedPerformanceNow();
+  updateTerminalAttachTrace(key, (entry) => {
+    switch (milestone) {
+      case 'channel-ready':
+        entry.channelReadyAtMs = atMs;
+        entry.status = 'channel-ready';
+        return;
+      case 'attach-fit-ready':
+        entry.attachFitReadyAtMs = atMs;
+        entry.status = 'fit-ready';
+        return;
+      case 'spawn-requested':
+        entry.spawnRequestedAtMs = atMs;
+        entry.status = 'spawning';
+        return;
+      case 'spawn-resolved':
+        entry.spawnResolvedAtMs = atMs;
+        entry.status = 'spawned';
+        return;
+      case 'attach-recovery-started':
+        entry.recoveryStartedAtMs = atMs;
+        entry.status = 'recovering';
+        return;
+      case 'attach-recovery-settled':
+        entry.recoverySettledAtMs = atMs;
+        return;
+      default:
+        assertNever(milestone, 'Unhandled terminal attach milestone');
+    }
+  });
 }
 
 function clearScheduledSwitchWindowCompletion(completionFrame: number | undefined): void {
@@ -356,7 +417,7 @@ function getTerminalAnomalyPresentation(
 export function TerminalView(props: TerminalViewProps): JSX.Element {
   let shellRef!: HTMLDivElement;
   let containerRef!: HTMLDivElement;
-  let session: ReturnType<typeof startTerminalSession> | undefined;
+  let session: TerminalSession | undefined;
   let attachRegistration: ReturnType<typeof registerTerminalAttachCandidate> | undefined;
   let prewarmCleanup: (() => void) | undefined;
   let switchWindowFirstPaintRaf: number | undefined;
@@ -371,6 +432,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
   let takeOverGeneration = 0;
+  let sessionStartGeneration = 0;
   let pendingRecoveryFocusRestore = false;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
   let sessionStartedOnce = false;
@@ -381,6 +443,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let lastLogicalReadyDurationMs: number | null = null;
   let lastLogicalReadyDurationGeneration = 0;
   let sessionStartupMeasurementStartedAtMs: number | null = null;
+  let selectedInteractiveBreadcrumbEmitted = false;
+  let terminalSessionLoadFailed = false;
   let isFocusedNow = false;
   let isSelectedNow = false;
   let isVisibleNow = false;
@@ -412,6 +476,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [domFocusWithin, setDomFocusWithin] = createSignal(false);
   const [documentFocusVersion, setDocumentFocusVersion] = createSignal(0);
   const [isVisible, setIsVisible] = createSignal(isInitiallyFocused);
+  const [sessionVersion, setSessionVersion] = createSignal(0);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
     return getTerminalSurfaceTier(terminalStartupKey);
@@ -715,6 +780,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     );
   }
 
+  function isSelectedTerminalInteractive(): boolean {
+    return (
+      store.activeTaskId === props.taskId &&
+      isVisible() &&
+      sessionStatus() === 'ready' &&
+      isPaintSettledReady() &&
+      !restoreBlocked() &&
+      shouldBlinkTerminalCursor()
+    );
+  }
+
   function canAcceptTerminalInput(): boolean {
     const status = sessionStatus();
     switch (status) {
@@ -929,14 +1005,72 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function cleanupTerminalSessionLifetime(): void {
+    sessionStartGeneration += 1;
     takeOverGeneration += 1;
+    terminalSessionLoadFailed = false;
+    selectedInteractiveBreadcrumbEmitted = false;
     setTakingOver(false);
     setRenderHibernating(false);
     setRestoreBlocked(false);
     session?.cleanup();
     session = undefined;
+    setSessionVersion((version) => version + 1);
     attachRegistration?.unregister();
     attachRegistration = undefined;
+  }
+
+  function acceptStartedTerminalSession(generation: number, nextSession: TerminalSession): void {
+    if (generation !== sessionStartGeneration) {
+      nextSession.cleanup();
+      return;
+    }
+
+    session = nextSession;
+    setSessionVersion((version) => version + 1);
+    syncCurrentSessionRuntimeState();
+  }
+
+  function handleTerminalSessionLoadFailure(generation: number, error: unknown): void {
+    if (generation !== sessionStartGeneration) {
+      return;
+    }
+
+    console.warn('Failed to load terminal runtime:', error);
+    terminalSessionLoadFailed = true;
+    sessionStartedOnce = false;
+    attachRegistration?.unregister();
+    attachRegistration = undefined;
+    setSessionStatus('error');
+  }
+
+  function retryTerminalSessionLoadAfterPriorityChange(): void {
+    if (!terminalSessionLoadFailed) {
+      return;
+    }
+
+    terminalSessionLoadFailed = false;
+    setSessionStatus('binding');
+    ensureTerminalSessionRegistered();
+  }
+
+  function handleSessionStatusChange(status: TerminalViewStatus): void {
+    setSessionStatus(status);
+    syncCurrentSessionRuntimeState();
+  }
+
+  function handleSessionPaintReadyChange(nextPaintReady: boolean): void {
+    setPaintReady(nextPaintReady);
+    syncCurrentSessionRuntimeState();
+  }
+
+  function handleSessionRenderHibernationChange(isHibernating: boolean): void {
+    setRenderHibernating(isHibernating);
+    syncCurrentSessionRuntimeState();
+  }
+
+  function handleSessionRestoreBlockedChange(isBlocked: boolean): void {
+    setRestoreBlocked(isBlocked);
+    syncCurrentSessionRuntimeState();
   }
 
   function enterSessionDormancy(): void {
@@ -951,20 +1085,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function ensureTerminalSessionRegistered(): void {
     setSessionDormant(false);
-    if (attachRegistration || session) {
+    if (terminalSessionLoadFailed || attachRegistration || session) {
       return;
     }
 
+    selectedInteractiveBreadcrumbEmitted = false;
     beginTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
     attachRegistration = registerTerminalAttachCandidate({
       attach: () => {
+        const generation = ++sessionStartGeneration;
         updateTerminalAttachTrace(terminalStartupKey, (entry) => {
           entry.attachStartedAtMs = getRoundedPerformanceNow();
           entry.status = 'binding';
         });
         sessionStartedOnce = true;
         beginStartupMeasurement();
-        session = startTerminalSession({
+        const startedSession = startLoadedTerminalSession({
           canAcceptInput: canAcceptTerminalInput,
           containerRef,
           getOutputPriority: outputPriority,
@@ -978,21 +1114,24 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             });
             attachRegistration?.release();
           },
+          onAttachMilestone: (milestone) => {
+            recordTerminalAttachMilestone(terminalStartupKey, milestone);
+          },
           onBlockedInputAttempt: () => {
             recordTerminalPresentationBlockedInput(presentationMode().kind);
             anomalyMonitorRegistration?.recordInteraction('blocked-input');
           },
-          onPaintReadyChange: setPaintReady,
+          onPaintReadyChange: handleSessionPaintReadyChange,
           onStartupFitExecuted: recordStartupFitExecutionIfPending,
           onStartupFitScheduled: recordStartupFitScheduleIfPending,
           onStartupRenderEvent: recordStartupRenderEventIfPending,
           onStartupWriteRendered: recordStartupWriteIfPending,
-          onRenderHibernationChange: setRenderHibernating,
+          onRenderHibernationChange: handleSessionRenderHibernationChange,
           onReadOnlyInputAttempt: () => {
             anomalyMonitorRegistration?.recordInteraction('read-only-input');
             controlVisualState.expandBanner();
           },
-          onRestoreBlockedChange: setRestoreBlocked,
+          onRestoreBlockedChange: handleSessionRestoreBlockedChange,
           onResizeTransactionChange: () => undefined,
           onSelectedRecoverySettle: () => {
             markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
@@ -1002,13 +1141,27 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             markTerminalSwitchWindowRecoveryStarted(taskId, switchWindowOwnerId);
           },
           onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
-          onStatusChange: setSessionStatus,
+          onStatusChange: handleSessionStatusChange,
           props,
           subscribeStartupPaintCoordinationChanges:
             subscribeTerminalStartupPaintCoordinationChanges,
           shouldCommitResize: shouldKeepTerminalGeometryLive,
         });
-        syncCurrentSessionRuntimeState();
+
+        if (startedSession instanceof Promise) {
+          void startedSession
+            .then((nextSession) => {
+              untrack(() => {
+                acceptStartedTerminalSession(generation, nextSession);
+              });
+            })
+            .catch((error: unknown) => {
+              handleTerminalSessionLoadFailure(generation, error);
+            });
+          return;
+        }
+
+        acceptStartedTerminalSession(generation, startedSession);
       },
       getPriority: attachPriority,
       key: terminalStartupKey,
@@ -1018,6 +1171,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function syncTerminalSessionLiveness(): void {
     const hiddenTerminalSessionDormancyDelayMs = getHiddenTerminalSessionDormancyDelayMs();
+
+    if (terminalSessionLoadFailed) {
+      clearSessionDormancyTimer();
+      return;
+    }
 
     if (props.isShell === true && !sessionStartedOnce && !shouldKeepTerminalSessionLive()) {
       clearSessionDormancyTimer();
@@ -1183,6 +1341,40 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     });
   });
 
+  const presentationMode = createMemo<TerminalPresentationMode>(() => {
+    const status = sessionStatus();
+
+    const nextLoadingLabel = getTerminalLoadingLabel(status);
+    if (nextLoadingLabel !== null) {
+      return {
+        kind: 'loading',
+        label: nextLoadingLabel,
+      };
+    }
+
+    if (status === 'error') {
+      return { kind: 'error' };
+    }
+
+    return { kind: 'live' };
+  });
+  const loadingPresentationMode = createMemo(() => getLoadingPresentationMode(presentationMode()));
+  const loadingLabel = createMemo(() => {
+    return loadingPresentationMode()?.label ?? null;
+  });
+  const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
+  const isLiveRenderReady = createMemo(() => {
+    return (
+      sessionStatus() === 'ready' &&
+      presentationMode().kind === 'live' &&
+      (props.isFocused === true || isVisible())
+    );
+  });
+  const isPaintSettledReady = createMemo(() => isTerminalPaintReady(sessionStatus()));
+  const shouldMaskLiveTerminalSurface = createMemo(() => {
+    return shouldMaskTerminalPresentationMode(presentationMode());
+  });
+
   createEffect(() => {
     sessionStatus();
     outputPriority();
@@ -1228,6 +1420,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       clearTerminalRecentHiddenCandidate(terminalStartupKey);
       terminalSurfaceTierRegistration?.noteIntent();
       armTerminalWakePrewarm();
+      retryTerminalSessionLoadAfterPriorityChange();
     }
   });
 
@@ -1254,7 +1447,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     syncTerminalSessionLiveness();
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const geometryLive = shouldKeepTerminalGeometryLive();
     if (!geometryLive) {
       return;
@@ -1268,7 +1462,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     attachRegistration?.updatePriority();
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     outputPriority();
     surfaceTier();
     session?.updateOutputPriority?.();
@@ -1309,10 +1504,31 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   createEffect(() => {
     const paintSettledReady = isPaintSettledReady();
     recordPaintReadyMeasurementIfPending();
+    if (paintSettledReady) {
+      updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+        if (entry.paintReadyAtMs === null) {
+          entry.paintReadyAtMs = getRoundedPerformanceNow();
+        }
+      });
+    }
     if (paintSettledReady && getTerminalStartupPaintRole() === 'selected') {
       markBrowserStartupSelectedTerminalReady();
       notifyTerminalAttachPolicyChanged();
     }
+  });
+
+  createEffect(() => {
+    if (selectedInteractiveBreadcrumbEmitted || !isSelectedTerminalInteractive()) {
+      return;
+    }
+
+    selectedInteractiveBreadcrumbEmitted = true;
+    updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+      if (entry.selectedInteractiveAtMs === null) {
+        entry.selectedInteractiveAtMs = getRoundedPerformanceNow();
+      }
+    });
+    emitStartupBreadcrumb('terminal:selected-interactive');
   });
 
   createEffect(() => {
@@ -1350,28 +1566,32 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const size = props.fontSize;
     if (size === undefined || size === null || !session) return;
     session.term.options.fontSize = size;
     markDirty(agentId, 'font-size');
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const font = store.terminalFont;
     if (!session) return;
     session.term.options.fontFamily = getTerminalFontFamily(font);
     markDirty(agentId, 'font-family');
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const preset = store.themePreset;
     if (!session) return;
     session.term.options.theme = getTerminalTheme(preset);
     markDirty(agentId, 'theme');
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const focused = props.isFocused === true;
     const masked = shouldMaskLiveTerminalSurface();
     const hibernating = renderHibernating();
@@ -1388,7 +1608,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     syncCurrentSessionRuntimeState();
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const focused = props.isFocused === true;
     const status = sessionStatus();
     const blocked = restoreBlocked();
@@ -1418,47 +1639,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     activeSession.term.focus();
   });
 
-  createEffect(() => {
+  createRenderEffect(() => {
+    sessionVersion();
     const shouldMaskSurface = shouldMaskLiveTerminalSurface();
     if (!session || !shouldMaskSurface) {
       return;
     }
 
     session.term.blur?.();
-  });
-
-  const presentationMode = createMemo<TerminalPresentationMode>(() => {
-    const status = sessionStatus();
-
-    const nextLoadingLabel = getTerminalLoadingLabel(status);
-    if (nextLoadingLabel !== null) {
-      return {
-        kind: 'loading',
-        label: nextLoadingLabel,
-      };
-    }
-
-    if (status === 'error') {
-      return { kind: 'error' };
-    }
-
-    return { kind: 'live' };
-  });
-  const loadingPresentationMode = createMemo(() => getLoadingPresentationMode(presentationMode()));
-  const loadingLabel = createMemo(() => {
-    return loadingPresentationMode()?.label ?? null;
-  });
-  const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
-  const isLiveRenderReady = createMemo(() => {
-    return (
-      sessionStatus() === 'ready' &&
-      presentationMode().kind === 'live' &&
-      (props.isFocused === true || isVisible())
-    );
-  });
-  const isPaintSettledReady = createMemo(() => isTerminalPaintReady(sessionStatus()));
-  const shouldMaskLiveTerminalSurface = createMemo(() => {
-    return shouldMaskTerminalPresentationMode(presentationMode());
   });
 
   createEffect(() => {

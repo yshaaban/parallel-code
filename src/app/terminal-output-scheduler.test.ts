@@ -13,6 +13,7 @@ import {
   resetTerminalSwitchEchoGraceForTests,
 } from './terminal-switch-echo-grace';
 import {
+  completeTerminalFocusedInputEcho,
   noteTerminalFocusedInput,
   resetTerminalFocusedInputForTests,
   settleTerminalFocusedInput,
@@ -1354,6 +1355,33 @@ describe('terminal-output-scheduler', () => {
     unregisterVisibleTerminals(visibleRegistrations);
   });
 
+  it('uses built-in high load mode pressure scaling at two visible terminals', () => {
+    setTerminalHighLoadModeForTest(true);
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalFramePressureLevelForTests('critical');
+
+    const visibleRegistrations = registerVisibleTerminals(2);
+    let drainedBytes = 0;
+
+    const visibleBackground = registerTerminalOutputCandidate(
+      'visible-background-terminal',
+      () => 'visible-background',
+      () => (drainedBytes === 0 ? 8 * 1024 : 0),
+      (maxBytes) => {
+        drainedBytes = maxBytes;
+        return maxBytes;
+      },
+    );
+
+    visibleBackground.requestDrain();
+    runAnimationFrame();
+
+    expect(drainedBytes).toBe(1024);
+
+    visibleBackground.unregister();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
   it('applies an exact visible-count pressure drain scale to focused output', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       visibleCountDrainBudgetOverrides: {
@@ -2395,6 +2423,60 @@ describe('terminal-output-scheduler', () => {
 
     visibleBackground.unregister();
     settleTerminalFocusedInput('task-focused');
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('blocks visible-background drains while focused input remains typing-critical after echo', () => {
+    const visibleRegistrations = registerVisibleTerminals(2);
+    const drainOrder: string[] = [];
+    let focusedPendingBytes = 4_096;
+    let visibleBackgroundPendingBytes = 4_096;
+
+    noteTerminalFocusedInput('task-focused', 'agent-focused');
+    completeTerminalFocusedInputEcho('task-focused', 'agent-focused');
+
+    const focused = registerTerminalOutputCandidate(
+      'focused-terminal',
+      'task-focused',
+      () => 'focused',
+      () => focusedPendingBytes,
+      (maxBytes) => {
+        const drainedBytes = Math.min(maxBytes, focusedPendingBytes);
+        focusedPendingBytes -= drainedBytes;
+        drainOrder.push(`focused:${drainedBytes}`);
+        return drainedBytes;
+      },
+    );
+    const visibleBackground = registerTerminalOutputCandidate(
+      'visible-background-terminal',
+      'task-background',
+      () => 'visible-background',
+      () => visibleBackgroundPendingBytes,
+      (maxBytes) => {
+        const drainedBytes = Math.min(maxBytes, visibleBackgroundPendingBytes);
+        visibleBackgroundPendingBytes -= drainedBytes;
+        drainOrder.push(`visible-background:${drainedBytes}`);
+        return drainedBytes;
+      },
+    );
+
+    visibleBackground.requestDrain();
+    focused.requestDrain();
+    vi.runOnlyPendingTimers();
+
+    expect(drainOrder).toEqual([`focused:${4_096}`]);
+    expect(visibleBackgroundPendingBytes).toBe(4_096);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalOutputScheduler.rescheduledDrains).toBe(
+      0,
+    );
+
+    settleTerminalFocusedInput('task-focused', 'agent-focused');
+    runAnimationFrame();
+
+    expect(drainOrder).toEqual([`focused:${4_096}`, `visible-background:${4_096}`]);
+
+    focused.unregister();
+    visibleBackground.unregister();
     unregisterVisibleTerminals(visibleRegistrations);
   });
 

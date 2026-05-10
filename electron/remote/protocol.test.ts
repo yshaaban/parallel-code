@@ -100,6 +100,41 @@ describe('parseClientMessage', () => {
     });
   });
 
+  it('accepts terminal input trace updates with optional browser transport receive timing', () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'terminal-input-trace',
+          agentId: 'agent-1',
+          outputReceivedAtMs: 120,
+          outputRenderedAtMs: 135,
+          outputTransportReceivedAtMs: 115,
+          requestId: 'request-1',
+        }),
+      ),
+    ).toEqual({
+      type: 'terminal-input-trace',
+      agentId: 'agent-1',
+      outputReceivedAtMs: 120,
+      outputRenderedAtMs: 135,
+      outputTransportReceivedAtMs: 115,
+      requestId: 'request-1',
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'terminal-input-trace',
+          agentId: 'agent-1',
+          outputReceivedAtMs: 120,
+          outputRenderedAtMs: 135,
+          outputTransportReceivedAtMs: -1,
+          requestId: 'request-1',
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('rejects primitive JSON, unknown types, and malformed finite states', () => {
     expect(parseClientMessage('null')).toBeNull();
     expect(parseClientMessage('[]')).toBeNull();
@@ -184,6 +219,25 @@ describe('parseClientMessage', () => {
         }),
       ),
     ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'input',
+          agentId: 'agent-1',
+          data: 'hello',
+          taskId: 'task-1',
+          controllerId: 'client-1',
+          trace: {
+            bufferedAtMs: 2,
+            echoText: 'x'.repeat(513),
+            inputChars: 5,
+            inputKind: 'interactive',
+            sendStartedAtMs: 3,
+            startedAtMs: 1,
+          },
+        }),
+      ),
+    ).toBeNull();
 
     expect(
       parseClientMessage(
@@ -195,6 +249,7 @@ describe('parseClientMessage', () => {
           controllerId: 'client-1',
           trace: {
             bufferedAtMs: 2,
+            echoText: 'hello',
             inputChars: 5,
             inputKind: 'interactive',
             sendStartedAtMs: 3,
@@ -210,6 +265,7 @@ describe('parseClientMessage', () => {
       taskId: 'task-1',
       trace: {
         bufferedAtMs: 2,
+        echoText: 'hello',
         inputChars: 5,
         inputKind: 'interactive',
         sendStartedAtMs: 3,

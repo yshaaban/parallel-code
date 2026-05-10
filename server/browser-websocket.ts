@@ -35,6 +35,7 @@ import {
   createBrowserTerminalInputTraceRequest,
   recordBrowserTerminalInputClientDisconnected,
   recordBrowserTerminalInputClientUpdate,
+  recordBrowserTerminalInputCommandResultSent,
   recordBrowserTerminalInputFailure,
   recordBrowserTerminalInputServerReceived,
 } from './browser-terminal-input-tracing.js';
@@ -148,6 +149,7 @@ export function registerBrowserWebSocketServer(
     claimAgentControl: (client, agentId) => options.transport.claimAgentControl(client, agentId),
     releaseAgentControl: (agentId, controllerId) =>
       options.transport.releaseAgentControl(agentId, controllerId),
+    onAgentCommandResultSent: recordBrowserTerminalInputCommandResultSent,
     sendAgentError: options.sendAgentError,
     sendMessage: options.sendMessage,
   });

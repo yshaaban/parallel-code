@@ -338,6 +338,9 @@ vi.mock('../store/store', async () => {
         : null,
     ),
     getStoredTaskFocusedPanel: vi.fn((taskId: string) => core.store.focusedPanel[taskId] ?? null),
+    getTaskFocusedPanel: vi.fn(
+      (taskId: string) => core.store.focusedPanel[taskId] ?? 'ai-terminal',
+    ),
     getTaskActivityStatus: vi.fn(() => 'live'),
     isTaskPanelFocused: vi.fn(
       (taskId: string, panelId: string) => core.store.focusedPanel[taskId] === panelId,
@@ -718,15 +721,12 @@ describe('TaskPanel', () => {
     expect(showNotificationMock).not.toHaveBeenCalledWith('Push failed for feature/renamed');
   });
 
-  it('auto-focuses the prompt for the active task when no panel is focused', async () => {
+  it('focuses the default AI terminal panel for the active task when no panel is focused', async () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.runOnlyPendingTimersAsync();
 
-    const promptInput = screen.getByLabelText('Prompt input');
-    await waitFor(() => {
-      expect(document.activeElement).toBe(promptInput);
-    });
+    expect(triggerFocusMock).toHaveBeenCalledWith('task-1:ai-terminal');
   });
 
   it('retries a failed close from the error overlay', async () => {

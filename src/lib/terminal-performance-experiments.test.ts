@@ -156,6 +156,7 @@ describe('terminal-performance-experiments', () => {
         adaptiveVisibleBackgroundThrottleMode: 'moderate',
         focusedPreemptionDrainScope: 'focused',
         focusedPreemptionWindowMs: 150,
+        hiddenTerminalHibernationDelayMs: 75,
         label: 'high_load_mode',
         multiVisiblePressureMinimumVisibleCount: 4,
         switchTargetWindowMs: 250,
@@ -188,6 +189,16 @@ describe('terminal-performance-experiments', () => {
     expect(
       getTerminalPerformanceExperimentConfig().visibleCountPressureWriteBatchLimitScales,
     ).toEqual({
+      '2': {
+        focused: {
+          critical: 1.5,
+          elevated: 1.25,
+        },
+        'visible-background': {
+          critical: 0.125,
+          elevated: 0.375,
+        },
+      },
       '4': {
         focused: {
           critical: 1.5,
@@ -240,6 +251,30 @@ describe('terminal-performance-experiments', () => {
     expect(getTerminalExperimentSwitchTargetWindowMs(1)).toBe(250);
     expect(getTerminalExperimentSwitchTargetWindowMs(2)).toBe(250);
     expect(getTerminalExperimentSwitchTargetWindowMs(4)).toBe(250);
+    expect(
+      getTerminalExperimentVisibleCountPressureDrainBudgetScale('focused', 2, 'critical'),
+    ).toBe(1.5);
+    expect(
+      getTerminalExperimentVisibleCountPressureDrainBudgetScale('focused', 4, 'critical'),
+    ).toBe(1.5);
+    expect(
+      getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale(2, 'critical'),
+    ).toBe(0.125);
+    expect(
+      getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale(
+        'visible-background',
+        2,
+        'critical',
+      ),
+    ).toBe(0.125);
+    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(1)).toBe(180);
+    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(2)).toBe(180);
+    expect(getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes(1)).toBe(
+      8 * 1024,
+    );
+    expect(getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes(2)).toBe(
+      8 * 1024,
+    );
   });
 
   it('prefers injected experiments over the built-in high load mode profile', () => {

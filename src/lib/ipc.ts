@@ -39,6 +39,10 @@ import {
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
 import { createRandomId } from './random-id';
 import { splitTerminalInputChunks } from './terminal-input-batching';
+import {
+  recordBrowserControlSendBufferedAmount,
+  recordBrowserControlSendCompleted,
+} from './terminalLatency';
 import { isNonEmptyString } from './type-guards';
 import {
   clearTerminalTraceClockAlignment,
@@ -159,7 +163,7 @@ interface PendingBrowserAgentCommandRequest {
   agentId: string;
   command: 'input' | 'resize';
   reject: (error: Error) => void;
-  resolve: () => void;
+  resolve: (receivedAtMs: number) => void;
   timeout: ReturnType<typeof globalThis.setTimeout>;
 }
 
@@ -167,6 +171,7 @@ interface BrowserInputSendOptions {
   awaitCommandResult?: boolean;
   canSend?: () => boolean;
   controllerId?: string;
+  onCommandResultReceived?: (receivedAtMs: number) => void;
   requestId?: string;
   taskId?: string;
   trace?: TerminalInputTraceMessage;
@@ -298,9 +303,10 @@ function ensureBrowserAgentCommandRequestListeners(): void {
       return;
     }
 
+    const resultReceivedAtMs = performance.now();
     clearPendingBrowserAgentCommandRequest(message.requestId);
     if (message.accepted) {
-      pendingRequest.resolve();
+      pendingRequest.resolve(resultReceivedAtMs);
       return;
     }
 
@@ -337,9 +343,9 @@ function waitForBrowserAgentCommandResult(
     command: 'input' | 'resize';
   },
   send: () => Promise<void>,
-): Promise<void> {
+): Promise<number> {
   ensureBrowserAgentCommandRequestListeners();
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<number>((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
       pendingBrowserAgentCommandRequests.delete(requestId);
       cleanupBrowserAgentCommandRequestListenersIfIdle();
@@ -384,7 +390,17 @@ async function sendNonQueueableBrowserCommand(
     throw createBrowserAgentCommandCanceledError();
   }
 
-  if (!browserControlClient.sendIfOpen(message)) {
+  recordBrowserControlSendBufferedAmount(message.type, browserControlClient.getBufferedAmount());
+
+  const sendStartedAtMs = performance.now();
+  const sent = browserControlClient.sendIfOpen(message);
+  recordBrowserControlSendCompleted(
+    message.type,
+    performance.now() - sendStartedAtMs,
+    browserControlClient.getBufferedAmount(),
+  );
+
+  if (!sent) {
     throw createBrowserSocketUnavailableError();
   }
 }
@@ -612,6 +628,9 @@ function createBrowserTerminalInputTraceMessage(
     agentId: update.agentId,
     outputReceivedAtMs: update.outputReceivedAtMs,
     outputRenderedAtMs: update.outputRenderedAtMs,
+    ...(update.outputTransportReceivedAtMs !== undefined
+      ? { outputTransportReceivedAtMs: update.outputTransportReceivedAtMs }
+      : {}),
     requestId: update.requestId,
   };
 }
@@ -769,8 +788,8 @@ async function sendBrowserAgentCommand(
     command: 'input' | 'resize';
   },
   message: Extract<ClientMessage, { type: 'input' | 'resize' }>,
-): Promise<void> {
-  await waitForBrowserAgentCommandResult(requestId, details, () =>
+): Promise<number> {
+  return await waitForBrowserAgentCommandResult(requestId, details, () =>
     sendNonQueueableBrowserCommand(message, {
       canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
       waitForConnection: true,
@@ -802,9 +821,10 @@ async function sendBrowserInput(
     return;
   }
 
+  let commandResultReceivedAtMs: number | null = null;
   for (const [index, chunk] of inputChunks.entries()) {
     const requestId = getBrowserAgentCommandRequestId(options.requestId, inputChunks.length, index);
-    await sendBrowserAgentCommand(
+    commandResultReceivedAtMs = await sendBrowserAgentCommand(
       requestId,
       { agentId, command: 'input' },
       createBrowserInputMessage(agentId, chunk, {
@@ -814,6 +834,10 @@ async function sendBrowserInput(
         ...(index === 0 && options.trace ? { trace: options.trace } : {}),
       }),
     );
+  }
+
+  if (commandResultReceivedAtMs !== null) {
+    options.onCommandResultReceived?.(commandResultReceivedAtMs);
   }
 }
 
@@ -1081,6 +1105,9 @@ export function sendTerminalInputTraceUpdate(update: TerminalInputTraceClientUpd
 
 export async function sendTerminalInput(
   request: Exclude<RendererInvokeRequestMap[IPC.WriteToAgent], undefined>,
+  options: {
+    onBrowserCommandResultReceived?: (receivedAtMs: number) => void;
+  } = {},
 ): Promise<void> {
   if (isElectronRuntime()) {
     const electron = window.electron?.ipcRenderer;
@@ -1096,6 +1123,9 @@ export async function sendTerminalInput(
   await sendBrowserInput(request.agentId, request.data, {
     canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
     ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+    ...(options.onBrowserCommandResultReceived
+      ? { onCommandResultReceived: options.onBrowserCommandResultReceived }
+      : {}),
     requestId,
     ...(request.taskId ? { taskId: request.taskId } : {}),
     ...(request.trace ? { trace: request.trace } : {}),

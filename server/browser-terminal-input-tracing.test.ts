@@ -4,6 +4,7 @@ import {
   createBrowserTerminalInputTraceClockSyncMessage,
   createBrowserTerminalInputTraceRequest,
   getBrowserTerminalInputTracePreview,
+  recordBrowserTerminalInputCommandResultSent,
   recordBrowserTerminalInputFailure,
   recordBrowserTerminalInputServerReceived,
 } from './browser-terminal-input-tracing.js';
@@ -78,6 +79,34 @@ describe('browser terminal input tracing', () => {
 
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith('agent-1', 'request-1', 'denied');
+  });
+
+  it('records command-result sends only for request-tracked input commands', () => {
+    const record = vi.fn();
+
+    recordBrowserTerminalInputCommandResultSent(
+      {
+        accepted: true,
+        agentId: 'agent-1',
+        command: 'resize',
+        requestId: 'resize-1',
+        type: 'agent-command-result',
+      },
+      record,
+    );
+    recordBrowserTerminalInputCommandResultSent(
+      {
+        accepted: true,
+        agentId: 'agent-1',
+        command: 'input',
+        requestId: 'input-1',
+        type: 'agent-command-result',
+      },
+      record,
+    );
+
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith('agent-1', 'input-1');
   });
 
   it('builds clock sync responses with receive and send timestamps', () => {
