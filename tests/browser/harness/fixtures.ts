@@ -34,6 +34,9 @@ interface BrowserLabOpenPageOptions {
   clientId?: string;
   displayName?: string;
   expectAppShell?: boolean;
+  gotoWaitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
+  onAfterGoto?: () => void;
+  onBeforeGoto?: () => void;
   path?: string;
   prepareContext?: (context: BrowserContext) => Promise<void> | void;
   viewportSize?: {
@@ -817,7 +820,11 @@ export const test = base.extend<
     }
 
     async function gotoApp(page: Page, options: BrowserLabOpenPageOptions = {}): Promise<void> {
-      await page.goto(getAuthedUrl(options.path ?? '/'));
+      options.onBeforeGoto?.();
+      await page.goto(getAuthedUrl(options.path ?? '/'), {
+        waitUntil: options.gotoWaitUntil,
+      });
+      options.onAfterGoto?.();
       if (options.expectAppShell === false) {
         return;
       }

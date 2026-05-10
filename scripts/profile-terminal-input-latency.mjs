@@ -94,6 +94,11 @@ function describeSummary(summary) {
     `send p50=${formatMs(summary.clientSendMs.p50)}`,
     `send->echo p50=${formatMs(summary.sendToEchoMs.p50)}`,
     `server queue p50=${formatMs(summary.serverQueueMs.p50)}`,
+    `pty echo p50=${formatMs(summary.ptyEchoMs.p50)}`,
+    `backend output buffer p50=${formatMs(summary.backendOutputBufferMs.p50)}`,
+    `browser delivery p50=${formatMs(summary.browserDeliveryMs.p50)}`,
+    `browser transport delivery p50=${formatMs(summary.browserTransportDeliveryMs.p50)}`,
+    `browser channel dispatch p50=${formatMs(summary.browserChannelDispatchMs.p50)}`,
     `transport residual p50=${formatMs(summary.transportResidualMs.p50)}`,
     `render p50=${formatMs(summary.renderMs.p50)}`,
   ].join(' | ');
@@ -140,6 +145,27 @@ function printSlowSamples(snapshot) {
     const clientSendMs = getTraceDuration(sample, 'bufferedAtMs', 'sendStartedAtMs');
     const sendToEchoMs = getTraceDuration(sample, 'sendStartedAtMs', 'outputReceivedAtMs');
     const serverQueueMs = getTraceDuration(sample, 'serverReceivedAtMs', 'ptyWrittenAtMs');
+    const ptyEchoMs = getTraceDuration(sample, 'ptyWrittenAtMs', 'ptyOutputReceivedAtMs');
+    const backendOutputBufferMs = getTraceDuration(
+      sample,
+      'ptyOutputReceivedAtMs',
+      'backendOutputFlushedAtMs',
+    );
+    const browserDeliveryMs = getTraceDuration(
+      sample,
+      'backendOutputFlushedAtMs',
+      'outputReceivedAtMs',
+    );
+    const browserTransportDeliveryMs = getTraceDuration(
+      sample,
+      'backendOutputFlushedAtMs',
+      'outputTransportReceivedAtMs',
+    );
+    const browserChannelDispatchMs = getTraceDuration(
+      sample,
+      'outputTransportReceivedAtMs',
+      'outputReceivedAtMs',
+    );
     const renderMs = getTraceDuration(sample, 'outputReceivedAtMs', 'outputRenderedAtMs');
     const transportResidualMs =
       sendToEchoMs !== null && serverQueueMs !== null
@@ -149,7 +175,12 @@ function printSlowSamples(snapshot) {
       `  ${sample.requestId} ${sample.inputKind} chars=${sample.inputChars} e2e=${formatMs(endToEndMs ?? NaN)} ` +
         `buffer=${formatMs(clientBufferMs ?? NaN)} send=${formatMs(clientSendMs ?? NaN)} ` +
         `send->echo=${formatMs(sendToEchoMs ?? NaN)} server-queue=${formatMs(serverQueueMs ?? NaN)} ` +
-        `transport-residual=${formatMs(transportResidualMs ?? NaN)} render=${formatMs(renderMs ?? NaN)} preview=${JSON.stringify(sample.inputPreview)}`,
+        `pty-echo=${formatMs(ptyEchoMs ?? NaN)} backend-output-buffer=${formatMs(backendOutputBufferMs ?? NaN)} ` +
+        `browser-delivery=${formatMs(browserDeliveryMs ?? NaN)} ` +
+        `browser-transport-delivery=${formatMs(browserTransportDeliveryMs ?? NaN)} ` +
+        `browser-channel-dispatch=${formatMs(browserChannelDispatchMs ?? NaN)} ` +
+        `transport-residual=${formatMs(transportResidualMs ?? NaN)} ` +
+        `render=${formatMs(renderMs ?? NaN)} preview=${JSON.stringify(sample.inputPreview)}`,
     );
   }
 }

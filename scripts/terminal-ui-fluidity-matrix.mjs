@@ -11,6 +11,7 @@ import {
   getTerminalUiFluidityVariant,
 } from './terminal-ui-fluidity-variants.mjs';
 import {
+  evaluateTerminalUiFluidityBudgets,
   getDefaultTerminalUiFluidityGateProfiles,
   getDefaultTerminalUiFluidityGateVisibleTerminalCounts,
 } from './terminal-ui-fluidity-gate.mjs';
@@ -24,6 +25,7 @@ const DEFAULT_PROFILES = getDefaultTerminalUiFluidityGateProfiles();
 const DEFAULT_REPEATS = 3;
 const DEFAULT_TERMINAL_COUNTS = [24];
 const DEFAULT_VISIBLE_TERMINAL_COUNTS = getDefaultTerminalUiFluidityGateVisibleTerminalCounts();
+const BROWSER_CONTROL_CLIENT_DETAIL_TYPES = ['input', 'resize', 'pause', 'resume'];
 
 function isHiddenWakeSuiteName(profile) {
   return (
@@ -80,6 +82,7 @@ function parseArgs(argv) {
   const options = {
     allowPartialProfiles: false,
     durationMs: 5_000,
+    failOnBudget: false,
     inputIntervalMs: 800,
     outDir: defaultOutputDirectory(),
     profiles: [...DEFAULT_PROFILES],
@@ -133,6 +136,9 @@ function parseArgs(argv) {
       case '--duration-ms':
         options.durationMs = parsePositiveInteger(next, '--duration-ms');
         index += 1;
+        break;
+      case '--fail-on-budget':
+        options.failOnBudget = true;
         break;
       case '--input-interval-ms':
         options.inputIntervalMs = parsePositiveInteger(next, '--input-interval-ms');
@@ -200,6 +206,8 @@ Options:
                               (default: ${DEFAULT_VISIBLE_TERMINAL_COUNTS.join(',')})
   --repeats <n>               Repeats per variant/count pair (default: ${DEFAULT_REPEATS})
   --duration-ms <n>           Measurement window per suite (default: 5000)
+  --fail-on-budget            Exit non-zero after writing artifacts when provisional
+                              UI-fluidity budgets fail
   --input-interval-ms <n>     Focused input probe interval (default: 800)
   --surface <agents|shell>    Surface to profile (default: agents)
   --out-dir <path>            Artifact directory (default: artifacts/terminal-ui-fluidity/<timestamp>)
@@ -307,9 +315,15 @@ function collectMedian(values) {
   return (left + right) / 2;
 }
 
+function collectSum(values) {
+  return values
+    .filter((value) => Number.isFinite(value))
+    .reduce((total, value) => total + value, 0);
+}
+
 function collectNullableMedian(values) {
   const finiteValues = values
-    .filter((value) => Number.isFinite(value))
+    .filter((value) => Number.isFinite(value) && value >= 0)
     .sort((left, right) => left - right);
   if (finiteValues.length === 0) {
     return null;
@@ -325,8 +339,67 @@ function collectNullableMedian(values) {
   return (left + right) / 2;
 }
 
+function collectBrowserControlClientTypeStats(suites, type) {
+  return {
+    nonZeroBufferedSendAttempts: collectSum(
+      suites.map(
+        (suite) => suite.browserControlClient?.byType?.[type]?.nonZeroBufferedSendAttempts ?? 0,
+      ),
+    ),
+    postSendBufferedAmountMax: collectMedian(
+      suites.map(
+        (suite) => suite.browserControlClient?.byType?.[type]?.postSendBufferedAmountMax ?? 0,
+      ),
+    ),
+    sendAttempts: collectSum(
+      suites.map((suite) => suite.browserControlClient?.byType?.[type]?.sendAttempts ?? 0),
+    ),
+    sendBufferedAmountMax: collectMedian(
+      suites.map((suite) => suite.browserControlClient?.byType?.[type]?.sendBufferedAmountMax ?? 0),
+    ),
+    sendDurationP95Ms: collectMedian(
+      suites.map((suite) => suite.browserControlClient?.byType?.[type]?.sendDurationMs?.p95 ?? 0),
+    ),
+  };
+}
+
+function collectBrowserControlClientStatsByType(suites) {
+  return Object.fromEntries(
+    BROWSER_CONTROL_CLIENT_DETAIL_TYPES.map((type) => [
+      type,
+      collectBrowserControlClientTypeStats(suites, type),
+    ]),
+  );
+}
+
+function formatBrowserControlClientTypeStats(browserControlClient, type) {
+  const stats = browserControlClient.byType?.[type] ?? {
+    nonZeroBufferedSendAttempts: 0,
+    postSendBufferedAmountMax: 0,
+    sendAttempts: 0,
+    sendBufferedAmountMax: 0,
+    sendDurationP95Ms: 0,
+  };
+  return (
+    `${type}-sends=${stats.sendAttempts.toFixed(0)}` +
+    ` ${type}-nonzero-buffered=${stats.nonZeroBufferedSendAttempts.toFixed(0)}` +
+    ` ${type}-buffered-max=${stats.sendBufferedAmountMax.toFixed(0)}` +
+    ` ${type}-post-buffered-max=${stats.postSendBufferedAmountMax.toFixed(0)}` +
+    ` ${type}-send-duration-p95=${stats.sendDurationP95Ms.toFixed(2)}ms`
+  );
+}
+
+function formatBudgetValue(check, key) {
+  const value = check[key];
+  if (check.unit === 'count') {
+    return Number.isFinite(value) ? value.toFixed(0) : 'n/a';
+  }
+
+  return formatNullableMs(value);
+}
+
 function formatNullableMs(value) {
-  return Number.isFinite(value) ? `${value.toFixed(2)}ms` : 'n/a';
+  return Number.isFinite(value) && value >= 0 ? `${value.toFixed(2)}ms` : 'n/a';
 }
 
 function collectMedianSuiteSummaries(runs) {
@@ -343,9 +416,24 @@ function collectMedianSuiteSummaries(runs) {
   return [...aggregatedByProfile.entries()].map(([profile, suites]) => ({
     experiment: suites[0]?.experiment ?? null,
     focusedRoundTrip: {
-      attemptedCount: collectMedian(suites.map((suite) => suite.focusedRoundTrip.attemptedCount)),
+      attemptedCount: collectSum(suites.map((suite) => suite.focusedRoundTrip.attemptedCount)),
+      echoAfterDispatchP95Ms: collectMedian(
+        suites.map((suite) => suite.focusedRoundTrip.echoAfterDispatchP95Ms ?? 0),
+      ),
+      inputDispatchP95Ms: collectMedian(
+        suites.map((suite) => suite.focusedRoundTrip.inputDispatchP95Ms ?? 0),
+      ),
       p95Ms: collectNullableMedian(suites.map((suite) => suite.focusedRoundTrip.p95Ms)),
-      timeoutCount: collectMedian(suites.map((suite) => suite.focusedRoundTrip.timeoutCount)),
+      renderAfterReceiveP95Ms: collectMedian(
+        suites.map((suite) => suite.focusedRoundTrip.renderAfterReceiveP95Ms ?? 0),
+      ),
+      renderedP95Ms: collectMedian(
+        suites.map((suite) => suite.focusedRoundTrip.renderedP95Ms ?? 0),
+      ),
+      renderedTimeoutCount: collectSum(
+        suites.map((suite) => suite.focusedRoundTrip.renderedTimeoutCount ?? 0),
+      ),
+      timeoutCount: collectSum(suites.map((suite) => suite.focusedRoundTrip.timeoutCount)),
     },
     frameGap: {
       p95Ms: collectMedian(suites.map((suite) => suite.frameGap.p95Ms)),
@@ -668,11 +756,31 @@ function collectMedianSuiteSummaries(runs) {
         }
       : null,
     terminalOutputPerFrame: {
+      activeWriteAgeP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.activeWriteAgeP95Ms ?? 0),
+      ),
+      activeWriteCountP95: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.activeWriteCountP95 ?? 0),
+      ),
       activeVisibleBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.activeVisibleBytesP95 ?? 0),
       ),
       activeVisibleQueueAgeP95Ms: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.activeVisibleQueueAgeP95Ms ?? 0),
+      ),
+      activeVisibleWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.activeVisibleWriteDurationP95Ms ?? 0),
+      ),
+      activeVisibleWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.activeVisibleWriteFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
+      controlWriteBytesP95: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.controlWriteBytesP95 ?? 0),
+      ),
+      controlWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.controlWriteDurationP95Ms ?? 0),
       ),
       directWriteBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.directWriteBytesP95 ?? 0),
@@ -683,11 +791,35 @@ function collectMedianSuiteSummaries(runs) {
       focusedWriteBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.focusedWriteBytesP95 ?? 0),
       ),
+      focusedWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.focusedWriteDurationP95Ms ?? 0),
+      ),
+      focusedWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.focusedWriteFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
       hiddenQueueAgeP95Ms: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.hiddenQueueAgeP95Ms),
       ),
+      nonTargetVisibleActiveWriteAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.nonTargetVisibleActiveWriteAgeP95Ms ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteCountP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.nonTargetVisibleActiveWriteCountP95 ?? 0,
+        ),
+      ),
       nonTargetVisibleBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.nonTargetVisibleBytesP95 ?? 0),
+      ),
+      plainWriteBytesP95: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.plainWriteBytesP95 ?? 0),
+      ),
+      plainWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.plainWriteDurationP95Ms ?? 0),
       ),
       queuedWriteBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.queuedWriteBytesP95 ?? 0),
@@ -695,14 +827,49 @@ function collectMedianSuiteSummaries(runs) {
       queuedWriteCallsP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.queuedWriteCallsP95 ?? 0),
       ),
+      queuedWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.queuedWriteDurationP95Ms ?? 0),
+      ),
+      queuedWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.queuedWriteFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
+      redrawControlWriteBytesP95: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.redrawControlWriteBytesP95 ?? 0),
+      ),
+      redrawControlWriteDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.redrawControlWriteDurationP95Ms ?? 0),
+      ),
       suppressedBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.suppressedBytesP95),
       ),
       visibleBackgroundBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.visibleBackgroundBytesP95 ?? 0),
       ),
+      visibleBackgroundActiveWriteAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.visibleBackgroundActiveWriteAgeP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteCountP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.visibleBackgroundActiveWriteCountP95 ?? 0,
+        ),
+      ),
       visibleBackgroundQueueAgeP95Ms: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.visibleBackgroundQueueAgeP95Ms ?? 0),
+      ),
+      visibleBackgroundWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputPerFrame.visibleBackgroundWriteDurationP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputPerFrame.visibleBackgroundWriteFinalizationDurationP95Ms ?? 0,
+        ),
       ),
       visibleQueueAgeP95Ms: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.visibleQueueAgeP95Ms),
@@ -710,12 +877,485 @@ function collectMedianSuiteSummaries(runs) {
       writeBytesP95: collectMedian(
         suites.map((suite) => suite.terminalOutputPerFrame.writeBytesP95),
       ),
+      writeDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.writeDurationP95Ms ?? 0),
+      ),
+      writeFinalizationDurationP95Ms: collectMedian(
+        suites.map((suite) => suite.terminalOutputPerFrame.writeFinalizationDurationP95Ms ?? 0),
+      ),
+    },
+    terminalOutputDuringFocusedInputPerFrame: {
+      activeWriteAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.activeWriteAgeP95Ms ?? 0,
+        ),
+      ),
+      activeWriteCountP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.activeWriteCountP95 ?? 0,
+        ),
+      ),
+      activeVisibleBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.activeVisibleBytesP95 ?? 0,
+        ),
+      ),
+      activeVisibleQueueAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.activeVisibleQueueAgeP95Ms ?? 0,
+        ),
+      ),
+      controlWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.controlWriteBytesP95 ?? 0,
+        ),
+      ),
+      controlWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.controlWriteDurationP95Ms ?? 0,
+        ),
+      ),
+      directWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.directWriteBytesP95 ?? 0,
+        ),
+      ),
+      directWriteCallsP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.directWriteCallsP95 ?? 0,
+        ),
+      ),
+      focusedWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.focusedWriteBytesP95 ?? 0,
+        ),
+      ),
+      hiddenBytesP95: collectMedian(
+        suites.map((suite) => suite.terminalOutputDuringFocusedInputPerFrame?.hiddenBytesP95 ?? 0),
+      ),
+      nonTargetVisibleActiveWriteAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.nonTargetVisibleActiveWriteAgeP95Ms ??
+            0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.nonTargetVisibleActiveWriteCountP95 ??
+            0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedBeforeInputAgeP95Ms ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputBytesP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedBeforeInputBytesP95 ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedBeforeInputCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedBeforeInputCountP95 ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedDuringInputAgeP95Ms ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputBytesP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedDuringInputBytesP95 ?? 0,
+        ),
+      ),
+      nonTargetVisibleActiveWriteStartedDuringInputCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleActiveWriteStartedDuringInputCountP95 ?? 0,
+        ),
+      ),
+      nonTargetVisibleBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.nonTargetVisibleBytesP95 ?? 0,
+        ),
+      ),
+      nonTargetVisibleWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.nonTargetVisibleWriteDurationP95Ms ?? 0,
+        ),
+      ),
+      nonTargetVisibleWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.nonTargetVisibleWriteFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
+      plainWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.plainWriteBytesP95 ?? 0,
+        ),
+      ),
+      plainWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.plainWriteDurationP95Ms ?? 0,
+        ),
+      ),
+      queuedWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.queuedWriteBytesP95 ?? 0,
+        ),
+      ),
+      queuedWriteCallsP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.queuedWriteCallsP95 ?? 0,
+        ),
+      ),
+      queuedQueueAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.queuedQueueAgeP95Ms ?? 0,
+        ),
+      ),
+      redrawControlWriteBytesP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.redrawControlWriteBytesP95 ?? 0,
+        ),
+      ),
+      redrawControlWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.redrawControlWriteDurationP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundBytesP95: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.visibleBackgroundBytesP95 ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.visibleBackgroundActiveWriteAgeP95Ms ??
+            0,
+        ),
+      ),
+      visibleBackgroundActiveWriteCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.visibleBackgroundActiveWriteCountP95 ??
+            0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedBeforeInputAgeP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputBytesP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedBeforeInputBytesP95 ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedBeforeInputCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedBeforeInputCountP95 ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedDuringInputAgeP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputBytesP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedDuringInputBytesP95 ?? 0,
+        ),
+      ),
+      visibleBackgroundActiveWriteStartedDuringInputCountP95: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundActiveWriteStartedDuringInputCountP95 ?? 0,
+        ),
+      ),
+      visibleBackgroundQueueAgeP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.visibleBackgroundQueueAgeP95Ms ?? 0,
+        ),
+      ),
+      visibleBackgroundWriteDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.visibleBackgroundWriteDurationP95Ms ??
+            0,
+        ),
+      ),
+      visibleBackgroundWriteFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame
+              ?.visibleBackgroundWriteFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
+      writeDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) => suite.terminalOutputDuringFocusedInputPerFrame?.writeDurationP95Ms ?? 0,
+        ),
+      ),
+      writeFinalizationDurationP95Ms: collectMedian(
+        suites.map(
+          (suite) =>
+            suite.terminalOutputDuringFocusedInputPerFrame?.writeFinalizationDurationP95Ms ?? 0,
+        ),
+      ),
     },
     terminalOutputTotals: {
       suppressedBytes: collectMedian(
         suites.map((suite) => suite.terminalOutputTotals.suppressedBytes),
       ),
     },
+    terminalInput: suites.some((suite) => suite.terminalInput)
+      ? {
+          acceptedP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.accepted?.p95Ms ?? 0),
+          ),
+          acceptedMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.accepted?.maxMs ?? 0),
+          ),
+          acceptedCount: collectMedian(
+            suites.map((suite) => suite.terminalInput?.accepted?.count ?? 0),
+          ),
+          acceptedSettledP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.acceptedSettled?.p95Ms ?? 0),
+          ),
+          acceptedSettledMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.acceptedSettled?.maxMs ?? 0),
+          ),
+          acceptedSettledCount: collectMedian(
+            suites.map((suite) => suite.terminalInput?.acceptedSettled?.count ?? 0),
+          ),
+          bufferedP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.buffered?.p95Ms ?? 0),
+          ),
+          bufferedMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.buffered?.maxMs ?? 0),
+          ),
+          dispatchedP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.dispatched?.p95Ms ?? 0),
+          ),
+          dispatchedMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.dispatched?.maxMs ?? 0),
+          ),
+          dispatchedCount: collectMedian(
+            suites.map((suite) => suite.terminalInput?.dispatched?.count ?? 0),
+          ),
+          commandResultReceivedP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.commandResultReceived?.p95Ms ?? 0),
+          ),
+          commandResultReceivedMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.commandResultReceived?.maxMs ?? 0),
+          ),
+          commandResultReceivedCount: collectMedian(
+            suites.map((suite) => suite.terminalInput?.commandResultReceived?.count ?? 0),
+          ),
+          leaseWaitP95Ms: collectMedian(
+            suites.map((suite) => suite.terminalInput?.leaseWait?.p95Ms ?? 0),
+          ),
+          leaseWaitMaxMs: collectMedian(
+            suites.map((suite) => suite.terminalInput?.leaseWait?.maxMs ?? 0),
+          ),
+          leaseWaitCount: collectMedian(
+            suites.map((suite) => suite.terminalInput?.leaseWait?.count ?? 0),
+          ),
+          sentP95Ms: collectMedian(suites.map((suite) => suite.terminalInput?.sent?.p95Ms ?? 0)),
+          sentMaxMs: collectMedian(suites.map((suite) => suite.terminalInput?.sent?.maxMs ?? 0)),
+          sentCount: collectMedian(suites.map((suite) => suite.terminalInput?.sent?.count ?? 0)),
+        }
+      : null,
+    rendererTerminalInput: suites.some((suite) => suite.rendererTerminalInput)
+      ? {
+          bufferedCharsMax: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.bufferedCharsMax ?? 0),
+          ),
+          droppedSuffixBatches: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.droppedSuffixBatches ?? 0),
+          ),
+          inFlightBatchesMax: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.inFlightBatchesMax ?? 0),
+          ),
+          queuedChunksMax: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.queuedChunksMax ?? 0),
+          ),
+          retrySchedules: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.retrySchedules ?? 0),
+          ),
+          sentBatchCharsMax: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.sentBatchCharsMax ?? 0),
+          ),
+          sentBatches: collectMedian(
+            suites.map((suite) => suite.rendererTerminalInput?.sentBatches ?? 0),
+          ),
+        }
+      : null,
+    browserControlClient: suites.some((suite) => suite.browserControlClient)
+      ? {
+          byType: collectBrowserControlClientStatsByType(suites),
+          nonZeroBufferedSendAttempts: collectSum(
+            suites.map((suite) => suite.browserControlClient?.nonZeroBufferedSendAttempts ?? 0),
+          ),
+          postSendBufferedAmountMax: collectMedian(
+            suites.map((suite) => suite.browserControlClient?.postSendBufferedAmountMax ?? 0),
+          ),
+          sendAttempts: collectSum(
+            suites.map((suite) => suite.browserControlClient?.sendAttempts ?? 0),
+          ),
+          sendBufferedAmountMax: collectMedian(
+            suites.map((suite) => suite.browserControlClient?.sendBufferedAmountMax ?? 0),
+          ),
+          sendDurationP95Ms: collectMedian(
+            suites.map((suite) => suite.browserControlClient?.sendDurationP95Ms ?? 0),
+          ),
+        }
+      : null,
+    terminalFlowControl: suites.some((suite) => suite.terminalFlowControl)
+      ? {
+          avgPauseRequestWindowMs: collectMedian(
+            suites.map((suite) => suite.terminalFlowControl?.avgPauseRequestWindowMs ?? 0),
+          ),
+          pauseRequests: collectMedian(
+            suites.map((suite) => suite.terminalFlowControl?.pauseRequests ?? 0),
+          ),
+          resumeRequests: collectMedian(
+            suites.map((suite) => suite.terminalFlowControl?.resumeRequests ?? 0),
+          ),
+        }
+      : null,
+    backendInputTrace: suites.some((suite) => suite.backendInputTrace)
+      ? {
+          activeTraceCount: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.activeTraceCount ?? 0),
+          ),
+          backendOutputBufferP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.backendOutputBufferP95Ms ?? 0),
+          ),
+          browserChannelDispatchP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.browserChannelDispatchP95Ms ?? 0),
+          ),
+          browserDeliveryP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.browserDeliveryP95Ms ?? 0),
+          ),
+          browserTransportDeliveryP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.browserTransportDeliveryP95Ms ?? 0),
+          ),
+          clientBufferP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.clientBufferP95Ms ?? 0),
+          ),
+          clientSendP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.clientSendP95Ms ?? 0),
+          ),
+          commandAckP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.commandAckP95Ms ?? 0),
+          ),
+          completedCount: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.completedCount ?? 0),
+          ),
+          droppedTraces: collectSum(
+            suites.map((suite) => suite.backendInputTrace?.droppedTraces ?? 0),
+          ),
+          endToEndP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.endToEndP95Ms ?? 0),
+          ),
+          ptyEchoP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.ptyEchoP95Ms ?? 0),
+          ),
+          ptyWriteToCommandAckP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.ptyWriteToCommandAckP95Ms ?? 0),
+          ),
+          renderP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.renderP95Ms ?? 0),
+          ),
+          sendToEchoP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.sendToEchoP95Ms ?? 0),
+          ),
+          serverQueueP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.serverQueueP95Ms ?? 0),
+          ),
+          transportResidualP95Ms: collectMedian(
+            suites.map((suite) => suite.backendInputTrace?.transportResidualP95Ms ?? 0),
+          ),
+        }
+      : null,
+    backendPtyInput: suites.some((suite) => suite.backendPtyInput)
+      ? {
+          coalescedMessages: collectMedian(
+            suites.map((suite) => suite.backendPtyInput?.coalescedMessages ?? 0),
+          ),
+          enqueuedMessages: collectMedian(
+            suites.map((suite) => suite.backendPtyInput?.enqueuedMessages ?? 0),
+          ),
+          flushes: collectMedian(suites.map((suite) => suite.backendPtyInput?.flushes ?? 0)),
+          maxQueuedChars: collectMedian(
+            suites.map((suite) => suite.backendPtyInput?.maxQueuedChars ?? 0),
+          ),
+          writeFailures: collectSum(
+            suites.map((suite) => suite.backendPtyInput?.writeFailures ?? 0),
+          ),
+        }
+      : null,
+    backendBrowserControl: suites.some((suite) => suite.backendBrowserControl)
+      ? {
+          backpressureRejects: collectSum(
+            suites.map((suite) => suite.backendBrowserControl?.backpressureRejects ?? 0),
+          ),
+          delayedQueueMaxAgeMs: collectMedian(
+            suites.map((suite) => suite.backendBrowserControl?.delayedQueueMaxAgeMs ?? 0),
+          ),
+          delayedQueueMaxBytes: collectMedian(
+            suites.map((suite) => suite.backendBrowserControl?.delayedQueueMaxBytes ?? 0),
+          ),
+          delayedQueueMaxDepth: collectMedian(
+            suites.map((suite) => suite.backendBrowserControl?.delayedQueueMaxDepth ?? 0),
+          ),
+          maxBufferedAmountBytes: collectMedian(
+            suites.map((suite) => suite.backendBrowserControl?.maxBufferedAmountBytes ?? 0),
+          ),
+          notOpenRejects: collectSum(
+            suites.map((suite) => suite.backendBrowserControl?.notOpenRejects ?? 0),
+          ),
+          sendErrors: collectSum(
+            suites.map((suite) => suite.backendBrowserControl?.sendErrors ?? 0),
+          ),
+        }
+      : null,
     terminalRender: {
       p95Ms: collectMedian(suites.map((suite) => suite.terminalRender.p95Ms)),
     },
@@ -810,6 +1450,32 @@ function createHiddenSwitchSummaryLines(suite, switchReadyDelta) {
 function createMarkdownSummary(summary) {
   const lines = ['# Terminal UI Fluidity Experiment Matrix', ''];
   const aggregateIndex = createAggregateIndex(summary.aggregatedRuns);
+  const budgetObservations = summary.budgetObservations;
+
+  if (budgetObservations) {
+    lines.push('## Budget Observations', '');
+    lines.push(`- Overall: ${budgetObservations.overallStatus}`);
+    lines.push(
+      `- Checks: ${budgetObservations.checkedCount}; failures: ${budgetObservations.failedCount}`,
+    );
+    lines.push(
+      '- Budgets are provisional product-profile observations. Use `--fail-on-budget` only when a branch is explicitly trying to satisfy this loaded browser lane.',
+    );
+    if (budgetObservations.failedChecks.length > 0) {
+      lines.push('');
+      lines.push('| Variant | Visible | Profile | Metric | Actual | Budget | Status |');
+      lines.push('| --- | ---: | --- | --- | ---: | ---: | --- |');
+      for (const check of budgetObservations.failedChecks) {
+        const visibleLabel =
+          check.visibleTerminalCount === null ? 'default' : String(check.visibleTerminalCount);
+        lines.push(
+          `| ${check.variant} | ${visibleLabel} | ${check.profile} | ${check.metric} | ` +
+            `${formatBudgetValue(check, 'actualMs')} | ${formatBudgetValue(check, 'maxMs')} | ${check.status} |`,
+        );
+      }
+    }
+    lines.push('');
+  }
 
   if (summary.profileCompatibilityWarnings.length > 0) {
     lines.push('## Compatibility Warnings', '');
@@ -882,10 +1548,155 @@ function createMarkdownSummary(summary) {
           ` non-target-visible-bytes p95=${suite.terminalOutputPerFrame.nonTargetVisibleBytesP95.toFixed(0)}` +
           ` active-visible-bytes p95=${suite.terminalOutputPerFrame.activeVisibleBytesP95.toFixed(0)}` +
           ` visible-background-bytes p95=${suite.terminalOutputPerFrame.visibleBackgroundBytesP95.toFixed(0)}` +
+          ` plain-bytes p95=${suite.terminalOutputPerFrame.plainWriteBytesP95.toFixed(0)}` +
+          ` control-bytes p95=${suite.terminalOutputPerFrame.controlWriteBytesP95.toFixed(0)}` +
+          ` redraw-control-bytes p95=${suite.terminalOutputPerFrame.redrawControlWriteBytesP95.toFixed(0)}` +
+          ` write-duration p95=${suite.terminalOutputPerFrame.writeDurationP95Ms.toFixed(2)}ms` +
+          ` plain-write-duration p95=${suite.terminalOutputPerFrame.plainWriteDurationP95Ms.toFixed(2)}ms` +
+          ` control-write-duration p95=${suite.terminalOutputPerFrame.controlWriteDurationP95Ms.toFixed(2)}ms` +
+          ` redraw-control-write-duration p95=${suite.terminalOutputPerFrame.redrawControlWriteDurationP95Ms.toFixed(2)}ms` +
+          ` write-finalization p95=${suite.terminalOutputPerFrame.writeFinalizationDurationP95Ms.toFixed(2)}ms` +
+          ` visible-background-write-duration p95=${suite.terminalOutputPerFrame.visibleBackgroundWriteDurationP95Ms.toFixed(2)}ms` +
+          ` visible-background-write-finalization p95=${suite.terminalOutputPerFrame.visibleBackgroundWriteFinalizationDurationP95Ms.toFixed(2)}ms` +
+          ` active-write-count p95=${suite.terminalOutputPerFrame.activeWriteCountP95.toFixed(0)}` +
+          ` active-write-age p95=${suite.terminalOutputPerFrame.activeWriteAgeP95Ms.toFixed(2)}ms` +
+          ` visible-background-active-write-age p95=${suite.terminalOutputPerFrame.visibleBackgroundActiveWriteAgeP95Ms.toFixed(2)}ms` +
           ` hidden-queue p95=${suite.terminalOutputPerFrame.hiddenQueueAgeP95Ms.toFixed(2)}ms` +
           (hiddenQueueDelta === null ? '' : ` (${hiddenQueueDelta.toFixed(1)}%)`) +
           ` suppressed=${suite.terminalOutputTotals.suppressedBytes.toFixed(0)}`,
       );
+      if (!isHiddenWakeSuiteName(suite.profile)) {
+        lines.push(
+          `  focused-roundtrip-split input-dispatch-p95=${suite.focusedRoundTrip.inputDispatchP95Ms.toFixed(2)}ms` +
+            ` echo-after-dispatch-p95=${suite.focusedRoundTrip.echoAfterDispatchP95Ms.toFixed(2)}ms` +
+            ` rendered-p95=${suite.focusedRoundTrip.renderedP95Ms.toFixed(2)}ms` +
+            ` render-after-receive-p95=${suite.focusedRoundTrip.renderAfterReceiveP95Ms.toFixed(2)}ms` +
+            ` rendered-timeouts=${suite.focusedRoundTrip.renderedTimeoutCount.toFixed(0)}`,
+        );
+        lines.push(
+          `  focused-input-output focused-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.focusedWriteBytesP95.toFixed(0)}` +
+            ` active-visible-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.activeVisibleBytesP95.toFixed(0)}` +
+            ` visible-background-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundBytesP95.toFixed(0)}` +
+            ` non-target-visible-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleBytesP95.toFixed(0)}` +
+            ` plain-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.plainWriteBytesP95.toFixed(0)}` +
+            ` control-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.controlWriteBytesP95.toFixed(0)}` +
+            ` redraw-control-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteBytesP95.toFixed(0)}` +
+            ` direct-calls-p95=${suite.terminalOutputDuringFocusedInputPerFrame.directWriteCallsP95.toFixed(0)}` +
+            ` queued-calls-p95=${suite.terminalOutputDuringFocusedInputPerFrame.queuedWriteCallsP95.toFixed(0)}` +
+            ` write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.writeDurationP95Ms.toFixed(2)}ms` +
+            ` plain-write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.plainWriteDurationP95Ms.toFixed(2)}ms` +
+            ` control-write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.controlWriteDurationP95Ms.toFixed(2)}ms` +
+            ` redraw-control-write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteDurationP95Ms.toFixed(2)}ms` +
+            ` write-finalization-p95=${suite.terminalOutputDuringFocusedInputPerFrame.writeFinalizationDurationP95Ms.toFixed(2)}ms` +
+            ` non-target-visible-write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleWriteDurationP95Ms.toFixed(2)}ms` +
+            ` non-target-visible-write-finalization-p95=${suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleWriteFinalizationDurationP95Ms.toFixed(2)}ms` +
+            ` visible-background-write-duration-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundWriteDurationP95Ms.toFixed(2)}ms` +
+            ` visible-background-write-finalization-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundWriteFinalizationDurationP95Ms.toFixed(2)}ms` +
+            ` active-write-count-p95=${suite.terminalOutputDuringFocusedInputPerFrame.activeWriteCountP95.toFixed(0)}` +
+            ` active-write-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.activeWriteAgeP95Ms.toFixed(2)}ms` +
+            ` visible-background-active-write-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteAgeP95Ms.toFixed(2)}ms` +
+            ` visible-background-started-before-input-count-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputCountP95.toFixed(0)}` +
+            ` visible-background-started-before-input-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputBytesP95.toFixed(0)}` +
+            ` visible-background-started-before-input-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputAgeP95Ms.toFixed(2)}ms` +
+            ` visible-background-started-during-input-count-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputCountP95.toFixed(0)}` +
+            ` visible-background-started-during-input-bytes-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputBytesP95.toFixed(0)}` +
+            ` visible-background-started-during-input-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputAgeP95Ms.toFixed(2)}ms` +
+            ` active-visible-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.activeVisibleQueueAgeP95Ms.toFixed(2)}ms` +
+            ` visible-background-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundQueueAgeP95Ms.toFixed(2)}ms` +
+            ` queued-age-p95=${suite.terminalOutputDuringFocusedInputPerFrame.queuedQueueAgeP95Ms.toFixed(2)}ms`,
+        );
+      }
+      if (suite.terminalInput) {
+        lines.push(
+          `  terminal-input buffered-p95=${suite.terminalInput.bufferedP95Ms.toFixed(2)}ms` +
+            ` buffered-max=${suite.terminalInput.bufferedMaxMs.toFixed(2)}ms` +
+            ` sent-p95=${suite.terminalInput.sentP95Ms.toFixed(2)}ms` +
+            ` sent-max=${suite.terminalInput.sentMaxMs.toFixed(2)}ms` +
+            ` sent-count=${suite.terminalInput.sentCount.toFixed(0)}`,
+        );
+        lines.push(
+          `  terminal-input-split lease-wait-p95=${suite.terminalInput.leaseWaitP95Ms.toFixed(2)}ms` +
+            ` lease-wait-max=${suite.terminalInput.leaseWaitMaxMs.toFixed(2)}ms` +
+            ` lease-wait-count=${suite.terminalInput.leaseWaitCount.toFixed(0)}` +
+            ` dispatched-p95=${suite.terminalInput.dispatchedP95Ms.toFixed(2)}ms` +
+            ` dispatched-max=${suite.terminalInput.dispatchedMaxMs.toFixed(2)}ms` +
+            ` dispatched-count=${suite.terminalInput.dispatchedCount.toFixed(0)}` +
+            ` command-result-p95=${suite.terminalInput.commandResultReceivedP95Ms.toFixed(2)}ms` +
+            ` command-result-max=${suite.terminalInput.commandResultReceivedMaxMs.toFixed(2)}ms` +
+            ` command-result-count=${suite.terminalInput.commandResultReceivedCount.toFixed(0)}` +
+            ` accepted-p95=${suite.terminalInput.acceptedP95Ms.toFixed(2)}ms` +
+            ` accepted-max=${suite.terminalInput.acceptedMaxMs.toFixed(2)}ms` +
+            ` accepted-count=${suite.terminalInput.acceptedCount.toFixed(0)}` +
+            ` accepted-settle-p95=${suite.terminalInput.acceptedSettledP95Ms.toFixed(2)}ms` +
+            ` accepted-settle-max=${suite.terminalInput.acceptedSettledMaxMs.toFixed(2)}ms` +
+            ` accepted-settle-count=${suite.terminalInput.acceptedSettledCount.toFixed(0)}`,
+        );
+      }
+      if (suite.rendererTerminalInput) {
+        lines.push(
+          `  renderer-terminal-input buffered-chars-max=${suite.rendererTerminalInput.bufferedCharsMax.toFixed(0)}` +
+            ` queued-chunks-max=${suite.rendererTerminalInput.queuedChunksMax.toFixed(0)}` +
+            ` in-flight-max=${suite.rendererTerminalInput.inFlightBatchesMax.toFixed(0)}` +
+            ` sent-batches=${suite.rendererTerminalInput.sentBatches.toFixed(0)}` +
+            ` sent-batch-chars-max=${suite.rendererTerminalInput.sentBatchCharsMax.toFixed(0)}` +
+            ` retry-schedules=${suite.rendererTerminalInput.retrySchedules.toFixed(0)}` +
+            ` dropped-suffix=${suite.rendererTerminalInput.droppedSuffixBatches.toFixed(0)}`,
+        );
+      }
+      if (suite.browserControlClient) {
+        lines.push(
+          `  browser-control-client sends=${suite.browserControlClient.sendAttempts.toFixed(0)}` +
+            ` nonzero-buffered-sends=${suite.browserControlClient.nonZeroBufferedSendAttempts.toFixed(0)}` +
+            ` buffered-max=${suite.browserControlClient.sendBufferedAmountMax.toFixed(0)} ` +
+            ` post-buffered-max=${suite.browserControlClient.postSendBufferedAmountMax.toFixed(0)}` +
+            ` send-duration-p95=${suite.browserControlClient.sendDurationP95Ms.toFixed(2)}ms ` +
+            BROWSER_CONTROL_CLIENT_DETAIL_TYPES.map((type) =>
+              formatBrowserControlClientTypeStats(suite.browserControlClient, type),
+            ).join(' '),
+        );
+      }
+      if (suite.terminalFlowControl) {
+        lines.push(
+          `  terminal-flow pauses=${suite.terminalFlowControl.pauseRequests.toFixed(0)}` +
+            ` resumes=${suite.terminalFlowControl.resumeRequests.toFixed(0)}` +
+            ` avg-pause-window=${suite.terminalFlowControl.avgPauseRequestWindowMs.toFixed(2)}ms`,
+        );
+      }
+      if (suite.backendInputTrace) {
+        lines.push(
+          `  backend-input-trace completed=${suite.backendInputTrace.completedCount.toFixed(0)}` +
+            ` active=${suite.backendInputTrace.activeTraceCount.toFixed(0)}` +
+            ` dropped=${suite.backendInputTrace.droppedTraces.toFixed(0)}` +
+            ` client-buffer-p95=${suite.backendInputTrace.clientBufferP95Ms.toFixed(2)}ms` +
+            ` client-send-p95=${suite.backendInputTrace.clientSendP95Ms.toFixed(2)}ms` +
+            ` server-queue-p95=${suite.backendInputTrace.serverQueueP95Ms.toFixed(2)}ms` +
+            ` command-ack-p95=${suite.backendInputTrace.commandAckP95Ms.toFixed(2)}ms` +
+            ` pty-write-to-command-ack-p95=${suite.backendInputTrace.ptyWriteToCommandAckP95Ms.toFixed(2)}ms` +
+            ` pty-echo-p95=${suite.backendInputTrace.ptyEchoP95Ms.toFixed(2)}ms` +
+            ` backend-output-buffer-p95=${suite.backendInputTrace.backendOutputBufferP95Ms.toFixed(2)}ms` +
+            ` browser-delivery-p95=${suite.backendInputTrace.browserDeliveryP95Ms.toFixed(2)}ms` +
+            ` browser-transport-delivery-p95=${suite.backendInputTrace.browserTransportDeliveryP95Ms.toFixed(2)}ms` +
+            ` browser-channel-dispatch-p95=${suite.backendInputTrace.browserChannelDispatchP95Ms.toFixed(2)}ms` +
+            ` transport-residual-p95=${suite.backendInputTrace.transportResidualP95Ms.toFixed(2)}ms` +
+            ` render-p95=${suite.backendInputTrace.renderP95Ms.toFixed(2)}ms` +
+            ` end-to-end-p95=${suite.backendInputTrace.endToEndP95Ms.toFixed(2)}ms`,
+        );
+      }
+      if (suite.backendPtyInput && suite.backendBrowserControl) {
+        lines.push(
+          `  backend-pty-input enqueued=${suite.backendPtyInput.enqueuedMessages.toFixed(0)}` +
+            ` flushes=${suite.backendPtyInput.flushes.toFixed(0)}` +
+            ` coalesced=${suite.backendPtyInput.coalescedMessages.toFixed(0)}` +
+            ` max-queued-chars=${suite.backendPtyInput.maxQueuedChars.toFixed(0)}` +
+            ` write-failures=${suite.backendPtyInput.writeFailures.toFixed(0)}` +
+            ` control-backpressure=${suite.backendBrowserControl.backpressureRejects.toFixed(0)}` +
+            ` control-not-open=${suite.backendBrowserControl.notOpenRejects.toFixed(0)}` +
+            ` control-send-errors=${suite.backendBrowserControl.sendErrors.toFixed(0)}` +
+            ` control-delayed-depth=${suite.backendBrowserControl.delayedQueueMaxDepth.toFixed(0)}` +
+            ` control-delayed-age=${suite.backendBrowserControl.delayedQueueMaxAgeMs.toFixed(2)}ms` +
+            ` control-buffered-max=${suite.backendBrowserControl.maxBufferedAmountBytes.toFixed(0)}`,
+        );
+      }
       if (suite.terminalFit) {
         lines.push(
           `  terminal-fit dirty=${suite.terminalFit.dirtyMarks.toFixed(0)}` +
@@ -1086,8 +1897,10 @@ async function main() {
       return left.terminals - right.terminals;
     });
 
+  const budgetObservations = evaluateTerminalUiFluidityBudgets({ aggregatedRuns });
   const summary = {
     aggregatedRuns,
+    budgetObservations,
     generatedAt: new Date().toISOString(),
     options,
     profileCompatibilityWarnings,
@@ -1106,6 +1919,13 @@ async function main() {
   );
 
   console.log(`[ui-fluidity-matrix] artifacts written to ${options.outDir}`);
+
+  if (options.failOnBudget && budgetObservations.overallStatus === 'provisional-fail') {
+    throw new Error(
+      `Terminal UI fluidity budgets failed (${budgetObservations.failedCount} checks). ` +
+        `Artifacts were written to ${options.outDir}`,
+    );
+  }
 }
 
 const isDirectExecution =

@@ -32,6 +32,7 @@ const STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS = 8_192;
 
 export interface BrowserLabServer {
   agentId: string;
+  agentIds: string[];
   authToken: string;
   baseUrl: string;
   getLifecycleSnapshot: () => BrowserLabServerLifecycleSnapshot;
@@ -40,6 +41,7 @@ export interface BrowserLabServer {
   repoDir: string;
   stop: () => Promise<void>;
   taskId: string;
+  taskIds: string[];
   testDir: string;
   userDataPath: string;
 }
@@ -65,10 +67,12 @@ interface StartStandaloneBrowserServerOptions {
 
 export interface SeededBrowserState {
   agentId: string;
+  agentIds: string[];
   branchName: string;
   projectId: string;
   repoDir: string;
   taskId: string;
+  taskIds: string[];
   userDataPath: string;
 }
 
@@ -133,34 +137,51 @@ function createPersistedBrowserLabTask(
   };
 }
 
-function createLegacyState(
+function createSeededTaskEntries(
   project: Project,
-  taskId: string,
-  agentId: string,
-  taskName: string,
-  agentDef: AgentDef,
+  scenario: BrowserLabScenario,
   branchName: string,
-  taskGitIsolation: TaskGitIsolationMode | undefined,
-): PersistedState {
-  return {
-    projects: [project],
-    lastProjectId: project.id,
-    lastAgentId: agentDef.id,
-    taskOrder: [taskId],
-    collapsedTaskOrder: [],
-    tasks: {
-      [taskId]: createPersistedBrowserLabTask(
+): Array<{ agentId: string; task: PersistedTask; taskId: string }> {
+  const taskNames = [scenario.taskName, ...(scenario.additionalTaskNames ?? [])];
+
+  return taskNames.map((taskName, index) => {
+    const suffix = index === 0 ? '' : `-${index + 1}`;
+    const taskId = `task-browser-lab${suffix}`;
+    const agentId = `agent-browser-lab${suffix}`;
+
+    return {
+      agentId,
+      taskId,
+      task: createPersistedBrowserLabTask(
         project,
         taskId,
         agentId,
         taskName,
-        agentDef,
+        scenario.agentDef,
         branchName,
-        taskGitIsolation,
+        scenario.taskGitIsolation,
       ),
-    },
+    };
+  });
+}
+
+function createLegacyState(
+  project: Project,
+  taskEntries: Array<{ task: PersistedTask; taskId: string }>,
+  agentDef: AgentDef,
+): PersistedState {
+  const taskOrder = taskEntries.map((entry) => entry.taskId);
+  const firstTaskId = taskOrder[0] ?? 'task-browser-lab';
+
+  return {
+    projects: [project],
+    lastProjectId: project.id,
+    lastAgentId: agentDef.id,
+    taskOrder,
+    collapsedTaskOrder: [],
+    tasks: Object.fromEntries(taskEntries.map((entry) => [entry.taskId, entry.task])),
     terminals: {},
-    activeTaskId: taskId,
+    activeTaskId: firstTaskId,
     sidebarVisible: true,
     completedTaskDate: '2026-03-17',
     completedTaskCount: 0,
@@ -175,28 +196,16 @@ function createLegacyState(
 
 function createWorkspaceState(
   project: Project,
-  taskId: string,
-  agentId: string,
-  taskName: string,
+  taskEntries: Array<{ task: PersistedTask; taskId: string }>,
   agentDef: AgentDef,
-  branchName: string,
-  taskGitIsolation: TaskGitIsolationMode | undefined,
 ): WorkspaceSharedState {
+  const taskOrder = taskEntries.map((entry) => entry.taskId);
+
   return {
     projects: [project],
-    taskOrder: [taskId],
+    taskOrder,
     collapsedTaskOrder: [],
-    tasks: {
-      [taskId]: createPersistedBrowserLabTask(
-        project,
-        taskId,
-        agentId,
-        taskName,
-        agentDef,
-        branchName,
-        taskGitIsolation,
-      ),
-    },
+    tasks: Object.fromEntries(taskEntries.map((entry) => [entry.taskId, entry.task])),
     terminals: {},
     completedTaskDate: '2026-03-17',
     completedTaskCount: 0,
@@ -299,37 +308,26 @@ export async function seedBrowserState(
   const userDataPath = path.join(parentDir, 'user-data');
   const stateDir = getStandaloneStateDir(userDataPath);
   const projectId = 'project-browser-lab';
-  const taskId = 'task-browser-lab';
-  const agentId = 'agent-browser-lab';
   const project = createProject(projectId, repoDir);
   const branchName = getCurrentBranchName(repoDir);
-  const legacyState = createLegacyState(
-    project,
-    taskId,
-    agentId,
-    scenario.taskName,
-    scenario.agentDef,
-    branchName,
-    scenario.taskGitIsolation,
-  );
-  const workspaceState = createWorkspaceState(
-    project,
-    taskId,
-    agentId,
-    scenario.taskName,
-    scenario.agentDef,
-    branchName,
-    scenario.taskGitIsolation,
-  );
+  const taskEntries = createSeededTaskEntries(project, scenario, branchName);
+  const taskIds = taskEntries.map((entry) => entry.taskId);
+  const agentIds = taskEntries.map((entry) => entry.agentId);
+  const taskId = taskIds[0] ?? 'task-browser-lab';
+  const agentId = agentIds[0] ?? 'agent-browser-lab';
+  const legacyState = createLegacyState(project, taskEntries, scenario.agentDef);
+  const workspaceState = createWorkspaceState(project, taskEntries, scenario.agentDef);
 
   await writeSeededStateFiles(stateDir, legacyState, workspaceState);
 
   return {
     agentId,
+    agentIds,
     branchName,
     projectId,
     repoDir,
     taskId,
+    taskIds,
     userDataPath,
   };
 }
@@ -533,6 +531,7 @@ export async function startStandaloneBrowserServer(
 
     return {
       agentId: seededState.agentId,
+      agentIds: seededState.agentIds,
       authToken,
       baseUrl: ready.baseUrl,
       getLifecycleSnapshot: () => ({ ...lifecycleSnapshot }),
@@ -540,6 +539,7 @@ export async function startStandaloneBrowserServer(
       projectId: seededState.projectId,
       repoDir: seededState.repoDir,
       taskId: seededState.taskId,
+      taskIds: seededState.taskIds,
       testDir,
       userDataPath: seededState.userDataPath,
       stop: async () => {

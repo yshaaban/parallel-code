@@ -388,6 +388,43 @@ describe('browser-lab standalone server startup', () => {
     expect(savedState.tasks?.[server.taskId]?.branchName).toBe('main');
   });
 
+  it('can seed multiple task panels for product scorecard switching', async () => {
+    const server = await startStandaloneBrowserServer({
+      scenario: {
+        ...createInteractiveNodeScenario(),
+        additionalTaskNames: ['Scorecard Switch Target Fixture'],
+      },
+      testSlug: 'multi-task-scorecard-startup',
+      validateBrowserBuildArtifacts: false,
+    });
+    cleanup.push(() => server.stop());
+
+    const response = await fetch(`${server.baseUrl}/api/ipc/${IPC.LoadAppState}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${server.authToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+
+    expect(response.ok).toBe(true);
+    const payload = (await response.json()) as {
+      result: string | null;
+    };
+    const savedState = JSON.parse(payload.result ?? 'null') as {
+      taskOrder?: string[];
+      tasks?: Record<string, { name?: string }>;
+    };
+
+    expect(server.taskIds).toEqual(['task-browser-lab', 'task-browser-lab-2']);
+    expect(server.agentIds).toEqual(['agent-browser-lab', 'agent-browser-lab-2']);
+    expect(savedState.taskOrder).toEqual(server.taskIds);
+    expect(savedState.tasks?.[server.taskIds[1] ?? '']?.name).toBe(
+      'Scorecard Switch Target Fixture',
+    );
+  });
+
   it('serves the authenticated remote shell and accepts its websocket endpoint', async () => {
     const server = await startStandaloneBrowserServer({
       scenario: createInteractiveNodeScenario(),

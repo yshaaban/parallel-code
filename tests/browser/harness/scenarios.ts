@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const FIXTURES_DIR = path.resolve(__dirname, '..', '..', '..', 'scripts', 'fixtures');
 
 export interface BrowserLabScenario {
+  additionalTaskNames?: string[];
   agentDef: AgentDef;
   name: string;
   seedRepo?: (repoDir: string) => Promise<void> | void;

@@ -176,9 +176,95 @@ describe('terminal ui fluidity gate consistency', () => {
 
     expect(profilerScript).toContain('data-terminal-live-render-ready');
     expect(profilerScript).toContain('data-terminal-loading-overlay');
+    expect(profilerScript).toContain('alignViewportToVisibleTerminalCount');
+    expect(profilerScript).toContain('terminal input buffered');
+    expect(profilerScript).toContain('terminal input split lease-wait');
+    expect(profilerScript).toContain('command-result p50');
+    expect(profilerScript).toContain('accepted-settle p95');
+    expect(profilerScript).toContain('renderer terminal-input buffered-chars-max');
+    expect(profilerScript).toContain('browser control-client sends');
+    expect(profilerScript).toContain('BROWSER_CONTROL_CLIENT_DETAIL_TYPES');
+    expect(profilerScript).toContain('nonzero-buffered');
+    expect(profilerScript).toContain('post-buffered-max');
+    expect(profilerScript).toContain('send-duration-p95');
+    expect(profilerScript).toContain('terminal flow-control pauses');
+    expect(profilerScript).toContain('backend input trace completed');
+    expect(profilerScript).toContain('backend-output-buffer-p95');
+    expect(profilerScript).toContain('browser-delivery-p95');
+    expect(profilerScript).toContain('browser-transport-delivery-p95');
+    expect(profilerScript).toContain('browser-channel-dispatch-p95');
+    expect(profilerScript).toContain('command-ack-p95');
+    expect(profilerScript).toContain('pty-write-to-command-ack-p95');
+    expect(profilerScript).toContain('browser-control buffered-max');
+    expect(profilerScript).toContain('pty-echo-p95');
+    expect(profilerScript).toContain('get_backend_runtime_diagnostics');
+    expect(profilerScript).toContain('reset_backend_runtime_diagnostics');
+    expect(profilerScript).toContain('__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = false');
+    expect(profilerScript).toContain('active-visible-bytes-p95');
+    expect(profilerScript).toContain('visible-background-started-before-input-count');
+    expect(profilerScript).toContain('visible-background-started-before-input-bytes');
+    expect(profilerScript).toContain('focused round-trip split input-dispatch-p95');
+    expect(profilerScript).toContain('render-after-receive-p95');
+    expect(profilerScript).toContain('rendered-timeouts');
+    expect(profilerScript).toContain('plain-bytes=');
+    expect(profilerScript).toContain('control-bytes=');
+    expect(profilerScript).toContain('redraw-control-bytes=');
+    expect(profilerScript).toContain('plain-write-duration-p95');
+    expect(profilerScript).toContain('control-write-duration-p95');
+    expect(profilerScript).toContain('redraw-control-write-duration-p95');
+    expect(profilerScript).toContain('terminal-write finalization p95');
+    expect(profilerScript).toContain('write-finalization-p95');
     expect(profilerScript).not.toContain('Connecting to terminal…');
     expect(profilerScript).not.toContain('Attaching terminal…');
     expect(profilerScript).not.toContain('Restoring terminal output…');
+  });
+
+  it('keeps matrix summaries carrying focused round-trip, input, and flow split diagnostics', async () => {
+    const matrixScript = await readRepoFile('scripts/terminal-ui-fluidity-matrix.mjs');
+
+    expect(matrixScript).toContain('focused-roundtrip-split input-dispatch-p95');
+    expect(matrixScript).toContain('rendered-p95=');
+    expect(matrixScript).toContain('render-after-receive-p95');
+    expect(matrixScript).toContain('plain-bytes p95');
+    expect(matrixScript).toContain('control-bytes p95');
+    expect(matrixScript).toContain('redraw-control-bytes p95');
+    expect(matrixScript).toContain('plain-write-duration p95');
+    expect(matrixScript).toContain('control-write-duration p95');
+    expect(matrixScript).toContain('redraw-control-write-duration p95');
+    expect(matrixScript).toContain('write-finalization p95');
+    expect(matrixScript).toContain('write-finalization-p95');
+    expect(matrixScript).toContain('plain-bytes-p95=');
+    expect(matrixScript).toContain('control-bytes-p95=');
+    expect(matrixScript).toContain('redraw-control-bytes-p95=');
+    expect(matrixScript).toContain('plain-write-duration-p95=');
+    expect(matrixScript).toContain('control-write-duration-p95=');
+    expect(matrixScript).toContain('redraw-control-write-duration-p95=');
+    expect(matrixScript).toContain('focused-input-output focused-bytes-p95');
+    expect(matrixScript).toContain('visible-background-started-before-input-count-p95');
+    expect(matrixScript).toContain('visible-background-started-before-input-bytes-p95');
+    expect(matrixScript).toContain('terminal-input buffered-p95');
+    expect(matrixScript).toContain('terminal-input-split lease-wait-p95');
+    expect(matrixScript).toContain('command-result-p95');
+    expect(matrixScript).toContain('accepted-settle-p95');
+    expect(matrixScript).toContain('renderer-terminal-input buffered-chars-max');
+    expect(matrixScript).toContain('browser-control-client sends');
+    expect(matrixScript).toContain('BROWSER_CONTROL_CLIENT_DETAIL_TYPES');
+    expect(matrixScript).toContain('nonzero-buffered');
+    expect(matrixScript).toContain('post-buffered-max');
+    expect(matrixScript).toContain('send-duration-p95');
+    expect(matrixScript).toContain('terminal-flow pauses');
+    expect(matrixScript).toContain('backend-input-trace completed');
+    expect(matrixScript).toContain('backend-output-buffer-p95');
+    expect(matrixScript).toContain('browser-delivery-p95');
+    expect(matrixScript).toContain('browser-transport-delivery-p95');
+    expect(matrixScript).toContain('browser-channel-dispatch-p95');
+    expect(matrixScript).toContain('command-ack-p95');
+    expect(matrixScript).toContain('pty-write-to-command-ack-p95');
+    expect(matrixScript).toContain('control-buffered-max');
+    expect(matrixScript).toContain('pty-echo-p95');
+    expect(matrixScript).toContain('backend-pty-input enqueued');
+    expect(matrixScript).toContain('Number.isFinite(value) && value >= 0');
+    expect(matrixScript).toContain('timeoutCount: collectSum');
   });
 
   it('fails partial hidden-wake profile coverage by default and exposes exploratory opt-in', async () => {
@@ -217,5 +303,66 @@ describe('terminal ui fluidity gate consistency', () => {
         'hidden_session_dormancy',
       ),
     ).toEqual(['hidden_render_wake']);
+  });
+
+  it('evaluates provisional loaded browser fluidity budgets from aggregated matrix summaries', async () => {
+    const gateModule = await loadTerminalUiFluidityGateModule();
+    const observations = gateModule.evaluateTerminalUiFluidityBudgets({
+      aggregatedRuns: [
+        {
+          surface: 'agents',
+          terminals: 24,
+          variant: 'product_default',
+          visibleTerminalCount: 4,
+          suites: [
+            {
+              focusedRoundTrip: { p95Ms: 1_800, timeoutCount: 1 },
+              frameGap: { p95Ms: 300 },
+              longTasks: { totalDurationMs: 6_200 },
+              profile: 'interactive_verbose',
+              terminalOutputPerFrame: { hiddenQueueAgeP95Ms: 0 },
+              terminalRender: { p95Ms: 6_800 },
+            },
+            {
+              focusedRoundTrip: { p95Ms: -1 },
+              frameGap: { p95Ms: 120 },
+              longTasks: { totalDurationMs: 1_000 },
+              profile: 'bulk_text',
+              terminalOutputPerFrame: { hiddenQueueAgeP95Ms: 0 },
+              terminalRender: { p95Ms: 200 },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(observations.overallStatus).toBe('provisional-fail');
+    expect(observations.failedChecks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          metric: 'focused roundtrip p95',
+          profile: 'interactive_verbose',
+          status: 'provisional-fail',
+        }),
+        expect.objectContaining({
+          actualMs: 1,
+          maxMs: 0,
+          metric: 'focused roundtrip timeouts',
+          profile: 'interactive_verbose',
+          status: 'provisional-fail',
+          unit: 'count',
+        }),
+        expect.objectContaining({
+          metric: 'frame-gap p95',
+          profile: 'interactive_verbose',
+          status: 'provisional-fail',
+        }),
+      ]),
+    );
+    expect(
+      observations.failedChecks.some(
+        (check) => check.metric === 'focused roundtrip p95' && check.profile === 'bulk_text',
+      ),
+    ).toBe(false);
   });
 });

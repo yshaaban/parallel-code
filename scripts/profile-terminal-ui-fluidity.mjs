@@ -16,6 +16,8 @@ import { getDefaultTerminalUiFluidityGateProfiles } from './terminal-ui-fluidity
 import { getTerminalUiFluidityVariant } from './terminal-ui-fluidity-variants.mjs';
 
 const GET_AGENT_SCROLLBACK = 'get_agent_scrollback';
+const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
+const RESET_BACKEND_RUNTIME_DIAGNOSTICS = 'reset_backend_runtime_diagnostics';
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000';
 const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
@@ -42,6 +44,7 @@ const SEEDED_AGENT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_DURATION_MS = 6_000;
 const DEFAULT_TERMINALS = 24;
 const DEFAULT_INPUT_INTERVAL_MS = 800;
+const BROWSER_CONTROL_CLIENT_DETAIL_TYPES = ['input', 'resize', 'pause', 'resume'];
 const DEFAULT_SURFACE = 'agents';
 const DEFAULT_VARIANT = 'baseline';
 const DEFAULT_VISIBLE_TERMINAL_COUNT = null;
@@ -50,6 +53,11 @@ const SUITE_BOOTSTRAP_RETRY_LIMIT = 2;
 const PAGE_GOTO_TIMEOUT_MS = 60_000;
 const VIEWPORT_BASE_WIDTH = 1_280;
 const VIEWPORT_WIDTH_PER_VISIBLE_TERMINAL = 360;
+const VISIBLE_TERMINAL_VIEWPORT_ADJUSTMENT_STEP_PX = 120;
+const VISIBLE_TERMINAL_VIEWPORT_MIN_WIDTH = 760;
+const VISIBLE_TERMINAL_VIEWPORT_MAX_WIDTH = 3_200;
+const VISIBLE_TERMINAL_VIEWPORT_ALIGNMENT_ATTEMPTS = 14;
+const VISIBLE_TERMINAL_VIEWPORT_SETTLE_MS = 100;
 const DEFAULT_PROFILES = getDefaultTerminalUiFluidityGateProfiles();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -277,6 +285,89 @@ function formatCount(value) {
   return Number.isFinite(value) ? String(value) : 'n/a';
 }
 
+function createEmptyBrowserControlClientTypeStats() {
+  return {
+    nonZeroBufferedSendAttempts: 0,
+    postSendBufferedAmountMax: 0,
+    sendAttempts: 0,
+    sendBufferedAmountMax: 0,
+    sendDurationMs: createEmptyLatencyStats(),
+  };
+}
+
+function getBrowserControlClientTypeStats(browserControlClient, type) {
+  return browserControlClient.byType?.[type] ?? createEmptyBrowserControlClientTypeStats();
+}
+
+function formatBrowserControlClientTypeStats(browserControlClient, type) {
+  const stats = getBrowserControlClientTypeStats(browserControlClient, type);
+  return (
+    `${type}-sends=${formatCount(stats.sendAttempts)}` +
+    ` ${type}-nonzero-buffered=${formatCount(stats.nonZeroBufferedSendAttempts)}` +
+    ` ${type}-buffered-max=${formatCount(stats.sendBufferedAmountMax)}` +
+    ` ${type}-post-buffered-max=${formatCount(stats.postSendBufferedAmountMax)}` +
+    ` ${type}-send-duration-p95=${formatMs(stats.sendDurationMs.p95)}`
+  );
+}
+
+function createEmptyDurationSummary() {
+  return {
+    avgMs: 0,
+    count: 0,
+    maxMs: 0,
+    p50Ms: 0,
+    p95Ms: 0,
+  };
+}
+
+function createEmptyLatencyStats() {
+  return {
+    avg: 0,
+    count: 0,
+    max: 0,
+    min: 0,
+    p50: 0,
+    p95: 0,
+  };
+}
+
+function getRequiredDurationSample(sortedValues, index) {
+  const value = sortedValues[index];
+  if (value === undefined) {
+    throw new Error('Duration sample index out of bounds');
+  }
+
+  return value;
+}
+
+function getDurationPercentile(sortedValues, fraction) {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(sortedValues.length * fraction) - 1),
+  );
+  return getRequiredDurationSample(sortedValues, index);
+}
+
+function summarizeDurations(values) {
+  const sortedValues = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (sortedValues.length === 0) {
+    return createEmptyDurationSummary();
+  }
+
+  const sum = sortedValues.reduce((total, value) => total + value, 0);
+  return {
+    avgMs: Math.round((sum / sortedValues.length) * 100) / 100,
+    count: sortedValues.length,
+    maxMs: getRequiredDurationSample(sortedValues, sortedValues.length - 1),
+    p50Ms: getDurationPercentile(sortedValues, 0.5),
+    p95Ms: getDurationPercentile(sortedValues, 0.95),
+  };
+}
+
 function parseNullablePositiveInteger(value, fallback) {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -387,6 +478,65 @@ function getViewportSizeForVisibleTerminalCount(visibleTerminalCount) {
       VIEWPORT_BASE_WIDTH +
       Math.max(0, visibleTerminalCount - 1) * VIEWPORT_WIDTH_PER_VISIBLE_TERMINAL,
   };
+}
+
+async function readVisibleTerminalCount(page) {
+  const snapshot = await collectUiFluiditySnapshot(page);
+  const visibleTerminalCount = snapshot?.pacing?.visibleTerminalCount;
+  return Number.isFinite(visibleTerminalCount) ? visibleTerminalCount : null;
+}
+
+function getAdjustedViewportWidth(currentWidth, visibleTerminalCount, targetVisibleTerminalCount) {
+  const direction = visibleTerminalCount > targetVisibleTerminalCount ? -1 : 1;
+  const nextWidth = currentWidth + direction * VISIBLE_TERMINAL_VIEWPORT_ADJUSTMENT_STEP_PX;
+  return Math.max(
+    VISIBLE_TERMINAL_VIEWPORT_MIN_WIDTH,
+    Math.min(VISIBLE_TERMINAL_VIEWPORT_MAX_WIDTH, nextWidth),
+  );
+}
+
+async function alignViewportToVisibleTerminalCount(page, targetVisibleTerminalCount) {
+  if (targetVisibleTerminalCount === null) {
+    return;
+  }
+
+  for (let attempt = 0; attempt < VISIBLE_TERMINAL_VIEWPORT_ALIGNMENT_ATTEMPTS; attempt += 1) {
+    const visibleTerminalCount = await readVisibleTerminalCount(page);
+    if (visibleTerminalCount === targetVisibleTerminalCount) {
+      return;
+    }
+
+    if (visibleTerminalCount === null) {
+      await page.waitForTimeout(VISIBLE_TERMINAL_VIEWPORT_SETTLE_MS);
+      continue;
+    }
+
+    const viewport = page.viewportSize();
+    if (!viewport) {
+      throw new Error('Cannot align visible terminal count without a viewport');
+    }
+
+    const nextWidth = getAdjustedViewportWidth(
+      viewport.width,
+      visibleTerminalCount,
+      targetVisibleTerminalCount,
+    );
+    if (nextWidth === viewport.width) {
+      break;
+    }
+
+    await page.setViewportSize({
+      height: viewport.height,
+      width: nextWidth,
+    });
+    await page.waitForTimeout(VISIBLE_TERMINAL_VIEWPORT_SETTLE_MS);
+  }
+
+  const finalVisibleTerminalCount = await readVisibleTerminalCount(page);
+  throw new Error(
+    `Unable to align visible terminal count to ${targetVisibleTerminalCount}; ` +
+      `app reported ${finalVisibleTerminalCount ?? 'unknown'}`,
+  );
 }
 
 async function captureBrowserPerformanceTrace(page, tracePath, measure) {
@@ -1156,27 +1306,41 @@ async function openUiFluidityPage(context, suiteName, serverUrl, authToken) {
   return page;
 }
 
-async function resetMeasuredDiagnostics(page) {
-  await page.evaluate(() => {
-    globalThis.window.__parallelCodeUiFluidityDiagnostics?.reset();
-    globalThis.window.__parallelCodeTerminalLatency?.reset();
-  });
+async function resetMeasuredDiagnostics(page, client) {
+  await Promise.all([
+    page.evaluate(() => {
+      globalThis.window.__parallelCodeUiFluidityDiagnostics?.reset();
+      globalThis.window.__parallelCodeTerminalLatency?.reset();
+    }),
+    client.invokeIpc(RESET_BACKEND_RUNTIME_DIAGNOSTICS, undefined),
+  ]);
 }
 
-async function measureFocusedRoundTrip(page, terminalIndex) {
-  await focusTerminal(page, terminalIndex);
-  const marker = await page.evaluate(
-    (timeoutMs) =>
-      globalThis.window.__parallelCodeTerminalLatency?.startRoundTripProbe(timeoutMs) ?? '',
-    TERMINAL_ROUND_TRIP_TIMEOUT_MS,
-  );
-  if (typeof marker !== 'string' || marker.length === 0) {
+async function collectBackendRuntimeDiagnostics(client) {
+  return client.invokeIpc(GET_BACKEND_RUNTIME_DIAGNOSTICS, undefined);
+}
+
+async function startFocusedRoundTripProbe(page) {
+  const probe = await page.evaluate((timeoutMs) => {
+    const marker = globalThis.window.__parallelCodeTerminalLatency?.startRoundTripProbe(timeoutMs);
+    return {
+      inputDispatchStartedAtMs: globalThis.performance.now(),
+      marker: typeof marker === 'string' ? marker : '',
+    };
+  }, TERMINAL_ROUND_TRIP_TIMEOUT_MS);
+  if (
+    !probe ||
+    typeof probe.marker !== 'string' ||
+    probe.marker.length === 0 ||
+    typeof probe.inputDispatchStartedAtMs !== 'number'
+  ) {
     throw new Error('Failed to start a focused terminal round-trip probe');
   }
 
-  await page.keyboard.type(marker);
-  await page.keyboard.press('Enter');
+  return probe;
+}
 
+async function waitForFocusedRoundTripProbe(page, marker) {
   const roundTripMs = await page.evaluate(
     async (probeMarker) =>
       (await globalThis.window.__parallelCodeTerminalLatency?.waitForRoundTripProbe(probeMarker)) ??
@@ -1184,33 +1348,70 @@ async function measureFocusedRoundTrip(page, terminalIndex) {
     marker,
   );
   return typeof roundTripMs === 'number' ? roundTripMs : -1;
+}
+
+async function waitForFocusedRenderedRoundTripProbe(page, marker) {
+  const roundTripMs = await page.evaluate(
+    async (probeMarker) =>
+      (await globalThis.window.__parallelCodeTerminalLatency?.waitForRenderedRoundTripProbe(
+        probeMarker,
+      )) ?? -1,
+    marker,
+  );
+  return typeof roundTripMs === 'number' ? roundTripMs : -1;
+}
+
+async function measureFocusedRoundTripDetails(page, terminalIndex) {
+  await focusTerminal(page, terminalIndex);
+  const probe = await startFocusedRoundTripProbe(page);
+
+  await page.keyboard.type(probe.marker);
+  await page.keyboard.press('Enter');
+  const inputDispatchEndedAtMs = await page.evaluate(() => globalThis.performance.now());
+  const inputDispatchMs = Math.max(0, inputDispatchEndedAtMs - probe.inputDispatchStartedAtMs);
+  const roundTripMs = await waitForFocusedRoundTripProbe(page, probe.marker);
+  const renderedRoundTripMs =
+    roundTripMs >= 0 ? await waitForFocusedRenderedRoundTripProbe(page, probe.marker) : -1;
+
+  return {
+    echoAfterDispatchMs: roundTripMs >= 0 ? Math.max(0, roundTripMs - inputDispatchMs) : -1,
+    inputDispatchMs,
+    renderAfterReceiveMs:
+      renderedRoundTripMs >= 0 && roundTripMs >= 0
+        ? Math.max(0, renderedRoundTripMs - roundTripMs)
+        : -1,
+    renderedRoundTripMs,
+    roundTripMs,
+  };
+}
+
+async function measureFocusedRoundTrip(page, terminalIndex) {
+  const result = await measureFocusedRoundTripDetails(page, terminalIndex);
+  return result.roundTripMs;
 }
 
 async function measureFocusedRoundTripSafely(page, terminalIndex) {
   return await measureFocusedRoundTrip(page, terminalIndex).catch(() => -1);
 }
 
+async function measureFocusedRoundTripDetailsSafely(page, terminalIndex) {
+  return await measureFocusedRoundTripDetails(page, terminalIndex).catch(() => ({
+    echoAfterDispatchMs: -1,
+    inputDispatchMs: 0,
+    renderAfterReceiveMs: -1,
+    renderedRoundTripMs: -1,
+    roundTripMs: -1,
+  }));
+}
+
 async function measureFocusedRoundTripForTask(page, taskId) {
   await focusTaskTerminal(page, taskId);
-  const marker = await page.evaluate(
-    (timeoutMs) =>
-      globalThis.window.__parallelCodeTerminalLatency?.startRoundTripProbe(timeoutMs) ?? '',
-    TERMINAL_ROUND_TRIP_TIMEOUT_MS,
-  );
-  if (typeof marker !== 'string' || marker.length === 0) {
-    throw new Error('Failed to start a focused terminal round-trip probe');
-  }
+  const probe = await startFocusedRoundTripProbe(page);
 
-  await page.keyboard.type(marker);
+  await page.keyboard.type(probe.marker);
   await page.keyboard.press('Enter');
 
-  const roundTripMs = await page.evaluate(
-    async (probeMarker) =>
-      (await globalThis.window.__parallelCodeTerminalLatency?.waitForRoundTripProbe(probeMarker)) ??
-      -1,
-    marker,
-  );
-  return typeof roundTripMs === 'number' ? roundTripMs : -1;
+  return await waitForFocusedRoundTripProbe(page, probe.marker);
 }
 
 async function measureFocusedRoundTripForTaskSafely(page, taskId) {
@@ -2188,12 +2389,33 @@ async function runFocusedInputProbes(
   inputIntervalMs,
 ) {
   const startedAt = Date.now();
+  const echoAfterDispatchSamples = [];
+  const inputDispatchSamples = [];
+  const renderAfterReceiveSamples = [];
+  const renderedRoundTripSamples = [];
+  let attemptedCount = 0;
+  let renderedTimeoutCount = 0;
   let timeoutCount = 0;
   for (let probeIndex = 0; probeIndex < probeCount; probeIndex += 1) {
-    const roundTripMs = await measureFocusedRoundTripSafely(page, terminalIndex);
-    if (roundTripMs < 0) {
-      timeoutCount += 1;
+    attemptedCount += 1;
+    const probeResult = await measureFocusedRoundTripDetailsSafely(page, terminalIndex);
+    if (Number.isFinite(probeResult.inputDispatchMs)) {
+      inputDispatchSamples.push(probeResult.inputDispatchMs);
     }
+
+    if (probeResult.roundTripMs < 0) {
+      timeoutCount += 1;
+    } else {
+      echoAfterDispatchSamples.push(probeResult.echoAfterDispatchMs);
+    }
+
+    if (probeResult.renderedRoundTripMs < 0) {
+      renderedTimeoutCount += 1;
+    } else {
+      renderedRoundTripSamples.push(probeResult.renderedRoundTripMs);
+      renderAfterReceiveSamples.push(probeResult.renderAfterReceiveMs);
+    }
+
     if (probeIndex === probeCount - 1) {
       break;
     }
@@ -2207,8 +2429,13 @@ async function runFocusedInputProbes(
   }
 
   return {
-    attemptedCount: probeCount,
+    attemptedCount,
+    echoAfterDispatch: summarizeDurations(echoAfterDispatchSamples),
     elapsedMs: Date.now() - startedAt,
+    inputDispatch: summarizeDurations(inputDispatchSamples),
+    renderAfterReceive: summarizeDurations(renderAfterReceiveSamples),
+    renderedRoundTrip: summarizeDurations(renderedRoundTripSamples),
+    renderedTimeoutCount,
     timeoutCount,
   };
 }
@@ -2236,7 +2463,20 @@ async function collectUiFluiditySnapshot(page) {
 }
 
 function createSuiteSummary(suiteName, suiteResult) {
+  const backendDiagnostics = suiteResult.backendDiagnosticsSnapshot;
+  const backendTrace = backendDiagnostics.terminalInputTracing;
+  const backendTraceSummary = backendTrace.summary;
   const uiSnapshot = suiteResult.uiSnapshot;
+  const browserControlSummary = suiteResult.terminalLatencySnapshot.browserControl ?? {
+    nonZeroBufferedSendAttempts: 0,
+    postSendBufferedAmountMax: 0,
+    sendAttempts: 0,
+    sendBufferedAmountMax: 0,
+    sendDurationMs: createEmptyLatencyStats(),
+  };
+  const flowSummary = suiteResult.terminalLatencySnapshot.flow;
+  const inputSummary = suiteResult.terminalLatencySnapshot.input;
+  const renderedRoundTripSummary = suiteResult.terminalLatencySnapshot.renderedRoundTrip;
   const roundTripSummary = suiteResult.terminalLatencySnapshot.roundTrip;
   const renderSummary = suiteResult.terminalLatencySnapshot.render;
   const hiddenSwitchRoundTripMs = suiteResult.switchSummary?.roundTripMs ?? null;
@@ -2269,10 +2509,16 @@ function createSuiteSummary(suiteName, suiteResult) {
     focusedRoundTrip: {
       attemptedCount: suiteResult.inputProbeSummary.attemptedCount,
       count: normalizedFocusedRoundTripSummary.count,
+      echoAfterDispatchP95Ms: suiteResult.inputProbeSummary.echoAfterDispatch?.p95Ms ?? 0,
       initiallyReady: suiteResult.initialRoundTripReady === true,
+      inputDispatchP95Ms: suiteResult.inputProbeSummary.inputDispatch?.p95Ms ?? 0,
       maxMs: normalizedFocusedRoundTripSummary.max,
       p50Ms: normalizedFocusedRoundTripSummary.p50,
       p95Ms: normalizedFocusedRoundTripSummary.p95,
+      renderAfterReceiveP95Ms: suiteResult.inputProbeSummary.renderAfterReceive?.p95Ms ?? 0,
+      renderedP95Ms:
+        suiteResult.inputProbeSummary.renderedRoundTrip?.p95Ms ?? renderedRoundTripSummary.p95,
+      renderedTimeoutCount: suiteResult.inputProbeSummary.renderedTimeoutCount ?? 0,
       timeoutCount: normalizedFocusedRoundTripSummary.timeoutCount,
     },
     frameGap: {
@@ -2296,6 +2542,114 @@ function createSuiteSummary(suiteName, suiteResult) {
       echoReservationRemainingMs: uiSnapshot.focusedInput.echoReservationRemainingMs,
       remainingMs: uiSnapshot.focusedInput.remainingMs,
       taskId: uiSnapshot.focusedInput.taskId,
+    },
+    terminalInput: {
+      accepted: {
+        avgMs: inputSummary.accepted.avg,
+        count: inputSummary.accepted.count,
+        maxMs: inputSummary.accepted.max,
+        p50Ms: inputSummary.accepted.p50,
+        p95Ms: inputSummary.accepted.p95,
+      },
+      acceptedSettled: {
+        avgMs: inputSummary.acceptedSettled.avg,
+        count: inputSummary.acceptedSettled.count,
+        maxMs: inputSummary.acceptedSettled.max,
+        p50Ms: inputSummary.acceptedSettled.p50,
+        p95Ms: inputSummary.acceptedSettled.p95,
+      },
+      buffered: {
+        avgMs: inputSummary.buffered.avg,
+        count: inputSummary.buffered.count,
+        maxMs: inputSummary.buffered.max,
+        p50Ms: inputSummary.buffered.p50,
+        p95Ms: inputSummary.buffered.p95,
+      },
+      commandResultReceived: {
+        avgMs: inputSummary.commandResultReceived.avg,
+        count: inputSummary.commandResultReceived.count,
+        maxMs: inputSummary.commandResultReceived.max,
+        p50Ms: inputSummary.commandResultReceived.p50,
+        p95Ms: inputSummary.commandResultReceived.p95,
+      },
+      dispatched: {
+        avgMs: inputSummary.dispatched.avg,
+        count: inputSummary.dispatched.count,
+        maxMs: inputSummary.dispatched.max,
+        p50Ms: inputSummary.dispatched.p50,
+        p95Ms: inputSummary.dispatched.p95,
+      },
+      leaseWait: {
+        avgMs: inputSummary.leaseWait.avg,
+        count: inputSummary.leaseWait.count,
+        maxMs: inputSummary.leaseWait.max,
+        p50Ms: inputSummary.leaseWait.p50,
+        p95Ms: inputSummary.leaseWait.p95,
+      },
+      sent: {
+        avgMs: inputSummary.sent.avg,
+        count: inputSummary.sent.count,
+        maxMs: inputSummary.sent.max,
+        p50Ms: inputSummary.sent.p50,
+        p95Ms: inputSummary.sent.p95,
+      },
+    },
+    rendererTerminalInput: {
+      bufferedCharsMax: uiSnapshot.rendererRuntime.terminalInput.bufferedCharsMax,
+      droppedSuffixBatches: uiSnapshot.rendererRuntime.terminalInput.droppedSuffixBatches,
+      inFlightBatchesMax: uiSnapshot.rendererRuntime.terminalInput.inFlightBatchesMax,
+      queuedChunksMax: uiSnapshot.rendererRuntime.terminalInput.queuedChunksMax,
+      retrySchedules: uiSnapshot.rendererRuntime.terminalInput.retrySchedules,
+      sentBatchCharsMax: uiSnapshot.rendererRuntime.terminalInput.sentBatchCharsMax,
+      sentBatches: uiSnapshot.rendererRuntime.terminalInput.sentBatches,
+    },
+    browserControlClient: {
+      byType: browserControlSummary.byType ?? {},
+      nonZeroBufferedSendAttempts: browserControlSummary.nonZeroBufferedSendAttempts,
+      postSendBufferedAmountMax: browserControlSummary.postSendBufferedAmountMax,
+      sendAttempts: browserControlSummary.sendAttempts,
+      sendBufferedAmountMax: browserControlSummary.sendBufferedAmountMax,
+      sendDurationP95Ms: browserControlSummary.sendDurationMs.p95,
+    },
+    terminalFlowControl: {
+      avgPauseRequestWindowMs: flowSummary.avgPauseRequestWindowMs,
+      pauseRequests: flowSummary.pauseRequests,
+      resumeRequests: flowSummary.resumeRequests,
+    },
+    backendInputTrace: {
+      activeTraceCount: backendTrace.activeTraceCount,
+      backendOutputBufferP95Ms: backendTraceSummary.backendOutputBufferMs.p95,
+      browserChannelDispatchP95Ms: backendTraceSummary.browserChannelDispatchMs.p95,
+      browserDeliveryP95Ms: backendTraceSummary.browserDeliveryMs.p95,
+      browserTransportDeliveryP95Ms: backendTraceSummary.browserTransportDeliveryMs.p95,
+      clientBufferP95Ms: backendTraceSummary.clientBufferMs.p95,
+      clientSendP95Ms: backendTraceSummary.clientSendMs.p95,
+      commandAckP95Ms: backendTraceSummary.commandAckMs.p95,
+      completedCount: backendTraceSummary.count,
+      droppedTraces: backendTrace.droppedTraces,
+      endToEndP95Ms: backendTraceSummary.endToEndMs.p95,
+      ptyEchoP95Ms: backendTraceSummary.ptyEchoMs.p95,
+      ptyWriteToCommandAckP95Ms: backendTraceSummary.ptyWriteToCommandAckMs.p95,
+      renderP95Ms: backendTraceSummary.renderMs.p95,
+      sendToEchoP95Ms: backendTraceSummary.sendToEchoMs.p95,
+      serverQueueP95Ms: backendTraceSummary.serverQueueMs.p95,
+      transportResidualP95Ms: backendTraceSummary.transportResidualMs.p95,
+    },
+    backendPtyInput: {
+      coalescedMessages: backendDiagnostics.ptyInput.coalescedMessages,
+      enqueuedMessages: backendDiagnostics.ptyInput.enqueuedMessages,
+      flushes: backendDiagnostics.ptyInput.flushes,
+      maxQueuedChars: backendDiagnostics.ptyInput.maxQueuedChars,
+      writeFailures: backendDiagnostics.ptyInput.writeFailures,
+    },
+    backendBrowserControl: {
+      backpressureRejects: backendDiagnostics.browserControl.backpressureRejects,
+      delayedQueueMaxAgeMs: backendDiagnostics.browserControl.delayedQueueMaxAgeMs,
+      delayedQueueMaxBytes: backendDiagnostics.browserControl.delayedQueueMaxBytes,
+      delayedQueueMaxDepth: backendDiagnostics.browserControl.delayedQueueMaxDepth,
+      maxBufferedAmountBytes: backendDiagnostics.browserControl.maxBufferedAmountBytes ?? 0,
+      notOpenRejects: backendDiagnostics.browserControl.notOpenRejects,
+      sendErrors: backendDiagnostics.browserControl.sendErrors,
     },
     pacing: {
       denseFocusedInputProtectionActive: uiSnapshot.pacing.denseFocusedInputProtectionActive,
@@ -2369,36 +2723,150 @@ function createSuiteSummary(suiteName, suiteResult) {
       p95Ms: renderSummary.p95,
     },
     terminalOutputPerFrame: {
+      activeWriteAgeP95Ms: uiSnapshot.terminalOutputPerFrame.activeWriteAgeMs.p95,
+      activeWriteCountP95: uiSnapshot.terminalOutputPerFrame.activeWriteCount.p95,
       activeVisibleBytesP95: uiSnapshot.terminalOutputPerFrame.activeVisibleBytes.p95,
       activeVisibleQueueAgeP95Ms: uiSnapshot.terminalOutputPerFrame.activeVisibleQueueAgeMs.p95,
+      activeVisibleWriteDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.activeVisibleWriteDurationMs.p95,
+      activeVisibleWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.activeVisibleWriteFinalizationDurationMs.p95,
+      controlWriteBytesP95: uiSnapshot.terminalOutputPerFrame.controlWriteBytes.p95,
+      controlWriteDurationP95Ms: uiSnapshot.terminalOutputPerFrame.controlWriteDurationMs.p95,
       directWriteBytesP95: uiSnapshot.terminalOutputPerFrame.directWriteBytes.p95,
       directWriteCallsP95: uiSnapshot.terminalOutputPerFrame.directWriteCalls.p95,
       focusedQueueAgeP95Ms: uiSnapshot.terminalOutputPerFrame.focusedQueueAgeMs.p95,
       focusedWriteBytesP95: uiSnapshot.terminalOutputPerFrame.focusedWriteBytes.p95,
+      focusedWriteDurationP95Ms: uiSnapshot.terminalOutputPerFrame.focusedWriteDurationMs.p95,
+      focusedWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.focusedWriteFinalizationDurationMs.p95,
       hiddenBytesP95: uiSnapshot.terminalOutputPerFrame.hiddenBytes.p95,
       hiddenQueueAgeP95Ms: uiSnapshot.terminalOutputPerFrame.hiddenQueueAgeMs.p95,
+      nonTargetVisibleActiveWriteAgeP95Ms:
+        uiSnapshot.terminalOutputPerFrame.nonTargetVisibleActiveWriteAgeMs.p95,
+      nonTargetVisibleActiveWriteCountP95:
+        uiSnapshot.terminalOutputPerFrame.nonTargetVisibleActiveWriteCount.p95,
       nonTargetVisibleBytesP95: uiSnapshot.terminalOutputPerFrame.nonTargetVisibleBytes.p95,
+      plainWriteBytesP95: uiSnapshot.terminalOutputPerFrame.plainWriteBytes.p95,
+      plainWriteDurationP95Ms: uiSnapshot.terminalOutputPerFrame.plainWriteDurationMs.p95,
       queuedWriteBytesP95: uiSnapshot.terminalOutputPerFrame.queuedWriteBytes.p95,
       queuedWriteCallsP95: uiSnapshot.terminalOutputPerFrame.queuedWriteCalls.p95,
+      queuedWriteDurationP95Ms: uiSnapshot.terminalOutputPerFrame.queuedWriteDurationMs.p95,
+      queuedWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.queuedWriteFinalizationDurationMs.p95,
       queuedQueueAgeP95Ms: uiSnapshot.terminalOutputPerFrame.queuedQueueAgeMs.p95,
+      redrawControlWriteBytesP95: uiSnapshot.terminalOutputPerFrame.redrawControlWriteBytes.p95,
+      redrawControlWriteDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.redrawControlWriteDurationMs.p95,
       suppressedBytesP95: uiSnapshot.terminalOutputPerFrame.suppressedBytes.p95,
       visibleBytesP95: uiSnapshot.terminalOutputPerFrame.visibleBytes.p95,
+      visibleBackgroundActiveWriteAgeP95Ms:
+        uiSnapshot.terminalOutputPerFrame.visibleBackgroundActiveWriteAgeMs.p95,
+      visibleBackgroundActiveWriteCountP95:
+        uiSnapshot.terminalOutputPerFrame.visibleBackgroundActiveWriteCount.p95,
       visibleBackgroundBytesP95: uiSnapshot.terminalOutputPerFrame.visibleBackgroundBytes.p95,
       visibleBackgroundQueueAgeP95Ms:
         uiSnapshot.terminalOutputPerFrame.visibleBackgroundQueueAgeMs.p95,
+      visibleBackgroundWriteDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.visibleBackgroundWriteDurationMs.p95,
+      visibleBackgroundWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.visibleBackgroundWriteFinalizationDurationMs.p95,
       visibleQueueAgeP95Ms: uiSnapshot.terminalOutputPerFrame.visibleQueueAgeMs.p95,
       writeBytesP95: uiSnapshot.terminalOutputPerFrame.writeBytes.p95,
       writeCallsP95: uiSnapshot.terminalOutputPerFrame.writeCalls.p95,
+      writeDurationP95Ms: uiSnapshot.terminalOutputPerFrame.writeDurationMs.p95,
+      writeFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputPerFrame.writeFinalizationDurationMs.p95,
     },
     terminalOutputDuringFocusedInputPerFrame: {
+      activeWriteAgeP95Ms: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.activeWriteAgeMs.p95,
+      activeWriteCountP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.activeWriteCount.p95,
+      activeVisibleBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.activeVisibleBytes.p95,
+      activeVisibleQueueAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.activeVisibleQueueAgeMs.p95,
+      controlWriteBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.controlWriteBytes.p95,
+      controlWriteDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.controlWriteDurationMs.p95,
+      directWriteBytesP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.directWriteBytes.p95,
+      directWriteCallsP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.directWriteCalls.p95,
       focusedWriteBytesP95:
         uiSnapshot.terminalOutputDuringFocusedInputPerFrame.focusedWriteBytes.p95,
       hiddenBytesP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.hiddenBytes.p95,
+      nonTargetVisibleActiveWriteAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleActiveWriteAgeMs.p95,
+      nonTargetVisibleActiveWriteCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleActiveWriteCount.p95,
+      nonTargetVisibleActiveWriteStartedBeforeInputAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedBeforeInputAgeMs.p95,
+      nonTargetVisibleActiveWriteStartedBeforeInputBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedBeforeInputBytes.p95,
+      nonTargetVisibleActiveWriteStartedBeforeInputCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedBeforeInputCount.p95,
+      nonTargetVisibleActiveWriteStartedDuringInputAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedDuringInputAgeMs.p95,
+      nonTargetVisibleActiveWriteStartedDuringInputBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedDuringInputBytes.p95,
+      nonTargetVisibleActiveWriteStartedDuringInputCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleActiveWriteStartedDuringInputCount.p95,
       nonTargetVisibleBytesP95:
         uiSnapshot.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleBytes.p95,
+      nonTargetVisibleWriteDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleWriteDurationMs.p95,
+      nonTargetVisibleWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .nonTargetVisibleWriteFinalizationDurationMs.p95,
+      plainWriteBytesP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.plainWriteBytes.p95,
+      plainWriteDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.plainWriteDurationMs.p95,
+      queuedWriteBytesP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.queuedWriteBytes.p95,
+      queuedWriteCallsP95: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.queuedWriteCalls.p95,
       queuedQueueAgeP95Ms: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.queuedQueueAgeMs.p95,
+      redrawControlWriteBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteBytes.p95,
+      redrawControlWriteDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteDurationMs.p95,
+      visibleBackgroundActiveWriteAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteAgeMs.p95,
+      visibleBackgroundActiveWriteCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteCount.p95,
+      visibleBackgroundActiveWriteStartedBeforeInputAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedBeforeInputAgeMs.p95,
+      visibleBackgroundActiveWriteStartedBeforeInputBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedBeforeInputBytes.p95,
+      visibleBackgroundActiveWriteStartedBeforeInputCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedBeforeInputCount.p95,
+      visibleBackgroundActiveWriteStartedDuringInputAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedDuringInputAgeMs.p95,
+      visibleBackgroundActiveWriteStartedDuringInputBytesP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedDuringInputBytes.p95,
+      visibleBackgroundActiveWriteStartedDuringInputCountP95:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundActiveWriteStartedDuringInputCount.p95,
       visibleBackgroundBytesP95:
         uiSnapshot.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundBytes.p95,
+      visibleBackgroundQueueAgeP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundQueueAgeMs.p95,
+      visibleBackgroundWriteDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundWriteDurationMs.p95,
+      visibleBackgroundWriteFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame
+          .visibleBackgroundWriteFinalizationDurationMs.p95,
+      writeDurationP95Ms: uiSnapshot.terminalOutputDuringFocusedInputPerFrame.writeDurationMs.p95,
+      writeFinalizationDurationP95Ms:
+        uiSnapshot.terminalOutputDuringFocusedInputPerFrame.writeFinalizationDurationMs.p95,
     },
     trace: suiteResult.traceSummary ?? null,
   };
@@ -2423,10 +2891,38 @@ function createMarkdownSummary(runSummary) {
       `- cumulative writes calls=${formatCount(suite.terminalOutputTotals.totalCalls)} bytes=${formatCount(suite.terminalOutputTotals.totalBytes)} focused=${formatCount(suite.terminalOutputTotals.focusedBytes)} active-visible=${formatCount(suite.terminalOutputTotals.activeVisibleBytes)} visible-background=${formatCount(suite.terminalOutputTotals.visibleBackgroundBytes)} hidden=${formatCount(suite.terminalOutputTotals.hiddenBytes)} queued=${formatCount(suite.terminalOutputTotals.queuedBytes)} suppressed=${formatCount(suite.terminalOutputTotals.suppressedBytes)}`,
     );
     lines.push(
-      `- per-frame writes p95 calls=${formatCount(suite.terminalOutputPerFrame.writeCallsP95)} direct-calls=${formatCount(suite.terminalOutputPerFrame.directWriteCallsP95)} queued-calls=${formatCount(suite.terminalOutputPerFrame.queuedWriteCallsP95)} bytes=${formatCount(suite.terminalOutputPerFrame.writeBytesP95)} direct-bytes=${formatCount(suite.terminalOutputPerFrame.directWriteBytesP95)} queued-bytes=${formatCount(suite.terminalOutputPerFrame.queuedWriteBytesP95)} focused-bytes=${formatCount(suite.terminalOutputPerFrame.focusedWriteBytesP95)} non-target-visible-bytes=${formatCount(suite.terminalOutputPerFrame.nonTargetVisibleBytesP95)} active-visible-bytes=${formatCount(suite.terminalOutputPerFrame.activeVisibleBytesP95)} visible-background-bytes=${formatCount(suite.terminalOutputPerFrame.visibleBackgroundBytesP95)} hidden-bytes=${formatCount(suite.terminalOutputPerFrame.hiddenBytesP95)} suppressed-bytes=${formatCount(suite.terminalOutputPerFrame.suppressedBytesP95)}`,
+      `- per-frame writes p95 calls=${formatCount(suite.terminalOutputPerFrame.writeCallsP95)} direct-calls=${formatCount(suite.terminalOutputPerFrame.directWriteCallsP95)} queued-calls=${formatCount(suite.terminalOutputPerFrame.queuedWriteCallsP95)} bytes=${formatCount(suite.terminalOutputPerFrame.writeBytesP95)} direct-bytes=${formatCount(suite.terminalOutputPerFrame.directWriteBytesP95)} queued-bytes=${formatCount(suite.terminalOutputPerFrame.queuedWriteBytesP95)} focused-bytes=${formatCount(suite.terminalOutputPerFrame.focusedWriteBytesP95)} non-target-visible-bytes=${formatCount(suite.terminalOutputPerFrame.nonTargetVisibleBytesP95)} active-visible-bytes=${formatCount(suite.terminalOutputPerFrame.activeVisibleBytesP95)} visible-background-bytes=${formatCount(suite.terminalOutputPerFrame.visibleBackgroundBytesP95)} hidden-bytes=${formatCount(suite.terminalOutputPerFrame.hiddenBytesP95)} plain-bytes=${formatCount(suite.terminalOutputPerFrame.plainWriteBytesP95)} control-bytes=${formatCount(suite.terminalOutputPerFrame.controlWriteBytesP95)} redraw-control-bytes=${formatCount(suite.terminalOutputPerFrame.redrawControlWriteBytesP95)} suppressed-bytes=${formatCount(suite.terminalOutputPerFrame.suppressedBytesP95)}`,
     );
     lines.push(
-      `- focused-input window active=${String(suite.focusedInput.active)} task=${suite.focusedInput.taskId ?? 'none'} age=${formatMs(suite.focusedInput.ageMs)} remaining=${formatMs(suite.focusedInput.remainingMs)} echo-reservation=${String(suite.focusedInput.echoReservationActive)} echo-remaining=${formatMs(suite.focusedInput.echoReservationRemainingMs)} focused-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.focusedWriteBytesP95)} non-target-visible-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleBytesP95)} visible-background-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundBytesP95)} hidden-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.hiddenBytesP95)} queued-age-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.queuedQueueAgeP95Ms)}`,
+      `- terminal-write duration p95 total=${formatMs(suite.terminalOutputPerFrame.writeDurationP95Ms)} focused=${formatMs(suite.terminalOutputPerFrame.focusedWriteDurationP95Ms)} active-visible=${formatMs(suite.terminalOutputPerFrame.activeVisibleWriteDurationP95Ms)} visible-background=${formatMs(suite.terminalOutputPerFrame.visibleBackgroundWriteDurationP95Ms)} queued=${formatMs(suite.terminalOutputPerFrame.queuedWriteDurationP95Ms)} plain=${formatMs(suite.terminalOutputPerFrame.plainWriteDurationP95Ms)} control=${formatMs(suite.terminalOutputPerFrame.controlWriteDurationP95Ms)} redraw-control=${formatMs(suite.terminalOutputPerFrame.redrawControlWriteDurationP95Ms)}`,
+    );
+    lines.push(
+      `- terminal-write finalization p95 total=${formatMs(suite.terminalOutputPerFrame.writeFinalizationDurationP95Ms)} focused=${formatMs(suite.terminalOutputPerFrame.focusedWriteFinalizationDurationP95Ms)} active-visible=${formatMs(suite.terminalOutputPerFrame.activeVisibleWriteFinalizationDurationP95Ms)} visible-background=${formatMs(suite.terminalOutputPerFrame.visibleBackgroundWriteFinalizationDurationP95Ms)} queued=${formatMs(suite.terminalOutputPerFrame.queuedWriteFinalizationDurationP95Ms)}`,
+    );
+    lines.push(
+      `- terminal-active writes p95 count=${formatCount(suite.terminalOutputPerFrame.activeWriteCountP95)}` +
+        ` age=${formatMs(suite.terminalOutputPerFrame.activeWriteAgeP95Ms)}` +
+        ` non-target-visible-count=${formatCount(suite.terminalOutputPerFrame.nonTargetVisibleActiveWriteCountP95)}` +
+        ` non-target-visible-age=${formatMs(suite.terminalOutputPerFrame.nonTargetVisibleActiveWriteAgeP95Ms)}` +
+        ` visible-background-count=${formatCount(suite.terminalOutputPerFrame.visibleBackgroundActiveWriteCountP95)}` +
+        ` visible-background-age=${formatMs(suite.terminalOutputPerFrame.visibleBackgroundActiveWriteAgeP95Ms)}`,
+    );
+    lines.push(
+      `- focused-input window active=${String(suite.focusedInput.active)} task=${suite.focusedInput.taskId ?? 'none'} age=${formatMs(suite.focusedInput.ageMs)} remaining=${formatMs(suite.focusedInput.remainingMs)} echo-reservation=${String(suite.focusedInput.echoReservationActive)} echo-remaining=${formatMs(suite.focusedInput.echoReservationRemainingMs)} focused-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.focusedWriteBytesP95)} active-visible-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.activeVisibleBytesP95)} non-target-visible-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleBytesP95)} visible-background-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundBytesP95)} hidden-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.hiddenBytesP95)} plain-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.plainWriteBytesP95)} control-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.controlWriteBytesP95)} redraw-control-bytes-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteBytesP95)} direct-calls-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.directWriteCallsP95)} queued-calls-p95=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.queuedWriteCallsP95)} write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.writeDurationP95Ms)} plain-write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.plainWriteDurationP95Ms)} control-write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.controlWriteDurationP95Ms)} redraw-control-write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.redrawControlWriteDurationP95Ms)} write-finalization-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.writeFinalizationDurationP95Ms)} non-target-visible-write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleWriteDurationP95Ms)} non-target-visible-write-finalization-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleWriteFinalizationDurationP95Ms)} visible-background-write-duration-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundWriteDurationP95Ms)} visible-background-write-finalization-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundWriteFinalizationDurationP95Ms)} active-visible-age-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.activeVisibleQueueAgeP95Ms)} visible-background-age-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundQueueAgeP95Ms)} queued-age-p95=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.queuedQueueAgeP95Ms)}`,
+    );
+    lines.push(
+      `- focused-input active writes p95 count=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.activeWriteCountP95)}` +
+        ` age=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.activeWriteAgeP95Ms)}` +
+        ` non-target-visible-count=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleActiveWriteCountP95)}` +
+        ` non-target-visible-age=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.nonTargetVisibleActiveWriteAgeP95Ms)}` +
+        ` visible-background-count=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteCountP95)}` +
+        ` visible-background-age=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteAgeP95Ms)}` +
+        ` visible-background-started-before-input-count=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputCountP95)}` +
+        ` visible-background-started-before-input-bytes=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputBytesP95)}` +
+        ` visible-background-started-before-input-age=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedBeforeInputAgeP95Ms)}` +
+        ` visible-background-started-during-input-count=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputCountP95)}` +
+        ` visible-background-started-during-input-bytes=${formatCount(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputBytesP95)}` +
+        ` visible-background-started-during-input-age=${formatMs(suite.terminalOutputDuringFocusedInputPerFrame.visibleBackgroundActiveWriteStartedDuringInputAgeP95Ms)}`,
     );
     lines.push(
       `- pacing visible-count=${formatCount(suite.pacing.visibleTerminalCount)} pressure=${suite.pacing.framePressureLevel} focused-lane-budget=${formatCount(suite.pacing.focusedLaneFrameBudgetBytes)} visible-lane-budget=${formatCount(suite.pacing.visibleLaneFrameBudgetBytes)} hidden-lane-budget=${formatCount(suite.pacing.hiddenLaneFrameBudgetBytes)} shared-visible-budget=${formatCount(suite.pacing.sharedNonTargetVisibleFrameBudgetBytes ?? 0)} switch-target-reserve=${formatCount(suite.pacing.switchTargetReserveBudgetBytes ?? 0)} switch-window=${String(suite.pacing.switchWindowActive)} dense-focused-input=${String(suite.pacing.denseFocusedInputProtectionActive)} focused-preemption=${String(suite.pacing.focusedPreemptionWindowActive)}`,
@@ -2436,6 +2932,31 @@ function createMarkdownSummary(runSummary) {
     );
     lines.push(
       `- terminal render p50=${formatMs(suite.terminalRender.p50Ms)} p95=${formatMs(suite.terminalRender.p95Ms)} max=${formatMs(suite.terminalRender.maxMs)} count=${formatCount(suite.terminalRender.count)}`,
+    );
+    lines.push(
+      `- terminal input buffered p50=${formatMs(suite.terminalInput.buffered.p50Ms)} p95=${formatMs(suite.terminalInput.buffered.p95Ms)} max=${formatMs(suite.terminalInput.buffered.maxMs)} count=${formatCount(suite.terminalInput.buffered.count)} sent p50=${formatMs(suite.terminalInput.sent.p50Ms)} p95=${formatMs(suite.terminalInput.sent.p95Ms)} max=${formatMs(suite.terminalInput.sent.maxMs)} count=${formatCount(suite.terminalInput.sent.count)}`,
+    );
+    lines.push(
+      `- terminal input split lease-wait p50=${formatMs(suite.terminalInput.leaseWait.p50Ms)} p95=${formatMs(suite.terminalInput.leaseWait.p95Ms)} max=${formatMs(suite.terminalInput.leaseWait.maxMs)} count=${formatCount(suite.terminalInput.leaseWait.count)} dispatched p50=${formatMs(suite.terminalInput.dispatched.p50Ms)} p95=${formatMs(suite.terminalInput.dispatched.p95Ms)} max=${formatMs(suite.terminalInput.dispatched.maxMs)} count=${formatCount(suite.terminalInput.dispatched.count)} command-result p50=${formatMs(suite.terminalInput.commandResultReceived.p50Ms)} p95=${formatMs(suite.terminalInput.commandResultReceived.p95Ms)} max=${formatMs(suite.terminalInput.commandResultReceived.maxMs)} count=${formatCount(suite.terminalInput.commandResultReceived.count)} accepted p50=${formatMs(suite.terminalInput.accepted.p50Ms)} p95=${formatMs(suite.terminalInput.accepted.p95Ms)} max=${formatMs(suite.terminalInput.accepted.maxMs)} count=${formatCount(suite.terminalInput.accepted.count)} accepted-settle p95=${formatMs(suite.terminalInput.acceptedSettled.p95Ms)} max=${formatMs(suite.terminalInput.acceptedSettled.maxMs)} count=${formatCount(suite.terminalInput.acceptedSettled.count)}`,
+    );
+    lines.push(
+      `- renderer terminal-input buffered-chars-max=${formatCount(suite.rendererTerminalInput.bufferedCharsMax)} queued-chunks-max=${formatCount(suite.rendererTerminalInput.queuedChunksMax)} in-flight-max=${formatCount(suite.rendererTerminalInput.inFlightBatchesMax)} sent-batches=${formatCount(suite.rendererTerminalInput.sentBatches)} sent-batch-chars-max=${formatCount(suite.rendererTerminalInput.sentBatchCharsMax)} retry-schedules=${formatCount(suite.rendererTerminalInput.retrySchedules)} dropped-suffix=${formatCount(suite.rendererTerminalInput.droppedSuffixBatches)}`,
+    );
+    lines.push(
+      `- browser control-client sends=${formatCount(suite.browserControlClient.sendAttempts)} nonzero-buffered-sends=${formatCount(suite.browserControlClient.nonZeroBufferedSendAttempts)} buffered-max=${formatCount(suite.browserControlClient.sendBufferedAmountMax)} post-buffered-max=${formatCount(suite.browserControlClient.postSendBufferedAmountMax)} send-duration-p95=${formatMs(suite.browserControlClient.sendDurationP95Ms)} ` +
+        BROWSER_CONTROL_CLIENT_DETAIL_TYPES.map((type) =>
+          formatBrowserControlClientTypeStats(suite.browserControlClient, type),
+        ).join(' '),
+    );
+    lines.push(
+      `- terminal flow-control pauses=${formatCount(suite.terminalFlowControl.pauseRequests)} resumes=${formatCount(suite.terminalFlowControl.resumeRequests)} avg-pause-window=${formatMs(suite.terminalFlowControl.avgPauseRequestWindowMs)}`,
+    );
+    lines.push(
+      `- backend input trace completed=${formatCount(suite.backendInputTrace.completedCount)} active=${formatCount(suite.backendInputTrace.activeTraceCount)} dropped=${formatCount(suite.backendInputTrace.droppedTraces)} client-buffer-p95=${formatMs(suite.backendInputTrace.clientBufferP95Ms)} client-send-p95=${formatMs(suite.backendInputTrace.clientSendP95Ms)} server-queue-p95=${formatMs(suite.backendInputTrace.serverQueueP95Ms)} command-ack-p95=${formatMs(suite.backendInputTrace.commandAckP95Ms)} pty-write-to-command-ack-p95=${formatMs(suite.backendInputTrace.ptyWriteToCommandAckP95Ms)} pty-echo-p95=${formatMs(suite.backendInputTrace.ptyEchoP95Ms)} backend-output-buffer-p95=${formatMs(suite.backendInputTrace.backendOutputBufferP95Ms)} browser-delivery-p95=${formatMs(suite.backendInputTrace.browserDeliveryP95Ms)} browser-transport-delivery-p95=${formatMs(suite.backendInputTrace.browserTransportDeliveryP95Ms)} browser-channel-dispatch-p95=${formatMs(suite.backendInputTrace.browserChannelDispatchP95Ms)} transport-residual-p95=${formatMs(suite.backendInputTrace.transportResidualP95Ms)} render-p95=${formatMs(suite.backendInputTrace.renderP95Ms)} end-to-end-p95=${formatMs(suite.backendInputTrace.endToEndP95Ms)}`,
+    );
+    lines.push(
+      `- backend pty-input enqueued=${formatCount(suite.backendPtyInput.enqueuedMessages)} flushes=${formatCount(suite.backendPtyInput.flushes)} coalesced=${formatCount(suite.backendPtyInput.coalescedMessages)} max-queued-chars=${formatCount(suite.backendPtyInput.maxQueuedChars)} write-failures=${formatCount(suite.backendPtyInput.writeFailures)} control-backpressure=${formatCount(suite.backendBrowserControl.backpressureRejects)} control-not-open=${formatCount(suite.backendBrowserControl.notOpenRejects)} control-send-errors=${formatCount(suite.backendBrowserControl.sendErrors)} control-delayed-depth=${formatCount(suite.backendBrowserControl.delayedQueueMaxDepth)} control-delayed-age=${formatMs(suite.backendBrowserControl.delayedQueueMaxAgeMs)}`,
+      `- backend browser-control buffered-max=${formatCount(suite.backendBrowserControl.maxBufferedAmountBytes)} delayed-bytes=${formatCount(suite.backendBrowserControl.delayedQueueMaxBytes)}`,
     );
     lines.push(
       `- runtime-per-frame p95 owner=${formatMs(suite.runtimePerFrame.ownerP95Ms)} analysis=${formatMs(suite.runtimePerFrame.agentAnalysisP95Ms)} scan=${formatMs(suite.runtimePerFrame.schedulerScanP95Ms)} drain=${formatMs(suite.runtimePerFrame.schedulerDrainP95Ms)} active-webgl=${formatCount(suite.runtimePerFrame.activeWebglContextsP95)} visible-webgl=${formatCount(suite.runtimePerFrame.visibleWebglContextsP95)}`,
@@ -2449,6 +2970,11 @@ function createMarkdownSummary(runSummary) {
     lines.push(
       `${isHiddenWakeSuiteName(suite.profile) ? '- hidden-switch round-trip' : '- focused round-trip'} p50=${formatMs(suite.focusedRoundTrip.p50Ms)} p95=${formatMs(suite.focusedRoundTrip.p95Ms)} max=${formatMs(suite.focusedRoundTrip.maxMs)} count=${formatCount(suite.focusedRoundTrip.count)} attempted=${formatCount(suite.focusedRoundTrip.attemptedCount)} timeouts=${formatCount(suite.focusedRoundTrip.timeoutCount)} initially-ready=${String(suite.focusedRoundTrip.initiallyReady)}`,
     );
+    if (!isHiddenWakeSuiteName(suite.profile)) {
+      lines.push(
+        `- focused round-trip split input-dispatch-p95=${formatMs(suite.focusedRoundTrip.inputDispatchP95Ms)} echo-after-dispatch-p95=${formatMs(suite.focusedRoundTrip.echoAfterDispatchP95Ms)} rendered-p95=${formatMs(suite.focusedRoundTrip.renderedP95Ms)} render-after-receive-p95=${formatMs(suite.focusedRoundTrip.renderAfterReceiveP95Ms)} rendered-timeouts=${formatCount(suite.focusedRoundTrip.renderedTimeoutCount)}`,
+      );
+    }
     if (suite.trace) {
       lines.push(
         `- trace main-thread slices=${formatCount(suite.trace.mainThreadSliceCount)} longtasks=${formatCount(suite.trace.mainThreadLongTasks.count)} total=${formatMs(suite.trace.mainThreadLongTasks.totalMs)} top=${suite.trace.topMainThreadSlices[0]?.name ?? 'n/a'}`,
@@ -2493,6 +3019,7 @@ async function runSuiteAttempt(browser, options, suiteName) {
       globalThis.sessionStorage.setItem(clientIdStorageKey, 'ui-fluidity-profiler-session');
       globalThis.window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
       globalThis.window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+      globalThis.window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = false;
       globalThis.window.__TERMINAL_PERF__ = true;
       globalThis.window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
       globalThis.window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = [];
@@ -2533,6 +3060,7 @@ async function runSuiteAttempt(browser, options, suiteName) {
           : 'Expected at least one created shell terminal',
       );
     }
+    await alignViewportToVisibleTerminalCount(page, options.visibleTerminalCount);
 
     if (options.surface === 'agents') {
       await waitForSeededAgentsReady(
@@ -2633,14 +3161,16 @@ async function runSuiteAttempt(browser, options, suiteName) {
       };
       inputProbeSummary = {
         attemptedCount: 1,
+        echoAfterDispatch: createEmptyDurationSummary(),
         elapsedMs: Math.round(nextSwitchSummary.inputReadyMs),
+        inputDispatch: createEmptyDurationSummary(),
         timeoutCount: nextSwitchSummary.roundTripMs < 0 ? 1 : 0,
       };
       await waitForAnimationFrames(page, 2);
       return nextSwitchSummary;
     };
 
-    await resetMeasuredDiagnostics(page);
+    await resetMeasuredDiagnostics(page, client);
 
     if (shouldCaptureTraceForSuite(options, suiteName)) {
       const traceResult = await captureBrowserPerformanceTrace(
@@ -2655,16 +3185,18 @@ async function runSuiteAttempt(browser, options, suiteName) {
       await measureWindow();
     }
 
-    const [terminalLatencySnapshot, uiSnapshot] = await Promise.all([
+    const [backendDiagnosticsSnapshot, terminalLatencySnapshot, uiSnapshot] = await Promise.all([
+      collectBackendRuntimeDiagnostics(client),
       page.evaluate(() => globalThis.window.__parallelCodeTerminalLatency?.getSnapshot() ?? null),
       collectUiFluiditySnapshot(page),
     ]);
 
-    if (!terminalLatencySnapshot || !uiSnapshot) {
+    if (!backendDiagnosticsSnapshot || !terminalLatencySnapshot || !uiSnapshot) {
       throw new Error('UI fluidity diagnostics snapshots were not available');
     }
 
     return {
+      backendDiagnosticsSnapshot,
       initialRoundTripReady,
       inputProbeSummary,
       switchSummary,

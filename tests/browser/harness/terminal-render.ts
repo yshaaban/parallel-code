@@ -96,6 +96,7 @@ async function installTerminalDiagnosticsInitScript(
   await context.addInitScript(
     ({ currentDisplayName, currentTerminalExperiments }) => {
       window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+      window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
       window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__ = true;
       window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
       window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
