@@ -269,7 +269,9 @@ Keep the packaged defaults aligned with that gate. The explicit npm gate entrypo
 their scope obvious:
 
 - `profile:terminal:ui-fluidity:gate` is the canonical `1,2,4 visible` sweep against
-  `product_default` and `high_load_mode_product`
+  `product_default` and `high_load_mode_product`; its matrix artifacts include provisional budget
+  observations, and `--fail-on-budget` is reserved for branches explicitly trying to satisfy this
+  loaded browser lane
 - `profile:terminal:ui-fluidity:matrix:gate` is a compatibility alias for that same gate, not a
   second independently maintained command
 - `profile:terminal:ui-fluidity:dense-gate` is the direct `4 visible` dense comparison against the

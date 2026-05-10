@@ -21,6 +21,8 @@ This document does not own:
 For ownership, use [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md). For validation
 layers and sufficiency, use [TESTING.md](./TESTING.md). For terminal and browser-lab workflow, use
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
+For the implementation-first performance plan, use
+[PRODUCT-PERFORMANCE-EXECUTION-PLAN.md](./PRODUCT-PERFORMANCE-EXECUTION-PLAN.md).
 For the current objective-to-evidence audit, use
 [PRODUCT-GOAL-AUDIT-2026-05-08.md](./PRODUCT-GOAL-AUDIT-2026-05-08.md).
 
@@ -34,10 +36,14 @@ attention, or why something is blocked. Browser/server mode is the product basel
 only a platform adapter. Preserve and harden advanced browser capabilities, including safe remote
 access, explicit preview and port exposure for remote browser-app testing, multi-client control and
 takeover, and replayable backend state, while keeping ownership simple: backend owns external truth,
-renderer owns presentation and workflow, and transport never owns domain policy. Validate every
-change from user frustration first, using the cheapest reliable owner-local proof, and reserve real
-browser tests for risks that only a browser can expose, such as focus, paint, navigation, cookies,
-websocket auth/bootstrap, and multi-context coordination.
+renderer owns presentation and workflow, and transport never owns domain policy. The immediate
+performance objective is product-code first: use the browser/server scorecard and low-overhead
+diagnostics to expose the slowest real user journeys, then experiment on those runtime paths until
+the selected terminal, task switching, review, preview, remote, reconnect, and cleanup flows meet
+explicit product budgets. Validate every change from user frustration first, using the cheapest
+reliable owner-local proof while iterating, and reserve real browser tests for risks that only a
+browser can expose, such as focus, paint, navigation, cookies, websocket auth/bootstrap, and
+multi-context coordination.
 
 ## Product Promise
 
@@ -113,18 +119,18 @@ These are starting points, not mandatory universal gates. Use the narrowest lane
 owner and risk, then broaden only when the changed surface justifies it. `package.json` remains the
 source of truth for exact script definitions.
 
-| Product surface                   | Start with                                                                                                                                                                                                                 | Escalate when                                                                                                                                                         |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Review discipline                 | `npm run validate:pr-description`, `npm run test:validation-guards`, and `npm run test:architecture-guards`                                                                                                                | Pair with `npm run check` before review when code changed.                                                                                                            |
-| Docs / tooling only               | `npm run format:check` and `git diff --check`                                                                                                                                                                              | Add targeted tests only when tooling behavior changed.                                                                                                                |
-| Terminal typing and switching     | `npm run test:node:file -- src/app/terminal-focused-input.test.ts src/app/terminal-output-scheduler-policy.test.ts src/app/terminal-attach-scheduler.test.ts src/components/terminal-view/terminal-input-pipeline.test.ts` | Add `npm run test:browser:terminal` when real focus, paint, restore, or visibility changed.                                                                           |
-| Terminal responsiveness tuning    | owner-local tests first, then `npm run profile:terminal:ui-fluidity:gate`                                                                                                                                                  | Add `npm run profile:terminal:ui-fluidity:dense-gate` for dense visible-terminal risk.                                                                                |
-| Review and diffs                  | `npm run test:node:file -- tests/contracts/review-diff.contract.test.ts src/app/review-diffs.test.ts src/app/review-files.test.ts`                                                                                         | Add `npm run test:solid:file -- src/components/ReviewPanel.test.tsx` or `npm run profile:review:diffs` when UI cost changed.                                          |
-| Preview and port exposure         | `npm run test:node:file -- server/browser-preview.test.ts electron/ipc/task-ports.test.ts src/app/task-ports.test.ts`                                                                                                      | Add `npm run test:solid:file -- src/components/PreviewPanel.test.tsx` or `npm run test:browser:preview` when real navigation, cookies, redirects, or iframes changed. |
-| Task deletion cleanup             | `npm run test:node:file -- src/store/task-state-cleanup.test.ts src/app/task-workflows.control.test.ts`                                                                                                                    | Add `npm run test:browser:task-deletion` when real browser deletion, review panel, preview panel, or browser IPC cleanup changes.                                     |
-| Remote and multi-client control   | `npm run test:contracts`                                                                                                                                                                                                   | Add `npm run test:browser:remote` or `npm run test:browser:canaries` for real multi-context browser coordination.                                                     |
-| Startup, restore, and replay      | `npm run test:node:file -- src/app/server-state-bootstrap.test.ts src/app/session-bootstrap-controller.test.ts src/app/desktop-session.test.ts`                                                                            | Add `npm run test:browser:canaries` when real browser cold bootstrap, reconnect restore, or browser-side websocket auth/bootstrap handling changed.                   |
-| Broad local pre-review confidence | `npm run check` and `npm test`                                                                                                                                                                                             | Add focused browser lanes only for browser-only risks named above.                                                                                                    |
+| Product surface                   | Start with                                                                                                                                                                                                                                              | Escalate when                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Review discipline                 | `npm run validate:pr-description`, `npm run test:validation-guards`, and `npm run test:architecture-guards`                                                                                                                                             | Pair with `npm run check` before review when code changed.                                                                                                                         |
+| Docs / tooling only               | `npm run format:check` and `git diff --check`                                                                                                                                                                                                           | Add targeted tests only when tooling behavior changed.                                                                                                                             |
+| Terminal typing and switching     | `npm run test:node:file -- src/app/terminal-focused-input.test.ts src/app/terminal-output-scheduler-policy.test.ts src/app/terminal-attach-scheduler.test.ts src/components/terminal-view/terminal-input-pipeline.test.ts`                              | Add `npm run test:browser:terminal` when real focus, paint, restore, or visibility changed.                                                                                        |
+| Terminal responsiveness tuning    | owner-local tests first, then `npm run profile:terminal:ui-fluidity:gate` as a loaded browser evidence generator with explicit artifact budget observations                                                                                             | Add `npm run profile:terminal:ui-fluidity:dense-gate` for dense visible-terminal risk; use `--fail-on-budget` only when a branch is explicitly trying to satisfy that loaded lane. |
+| Review and diffs                  | `npm run test:node:file -- tests/contracts/review-diff.contract.test.ts src/app/review-diffs.test.ts src/app/review-files.test.ts`                                                                                                                      | Add `npm run test:solid:file -- src/components/ReviewPanel.test.tsx` or `npm run profile:review:diffs` when UI cost changed.                                                       |
+| Preview and port exposure         | `npm run test:node:file -- server/browser-preview.test.ts electron/ipc/task-ports.test.ts src/app/task-ports.test.ts`                                                                                                                                   | Add `npm run test:solid:file -- src/components/PreviewPanel.test.tsx` or `npm run test:browser:preview` when real navigation, cookies, redirects, or iframes changed.              |
+| Task deletion cleanup             | `npm run test:node:file -- src/store/task-state-cleanup.test.ts src/app/task-workflows.control.test.ts`                                                                                                                                                 | Add `npm run test:browser:task-deletion` when real browser deletion, review panel, preview panel, or browser IPC cleanup changes.                                                  |
+| Remote and multi-client control   | `npm run test:contracts`; use `npm run perf:scorecard:smoke` when remote command-session responsiveness is the product risk.                                                                                                                            | Add `npm run test:browser:remote` or `npm run test:browser:canaries` for real multi-context browser coordination.                                                                  |
+| Startup, restore, and replay      | `npm run test:node:file -- src/app/server-state-bootstrap.test.ts src/app/session-bootstrap-controller.test.ts src/app/desktop-session.test.ts`; use `npm run perf:scorecard:smoke` when reconnect selected-surface responsiveness is the product risk. | Add `npm run test:browser:canaries` when real browser cold bootstrap, reconnect restore, or browser-side websocket auth/bootstrap handling changed.                                |
+| Broad local pre-review confidence | `npm run check` and `npm test`                                                                                                                                                                                                                          | Add focused browser lanes only for browser-only risks named above.                                                                                                                 |
 
 ## Playwright Minimization Rules
 
@@ -151,6 +157,15 @@ Do not use Playwright as the first proof for:
 When a real browser or latency gate fails on a loaded machine, isolate-rerun the exact failing case
 once before changing product code or weakening the assertion. Treat the first failure as a signal,
 not yet as proof of a product regression.
+
+For performance work, prefer semi-micro integration proof before broad browser repetition: measure
+the owner seam that explains the user pain, such as bootstrap projection time, terminal attach
+scheduling, renderer paint readiness, terminal write-shape/render-commit pressure, diff shaping,
+proxy response timing, remote command acknowledgement, or websocket replay. Use the browser
+scorecard to confirm the full journey after the local seam improves, and keep both artifacts when
+browser timing is visibly load-sensitive. When a new diagnostic split changes the product direction,
+first verify its internal attribution and record rejected product-code experiments in the execution
+plan so future passes do not repeat known-regressive paths.
 
 ## Review Flow
 
