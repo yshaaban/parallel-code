@@ -138,6 +138,38 @@ describe('terminal recovery batching', () => {
     });
   });
 
+  it('uses caller geometry for missing attach recovery batch entries', async () => {
+    invokeMock.mockResolvedValue([]);
+
+    const { requestAttachTerminalRecovery } = await import('./scrollbackRestore');
+
+    const recovery = requestAttachTerminalRecovery('agent-missing', {
+      fallbackCols: 132,
+      fallbackRows: 44,
+      outputCursor: 5,
+    });
+
+    await vi.advanceTimersByTimeAsync(20);
+
+    await expect(recovery).resolves.toMatchObject({
+      agentId: 'agent-missing',
+      cols: 132,
+      recovery: { kind: 'snapshot', data: null },
+      rows: 44,
+    });
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-missing',
+          outputCursor: 5,
+          renderedTail: null,
+          requestId: expect.any(String),
+          snapshotByteLimit: null,
+        },
+      ],
+    });
+  });
+
   it('batches reconnect restores into a single IPC round-trip', async () => {
     invokeMock.mockImplementation(
       async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
@@ -278,6 +310,33 @@ describe('terminal recovery batching', () => {
     });
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: expect.any(String),
+          role: 'selected',
+        },
+      ],
+    });
+  });
+
+  it('uses caller geometry for missing startup recovery batch entries', async () => {
+    invokeMock.mockResolvedValue([]);
+
+    const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
+
+    await expect(
+      requestStartupTerminalRecovery('agent-selected', 'selected', {
+        fallbackCols: 120,
+        fallbackRows: 34,
+      }),
+    ).resolves.toMatchObject({
+      agentId: 'agent-selected',
+      cols: 120,
+      recovery: { kind: 'snapshot', data: null },
+      rows: 34,
+    });
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalStartupRecoveryBatch, {
       requests: [
         {

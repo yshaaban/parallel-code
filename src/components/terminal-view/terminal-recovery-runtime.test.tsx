@@ -67,6 +67,11 @@ vi.mock('../../app/terminal-switch-window', () => ({
 
 import { createTerminalRecoveryRuntime } from './terminal-recovery-runtime';
 
+const DEFAULT_FALLBACK_GEOMETRY = {
+  fallbackCols: 80,
+  fallbackRows: 24,
+};
+
 function createRecoveryEntry(agentId: string): TerminalRecoveryBatchEntry {
   return {
     agentId,
@@ -74,6 +79,7 @@ function createRecoveryEntry(agentId: string): TerminalRecoveryBatchEntry {
     outputCursor: 0,
     recovery: { kind: 'noop' },
     requestId: 'req-1',
+    rows: 24,
   };
 }
 
@@ -90,6 +96,24 @@ function createSnapshotRecoveryEntry(
       kind: 'snapshot',
     },
     requestId: 'req-snapshot',
+    rows: 24,
+  };
+}
+
+function createTerminalStateRecoveryEntry(
+  agentId: string,
+  data: string,
+): TerminalRecoveryBatchEntry {
+  return {
+    agentId,
+    cols: 80,
+    outputCursor: Buffer.byteLength(data, 'utf8'),
+    recovery: {
+      data: Buffer.from(data, 'utf8').toString('base64'),
+      kind: 'terminal-state',
+    },
+    requestId: 'req-terminal-state',
+    rows: 24,
   };
 }
 
@@ -166,6 +190,7 @@ function createRecoveryRuntimeFixture(
     cols: number;
     refresh: ReturnType<typeof vi.fn>;
     reset: ReturnType<typeof vi.fn>;
+    resize: (cols: number, rows: number) => void;
     rows: number;
     scrollToBottom: ReturnType<typeof vi.fn>;
     write: (chunk: Uint8Array, callback?: () => void) => void;
@@ -195,6 +220,10 @@ function createRecoveryRuntimeFixture(
     cols: options.termCols ?? 80,
     refresh: termRefreshMock,
     reset: vi.fn(),
+    resize: vi.fn((cols: number, rows: number) => {
+      term.cols = cols;
+      term.rows = rows;
+    }),
     rows: options.termRows ?? 24,
     scrollToBottom: termScrollToBottomMock,
     write: handleTermWrite,
@@ -323,6 +352,7 @@ function createDeltaRecoveryEntry(agentId: string, byteLength: number): Terminal
       source: 'tail',
     },
     requestId: 'req-delta',
+    rows: 24,
   };
 }
 
@@ -343,6 +373,7 @@ function createDeltaRecoveryEntryWithSource(
       source,
     },
     requestId: 'req-delta-source',
+    rows: 24,
   };
 }
 
@@ -438,7 +469,11 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
@@ -464,6 +499,7 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
 
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 12,
       renderedTail: null,
       snapshotByteLimit: 512 * 1024,
@@ -475,6 +511,7 @@ describe('createTerminalRecoveryRuntime', () => {
     await createRecoveryRuntimeFixture().runtime.restoreTerminalOutput('backpressure');
 
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 0,
       renderedTail: null,
       snapshotByteLimit: null,
@@ -491,6 +528,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
+        ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
         snapshotByteLimit: null,
@@ -512,6 +550,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
+        ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
         snapshotByteLimit: null,
@@ -531,6 +570,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
+        ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
         snapshotByteLimit: null,
@@ -559,8 +599,13 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('backpressure');
     await runtime.restoreTerminalOutput('reconnect');
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 33,
       renderedTail: renderedOutputHistory.toString('base64'),
       snapshotByteLimit: null,
@@ -568,6 +613,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
+        ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 33,
         renderedTail: renderedOutputHistory.toString('base64'),
         snapshotByteLimit: null,
@@ -587,6 +633,23 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(termScrollToBottomMock).not.toHaveBeenCalled();
   });
 
+  it('applies terminal-state recovery by resetting and replaying serialized terminal state', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createTerminalStateRecoveryEntry('agent-1', '\x1b[?1049h\x1b[4;5Hinput>'),
+    );
+    const { outputPipelineMock, runtime, term, termWriteMock } = createRecoveryRuntimeFixture();
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledWith(new Uint8Array(0));
+    expect(outputPipelineMock.setRenderedOutputCursor).toHaveBeenCalledWith(
+      Buffer.byteLength('\x1b[?1049h\x1b[4;5Hinput>', 'utf8'),
+    );
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.resetCounts.attach).toBe(1);
+  });
+
   it('requests backpressure recovery against the local buffered tail, not only painted bytes', async () => {
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       renderedOutputCursor: 12,
@@ -600,6 +663,7 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('backpressure');
 
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 20,
       renderedTail: Buffer.from('painted-tailqueued', 'utf8').toString('base64'),
       snapshotByteLimit: null,
@@ -620,7 +684,11 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
   });
 
   it('routes visible sibling startup recovery through the startup helper without client-side caps', async () => {
@@ -634,7 +702,11 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
 
     expect(outputPipelineMock.getRecoveryRequestState).not.toHaveBeenCalled();
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'visible-sibling');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'visible-sibling',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
   });
 
   it('routes dense active-visible startup recovery through the startup helper without client-side caps', async () => {
@@ -656,7 +728,11 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
 
     expect(outputPipelineMock.getRecoveryRequestState).not.toHaveBeenCalled();
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'visible-sibling');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'visible-sibling',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
   });
 
   it('keeps hidden attach recovery on the legacy attach helper', async () => {
@@ -671,6 +747,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(outputPipelineMock.getRecoveryRequestState).toHaveBeenCalledWith(32 * 1024);
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 20,
       renderedTail: Buffer.from('painted-tail', 'utf8').toString('base64'),
       snapshotByteLimit: 64 * 1024,
@@ -690,6 +767,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(outputPipelineMock.getRecoveryRequestState).toHaveBeenCalledWith(32 * 1024);
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 20,
       renderedTail: Buffer.from('painted-tail', 'utf8').toString('base64'),
       snapshotByteLimit: 64 * 1024,
@@ -743,7 +821,11 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
 
     expect(termWriteMock).toHaveBeenCalledTimes(9);
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
   });
 
   it('yields between large attach snapshot chunks for focused startup restore', async () => {
@@ -1264,6 +1346,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
+        ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 12,
         renderedTail: renderedOutputHistory.toString('base64'),
         snapshotByteLimit: null,
@@ -1428,6 +1511,28 @@ describe('createTerminalRecoveryRuntime', () => {
     ).toBe(1);
   });
 
+  it('adopts backend rows and columns before applying mismatched attach recovery', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue({
+      ...createTerminalStateRecoveryEntry('agent-1', '\x1b[3;4Hinput>'),
+      cols: 100,
+      rows: 30,
+    });
+    const { runtime, term, termWriteMock } = createRecoveryRuntimeFixture({
+      termCols: 80,
+      termRows: 24,
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(term.resize).toHaveBeenCalledWith(100, 30);
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(30);
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.geometryAlignmentFallbacks,
+    ).toBe(1);
+  });
+
   it('treats noop recovery as a cursor-only transition', async () => {
     requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     const {
@@ -1530,7 +1635,11 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
     expect(writeCheckCount).toBeGreaterThanOrEqual(2);
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
   });
 
   it('does not wait for queued local output to drain before requesting attach recovery', async () => {
@@ -1542,7 +1651,11 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
     expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
@@ -1563,7 +1676,11 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      'selected',
+      DEFAULT_FALLBACK_GEOMETRY,
+    );
     expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,

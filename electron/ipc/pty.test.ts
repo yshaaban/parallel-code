@@ -4,6 +4,7 @@ import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
+import { TerminalStateMirror } from './terminal-state-mirror.js';
 
 const { observeTaskPortsFromOutputMock, spawnMock } = vi.hoisted(() => ({
   observeTaskPortsFromOutputMock: vi.fn(),
@@ -26,6 +27,7 @@ import {
   killAllAgents,
   onPtyEvent,
   pauseAgent,
+  resizeAgent,
   resumeAgent,
   spawnAgent,
   validateCommand,
@@ -44,6 +46,7 @@ const minimalLookupPath = path.dirname(existingAbsoluteCommand);
 
 type MockProc = {
   cols: number;
+  rows: number;
   pause: () => void;
   resume: () => void;
   resize: (cols: number, rows: number) => void;
@@ -61,10 +64,12 @@ function createMockProc(): MockProc {
 
   const proc: MockProc = {
     cols: 80,
+    rows: 24,
     pause: vi.fn(),
     resume: vi.fn(),
-    resize: vi.fn((cols: number) => {
+    resize: vi.fn((cols: number, rows: number) => {
       proc.cols = cols;
+      proc.rows = rows;
     }),
     write: vi.fn(),
     kill: vi.fn(() => onExitCb?.({ exitCode: 0, signal: null })),
@@ -176,7 +181,7 @@ describe('spawnAgent', () => {
     expect(diagnostics.terminalInputTracing.completedTraces).toHaveLength(0);
   });
 
-  it('requests a structured restore when reconnecting to an existing session', () => {
+  it('reattaches to an existing session without implicitly resizing the shared PTY', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
     const sendToChannel = vi.fn();
@@ -209,11 +214,62 @@ describe('spawnAgent', () => {
     });
 
     expect(attachedExistingSession).toBe(true);
-    expect(proc.resize).toHaveBeenCalledWith(100, 30);
+    expect(proc.resize).not.toHaveBeenCalled();
     expect(sendToChannel).not.toHaveBeenCalledWith('two', {
       type: 'RecoveryRequired',
       reason: 'attach',
     });
+  });
+
+  it('keeps explicit resizeAgent as the PTY resize mutation path', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-resize',
+      agentId: 'agent-resize',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'resize-channel' },
+    });
+
+    resizeAgent('agent-resize', 100, 30);
+
+    expect(proc.resize).toHaveBeenCalledWith(100, 30);
+    expect(proc.cols).toBe(100);
+    expect(proc.rows).toBe(30);
+  });
+
+  it('does not advance the terminal-state mirror when PTY resize fails', () => {
+    const enqueueResizeSpy = vi.spyOn(TerminalStateMirror.prototype, 'enqueueResize');
+    const proc = createMockProc();
+    proc.resize = vi.fn(() => {
+      throw new Error('resize failed');
+    });
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-resize-failure',
+      agentId: 'agent-resize-failure',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'resize-failure-channel' },
+    });
+
+    try {
+      expect(() => resizeAgent('agent-resize-failure', 100, 30)).toThrow('resize failed');
+      expect(enqueueResizeSpy).not.toHaveBeenCalled();
+    } finally {
+      enqueueResizeSpy.mockRestore();
+    }
   });
 
   it('ignores late exits from an older generation after respawning the same agent id', () => {
@@ -338,7 +394,7 @@ describe('spawnAgent', () => {
       ).toBe(true);
 
       expect(spawnMock).toHaveBeenCalledTimes(1);
-      expect(proc.resize).toHaveBeenCalledWith(100, 30);
+      expect(proc.resize).not.toHaveBeenCalled();
       expect(getAgentMeta('agent-reattach-metadata')).toEqual({
         agentId: 'agent-reattach-metadata',
         generation: 0,
@@ -409,6 +465,30 @@ describe('spawnAgent', () => {
     expect(getAgentPauseState('agent-restore-pause')).toBeNull();
   });
 
+  it('returns noop recovery without snapshot payload when both backend and renderer are empty', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-empty-noop',
+      agentId: 'agent-empty-noop',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'empty-noop' },
+    });
+
+    expect(getAgentTerminalRecovery('agent-empty-noop', null)).toEqual({
+      cols: 80,
+      kind: 'noop',
+      outputCursor: 0,
+      rows: 24,
+    });
+  });
+
   it('returns an empty snapshot recovery when the backend scrollback is empty but the client has stale content', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -435,6 +515,7 @@ describe('spawnAgent', () => {
       data: Buffer.alloc(0),
       kind: 'snapshot',
       outputCursor: 0,
+      rows: 24,
     });
   });
 
@@ -460,6 +541,7 @@ describe('spawnAgent', () => {
       cols: 80,
       kind: 'noop',
       outputCursor: Buffer.byteLength('hello world', 'utf8'),
+      rows: 24,
     });
   });
 
@@ -488,6 +570,7 @@ describe('spawnAgent', () => {
       kind: 'delta',
       overlapBytes: 6,
       outputCursor: 8,
+      rows: 24,
       source: 'tail',
     });
   });
@@ -516,6 +599,7 @@ describe('spawnAgent', () => {
       kind: 'delta',
       overlapBytes: 3,
       outputCursor: 7,
+      rows: 24,
       source: 'tail',
     });
   });
@@ -543,6 +627,7 @@ describe('spawnAgent', () => {
       data: Buffer.from('abcdef', 'utf8'),
       kind: 'snapshot',
       outputCursor: 6,
+      rows: 24,
     });
   });
 
@@ -571,10 +656,11 @@ describe('spawnAgent', () => {
       data: Buffer.from('stuvwxyz', 'utf8'),
       kind: 'snapshot',
       outputCursor: 26,
+      rows: 24,
     });
   });
 
-  it('builds compact startup snapshots for selected and visible startup terminals', () => {
+  it('builds serialized terminal-state recovery for selected and visible startup terminals', async () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
 
@@ -593,29 +679,37 @@ describe('spawnAgent', () => {
     const startupHistory = '0123456789'.repeat(40);
     proc.emitData(startupHistory);
 
-    const selectedRecovery = getAgentTerminalStartupRecovery(
+    const selectedRecovery = await getAgentTerminalStartupRecovery(
       'agent-startup-caps',
       Buffer.from('stale', 'utf8'),
       null,
       'selected',
       4,
     );
-    expect(selectedRecovery.kind).toBe('snapshot');
+    expect(selectedRecovery.kind).toBe('terminal-state');
+    if (selectedRecovery.kind !== 'terminal-state') {
+      throw new Error('expected terminal-state recovery for selected terminal');
+    }
     expect(selectedRecovery.cols).toBe(80);
+    expect(selectedRecovery.rows).toBe(24);
     expect(selectedRecovery.outputCursor).toBe(startupHistory.length);
-    const siblingRecovery = getAgentTerminalStartupRecovery(
+    const siblingRecovery = await getAgentTerminalStartupRecovery(
       'agent-startup-caps',
       Buffer.from('stale', 'utf8'),
       null,
       'visible-sibling',
       4,
     );
-    expect(siblingRecovery.kind).toBe('snapshot');
+    expect(siblingRecovery.kind).toBe('terminal-state');
+    if (siblingRecovery.kind !== 'terminal-state') {
+      throw new Error('expected terminal-state recovery for visible sibling');
+    }
     expect(siblingRecovery.cols).toBe(80);
+    expect(siblingRecovery.rows).toBe(24);
     expect(siblingRecovery.outputCursor).toBe(startupHistory.length);
   });
 
-  it('ignores client recovery cursors when building startup snapshots', () => {
+  it('uses backend terminal state instead of client cursors for startup recovery', async () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
 
@@ -633,7 +727,7 @@ describe('spawnAgent', () => {
 
     proc.emitData('0123456789abcdefghij');
 
-    const recovery = getAgentTerminalStartupRecovery(
+    const recovery = await getAgentTerminalStartupRecovery(
       'agent-startup-cursor',
       Buffer.from('0123456789', 'utf8'),
       10,
@@ -643,11 +737,50 @@ describe('spawnAgent', () => {
 
     expect(recovery.cols).toBe(80);
     expect(recovery.outputCursor).toBe(20);
-    expect(recovery.kind).toBe('snapshot');
-    if (recovery.kind !== 'snapshot') {
-      throw new Error('expected snapshot recovery');
+    expect(recovery.kind).toBe('terminal-state');
+    if (recovery.kind !== 'terminal-state') {
+      throw new Error('expected terminal-state recovery');
     }
     expect(recovery.data?.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to scrollback snapshots and records diagnostics when terminal-state serialization is unavailable', async () => {
+    const serializeSpy = vi
+      .spyOn(TerminalStateMirror.prototype, 'serialize')
+      .mockResolvedValueOnce(null);
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-startup-fallback',
+      agentId: 'agent-startup-fallback',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'startup-fallback' },
+    });
+
+    proc.emitData('fallback-history');
+
+    try {
+      const recovery = await getAgentTerminalStartupRecovery(
+        'agent-startup-fallback',
+        Buffer.from('stale', 'utf8'),
+        null,
+        'visible-sibling',
+        4,
+      );
+
+      expect(recovery.kind).toBe('snapshot');
+      expect(getBackendRuntimeDiagnosticsSnapshot().terminalRecovery.terminalStateFallbacks).toBe(
+        1,
+      );
+    } finally {
+      serializeSpy.mockRestore();
+    }
   });
 
   it('returns cursor-based delta recovery when the client cursor is within the retained window', () => {
@@ -675,6 +808,7 @@ describe('spawnAgent', () => {
       kind: 'delta',
       outputCursor: 10,
       overlapBytes: 0,
+      rows: 24,
       source: 'cursor',
     });
   });
@@ -705,6 +839,7 @@ describe('spawnAgent', () => {
       kind: 'delta',
       outputCursor: 10,
       overlapBytes: 0,
+      rows: 24,
       source: 'cursor',
     });
     expect(
@@ -713,6 +848,7 @@ describe('spawnAgent', () => {
       cols: 80,
       kind: 'noop',
       outputCursor: 10,
+      rows: 24,
     });
   });
 
@@ -742,6 +878,7 @@ describe('spawnAgent', () => {
       kind: 'delta',
       outputCursor: 6,
       overlapBytes: 3,
+      rows: 24,
       source: 'tail',
     });
   });

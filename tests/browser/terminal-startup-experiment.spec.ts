@@ -277,6 +277,8 @@ interface BackendRuntimeDiagnosticsSnapshot {
     returnedBytes: number;
     snapshotResponses: number;
     tailDeltaResponses: number;
+    terminalStateFallbacks: number;
+    terminalStateResponses: number;
   };
 }
 
@@ -347,7 +349,7 @@ interface TerminalReplayTraceEntry {
   pauseMs: number;
   reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss';
   recoveryFetchMs: number;
-  recoveryKind: 'noop' | 'delta' | 'snapshot';
+  recoveryKind: 'noop' | 'delta' | 'snapshot' | 'terminal-state';
   requestStateBytes: number;
   requestedAtMs: number;
   restoreTotalMs: number;

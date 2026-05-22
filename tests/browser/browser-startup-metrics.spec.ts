@@ -78,7 +78,7 @@ interface TerminalReplayTraceEntrySnapshot {
   primaryReadinessWaitMs: number;
   reason: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss';
   recoveryFetchMs: number;
-  recoveryKind: 'delta' | 'noop' | 'snapshot';
+  recoveryKind: 'delta' | 'noop' | 'snapshot' | 'terminal-state';
   revealSettleMs: number;
   requestStateBytes: number;
   restoreTotalMs: number;

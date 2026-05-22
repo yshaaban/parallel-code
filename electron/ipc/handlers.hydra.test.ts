@@ -4,11 +4,19 @@ import { IPC } from './channels.js';
 const {
   spawnAgentMock,
   ensurePlansDirectoryMock,
+  getAgentColsMock,
+  getAgentRowsMock,
+  hasAgentSessionMock,
+  resizeAgentMock,
   startPlanWatcherMock,
   startTaskGitStatusMonitoringMock,
 } = vi.hoisted(() => ({
   spawnAgentMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
+  getAgentColsMock: vi.fn(),
+  getAgentRowsMock: vi.fn(),
+  hasAgentSessionMock: vi.fn(),
+  resizeAgentMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
 }));
@@ -18,6 +26,10 @@ vi.mock('./pty.js', async () => {
   return {
     ...actual,
     spawnAgent: spawnAgentMock,
+    getAgentCols: getAgentColsMock,
+    getAgentRows: getAgentRowsMock,
+    hasAgentSession: hasAgentSessionMock,
+    resizeAgent: resizeAgentMock,
   };
 });
 
@@ -52,6 +64,9 @@ function buildContext(): HandlerContext {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getAgentColsMock.mockReturnValue(80);
+  getAgentRowsMock.mockReturnValue(24);
+  hasAgentSessionMock.mockReturnValue(false);
   startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
 });
 
@@ -149,5 +164,49 @@ describe('Hydra spawn handling', () => {
         isInternalNodeProcess: false,
       }),
     );
+  });
+
+  it('uses backend geometry for existing-session attach instead of requested local geometry', () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    hasAgentSessionMock.mockReturnValue(true);
+    getAgentColsMock.mockReturnValue(88);
+    getAgentRowsMock.mockReturnValue(26);
+
+    handlers[IPC.SpawnAgent]?.({
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      command: 'codex',
+      args: ['resume'],
+      cwd: '/tmp/parallel-code/worktree-one',
+      env: {},
+      cols: 120,
+      rows: 40,
+      controllerId: 'client-1',
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 88,
+        rows: 26,
+      }),
+    );
+  });
+
+  it('keeps explicit ResizeAgent as the handler resize path', () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    handlers[IPC.ResizeAgent]?.({
+      agentId: 'agent-1',
+      cols: 120,
+      rows: 40,
+      taskId: 'task-1',
+      controllerId: 'client-1',
+    });
+
+    expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40);
   });
 });

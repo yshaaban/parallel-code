@@ -36,6 +36,8 @@ interface RuntimeDiagnosticsSnapshot {
     returnedBytes: number;
     snapshotResponses: number;
     tailDeltaResponses: number;
+    terminalStateFallbacks: number;
+    terminalStateResponses: number;
   };
 }
 

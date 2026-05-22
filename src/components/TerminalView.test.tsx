@@ -582,7 +582,7 @@ describe('TerminalView', () => {
     expect(session.term.options.cursorBlink).toBe(false);
   });
 
-  it('restores DOM focus for a focused terminal after recovery completes in the foreground', async () => {
+  it('restores DOM focus for a focused terminal after recovery completes and paint is ready', async () => {
     const session = createMockTerminalSession();
     startTerminalSessionMock.mockReturnValueOnce(session);
     let documentFocused = false;
@@ -611,6 +611,11 @@ describe('TerminalView', () => {
 
     documentFocused = true;
     window.dispatchEvent(new Event('focus'));
+    await Promise.resolve();
+
+    expect(session.term.focus).not.toHaveBeenCalled();
+
+    getLastPaintReadyChangeHandler()?.(true);
     await Promise.resolve();
 
     expect(session.term.focus).toHaveBeenCalledTimes(1);

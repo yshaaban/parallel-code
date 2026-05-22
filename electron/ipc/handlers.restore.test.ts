@@ -213,6 +213,7 @@ describe('GetTerminalRecoveryBatch', () => {
             cols: 91,
             kind: 'noop',
             outputCursor: outputCursor ?? 14,
+            rows: 21,
           };
         }
 
@@ -225,6 +226,7 @@ describe('GetTerminalRecoveryBatch', () => {
             kind: 'delta',
             overlapBytes: renderedText.length,
             outputCursor: 23,
+            rows: 22,
             source: 'cursor',
           };
         }
@@ -234,6 +236,7 @@ describe('GetTerminalRecoveryBatch', () => {
           data: Buffer.from('snapshot-bytes', 'utf8'),
           kind: 'snapshot',
           outputCursor: 37,
+          rows: 23,
         };
       },
     );
@@ -250,16 +253,18 @@ describe('GetTerminalRecoveryBatch', () => {
           return {
             cols: 120,
             data: Buffer.from('selected-startup', 'utf8'),
-            kind: 'snapshot',
+            kind: 'terminal-state',
             outputCursor: 48,
+            rows: 32,
           };
         }
 
         return {
           cols: 96,
           data: Buffer.from('visible-startup', 'utf8'),
-          kind: 'snapshot',
+          kind: 'terminal-state',
           outputCursor: 25,
+          rows: 28,
         };
       },
     );
@@ -302,6 +307,7 @@ describe('GetTerminalRecoveryBatch', () => {
       cols: number;
       recovery: { kind: string; data?: string | null; overlapBytes?: number };
       requestId: string;
+      rows: number;
     }>;
 
     expect(result).toEqual([
@@ -313,6 +319,7 @@ describe('GetTerminalRecoveryBatch', () => {
           kind: 'noop',
         },
         requestId: 'req-noop',
+        rows: 21,
       },
       {
         agentId: 'agent-delta',
@@ -325,6 +332,7 @@ describe('GetTerminalRecoveryBatch', () => {
           source: 'cursor',
         },
         requestId: 'req-delta',
+        rows: 22,
       },
       {
         agentId: 'agent-snapshot',
@@ -335,6 +343,7 @@ describe('GetTerminalRecoveryBatch', () => {
           data: Buffer.from('snapshot-bytes', 'utf8').toString('base64'),
         },
         requestId: 'req-snapshot',
+        rows: 23,
       },
     ]);
     expect(pauseAgentMock).toHaveBeenCalledTimes(3);
@@ -350,6 +359,8 @@ describe('GetTerminalRecoveryBatch', () => {
         Buffer.byteLength('delta-bytes', 'utf8') + Buffer.byteLength('snapshot-bytes', 'utf8'),
       snapshotResponses: 1,
       tailDeltaResponses: 0,
+      terminalStateFallbacks: 0,
+      terminalStateResponses: 0,
     });
     expect(getBackendRuntimeDiagnosticsSnapshot().scrollbackReplay).toMatchObject({
       batchRequests: 0,
@@ -378,6 +389,7 @@ describe('GetTerminalRecoveryBatch', () => {
       outputCursor: number;
       recovery: { kind: string; data?: string | null };
       requestId: string;
+      rows: number;
     }>;
 
     expect(result).toEqual([
@@ -390,6 +402,7 @@ describe('GetTerminalRecoveryBatch', () => {
           data: Buffer.from('snapshot-bytes', 'utf8').toString('base64'),
         },
         requestId: 'req-snapshot',
+        rows: 23,
       },
     ]);
     expect(pauseAgentMock).not.toHaveBeenCalled();
@@ -437,6 +450,7 @@ describe('GetTerminalRecoveryBatch', () => {
       outputCursor: number;
       recovery: { kind: string; data?: string | null; overlapBytes?: number; source?: string };
       requestId: string;
+      rows: number;
     }>;
 
     expect(result).toEqual([
@@ -445,20 +459,22 @@ describe('GetTerminalRecoveryBatch', () => {
         cols: 120,
         outputCursor: 48,
         recovery: {
-          kind: 'snapshot',
+          kind: 'terminal-state',
           data: Buffer.from('selected-startup', 'utf8').toString('base64'),
         },
         requestId: 'req-selected',
+        rows: 32,
       },
       {
         agentId: 'agent-visible',
         cols: 96,
         outputCursor: 25,
         recovery: {
-          kind: 'snapshot',
+          kind: 'terminal-state',
           data: Buffer.from('visible-startup', 'utf8').toString('base64'),
         },
         requestId: 'req-visible',
+        rows: 28,
       },
     ]);
     expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
@@ -475,5 +491,9 @@ describe('GetTerminalRecoveryBatch', () => {
       'visible-sibling',
       2,
     );
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalRecovery).toMatchObject({
+      snapshotResponses: 0,
+      terminalStateResponses: 2,
+    });
   });
 });
