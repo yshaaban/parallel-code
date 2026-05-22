@@ -52,14 +52,14 @@ type MockProc = {
   resize: (cols: number, rows: number) => void;
   write: (data: string) => void;
   kill: () => void;
-  onData: (cb: (data: string) => void) => void;
+  onData: (cb: (data: string | Buffer) => void) => void;
   onExit: (cb: (info: { exitCode: number | null; signal?: number | null }) => void) => void;
-  emitData: (data: string) => void;
+  emitData: (data: string | Buffer) => void;
   emitExit: (info: { exitCode: number | null; signal?: number | null }) => void;
 };
 
 function createMockProc(): MockProc {
-  let onDataCb: ((data: string) => void) | undefined;
+  let onDataCb: ((data: string | Buffer) => void) | undefined;
   let onExitCb: ((info: { exitCode: number | null; signal?: number | null }) => void) | undefined;
 
   const proc: MockProc = {
@@ -79,7 +79,7 @@ function createMockProc(): MockProc {
     onExit: vi.fn((cb) => {
       onExitCb = cb;
     }),
-    emitData: (data: string) => {
+    emitData: (data: string | Buffer) => {
       onDataCb?.(data);
     },
     emitExit: (info) => {
@@ -146,6 +146,65 @@ describe('validateCommand', () => {
 });
 
 describe('spawnAgent', () => {
+  it('requests raw PTY output bytes on Unix-like platforms', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-raw-output-option',
+      agentId: 'agent-raw-output-option',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'raw-output-option-channel' },
+    });
+
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as { encoding?: string | null } | undefined;
+    if (process.platform === 'win32') {
+      expect(spawnOptions).not.toHaveProperty('encoding');
+    } else {
+      expect(spawnOptions?.encoding).toBeNull();
+    }
+  });
+
+  it('keeps raw PTY bytes in output, scrollback, and recovery cursors', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    const sendToChannel = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-raw-output',
+      agentId: 'agent-raw-output',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'raw-output-channel' },
+    });
+
+    const rawChunk = Buffer.from([0xff, 0x00, 0x41, 0xc3, 0x28]);
+    proc.emitData(rawChunk);
+    vi.advanceTimersByTime(4);
+
+    expect(sendToChannel).toHaveBeenCalledWith('raw-output-channel', {
+      type: 'Data',
+      data: rawChunk.toString('base64'),
+    });
+    expect(getAgentTerminalRecovery('agent-raw-output', null)).toEqual({
+      cols: 80,
+      data: rawChunk,
+      kind: 'snapshot',
+      outputCursor: rawChunk.length,
+      rows: 24,
+    });
+  });
+
   it('registers backend terminal input traces when traced shell input arrives', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -323,6 +382,7 @@ describe('spawnAgent', () => {
       expect(onExit).toHaveBeenLastCalledWith('agent-same', {
         exitCode: 0,
         generation: 0,
+        lastOutput: [],
         signal: null,
       });
       expect(getAgentMeta('agent-same')).toEqual({
@@ -429,6 +489,7 @@ describe('spawnAgent', () => {
       expect(onExit).toHaveBeenCalledWith('agent-reattach-metadata', {
         exitCode: 0,
         generation: 0,
+        lastOutput: ['hello'],
         signal: null,
       });
     } finally {
@@ -987,6 +1048,77 @@ describe('spawnAgent', () => {
 
     expect(proc.write).toHaveBeenCalledTimes(1);
     expect(proc.write).toHaveBeenCalledWith('echo hello\r');
+  });
+
+  it('writes request-tracked terminal input in sequence when requests arrive out of order', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-ordered-input',
+      agentId: 'agent-ordered-input',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'ordered-input' },
+    });
+
+    writeToAgent('agent-ordered-input', 'second\r', undefined, {
+      inputEpoch: 'epoch-one',
+      inputSeq: 1,
+    });
+    writeToAgent('agent-ordered-input', 'first\r', undefined, {
+      inputEpoch: 'epoch-one',
+      inputSeq: 0,
+    });
+
+    expect(proc.write).toHaveBeenCalledTimes(2);
+    expect(
+      vi
+        .mocked(proc.write)
+        .mock.calls.map(([data]) => data)
+        .join(''),
+    ).toBe('first\rsecond\r');
+  });
+
+  it('rotates ordered terminal input epochs and ignores stale gaps', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-ordered-input-epoch',
+      agentId: 'agent-ordered-input-epoch',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'ordered-input-epoch' },
+    });
+
+    writeToAgent('agent-ordered-input-epoch', 'stale-later\r', undefined, {
+      inputEpoch: 'old-epoch',
+      inputSeq: 1,
+    });
+    writeToAgent('agent-ordered-input-epoch', 'fresh\r', undefined, {
+      inputEpoch: 'new-epoch',
+      inputSeq: 0,
+    });
+    writeToAgent('agent-ordered-input-epoch', 'stale-first\r', undefined, {
+      inputEpoch: 'old-epoch',
+      inputSeq: 0,
+    });
+
+    expect(
+      vi
+        .mocked(proc.write)
+        .mock.calls.map(([data]) => data)
+        .join(''),
+    ).toBe('fresh\r');
   });
 
   it('splits oversized browser paste input before writing to the PTY', () => {

@@ -13,6 +13,7 @@ const {
   getAgentColsMock,
   getAgentTerminalRecoveryMock,
   getAgentTerminalStartupRecoveryMock,
+  hasAgentSessionMock,
 } = vi.hoisted(() => ({
   pauseAgentMock: vi.fn(),
   resumeAgentMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   getAgentColsMock: vi.fn(),
   getAgentTerminalRecoveryMock: vi.fn(),
   getAgentTerminalStartupRecoveryMock: vi.fn(),
+  hasAgentSessionMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -34,6 +36,7 @@ vi.mock('./pty.js', async () => {
     getAgentCols: getAgentColsMock,
     getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
     getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
+    hasAgentSession: hasAgentSessionMock,
   };
 });
 
@@ -56,6 +59,7 @@ describe('GetScrollbackBatch', () => {
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
     getAgentPauseStateMock.mockReturnValue(null);
+    hasAgentSessionMock.mockReturnValue(true);
     getAgentScrollbackMock.mockImplementation((agentId: string) =>
       Buffer.from(`scrollback:${agentId}`, 'utf8').toString('base64'),
     );
@@ -104,6 +108,21 @@ describe('GetScrollbackBatch', () => {
         Buffer.byteLength('scrollback:agent-a', 'utf8') +
         Buffer.byteLength('scrollback:agent-b', 'utf8'),
     });
+  });
+
+  it('does not pause missing agents before returning scrollback batch entries', async () => {
+    hasAgentSessionMock.mockImplementation((agentId: string) => agentId === 'agent-live');
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetScrollbackBatch]?.({
+      agentIds: ['agent-live', 'agent-missing'],
+    })) as Array<{ agentId: string; scrollback: string | null; cols: number }>;
+
+    expect(result.map((entry) => entry.agentId)).toEqual(['agent-live', 'agent-missing']);
+    expect(pauseAgentMock).toHaveBeenCalledTimes(1);
+    expect(pauseAgentMock).toHaveBeenCalledWith('agent-live', 'restore');
+    expect(resumeAgentMock).toHaveBeenCalledTimes(1);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-live', 'restore');
   });
 
   it('dedupes concurrent identical scrollback batch requests', async () => {
@@ -200,6 +219,8 @@ describe('GetTerminalRecoveryBatch', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
+    getAgentPauseStateMock.mockReturnValue(null);
+    hasAgentSessionMock.mockReturnValue(true);
     getAgentTerminalRecoveryMock.mockImplementation(
       (
         agentId: string,
@@ -429,6 +450,36 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null, 4096);
   });
 
+  it('does not pause missing agents before returning terminal recovery entries', async () => {
+    hasAgentSessionMock.mockImplementation((agentId: string) => agentId === 'agent-noop');
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetTerminalRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-noop',
+          outputCursor: 14,
+          renderedTail: null,
+          requestId: 'req-live',
+          snapshotByteLimit: null,
+        },
+        {
+          agentId: 'agent-snapshot',
+          outputCursor: null,
+          renderedTail: null,
+          requestId: 'req-missing',
+          snapshotByteLimit: null,
+        },
+      ],
+    })) as Array<{ agentId: string; requestId: string }>;
+
+    expect(result.map((entry) => entry.requestId)).toEqual(['req-live', 'req-missing']);
+    expect(pauseAgentMock).toHaveBeenCalledTimes(1);
+    expect(pauseAgentMock).toHaveBeenCalledWith('agent-noop', 'restore');
+    expect(resumeAgentMock).toHaveBeenCalledTimes(1);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-noop', 'restore');
+  });
+
   it('rejects malformed rendered tail base64 before decoding recovery requests', async () => {
     const handlers = createIpcHandlers(buildContext());
 
@@ -579,6 +630,34 @@ describe('GetTerminalRecoveryBatch', () => {
       'visible-sibling',
       4,
     );
+  });
+
+  it('does not pause missing agents before returning terminal startup recovery entries', async () => {
+    hasAgentSessionMock.mockImplementation((agentId: string) => agentId === 'agent-selected');
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: 'req-live',
+          role: 'selected',
+          visibleTerminalCount: 2,
+        },
+        {
+          agentId: 'agent-visible',
+          requestId: 'req-missing',
+          role: 'visible-sibling',
+          visibleTerminalCount: 2,
+        },
+      ],
+    })) as Array<{ agentId: string; requestId: string }>;
+
+    expect(result.map((entry) => entry.requestId)).toEqual(['req-live', 'req-missing']);
+    expect(pauseAgentMock).toHaveBeenCalledTimes(1);
+    expect(pauseAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
+    expect(resumeAgentMock).toHaveBeenCalledTimes(1);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
   });
 
   it('rejects non-positive explicit visible startup terminal counts', async () => {

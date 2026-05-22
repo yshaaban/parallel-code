@@ -171,11 +171,20 @@ interface BrowserInputSendOptions {
   awaitCommandResult?: boolean;
   canSend?: () => boolean;
   controllerId?: string;
+  inputEpoch?: string;
+  inputSeq?: number;
   onCommandResultReceived?: (receivedAtMs: number) => void;
   requestId?: string;
   taskId?: string;
   trace?: TerminalInputTraceMessage;
 }
+
+type BrowserInputOrderContext = Partial<
+  Pick<Extract<ClientMessage, { type: 'input' }>, 'inputEpoch' | 'inputSeq'>
+>;
+type BrowserResizeOrderContext = Partial<
+  Pick<Extract<ClientMessage, { type: 'resize' }>, 'resizeEpoch' | 'resizeSeq'>
+>;
 
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
 const pendingTerminalTraceClockSyncRequests = new Map<string, number>();
@@ -608,11 +617,54 @@ function createBrowserTaskControlContext(options: {
     : {};
 }
 
+function createBrowserInputOrderContext(options: {
+  inputEpoch?: string | undefined;
+  inputSeq?: number | undefined;
+}): BrowserInputOrderContext {
+  if (options.inputEpoch === undefined || options.inputSeq === undefined) {
+    return {};
+  }
+
+  return {
+    inputEpoch: options.inputEpoch,
+    inputSeq: options.inputSeq,
+  };
+}
+
+function createBrowserInputChunkOrderContext(
+  options: {
+    inputEpoch?: string | undefined;
+    inputSeq?: number | undefined;
+  },
+  chunkIndex: number,
+): BrowserInputOrderContext {
+  return createBrowserInputOrderContext({
+    inputEpoch: options.inputEpoch,
+    inputSeq: options.inputSeq !== undefined ? options.inputSeq + chunkIndex : undefined,
+  });
+}
+
+function createBrowserResizeOrderContext(options: {
+  resizeEpoch?: string | undefined;
+  resizeSeq?: number | undefined;
+}): BrowserResizeOrderContext {
+  if (options.resizeEpoch === undefined || options.resizeSeq === undefined) {
+    return {};
+  }
+
+  return {
+    resizeEpoch: options.resizeEpoch,
+    resizeSeq: options.resizeSeq,
+  };
+}
+
 function createBrowserInputMessage(
   agentId: string,
   data: string,
   options: {
     controllerId?: string;
+    inputEpoch?: string;
+    inputSeq?: number;
     requestId?: string;
     taskId?: string;
     trace?: TerminalInputTraceMessage;
@@ -623,6 +675,7 @@ function createBrowserInputMessage(
     agentId,
     data,
     ...createBrowserTaskControlContext(options),
+    ...createBrowserInputOrderContext(options),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.trace ? { trace: options.trace } : {}),
   };
@@ -769,6 +822,7 @@ function createBrowserResizeMessage(
     cols: args.cols,
     ...createBrowserTaskControlContext(args),
     requestId,
+    ...createBrowserResizeOrderContext(args),
     rows: args.rows,
   };
 }
@@ -816,6 +870,7 @@ async function sendBrowserInput(
       await sendNonQueueableBrowserCommand(
         createBrowserInputMessage(agentId, chunk, {
           ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+          ...createBrowserInputChunkOrderContext(options, index),
           ...(options.taskId ? { taskId: options.taskId } : {}),
           ...(index === 0 && options.requestId ? { requestId: options.requestId } : {}),
           ...(index === 0 && options.trace ? { trace: options.trace } : {}),
@@ -837,6 +892,7 @@ async function sendBrowserInput(
       { agentId, command: 'input' },
       createBrowserInputMessage(agentId, chunk, {
         ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+        ...createBrowserInputChunkOrderContext(options, index),
         requestId,
         ...(options.taskId ? { taskId: options.taskId } : {}),
         ...(index === 0 && options.trace ? { trace: options.trace } : {}),
@@ -922,6 +978,7 @@ async function browserInvoke(
     case IPC.WriteToAgent: {
       await sendBrowserInput(args.agentId, args.data, {
         ...(args.controllerId ? { controllerId: args.controllerId } : {}),
+        ...createBrowserInputOrderContext(args),
         ...(args.requestId ? { requestId: args.requestId } : {}),
         ...(args.taskId ? { taskId: args.taskId } : {}),
         ...(args.trace ? { trace: args.trace } : {}),
@@ -1123,7 +1180,26 @@ export async function sendTerminalInput(
       throw new Error('Electron IPC bridge is unavailable');
     }
 
-    await invokeElectronTransport(electron, IPC.WriteToAgent, request);
+    const inputChunks = splitBrowserInputData(request.data);
+    const requestWithoutTrace = { ...request };
+    delete requestWithoutTrace.trace;
+    for (const [index, chunk] of inputChunks.entries()) {
+      const baseRequest = index === 0 ? request : requestWithoutTrace;
+      await invokeElectronTransport(electron, IPC.WriteToAgent, {
+        ...baseRequest,
+        data: chunk,
+        ...createBrowserInputChunkOrderContext(request, index),
+        ...(request.requestId !== undefined && inputChunks.length > 1
+          ? {
+              requestId: getBrowserAgentCommandRequestId(
+                request.requestId,
+                inputChunks.length,
+                index,
+              ),
+            }
+          : {}),
+      });
+    }
     return;
   }
 
@@ -1131,6 +1207,7 @@ export async function sendTerminalInput(
   await sendBrowserInput(request.agentId, request.data, {
     canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
     ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+    ...createBrowserInputOrderContext(request),
     ...(options.onBrowserCommandResultReceived
       ? { onCommandResultReceived: options.onBrowserCommandResultReceived }
       : {}),

@@ -117,6 +117,8 @@ export interface RendererInvokeRequestMap {
     agentId: string;
     controllerId?: string;
     data: string;
+    inputEpoch?: string;
+    inputSeq?: number;
     requestId?: string;
     taskId?: string;
     trace?: TerminalInputTraceMessage;
@@ -126,6 +128,8 @@ export interface RendererInvokeRequestMap {
     cols: number;
     controllerId?: string;
     requestId?: string;
+    resizeEpoch?: string;
+    resizeSeq?: number;
     rows: number;
     taskId?: string;
   };

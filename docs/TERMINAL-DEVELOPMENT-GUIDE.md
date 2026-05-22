@@ -4,7 +4,8 @@ This document is the practical contributor guide for terminal, browser-control, 
 restore, and terminal-performance work in Parallel Code.
 
 Read this after [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md),
-[ARCHITECTURE.md](./ARCHITECTURE.md), and [TESTING.md](./TESTING.md).
+[ARCHITECTURE.md](./ARCHITECTURE.md), [TERMINAL-CONTRACT.md](./TERMINAL-CONTRACT.md), and
+[TESTING.md](./TESTING.md).
 
 Use this guide when you are:
 

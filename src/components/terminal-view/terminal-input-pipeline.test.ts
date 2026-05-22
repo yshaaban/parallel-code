@@ -949,6 +949,58 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('retries failed terminal input with the same ordering token for backend idempotency', async () => {
+    vi.mocked(sendTerminalInput)
+      .mockRejectedValueOnce(new Error('socket closed after partial input'))
+      .mockResolvedValue(undefined);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('retry-safe\r');
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(50);
+    await flushMicrotasks();
+
+    const inputRequests = vi.mocked(sendTerminalInput).mock.calls.map(([request]) => request);
+    expect(inputRequests).toHaveLength(2);
+    expect(inputRequests[0]).toEqual(
+      expect.objectContaining({
+        data: 'retry-safe\r',
+        inputEpoch: expect.any(String),
+        inputSeq: 0,
+      }),
+    );
+    expect(inputRequests[1]).toEqual(
+      expect.objectContaining({
+        data: 'retry-safe\r',
+        inputEpoch: inputRequests[0]?.inputEpoch,
+        inputSeq: inputRequests[0]?.inputSeq,
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
   it('records task-command lease wait separately from input dispatch timing', async () => {
     window.__TERMINAL_PERF__ = true;
     const acquireDeferred = createDeferred<boolean>();
@@ -1083,14 +1135,19 @@ describe('terminal-input-pipeline', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
 
     pipeline.cleanup();
   });
@@ -1148,14 +1205,19 @@ describe('terminal-input-pipeline', () => {
     await flushMicrotasks();
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 132,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 36,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 132,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 36,
+        taskId: 'task-1',
+      }),
+    );
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
       IPC.ResizeAgent,
       expect.objectContaining({ cols: 100, rows: 30 }),
@@ -1208,14 +1270,19 @@ describe('terminal-input-pipeline', () => {
     await flushMicrotasks();
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 132,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 36,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 132,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 36,
+        taskId: 'task-1',
+      }),
+    );
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
       IPC.ResizeAgent,
       expect.objectContaining({ cols: 100, rows: 30 }),
@@ -1457,14 +1524,19 @@ describe('terminal-input-pipeline', () => {
     pipeline.flushPendingResize();
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
 
     pipeline.cleanup();
   });
@@ -1500,14 +1572,72 @@ describe('terminal-input-pipeline', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 101,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 30,
+        taskId: 'task-1',
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('rotates resize ordering epochs when a committed resize must be retried', async () => {
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(new Error('resize failed'))
+      .mockResolvedValue(undefined);
+    const pipeline = createTerminalInputPipeline({
       agentId: 'agent-1',
-      cols: 101,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 30,
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
       taskId: 'task-1',
+      term: createTestTerminal(),
     });
+
+    pipeline.handleTerminalResize(120, 40);
+    await vi.advanceTimersByTimeAsync(120);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(120);
+    await flushMicrotasks();
+
+    const resizeRequests = vi
+      .mocked(invoke)
+      .mock.calls.filter(([channel]) => channel === IPC.ResizeAgent)
+      .map(([, request]) => request as { resizeEpoch: string; resizeSeq: number });
+
+    expect(resizeRequests).toHaveLength(2);
+    expect(resizeRequests[0]).toEqual(
+      expect.objectContaining({
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+      }),
+    );
+    expect(resizeRequests[1]).toEqual(
+      expect.objectContaining({
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+      }),
+    );
+    expect(resizeRequests[1]?.resizeEpoch).not.toBe(resizeRequests[0]?.resizeEpoch);
 
     pipeline.cleanup();
   });
@@ -1561,14 +1691,19 @@ describe('terminal-input-pipeline', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
     expect(onResizeCommitted).toHaveBeenCalledWith({ cols: 120, rows: 40 });
 
     pipeline.cleanup();
@@ -1607,14 +1742,19 @@ describe('terminal-input-pipeline', () => {
 
     await pipeline.flushPendingResizeForRecoveryAlignment();
 
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
 
     restoreBlocked = false;
     pipeline.cleanup();
@@ -1644,14 +1784,19 @@ describe('terminal-input-pipeline', () => {
 
     await pipeline.flushPendingResizeForRecoveryAlignment();
 
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
 
     pipeline.cleanup();
   });
@@ -1688,14 +1833,19 @@ describe('terminal-input-pipeline', () => {
 
     await pipeline.flushPendingResizeForRecoveryAlignment();
 
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
-      agentId: 'agent-1',
-      cols: 120,
-      controllerId: 'runtime-client-1',
-      requestId: expect.any(String),
-      rows: 40,
-      taskId: 'task-1',
-    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        requestId: expect.any(String),
+        resizeEpoch: expect.any(String),
+        resizeSeq: expect.any(Number),
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
 
     pipeline.cleanup();
   });

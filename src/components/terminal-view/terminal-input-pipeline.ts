@@ -1,6 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
+import { MAX_CLIENT_INPUT_DATA_LENGTH } from '../../../electron/remote/protocol';
 import {
   BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE,
   cancelBrowserAgentCommandRequest,
@@ -79,7 +80,9 @@ interface InFlightInputBatch {
   batch: string;
   bufferedAtMs: number;
   count: number;
+  inputEpoch: string;
   inputKind: TerminalInputTraceKind;
+  inputSeq: number;
   queuedAt: number;
   requestId: string;
   startedAtMs: number;
@@ -312,6 +315,10 @@ export function createTerminalInputPipeline(
   } | null = null;
   const inputQueue: QueuedInputChunk[] = [];
   const inFlightInputBatches: InFlightInputBatch[] = [];
+  let inputEpoch = createRandomId();
+  let nextInputSeq = 0;
+  let resizeEpoch = createRandomId();
+  let nextResizeSeq = 0;
   let inputLifecycleGeneration = 0;
   let inputFlushTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let inputLeaseAcquirePromise: Promise<boolean> | null = null;
@@ -350,7 +357,18 @@ export function createTerminalInputPipeline(
     nextProgrammaticInputTrace = null;
     pendingInputTraceEchoes.clear();
     pendingInputTraceOutputTail = '';
+    rotateInputOrderingEpoch();
     updateInputQueueDiagnostics();
+  }
+
+  function rotateInputOrderingEpoch(): void {
+    inputEpoch = createRandomId();
+    nextInputSeq = 0;
+  }
+
+  function rotateResizeOrderingEpoch(): void {
+    resizeEpoch = createRandomId();
+    nextResizeSeq = 0;
   }
 
   function resetPendingInputState(): void {
@@ -390,6 +408,7 @@ export function createTerminalInputPipeline(
       pendingInputTraceEchoes.delete(batch.requestId);
     }
     inFlightInputBatches.length = 0;
+    rotateInputOrderingEpoch();
     inputLifecycleGeneration += 1;
     updateInputQueueDiagnostics();
   }
@@ -401,6 +420,7 @@ export function createTerminalInputPipeline(
 
     cancelBrowserAgentCommandRequest(resizeState.requestId);
     setResizeIdle();
+    rotateResizeOrderingEpoch();
     resizeLifecycleGeneration += 1;
   }
 
@@ -733,13 +753,19 @@ export function createTerminalInputPipeline(
     const batch = {
       ...nextBatch,
       bufferedAtMs: traceSummary.bufferedAtMs,
+      inputEpoch,
       inputKind: traceSummary.inputKind,
+      inputSeq: nextInputSeq,
       queuedAt: queuedBatchEntries[0]?.queuedAt ?? 0,
       requestId: createRandomId(),
       startedAtMs: traceSummary.startedAtMs,
       status: 'sending' as const,
       traceEchoText: getTraceEchoText(nextBatch.batch),
     };
+    nextInputSeq += Math.max(
+      1,
+      splitTerminalInputChunks(batch.batch, MAX_CLIENT_INPUT_DATA_LENGTH).length,
+    );
     inFlightInputBatches.push(batch);
     updateInputQueueDiagnostics();
     return batch;
@@ -803,11 +829,15 @@ export function createTerminalInputPipeline(
     }
 
     const droppedBatches = inFlightInputBatches.splice(batchIndex);
+    const firstDroppedBatch = droppedBatches[0];
     for (const [index, batch] of droppedBatches.entries()) {
       pendingInputTraceEchoes.delete(batch.requestId);
       if (index > 0) {
         cancelBrowserAgentCommandRequest(batch.requestId);
       }
+    }
+    if (firstDroppedBatch) {
+      nextInputSeq = firstDroppedBatch.inputSeq;
     }
     recordTerminalInputDroppedSuffixBatches(droppedBatches.length);
     updateInputQueueDiagnostics();
@@ -853,6 +883,8 @@ export function createTerminalInputPipeline(
         agentId,
         controllerId: runtimeClientId,
         data: batch.batch,
+        inputEpoch: batch.inputEpoch,
+        inputSeq: batch.inputSeq,
         requestId: batch.requestId,
         taskId,
         ...(trace ? { trace } : {}),
@@ -1193,6 +1225,8 @@ export function createTerminalInputPipeline(
 
     recordTerminalResizeCommitAttempt();
     const requestId = createRandomId();
+    const resizeSeq = nextResizeSeq;
+    nextResizeSeq += 1;
     const resizeGeneration = resizeLifecycleGeneration;
     setResizeState({
       generation: resizeGeneration,
@@ -1207,6 +1241,8 @@ export function createTerminalInputPipeline(
       cols,
       controllerId: runtimeClientId,
       requestId,
+      resizeEpoch,
+      resizeSeq,
       rows,
       taskId,
     })
@@ -1242,6 +1278,7 @@ export function createTerminalInputPipeline(
           return;
         }
 
+        rotateResizeOrderingEpoch();
         if (resizeState.kind === 'sending' && resizeState.requestId === requestId) {
           setResizeState({
             ...resizeState,

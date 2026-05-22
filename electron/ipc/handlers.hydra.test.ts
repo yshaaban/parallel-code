@@ -10,6 +10,7 @@ const {
   resizeAgentMock,
   startPlanWatcherMock,
   startTaskGitStatusMonitoringMock,
+  writeToAgentMock,
 } = vi.hoisted(() => ({
   spawnAgentMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
@@ -19,6 +20,7 @@ const {
   resizeAgentMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
+  writeToAgentMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -30,6 +32,7 @@ vi.mock('./pty.js', async () => {
     getAgentRows: getAgentRowsMock,
     hasAgentSession: hasAgentSessionMock,
     resizeAgent: resizeAgentMock,
+    writeToAgent: writeToAgentMock,
   };
 });
 
@@ -207,6 +210,62 @@ describe('Hydra spawn handling', () => {
       controllerId: 'client-1',
     });
 
-    expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40);
+    expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40, undefined);
+  });
+
+  it('passes paired terminal ordering tokens through handler validation', () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    handlers[IPC.WriteToAgent]?.({
+      agentId: 'agent-1',
+      data: 'pwd\r',
+      inputEpoch: 'input-epoch-1',
+      inputSeq: 0,
+    });
+    handlers[IPC.ResizeAgent]?.({
+      agentId: 'agent-1',
+      cols: 120,
+      resizeEpoch: 'resize-epoch-1',
+      resizeSeq: 0,
+      rows: 40,
+    });
+
+    expect(writeToAgentMock).toHaveBeenCalledWith('agent-1', 'pwd\r', undefined, {
+      inputEpoch: 'input-epoch-1',
+      inputSeq: 0,
+    });
+    expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40, {
+      resizeEpoch: 'resize-epoch-1',
+      resizeSeq: 0,
+    });
+  });
+
+  it('rejects partial, empty, and negative terminal ordering tokens at the IPC boundary', () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    expect(() =>
+      handlers[IPC.WriteToAgent]?.({
+        agentId: 'agent-1',
+        data: 'pwd\r',
+        inputEpoch: 'input-epoch-1',
+      }),
+    ).toThrow('inputEpoch and inputSeq must both be provided');
+    expect(() =>
+      handlers[IPC.WriteToAgent]?.({
+        agentId: 'agent-1',
+        data: 'pwd\r',
+        inputEpoch: '',
+        inputSeq: 0,
+      }),
+    ).toThrow('inputEpoch must be a non-empty string');
+    expect(() =>
+      handlers[IPC.ResizeAgent]?.({
+        agentId: 'agent-1',
+        cols: 120,
+        resizeEpoch: 'resize-epoch-1',
+        resizeSeq: -1,
+        rows: 40,
+      }),
+    ).toThrow('resizeSeq must be a non-negative integer');
   });
 });

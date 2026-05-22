@@ -4,6 +4,9 @@ Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you a
 For the practical contributor workflow around browser terminals, restore, browser-lab validation,
 and non-obvious terminal lifecycle rules, read
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
+For the durable terminal behavior contract covering byte fidelity, stream messages, recovery,
+readiness, flow control, parity, and degraded platform behavior, read
+[TERMINAL-CONTRACT.md](./TERMINAL-CONTRACT.md).
 For task/worktree-scoped Docker Compose support, inspect semantics, and lifecycle boundaries, read
 [TASK-CONTAINER-ENVIRONMENTS.md](./TASK-CONTAINER-ENVIRONMENTS.md).
 For the current explicit git-isolation model, migration rules, and remaining compatibility cleanup, read

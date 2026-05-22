@@ -16,6 +16,12 @@ import type {
   TerminalInputTraceKind,
   TerminalInputTraceMessage,
 } from '../../src/domain/terminal-input-tracing.js';
+import type {
+  PtyExitData,
+  TerminalRecoveryBatchEntry,
+  TerminalRecoveryPayload,
+  TerminalStartupRecoveryRole,
+} from '../../src/ipc/types.js';
 import {
   isGitStatusSyncEvent,
   isPauseReason,
@@ -84,6 +90,31 @@ export interface ScrollbackMessage {
   agentId: string;
   data: string; // base64
   cols: number;
+}
+
+export type RemoteTerminalStreamEvent =
+  | {
+      type: 'Data';
+      data: string; // base64
+    }
+  | {
+      type: 'Exit';
+      data: PtyExitData;
+    }
+  | {
+      type: 'RecoveryRequired';
+      reason: 'attach' | 'backpressure';
+    };
+
+export interface TerminalStreamMessage {
+  type: 'terminal-stream';
+  agentId: string;
+  event: RemoteTerminalStreamEvent;
+}
+
+export interface TerminalRecoveryResultMessage {
+  type: 'terminal-recovery-result';
+  entry: TerminalRecoveryBatchEntry;
 }
 
 export interface PongMessage {
@@ -206,6 +237,8 @@ export type ServerMessage =
   | StatusMessage
   | AgentsMessage
   | ScrollbackMessage
+  | TerminalStreamMessage
+  | TerminalRecoveryResultMessage
   | PongMessage
   | ChannelMessage
   | IpcEventMessage
@@ -248,6 +281,24 @@ const TASK_COMMAND_TAKEOVER_RESULT_DECISION_VALUES = {
   'force-required': true,
   'owner-missing': true,
 } as const satisfies Record<TaskCommandTakeoverResultMessage['decision'], true>;
+
+const TERMINAL_STREAM_RECOVERY_REASON_VALUES = {
+  attach: true,
+  backpressure: true,
+} as const satisfies Record<
+  Extract<RemoteTerminalStreamEvent, { type: 'RecoveryRequired' }>['reason'],
+  true
+>;
+
+const TERMINAL_RECOVERY_SOURCE_VALUES = {
+  cursor: true,
+  tail: true,
+} as const satisfies Record<Extract<TerminalRecoveryPayload, { kind: 'delta' }>['source'], true>;
+
+const TERMINAL_STARTUP_RECOVERY_ROLE_VALUES = {
+  selected: true,
+  'visible-sibling': true,
+} as const satisfies Record<TerminalStartupRecoveryRole, true>;
 
 type ServerMessageGuard<TType extends ServerMessage['type']> = (
   value: unknown,
@@ -294,6 +345,83 @@ function isScrollbackMessage(value: unknown): value is ScrollbackMessage {
     typeof value.data === 'string' &&
     isValidBase64(value.data) &&
     isPositiveInteger(value.cols)
+  );
+}
+
+function isPtyExitData(value: unknown): value is PtyExitData {
+  return (
+    isRecord(value) &&
+    isNullableNonNegativeInteger(value.exit_code) &&
+    isNullableString(value.signal) &&
+    isArrayOf(value.last_output, (entry): entry is string => typeof entry === 'string')
+  );
+}
+
+function isRemoteTerminalStreamEvent(value: unknown): value is RemoteTerminalStreamEvent {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.type) {
+    case 'Data':
+      return typeof value.data === 'string' && isValidBase64(value.data);
+    case 'Exit':
+      return isPtyExitData(value.data);
+    case 'RecoveryRequired':
+      return isStringMember(value.reason, TERMINAL_STREAM_RECOVERY_REASON_VALUES);
+    default:
+      return false;
+  }
+}
+
+function isTerminalStreamMessage(value: unknown): value is TerminalStreamMessage {
+  return (
+    hasServerMessageType(value, 'terminal-stream') &&
+    typeof value.agentId === 'string' &&
+    isRemoteTerminalStreamEvent(value.event)
+  );
+}
+
+function isTerminalRecoveryPayload(value: unknown): value is TerminalRecoveryPayload {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.kind) {
+    case 'delta':
+      return (
+        typeof value.data === 'string' &&
+        isValidBase64(value.data) &&
+        isNonNegativeInteger(value.overlapBytes) &&
+        isStringMember(value.source, TERMINAL_RECOVERY_SOURCE_VALUES)
+      );
+    case 'noop':
+      return true;
+    case 'snapshot':
+      return value.data === null || (typeof value.data === 'string' && isValidBase64(value.data));
+    case 'terminal-state':
+      return typeof value.data === 'string' && isValidBase64(value.data);
+    default:
+      return false;
+  }
+}
+
+function isTerminalRecoveryBatchEntry(value: unknown): value is TerminalRecoveryBatchEntry {
+  return (
+    isRecord(value) &&
+    typeof value.agentId === 'string' &&
+    isPositiveInteger(value.cols) &&
+    isNonNegativeInteger(value.outputCursor) &&
+    typeof value.requestId === 'string' &&
+    isPositiveInteger(value.rows) &&
+    isTerminalRecoveryPayload(value.recovery)
+  );
+}
+
+function isTerminalRecoveryResultMessage(value: unknown): value is TerminalRecoveryResultMessage {
+  return (
+    hasServerMessageType(value, 'terminal-recovery-result') &&
+    isTerminalRecoveryBatchEntry(value.entry)
   );
 }
 
@@ -472,6 +600,8 @@ const SERVER_MESSAGE_GUARDS = {
   scrollback: isScrollbackMessage,
   'state-bootstrap': isStateBootstrapMessage,
   status: isStatusMessage,
+  'terminal-recovery-result': isTerminalRecoveryResultMessage,
+  'terminal-stream': isTerminalStreamMessage,
   'task-command-takeover-request': isTaskCommandTakeoverRequestMessage,
   'task-command-takeover-result': isTaskCommandTakeoverResultMessage,
   'task-event': isTaskEventMessage,
@@ -505,6 +635,8 @@ interface InputCommandBase {
   type: 'input';
   agentId: string;
   data: string;
+  inputEpoch?: string;
+  inputSeq?: number;
   requestId?: string;
   trace?: TerminalInputTraceMessage;
 }
@@ -516,6 +648,8 @@ interface ResizeCommandBase {
   agentId: string;
   cols: number;
   requestId?: string;
+  resizeEpoch?: string;
+  resizeSeq?: number;
   rows: number;
 }
 
@@ -543,6 +677,7 @@ export interface ResumeCommand {
 export interface SubscribeCommand {
   type: 'subscribe';
   agentId: string;
+  terminalProtocol?: 'legacy' | 'structured';
 }
 
 export interface UnsubscribeCommand {
@@ -603,6 +738,23 @@ export interface TerminalInputTraceClockSyncCommand extends TerminalInputTraceCl
   type: 'terminal-input-trace-clock-sync';
 }
 
+export interface TerminalRecoveryRequestCommand {
+  type: 'terminal-recovery-request';
+  agentId: string;
+  outputCursor: number | null;
+  renderedTail: string | null;
+  requestId: string;
+  snapshotByteLimit: number | null;
+}
+
+export interface TerminalStartupRecoveryRequestCommand {
+  type: 'terminal-startup-recovery-request';
+  agentId: string;
+  requestId: string;
+  role: TerminalStartupRecoveryRole;
+  visibleTerminalCount: number;
+}
+
 export type ClientMessage =
   | AuthCommand
   | PingCommand
@@ -619,6 +771,8 @@ export type ClientMessage =
   | UpdatePresenceCommand
   | RequestTaskCommandTakeoverCommand
   | RespondTaskCommandTakeoverCommand
+  | TerminalRecoveryRequestCommand
+  | TerminalStartupRecoveryRequestCommand
   | TerminalInputTraceCommand
   | TerminalInputTraceClockSyncCommand;
 
@@ -637,6 +791,8 @@ const CLIENT_MESSAGE_TYPE_VALUES = {
   'respond-task-command-takeover': true,
   resume: true,
   subscribe: true,
+  'terminal-recovery-request': true,
+  'terminal-startup-recovery-request': true,
   'terminal-input-trace': true,
   'terminal-input-trace-clock-sync': true,
   'unbind-channel': true,
@@ -661,8 +817,19 @@ const PEER_PRESENCE_VISIBILITY_VALUES = {
   visible: true,
 } as const satisfies Record<PresencePayload['visibility'], true>;
 
+const TERMINAL_SUBSCRIBE_PROTOCOL_VALUES = {
+  legacy: true,
+  structured: true,
+} as const satisfies Record<NonNullable<SubscribeCommand['terminalProtocol']>, true>;
+
+const MAX_ORDER_EPOCH_LENGTH = 100;
+
 function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
   return typeof val === 'string' && val.length <= maxLen;
+}
+
+function isNonEmptyStringWithMaxLength(val: unknown, maxLen: number): val is string {
+  return isStringWithMaxLength(val, maxLen) && val.length > 0;
 }
 
 function parseClientMessageType(value: unknown): ClientMessage['type'] | null {
@@ -724,6 +891,46 @@ function isTerminalSize(value: unknown): value is number {
   return isPositiveInteger(value) && value <= 500;
 }
 
+function parseInputOrderToken(
+  message: Record<string, unknown>,
+): Pick<InputCommandBase, 'inputEpoch' | 'inputSeq'> | null {
+  if (message.inputEpoch === undefined && message.inputSeq === undefined) {
+    return {};
+  }
+
+  if (
+    !isNonEmptyStringWithMaxLength(message.inputEpoch, MAX_ORDER_EPOCH_LENGTH) ||
+    !isNonNegativeInteger(message.inputSeq)
+  ) {
+    return null;
+  }
+
+  return {
+    inputEpoch: message.inputEpoch,
+    inputSeq: message.inputSeq,
+  };
+}
+
+function parseResizeOrderToken(
+  message: Record<string, unknown>,
+): Pick<ResizeCommandBase, 'resizeEpoch' | 'resizeSeq'> | null {
+  if (message.resizeEpoch === undefined && message.resizeSeq === undefined) {
+    return {};
+  }
+
+  if (
+    !isNonEmptyStringWithMaxLength(message.resizeEpoch, MAX_ORDER_EPOCH_LENGTH) ||
+    !isNonNegativeInteger(message.resizeSeq)
+  ) {
+    return null;
+  }
+
+  return {
+    resizeEpoch: message.resizeEpoch,
+    resizeSeq: message.resizeSeq,
+  };
+}
+
 function parsePresenceStringArray(value: unknown): string[] | null {
   if (value === undefined) {
     return [];
@@ -772,7 +979,7 @@ function parseTerminalInputTraceMessage(
   };
 }
 
-type AgentScopedCommand = KillCommand | SubscribeCommand | UnsubscribeCommand;
+type AgentScopedCommand = KillCommand | UnsubscribeCommand;
 type PauseResumeCommand = PauseCommand | ResumeCommand;
 
 function parseAgentScopedCommand(
@@ -786,6 +993,27 @@ function parseAgentScopedCommand(
   return {
     type,
     agentId: message.agentId,
+  };
+}
+
+function parseSubscribeCommand(message: Record<string, unknown>): SubscribeCommand | null {
+  if (!isStringWithMaxLength(message.agentId, 100)) {
+    return null;
+  }
+
+  if (
+    message.terminalProtocol !== undefined &&
+    !isStringMember(message.terminalProtocol, TERMINAL_SUBSCRIBE_PROTOCOL_VALUES)
+  ) {
+    return null;
+  }
+
+  return {
+    type: 'subscribe',
+    agentId: message.agentId,
+    ...(message.terminalProtocol !== undefined
+      ? { terminalProtocol: message.terminalProtocol }
+      : {}),
   };
 }
 
@@ -877,10 +1105,15 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         {
           const trace = parseTerminalInputTraceMessage(msg.trace);
           const taskControlContext = parseTaskControlCommandContext(msg);
+          const inputOrderToken = parseInputOrderToken(msg);
           if (trace === null) {
             return null;
           }
-          if (taskControlContext === null || !isOptionalStringWithMaxLength(msg.requestId, 120)) {
+          if (
+            taskControlContext === null ||
+            inputOrderToken === null ||
+            !isOptionalStringWithMaxLength(msg.requestId, 120)
+          ) {
             return null;
           }
           return {
@@ -888,6 +1121,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
             agentId: msg.agentId,
             data: msg.data,
             ...taskControlContext,
+            ...inputOrderToken,
             ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
             ...(trace !== undefined ? { trace } : {}),
           };
@@ -904,7 +1138,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         }
         {
           const taskControlContext = parseTaskControlCommandContext(msg);
-          if (taskControlContext === null) {
+          const resizeOrderToken = parseResizeOrderToken(msg);
+          if (taskControlContext === null || resizeOrderToken === null) {
             return null;
           }
 
@@ -914,14 +1149,17 @@ export function parseClientMessage(raw: string): ClientMessage | null {
             cols: msg.cols,
             rows: msg.rows,
             ...taskControlContext,
+            ...resizeOrderToken,
             ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
           };
         }
 
       case 'kill':
-      case 'subscribe':
       case 'unsubscribe':
         return parseAgentScopedCommand(messageType, msg);
+
+      case 'subscribe':
+        return parseSubscribeCommand(msg);
 
       case 'pause':
       case 'resume':
@@ -996,6 +1234,49 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           type: 'respond-task-command-takeover',
           approved: msg.approved,
           requestId: msg.requestId,
+        };
+
+      case 'terminal-recovery-request':
+        if (
+          !isStringWithMaxLength(msg.agentId, 100) ||
+          !isStringWithMaxLength(msg.requestId, 120) ||
+          (msg.outputCursor !== undefined && !isNullableNonNegativeInteger(msg.outputCursor)) ||
+          (msg.renderedTail !== undefined &&
+            !(
+              msg.renderedTail === null ||
+              (typeof msg.renderedTail === 'string' && isValidBase64(msg.renderedTail))
+            )) ||
+          (msg.snapshotByteLimit !== undefined &&
+            !isNullableNonNegativeInteger(msg.snapshotByteLimit))
+        ) {
+          return null;
+        }
+        return {
+          type: 'terminal-recovery-request',
+          agentId: msg.agentId,
+          outputCursor: typeof msg.outputCursor === 'number' ? msg.outputCursor : null,
+          renderedTail: typeof msg.renderedTail === 'string' ? msg.renderedTail : null,
+          requestId: msg.requestId,
+          snapshotByteLimit:
+            typeof msg.snapshotByteLimit === 'number' ? msg.snapshotByteLimit : null,
+        };
+
+      case 'terminal-startup-recovery-request':
+        if (
+          !isStringWithMaxLength(msg.agentId, 100) ||
+          !isStringWithMaxLength(msg.requestId, 120) ||
+          !isStringMember(msg.role, TERMINAL_STARTUP_RECOVERY_ROLE_VALUES) ||
+          (msg.visibleTerminalCount !== undefined && !isPositiveInteger(msg.visibleTerminalCount))
+        ) {
+          return null;
+        }
+        return {
+          type: 'terminal-startup-recovery-request',
+          agentId: msg.agentId,
+          requestId: msg.requestId,
+          role: msg.role,
+          visibleTerminalCount:
+            typeof msg.visibleTerminalCount === 'number' ? msg.visibleTerminalCount : 1,
         };
 
       case 'terminal-input-trace':

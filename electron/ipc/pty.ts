@@ -7,6 +7,17 @@ import {
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
 } from '../../src/lib/terminal-input-batching.js';
+import {
+  createTerminalOrderedState,
+  enqueueTerminalOrderedRequest,
+  hasTerminalInputOrder,
+  hasTerminalResizeOrder,
+  type OrderedTerminalInputRequest,
+  type OrderedTerminalResizeRequest,
+  type TerminalOrderedState,
+  type TerminalInputOrderToken,
+  type TerminalResizeOrderToken,
+} from '../../src/terminal-core/terminal-ordering.js';
 import type { TerminalStartupRecoveryRole } from '../../src/ipc/types.js';
 import { truncatePreview } from '../../src/lib/preview-heuristics.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
@@ -55,6 +66,8 @@ interface PtySession {
   outputCursor: number;
   pendingInputQueue: QueuedPtyInputBatch[];
   pendingInputChars: number;
+  orderedInputState: TerminalOrderedState<QueuedPtyInputBatch>;
+  orderedResizeState: TerminalOrderedState<OrderedTerminalResizeRequest>;
   recentInteractiveOutputDeadlineAtMs: number;
   tailBuf: Buffer;
   tailOffset: number;
@@ -240,6 +253,17 @@ function appendToTailBuffer(session: PtySession, chunk: Buffer): void {
 
   chunk.copy(session.tailBuf, session.tailOffset);
   session.tailOffset += chunk.length;
+}
+
+function normalizePtyOutputChunk(data: string | Uint8Array): {
+  bytes: Buffer;
+  text: string;
+} {
+  const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
+  return {
+    bytes,
+    text: bytes.toString('utf8'),
+  };
 }
 
 function getSessionOrThrow(agentId: string): PtySession {
@@ -457,6 +481,7 @@ function clearPendingInput(session: PtySession): void {
   }
   session.pendingInputQueue = [];
   session.pendingInputChars = 0;
+  session.orderedInputState.pending.clear();
   clearInputFlushTimer(session);
 }
 
@@ -486,6 +511,13 @@ function shouldArmInteractiveOutputFlushWindow(
 function stopAcceptingInput(session: PtySession): void {
   session.acceptsInput = false;
   clearPendingInput(session);
+}
+
+function enqueueTerminalInputRequest(
+  session: PtySession,
+  request: OrderedTerminalInputRequest<TerminalInputTraceRequest>,
+): void {
+  enqueuePendingInput(session, request.data, request.traceRequest);
 }
 
 function flushPendingInput(session: PtySession): void {
@@ -724,6 +756,7 @@ export function spawnAgent(
     cols: args.cols,
     rows: args.rows,
     cwd,
+    ...(process.platform !== 'win32' ? { encoding: null } : {}),
     env: spawnEnv,
   });
 
@@ -747,6 +780,8 @@ export function spawnAgent(
     outputCursor: 0,
     pendingInputQueue: [],
     pendingInputChars: 0,
+    orderedInputState: createTerminalOrderedState(),
+    orderedResizeState: createTerminalOrderedState(),
     recentInteractiveOutputDeadlineAtMs: 0,
     tailBuf: Buffer.alloc(TAIL_CAP),
     tailOffset: 0,
@@ -759,14 +794,14 @@ export function spawnAgent(
   };
   sessions.set(args.agentId, session);
 
-  proc.onData((data: string) => {
-    const chunk = Buffer.from(data, 'utf8');
+  function handlePtyData(data: string | Uint8Array): void {
+    const { bytes: chunk, text } = normalizePtyOutputChunk(data);
     session.scrollback.write(chunk);
     session.terminalStateMirror.enqueueOutput(chunk);
     session.outputCursor += chunk.length;
-    recordAgentOutput(args.agentId, data);
-    observeTaskPortsFromOutput(session.taskId, data);
-    recordTerminalInputTracePtyOutput(args.agentId, data);
+    recordAgentOutput(args.agentId, text);
+    observeTaskPortsFromOutput(session.taskId, text);
+    recordTerminalInputTracePtyOutput(args.agentId, text);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);
@@ -790,7 +825,9 @@ export function spawnAgent(
     if (!session.flushTimer) {
       session.flushTimer = setTimeout(() => flushSessionBatch(session), BATCH_INTERVAL);
     }
-  });
+  }
+
+  proc.onData(handlePtyData as (data: string) => void);
 
   proc.onExit(({ exitCode, signal }) => {
     // If this session was replaced by a new spawn with the same agentId,
@@ -808,7 +845,7 @@ export function spawnAgent(
       type: 'Exit',
       data: {
         exit_code: exitCode,
-        signal: signal !== undefined ? String(signal) : null,
+        signal: signal === null || signal === undefined ? null : String(signal),
         last_output: lines,
       },
     });
@@ -816,12 +853,13 @@ export function spawnAgent(
     emitPtyEvent('exit', args.agentId, {
       exitCode,
       generation: session.lifecycleGeneration,
+      lastOutput: lines,
       signal,
     });
     recordAgentExit(args.agentId, {
       exitCode,
       lastOutput: lines,
-      signal: signal !== undefined ? String(signal) : null,
+      signal: signal === null || signal === undefined ? null : String(signal),
     });
     session.terminalStateMirror.dispose();
     sessions.delete(args.agentId);
@@ -840,14 +878,45 @@ export function writeToAgent(
   agentId: string,
   data: string,
   traceRequest?: TerminalInputTraceRequest,
+  order?: TerminalInputOrderToken,
 ): void {
-  enqueuePendingInput(getSessionOrThrow(agentId), data, traceRequest);
+  const session = getSessionOrThrow(agentId);
+  if (!hasTerminalInputOrder(order)) {
+    enqueuePendingInput(session, data, traceRequest);
+    return;
+  }
+
+  enqueueTerminalOrderedRequest(
+    session.orderedInputState,
+    order,
+    {
+      data,
+      ...(traceRequest ? { traceRequest } : {}),
+    },
+    (request) => enqueueTerminalInputRequest(session, request),
+  );
 }
 
-export function resizeAgent(agentId: string, cols: number, rows: number): void {
-  const session = getSessionOrThrow(agentId);
+function applyTerminalResize(session: PtySession, cols: number, rows: number): void {
   session.proc.resize(cols, rows);
   session.terminalStateMirror.enqueueResize(cols, rows);
+}
+
+export function resizeAgent(
+  agentId: string,
+  cols: number,
+  rows: number,
+  order?: TerminalResizeOrderToken,
+): void {
+  const session = getSessionOrThrow(agentId);
+  if (!hasTerminalResizeOrder(order)) {
+    applyTerminalResize(session, cols, rows);
+    return;
+  }
+
+  enqueueTerminalOrderedRequest(session.orderedResizeState, order, { cols, rows }, (request) =>
+    applyTerminalResize(session, request.cols, request.rows),
+  );
 }
 
 function addPauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {

@@ -776,6 +776,71 @@ describe('Channel', () => {
     expect(inputMessages.map((message) => message.data).join('')).toBe(data);
   });
 
+  it('chunks large Electron terminal input with matching ordered sequence tokens', async () => {
+    const { MAX_CLIENT_INPUT_DATA_LENGTH } = await import('../../electron/remote/protocol');
+    const invokeMock = vi.fn<(channel: IPC, args?: unknown) => Promise<unknown>>(
+      async () => undefined,
+    );
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        location: new URL('http://localhost/terminal'),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        setTimeout,
+        clearTimeout,
+        electron: {
+          ipcRenderer: {
+            invoke: invokeMock,
+            on: vi.fn(),
+            removeAllListeners: vi.fn(),
+          },
+        },
+      },
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+    const data = 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512);
+    const trace = {
+      bufferedAtMs: 100,
+      inputChars: data.length,
+      inputKind: 'paste' as const,
+      sendStartedAtMs: 105,
+      startedAtMs: 95,
+    };
+
+    await sendTerminalInput({
+      agentId: 'agent-1',
+      data,
+      inputEpoch: 'input-epoch-1',
+      inputSeq: 7,
+      requestId: 'request-1',
+      trace,
+    });
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock.mock.calls[0]).toEqual([
+      IPC.WriteToAgent,
+      expect.objectContaining({
+        data: 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH),
+        inputEpoch: 'input-epoch-1',
+        inputSeq: 7,
+        requestId: 'request-1:0',
+        trace,
+      }),
+    ]);
+    expect(invokeMock.mock.calls[1]).toEqual([
+      IPC.WriteToAgent,
+      expect.objectContaining({
+        data: 'x'.repeat(512),
+        inputEpoch: 'input-epoch-1',
+        inputSeq: 8,
+        requestId: 'request-1:1',
+      }),
+    ]);
+    expect(invokeMock.mock.calls[1]?.[1]).not.toHaveProperty('trace');
+  });
+
   it('chunks large browser write_to_agent payloads without splitting surrogate pairs', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,

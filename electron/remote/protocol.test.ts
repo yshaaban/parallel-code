@@ -273,6 +273,152 @@ describe('parseClientMessage', () => {
       },
     });
   });
+
+  it('preserves optional paired terminal input and resize ordering tokens', () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'input',
+          agentId: 'agent-1',
+          data: 'hello',
+          inputEpoch: 'input-epoch-1',
+          inputSeq: 2,
+          taskId: 'task-1',
+          controllerId: 'client-1',
+        }),
+      ),
+    ).toEqual({
+      type: 'input',
+      agentId: 'agent-1',
+      controllerId: 'client-1',
+      data: 'hello',
+      inputEpoch: 'input-epoch-1',
+      inputSeq: 2,
+      taskId: 'task-1',
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'resize',
+          agentId: 'agent-1',
+          cols: 120,
+          rows: 32,
+          resizeEpoch: 'resize-epoch-1',
+          resizeSeq: 7,
+        }),
+      ),
+    ).toEqual({
+      type: 'resize',
+      agentId: 'agent-1',
+      cols: 120,
+      resizeEpoch: 'resize-epoch-1',
+      resizeSeq: 7,
+      rows: 32,
+    });
+  });
+
+  it('rejects malformed or partial terminal ordering tokens', () => {
+    for (const message of [
+      { type: 'input', agentId: 'agent-1', data: 'x', inputEpoch: 'epoch-1' },
+      { type: 'input', agentId: 'agent-1', data: 'x', inputSeq: 1 },
+      { type: 'input', agentId: 'agent-1', data: 'x', inputEpoch: '', inputSeq: 1 },
+      { type: 'input', agentId: 'agent-1', data: 'x', inputEpoch: 'epoch-1', inputSeq: -1 },
+      { type: 'input', agentId: 'agent-1', data: 'x', inputEpoch: 'epoch-1', inputSeq: 1.5 },
+      { type: 'resize', agentId: 'agent-1', cols: 80, rows: 24, resizeEpoch: 'epoch-1' },
+      { type: 'resize', agentId: 'agent-1', cols: 80, rows: 24, resizeSeq: 1 },
+      {
+        type: 'resize',
+        agentId: 'agent-1',
+        cols: 80,
+        rows: 24,
+        resizeEpoch: 'epoch-1',
+        resizeSeq: Number.NaN,
+      },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+    }
+  });
+
+  it('accepts structured terminal recovery request hooks with strict base64 tails', () => {
+    const renderedTail = Buffer.from('tail', 'utf8').toString('base64');
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'terminal-recovery-request',
+          agentId: 'agent-1',
+          outputCursor: 42,
+          renderedTail,
+          requestId: 'recovery-1',
+          snapshotByteLimit: 4096,
+        }),
+      ),
+    ).toEqual({
+      type: 'terminal-recovery-request',
+      agentId: 'agent-1',
+      outputCursor: 42,
+      renderedTail,
+      requestId: 'recovery-1',
+      snapshotByteLimit: 4096,
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'terminal-startup-recovery-request',
+          agentId: 'agent-1',
+          requestId: 'startup-1',
+          role: 'selected',
+          visibleTerminalCount: 2,
+        }),
+      ),
+    ).toEqual({
+      type: 'terminal-startup-recovery-request',
+      agentId: 'agent-1',
+      requestId: 'startup-1',
+      role: 'selected',
+      visibleTerminalCount: 2,
+    });
+  });
+
+  it('rejects malformed structured terminal recovery requests', () => {
+    for (const message of [
+      {
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        renderedTail: 'not-valid-base64!',
+        requestId: 'recovery-1',
+      },
+      {
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        renderedTail: 'AB==',
+        requestId: 'recovery-1',
+      },
+      {
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        outputCursor: -1,
+        requestId: 'recovery-1',
+      },
+      {
+        type: 'terminal-startup-recovery-request',
+        agentId: 'agent-1',
+        requestId: 'startup-1',
+        role: 'hidden',
+      },
+      {
+        type: 'terminal-startup-recovery-request',
+        agentId: 'agent-1',
+        requestId: 'startup-1',
+        role: 'selected',
+        visibleTerminalCount: 0,
+      },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+    }
+  });
 });
 
 describe('isServerMessage', () => {
@@ -434,6 +580,28 @@ describe('isServerMessage', () => {
       serverReceivedAtMs: 2,
       serverSentAtMs: 3,
     },
+    {
+      type: 'terminal-recovery-result',
+      entry: {
+        agentId: 'agent-1',
+        cols: 80,
+        outputCursor: 12,
+        recovery: {
+          data: Buffer.from('snapshot', 'utf8').toString('base64'),
+          kind: 'snapshot',
+        },
+        requestId: 'recovery-1',
+        rows: 24,
+      },
+    },
+    {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'Data',
+        data: Buffer.from('ready', 'utf8').toString('base64'),
+      },
+    },
   ] satisfies ServerMessage[];
 
   it('accepts each known server message shape', () => {
@@ -460,6 +628,86 @@ describe('isServerMessage', () => {
             version: 2,
           },
         ],
+      }),
+    ).toBe(true);
+  });
+
+  it('accepts structured terminal stream variants and recovery result variants', () => {
+    expect(
+      isServerMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'Exit',
+          data: {
+            exit_code: 0,
+            last_output: ['done'],
+            signal: null,
+          },
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isServerMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'RecoveryRequired',
+          reason: 'backpressure',
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isServerMessage({
+        type: 'terminal-recovery-result',
+        entry: {
+          agentId: 'agent-1',
+          cols: 120,
+          outputCursor: 9,
+          recovery: {
+            data: Buffer.from('delta', 'utf8').toString('base64'),
+            kind: 'delta',
+            overlapBytes: 2,
+            source: 'cursor',
+          },
+          requestId: 'recovery-delta',
+          rows: 32,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isServerMessage({
+        type: 'terminal-recovery-result',
+        entry: {
+          agentId: 'agent-1',
+          cols: 120,
+          outputCursor: 9,
+          recovery: {
+            data: Buffer.from('terminal-state', 'utf8').toString('base64'),
+            kind: 'terminal-state',
+          },
+          requestId: 'recovery-state',
+          rows: 32,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isServerMessage({
+        type: 'terminal-recovery-result',
+        entry: {
+          agentId: 'agent-1',
+          cols: 120,
+          outputCursor: 9,
+          recovery: {
+            kind: 'noop',
+          },
+          requestId: 'recovery-noop',
+          rows: 32,
+        },
       }),
     ).toBe(true);
   });
@@ -501,6 +749,42 @@ describe('isServerMessage', () => {
         requesterClientId: 'client-2',
         requesterDisplayName: 'Sam',
         taskId: 'task-1',
+      }),
+    ).toBe(false);
+    expect(
+      isServerMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'Data',
+          data: 'AB==',
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isServerMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'RecoveryRequired',
+          reason: 'network',
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isServerMessage({
+        type: 'terminal-recovery-result',
+        entry: {
+          agentId: 'agent-1',
+          cols: 80,
+          outputCursor: 1,
+          recovery: {
+            data: 'not-valid-base64!',
+            kind: 'terminal-state',
+          },
+          requestId: 'recovery-1',
+          rows: 24,
+        },
       }),
     ).toBe(false);
   });
