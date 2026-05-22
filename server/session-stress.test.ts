@@ -21,6 +21,7 @@ import {
   stopServer,
   TEST_TOKEN,
   trackSocketMessages,
+  waitForChannelMarkerOccurrences,
   waitForMessage,
   waitForSocketClose,
   writeToAgentViaHttp,
@@ -41,6 +42,9 @@ let stdinBuffer = '';
 let outputInFlight = false;
 
 process.stdin.setEncoding('utf8');
+if (process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
+  process.stdin.setRawMode(true);
+}
 
 if (readyMarker) {
   process.stdout.write(readyMarker + '\n');
@@ -878,9 +882,16 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
 
       const tailMarker = `__SESSION_STRESS_OVERSIZED_TAIL_${Date.now()}__`;
       const oversizedInput = `${'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512)}${tailMarker}\n`;
+      const tailMarkerPromise = waitForChannelMarkerOccurrences(
+        client,
+        agent.channelId,
+        tailMarker,
+        1,
+        15_000,
+      );
       sendAgentInput(client, agent.agentId, oversizedInput);
 
-      await waitForChannelMarker(client, agent.channelId, tailMarker, 15_000);
+      await expect(tailMarkerPromise).resolves.toMatchObject({ markerSeen: 1 });
     } finally {
       await Promise.allSettled([killAgentViaHttp(agent.agentId)]);
       client.close();

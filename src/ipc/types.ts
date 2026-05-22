@@ -110,6 +110,7 @@ export interface TerminalStartupRecoveryRequestEntry {
   agentId: string;
   requestId: string;
   role: TerminalStartupRecoveryRole;
+  visibleTerminalCount: number;
 }
 
 export type TerminalRecoveryPayload =

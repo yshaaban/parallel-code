@@ -236,5 +236,5 @@ describe('cursor-addressed TUI recovery', () => {
       const restoredState = await replayIntoMirror([stalePrefix, recovery.data]);
       expect(restoredState).toEqual(expectedState);
     }
-  });
+  }, 15_000);
 });

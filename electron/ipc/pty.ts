@@ -3,6 +3,7 @@ import type { PauseReason } from '../remote/protocol.js';
 import type { TerminalInputTraceMessage } from '../../src/domain/terminal-input-tracing.js';
 import {
   getTerminalInputBatchPlan,
+  splitTerminalInputChunks,
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
 } from '../../src/lib/terminal-input-batching.js';
@@ -507,7 +508,9 @@ function flushPendingInput(session: PtySession): void {
     }
 
     try {
-      session.proc.write(nextBatch.batch);
+      for (const chunk of splitTerminalInputChunks(nextBatch.batch, INPUT_BATCH_MAX_CHARS)) {
+        session.proc.write(chunk.data);
+      }
     } catch {
       recordPtyInputWriteFailure();
       for (const traceEntry of traceEntries) {
@@ -1059,13 +1062,18 @@ export async function getAgentTerminalStartupRecovery(
 
   const terminalState = await session?.terminalStateMirror.serialize();
   if (terminalState) {
-    return {
-      cols: terminalState.cols,
-      data: terminalState.data,
-      kind: 'terminal-state',
-      outputCursor,
-      rows: terminalState.rows,
-    };
+    if (terminalState.data.length <= snapshotByteLimit) {
+      return {
+        cols: terminalState.cols,
+        data: terminalState.data,
+        kind: 'terminal-state',
+        outputCursor,
+        rows: terminalState.rows,
+      };
+    }
+
+    recordTerminalStateRecoveryFallback();
+    return buildStartupSnapshotRecovery(scrollback, cols, rows, outputCursor, snapshotByteLimit);
   }
   if (session) {
     recordTerminalStateRecoveryFallback();

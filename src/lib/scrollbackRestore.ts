@@ -25,6 +25,7 @@ interface TerminalRecoveryDispatchOptions {
   fallbackCols?: number;
   fallbackRows?: number;
   immediate?: boolean;
+  visibleTerminalCount?: number;
 }
 
 interface TerminalRecoveryFallbackGeometry {
@@ -48,6 +49,7 @@ interface PendingStartupRestore {
   fallbackGeometry: TerminalRecoveryFallbackGeometry;
   requestId: string;
   role: TerminalStartupRecoveryRole;
+  visibleTerminalCount: number;
   resolve: (entry: TerminalRecoveryBatchEntry) => void;
   reject: (reason: unknown) => void;
 }
@@ -158,12 +160,27 @@ function createTerminalStartupRecoveryRequestEntry(
   agentId: string,
   requestId: string,
   role: TerminalStartupRecoveryRole,
+  visibleTerminalCount: number,
 ): TerminalStartupRecoveryRequestEntry {
   return {
     agentId,
     requestId,
     role,
+    visibleTerminalCount,
   };
+}
+
+function getStartupVisibleTerminalCount(options: TerminalRecoveryDispatchOptions): number {
+  const visibleTerminalCount = options.visibleTerminalCount;
+  if (
+    visibleTerminalCount === undefined ||
+    !Number.isInteger(visibleTerminalCount) ||
+    visibleTerminalCount < 1
+  ) {
+    return 1;
+  }
+
+  return visibleTerminalCount;
 }
 
 function scheduleTerminalRecoveryBatchFlush(state: BatchedTerminalRecoveryState): void {
@@ -259,7 +276,12 @@ async function requestImmediateTerminalStartupRecoveryEntry(
 ): Promise<TerminalRecoveryBatchEntry> {
   const requestId = createRandomId();
   const [entry] = await invokeTerminalStartupRecoveryBatch([
-    createTerminalStartupRecoveryRequestEntry(agentId, requestId, role),
+    createTerminalStartupRecoveryRequestEntry(
+      agentId,
+      requestId,
+      role,
+      getStartupVisibleTerminalCount(options),
+    ),
   ]);
 
   return (
@@ -312,7 +334,12 @@ async function flushTerminalStartupRecoveryBatch(
   try {
     const results = await invokeTerminalStartupRecoveryBatch(
       currentBatch.map((entry) =>
-        createTerminalStartupRecoveryRequestEntry(entry.agentId, entry.requestId, entry.role),
+        createTerminalStartupRecoveryRequestEntry(
+          entry.agentId,
+          entry.requestId,
+          entry.role,
+          entry.visibleTerminalCount,
+        ),
       ),
     );
     const recoveryByRequestId = new Map(results.map((entry) => [entry.requestId, entry] as const));
@@ -366,6 +393,7 @@ export function requestStartupTerminalRecovery(
       fallbackGeometry: getTerminalRecoveryFallbackGeometry(dispatchOptions),
       requestId: createRandomId(),
       role,
+      visibleTerminalCount: getStartupVisibleTerminalCount(dispatchOptions),
       resolve,
       reject,
     });

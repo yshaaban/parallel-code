@@ -709,6 +709,55 @@ describe('spawnAgent', () => {
     expect(siblingRecovery.outputCursor).toBe(startupHistory.length);
   });
 
+  it('falls back to capped startup snapshots when serialized terminal-state exceeds the dense role cap', async () => {
+    const serializeSpy = vi
+      .spyOn(TerminalStateMirror.prototype, 'serialize')
+      .mockResolvedValueOnce({
+        cols: 80,
+        data: Buffer.alloc(80 * 1024, 's'),
+        rows: 24,
+      });
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-startup-oversized-state',
+      agentId: 'agent-startup-oversized-state',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'startup-oversized-state' },
+    });
+
+    const startupHistory = 'h'.repeat(64 * 1024);
+    proc.emitData(startupHistory);
+
+    try {
+      const recovery = await getAgentTerminalStartupRecovery(
+        'agent-startup-oversized-state',
+        Buffer.from('stale', 'utf8'),
+        null,
+        'visible-sibling',
+        4,
+      );
+
+      expect(recovery.kind).toBe('snapshot');
+      if (recovery.kind !== 'snapshot') {
+        throw new Error('expected snapshot fallback for oversized terminal-state recovery');
+      }
+      expect(recovery.data?.length).toBe(48 * 1024);
+      expect(recovery.outputCursor).toBe(startupHistory.length);
+      expect(getBackendRuntimeDiagnosticsSnapshot().terminalRecovery.terminalStateFallbacks).toBe(
+        1,
+      );
+    } finally {
+      serializeSpy.mockRestore();
+    }
+  });
+
   it('uses backend terminal state instead of client cursors for startup recovery', async () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -938,6 +987,31 @@ describe('spawnAgent', () => {
 
     expect(proc.write).toHaveBeenCalledTimes(1);
     expect(proc.write).toHaveBeenCalledWith('echo hello\r');
+  });
+
+  it('splits oversized browser paste input before writing to the PTY', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-large-input',
+      agentId: 'agent-large-input',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'large-input' },
+    });
+
+    const input = `${'x'.repeat(64 * 1024 + 512)}tail-marker\n`;
+    writeToAgent('agent-large-input', input);
+
+    const writes = vi.mocked(proc.write).mock.calls.map(([chunk]) => chunk);
+    expect(writes.length).toBeGreaterThan(1);
+    expect(writes.join('')).toBe(input);
+    expect(writes.every((chunk) => chunk.length <= 16 * 1024)).toBe(true);
   });
 
   it('clears pending queued input when the process exits', () => {

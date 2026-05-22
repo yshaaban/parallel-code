@@ -246,6 +246,7 @@ describe('GetTerminalRecoveryBatch', () => {
         renderedTail: Buffer | null,
         outputCursor: number | null,
         _role: 'selected' | 'visible-sibling',
+        _visibleTerminalCount: number,
       ) => {
         expect(renderedTail).toBeNull();
         expect(outputCursor).toBeNull();
@@ -428,7 +429,28 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null, 4096);
   });
 
-  it('builds startup recovery entries with server-owned roles and ordering', async () => {
+  it('rejects malformed rendered tail base64 before decoding recovery requests', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.GetTerminalRecoveryBatch]?.({
+        requests: [
+          {
+            agentId: 'agent-snapshot',
+            outputCursor: null,
+            renderedTail: 'not-valid-base64!',
+            requestId: 'req-invalid-tail',
+            snapshotByteLimit: null,
+          },
+        ],
+      }),
+    ).rejects.toThrow('requests[0].renderedTail must be valid base64');
+
+    expect(getAgentTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('supports legacy startup recovery entries with batch-length visible count fallback', async () => {
     const handlers = createIpcHandlers(buildContext());
 
     const result = (await handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
@@ -495,5 +517,61 @@ describe('GetTerminalRecoveryBatch', () => {
       snapshotResponses: 0,
       terminalStateResponses: 2,
     });
+  });
+
+  it('uses explicit total visible startup terminal count from requests', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: 'req-selected',
+          role: 'selected',
+          visibleTerminalCount: 4,
+        },
+        {
+          agentId: 'agent-visible',
+          requestId: 'req-visible',
+          role: 'visible-sibling',
+          visibleTerminalCount: 4,
+        },
+      ],
+    });
+
+    expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
+      'agent-selected',
+      null,
+      null,
+      'selected',
+      4,
+    );
+    expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
+      'agent-visible',
+      null,
+      null,
+      'visible-sibling',
+      4,
+    );
+  });
+
+  it('rejects non-positive explicit visible startup terminal counts', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
+        requests: [
+          {
+            agentId: 'agent-selected',
+            requestId: 'req-selected',
+            role: 'selected',
+            visibleTerminalCount: 0,
+          },
+        ],
+      }),
+    ).rejects.toThrow('requests[0].visibleTerminalCount must be a positive integer');
+
+    expect(getAgentTerminalStartupRecoveryMock).not.toHaveBeenCalled();
+    expect(pauseAgentMock).not.toHaveBeenCalled();
   });
 });

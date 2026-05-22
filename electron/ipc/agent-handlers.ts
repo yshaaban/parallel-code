@@ -61,6 +61,7 @@ interface CachedScrollbackBatch {
 
 const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
 const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 function serializeTerminalRecoveryEntry(
   agentId: string,
@@ -166,6 +167,34 @@ function getScrollbackBatchCacheKey(agentIds: string[]): string {
   return [...agentIds].sort().join('\n');
 }
 
+function assertBase64String(value: string, label: string): void {
+  if (value.length === 0) {
+    return;
+  }
+
+  const isCanonicalBase64 = value.length % 4 === 0 && BASE64_PATTERN.test(value);
+  if (!isCanonicalBase64) {
+    throw new BadRequestError(`${label} must be valid base64`);
+  }
+}
+
+function normalizeStartupVisibleTerminalCount(
+  value: unknown,
+  fallbackCount: number,
+  label: string,
+): number {
+  if (value === undefined) {
+    return fallbackCount;
+  }
+
+  assertInt(value, label);
+  if (value <= 0) {
+    throw new BadRequestError(`${label} must be a positive integer`);
+  }
+
+  return value;
+}
+
 async function fetchScrollbackBatch(
   agentIds: string[],
 ): Promise<Map<string, ScrollbackBatchEntrySnapshot>> {
@@ -246,7 +275,6 @@ async function fetchTerminalStartupRecoveryBatch(
   const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
   const pausedIds: string[] = [];
   const startedAt = performance.now();
-  const visibleTerminalCount = requests.length;
 
   try {
     for (const agentId of uniqueAgentIds) {
@@ -265,7 +293,7 @@ async function fetchTerminalStartupRecoveryBatch(
           null,
           null,
           request.role,
-          visibleTerminalCount,
+          request.visibleTerminalCount,
         );
         return serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
       }),
@@ -480,6 +508,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           }
           if (candidate.renderedTail !== null && candidate.renderedTail !== undefined) {
             assertString(candidate.renderedTail, `requests[${index}].renderedTail`);
+            assertBase64String(candidate.renderedTail, `requests[${index}].renderedTail`);
           }
           if (candidate.snapshotByteLimit !== null && candidate.snapshotByteLimit !== undefined) {
             assertInt(candidate.snapshotByteLimit, `requests[${index}].snapshotByteLimit`);
@@ -531,11 +560,17 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           if (candidate.role !== 'selected' && candidate.role !== 'visible-sibling') {
             throw new BadRequestError(`requests[${index}].role must be a startup recovery role`);
           }
+          const visibleTerminalCount = normalizeStartupVisibleTerminalCount(
+            candidate.visibleTerminalCount,
+            requests.length,
+            `requests[${index}].visibleTerminalCount`,
+          );
 
           return {
             agentId: candidate.agentId,
             requestId: candidate.requestId,
             role: candidate.role,
+            visibleTerminalCount,
           } satisfies TerminalStartupRecoveryRequestEntry;
         });
 

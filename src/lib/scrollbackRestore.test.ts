@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
+import type { TerminalRecoveryBatchEntry } from '../ipc/types';
+
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
 }));
@@ -8,6 +10,47 @@ const { invokeMock } = vi.hoisted(() => ({
 vi.mock('./ipc', () => ({
   invoke: invokeMock,
 }));
+
+type RecoveryRequest = {
+  agentId: string;
+  requestId: string;
+};
+
+type RecoveryRequestPayload = {
+  requests: RecoveryRequest[];
+};
+
+function createSnapshotBatchEntry(
+  request: RecoveryRequest,
+  options: {
+    cols?: number;
+    data?: string;
+    outputCursor?: number;
+    rows?: number;
+  } = {},
+): TerminalRecoveryBatchEntry {
+  return {
+    agentId: request.agentId,
+    cols: options.cols ?? 101,
+    outputCursor: options.outputCursor ?? 17,
+    recovery: {
+      data: options.data ?? 'aaa',
+      kind: 'snapshot',
+    },
+    requestId: request.requestId,
+    rows: options.rows ?? 24,
+  };
+}
+
+function mockSnapshotRecoveryBatch(
+  createEntry: (request: RecoveryRequest) => TerminalRecoveryBatchEntry,
+): void {
+  invokeMock.mockImplementation(async function (_channel: IPC, payload: RecoveryRequestPayload) {
+    return payload.requests.map(function mapRecoveryRequest(request) {
+      return createEntry(request);
+    });
+  });
+}
 
 describe('terminal recovery batching', () => {
   const originalWindow = globalThis.window;
@@ -47,8 +90,9 @@ describe('terminal recovery batching', () => {
           source: 'tail',
         },
         requestId: 'req-now',
+        rows: 24,
       },
-    ]);
+    ] satisfies TerminalRecoveryBatchEntry[]);
 
     const { requestTerminalRecovery } = await import('./scrollbackRestore');
 
@@ -84,19 +128,14 @@ describe('terminal recovery batching', () => {
   });
 
   it('batches initial attach restores into a single IPC round-trip', async () => {
-    invokeMock.mockImplementation(
-      async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
-        payload.requests.map((request) => ({
-          agentId: request.agentId,
-          cols: request.agentId === 'agent-a' ? 81 : 99,
-          outputCursor: request.agentId === 'agent-a' ? 7 : 9,
-          recovery: {
-            data: request.agentId === 'agent-a' ? 'aaa' : 'bbb',
-            kind: 'snapshot' as const,
-          },
-          requestId: request.requestId,
-        })),
-    );
+    mockSnapshotRecoveryBatch(function createInitialAttachRecoveryEntry(request) {
+      return createSnapshotBatchEntry(request, {
+        cols: request.agentId === 'agent-a' ? 81 : 99,
+        data: request.agentId === 'agent-a' ? 'aaa' : 'bbb',
+        outputCursor: request.agentId === 'agent-a' ? 7 : 9,
+        rows: request.agentId === 'agent-a' ? 24 : 30,
+      });
+    });
 
     const { requestAttachTerminalRecovery } = await import('./scrollbackRestore');
 
@@ -171,19 +210,14 @@ describe('terminal recovery batching', () => {
   });
 
   it('batches reconnect restores into a single IPC round-trip', async () => {
-    invokeMock.mockImplementation(
-      async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
-        payload.requests.map((request) => ({
-          agentId: request.agentId,
-          cols: request.agentId === 'agent-a' ? 81 : 99,
-          outputCursor: request.agentId === 'agent-a' ? 7 : 9,
-          recovery: {
-            data: request.agentId === 'agent-a' ? 'aaa' : 'bbb',
-            kind: 'snapshot' as const,
-          },
-          requestId: request.requestId,
-        })),
-    );
+    mockSnapshotRecoveryBatch(function createReconnectRecoveryEntry(request) {
+      return createSnapshotBatchEntry(request, {
+        cols: request.agentId === 'agent-a' ? 81 : 99,
+        data: request.agentId === 'agent-a' ? 'aaa' : 'bbb',
+        outputCursor: request.agentId === 'agent-a' ? 7 : 9,
+        rows: request.agentId === 'agent-a' ? 24 : 30,
+      });
+    });
 
     const { requestReconnectTerminalRecovery } = await import('./scrollbackRestore');
 
@@ -226,19 +260,14 @@ describe('terminal recovery batching', () => {
   });
 
   it('requests selected startup recovery immediately while still batching visible siblings', async () => {
-    invokeMock.mockImplementation(
-      async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
-        payload.requests.map((request) => ({
-          agentId: request.agentId,
-          cols: request.agentId === 'agent-selected' ? 101 : 88,
-          outputCursor: request.agentId === 'agent-selected' ? 17 : 9,
-          recovery: {
-            data: request.agentId === 'agent-selected' ? 'aaa' : 'bbb',
-            kind: 'snapshot' as const,
-          },
-          requestId: request.requestId,
-        })),
-    );
+    mockSnapshotRecoveryBatch(function createStartupRecoveryEntry(request) {
+      return createSnapshotBatchEntry(request, {
+        cols: request.agentId === 'agent-selected' ? 101 : 88,
+        data: request.agentId === 'agent-selected' ? 'aaa' : 'bbb',
+        outputCursor: request.agentId === 'agent-selected' ? 17 : 9,
+        rows: request.agentId === 'agent-selected' ? 24 : 30,
+      });
+    });
 
     const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
 
@@ -254,6 +283,7 @@ describe('terminal recovery batching', () => {
           agentId: 'agent-selected',
           requestId: expect.any(String),
           role: 'selected',
+          visibleTerminalCount: 1,
         },
       ],
     });
@@ -279,6 +309,7 @@ describe('terminal recovery batching', () => {
           agentId: 'agent-visible',
           requestId: expect.any(String),
           role: 'visible-sibling',
+          visibleTerminalCount: 1,
         },
       ],
     });
@@ -295,8 +326,9 @@ describe('terminal recovery batching', () => {
           kind: 'snapshot' as const,
         },
         requestId: 'req-selected',
+        rows: 24,
       },
-    ]);
+    ] satisfies TerminalRecoveryBatchEntry[]);
 
     const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
 
@@ -316,6 +348,7 @@ describe('terminal recovery batching', () => {
           agentId: 'agent-selected',
           requestId: expect.any(String),
           role: 'selected',
+          visibleTerminalCount: 1,
         },
       ],
     });
@@ -343,6 +376,46 @@ describe('terminal recovery batching', () => {
           agentId: 'agent-selected',
           requestId: expect.any(String),
           role: 'selected',
+          visibleTerminalCount: 1,
+        },
+      ],
+    });
+  });
+
+  it('passes caller visible startup terminal count for selected and visible sibling requests', async () => {
+    mockSnapshotRecoveryBatch(createSnapshotBatchEntry);
+
+    const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
+
+    const selected = requestStartupTerminalRecovery('agent-selected', 'selected', {
+      visibleTerminalCount: 4,
+    });
+    const visible = requestStartupTerminalRecovery('agent-visible', 'visible-sibling', {
+      visibleTerminalCount: 4,
+    });
+
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(selected).resolves.toMatchObject({ agentId: 'agent-selected' });
+    await expect(visible).resolves.toMatchObject({ agentId: 'agent-visible' });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: expect.any(String),
+          role: 'selected',
+          visibleTerminalCount: 4,
+        },
+      ],
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-visible',
+          requestId: expect.any(String),
+          role: 'visible-sibling',
+          visibleTerminalCount: 4,
         },
       ],
     });
@@ -361,8 +434,9 @@ describe('terminal recovery batching', () => {
           source: 'tail' as const,
         },
         requestId: 'req-now',
+        rows: 24,
       },
-    ]);
+    ] satisfies TerminalRecoveryBatchEntry[]);
 
     const { requestReconnectTerminalRecovery } = await import('./scrollbackRestore');
 
