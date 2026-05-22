@@ -201,6 +201,8 @@ export function createBrowserControlClient(
     'agent-error': emitBrowserMessage,
     'agent-command-result': emitBrowserMessage,
     'terminal-input-trace-clock-sync': emitBrowserMessage,
+    'terminal-recovery-result': emitBrowserMessage,
+    'terminal-stream': emitBrowserMessage,
     'task-command-takeover-request': emitBrowserMessage,
     'task-command-takeover-result': emitBrowserMessage,
   } satisfies BrowserServerMessageHandlerMap;

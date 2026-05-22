@@ -4,18 +4,30 @@ import { WebSocket } from 'ws';
 import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport.js';
 
 const writeToAgentMock = vi.fn();
+const resizeAgentMock = vi.fn();
 const recordTerminalInputTraceClientUpdateMock = vi.fn();
+const getAgentTerminalRecoveryMock = vi.fn();
+const getAgentTerminalStartupRecoveryMock = vi.fn();
+const onPtyEventMock = vi.fn(
+  (_event: string, _listener: (agentId: string, data?: unknown) => void) => () => {},
+);
+const subscribeToAgentMock = vi.fn((_agentId: string, _callback: (data: string) => void) => false);
+const unsubscribeFromAgentMock = vi.fn();
 
 vi.mock('../ipc/pty.js', () => ({
   getAgentCols: vi.fn(() => 80),
+  getAgentPauseState: vi.fn(() => null),
   getAgentScrollback: vi.fn(() => null),
+  getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
+  getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
+  hasAgentSession: vi.fn(() => false),
   killAgent: vi.fn(),
-  onPtyEvent: vi.fn(() => () => {}),
+  onPtyEvent: onPtyEventMock,
   pauseAgent: vi.fn(),
-  resizeAgent: vi.fn(),
+  resizeAgent: resizeAgentMock,
   resumeAgent: vi.fn(),
-  subscribeToAgent: vi.fn(() => false),
-  unsubscribeFromAgent: vi.fn(),
+  subscribeToAgent: subscribeToAgentMock,
+  unsubscribeFromAgent: unsubscribeFromAgentMock,
   writeToAgent: writeToAgentMock,
 }));
 
@@ -56,6 +68,10 @@ function createClaimAgentControlMock() {
   return vi.fn((): ClaimAgentControlResult => ({ ok: true, controllerId: 'client-1' }));
 }
 
+function createSendMessageMock() {
+  return vi.fn(() => ({ ok: true as const }));
+}
+
 function createMockTransport(
   overrides: Partial<WebSocketTransport<WebSocket>> = {},
 ): WebSocketTransport<WebSocket> {
@@ -87,6 +103,19 @@ function createMockTransport(
 describe('registerRemoteWebSocketServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getAgentTerminalRecoveryMock.mockReturnValue({
+      cols: 80,
+      kind: 'noop',
+      outputCursor: 0,
+      rows: 24,
+    });
+    getAgentTerminalStartupRecoveryMock.mockResolvedValue({
+      cols: 80,
+      kind: 'noop',
+      outputCursor: 0,
+      rows: 24,
+    });
+    subscribeToAgentMock.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -98,7 +127,7 @@ describe('registerRemoteWebSocketServer', () => {
     const client = createFakeClient();
     const wss = createFakeWebSocketServer();
     wss.clients.add(client);
-    const sendMessage = vi.fn();
+    const sendMessage = createSendMessageMock();
 
     registerRemoteWebSocketServer({
       authenticateConnection: () => true,
@@ -165,7 +194,7 @@ describe('registerRemoteWebSocketServer', () => {
     const client = createFakeClient();
     const wss = createFakeWebSocketServer();
     wss.clients.add(client);
-    const sendMessage = vi.fn();
+    const sendMessage = createSendMessageMock();
 
     registerRemoteWebSocketServer({
       authenticateConnection: () => true,
@@ -198,6 +227,439 @@ describe('registerRemoteWebSocketServer', () => {
         serverReceivedAtMs: expect.any(Number),
         serverSentAtMs: expect.any(Number),
       }),
+    );
+  });
+
+  it('streams structured terminal Data for opt-in remote subscribers', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    let outputCallback: ((data: string) => void) | undefined;
+    subscribeToAgentMock.mockImplementation(
+      (_agentId: string, callback: (data: string) => void) => {
+        outputCallback = callback;
+        return true;
+      },
+    );
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      }),
+    );
+
+    const data = Buffer.from('structured data', 'utf8').toString('base64');
+    if (outputCallback === undefined) {
+      throw new Error('Expected structured subscription callback');
+    }
+    outputCallback(data);
+
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'Data',
+        data,
+      },
+    });
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'output' }),
+    );
+  });
+
+  it('signals structured terminal recovery after remote send backpressure', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = vi
+      .fn()
+      .mockReturnValueOnce({ ok: false as const, reason: 'backpressure' as const })
+      .mockReturnValue({ ok: true as const });
+    let outputCallback: ((data: string) => void) | undefined;
+    subscribeToAgentMock.mockImplementation(
+      (_agentId: string, callback: (data: string) => void) => {
+        outputCallback = callback;
+        return true;
+      },
+    );
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      }),
+    );
+
+    if (!outputCallback) {
+      throw new Error('Expected structured subscription callback');
+    }
+    outputCallback('first');
+    outputCallback('second');
+
+    expect(sendMessage).toHaveBeenNthCalledWith(1, client, {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'Data',
+        data: 'first',
+      },
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, client, {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'RecoveryRequired',
+        reason: 'backpressure',
+      },
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('streams structured terminal Exit diagnostics for opt-in remote subscribers', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    subscribeToAgentMock.mockReturnValue(true);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      }),
+    );
+
+    const exitListener = onPtyEventMock.mock.calls.find(([event]) => event === 'exit')?.[1] as
+      | ((agentId: string, data: unknown) => void)
+      | undefined;
+    if (!exitListener) {
+      throw new Error('Expected exit listener registration');
+    }
+    exitListener('agent-1', {
+      exitCode: 2,
+      lastOutput: ['fatal error'],
+      signal: null,
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'Exit',
+        data: {
+          exit_code: 2,
+          last_output: ['fatal error'],
+          signal: null,
+        },
+      },
+    });
+  });
+
+  it('keeps legacy output as the default remote subscription protocol', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    let outputCallback: ((data: string) => void) | undefined;
+    subscribeToAgentMock.mockImplementation(
+      (_agentId: string, callback: (data: string) => void) => {
+        outputCallback = callback;
+        return true;
+      },
+    );
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+      }),
+    );
+
+    const data = Buffer.from('legacy data', 'utf8').toString('base64');
+    if (outputCallback === undefined) {
+      throw new Error('Expected legacy subscription callback');
+    }
+    outputCallback(data);
+
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'output',
+      agentId: 'agent-1',
+      data,
+    });
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'terminal-stream' }),
+    );
+  });
+
+  it('ignores stale output callbacks after remote client cleanup', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    let outputCallback: ((data: string) => void) | undefined;
+    subscribeToAgentMock.mockImplementation(
+      (_agentId: string, callback: (data: string) => void) => {
+        outputCallback = callback;
+        return true;
+      },
+    );
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+      }),
+    );
+
+    if (!outputCallback) {
+      throw new Error('Expected remote subscription callback');
+    }
+    client.emit('close');
+    outputCallback('stale data');
+
+    expect(unsubscribeFromAgentMock).toHaveBeenCalledWith('agent-1', outputCallback);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('responds to terminal snapshot recovery requests over the remote websocket', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    const renderedTail = Buffer.from('tail', 'utf8').toString('base64');
+    getAgentTerminalRecoveryMock.mockReturnValue({
+      cols: 120,
+      data: Buffer.from('snapshot', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: 42,
+      rows: 32,
+    });
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        outputCursor: 12,
+        renderedTail,
+        requestId: 'recovery-1',
+        snapshotByteLimit: 4096,
+      }),
+    );
+
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      Buffer.from('tail', 'utf8'),
+      12,
+      4096,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-recovery-result',
+      entry: {
+        agentId: 'agent-1',
+        cols: 120,
+        outputCursor: 42,
+        recovery: {
+          data: Buffer.from('snapshot', 'utf8').toString('base64'),
+          kind: 'snapshot',
+        },
+        requestId: 'recovery-1',
+        rows: 32,
+      },
+    });
+  });
+
+  it('responds to terminal-state startup recovery requests over the remote websocket', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    getAgentTerminalStartupRecoveryMock.mockResolvedValue({
+      cols: 100,
+      data: Buffer.from('terminal-state', 'utf8'),
+      kind: 'terminal-state',
+      outputCursor: 8,
+      rows: 30,
+    });
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'terminal-startup-recovery-request',
+        agentId: 'agent-1',
+        requestId: 'startup-1',
+        role: 'selected',
+        visibleTerminalCount: 2,
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      null,
+      null,
+      'selected',
+      2,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-recovery-result',
+      entry: {
+        agentId: 'agent-1',
+        cols: 100,
+        outputCursor: 8,
+        recovery: {
+          data: Buffer.from('terminal-state', 'utf8').toString('base64'),
+          kind: 'terminal-state',
+        },
+        requestId: 'startup-1',
+        rows: 30,
+      },
+    });
+  });
+
+  it('drops terminal recovery requests with non-canonical base64 tails', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        renderedTail: 'AB==',
+        requestId: 'recovery-1',
+      }),
+    );
+
+    expect(getAgentTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'terminal-recovery-result' }),
     );
   });
 
@@ -239,17 +701,95 @@ describe('registerRemoteWebSocketServer', () => {
       }),
     );
 
-    expect(writeToAgentMock).toHaveBeenCalledWith('agent-1', 'hello', {
-      clientId: 'client-1',
-      requestId: 'request-1',
-      taskId: 'task-1',
-      trace: {
-        bufferedAtMs: 10,
-        inputChars: 5,
-        inputKind: 'interactive',
-        sendStartedAtMs: 20,
-        startedAtMs: 5,
+    expect(writeToAgentMock).toHaveBeenCalledWith(
+      'agent-1',
+      'hello',
+      {
+        clientId: 'client-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
+        trace: {
+          bufferedAtMs: 10,
+          inputChars: 5,
+          inputKind: 'interactive',
+          sendStartedAtMs: 20,
+          startedAtMs: 5,
+        },
       },
+      undefined,
+    );
+  });
+
+  it('passes input order tokens to agent writes', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport(),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'input',
+        agentId: 'agent-1',
+        data: 'ordered input',
+        inputEpoch: 'input-epoch-1',
+        inputSeq: 7,
+      }),
+    );
+
+    expect(writeToAgentMock).toHaveBeenCalledWith('agent-1', 'ordered input', undefined, {
+      inputEpoch: 'input-epoch-1',
+      inputSeq: 7,
+    });
+  });
+
+  it('passes resize order tokens to agent resizes', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport(),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'resize',
+        agentId: 'agent-1',
+        cols: 120,
+        rows: 40,
+        resizeEpoch: 'resize-epoch-1',
+        resizeSeq: 3,
+      }),
+    );
+
+    expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40, {
+      resizeEpoch: 'resize-epoch-1',
+      resizeSeq: 3,
     });
   });
 });

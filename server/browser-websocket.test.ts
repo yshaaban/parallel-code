@@ -9,11 +9,25 @@ import type {
 
 const {
   canResizeTaskTerminalMock,
+  getAgentColsMock,
+  getAgentScrollbackMock,
+  getAgentTerminalRecoveryMock,
+  getAgentTerminalStartupRecoveryMock,
+  onPtyEventMock,
   recordTerminalInputTraceClientDisconnectedMock,
+  subscribeToAgentMock,
   writeToAgentMock,
 } = vi.hoisted(() => ({
   canResizeTaskTerminalMock: vi.fn(() => true),
+  getAgentColsMock: vi.fn<() => number>(() => 80),
+  getAgentScrollbackMock: vi.fn<() => string | null>(() => null),
+  getAgentTerminalRecoveryMock: vi.fn(),
+  getAgentTerminalStartupRecoveryMock: vi.fn(),
+  onPtyEventMock: vi.fn(() => () => {}),
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
+  subscribeToAgentMock: vi.fn<(agentId: string, callback: (data: string) => void) => boolean>(
+    () => false,
+  ),
   writeToAgentMock: vi.fn(),
 }));
 
@@ -27,14 +41,19 @@ const AGENT_INPUT_MESSAGE = JSON.stringify({
 });
 
 vi.mock('../electron/ipc/pty.js', () => ({
-  getAgentCols: vi.fn(() => 80),
+  getAgentCols: getAgentColsMock,
   getAgentMeta: vi.fn(() => null),
-  getAgentScrollback: vi.fn(() => null),
+  getAgentPauseState: vi.fn(() => null),
+  getAgentScrollback: getAgentScrollbackMock,
+  getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
+  getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
+  hasAgentSession: vi.fn(() => true),
   killAgent: vi.fn(),
+  onPtyEvent: onPtyEventMock,
   pauseAgent: vi.fn(),
   resizeAgent: vi.fn(),
   resumeAgent: vi.fn(),
-  subscribeToAgent: vi.fn(() => false),
+  subscribeToAgent: subscribeToAgentMock,
   unsubscribeFromAgent: vi.fn(),
   writeToAgent: writeToAgentMock,
 }));
@@ -178,6 +197,23 @@ function cleanupTrackedClient(
 describe('registerBrowserWebSocketServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getAgentColsMock.mockReturnValue(80);
+    getAgentScrollbackMock.mockReturnValue(null);
+    getAgentTerminalRecoveryMock.mockReturnValue({
+      cols: 100,
+      data: Buffer.from('browser recovery', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: 16,
+      rows: 30,
+    });
+    getAgentTerminalStartupRecoveryMock.mockResolvedValue({
+      cols: 100,
+      data: Buffer.from('browser startup recovery', 'utf8'),
+      kind: 'terminal-state',
+      outputCursor: 24,
+      rows: 30,
+    });
+    subscribeToAgentMock.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -254,6 +290,124 @@ describe('registerBrowserWebSocketServer', () => {
     });
 
     expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-1', undefined);
+  });
+
+  it('serves terminal recovery requests over the browser websocket control plane', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        sendMessage,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        agentId: 'agent-1',
+        outputCursor: 10,
+        renderedTail: Buffer.from('tail', 'utf8').toString('base64'),
+        requestId: 'recovery-1',
+        snapshotByteLimit: 4096,
+        type: 'terminal-recovery-request',
+      }),
+    );
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      Buffer.from('tail', 'utf8'),
+      10,
+      4096,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-recovery-result',
+      entry: {
+        agentId: 'agent-1',
+        cols: 100,
+        outputCursor: 16,
+        recovery: {
+          data: Buffer.from('browser recovery', 'utf8').toString('base64'),
+          kind: 'snapshot',
+        },
+        requestId: 'recovery-1',
+        rows: 30,
+      },
+    });
+  });
+
+  it('honors structured terminal subscriptions on the browser websocket control plane', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = vi.fn(() => true);
+    let outputCallback: ((data: string) => void) | undefined;
+    getAgentColsMock.mockReturnValue(100);
+    getAgentScrollbackMock.mockReturnValue(
+      Buffer.from('legacy scrollback', 'utf8').toString('base64'),
+    );
+    subscribeToAgentMock.mockImplementation((_agentId, callback) => {
+      outputCallback = callback;
+      return true;
+    });
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        sendMessage,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      }),
+    );
+
+    const data = Buffer.from('structured browser output', 'utf8').toString('base64');
+    if (outputCallback === undefined) {
+      throw new Error('Expected structured subscription callback');
+    }
+    outputCallback(data);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-stream',
+      agentId: 'agent-1',
+      event: {
+        type: 'Data',
+        data,
+      },
+    });
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'scrollback' }),
+    );
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'output' }),
+    );
   });
 
   it('ignores malformed websocket URLs before authenticating', async () => {

@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
+import { onPtyEvent } from '../electron/ipc/pty.js';
 import {
   isAutomaticPauseReason,
   parseClientMessage,
@@ -14,6 +15,8 @@ import {
   resolveBrowserAgentTaskId,
 } from './browser-websocket-task-control.js';
 import {
+  getBrowserAgentTerminalRecoveryEntry,
+  getBrowserAgentTerminalStartupRecoveryEntry,
   killBrowserAgent,
   pauseBrowserAgent,
   resizeBrowserAgent,
@@ -30,6 +33,7 @@ import {
   type AgentCommandExecutionOptions,
 } from './browser-agent-command-runner.js';
 import { createBrowserAgentOutputSubscriptions } from './browser-agent-output-subscriptions.js';
+import type { TerminalRecoveryBatchEntry } from '../src/ipc/types.js';
 import {
   createBrowserTerminalInputTraceClockSyncMessage,
   createBrowserTerminalInputTraceRequest,
@@ -138,6 +142,32 @@ function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
 }
 
+function createInputOrderToken(
+  message: Extract<AuthenticatedClientMessage, { type: 'input' }>,
+): Parameters<typeof writeBrowserAgentInput>[3] {
+  if (message.inputEpoch === undefined || message.inputSeq === undefined) {
+    return undefined;
+  }
+
+  return {
+    inputEpoch: message.inputEpoch,
+    inputSeq: message.inputSeq,
+  };
+}
+
+function createResizeOrderToken(
+  message: Extract<AuthenticatedClientMessage, { type: 'resize' }>,
+): Parameters<typeof resizeBrowserAgent>[3] {
+  if (message.resizeEpoch === undefined || message.resizeSeq === undefined) {
+    return undefined;
+  }
+
+  return {
+    resizeEpoch: message.resizeEpoch,
+    resizeSeq: message.resizeSeq,
+  };
+}
+
 export function registerBrowserWebSocketServer(
   options: RegisterBrowserWebSocketServerOptions,
 ): BrowserWebSocketServer {
@@ -157,6 +187,16 @@ export function registerBrowserWebSocketServer(
     isClientOpen: (client) => client.readyState === WebSocket.OPEN,
     sendMessage: options.sendMessage,
   });
+  const unsubscribeExit = onPtyEvent('exit', (agentId, data) => {
+    agentOutputSubscriptions.emitExit(
+      agentId,
+      (data ?? {}) as {
+        exitCode?: number | null;
+        lastOutput?: string[];
+        signal?: unknown;
+      },
+    );
+  });
 
   function cleanupClient(client: WebSocket): void {
     recordBrowserTerminalInputClientDisconnected(options.transport.getClientId(client));
@@ -170,6 +210,7 @@ export function registerBrowserWebSocketServer(
 
   function cleanup(): void {
     agentCommandResults.cleanup();
+    unsubscribeExit();
   }
 
   function mergeAgentCommandExecutionOptions(
@@ -217,6 +258,27 @@ export function registerBrowserWebSocketServer(
     );
   }
 
+  function sendTerminalRecoveryResult(
+    client: WebSocket,
+    agentId: string,
+    fallbackMessage: string,
+    recoveryEntry: Promise<TerminalRecoveryBatchEntry>,
+  ): void {
+    void recoveryEntry
+      .then((entry) => {
+        const sent = options.sendMessage(client, {
+          type: 'terminal-recovery-result',
+          entry,
+        });
+        if (sent) {
+          agentOutputSubscriptions.resume(client, entry.agentId);
+        }
+      })
+      .catch((error) => {
+        options.sendAgentError(client, agentId, fallbackMessage, error);
+      });
+  }
+
   function createClientMessageHandlers(client: WebSocket): BrowserClientMessageHandlerMap {
     return {
       ping: () => {
@@ -236,6 +298,7 @@ export function registerBrowserWebSocketServer(
               currentMessage.agentId,
               currentMessage.data,
               createBrowserTerminalInputTraceRequest(currentMessage, clientId, traceTaskId),
+              createInputOrderToken(currentMessage),
             );
           },
           traceRequestId
@@ -256,7 +319,12 @@ export function registerBrowserWebSocketServer(
       },
       resize: (currentMessage) => {
         runTaskControlledAgentCommand(client, currentMessage, 'resize', () => {
-          resizeBrowserAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
+          resizeBrowserAgent(
+            currentMessage.agentId,
+            currentMessage.cols,
+            currentMessage.rows,
+            createResizeOrderToken(currentMessage),
+          );
         });
       },
       kill: (currentMessage) => {
@@ -305,7 +373,11 @@ export function registerBrowserWebSocketServer(
         options.channels.unbindChannel(client, currentMessage.channelId);
       },
       subscribe: (currentMessage) => {
-        agentOutputSubscriptions.subscribe(client, currentMessage.agentId);
+        agentOutputSubscriptions.subscribe(
+          client,
+          currentMessage.agentId,
+          currentMessage.terminalProtocol,
+        );
       },
       unsubscribe: (currentMessage) => {
         agentOutputSubscriptions.unsubscribe(client, currentMessage.agentId);
@@ -344,13 +416,27 @@ export function registerBrowserWebSocketServer(
           createBrowserTerminalInputTraceClockSyncMessage(currentMessage),
         );
       },
+      'terminal-recovery-request': (currentMessage) => {
+        sendTerminalRecoveryResult(
+          client,
+          currentMessage.agentId,
+          'terminal recovery failed',
+          getBrowserAgentTerminalRecoveryEntry(currentMessage),
+        );
+      },
+      'terminal-startup-recovery-request': (currentMessage) => {
+        sendTerminalRecoveryResult(
+          client,
+          currentMessage.agentId,
+          'terminal startup recovery failed',
+          getBrowserAgentTerminalStartupRecoveryEntry(currentMessage),
+        );
+      },
     } satisfies BrowserClientMessageHandlerMap;
   }
 
   options.wss.on('connection', (client, req) => {
     enableSocketNoDelay(client);
-    agentOutputSubscriptions.registerClient(client);
-    const clientMessageHandlers = createClientMessageHandlers(client);
     const authContext = parseSocketAuthContext(req);
 
     if (!options.isAllowedBrowserOrigin(req)) {
@@ -365,6 +451,9 @@ export function registerBrowserWebSocketServer(
     } else {
       options.transport.scheduleAuthTimeout(client);
     }
+
+    agentOutputSubscriptions.registerClient(client);
+    const clientMessageHandlers = createClientMessageHandlers(client);
 
     client.on('pong', () => {
       options.transport.notePong(client);

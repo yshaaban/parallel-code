@@ -2,6 +2,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import {
   getAgentCols,
   getAgentScrollback,
+  getAgentTerminalRecovery,
+  getAgentTerminalStartupRecovery,
   killAgent,
   onPtyEvent,
   pauseAgent,
@@ -11,6 +13,11 @@ import {
   unsubscribeFromAgent,
   writeToAgent,
 } from '../ipc/pty.js';
+import {
+  decodeTerminalRenderedTail,
+  runWithTerminalRestorePause,
+  serializeTerminalRecoveryEntry,
+} from '../ipc/terminal-recovery.js';
 import { recordTerminalInputTraceClientUpdate } from '../ipc/runtime-diagnostics.js';
 import {
   isAutomaticPauseReason,
@@ -22,6 +29,7 @@ import {
 } from './protocol.js';
 import { getClaimAgentControlErrorMessage, type WebSocketTransport } from './ws-transport.js';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../../src/lib/dispatch-by-type.js';
+import type { PtyExitData, TerminalRecoveryBatchEntry } from '../../src/ipc/types.js';
 
 export interface RegisterRemoteWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
@@ -37,6 +45,51 @@ export interface RemoteWebSocketServer {
 
 type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
 type RemoteClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
+type TerminalSubscriptionProtocol = 'legacy' | 'structured';
+
+interface RemoteAgentSubscription {
+  callback: (data: string) => void;
+  degraded: boolean;
+  terminalProtocol: TerminalSubscriptionProtocol;
+}
+
+function createInputOrderToken(
+  message: Extract<AuthenticatedClientMessage, { type: 'input' }>,
+): Parameters<typeof writeToAgent>[3] {
+  if (message.inputEpoch === undefined || message.inputSeq === undefined) {
+    return undefined;
+  }
+
+  return {
+    inputEpoch: message.inputEpoch,
+    inputSeq: message.inputSeq,
+  };
+}
+
+function createResizeOrderToken(
+  message: Extract<AuthenticatedClientMessage, { type: 'resize' }>,
+): Parameters<typeof resizeAgent>[3] {
+  if (message.resizeEpoch === undefined || message.resizeSeq === undefined) {
+    return undefined;
+  }
+
+  return {
+    resizeEpoch: message.resizeEpoch,
+    resizeSeq: message.resizeSeq,
+  };
+}
+
+function createPtyExitData(data: {
+  exitCode?: number | null | undefined;
+  lastOutput?: string[] | undefined;
+  signal?: unknown;
+}): PtyExitData {
+  return {
+    exit_code: data.exitCode ?? null,
+    last_output: Array.isArray(data.lastOutput) ? data.lastOutput : [],
+    signal: data.signal === null || data.signal === undefined ? null : String(data.signal),
+  };
+}
 
 function enableSocketNoDelay(client: WebSocket): void {
   const socket = (
@@ -60,7 +113,7 @@ function getTraceNowMs(): number {
 export function registerRemoteWebSocketServer(
   options: RegisterRemoteWebSocketServerOptions,
 ): RemoteWebSocketServer {
-  const clientSubscriptions = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
+  const clientSubscriptions = new WeakMap<WebSocket, Map<string, RemoteAgentSubscription>>();
   const exitBroadcastTimers = new Set<ReturnType<typeof setTimeout>>();
   let cleanedUp = false;
 
@@ -71,9 +124,10 @@ export function registerRemoteWebSocketServer(
     if (!subscriptions) return;
 
     for (const [agentId, callback] of subscriptions) {
-      unsubscribeFromAgent(agentId, callback);
+      unsubscribeFromAgent(agentId, callback.callback);
     }
     subscriptions.clear();
+    clientSubscriptions.delete(client);
   }
 
   function broadcastAgentList(): void {
@@ -140,6 +194,60 @@ export function registerRemoteWebSocketServer(
     executeAgentCommand(client, agentId, action, execute);
   }
 
+  function resumeStructuredSubscription(client: WebSocket, agentId: string): void {
+    const subscription = clientSubscriptions.get(client)?.get(agentId);
+    if (subscription) {
+      subscription.degraded = false;
+    }
+  }
+
+  function sendTerminalRecoveryEntry(client: WebSocket, entry: TerminalRecoveryBatchEntry): void {
+    const result = options.transport.sendMessage(client, {
+      type: 'terminal-recovery-result',
+      entry,
+    } satisfies ServerMessage);
+    if (result.ok) {
+      resumeStructuredSubscription(client, entry.agentId);
+    }
+  }
+
+  function sendStructuredRecoveryRequired(client: WebSocket, agentId: string): void {
+    options.transport.sendMessage(client, {
+      type: 'terminal-stream',
+      agentId,
+      event: {
+        type: 'RecoveryRequired',
+        reason: 'backpressure',
+      },
+    } satisfies ServerMessage);
+  }
+
+  function sendStructuredData(
+    client: WebSocket,
+    agentId: string,
+    subscription: RemoteAgentSubscription,
+    data: string,
+  ): void {
+    if (subscription.degraded) {
+      return;
+    }
+
+    const result = options.transport.sendMessage(client, {
+      type: 'terminal-stream',
+      agentId,
+      event: {
+        type: 'Data',
+        data,
+      },
+    } satisfies ServerMessage);
+    if (result.ok) {
+      return;
+    }
+
+    subscription.degraded = true;
+    sendStructuredRecoveryRequired(client, agentId);
+  }
+
   function createClientMessageHandlers(client: WebSocket): RemoteClientMessageHandlerMap {
     return {
       ping: () => {
@@ -158,12 +266,18 @@ export function registerRemoteWebSocketServer(
                   trace: currentMessage.trace,
                 }
               : undefined,
+            createInputOrderToken(currentMessage),
           );
         });
       },
       resize: (currentMessage) => {
         runAgentCommand(client, currentMessage.agentId, 'resize', () => {
-          resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
+          resizeAgent(
+            currentMessage.agentId,
+            currentMessage.cols,
+            currentMessage.rows,
+            createResizeOrderToken(currentMessage),
+          );
         });
       },
       kill: (currentMessage) => {
@@ -196,19 +310,32 @@ export function registerRemoteWebSocketServer(
       subscribe: (currentMessage) => {
         const subscriptions = clientSubscriptions.get(client);
         if (!subscriptions || subscriptions.has(currentMessage.agentId)) return;
+        const terminalProtocol = currentMessage.terminalProtocol ?? 'legacy';
 
-        const scrollback = getAgentScrollback(currentMessage.agentId);
-        if (scrollback) {
-          options.transport.sendMessage(client, {
-            type: 'scrollback',
-            agentId: currentMessage.agentId,
-            data: scrollback,
-            cols: getAgentCols(currentMessage.agentId),
-          } satisfies ServerMessage);
+        if (terminalProtocol === 'legacy') {
+          const scrollback = getAgentScrollback(currentMessage.agentId);
+          if (scrollback) {
+            options.transport.sendMessage(client, {
+              type: 'scrollback',
+              agentId: currentMessage.agentId,
+              data: scrollback,
+              cols: getAgentCols(currentMessage.agentId),
+            } satisfies ServerMessage);
+          }
         }
 
         const callback = (data: string) => {
+          const subscription = clientSubscriptions.get(client)?.get(currentMessage.agentId);
+          if (!subscription || subscription.callback !== callback) {
+            return;
+          }
+
           if (client.readyState !== WebSocket.OPEN) return;
+          if (subscription.terminalProtocol === 'structured') {
+            sendStructuredData(client, currentMessage.agentId, subscription, data);
+            return;
+          }
+
           options.transport.sendMessage(client, {
             type: 'output',
             agentId: currentMessage.agentId,
@@ -217,15 +344,19 @@ export function registerRemoteWebSocketServer(
         };
 
         if (subscribeToAgent(currentMessage.agentId, callback)) {
-          subscriptions.set(currentMessage.agentId, callback);
+          subscriptions.set(currentMessage.agentId, {
+            callback,
+            degraded: false,
+            terminalProtocol,
+          });
         }
       },
       unsubscribe: (currentMessage) => {
         const subscriptions = clientSubscriptions.get(client);
-        const callback = subscriptions?.get(currentMessage.agentId);
-        if (!callback) return;
+        const subscription = subscriptions?.get(currentMessage.agentId);
+        if (!subscription) return;
 
-        unsubscribeFromAgent(currentMessage.agentId, callback);
+        unsubscribeFromAgent(currentMessage.agentId, subscription.callback);
         subscriptions?.delete(currentMessage.agentId);
       },
       'bind-channel': () => {},
@@ -245,6 +376,47 @@ export function registerRemoteWebSocketServer(
           serverReceivedAtMs,
           serverSentAtMs: getTraceNowMs(),
         } satisfies ServerMessage);
+      },
+      'terminal-recovery-request': (currentMessage) => {
+        void runWithTerminalRestorePause(currentMessage.agentId, () => {
+          const recovery = getAgentTerminalRecovery(
+            currentMessage.agentId,
+            decodeTerminalRenderedTail(currentMessage.renderedTail),
+            currentMessage.outputCursor,
+            currentMessage.snapshotByteLimit,
+          );
+          sendTerminalRecoveryEntry(
+            client,
+            serializeTerminalRecoveryEntry(
+              currentMessage.agentId,
+              currentMessage.requestId,
+              recovery,
+            ),
+          );
+        }).catch((error) => {
+          sendAgentError(client, currentMessage.agentId, 'terminal recovery failed', error);
+        });
+      },
+      'terminal-startup-recovery-request': (currentMessage) => {
+        void runWithTerminalRestorePause(currentMessage.agentId, async () => {
+          const recovery = await getAgentTerminalStartupRecovery(
+            currentMessage.agentId,
+            null,
+            null,
+            currentMessage.role,
+            currentMessage.visibleTerminalCount,
+          );
+          sendTerminalRecoveryEntry(
+            client,
+            serializeTerminalRecoveryEntry(
+              currentMessage.agentId,
+              currentMessage.requestId,
+              recovery,
+            ),
+          );
+        }).catch((error) => {
+          sendAgentError(client, currentMessage.agentId, 'terminal startup recovery failed', error);
+        });
       },
       'update-presence': () => {},
     } satisfies RemoteClientMessageHandlerMap;
@@ -267,7 +439,11 @@ export function registerRemoteWebSocketServer(
   });
 
   const unsubscribeExit = onPtyEvent('exit', (agentId, data) => {
-    const { exitCode } = (data ?? {}) as { exitCode?: number };
+    const { exitCode, lastOutput, signal } = (data ?? {}) as {
+      exitCode?: number;
+      lastOutput?: string[];
+      signal?: unknown;
+    };
     options.transport.releaseAgentControl(agentId);
     options.transport.broadcastControl({
       type: 'status',
@@ -277,7 +453,19 @@ export function registerRemoteWebSocketServer(
     });
 
     for (const client of options.wss.clients) {
-      clientSubscriptions.get(client)?.delete(agentId);
+      const subscriptions = clientSubscriptions.get(client);
+      const subscription = subscriptions?.get(agentId);
+      if (subscription?.terminalProtocol === 'structured') {
+        options.transport.sendMessage(client, {
+          type: 'terminal-stream',
+          agentId,
+          event: {
+            type: 'Exit',
+            data: createPtyExitData({ exitCode, lastOutput, signal }),
+          },
+        } satisfies ServerMessage);
+      }
+      subscriptions?.delete(agentId);
     }
 
     const timer = setTimeout(() => {
