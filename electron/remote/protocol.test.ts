@@ -468,9 +468,20 @@ describe('isServerMessage', () => {
     expect(isServerMessage({ type: 'future-server-event', payload: { ready: true } })).toBe(false);
     expect(isServerMessage({ type: 'agent-error', agentId: 'agent-1' })).toBe(false);
     expect(isServerMessage({ type: 'agents', list: [{ agentId: 'agent-1' }] })).toBe(false);
+    expect(isServerMessage({ type: 'output', agentId: 'agent-1', data: 'not-valid-base64!' })).toBe(
+      false,
+    );
     expect(isServerMessage({ type: 'scrollback', agentId: 'agent-1', cols: 0, data: '' })).toBe(
       false,
     );
+    expect(
+      isServerMessage({
+        type: 'scrollback',
+        agentId: 'agent-1',
+        cols: 80,
+        data: 'AB==',
+      }),
+    ).toBe(false);
     expect(
       isServerMessage({
         type: 'task-ports-changed',

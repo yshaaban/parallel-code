@@ -39,6 +39,7 @@ import {
   isStringMember,
 } from '../../src/lib/type-guards.js';
 import { assertNever } from '../../src/lib/assert-never.js';
+import { isValidBase64 } from '../../src/lib/base64.js';
 
 export type {
   AgentLifecycleEvent,
@@ -267,7 +268,8 @@ function isOutputMessage(value: unknown): value is OutputMessage {
   return (
     hasServerMessageType(value, 'output') &&
     typeof value.agentId === 'string' &&
-    typeof value.data === 'string'
+    typeof value.data === 'string' &&
+    isValidBase64(value.data)
   );
 }
 
@@ -290,6 +292,7 @@ function isScrollbackMessage(value: unknown): value is ScrollbackMessage {
     hasServerMessageType(value, 'scrollback') &&
     typeof value.agentId === 'string' &&
     typeof value.data === 'string' &&
+    isValidBase64(value.data) &&
     isPositiveInteger(value.cols)
   );
 }

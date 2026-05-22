@@ -198,6 +198,31 @@ describe('remote ws projections', () => {
     expect(module.getAgentPreview('agent-1')).toBe('A');
   });
 
+  it('drops malformed output and scrollback payloads before notifying terminal listeners', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const outputListener = vi.fn();
+      const scrollbackListener = vi.fn();
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'ready' })]));
+      const cleanupOutput = module.onOutput('agent-1', outputListener);
+      const cleanupScrollback = module.onScrollback('agent-1', scrollbackListener);
+      cleanups.push(cleanupOutput, cleanupScrollback);
+
+      options.onMessage(createOutputMessage('not-valid-base64!'));
+      options.onMessage(createScrollbackMessage('not-valid-base64!'));
+
+      expect(outputListener).not.toHaveBeenCalled();
+      expect(scrollbackListener).not.toHaveBeenCalled();
+      expect(module.getAgentPreview('agent-1')).toBe('ready');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
   it('uses the stable remote client identity in the websocket url', async () => {
     const { options } = await loadWsModule();
 

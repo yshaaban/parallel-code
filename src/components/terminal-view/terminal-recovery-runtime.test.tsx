@@ -662,6 +662,28 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.resetCounts.attach).toBe(1);
   });
 
+  it('drops malformed terminal-state recovery before mutating the terminal', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    requestStartupTerminalRecoveryMock.mockResolvedValue({
+      ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
+      recovery: {
+        data: 'not-valid-base64!',
+        kind: 'terminal-state',
+      },
+    });
+    const { outputPipelineMock, runtime, term, termWriteMock } = createRecoveryRuntimeFixture();
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(term.reset).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+    expect(outputPipelineMock.setRenderedOutputCursor).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[terminal] Failed to restore scrollback',
+      expect.any(Error),
+    );
+  });
+
   it('requests backpressure recovery against the local buffered tail, not only painted bytes', async () => {
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       renderedOutputCursor: 12,

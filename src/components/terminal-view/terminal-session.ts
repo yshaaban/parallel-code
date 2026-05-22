@@ -20,6 +20,7 @@ import {
   isBrowserPagehidePending,
 } from '../../lib/browser-pagehide';
 import { getBrowserChannelMessageTiming } from '../../lib/browser-channel-client';
+import { tryDecodeBase64ToUint8Array } from '../../lib/base64';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../../lib/dispatch-by-type';
 import { getTerminalFontFamily } from '../../lib/fonts';
 import {
@@ -155,12 +156,23 @@ function getReadyFallbackDelayMs(
   return DEFAULT_READY_FALLBACK_DELAY_MS;
 }
 
-function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['data']): Uint8Array {
+function decodeTerminalOutputData(
+  data: Extract<PtyOutput, { type: 'Data' }>['data'],
+): Uint8Array | null {
   if (typeof data !== 'string') {
     return data;
   }
 
-  return Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  const decoded = tryDecodeBase64ToUint8Array(data);
+  if (decoded === null) {
+    console.warn(
+      '[terminal] Ignoring malformed terminal output payload',
+      new Error('Invalid base64 payload'),
+    );
+    return null;
+  }
+
+  return decoded;
 }
 
 function shouldAcquireTerminalWebglRenderer(priority: TerminalOutputPriority): boolean {
@@ -1406,6 +1418,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         ? outputReceivedAtMs - Math.max(0, performance.now() - channelTiming.receivedAtMs)
         : undefined;
       const decoded = decodeTerminalOutputData(message.data);
+      if (decoded === null) {
+        return;
+      }
       if (hasPendingProbes()) {
         detectProbeInOutput(PROBE_TEXT_DECODER.decode(decoded));
       }

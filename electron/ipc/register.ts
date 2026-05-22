@@ -28,6 +28,7 @@ import { subscribeTaskReview } from './task-review-state.js';
 import { subscribeTaskReviewSignals } from './task-review-signals.js';
 import { subscribeTaskSteps } from './task-steps.js';
 import { subscribeTaskPorts } from './task-ports.js';
+import { decodeBase64ToUint8Array, getBase64DecodedByteLength } from '../../src/lib/base64.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
   if (!win.isDestroyed()) {
@@ -233,17 +234,6 @@ function sanitizeDroppedImageName(name: string | undefined): string {
   return `parallel-code-drop-${suffix}.png`;
 }
 
-function getBase64DecodedByteLength(data: string): number {
-  let padding = 0;
-  if (data.endsWith('==')) {
-    padding = 2;
-  } else if (data.endsWith('=')) {
-    padding = 1;
-  }
-
-  return Math.floor((data.length * 3) / 4) - padding;
-}
-
 function createClipboardController(): ClipboardController {
   const clipboardImagePath = path.join(os.tmpdir(), 'parallel-code-clipboard.png');
 
@@ -292,12 +282,12 @@ function createClipboardController(): ClipboardController {
 
     async saveDroppedImage(args: { data: string; name?: string }): Promise<string | null> {
       const decodedBytes = getBase64DecodedByteLength(args.data);
-      if (decodedBytes < 0 || decodedBytes > MAX_DROPPED_IMAGE_BYTES) {
+      if (decodedBytes === null || decodedBytes > MAX_DROPPED_IMAGE_BYTES) {
         return null;
       }
 
       const imagePath = path.join(os.tmpdir(), sanitizeDroppedImageName(args.name));
-      await fs.promises.writeFile(imagePath, Buffer.from(args.data, 'base64'));
+      await fs.promises.writeFile(imagePath, decodeBase64ToUint8Array(args.data));
       return imagePath;
     },
   };

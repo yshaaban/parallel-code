@@ -1,4 +1,5 @@
 import type { ServerMessage } from '../electron/remote/protocol.js';
+import { getBase64DecodedByteLength, isValidBase64 } from '../src/lib/base64.js';
 
 export interface QueuedMessage {
   data: string | Buffer;
@@ -24,10 +25,18 @@ export function isChannelDataPayload(payload: unknown): payload is { type: 'Data
   );
 }
 
+export function isValidChannelDataPayload(
+  payload: unknown,
+): payload is { type: 'Data'; data: string } {
+  return isChannelDataPayload(payload) && isValidBase64(payload.data);
+}
+
 export function buildBinaryChannelFrame(channelId: string, base64Data: string): Buffer | null {
   if (!UUID_CHANNEL_ID_RE.test(channelId)) return null;
 
-  const rawDataLength = Buffer.byteLength(base64Data, 'base64');
+  const rawDataLength = getBase64DecodedByteLength(base64Data);
+  if (rawDataLength === null) return null;
+
   const frame = Buffer.allocUnsafe(CHANNEL_BINARY_HEADER_BYTES + rawDataLength);
   frame[0] = CHANNEL_DATA_FRAME_TYPE;
   frame.write(channelId, 1, CHANNEL_ID_BYTES, 'ascii');
@@ -41,7 +50,7 @@ export function buildBinaryChannelFrame(channelId: string, base64Data: string): 
 }
 
 export function createQueuedChannelMessage(channelId: string, payload: unknown): QueuedMessage {
-  if (isChannelDataPayload(payload)) {
+  if (isValidChannelDataPayload(payload)) {
     const binaryFrame = buildBinaryChannelFrame(channelId, payload.data);
     if (binaryFrame) {
       return {

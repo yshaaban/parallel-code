@@ -41,6 +41,7 @@ import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
 import { assertNever } from '../../src/lib/assert-never.js';
+import { isValidBase64 } from '../../src/lib/base64.js';
 import type {
   TerminalRecoveryBatchEntry,
   TerminalRecoveryRequestEntry,
@@ -61,7 +62,6 @@ interface CachedScrollbackBatch {
 
 const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
 const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 function serializeTerminalRecoveryEntry(
   agentId: string,
@@ -168,12 +168,7 @@ function getScrollbackBatchCacheKey(agentIds: string[]): string {
 }
 
 function assertBase64String(value: string, label: string): void {
-  if (value.length === 0) {
-    return;
-  }
-
-  const isCanonicalBase64 = value.length % 4 === 0 && BASE64_PATTERN.test(value);
-  if (!isCanonicalBase64) {
+  if (!isValidBase64(value)) {
     throw new BadRequestError(`${label} must be valid base64`);
   }
 }

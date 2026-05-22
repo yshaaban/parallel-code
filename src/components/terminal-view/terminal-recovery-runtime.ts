@@ -1,9 +1,10 @@
 import type { Terminal } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
-import { invoke } from '../../lib/ipc';
 import { assertNever } from '../../lib/assert-never';
+import { decodeBase64ToUint8Array } from '../../lib/base64';
 import type { BrowserControlConnectionState } from '../../lib/browser-control-client';
+import { invoke } from '../../lib/ipc';
 import {
   recordTerminalRecoveryApply,
   recordTerminalRecoveryGeometryAlignmentFallback,
@@ -45,11 +46,6 @@ import type { TerminalViewStatus } from './types';
 import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
 import type { TerminalOutputPipeline } from './terminal-output-pipeline';
 import type { TerminalInputPipeline } from './terminal-input-pipeline';
-
-const B64_LOOKUP = new Uint8Array(128);
-for (let i = 0; i < 64; i++) {
-  B64_LOOKUP['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
-}
 
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS = 500;
@@ -250,30 +246,6 @@ type TerminalRecoveryState =
       reason: TerminalRecoveryReason;
       selectedRecoveryStarted: boolean;
     };
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  let end = base64.length;
-  while (end > 0 && base64.charCodeAt(end - 1) === 61) {
-    end--;
-  }
-  const output = new Uint8Array((end * 3) >>> 2);
-  let outputIndex = 0;
-  for (let index = 0; index < end; ) {
-    const a = B64_LOOKUP[base64.charCodeAt(index++)];
-    const b = index < end ? B64_LOOKUP[base64.charCodeAt(index++)] : 0;
-    const c = index < end ? B64_LOOKUP[base64.charCodeAt(index++)] : 0;
-    const d = index < end ? B64_LOOKUP[base64.charCodeAt(index++)] : 0;
-    const triplet = (a << 18) | (b << 12) | (c << 6) | d;
-    output[outputIndex++] = (triplet >>> 16) & 0xff;
-    if (outputIndex < output.length) {
-      output[outputIndex++] = (triplet >>> 8) & 0xff;
-    }
-    if (outputIndex < output.length) {
-      output[outputIndex++] = triplet & 0xff;
-    }
-  }
-  return output;
-}
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) {
@@ -1383,7 +1355,7 @@ export function createTerminalRecoveryRuntime(
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
         return;
       case 'delta': {
-        const delta = base64ToUint8Array(entry.recovery.data);
+        const delta = decodeBase64ToUint8Array(entry.recovery.data);
         if (delta.length > 0) {
           await writeTerminalPayloadChunked(
             delta,
@@ -1404,7 +1376,7 @@ export function createTerminalRecoveryRuntime(
       }
       case 'snapshot': {
         const scrollback = entry.recovery.data
-          ? base64ToUint8Array(entry.recovery.data)
+          ? decodeBase64ToUint8Array(entry.recovery.data)
           : new Uint8Array(0);
         if (reason === 'renderer-loss') {
           return;
@@ -1414,7 +1386,7 @@ export function createTerminalRecoveryRuntime(
         return;
       }
       case 'terminal-state': {
-        const terminalState = base64ToUint8Array(entry.recovery.data);
+        const terminalState = decodeBase64ToUint8Array(entry.recovery.data);
         if (reason === 'renderer-loss') {
           return;
         }

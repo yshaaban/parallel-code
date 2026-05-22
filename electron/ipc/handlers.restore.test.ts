@@ -432,22 +432,48 @@ describe('GetTerminalRecoveryBatch', () => {
   it('rejects malformed rendered tail base64 before decoding recovery requests', async () => {
     const handlers = createIpcHandlers(buildContext());
 
+    for (const renderedTail of ['not-valid-base64!', 'AB==']) {
+      await expect(
+        handlers[IPC.GetTerminalRecoveryBatch]?.({
+          requests: [
+            {
+              agentId: 'agent-snapshot',
+              outputCursor: null,
+              renderedTail,
+              requestId: 'req-invalid-tail',
+              snapshotByteLimit: null,
+            },
+          ],
+        }),
+      ).rejects.toThrow('requests[0].renderedTail must be valid base64');
+    }
+
+    expect(getAgentTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+
+    getAgentTerminalRecoveryMock.mockReturnValueOnce({
+      cols: 80,
+      data: Buffer.from('snapshot', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: 8,
+      rows: 24,
+    });
     await expect(
       handlers[IPC.GetTerminalRecoveryBatch]?.({
         requests: [
           {
             agentId: 'agent-snapshot',
             outputCursor: null,
-            renderedTail: 'not-valid-base64!',
-            requestId: 'req-invalid-tail',
+            renderedTail: 'AA==',
+            requestId: 'req-valid-tail',
             snapshotByteLimit: null,
           },
         ],
       }),
-    ).rejects.toThrow('requests[0].renderedTail must be valid base64');
+    ).resolves.toBeDefined();
 
-    expect(getAgentTerminalRecoveryMock).not.toHaveBeenCalled();
-    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledTimes(1);
   });
 
   it('supports legacy startup recovery entries with batch-length visible count fallback', async () => {

@@ -360,7 +360,20 @@ vi.mock('../../lib/ipc', () => ({
 }));
 
 vi.mock('../../lib/dispatch-by-type', () => ({
-  dispatchByType: vi.fn(),
+  dispatchByType: vi.fn(
+    (handlers: Record<string, (message: unknown) => void>, message: unknown) => {
+      if (!message || typeof message !== 'object') {
+        return;
+      }
+
+      const type = (message as { type?: unknown }).type;
+      if (typeof type !== 'string') {
+        return;
+      }
+
+      handlers[type]?.(message);
+    },
+  ),
 }));
 
 vi.mock('../../lib/fonts', () => ({
@@ -1730,7 +1743,7 @@ describe('startTerminalSession render hibernation', () => {
 
     await flushSessionStartup();
     outputPipelineFactoryState.lastOutputChannel?.onmessage?.({
-      data: 'prompt',
+      data: Buffer.from('prompt', 'utf8').toString('base64'),
       type: 'Data',
     });
     session.cleanup();
@@ -1738,6 +1751,34 @@ describe('startTerminalSession render hibernation', () => {
     await vi.advanceTimersByTimeAsync(50);
 
     expect(enqueueProgrammaticInput).not.toHaveBeenCalled();
+  });
+
+  it('drops malformed base64 terminal output without enqueueing corrupt bytes', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let session: ReturnType<typeof startTerminalSession> | undefined;
+    try {
+      session = startTerminalSession({
+        containerRef: createMeasuredContainer(),
+        getOutputPriority: () => 'focused',
+        props: createProps(),
+      });
+
+      await flushSessionStartup();
+      outputPipelineFactoryState.lastOutputChannel?.onmessage?.({
+        data: 'not-valid-base64!',
+        type: 'Data',
+      });
+
+      const outputPipeline = createTerminalOutputPipelineMock.mock.results[0]?.value;
+      expect(outputPipeline?.enqueueOutput).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[terminal] Ignoring malformed terminal output payload',
+        expect.any(Error),
+      );
+    } finally {
+      session?.cleanup();
+      warnSpy.mockRestore();
+    }
   });
 
   it('defers session fit stabilization until startup is ready and any resize transaction settles', async () => {

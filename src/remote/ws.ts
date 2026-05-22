@@ -14,7 +14,7 @@ import {
   type WebSocketClientCore,
   type WebSocketConnectionState,
 } from '../lib/websocket-client';
-import { b64decode } from './base64';
+import { tryB64Decode } from './base64';
 import {
   appendRemoteAgentTail,
   deriveRemoteAgentPreview,
@@ -176,12 +176,25 @@ function getAgentDecoder(agentId: string): TextDecoder {
   return decoder;
 }
 
-function decodeOutputChunk(agentId: string, data: string, stream: boolean): string {
-  return getAgentDecoder(agentId).decode(b64decode(data), { stream });
+function decodeOutputChunk(agentId: string, bytes: Uint8Array, stream: boolean): string {
+  return getAgentDecoder(agentId).decode(bytes, { stream });
 }
 
-function decodeScrollbackSnapshot(data: string): string {
-  return new TextDecoder().decode(b64decode(data));
+function decodeScrollbackSnapshot(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+function decodeRemoteBase64Payload(data: string, context: string): Uint8Array | null {
+  const decoded = tryB64Decode(data);
+  if (decoded === null) {
+    logRemoteWsWarning(
+      `Ignoring malformed ${context} payload`,
+      new Error('Invalid base64 payload'),
+    );
+    return null;
+  }
+
+  return decoded;
 }
 
 function resetAgentDecoder(agentId: string): void {
@@ -251,13 +264,18 @@ function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>
 }
 
 function handleOutputMessage(message: Extract<ServerMessage, { type: 'output' }>): void {
+  const bytes = decodeRemoteBase64Payload(message.data, 'output');
+  if (bytes === null) {
+    return;
+  }
+
   outputListeners.get(message.agentId)?.forEach((listener) => listener(message.data));
   const agent = agents().find((item) => item.agentId === message.agentId);
   if (!agent) {
     return;
   }
 
-  const decodedChunk = decodeOutputChunk(message.agentId, message.data, true);
+  const decodedChunk = decodeOutputChunk(message.agentId, bytes, true);
   const previousTail = agentTailById()[message.agentId] ?? agent.lastLine;
   const nextTail = appendRemoteAgentTail(previousTail, decodedChunk);
   updateAgentPreviewFromTail(agent, nextTail);
@@ -265,6 +283,11 @@ function handleOutputMessage(message: Extract<ServerMessage, { type: 'output' }>
 }
 
 function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scrollback' }>): void {
+  const bytes = decodeRemoteBase64Payload(message.data, 'scrollback');
+  if (bytes === null) {
+    return;
+  }
+
   scrollbackListeners
     .get(message.agentId)
     ?.forEach((listener) => listener(message.data, message.cols));
@@ -274,7 +297,7 @@ function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scroll
     return;
   }
 
-  const decodedScrollback = decodeScrollbackSnapshot(message.data);
+  const decodedScrollback = decodeScrollbackSnapshot(bytes);
   updateAgentPreviewFromTail(agent, truncateRemoteAgentTail(decodedScrollback));
   updateAgentActivity(message.agentId);
 }

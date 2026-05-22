@@ -13,6 +13,7 @@ import {
 import {
   createQueuedChannelMessage,
   isChannelDataPayload,
+  isValidChannelDataPayload,
   type QueuedMessage,
 } from './channel-frames.js';
 
@@ -143,7 +144,7 @@ function createPendingMessage(
   payload: unknown,
   enqueuedAtMs = Date.now(),
 ): PendingMessage {
-  if (isChannelDataPayload(payload)) {
+  if (isValidChannelDataPayload(payload)) {
     return createTerminalDataPendingMessage(channelId, payload, enqueuedAtMs);
   }
 
