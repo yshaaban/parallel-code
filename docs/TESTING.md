@@ -726,7 +726,8 @@ Edge cases that are easy to miss:
 
 Preferred proof:
 
-- `node / backend` for recovery contract and retained-cursor behavior
+- `node / backend` for recovery contract, retained-cursor behavior, and headless terminal-state
+  stress against cursor-addressed TUI output
 - `runtime / integration` for real browser restore/focus/render behavior
 - `Solid / UI` for local terminal overlays and shared startup indicators
 

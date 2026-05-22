@@ -510,12 +510,13 @@ Current model:
 7. the backend returns one of:
    - `noop`
    - `delta`
+   - `terminal-state`
    - `snapshot`
 
 Current batching rule:
 
 - visible non-shell startup uses the dedicated startup batch path so the backend, not the renderer,
-  owns the compact snapshot policy for `selected` and `visible-sibling` terminals
+  owns serialized terminal-state recovery for `selected` and `visible-sibling` terminals
 - visible shell attach intentionally does not inherit that snapshot-first policy; it stays on the
   ordinary attach path with rendered-tail suppression so reload/background-switch shell cases stay
   stable without forcing startup snapshot replay
@@ -523,6 +524,8 @@ Current batching rule:
 - hidden attach still uses the ordinary attach/recovery contract
 - batching only coalesces recovery lookups; each terminal still keeps its own outer
   pause/apply/resume lifecycle so live output cannot race the applied state
+- recovery responses carry backend `cols` and `rows`; attach recovery must either align the local
+  xterm to that geometry before replay or reject the entry
 
 Important request state:
 
@@ -533,17 +536,20 @@ Important request state:
 
 Recovery preference:
 
-1. visible non-shell startup prefers backend-owned compact `snapshot` recovery
+1. visible non-shell startup prefers backend-owned serialized `terminal-state` recovery
 2. visible shell attach stays on ordinary attach with rendered-tail suppression; it does not use
-   the startup snapshot policy
+   the startup terminal-state policy
 3. reconnect and non-startup recovery prefer cursor-based `delta` when the requested cursor is
    still in the retained backend window
 4. reconnect and non-startup recovery then try rendered-tail overlap `delta`
 5. reconnect and non-startup recovery fall back to `snapshot` only when delta cannot be proven
+6. visible non-shell startup falls back to compact `snapshot` only when the backend terminal-state
+   mirror is unavailable, and that fallback must be counted in backend diagnostics
 
 Important UI rule:
 
-- only `snapshot` recovery may surface blocking `restoring` UI or call `term.reset()`
+- only full-state recovery (`terminal-state` or `snapshot`) may surface blocking `restoring` UI or
+  call `term.reset()`
 - `delta` and `noop` recovery should stay non-blocking
 - while `Connecting`, `Attaching`, or blocking `Restoring` UI is visible, the live xterm surface
   should stay masked so users do not see historical snapshot replay scroll underneath the overlay
@@ -816,6 +822,7 @@ Specifically assert:
 
 - no historical live replay on rebind
 - snapshot fallback count stays at zero for expected delta/noop cases
+- terminal-state fallback count stays at zero when startup mirror recovery is expected
 - terminal status history does not include `restoring` for non-blocking recovery scenarios
 
 ### 3. Control / takeover / resize-authority changes

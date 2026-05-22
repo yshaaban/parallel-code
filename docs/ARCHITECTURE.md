@@ -764,13 +764,14 @@ Current shape:
    `GetTerminalStartupRecoveryBatch` path
 6. visible startup recovery is split by terminal type:
    - visible non-shell startup attach uses `GetTerminalStartupRecoveryBatch`, and the backend
-     chooses compact startup payloads for `selected` and `visible-sibling` terminals
+     prefers serialized `terminal-state` payloads from its headless xterm mirror for `selected` and
+     `visible-sibling` terminals
    - visible shell attach stays on the ordinary attach/recovery path, but local rendered-tail
      replay is suppressed so reload/background-switch shell continuity does not fall back to
      renderer-side request-state overlap
    - hidden attach and non-startup restore paths still use the ordinary recovery contract
-7. replay/apply throughput is still paced in the renderer, but visible-startup compaction now lives
-   on the backend so startup no longer depends on renderer-side "smaller replay" heuristics
+7. replay/apply throughput is still paced in the renderer, but visible-startup state reconstruction
+   now lives on the backend so startup no longer depends on renderer-side "smaller replay" heuristics
 8. fit/restore readiness is explicit before queued output is flushed into xterm
 9. the loading surface masks the live xterm container until live render is ready, so users do not
    watch blocking startup snapshot application scroll underneath the startup UI
@@ -807,7 +808,9 @@ Current shape:
 
 Important property:
 
-- visible-startup recovery is now server-compacted instead of renderer-serialized
+- visible-startup recovery is now server-owned terminal-state recovery instead of renderer-serialized
+  historical output; if the headless mirror is unavailable, diagnostics count the fallback and the
+  backend returns the ordinary compact snapshot path
 - steady-state continuity still stays delta-first: attach / backpressure / hibernate recovery now
   drains queued local output before asking the backend for recovery state so the renderer and
   backend agree on the current tail, while reconnect replacement restores deliberately preserve the
@@ -818,7 +821,9 @@ Important property:
   `src/app/task-presentation-status.ts`
 - local terminal fit stays local, but committed PTY resize authority follows backend task-command
   control; peer-controlled geometry is deferred locally and server-side resize requests are accepted
-  or rejected by the current task owner
+  or rejected by the current task owner. Reattaching an existing session must not implicitly resize
+  the shared PTY; explicit resize commands own that mutation, and recovery responses carry both
+  backend rows and columns so the renderer aligns to backend PTY geometry before replay
 - dense-overload and surface-role reductions remain explicitly experimental and
   presentation/runtime-only; they may reduce browser work under load, but backend recovery truth and
   switch ownership stay unchanged
@@ -1341,15 +1346,20 @@ Browser mode only:
    - `snapshot`
 6. the terminal applies the lightest valid recovery and resumes live output
 
+Visible non-shell startup attach uses `get_terminal_startup_recovery_batch` instead. That path can
+return `terminal-state`, a backend-owned serialized xterm state produced from the PTY mirror, with
+compact `snapshot` as the fallback if the mirror is unavailable.
+
 Important property:
 
 - browser recovery is now explicit catch-up, not implicit live replay of historical output
-- `delta` and `noop` recovery should stay non-blocking in the renderer; only snapshot fallback should surface a blocking restore state
+- `delta` and `noop` recovery should stay non-blocking in the renderer; only full-state recovery
+  (`terminal-state` or snapshot fallback) should surface a blocking restore state
 - selected handoff protection may temporarily prioritize restore and replay for the selected
   terminal, but that ordering aid remains presentation/runtime policy rather than backend truth
 - experimental live-surface caps remain presentation/runtime policy only and do not change backend
   recovery truth
-- destructive reset is a fallback for irreconcilable snapshots, not the default recovery path
+- destructive reset is reserved for full-state recovery, not ordinary delta/noop continuity
 - large-history terminals should stay stable under reconnect, backpressure recovery, and rebind
 
 For the practical testing and debugging workflow around this area, including which browser-lab
