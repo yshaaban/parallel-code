@@ -1110,37 +1110,40 @@ export function createTerminalRecoveryRuntime(
   } {
     const isAttachRecovery =
       recoveryState.kind === 'restoring' && recoveryState.reason === 'attach';
-    const attachRequestTailBytes = isAttachRecovery
-      ? getAttachRecoveryRequestTailByteLimit(options.getOutputPriority())
-      : undefined;
-    const requestTailBytes =
-      attachRequestTailBytes === undefined
-        ? undefined
-        : isDenseVisibleStartupAttach()
-          ? Math.min(
-              attachRequestTailBytes,
-              DENSE_STARTUP_ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY[options.getOutputPriority()],
-            )
-          : attachRequestTailBytes;
+    let requestTailBytes: number | undefined;
+    let snapshotByteLimit: number | null = null;
+
+    if (isAttachRecovery) {
+      const outputPriority = options.getOutputPriority();
+      requestTailBytes = getAttachRecoveryRequestTailByteLimit(outputPriority);
+      snapshotByteLimit = getAttachRecoverySnapshotByteLimit(outputPriority);
+
+      if (isDenseVisibleStartupAttach()) {
+        requestTailBytes = Math.min(
+          requestTailBytes,
+          DENSE_STARTUP_ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY[outputPriority],
+        );
+        snapshotByteLimit = Math.min(
+          snapshotByteLimit,
+          DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[outputPriority],
+        );
+      }
+    }
+
     const requestState = outputPipeline.getRecoveryRequestState(requestTailBytes);
-    const attachSnapshotByteLimit = isAttachRecovery
-      ? getAttachRecoverySnapshotByteLimit(options.getOutputPriority())
-      : null;
+    let renderedTail: string | null = null;
+    if (
+      !suppressRenderedTail &&
+      requestState.renderedTail &&
+      requestState.renderedTail.length > 0
+    ) {
+      renderedTail = uint8ArrayToBase64(requestState.renderedTail);
+    }
+
     return {
       outputCursor: requestState.outputCursor,
-      renderedTail:
-        !suppressRenderedTail && requestState.renderedTail && requestState.renderedTail.length > 0
-          ? uint8ArrayToBase64(requestState.renderedTail)
-          : null,
-      snapshotByteLimit:
-        attachSnapshotByteLimit === null
-          ? null
-          : isDenseVisibleStartupAttach()
-            ? Math.min(
-                attachSnapshotByteLimit,
-                DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[options.getOutputPriority()],
-              )
-            : attachSnapshotByteLimit,
+      renderedTail,
+      snapshotByteLimit,
     };
   }
 
@@ -1153,13 +1156,17 @@ export function createTerminalRecoveryRuntime(
     }
 
     return (
-      isSnapshotRecovery(entry) &&
+      isFullStateRecovery(entry) &&
       shouldBlockTerminalRecoveryUIForStatus(options.getCurrentStatus())
     );
   }
 
   function isSnapshotRecovery(entry: TerminalRecoveryBatchEntry): boolean {
     return entry.recovery.kind === 'snapshot';
+  }
+
+  function isFullStateRecovery(entry: TerminalRecoveryBatchEntry): boolean {
+    return entry.recovery.kind === 'snapshot' || entry.recovery.kind === 'terminal-state';
   }
 
   function isVisibleSteadyStateSnapshotRecovery(
@@ -1186,9 +1193,7 @@ export function createTerminalRecoveryRuntime(
     reason: TerminalRecoveryReason,
     entry: TerminalRecoveryBatchEntry,
   ): boolean {
-    return reason === 'attach'
-      ? entry.recovery.kind !== 'noop'
-      : entry.recovery.kind === 'snapshot';
+    return reason === 'attach' ? entry.recovery.kind !== 'noop' : isFullStateRecovery(entry);
   }
 
   function getTerminalRecoveryRequest(
@@ -1208,40 +1213,67 @@ export function createTerminalRecoveryRuntime(
     return assertNever(reason, 'Unhandled terminal recovery reason');
   }
 
+  function getTerminalRecoveryFallbackOptions(): {
+    fallbackCols: number;
+    fallbackRows: number;
+  } {
+    return {
+      fallbackCols: term.cols,
+      fallbackRows: term.rows,
+    };
+  }
+
   async function requestRecoveryEntry(
     reason: TerminalRecoveryReason,
     requestState: ReturnType<typeof getTerminalRecoveryRequestState> | null,
   ): Promise<TerminalRecoveryBatchEntry> {
+    const fallbackOptions = getTerminalRecoveryFallbackOptions();
     if (
       reason === 'reconnect' &&
       (options.isSelectedRecoveryProtected() || isPrioritySelectedVisibleReconnectRecovery(reason))
     ) {
       return requestReconnectTerminalRecovery(
         agentId,
-        requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
+        {
+          ...(requestState ?? {}),
+          ...fallbackOptions,
+        },
         { immediate: true },
       );
     }
 
     const recoveryRequest = getTerminalRecoveryRequest(reason);
-    return recoveryRequest(
-      agentId,
-      requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
-    );
+    return recoveryRequest(agentId, {
+      ...(requestState ?? {}),
+      ...fallbackOptions,
+    });
   }
 
   function shouldAlignRecoveryGeometry(reason: TerminalRecoveryReason): boolean {
     switch (reason) {
       case 'attach':
-      case 'renderer-loss':
-        return false;
       case 'backpressure':
       case 'hibernate':
       case 'reconnect':
         return true;
+      case 'renderer-loss':
+        return false;
     }
 
     return assertNever(reason, 'Unhandled terminal recovery reason');
+  }
+
+  function isRecoveryGeometryAligned(entry: TerminalRecoveryBatchEntry): boolean {
+    return entry.cols === term.cols && entry.rows === term.rows;
+  }
+
+  function adoptAttachRecoveryGeometry(entry: TerminalRecoveryBatchEntry): boolean {
+    if (isRecoveryGeometryAligned(entry)) {
+      return true;
+    }
+
+    term.resize(entry.cols, entry.rows);
+    return isRecoveryGeometryAligned(entry);
   }
 
   async function requestGeometryAlignedRecoveryEntry(
@@ -1267,12 +1299,16 @@ export function createTerminalRecoveryRuntime(
       const recoveryEntry =
         startupRecoveryRole === null
           ? await requestRecoveryEntry(reason, requestState)
-          : await requestStartupTerminalRecovery(agentId, startupRecoveryRole);
+          : await requestStartupTerminalRecovery(
+              agentId,
+              startupRecoveryRole,
+              getTerminalRecoveryFallbackOptions(),
+            );
       if (!isActiveRestoreGeneration(generation)) {
         return null;
       }
 
-      if (!shouldAlignRecoveryGeometry(reason) || recoveryEntry.cols === term.cols) {
+      if (!shouldAlignRecoveryGeometry(reason) || isRecoveryGeometryAligned(recoveryEntry)) {
         return recoveryEntry;
       }
       lastMismatchedRecoveryEntry = recoveryEntry;
@@ -1299,6 +1335,11 @@ export function createTerminalRecoveryRuntime(
 
     if (lastMismatchedRecoveryEntry !== null) {
       recordTerminalRecoveryGeometryAlignmentFallback();
+      if (reason === 'attach') {
+        return adoptAttachRecoveryGeometry(lastMismatchedRecoveryEntry)
+          ? lastMismatchedRecoveryEntry
+          : null;
+      }
     }
     return lastMismatchedRecoveryEntry;
   }
@@ -1360,6 +1401,24 @@ export function createTerminalRecoveryRuntime(
           return;
         }
         await restoreTerminalScrollbackData(scrollback, reason);
+        outputPipeline.setRenderedOutputCursor(entry.outputCursor);
+        return;
+      }
+      case 'terminal-state': {
+        const terminalState = base64ToUint8Array(entry.recovery.data);
+        if (reason === 'renderer-loss') {
+          return;
+        }
+        recordTerminalRecoveryReset(reason);
+        term.reset();
+        await writeTerminalPayloadChunked(
+          terminalState,
+          getRestoreChunkSize(reason),
+          shouldYieldBetweenRestoreChunks(reason),
+          reason,
+          getStartupWriteRenderedCallback(reason),
+        );
+        outputPipeline.setRenderedOutputHistory(new Uint8Array(0));
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
         return;
       }

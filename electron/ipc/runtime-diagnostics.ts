@@ -82,6 +82,8 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     returnedBytes: number;
     snapshotResponses: number;
     tailDeltaResponses: number;
+    terminalStateFallbacks: number;
+    terminalStateResponses: number;
   };
   terminalInputTracing: TerminalInputTraceDiagnosticsSnapshot;
 }
@@ -431,6 +433,8 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       returnedBytes: 0,
       snapshotResponses: 0,
       tailDeltaResponses: 0,
+      terminalStateFallbacks: 0,
+      terminalStateResponses: 0,
     },
     terminalInputTracing: {
       activeTraceCount: 0,
@@ -755,7 +759,8 @@ export function recordTerminalRecoveryBatch(
     recovery:
       | { kind: 'delta'; data: string; source: 'cursor' | 'tail' }
       | { kind: 'noop' }
-      | { kind: 'snapshot'; data: string | null };
+      | { kind: 'snapshot'; data: string | null }
+      | { kind: 'terminal-state'; data: string };
   }>,
   durationMs: number,
 ): void {
@@ -785,10 +790,18 @@ export function recordTerminalRecoveryBatch(
         backendRuntimeDiagnostics.terminalRecovery.snapshotResponses += 1;
         returnedBytes += Buffer.byteLength(entry.recovery.data ?? '', 'base64');
         break;
+      case 'terminal-state':
+        backendRuntimeDiagnostics.terminalRecovery.terminalStateResponses += 1;
+        returnedBytes += Buffer.byteLength(entry.recovery.data, 'base64');
+        break;
     }
   }
 
   backendRuntimeDiagnostics.terminalRecovery.returnedBytes += returnedBytes;
+}
+
+export function recordTerminalStateRecoveryFallback(): void {
+  backendRuntimeDiagnostics.terminalRecovery.terminalStateFallbacks += 1;
 }
 
 export function recordPtyInputEnqueue(chars: number, queuedChars: number): void {

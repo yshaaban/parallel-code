@@ -125,6 +125,10 @@ export type TerminalRecoveryPayload =
   | {
       kind: 'snapshot';
       data: string | null;
+    }
+  | {
+      kind: 'terminal-state';
+      data: string;
     };
 
 export interface TerminalRecoveryBatchEntry {
@@ -133,6 +137,7 @@ export interface TerminalRecoveryBatchEntry {
   outputCursor: number;
   recovery: TerminalRecoveryPayload;
   requestId: string;
+  rows: number;
 }
 
 export interface CreateArenaWorktreeResult {

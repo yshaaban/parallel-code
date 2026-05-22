@@ -757,6 +757,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     if (
       renderHibernating() ||
+      !isTerminalPaintReady(status) ||
       !session ||
       !hasDocumentFocus() ||
       store.sidebarFocused ||
@@ -1615,8 +1616,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const blocked = restoreBlocked();
     const mode = presentationMode().kind;
     const hibernating = renderHibernating();
+    const paintSettledReady = isPaintSettledReady();
     const focusVersion = documentFocusVersion();
     const domFocused = domFocusWithin();
+    void paintSettledReady;
     void focusVersion;
     void domFocused;
 

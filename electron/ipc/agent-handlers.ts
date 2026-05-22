@@ -26,6 +26,7 @@ import {
   resizeAgent,
   resumeAgent,
   writeToAgent,
+  type AgentTerminalRecovery,
 } from './pty.js';
 import { canResizeTaskTerminal, getTaskCommandControllerSnapshot } from './task-command-leases.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
@@ -39,7 +40,9 @@ import {
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
+import { assertNever } from '../../src/lib/assert-never.js';
 import type {
+  TerminalRecoveryBatchEntry,
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
 } from '../../src/ipc/types.js';
@@ -50,27 +53,6 @@ interface ScrollbackBatchEntrySnapshot {
   scrollback: string | null;
 }
 
-interface TerminalRecoveryBatchEntrySnapshot {
-  agentId: string;
-  cols: number;
-  outputCursor: number;
-  recovery:
-    | {
-        kind: 'delta';
-        data: string;
-        overlapBytes: number;
-        source: 'cursor' | 'tail';
-      }
-    | {
-        kind: 'noop';
-      }
-    | {
-        kind: 'snapshot';
-        data: string | null;
-      };
-  requestId: string;
-}
-
 interface CachedScrollbackBatch {
   expiresAt: number;
   promise: Promise<Map<string, ScrollbackBatchEntrySnapshot>>;
@@ -79,6 +61,58 @@ interface CachedScrollbackBatch {
 
 const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
 const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
+
+function serializeTerminalRecoveryEntry(
+  agentId: string,
+  requestId: string,
+  recovery: AgentTerminalRecovery,
+): TerminalRecoveryBatchEntry {
+  const baseEntry = {
+    agentId,
+    cols: recovery.cols,
+    outputCursor: recovery.outputCursor,
+    requestId,
+    rows: recovery.rows,
+  };
+
+  switch (recovery.kind) {
+    case 'delta':
+      return {
+        ...baseEntry,
+        recovery: {
+          data: recovery.data.toString('base64'),
+          kind: 'delta' as const,
+          overlapBytes: recovery.overlapBytes,
+          source: recovery.source,
+        },
+      };
+    case 'noop':
+      return {
+        ...baseEntry,
+        recovery: {
+          kind: 'noop' as const,
+        },
+      };
+    case 'snapshot':
+      return {
+        ...baseEntry,
+        recovery: {
+          data: recovery.data?.toString('base64') ?? null,
+          kind: 'snapshot' as const,
+        },
+      };
+    case 'terminal-state':
+      return {
+        ...baseEntry,
+        recovery: {
+          data: recovery.data.toString('base64'),
+          kind: 'terminal-state' as const,
+        },
+      };
+  }
+
+  return assertNever(recovery, 'Unhandled terminal recovery entry');
+}
 
 function clearExpiredScrollbackBatchEntries(now: number): void {
   for (const [cacheKey, entry] of pendingScrollbackBatchByKey) {
@@ -165,7 +199,7 @@ async function fetchScrollbackBatch(
 
 async function fetchTerminalRecoveryBatch(
   requests: TerminalRecoveryRequestEntry[],
-): Promise<TerminalRecoveryBatchEntrySnapshot[]> {
+): Promise<TerminalRecoveryBatchEntry[]> {
   const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
   const pausedIds: string[] = [];
   const startedAt = performance.now();
@@ -180,7 +214,7 @@ async function fetchTerminalRecoveryBatch(
       pausedIds.push(agentId);
     }
 
-    const results: TerminalRecoveryBatchEntrySnapshot[] = requests.map((request) => {
+    const results: TerminalRecoveryBatchEntry[] = requests.map((request) => {
       const renderedTail =
         typeof request.renderedTail === 'string' && request.renderedTail.length > 0
           ? Buffer.from(request.renderedTail, 'base64')
@@ -191,42 +225,7 @@ async function fetchTerminalRecoveryBatch(
         request.outputCursor ?? null,
         request.snapshotByteLimit ?? null,
       );
-      switch (recovery.kind) {
-        case 'delta':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              data: recovery.data.toString('base64'),
-              kind: 'delta' as const,
-              overlapBytes: recovery.overlapBytes,
-              source: recovery.source,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-        case 'noop':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              kind: 'noop' as const,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-        case 'snapshot':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              data: recovery.data?.toString('base64') ?? null,
-              kind: 'snapshot' as const,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-      }
+      return serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
     });
     recordTerminalRecoveryBatch(results, performance.now() - startedAt);
     return results;
@@ -243,7 +242,7 @@ async function fetchTerminalRecoveryBatch(
 
 async function fetchTerminalStartupRecoveryBatch(
   requests: TerminalStartupRecoveryRequestEntry[],
-): Promise<TerminalRecoveryBatchEntrySnapshot[]> {
+): Promise<TerminalRecoveryBatchEntry[]> {
   const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
   const pausedIds: string[] = [];
   const startedAt = performance.now();
@@ -259,51 +258,18 @@ async function fetchTerminalStartupRecoveryBatch(
       pausedIds.push(agentId);
     }
 
-    const results: TerminalRecoveryBatchEntrySnapshot[] = requests.map((request) => {
-      const recovery = getAgentTerminalStartupRecovery(
-        request.agentId,
-        null,
-        null,
-        request.role,
-        visibleTerminalCount,
-      );
-      switch (recovery.kind) {
-        case 'delta':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              data: recovery.data.toString('base64'),
-              kind: 'delta' as const,
-              overlapBytes: recovery.overlapBytes,
-              source: recovery.source,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-        case 'noop':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              kind: 'noop' as const,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-        case 'snapshot':
-          return {
-            agentId: request.agentId,
-            cols: recovery.cols,
-            outputCursor: recovery.outputCursor,
-            recovery: {
-              data: recovery.data?.toString('base64') ?? null,
-              kind: 'snapshot' as const,
-            },
-            requestId: request.requestId,
-          } satisfies TerminalRecoveryBatchEntrySnapshot;
-      }
-    });
+    const results: TerminalRecoveryBatchEntry[] = await Promise.all(
+      requests.map(async (request) => {
+        const recovery = await getAgentTerminalStartupRecovery(
+          request.agentId,
+          null,
+          null,
+          request.role,
+          visibleTerminalCount,
+        );
+        return serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
+      }),
+    );
     recordTerminalRecoveryBatch(results, performance.now() - startedAt);
     return results;
   } finally {
@@ -396,15 +362,8 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
       const requestedRows = typeof request.rows === 'number' ? request.rows : 24;
       const hasExistingSession = hasAgentSession(request.agentId);
-      const canResizeExistingSession = canApplyTaskResize(request);
-      const cols =
-        hasExistingSession && !canResizeExistingSession
-          ? getAgentCols(request.agentId)
-          : requestedCols;
-      const rows =
-        hasExistingSession && !canResizeExistingSession
-          ? getAgentRows(request.agentId)
-          : requestedRows;
+      const cols = hasExistingSession ? getAgentCols(request.agentId) : requestedCols;
+      const rows = hasExistingSession ? getAgentRows(request.agentId) : requestedRows;
 
       const attachedExistingSession = spawnTaskAgentWorkflow(context, {
         taskId: request.taskId,

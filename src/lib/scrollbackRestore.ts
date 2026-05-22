@@ -14,17 +14,27 @@ const RECONNECT_BATCH_WINDOW_MS = 12;
 const STARTUP_ATTACH_BATCH_WINDOW_MS = 8;
 
 interface TerminalRecoveryRequestOptions {
+  fallbackCols?: number;
+  fallbackRows?: number;
   outputCursor?: number | null;
   renderedTail?: string | null;
   snapshotByteLimit?: number | null;
 }
 
 interface TerminalRecoveryDispatchOptions {
+  fallbackCols?: number;
+  fallbackRows?: number;
   immediate?: boolean;
+}
+
+interface TerminalRecoveryFallbackGeometry {
+  cols: number;
+  rows: number;
 }
 
 interface PendingRestore {
   agentId: string;
+  fallbackGeometry: TerminalRecoveryFallbackGeometry;
   outputCursor: number | null;
   renderedTail: string | null;
   requestId: string;
@@ -35,6 +45,7 @@ interface PendingRestore {
 
 interface PendingStartupRestore {
   agentId: string;
+  fallbackGeometry: TerminalRecoveryFallbackGeometry;
   requestId: string;
   role: TerminalStartupRecoveryRole;
   resolve: (entry: TerminalRecoveryBatchEntry) => void;
@@ -43,6 +54,7 @@ interface PendingStartupRestore {
 
 interface PendingRecoveryListener {
   agentId: string;
+  fallbackGeometry: TerminalRecoveryFallbackGeometry;
   requestId: string;
   resolve: (entry: TerminalRecoveryBatchEntry) => void;
 }
@@ -101,19 +113,44 @@ function createTerminalRecoveryRequestEntry(
   };
 }
 
+function getTerminalRecoveryFallbackGeometry(
+  options: TerminalRecoveryRequestOptions | TerminalRecoveryDispatchOptions,
+): TerminalRecoveryFallbackGeometry {
+  return {
+    cols: options.fallbackCols ?? 80,
+    rows: options.fallbackRows ?? 24,
+  };
+}
+
+function mergeTerminalRecoveryFallbackOptions(
+  options: TerminalRecoveryRequestOptions,
+  dispatchOptions: TerminalRecoveryDispatchOptions,
+): TerminalRecoveryRequestOptions {
+  const mergedOptions: TerminalRecoveryRequestOptions = { ...options };
+  if (mergedOptions.fallbackCols === undefined && dispatchOptions.fallbackCols !== undefined) {
+    mergedOptions.fallbackCols = dispatchOptions.fallbackCols;
+  }
+  if (mergedOptions.fallbackRows === undefined && dispatchOptions.fallbackRows !== undefined) {
+    mergedOptions.fallbackRows = dispatchOptions.fallbackRows;
+  }
+  return mergedOptions;
+}
+
 function createTerminalRecoveryFallbackEntry(
   agentId: string,
   requestId: string,
+  geometry: TerminalRecoveryFallbackGeometry,
 ): TerminalRecoveryBatchEntry {
   return {
     agentId,
-    cols: 80,
+    cols: geometry.cols,
     outputCursor: 0,
     recovery: {
       kind: 'snapshot',
       data: null,
     },
     requestId,
+    rows: geometry.rows,
   };
 }
 
@@ -175,7 +212,12 @@ function resolvePendingTerminalRecovery(
   entry: TerminalRecoveryBatchEntry | undefined,
 ): void {
   listener.resolve(
-    entry ?? createTerminalRecoveryFallbackEntry(listener.agentId, listener.requestId),
+    entry ??
+      createTerminalRecoveryFallbackEntry(
+        listener.agentId,
+        listener.requestId,
+        listener.fallbackGeometry,
+      ),
   );
 }
 
@@ -200,19 +242,34 @@ async function requestImmediateTerminalRecoveryEntry(
     createTerminalRecoveryRequestEntry(agentId, requestId, options),
   ]);
 
-  return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
+  return (
+    entry ??
+    createTerminalRecoveryFallbackEntry(
+      agentId,
+      requestId,
+      getTerminalRecoveryFallbackGeometry(options),
+    )
+  );
 }
 
 async function requestImmediateTerminalStartupRecoveryEntry(
   agentId: string,
   role: TerminalStartupRecoveryRole,
+  options: TerminalRecoveryDispatchOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
   const requestId = createRandomId();
   const [entry] = await invokeTerminalStartupRecoveryBatch([
     createTerminalStartupRecoveryRequestEntry(agentId, requestId, role),
   ]);
 
-  return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
+  return (
+    entry ??
+    createTerminalRecoveryFallbackEntry(
+      agentId,
+      requestId,
+      getTerminalRecoveryFallbackGeometry(options),
+    )
+  );
 }
 
 export async function requestTerminalRecovery(
@@ -230,6 +287,7 @@ function requestBatchedTerminalRecovery(
   return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
     state.pending.push({
       agentId,
+      fallbackGeometry: getTerminalRecoveryFallbackGeometry(options),
       outputCursor: options.outputCursor ?? null,
       renderedTail: options.renderedTail ?? null,
       requestId: createRandomId(),
@@ -299,12 +357,13 @@ export function requestStartupTerminalRecovery(
   dispatchOptions: TerminalRecoveryDispatchOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
   if (role === 'selected' || dispatchOptions.immediate === true) {
-    return requestImmediateTerminalStartupRecoveryEntry(agentId, role);
+    return requestImmediateTerminalStartupRecoveryEntry(agentId, role, dispatchOptions);
   }
 
   return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
     startupAttachRestoreState.pending.push({
       agentId,
+      fallbackGeometry: getTerminalRecoveryFallbackGeometry(dispatchOptions),
       requestId: createRandomId(),
       role,
       resolve,
@@ -320,7 +379,10 @@ export function requestReconnectTerminalRecovery(
   dispatchOptions: TerminalRecoveryDispatchOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
   if (dispatchOptions.immediate === true) {
-    return requestImmediateTerminalRecoveryEntry(agentId, options);
+    return requestImmediateTerminalRecoveryEntry(
+      agentId,
+      mergeTerminalRecoveryFallbackOptions(options, dispatchOptions),
+    );
   }
 
   return requestBatchedTerminalRecovery(reconnectRestoreState, agentId, options);

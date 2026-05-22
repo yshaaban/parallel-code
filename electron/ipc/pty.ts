@@ -28,9 +28,11 @@ import {
   recordTerminalInputTracePtyEnqueued,
   recordTerminalInputTracePtyFlushed,
   recordTerminalInputTracePtyWritten,
+  recordTerminalStateRecoveryFallback,
   recordPtyInputWriteFailure,
 } from './runtime-diagnostics.js';
 import { observeTaskPortsFromOutput } from './task-ports.js';
+import { TerminalStateMirror } from './terminal-state-mirror.js';
 
 interface PtySession {
   proc: pty.IPty;
@@ -46,6 +48,7 @@ interface PtySession {
   inputFlushTimer: InputFlushTimer | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
+  terminalStateMirror: TerminalStateMirror;
   batchBuf: Buffer;
   batchOffset: number;
   outputCursor: number;
@@ -80,18 +83,28 @@ export type AgentTerminalRecovery =
       data: Buffer;
       overlapBytes: number;
       outputCursor: number;
+      rows: number;
       source: 'cursor' | 'tail';
     }
   | {
       cols: number;
       kind: 'noop';
       outputCursor: number;
+      rows: number;
     }
   | {
       cols: number;
       kind: 'snapshot';
       data: Buffer | null;
       outputCursor: number;
+      rows: number;
+    }
+  | {
+      cols: number;
+      data: Buffer;
+      kind: 'terminal-state';
+      outputCursor: number;
+      rows: number;
     };
 
 type InputFlushTimer =
@@ -275,6 +288,7 @@ function getLongestRecoveryOverlapBytes(renderedTail: Buffer, scrollback: Buffer
 function buildAgentTerminalRecovery(
   scrollback: Buffer,
   cols: number,
+  rows: number,
   renderedTail: Buffer | null,
   outputCursor: number,
   requestedOutputCursor: number | null,
@@ -296,6 +310,7 @@ function buildAgentTerminalRecovery(
         cols,
         kind: 'noop',
         outputCursor,
+        rows,
       };
     }
 
@@ -307,16 +322,27 @@ function buildAgentTerminalRecovery(
       kind: 'delta',
       outputCursor,
       overlapBytes: 0,
+      rows,
       source: 'cursor',
     };
   }
 
   if (scrollback.length === 0) {
+    if (!renderedTail || renderedTail.length === 0) {
+      return {
+        cols,
+        kind: 'noop',
+        outputCursor,
+        rows,
+      };
+    }
+
     return {
       cols,
-      data: renderedTail && renderedTail.length > 0 ? Buffer.alloc(0) : null,
-      kind: renderedTail && renderedTail.length > 0 ? 'snapshot' : 'noop',
+      data: Buffer.alloc(0),
+      kind: 'snapshot',
       outputCursor,
+      rows,
     };
   }
 
@@ -326,6 +352,7 @@ function buildAgentTerminalRecovery(
       data: snapshotScrollback,
       kind: 'snapshot',
       outputCursor,
+      rows,
     };
   }
 
@@ -334,6 +361,7 @@ function buildAgentTerminalRecovery(
       cols,
       kind: 'noop',
       outputCursor,
+      rows,
     };
   }
 
@@ -345,6 +373,7 @@ function buildAgentTerminalRecovery(
         cols,
         kind: 'noop',
         outputCursor,
+        rows,
       };
     }
 
@@ -354,6 +383,7 @@ function buildAgentTerminalRecovery(
       kind: 'delta',
       outputCursor,
       overlapBytes: renderedTail.length,
+      rows,
       source: 'tail',
     };
   }
@@ -366,6 +396,7 @@ function buildAgentTerminalRecovery(
       kind: 'delta',
       outputCursor,
       overlapBytes,
+      rows,
       source: 'tail',
     };
   }
@@ -375,6 +406,7 @@ function buildAgentTerminalRecovery(
     data: snapshotScrollback,
     kind: 'snapshot',
     outputCursor,
+    rows,
   };
 }
 
@@ -392,6 +424,7 @@ function getStartupRecoverySnapshotByteLimit(
 function buildStartupSnapshotRecovery(
   scrollback: Buffer,
   cols: number,
+  rows: number,
   outputCursor: number,
   snapshotByteLimit: number,
 ): AgentTerminalRecovery {
@@ -404,6 +437,7 @@ function buildStartupSnapshotRecovery(
     data: snapshotScrollback,
     kind: 'snapshot',
     outputCursor,
+    rows,
   };
 }
 
@@ -629,7 +663,6 @@ export function spawnAgent(
     existing.taskId = args.taskId;
     existing.isShell = args.isShell ?? false;
     existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
-    existing.proc.resize(args.cols, args.rows);
     return isNewChannel;
   }
 
@@ -705,6 +738,7 @@ export function spawnAgent(
     inputFlushTimer: null,
     subscribers: new Set(),
     scrollback: new RingBuffer(),
+    terminalStateMirror: new TerminalStateMirror(args.cols, args.rows),
     batchBuf: Buffer.alloc(BATCH_MAX),
     batchOffset: 0,
     outputCursor: 0,
@@ -725,6 +759,7 @@ export function spawnAgent(
   proc.onData((data: string) => {
     const chunk = Buffer.from(data, 'utf8');
     session.scrollback.write(chunk);
+    session.terminalStateMirror.enqueueOutput(chunk);
     session.outputCursor += chunk.length;
     recordAgentOutput(args.agentId, data);
     observeTaskPortsFromOutput(session.taskId, data);
@@ -785,6 +820,7 @@ export function spawnAgent(
       lastOutput: lines,
       signal: signal !== undefined ? String(signal) : null,
     });
+    session.terminalStateMirror.dispose();
     sessions.delete(args.agentId);
   });
 
@@ -806,7 +842,9 @@ export function writeToAgent(
 }
 
 export function resizeAgent(agentId: string, cols: number, rows: number): void {
-  getSessionOrThrow(agentId).proc.resize(cols, rows);
+  const session = getSessionOrThrow(agentId);
+  session.proc.resize(cols, rows);
+  session.terminalStateMirror.enqueueResize(cols, rows);
 }
 
 function addPauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {
@@ -983,9 +1021,12 @@ export function getAgentTerminalRecovery(
 ): AgentTerminalRecovery {
   const session = sessions.get(agentId);
   const scrollback = session?.scrollback.read() ?? Buffer.alloc(0);
+  const cols = getAgentCols(agentId);
+  const rows = getAgentRows(agentId);
   return buildAgentTerminalRecovery(
     scrollback,
-    getAgentCols(agentId),
+    cols,
+    rows,
     renderedTail,
     session?.outputCursor ?? 0,
     requestedOutputCursor,
@@ -993,32 +1034,44 @@ export function getAgentTerminalRecovery(
   );
 }
 
-export function getAgentTerminalStartupRecovery(
+export async function getAgentTerminalStartupRecovery(
   agentId: string,
   _renderedTail: Buffer | null,
   _requestedOutputCursor: number | null = null,
   role: TerminalStartupRecoveryRole,
   visibleTerminalCount = 1,
-): AgentTerminalRecovery {
+): Promise<AgentTerminalRecovery> {
   const session = sessions.get(agentId);
   const scrollback = session?.scrollback.read() ?? Buffer.alloc(0);
+  const cols = getAgentCols(agentId);
+  const rows = getAgentRows(agentId);
   const outputCursor = session?.outputCursor ?? 0;
   const snapshotByteLimit = getStartupRecoverySnapshotByteLimit(role, visibleTerminalCount);
 
   if (outputCursor === 0 && scrollback.length === 0) {
     return {
-      cols: getAgentCols(agentId),
+      cols,
       kind: 'noop',
       outputCursor,
+      rows,
     };
   }
 
-  return buildStartupSnapshotRecovery(
-    scrollback,
-    getAgentCols(agentId),
-    outputCursor,
-    snapshotByteLimit,
-  );
+  const terminalState = await session?.terminalStateMirror.serialize();
+  if (terminalState) {
+    return {
+      cols: terminalState.cols,
+      data: terminalState.data,
+      kind: 'terminal-state',
+      outputCursor,
+      rows: terminalState.rows,
+    };
+  }
+  if (session) {
+    recordTerminalStateRecoveryFallback();
+  }
+
+  return buildStartupSnapshotRecovery(scrollback, cols, rows, outputCursor, snapshotByteLimit);
 }
 
 /** Return all active agent IDs. */

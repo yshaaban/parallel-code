@@ -41,7 +41,7 @@ const TERMINAL_RECOVERY_REASONS = [
   'reconnect',
   'renderer-loss',
 ] as const;
-const TERMINAL_RECOVERY_KINDS = ['delta', 'noop', 'snapshot'] as const;
+const TERMINAL_RECOVERY_KINDS = ['delta', 'noop', 'snapshot', 'terminal-state'] as const;
 const TERMINAL_RECOVERY_RESET_REASONS = [
   'attach',
   'backpressure',
