@@ -8,8 +8,10 @@ import {
   fireAndForget,
   getBrowserTransportConnectionState,
   invoke,
+  isBrowserControlAuthenticated,
   isElectronRuntime,
   listenServerMessage,
+  onBrowserAuthenticated,
   onBrowserTransportEvent,
   sendPagehideInvoke,
 } from '../../lib/ipc';
@@ -1339,6 +1341,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     taskId,
     term,
   });
+  if (browserMode && isBrowserControlAuthenticated()) {
+    recoveryRuntime.handleBrowserControlAuthenticated();
+  }
 
   function setSelectedAttachRecoveryPending(nextPending: boolean): void {
     if (selectedAttachRecoveryPending === nextPending) {
@@ -1656,6 +1661,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           return;
       }
     });
+    cleanupCallbacks.push(
+      onBrowserAuthenticated(() => {
+        recoveryRuntime?.handleBrowserControlAuthenticated();
+      }),
+    );
   }
 
   void (async () => {

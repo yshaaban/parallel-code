@@ -181,6 +181,7 @@ function createRecoveryRuntimeFixture(
     setRenderedOutputHistoryMock: ReturnType<typeof vi.fn>;
   };
   inputPipelineMock: {
+    adoptBackendResizeForRecovery: ReturnType<typeof vi.fn>;
     drainInputQueue: ReturnType<typeof vi.fn>;
     flushPendingInput: ReturnType<typeof vi.fn>;
     flushPendingResize: ReturnType<typeof vi.fn>;
@@ -229,6 +230,7 @@ function createRecoveryRuntimeFixture(
     write: handleTermWrite,
   };
   const inputPipelineMock = {
+    adoptBackendResizeForRecovery: vi.fn(),
     drainInputQueue: vi.fn(),
     flushPendingInput: vi.fn(),
     flushPendingResize: vi.fn(),
@@ -338,6 +340,13 @@ function createRecoveryRuntimeFixture(
     outputPipelineMock,
     termWriteMock,
   };
+}
+
+function connectAuthenticatedBrowserControl(
+  runtime: ReturnType<typeof createTerminalRecoveryRuntime>,
+): void {
+  runtime.handleBrowserTransportConnectionState('connected');
+  runtime.handleBrowserControlAuthenticated();
 }
 
 function createDeltaRecoveryEntry(agentId: string, byteLength: number): TerminalRecoveryBatchEntry {
@@ -472,7 +481,10 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining({
+        ...DEFAULT_FALLBACK_GEOMETRY,
+        visibleTerminalCount: 1,
+      }),
     );
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
@@ -602,7 +614,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining(DEFAULT_FALLBACK_GEOMETRY),
     );
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       ...DEFAULT_FALLBACK_GEOMETRY,
@@ -687,7 +699,10 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining({
+        ...DEFAULT_FALLBACK_GEOMETRY,
+        visibleTerminalCount: 1,
+      }),
     );
   });
 
@@ -705,7 +720,10 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'visible-sibling',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining({
+        ...DEFAULT_FALLBACK_GEOMETRY,
+        visibleTerminalCount: 1,
+      }),
     );
   });
 
@@ -731,7 +749,10 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'visible-sibling',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining({
+        ...DEFAULT_FALLBACK_GEOMETRY,
+        visibleTerminalCount: 4,
+      }),
     );
   });
 
@@ -824,7 +845,10 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining({
+        ...DEFAULT_FALLBACK_GEOMETRY,
+        visibleTerminalCount: 4,
+      }),
     );
   });
 
@@ -1424,7 +1448,7 @@ describe('createTerminalRecoveryRuntime', () => {
   it('retries reconnect recovery until backend geometry matches the live terminal width', async () => {
     let recoveryCols = 80;
     requestReconnectTerminalRecoveryMock.mockImplementation(async () => ({
-      ...createDeltaRecoveryEntry('agent-1', 3),
+      ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
       cols: recoveryCols,
     }));
     const {
@@ -1451,10 +1475,34 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
   });
 
+  it('applies mismatched reconnect delta without geometry-alignment retries', async () => {
+    requestReconnectTerminalRecoveryMock.mockResolvedValue({
+      ...createDeltaRecoveryEntry('agent-1', 3),
+      cols: 80,
+    });
+    const { inputPipelineMock, outputPipelineMock, runtime, termWriteMock } =
+      createRecoveryRuntimeFixture({
+        currentStatus: 'ready',
+        outputPriority: 'focused',
+        renderedOutputCursor: 12,
+        termCols: 120,
+      });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment).not.toHaveBeenCalled();
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.geometryAlignmentFallbacks,
+    ).toBe(0);
+  });
+
   it('does not consume geometry-alignment retry budget while the live terminal width is still changing', async () => {
     let recoveryCols = 80;
     requestReconnectTerminalRecoveryMock.mockImplementation(async () => ({
-      ...createDeltaRecoveryEntry('agent-1', 3),
+      ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
       cols: recoveryCols,
     }));
     const { ensureTerminalFitReadyMock, inputPipelineMock, runtime, term, termWriteMock } =
@@ -1475,9 +1523,9 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(termWriteMock).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the latest recovery entry after exhausting stable geometry-alignment retries', async () => {
+  it('skips mismatched reconnect replay after exhausting stable geometry-alignment retries', async () => {
     requestReconnectTerminalRecoveryMock.mockResolvedValue({
-      ...createDeltaRecoveryEntry('agent-1', 3),
+      ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
       cols: 80,
     });
     const {
@@ -1500,9 +1548,9 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment.mock.calls.length).toBe(
       requestReconnectTerminalRecoveryMock.mock.calls.length,
     );
-    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).not.toHaveBeenCalled();
     expect(outputPipelineMock.appendRenderedOutputHistoryMock).not.toHaveBeenCalled();
-    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).not.toHaveBeenCalled();
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(runtime.isRestoreBlocked()).toBe(false);
@@ -1517,13 +1565,17 @@ describe('createTerminalRecoveryRuntime', () => {
       cols: 100,
       rows: 30,
     });
-    const { runtime, term, termWriteMock } = createRecoveryRuntimeFixture({
+    const { inputPipelineMock, runtime, term, termWriteMock } = createRecoveryRuntimeFixture({
       termCols: 80,
       termRows: 24,
     });
 
     await runtime.restoreTerminalOutput('attach');
 
+    expect(inputPipelineMock.adoptBackendResizeForRecovery).toHaveBeenCalledWith({
+      cols: 100,
+      rows: 30,
+    });
     expect(term.resize).toHaveBeenCalledWith(100, 30);
     expect(term.cols).toBe(100);
     expect(term.rows).toBe(30);
@@ -1638,7 +1690,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining(DEFAULT_FALLBACK_GEOMETRY),
     );
   });
 
@@ -1654,7 +1706,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining(DEFAULT_FALLBACK_GEOMETRY),
     );
     expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
@@ -1679,7 +1731,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       'selected',
-      DEFAULT_FALLBACK_GEOMETRY,
+      expect.objectContaining(DEFAULT_FALLBACK_GEOMETRY),
     );
     expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
@@ -1711,11 +1763,13 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(outputPipelineMock.dropQueuedOutputForRecovery).toHaveBeenCalledTimes(1);
   });
 
-  it('does not request reconnect recovery before the transport has ever connected', async () => {
+  it('does not request reconnect recovery on connected transport before authenticated control traffic', async () => {
     const { runtime, termWriteMock } = createRecoveryRuntimeFixture({
       outputPriority: 'focused',
     });
 
+    runtime.handleBrowserTransportConnectionState('connected');
+    runtime.handleBrowserTransportConnectionState('disconnected');
     runtime.handleBrowserTransportConnectionState('reconnecting');
     runtime.handleBrowserTransportConnectionState('connected');
 
@@ -1727,18 +1781,29 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(termWriteMock).not.toHaveBeenCalled();
   });
 
-  it('treats a late-mounted connected transport as already connected for the next reconnect cycle', async () => {
+  it('starts pending reconnect restore after authenticated control traffic and ignores repeated auth', async () => {
     const { runtime } = createRecoveryRuntimeFixture({
       initialBrowserTransportState: 'connected',
       outputPriority: 'focused',
     });
 
+    runtime.handleBrowserControlAuthenticated();
     runtime.handleBrowserTransportConnectionState('disconnected');
     runtime.handleBrowserTransportConnectionState('connected');
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+
+    runtime.handleBrowserControlAuthenticated();
 
     await vi.waitFor(() => {
       expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     });
+
+    runtime.handleBrowserControlAuthenticated();
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
   });
 
   it('starts a pending reconnect restore once spawn-ready is reached after reconnect returns', async () => {
@@ -1749,8 +1814,9 @@ describe('createTerminalRecoveryRuntime', () => {
       outputPriority: 'focused',
     });
 
+    runtime.handleBrowserControlAuthenticated();
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     await Promise.resolve();
 
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
@@ -1776,10 +1842,10 @@ describe('createTerminalRecoveryRuntime', () => {
       reconnectRestoreSettled.resolve(undefined);
     });
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     runtime.handleBrowserTransportConnectionState('disconnected');
     runtime.handleBrowserTransportConnectionState('reconnecting');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     await reconnectRestoreRequested.promise;
     reconnectRestore.resolve(createRecoveryEntry('agent-1'));
@@ -1837,14 +1903,14 @@ describe('createTerminalRecoveryRuntime', () => {
       }
     });
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     await firstRestoreRequested.promise;
 
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
 
@@ -1895,9 +1961,9 @@ describe('createTerminalRecoveryRuntime', () => {
       }
     });
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     await firstRestoreRequested.promise;
     expect(runtime.isRestoreBlocked()).toBe(true);
@@ -1910,7 +1976,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(markTerminalReadyMock).not.toHaveBeenCalled();
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     await secondRestoreRequested.promise;
 
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
@@ -1953,15 +2019,15 @@ describe('createTerminalRecoveryRuntime', () => {
       }
     });
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     await firstRestoreRequested.promise;
 
     hasQueuedOutput = true;
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     firstRestore.resolve(createRecoveryEntry('agent-1'));
     await firstRestore.promise;
@@ -2002,14 +2068,14 @@ describe('createTerminalRecoveryRuntime', () => {
       secondSelectedRecoverySettled.resolve(undefined);
     });
 
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     await firstRestoreRequested.promise;
 
     runtime.handleBrowserTransportConnectionState('disconnected');
-    runtime.handleBrowserTransportConnectionState('connected');
+    connectAuthenticatedBrowserControl(runtime);
 
     firstRestore.resolve(createRecoveryEntry('agent-1'));
     await firstRestore.promise;

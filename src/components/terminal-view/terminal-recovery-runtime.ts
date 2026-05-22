@@ -164,6 +164,7 @@ function roundMilliseconds(value: number): number {
 
 export interface TerminalRecoveryRuntime {
   dispose(): void;
+  handleBrowserControlAuthenticated(): void;
   handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
   isOutputFlushBlocked(): boolean;
   isRestoreBlocked(): boolean;
@@ -356,7 +357,8 @@ export function createTerminalRecoveryRuntime(
 
   let browserTransportState: ReconnectAwareBrowserTransportConnectionState =
     options.initialBrowserTransportState ?? 'disconnected';
-  let hasConnected = browserTransportState === 'connected';
+  let hasEverAuthenticatedBrowserControl = false;
+  let hasCurrentBrowserControlAuth = false;
   let pendingReconnectRestoreState: PendingReconnectRestoreState = 'none';
   let recoveryState: TerminalRecoveryState = { kind: 'idle' };
   let restoreBlocked = false;
@@ -455,17 +457,12 @@ export function createTerminalRecoveryRuntime(
   function getStartupVisibleTerminalCount(): number {
     const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
     if (!startupPaintSnapshot) {
-      return 0;
+      return 1;
     }
 
-    const selectedTerminalCount =
-      startupPaintSnapshot.selectedPaintReady || startupPaintSnapshot.selectedPendingCount > 0
-        ? 1
-        : 0;
-    return (
-      selectedTerminalCount +
-      startupPaintSnapshot.visiblePendingCount +
-      startupPaintSnapshot.visibleReadyCount
+    return Math.max(
+      1,
+      startupPaintSnapshot.visiblePendingCount + startupPaintSnapshot.visibleReadyCount,
     );
   }
 
@@ -1267,11 +1264,19 @@ export function createTerminalRecoveryRuntime(
     return entry.cols === term.cols && entry.rows === term.rows;
   }
 
+  function requiresRecoveryGeometryAlignment(entry: TerminalRecoveryBatchEntry): boolean {
+    return entry.recovery.kind === 'terminal-state';
+  }
+
   function adoptAttachRecoveryGeometry(entry: TerminalRecoveryBatchEntry): boolean {
     if (isRecoveryGeometryAligned(entry)) {
       return true;
     }
 
+    inputPipeline.adoptBackendResizeForRecovery({
+      cols: entry.cols,
+      rows: entry.rows,
+    });
     term.resize(entry.cols, entry.rows);
     return isRecoveryGeometryAligned(entry);
   }
@@ -1299,16 +1304,19 @@ export function createTerminalRecoveryRuntime(
       const recoveryEntry =
         startupRecoveryRole === null
           ? await requestRecoveryEntry(reason, requestState)
-          : await requestStartupTerminalRecovery(
-              agentId,
-              startupRecoveryRole,
-              getTerminalRecoveryFallbackOptions(),
-            );
+          : await requestStartupTerminalRecovery(agentId, startupRecoveryRole, {
+              ...getTerminalRecoveryFallbackOptions(),
+              visibleTerminalCount: getStartupVisibleTerminalCount(),
+            });
       if (!isActiveRestoreGeneration(generation)) {
         return null;
       }
 
-      if (!shouldAlignRecoveryGeometry(reason) || isRecoveryGeometryAligned(recoveryEntry)) {
+      if (
+        !shouldAlignRecoveryGeometry(reason) ||
+        !requiresRecoveryGeometryAlignment(recoveryEntry) ||
+        isRecoveryGeometryAligned(recoveryEntry)
+      ) {
         return recoveryEntry;
       }
       lastMismatchedRecoveryEntry = recoveryEntry;
@@ -1341,15 +1349,16 @@ export function createTerminalRecoveryRuntime(
           : null;
       }
     }
-    return lastMismatchedRecoveryEntry;
+    return null;
   }
 
   function canStartReconnectRestore(): boolean {
     return (
-      hasConnected &&
+      hasEverAuthenticatedBrowserControl &&
       pendingReconnectRestoreState !== 'none' &&
       !isRecoveryInFlight() &&
       browserTransportState === 'connected' &&
+      hasCurrentBrowserControlAuth &&
       options.isSpawnReady() &&
       !isRuntimeDisposed()
     );
@@ -1741,6 +1750,11 @@ export function createTerminalRecoveryRuntime(
 
   return {
     dispose,
+    handleBrowserControlAuthenticated(): void {
+      hasEverAuthenticatedBrowserControl = true;
+      hasCurrentBrowserControlAuth = true;
+      startReconnectRestoreIfReady();
+    },
     handleBrowserTransportConnectionState(
       state: ReconnectAwareBrowserTransportConnectionState,
     ): void {
@@ -1752,11 +1766,11 @@ export function createTerminalRecoveryRuntime(
               pendingReconnectRestoreState = isRecoveryInFlight() ? 'queued' : 'needed';
             }
           }
-          hasConnected = true;
           return;
         case 'disconnected':
         case 'reconnecting':
-          if (hasConnected) {
+          hasCurrentBrowserControlAuth = false;
+          if (hasEverAuthenticatedBrowserControl) {
             pendingReconnectRestoreState = 'needed';
             restoreGeneration += 1;
           }

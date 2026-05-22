@@ -8,7 +8,9 @@ import {
 import {
   fireAndForget,
   getBrowserTransportConnectionState,
+  isBrowserControlAuthenticated,
   isElectronRuntime,
+  onBrowserAuthenticated,
   onBrowserTransportEvent,
   sendPagehideInvoke,
 } from '../../lib/ipc';
@@ -87,6 +89,7 @@ const {
       (options: TerminalInputPipelineTestOptions) => TerminalInputPipeline
     >(() => ({
       cleanup: vi.fn(),
+      adoptBackendResizeForRecovery: vi.fn(),
       detectPendingInputTraceEcho: vi.fn(),
       drainInputQueue: vi.fn(),
       enqueueProgrammaticInput: vi.fn(),
@@ -134,6 +137,7 @@ const {
       (options: RecoveryRuntimeTestOptions) => TerminalRecoveryRuntime
     >((options) => ({
       dispose: vi.fn(),
+      handleBrowserControlAuthenticated: vi.fn(),
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
       isRestoreBlocked: vi.fn(() => false),
@@ -266,7 +270,9 @@ function createTestTerminalFitLifecycle(
 function createTestTerminalInputPipeline(
   overrides: Partial<TerminalInputPipeline> = {},
 ): TerminalInputPipeline {
+  const { adoptBackendResizeForRecovery = vi.fn(), ...restOverrides } = overrides;
   return {
+    adoptBackendResizeForRecovery,
     cleanup: vi.fn(),
     detectPendingInputTraceEcho: vi.fn(),
     drainInputQueue: vi.fn(),
@@ -283,7 +289,7 @@ function createTestTerminalInputPipeline(
     recordKeyboardTraceStart: vi.fn(),
     requestInputTakeover: vi.fn(async () => true),
     setNextProgrammaticInputTrace: vi.fn(),
-    ...overrides,
+    ...restOverrides,
   };
 }
 
@@ -292,6 +298,7 @@ function createTestTerminalRecoveryRuntime(
 ): TerminalRecoveryRuntime {
   return {
     dispose: vi.fn(),
+    handleBrowserControlAuthenticated: vi.fn(),
     handleBrowserTransportConnectionState: vi.fn(),
     isOutputFlushBlocked: vi.fn(() => false),
     isRestoreBlocked: vi.fn(() => false),
@@ -344,8 +351,10 @@ vi.mock('../../lib/ipc', () => ({
   fireAndForget: vi.fn(),
   getBrowserTransportConnectionState: vi.fn(() => 'disconnected'),
   invoke: invokeMock,
+  isBrowserControlAuthenticated: vi.fn(() => false),
   isElectronRuntime: vi.fn(() => true),
   listenServerMessage: vi.fn(() => vi.fn()),
+  onBrowserAuthenticated: vi.fn(() => vi.fn()),
   onBrowserTransportEvent: vi.fn(() => vi.fn()),
   sendPagehideInvoke: vi.fn(),
 }));
@@ -540,6 +549,7 @@ describe('startTerminalSession render hibernation', () => {
     vi.useFakeTimers();
     resetBrowserPagehideStateForTests();
     vi.mocked(isElectronRuntime).mockReturnValue(true);
+    vi.mocked(isBrowserControlAuthenticated).mockReturnValue(false);
     vi.mocked(getBrowserTransportConnectionState).mockReturnValue('disconnected');
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
@@ -1345,6 +1355,57 @@ describe('startTerminalSession render hibernation', () => {
         initialBrowserTransportState: 'reconnecting',
       }),
     );
+
+    session.cleanup();
+  });
+
+  it('notifies recovery runtime of browser control authentication separately from raw transport connection', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
+    const transportListener = vi.mocked(onBrowserTransportEvent).mock.calls[0]?.[0];
+    const authListener = vi.mocked(onBrowserAuthenticated).mock.calls[0]?.[0];
+
+    expect(recoveryRuntime).toBeTruthy();
+    expect(transportListener).toBeTypeOf('function');
+    expect(authListener).toBeTypeOf('function');
+
+    transportListener?.({ kind: 'connection', state: 'connected' });
+
+    expect(recoveryRuntime?.handleBrowserTransportConnectionState).toHaveBeenCalledWith(
+      'connected',
+    );
+    expect(recoveryRuntime?.handleBrowserControlAuthenticated).not.toHaveBeenCalled();
+
+    authListener?.();
+
+    expect(recoveryRuntime?.handleBrowserControlAuthenticated).toHaveBeenCalledTimes(1);
+
+    session.cleanup();
+  });
+
+  it('seeds recovery runtime when browser control is already authenticated before mount', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    vi.mocked(isBrowserControlAuthenticated).mockReturnValue(true);
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
+    expect(recoveryRuntime?.handleBrowserControlAuthenticated).toHaveBeenCalledTimes(1);
 
     session.cleanup();
   });

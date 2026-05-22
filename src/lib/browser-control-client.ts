@@ -48,6 +48,7 @@ export interface BrowserControlClient {
   getConnectionState: () => BrowserControlConnectionState;
   emitError: (message: string) => void;
   ensureConnected: () => Promise<WebSocket>;
+  isAuthenticated: () => boolean;
   isOpen: () => boolean;
   getLastRttMs: () => number | null;
   listenEvent: (channel: string, listener: BrowserEventListener) => () => void;
@@ -396,6 +397,7 @@ export function createBrowserControlClient(
     expireSession: () => browserSocketClient.disconnect('auth-expired'),
     getBufferedAmount: browserSocketClient.getBufferedAmount,
     getConnectionState: () => browserConnectionState,
+    isAuthenticated: () => hasConfirmedAuthenticatedSession,
     emitError,
     ensureConnected,
     isOpen: browserSocketClient.isOpen,

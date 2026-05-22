@@ -1204,6 +1204,7 @@ test.describe('browser-lab large scrollback restore', () => {
       prepareContext: async (context) => {
         await context.addInitScript(() => {
           window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
           window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
         });
       },
@@ -1441,6 +1442,7 @@ test.describe('browser-lab large scrollback restore', () => {
       prepareContext: async (context) => {
         await context.addInitScript(() => {
           window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
         });
       },
     });
@@ -1502,6 +1504,7 @@ test.describe('browser-lab large scrollback restore', () => {
       prepareContext: async (context) => {
         await context.addInitScript(() => {
           window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
         });
       },
     });

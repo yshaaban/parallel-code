@@ -131,6 +131,7 @@ type TerminalResizeState =
     };
 
 export interface TerminalInputPipeline {
+  adoptBackendResizeForRecovery(geometry: TerminalGeometry): void;
   cleanup(): void;
   detectPendingInputTraceEcho(
     chunk: Uint8Array,
@@ -1139,7 +1140,7 @@ export function createTerminalInputPipeline(
     return options.shouldCommitResize?.() !== false;
   }
 
-  function flushPendingResize(allowRestoreBlockedCommit = false): Promise<void> {
+  function flushPendingResize(forceRecoveryAlignmentCommit = false): Promise<void> {
     recordTerminalResizeFlush();
     const pendingResize = getPendingResize();
     if (!pendingResize || resizeState.kind === 'sending') {
@@ -1148,7 +1149,7 @@ export function createTerminalInputPipeline(
       }
       return inFlightResizeCommitPromise ?? Promise.resolve();
     }
-    if (options.isRestoreBlocked() && !allowRestoreBlockedCommit) {
+    if (options.isRestoreBlocked() && !forceRecoveryAlignmentCommit) {
       recordTerminalResizeCommitDeferred('restore-blocked');
       deferResize(pendingResize, 'restore-blocked');
       scheduleResizeFlush(getResizeFlushDelayMs());
@@ -1160,7 +1161,7 @@ export function createTerminalInputPipeline(
       scheduleResizeFlush(getResizeFlushDelayMs());
       return Promise.resolve();
     }
-    if (!canCommitResizeNow()) {
+    if (!canCommitResizeNow() && !forceRecoveryAlignmentCommit) {
       recordTerminalResizeCommitDeferred('not-live');
       deferResize(pendingResize, 'not-live');
       return Promise.resolve();
@@ -1272,9 +1273,9 @@ export function createTerminalInputPipeline(
     return commitPromise;
   }
 
-  async function flushPendingResizeAndWait(allowRestoreBlockedCommit = false): Promise<void> {
+  async function flushPendingResizeAndWait(forceRecoveryAlignmentCommit = false): Promise<void> {
     while (true) {
-      await flushPendingResize(allowRestoreBlockedCommit);
+      await flushPendingResize(forceRecoveryAlignmentCommit);
       if (
         resizeState.kind !== 'deferred' ||
         resizeState.reason !== 'in-flight' ||
@@ -1288,6 +1289,12 @@ export function createTerminalInputPipeline(
   }
 
   return {
+    adoptBackendResizeForRecovery(geometry: TerminalGeometry): void {
+      clearResizeFlushTimer();
+      cancelInFlightResizeRequest();
+      peerDeferredResize = null;
+      setResizeIdle({ cols: geometry.cols, rows: geometry.rows });
+    },
     cleanup(): void {
       flushPendingInput();
       cancelInFlightInputBatch();

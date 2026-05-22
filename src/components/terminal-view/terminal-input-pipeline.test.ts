@@ -1469,6 +1469,49 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('treats backend-owned recovery geometry as already committed without suppressing later local resizes', async () => {
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.adoptBackendResizeForRecovery({ cols: 100, rows: 30 });
+    pipeline.handleTerminalResize(100, 30);
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+    pipeline.handleTerminalResize(101, 30);
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 101,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 30,
+      taskId: 'task-1',
+    });
+
+    pipeline.cleanup();
+  });
+
   it('records restore-blocked resize deferral and commits once restore settles', async () => {
     let restoreBlocked = true;
     Object.defineProperty(globalThis, 'window', {
@@ -1598,6 +1641,50 @@ describe('terminal-input-pipeline', () => {
       taskId: 'task-1',
       term,
     });
+
+    await pipeline.flushPendingResizeForRecoveryAlignment();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 120,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 40,
+      taskId: 'task-1',
+    });
+
+    pipeline.cleanup();
+  });
+
+  it('commits recovery alignment resize while the terminal is not geometry-live', async () => {
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      shouldCommitResize: () => false,
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalResize(120, 40);
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({ cols: 120, rows: 40 }),
+    );
 
     await pipeline.flushPendingResizeForRecoveryAlignment();
 
