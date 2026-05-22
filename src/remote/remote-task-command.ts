@@ -48,6 +48,13 @@ import {
   requestTaskTakeover,
   resetRemoteTaskCommandSubscriptionsForTests,
 } from './remote-task-command-subscriptions';
+import {
+  nextRemoteInputOrder,
+  nextRemoteResizeOrder,
+  resetRemoteTerminalOrderForTests,
+  rotateRemoteInputOrder,
+  rotateRemoteResizeOrder,
+} from './remote-terminal-order';
 import { send } from './ws';
 
 const REMOTE_LEASE_OWNER_ID_KEY = 'parallel-code-remote-lease-owner-id';
@@ -331,12 +338,16 @@ export async function sendRemoteAgentInput(
     }
 
     try {
+      const order = nextRemoteInputOrder(agentId);
       await writeRemoteAgent({
         agentId,
         data,
+        inputEpoch: order.epoch,
+        inputSeq: order.seq,
         taskId,
       });
     } catch {
+      rotateRemoteInputOrder(agentId);
       return false;
     }
 
@@ -354,12 +365,17 @@ export function sendRemoteAgentResize(
     return;
   }
 
+  const order = nextRemoteResizeOrder(agentId);
   void resizeRemoteAgent({
     agentId,
     cols,
+    resizeEpoch: order.epoch,
+    resizeSeq: order.seq,
     rows,
     taskId,
-  }).catch(() => {});
+  }).catch(() => {
+    rotateRemoteResizeOrder(agentId);
+  });
 }
 
 export async function requestRemoteTaskTakeover(
@@ -508,5 +524,6 @@ export function resetRemoteTaskCommandStateForTests(): void {
   resetRemoteTaskCommandSubscriptionsForTests();
   clearSendQueues();
   clearTaskCommandGenerations();
+  resetRemoteTerminalOrderForTests();
   runtimeRemoteLeaseOwnerId = null;
 }

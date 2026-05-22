@@ -6,6 +6,7 @@ import type {
   RemoteAgent,
   ScrollbackMessage,
   ServerMessage,
+  TerminalStreamMessage,
 } from '../../electron/remote/protocol';
 import type {
   CreateWebSocketClientCoreOptions,
@@ -33,6 +34,11 @@ const taskState = vi.hoisted(() => ({
   applyRemoteTaskPortsChangedMock: vi.fn(),
 }));
 
+const terminalOrderState = vi.hoisted(() => ({
+  resetAllMock: vi.fn(),
+  resetAgentMock: vi.fn(),
+}));
+
 vi.mock('../lib/client-id', () => ({
   getPersistentClientId: vi.fn(() => 'remote-client-1234'),
 }));
@@ -53,6 +59,11 @@ vi.mock('./remote-collaboration', () => ({
 
 vi.mock('./remote-task-state', () => ({
   applyRemoteTaskPortsChanged: taskState.applyRemoteTaskPortsChangedMock,
+}));
+
+vi.mock('./remote-terminal-order', () => ({
+  resetRemoteTerminalOrderForAgent: terminalOrderState.resetAgentMock,
+  resetRemoteTerminalOrderForAllAgents: terminalOrderState.resetAllMock,
 }));
 
 vi.mock('../lib/websocket-client', () => ({
@@ -114,6 +125,17 @@ function createScrollbackMessage(data: string): ScrollbackMessage {
   };
 }
 
+function createTerminalStreamDataMessage(data: string): TerminalStreamMessage {
+  return {
+    type: 'terminal-stream',
+    agentId: 'agent-1',
+    event: {
+      type: 'Data',
+      data,
+    },
+  };
+}
+
 async function loadWsModule(): Promise<{
   module: typeof import('./ws');
   options: CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown>;
@@ -140,6 +162,8 @@ describe('remote ws projections', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     taskState.applyRemoteTaskPortsChangedMock.mockReset();
+    terminalOrderState.resetAgentMock.mockReset();
+    terminalOrderState.resetAllMock.mockReset();
   });
 
   it('refreshes inactive agent previews from authoritative agents snapshots', async () => {
@@ -171,6 +195,171 @@ describe('remote ws projections', () => {
     expect(module.getAgentPreview('agent-1')).toBe('live detail output');
 
     cleanup();
+  });
+
+  it('routes structured terminal Data through the legacy output listener alias', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const outputListener = vi.fn();
+      const terminalStreamListener = vi.fn();
+      const data = Buffer.from('\nstructured stream detail', 'utf8').toString('base64');
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'snapshot prompt' })]));
+      cleanups.push(module.onOutput('agent-1', outputListener));
+      cleanups.push(module.onTerminalStream('agent-1', terminalStreamListener));
+
+      options.onMessage(createTerminalStreamDataMessage(data));
+
+      expect(outputListener).toHaveBeenCalledWith(data);
+      expect(terminalStreamListener).toHaveBeenCalledWith({
+        type: 'Data',
+        data,
+      });
+      expect(module.getAgentPreview('agent-1')).toBe('structured stream detail');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
+  it('surfaces structured terminal Exit and RecoveryRequired events without legacy output', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const outputListener = vi.fn();
+      const terminalStreamListener = vi.fn();
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'running' })]));
+      cleanups.push(module.onOutput('agent-1', outputListener));
+      cleanups.push(module.onTerminalStream('agent-1', terminalStreamListener));
+
+      options.onMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'RecoveryRequired',
+          reason: 'backpressure',
+        },
+      });
+      options.onMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'Exit',
+          data: {
+            exit_code: 0,
+            last_output: ['finished'],
+            signal: null,
+          },
+        },
+      });
+
+      expect(outputListener).not.toHaveBeenCalled();
+      expect(terminalStreamListener).toHaveBeenCalledWith({
+        type: 'RecoveryRequired',
+        reason: 'backpressure',
+      });
+      expect(terminalStreamListener).toHaveBeenCalledWith({
+        type: 'Exit',
+        data: {
+          exit_code: 0,
+          last_output: ['finished'],
+          signal: null,
+        },
+      });
+      expect(module.agents()[0]).toMatchObject({ status: 'exited', exitCode: 0 });
+      expect(module.getAgentPreview('agent-1')).toBe('finished');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
+  it('seeds a same-id structured respawn from the fresh running snapshot after Exit', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const terminalStreamListener = vi.fn();
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'old run seed ' })]));
+      cleanups.push(module.onTerminalStream('agent-1', terminalStreamListener));
+      options.onMessage(
+        createTerminalStreamDataMessage(Buffer.from('old live output', 'utf8').toString('base64')),
+      );
+      expect(module.getAgentPreview('agent-1')).toBe('old run seed old live output');
+
+      options.onMessage({
+        type: 'terminal-stream',
+        agentId: 'agent-1',
+        event: {
+          type: 'Exit',
+          data: {
+            exit_code: 0,
+            last_output: ['previous session diagnostic '],
+            signal: null,
+          },
+        },
+      });
+      expect(module.getAgentPreview('agent-1')).toBe('previous session diagnostic');
+
+      websocketState.sendIfOpenMock.mockClear();
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'new run seed ' })]));
+      expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      });
+      options.onMessage(
+        createTerminalStreamDataMessage(Buffer.from('fresh output', 'utf8').toString('base64')),
+      );
+
+      expect(module.getAgentPreview('agent-1')).toBe('new run seed fresh output');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
+  it('resets terminal continuity from exited status when structured Exit was missed', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const terminalStreamListener = vi.fn();
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'old run seed ' })]));
+      cleanups.push(module.onTerminalStream('agent-1', terminalStreamListener));
+      options.onMessage(
+        createTerminalStreamDataMessage(Buffer.from('old live output', 'utf8').toString('base64')),
+      );
+
+      websocketState.sendIfOpenMock.mockClear();
+      options.onMessage({
+        type: 'status',
+        agentId: 'agent-1',
+        status: 'exited',
+        exitCode: 0,
+      });
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'new run seed ' })]));
+      options.onMessage(
+        createTerminalStreamDataMessage(Buffer.from('fresh output', 'utf8').toString('base64')),
+      );
+
+      expect(terminalOrderState.resetAgentMock).toHaveBeenCalledWith('agent-1');
+      expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+        type: 'subscribe',
+        agentId: 'agent-1',
+        terminalProtocol: 'structured',
+      });
+      expect(module.getAgentPreview('agent-1')).toBe('new run seed fresh output');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
   });
 
   it('decodes scrollback snapshots independently from the streaming output decoder', async () => {
@@ -223,6 +412,29 @@ describe('remote ws projections', () => {
     }
   });
 
+  it('drops malformed structured terminal Data before notifying terminal listeners', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+      const outputListener = vi.fn();
+      const terminalStreamListener = vi.fn();
+
+      options.onMessage(createAgentsMessage([createAgent({ lastLine: 'ready' })]));
+      cleanups.push(module.onOutput('agent-1', outputListener));
+      cleanups.push(module.onTerminalStream('agent-1', terminalStreamListener));
+
+      options.onMessage(createTerminalStreamDataMessage('AB=='));
+
+      expect(outputListener).not.toHaveBeenCalled();
+      expect(terminalStreamListener).not.toHaveBeenCalled();
+      expect(module.getAgentPreview('agent-1')).toBe('ready');
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
   it('uses the stable remote client identity in the websocket url', async () => {
     const { options } = await loadWsModule();
 
@@ -246,6 +458,102 @@ describe('remote ws projections', () => {
       type: 'kill',
       agentId: 'agent-1',
     });
+  });
+
+  it('sends structured subscribe and terminal recovery request hooks', async () => {
+    const { module } = await loadWsModule();
+    const renderedTail = Buffer.from('tail', 'utf8').toString('base64');
+
+    module.subscribeAgent('agent-1', { terminalProtocol: 'structured' });
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+      type: 'subscribe',
+      agentId: 'agent-1',
+      terminalProtocol: 'structured',
+    });
+
+    module.requestRemoteTerminalRecovery({
+      agentId: 'agent-1',
+      outputCursor: 12,
+      renderedTail,
+      requestId: 'recovery-1',
+      snapshotByteLimit: 4096,
+    });
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+      type: 'terminal-recovery-request',
+      agentId: 'agent-1',
+      outputCursor: 12,
+      renderedTail,
+      requestId: 'recovery-1',
+      snapshotByteLimit: 4096,
+    });
+
+    module.requestRemoteTerminalStartupRecovery({
+      agentId: 'agent-1',
+      requestId: 'startup-1',
+      role: 'selected',
+      visibleTerminalCount: 1,
+    });
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+      type: 'terminal-startup-recovery-request',
+      agentId: 'agent-1',
+      requestId: 'startup-1',
+      role: 'selected',
+      visibleTerminalCount: 1,
+    });
+  });
+
+  it('resets remote terminal ordering and resubscribes active agents after authentication', async () => {
+    const cleanups: Array<() => void> = [];
+    try {
+      const { module, options } = await loadWsModule();
+
+      cleanups.push(module.onOutput('agent-1', vi.fn()));
+      cleanups.push(module.onTerminalStream('agent-2', vi.fn()));
+      terminalOrderState.resetAllMock.mockClear();
+      websocketState.sendIfOpenMock.mockClear();
+
+      options.onAuthenticated?.({} as WebSocket);
+
+      expect(terminalOrderState.resetAllMock).toHaveBeenCalledTimes(1);
+      expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+        type: 'subscribe',
+        agentId: 'agent-1',
+      });
+      expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+        type: 'subscribe',
+        agentId: 'agent-2',
+        terminalProtocol: 'structured',
+      });
+    } finally {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    }
+  });
+
+  it('notifies terminal recovery result listeners', async () => {
+    const { module, options } = await loadWsModule();
+    const listener = vi.fn();
+    const cleanup = module.onTerminalRecoveryResult(listener);
+    const entry = {
+      agentId: 'agent-1',
+      cols: 80,
+      outputCursor: 4,
+      recovery: {
+        data: Buffer.from('snapshot', 'utf8').toString('base64'),
+        kind: 'snapshot' as const,
+      },
+      requestId: 'recovery-1',
+      rows: 24,
+    };
+
+    options.onMessage({
+      type: 'terminal-recovery-result',
+      entry,
+    });
+
+    expect(listener).toHaveBeenCalledWith(entry);
+    cleanup();
   });
 
   it('logs when the initial websocket connection fails', async () => {
@@ -395,6 +703,21 @@ describe('remote ws projections', () => {
       { type: 'scrollback', agentId: 'agent-1', data: 'c25hcHNob3Q=', cols: 0 },
       { type: 'status', agentId: 'agent-1', status: 'running', exitCode: Number.NaN },
       { type: 'status', agentId: 'agent-1', status: 'running', exitCode: 1.5 },
+      { type: 'terminal-stream', agentId: 'agent-1', event: { type: 'Data', data: 'AB==' } },
+      {
+        type: 'terminal-recovery-result',
+        entry: {
+          agentId: 'agent-1',
+          cols: 80,
+          outputCursor: 1,
+          recovery: {
+            data: 'AB==',
+            kind: 'terminal-state',
+          },
+          requestId: 'recovery-1',
+          rows: 24,
+        },
+      },
       { type: 'peer-presences' },
       {
         type: 'task-command-takeover-request',

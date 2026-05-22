@@ -142,7 +142,9 @@ import {
   resetRemoteTaskCommandStateForTests,
   respondToRemoteTaskCommandTakeover,
   sendRemoteAgentInput,
+  sendRemoteAgentResize,
 } from './remote-task-command';
+import { resetRemoteTerminalOrderForAgent } from './remote-terminal-order';
 
 function emitConnectionStatus(
   nextStatus: 'connected' | 'connecting' | 'disconnected' | 'reconnecting',
@@ -208,6 +210,7 @@ describe('remote task command control', () => {
       taskId: 'task-1',
       version: 3,
     });
+    mockState.resizeRemoteAgentMock.mockResolvedValue(undefined);
     mockState.writeRemoteAgentMock.mockResolvedValue(undefined);
     mockState.sendIfOpenMock.mockImplementation((message: ClientMessage) => {
       if (mockState.connectionStatus !== 'connected') {
@@ -247,11 +250,15 @@ describe('remote task command control', () => {
         version: 2,
       }),
     );
-    expect(mockState.writeRemoteAgentMock).toHaveBeenCalledWith({
-      agentId: 'agent-1',
-      data: 'pwd\r',
-      taskId: 'task-1',
-    });
+    expect(mockState.writeRemoteAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        data: 'pwd\r',
+        inputEpoch: expect.any(String),
+        inputSeq: 0,
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('keeps a stable remote lease owner when browser session storage is unavailable', async () => {
@@ -269,6 +276,50 @@ describe('remote task command control', () => {
     const releaseOwnerId = mockState.releaseRemoteTaskCommandLeaseMock.mock.calls[0]?.[0].ownerId;
     expect(acquireOwnerId).toEqual(expect.any(String));
     expect(releaseOwnerId).toBe(acquireOwnerId);
+  });
+
+  it('sends remote terminal resize with ordered resize tokens after lease retention', async () => {
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(true);
+
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+
+    expect(mockState.resizeRemoteAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 100,
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+        rows: 30,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('rotates remote resize ordering after a failed resize attempt', async () => {
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(true);
+    mockState.resizeRemoteAgentMock
+      .mockRejectedValueOnce(new Error('resize failed'))
+      .mockResolvedValue(undefined);
+
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+    await Promise.resolve();
+    sendRemoteAgentResize('agent-1', 'task-1', 101, 31);
+
+    const firstRequest = mockState.resizeRemoteAgentMock.mock.calls[0]?.[0];
+    const secondRequest = mockState.resizeRemoteAgentMock.mock.calls[1]?.[0];
+    expect(firstRequest).toEqual(
+      expect.objectContaining({
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+      }),
+    );
+    expect(secondRequest).toEqual(
+      expect.objectContaining({
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+      }),
+    );
+    expect(secondRequest?.resizeEpoch).not.toBe(firstRequest?.resizeEpoch);
   });
 
   it('allows terminal input while the remote transport is still connecting', async () => {
@@ -385,6 +436,54 @@ describe('remote task command control', () => {
     mockState.writeRemoteAgentMock.mockRejectedValueOnce(new Error('write failed'));
 
     await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(false);
+  });
+
+  it('rotates remote input ordering after a failed write attempt', async () => {
+    mockState.writeRemoteAgentMock
+      .mockRejectedValueOnce(new Error('write failed'))
+      .mockResolvedValue(undefined);
+
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'first\r')).resolves.toBe(false);
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'second\r')).resolves.toBe(true);
+
+    const firstRequest = mockState.writeRemoteAgentMock.mock.calls[0]?.[0];
+    const secondRequest = mockState.writeRemoteAgentMock.mock.calls[1]?.[0];
+    expect(firstRequest).toEqual(
+      expect.objectContaining({
+        inputEpoch: expect.any(String),
+        inputSeq: 0,
+      }),
+    );
+    expect(secondRequest).toEqual(
+      expect.objectContaining({
+        inputEpoch: expect.any(String),
+        inputSeq: 0,
+      }),
+    );
+    expect(secondRequest?.inputEpoch).not.toBe(firstRequest?.inputEpoch);
+  });
+
+  it('resets remote input and resize ordering after same-id terminal respawn', async () => {
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'first\r')).resolves.toBe(true);
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+
+    resetRemoteTerminalOrderForAgent('agent-1');
+
+    await expect(sendRemoteAgentInput('agent-1', 'task-1', 'second\r')).resolves.toBe(true);
+    sendRemoteAgentResize('agent-1', 'task-1', 101, 31);
+
+    expect(mockState.writeRemoteAgentMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        inputEpoch: expect.any(String),
+        inputSeq: 0,
+      }),
+    );
+    expect(mockState.resizeRemoteAgentMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+      }),
+    );
   });
 
   it('invalidates retained leases and pending takeovers on transport loss', async () => {

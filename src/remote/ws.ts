@@ -3,6 +3,7 @@ import {
   isServerMessage,
   type ClientMessage,
   type RemoteAgent,
+  type RemoteTerminalStreamEvent,
   type ServerMessage,
 } from '../../electron/remote/protocol';
 import type { PresenceConnectionStatus } from '../domain/presence';
@@ -30,6 +31,10 @@ import {
   upsertIncomingRemoteTakeoverRequest,
 } from './remote-collaboration';
 import { applyRemoteTaskPortsChanged } from './remote-task-state';
+import {
+  resetRemoteTerminalOrderForAgent,
+  resetRemoteTerminalOrderForAllAgents,
+} from './remote-terminal-order';
 
 export type ConnectionStatus = PresenceConnectionStatus;
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
@@ -44,7 +49,9 @@ type RemoteHandledServerMessageType =
   | 'status'
   | 'task-command-takeover-request'
   | 'task-command-takeover-result'
-  | 'task-ports-changed';
+  | 'task-ports-changed'
+  | 'terminal-recovery-result'
+  | 'terminal-stream';
 type RemoteIgnoredServerMessageType = Exclude<
   ServerMessage['type'],
   RemoteHandledServerMessageType
@@ -53,6 +60,13 @@ type RemoteIgnoredServerMessageType = Exclude<
 type ConnectionStatusListener = (nextStatus: ConnectionStatus) => void;
 type OutputListener = (data: string) => void;
 type ScrollbackListener = (data: string, cols: number) => void;
+type TerminalRecoveryResultListener = (
+  entry: Extract<ServerMessage, { type: 'terminal-recovery-result' }>['entry'],
+) => void;
+type TerminalStreamListener = (event: RemoteTerminalStreamEvent) => void;
+type TerminalSubscriptionProtocol = NonNullable<
+  Extract<ClientMessage, { type: 'subscribe' }>['terminalProtocol']
+>;
 
 const agentDecoders = new Map<string, TextDecoder>();
 const connectionStatusListeners = new Set<ConnectionStatusListener>();
@@ -63,8 +77,11 @@ const [authRequired, setAuthRequired] = createSignal(false);
 const [agentLastActivityAt, setAgentLastActivityAt] = createSignal<Record<string, number>>({});
 const [agentPreviewById, setAgentPreviewById] = createSignal<Record<string, string>>({});
 const [agentTailById, setAgentTailById] = createSignal<Record<string, string>>({});
+const agentTailResetPendingById = new Set<string>();
 const outputListeners = new Map<string, Set<OutputListener>>();
 const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
+const terminalRecoveryResultListeners = new Set<TerminalRecoveryResultListener>();
+const terminalStreamListeners = new Map<string, Set<TerminalStreamListener>>();
 
 let shouldReconnect = true;
 let lifecycleBound = false;
@@ -113,6 +130,8 @@ const REMOTE_SERVER_MESSAGE_HANDLERS = {
   'task-command-takeover-result': handleRemoteTakeoverResult,
   'ipc-event': (message) => applyRemoteIpcEvent(message.channel, message.payload),
   'task-ports-changed': applyRemoteTaskPortsChanged,
+  'terminal-recovery-result': handleTerminalRecoveryResultMessage,
+  'terminal-stream': handleTerminalStreamMessage,
 } satisfies DispatchByTypeHandlerMap<RemoteHandledServerMessage>;
 
 function updateStatus(nextStatus: ConnectionStatus): void {
@@ -130,22 +149,46 @@ function getSocketUrl(context: { clientId: string; lastSeq: number }): string {
   return url.toString();
 }
 
-function activeSubscriptionAgentIds(): Set<string> {
-  const agentIds = new Set<string>();
+function activeSubscriptionAgentProtocols(): Map<string, TerminalSubscriptionProtocol> {
+  const agentProtocols = new Map<string, TerminalSubscriptionProtocol>();
 
   for (const [agentId, listeners] of outputListeners) {
     if (listeners.size > 0) {
-      agentIds.add(agentId);
+      agentProtocols.set(agentId, 'legacy');
     }
   }
 
   for (const [agentId, listeners] of scrollbackListeners) {
     if (listeners.size > 0) {
-      agentIds.add(agentId);
+      agentProtocols.set(agentId, 'legacy');
     }
   }
 
-  return agentIds;
+  for (const [agentId, listeners] of terminalStreamListeners) {
+    if (listeners.size > 0) {
+      agentProtocols.set(agentId, 'structured');
+    }
+  }
+
+  return agentProtocols;
+}
+
+function createSubscribeMessage(
+  agentId: string,
+  terminalProtocol?: TerminalSubscriptionProtocol,
+): Extract<ClientMessage, { type: 'subscribe' }> {
+  return {
+    type: 'subscribe',
+    agentId,
+    ...(terminalProtocol === 'structured' ? { terminalProtocol } : {}),
+  };
+}
+
+function sendSubscriptionMessage(
+  agentId: string,
+  terminalProtocol?: TerminalSubscriptionProtocol,
+): boolean {
+  return client.sendIfOpen(createSubscribeMessage(agentId, terminalProtocol));
 }
 
 function toConnectionStatus(state: WebSocketConnectionState): ConnectionStatus {
@@ -227,16 +270,39 @@ function updateAgentPreviewFromTail(agent: RemoteAgent, nextTail: string): void 
   setAgentPreview(agent.agentId, deriveRemoteAgentPreview(nextTail, agent.status), nextTail);
 }
 
+function notifyTerminalStreamListeners(agentId: string, event: RemoteTerminalStreamEvent): void {
+  const listeners = terminalStreamListeners.get(agentId);
+  if (!listeners) {
+    return;
+  }
+
+  for (const listener of listeners) {
+    listener(event);
+  }
+}
+
 function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>): void {
   setAgents(message.list);
   const nextAgentIds = new Set(message.list.map((agent) => agent.agentId));
-  const subscribedAgentIds = activeSubscriptionAgentIds();
+  const activeAgentProtocols = activeSubscriptionAgentProtocols();
+  const subscribedAgentIds = new Set(activeAgentProtocols.keys());
+  const snapshotSeedAgentIds = new Set<string>();
+
+  for (const agent of message.list) {
+    if (agentTailResetPendingById.has(agent.agentId) && isRunningRemoteAgentStatus(agent.status)) {
+      snapshotSeedAgentIds.add(agent.agentId);
+    }
+  }
 
   setAgentLastActivityAt((previous) => pruneAgentProjection(previous, nextAgentIds));
   setAgentPreviewById((previous) => {
     const next = pruneAgentProjection(previous, nextAgentIds);
     for (const agent of message.list) {
-      if (subscribedAgentIds.has(agent.agentId) && next[agent.agentId]) {
+      if (
+        !snapshotSeedAgentIds.has(agent.agentId) &&
+        subscribedAgentIds.has(agent.agentId) &&
+        next[agent.agentId]
+      ) {
         continue;
       }
 
@@ -247,7 +313,11 @@ function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>
   setAgentTailById((previous) => {
     const next = pruneAgentProjection(previous, nextAgentIds);
     for (const agent of message.list) {
-      if (subscribedAgentIds.has(agent.agentId) && next[agent.agentId] !== undefined) {
+      if (
+        !snapshotSeedAgentIds.has(agent.agentId) &&
+        subscribedAgentIds.has(agent.agentId) &&
+        next[agent.agentId] !== undefined
+      ) {
         continue;
       }
 
@@ -261,25 +331,51 @@ function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>
       resetAgentDecoder(agentId);
     }
   }
+
+  for (const agentId of Array.from(agentTailResetPendingById)) {
+    if (!nextAgentIds.has(agentId) || snapshotSeedAgentIds.has(agentId)) {
+      agentTailResetPendingById.delete(agentId);
+    }
+  }
+
+  for (const agentId of snapshotSeedAgentIds) {
+    const terminalProtocol = activeAgentProtocols.get(agentId);
+    if (!terminalProtocol) {
+      continue;
+    }
+
+    sendSubscriptionMessage(agentId, terminalProtocol);
+  }
 }
 
-function handleOutputMessage(message: Extract<ServerMessage, { type: 'output' }>): void {
-  const bytes = decodeRemoteBase64Payload(message.data, 'output');
+function applyRemoteOutputData(agentId: string, data: string, context: string): void {
+  const bytes = decodeRemoteBase64Payload(data, context);
   if (bytes === null) {
     return;
   }
 
-  outputListeners.get(message.agentId)?.forEach((listener) => listener(message.data));
-  const agent = agents().find((item) => item.agentId === message.agentId);
+  const listeners = outputListeners.get(agentId);
+  if (listeners) {
+    for (const listener of listeners) {
+      listener(data);
+    }
+  }
+
+  const agent = agents().find((item) => item.agentId === agentId);
   if (!agent) {
     return;
   }
 
-  const decodedChunk = decodeOutputChunk(message.agentId, bytes, true);
-  const previousTail = agentTailById()[message.agentId] ?? agent.lastLine;
+  const decodedChunk = decodeOutputChunk(agentId, bytes, true);
+  const shouldStartFreshTail = agentTailResetPendingById.delete(agentId);
+  const previousTail = shouldStartFreshTail ? '' : (agentTailById()[agentId] ?? agent.lastLine);
   const nextTail = appendRemoteAgentTail(previousTail, decodedChunk);
   updateAgentPreviewFromTail(agent, nextTail);
-  updateAgentActivity(message.agentId);
+  updateAgentActivity(agentId);
+}
+
+function handleOutputMessage(message: Extract<ServerMessage, { type: 'output' }>): void {
+  applyRemoteOutputData(message.agentId, message.data, 'output');
 }
 
 function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scrollback' }>): void {
@@ -288,9 +384,12 @@ function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scroll
     return;
   }
 
-  scrollbackListeners
-    .get(message.agentId)
-    ?.forEach((listener) => listener(message.data, message.cols));
+  const listeners = scrollbackListeners.get(message.agentId);
+  if (listeners) {
+    for (const listener of listeners) {
+      listener(message.data, message.cols);
+    }
+  }
 
   const agent = agents().find((item) => item.agentId === message.agentId);
   if (!agent) {
@@ -303,6 +402,12 @@ function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scroll
 }
 
 function handleStatusMessage(message: Extract<ServerMessage, { type: 'status' }>): void {
+  if (message.status === 'exited') {
+    resetAgentDecoder(message.agentId);
+    resetRemoteTerminalOrderForAgent(message.agentId);
+    agentTailResetPendingById.add(message.agentId);
+  }
+
   setAgents((previous) =>
     previous.map((agent) =>
       agent.agentId === message.agentId
@@ -320,6 +425,50 @@ function handleStatusMessage(message: Extract<ServerMessage, { type: 'status' }>
   updateAgentPreviewFromTail(currentAgent, previewTail);
   if (isRunningRemoteAgentStatus(message.status)) {
     updateAgentActivity(message.agentId);
+  }
+}
+
+function handleTerminalStreamMessage(
+  message: Extract<ServerMessage, { type: 'terminal-stream' }>,
+): void {
+  switch (message.event.type) {
+    case 'Data':
+      applyRemoteOutputData(message.agentId, message.event.data, 'terminal stream');
+      notifyTerminalStreamListeners(message.agentId, message.event);
+      return;
+    case 'Exit': {
+      const exitEvent = message.event;
+      resetAgentDecoder(message.agentId);
+      resetRemoteTerminalOrderForAgent(message.agentId);
+      setAgents((previous) =>
+        previous.map((agent) =>
+          agent.agentId === message.agentId
+            ? { ...agent, status: 'exited', exitCode: exitEvent.data.exit_code }
+            : agent,
+        ),
+      );
+      const currentAgent = agents().find((agent) => agent.agentId === message.agentId);
+      agentTailResetPendingById.add(message.agentId);
+      if (currentAgent) {
+        updateAgentPreviewFromTail(
+          currentAgent,
+          truncateRemoteAgentTail(exitEvent.data.last_output.join('\n')),
+        );
+      }
+      notifyTerminalStreamListeners(message.agentId, exitEvent);
+      return;
+    }
+    case 'RecoveryRequired':
+      notifyTerminalStreamListeners(message.agentId, message.event);
+      return;
+  }
+}
+
+function handleTerminalRecoveryResultMessage(
+  message: Extract<ServerMessage, { type: 'terminal-recovery-result' }>,
+): void {
+  for (const listener of terminalRecoveryResultListeners) {
+    listener(message.entry);
   }
 }
 
@@ -351,8 +500,9 @@ function handleServerMessage(message: RemoteIncomingServerMessage): void {
 
 function onAuthenticated(): void {
   setAuthRequired(false);
-  for (const agentId of activeSubscriptionAgentIds()) {
-    client.sendIfOpen({ type: 'subscribe', agentId });
+  resetRemoteTerminalOrderForAllAgents();
+  for (const [agentId, terminalProtocol] of activeSubscriptionAgentProtocols()) {
+    sendSubscriptionMessage(agentId, terminalProtocol);
   }
 }
 
@@ -499,10 +649,17 @@ export function resetRemoteWsRuntimeStateForTests(): void {
   visibilityChangeListener = null;
   lifecycleBound = false;
   shouldReconnect = true;
+  resetRemoteTerminalOrderForAllAgents();
 }
 
-export function subscribeAgent(agentId: string): void {
-  send({ type: 'subscribe', agentId });
+export function subscribeAgent(
+  agentId: string,
+  options?: {
+    terminalProtocol?: Extract<ClientMessage, { type: 'subscribe' }>['terminalProtocol'];
+  },
+): boolean {
+  const terminalProtocol = options?.terminalProtocol;
+  return sendSubscriptionMessage(agentId, terminalProtocol);
 }
 
 export function unsubscribeAgent(agentId: string): void {
@@ -543,6 +700,49 @@ export function onScrollback(agentId: string, listener: ScrollbackListener): () 
       scrollbackListeners.delete(agentId);
     }
   };
+}
+
+export function onTerminalStream(agentId: string, listener: TerminalStreamListener): () => void {
+  let listeners = terminalStreamListeners.get(agentId);
+  if (!listeners) {
+    listeners = new Set();
+    terminalStreamListeners.set(agentId, listeners);
+  }
+
+  listeners.add(listener);
+
+  return () => {
+    const current = terminalStreamListeners.get(agentId);
+    current?.delete(listener);
+    if (current?.size === 0) {
+      terminalStreamListeners.delete(agentId);
+    }
+  };
+}
+
+export function onTerminalRecoveryResult(listener: TerminalRecoveryResultListener): () => void {
+  terminalRecoveryResultListeners.add(listener);
+  return () => {
+    terminalRecoveryResultListeners.delete(listener);
+  };
+}
+
+export function requestRemoteTerminalRecovery(
+  request: Omit<Extract<ClientMessage, { type: 'terminal-recovery-request' }>, 'type'>,
+): boolean {
+  return send({
+    type: 'terminal-recovery-request',
+    ...request,
+  });
+}
+
+export function requestRemoteTerminalStartupRecovery(
+  request: Omit<Extract<ClientMessage, { type: 'terminal-startup-recovery-request' }>, 'type'>,
+): boolean {
+  return send({
+    type: 'terminal-startup-recovery-request',
+    ...request,
+  });
 }
 
 export function sendKill(agentId: string): void {
