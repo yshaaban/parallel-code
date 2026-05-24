@@ -75,6 +75,7 @@ function buildContext(): HandlerContext {
     userDataPath: '/tmp/parallel-code-tests',
     window: {
       close: vi.fn(),
+      closeHandled: vi.fn(),
       focus: vi.fn(),
       forceClose: vi.fn(),
       getPosition: vi.fn(() => ({ x: 0, y: 0 })),

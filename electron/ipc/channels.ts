@@ -83,6 +83,7 @@ export enum IPC {
   WindowMinimize = '__window_minimize',
   WindowToggleMaximize = '__window_toggle_maximize',
   WindowClose = '__window_close',
+  WindowCloseHandled = '__window_close_handled',
   WindowForceClose = '__window_force_close',
   WindowHide = '__window_hide',
   WindowMaximize = '__window_maximize',
@@ -98,6 +99,7 @@ export enum IPC {
   WindowCloseRequested = '__window_close_requested',
 
   // Dialog
+  DialogChoose = '__dialog_choose',
   DialogConfirm = '__dialog_confirm',
   DialogOpen = '__dialog_open',
 

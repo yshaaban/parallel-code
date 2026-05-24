@@ -81,7 +81,7 @@ function addThrottledWindowEvent(
   win.on('resize', listener);
 }
 
-function createWindowController(win: BrowserWindow): WindowController {
+function createWindowController(win: BrowserWindow, closeHandled: () => void): WindowController {
   return {
     isFocused: () => win.isFocused(),
     isMaximized: () => win.isMaximized(),
@@ -92,6 +92,7 @@ function createWindowController(win: BrowserWindow): WindowController {
       else win.maximize();
     },
     close: () => win.close(),
+    closeHandled,
     forceClose: () => win.destroy(),
     hide: () => win.hide(),
     show: () => win.show(),
@@ -112,6 +113,17 @@ function createWindowController(win: BrowserWindow): WindowController {
 
 function createDialogController(win: BrowserWindow): DialogController {
   return {
+    choose: async (args) => {
+      const result = await dialog.showMessageBox(win, {
+        type: args.kind === 'warning' ? 'warning' : 'question',
+        title: args.title || 'Choose',
+        message: args.message,
+        buttons: args.choices,
+        defaultId: args.defaultIndex ?? 0,
+        cancelId: args.cancelIndex ?? args.choices.length - 1,
+      });
+      return result.response;
+    },
     confirm: async (args) => {
       const result = await dialog.showMessageBox(win, {
         type: args.kind === 'warning' ? 'warning' : 'question',
@@ -295,6 +307,25 @@ function createClipboardController(): ClipboardController {
 
 export function registerAllHandlers(win: BrowserWindow): void {
   const remoteAccess = createRemoteAccessController();
+  let closeFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearCloseFallbackTimer(): void {
+    if (closeFallbackTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(closeFallbackTimer);
+    closeFallbackTimer = undefined;
+  }
+
+  function armCloseFallbackTimer(): void {
+    clearCloseFallbackTimer();
+    closeFallbackTimer = setTimeout(() => {
+      closeFallbackTimer = undefined;
+      if (!win.isDestroyed()) win.destroy();
+    }, 5_000);
+  }
+
   const stopAgentSupervisionSubscription = subscribeAgentSupervision((event) => {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.AgentSupervisionChanged, event);
@@ -342,7 +373,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         emitRendererEvent(win.webContents, IPC.GitStatusChanged, payload);
       }
     },
-    window: createWindowController(win),
+    window: createWindowController(win, clearCloseFallbackTimer),
     dialog: createDialogController(win),
     shell: createShellController(),
     clipboard: createClipboardController(),
@@ -367,13 +398,12 @@ export function registerAllHandlers(win: BrowserWindow): void {
     event.preventDefault();
     if (!win.isDestroyed()) {
       win.webContents.send(IPC.WindowCloseRequested);
-      setTimeout(() => {
-        if (!win.isDestroyed()) win.destroy();
-      }, 5_000);
+      armCloseFallbackTimer();
     }
   });
 
   win.on('closed', () => {
+    clearCloseFallbackTimer();
     stopAgentSupervisionSubscription();
     stopRemoteStatusSubscription();
     stopTaskConvergenceSubscription();

@@ -121,6 +121,21 @@ function clearExpiredReconnectSnapshotCacheEntries(now: number): void {
   }
 }
 
+function assertOptionalChoiceIndex(
+  value: unknown,
+  label: 'cancelIndex' | 'defaultIndex',
+  choiceCount: number,
+): void {
+  if (value === undefined) {
+    return;
+  }
+
+  assertInt(value, label);
+  if (value < 0 || value >= choiceCount) {
+    throw new BadRequestError(`${label} must reference choices`);
+  }
+}
+
 function cacheReconnectSnapshot(
   userDataPath: string,
   promise: Promise<BrowserReconnectSnapshot>,
@@ -655,6 +670,7 @@ export function createSystemIpcHandlers(
     [IPC.WindowMinimize]: () => requireWindow(context).minimize(),
     [IPC.WindowToggleMaximize]: () => requireWindow(context).toggleMaximize(),
     [IPC.WindowClose]: () => requireWindow(context).close(),
+    [IPC.WindowCloseHandled]: () => requireWindow(context).closeHandled(),
     [IPC.WindowForceClose]: () => requireWindow(context).forceClose(),
     [IPC.WindowHide]: () => requireWindow(context).hide(),
     [IPC.WindowMaximize]: () => requireWindow(context).maximize(),
@@ -681,6 +697,27 @@ export function createSystemIpcHandlers(
 
     [IPC.WindowGetPosition]: () => requireWindow(context).getPosition(),
     [IPC.WindowGetSize]: () => requireWindow(context).getSize(),
+
+    [IPC.DialogChoose]: defineIpcHandler<IPC.DialogChoose>(IPC.DialogChoose, async (args) => {
+      const request = args;
+      assertString(request.message, 'message');
+      assertStringArray(request.choices, 'choices');
+      if (request.choices.length < 2) {
+        throw new BadRequestError('choices must include at least two entries');
+      }
+      if (request.title !== undefined) assertString(request.title, 'title');
+      if (request.kind !== undefined) assertString(request.kind, 'kind');
+      assertOptionalChoiceIndex(request.defaultIndex, 'defaultIndex', request.choices.length);
+      assertOptionalChoiceIndex(request.cancelIndex, 'cancelIndex', request.choices.length);
+      return requireDialog(context).choose({
+        message: request.message,
+        choices: request.choices,
+        ...(request.title !== undefined ? { title: request.title } : {}),
+        ...(request.kind !== undefined ? { kind: request.kind } : {}),
+        ...(request.defaultIndex !== undefined ? { defaultIndex: request.defaultIndex } : {}),
+        ...(request.cancelIndex !== undefined ? { cancelIndex: request.cancelIndex } : {}),
+      });
+    }),
 
     [IPC.DialogConfirm]: defineIpcHandler<IPC.DialogConfirm>(IPC.DialogConfirm, async (args) => {
       const request = args;

@@ -60,6 +60,10 @@ class AppWindow {
     window.close();
   }
 
+  async closeHandled(): Promise<void> {
+    if (isElectronRuntime()) await invoke(IPC.WindowCloseHandled);
+  }
+
   async hide(): Promise<void> {
     if (isElectronRuntime()) await invoke(IPC.WindowHide);
   }
@@ -138,22 +142,35 @@ class AppWindow {
     if (isElectronRuntime()) {
       return listen(IPC.WindowCloseRequested, () => {
         let prevented = false;
+        let handled = false;
+        const markHandled = () => {
+          if (handled) return;
+          handled = true;
+          void invoke(IPC.WindowCloseHandled);
+        };
         const result = handler({
           preventDefault: () => {
             prevented = true;
+            markHandled();
           },
         });
 
         if (result instanceof Promise) {
           result
             .then(() => {
+              markHandled();
               if (!prevented) void invoke(IPC.WindowForceClose);
             })
             .catch((error) => {
               console.error('Close handler failed, force-closing:', error);
+              markHandled();
               void invoke(IPC.WindowForceClose);
             });
-        } else if (!prevented) {
+          return;
+        }
+
+        markHandled();
+        if (!prevented) {
           void invoke(IPC.WindowForceClose);
         }
       });

@@ -16,6 +16,7 @@ vi.mock('./ipc', () => ({
 import {
   clearPathInputNotifier,
   clearConfirmNotifier,
+  choose,
   confirm,
   getPendingConfirm,
   getPendingPathInput,
@@ -86,6 +87,45 @@ describe('dialog confirm helpers', () => {
 
     await expect(resultPromise).resolves.toBe(false);
     expect(getPendingConfirm()).toBeNull();
+  });
+
+  it('routes choice dialogs through Electron IPC', async () => {
+    isElectronRuntimeMock.mockReturnValue(true);
+    invokeMock.mockResolvedValue(1);
+
+    await expect(
+      choose('You have running sessions.', {
+        choices: ['Kill & Quit', 'Keep in Background', 'Cancel'],
+        defaultIndex: 1,
+        cancelIndex: 2,
+        kind: 'warning',
+        title: 'Running Terminals',
+      }),
+    ).resolves.toBe(1);
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.DialogChoose, {
+      message: 'You have running sessions.',
+      choices: ['Kill & Quit', 'Keep in Background', 'Cancel'],
+      defaultIndex: 1,
+      cancelIndex: 2,
+      kind: 'warning',
+      title: 'Running Terminals',
+    });
+  });
+
+  it('falls back to the cancel choice in browser choice dialogs when declined', async () => {
+    const confirmSpy = vi.fn(() => false);
+    window.confirm = confirmSpy;
+
+    await expect(
+      choose('You have running sessions.', {
+        choices: ['Kill & Quit', 'Keep in Background', 'Cancel'],
+        defaultIndex: 1,
+        cancelIndex: 2,
+      }),
+    ).resolves.toBe(2);
+
+    expect(confirmSpy).toHaveBeenCalledWith('You have running sessions.');
   });
 });
 

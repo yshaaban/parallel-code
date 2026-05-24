@@ -152,6 +152,72 @@ describe('system handlers', () => {
     expect(resolveClipboardPaste).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards validated choice dialogs through dialog runtime support', async () => {
+    const choose = vi.fn(async () => 1);
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        dialog: {
+          choose,
+          confirm: vi.fn(async () => true),
+          open: vi.fn(async () => null),
+        },
+      },
+      buildOptions(),
+    );
+
+    await expect(
+      handlers[IPC.DialogChoose]?.({
+        message: 'You have running terminal sessions.',
+        choices: ['Kill & Quit', 'Keep in Background', 'Cancel'],
+        defaultIndex: 1,
+        cancelIndex: 2,
+        kind: 'warning',
+        title: 'Running Terminals',
+      }),
+    ).resolves.toBe(1);
+
+    expect(choose).toHaveBeenCalledWith({
+      message: 'You have running terminal sessions.',
+      choices: ['Kill & Quit', 'Keep in Background', 'Cancel'],
+      defaultIndex: 1,
+      cancelIndex: 2,
+      kind: 'warning',
+      title: 'Running Terminals',
+    });
+  });
+
+  it('rejects invalid choice dialog indexes before reaching dialog runtime support', async () => {
+    const choose = vi.fn(async () => 0);
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        dialog: {
+          choose,
+          confirm: vi.fn(async () => true),
+          open: vi.fn(async () => null),
+        },
+      },
+      buildOptions(),
+    );
+
+    await expect(
+      handlers[IPC.DialogChoose]?.({
+        message: 'Choose one',
+        choices: ['One', 'Two'],
+        defaultIndex: 2,
+      }),
+    ).rejects.toThrow('defaultIndex must reference choices');
+    await expect(
+      handlers[IPC.DialogChoose]?.({
+        message: 'Choose one',
+        choices: ['One'],
+      }),
+    ).rejects.toThrow('choices must include at least two entries');
+
+    expect(choose).not.toHaveBeenCalled();
+  });
+
   it('saves dropped images through clipboard runtime support', async () => {
     const saveDroppedImage = vi.fn(async () => '/tmp/parallel-code-drop-screen.png');
     const handlers = createSystemIpcHandlers(

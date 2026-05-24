@@ -1,5 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
-import { confirm } from '../lib/dialog';
+import { choose } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { appWindow } from '../lib/window';
 import { saveState } from '../store/persistence-save';
@@ -9,6 +9,22 @@ import type { PersistedWindowState } from '../store/types';
 
 const MIN_WINDOW_DIMENSION = 100;
 const WINDOW_EVENT_SETTLE_MS = 200;
+
+type RunningSessionCloseDecision = 'cancel' | 'hide' | 'kill';
+
+const RUNNING_SESSION_CLOSE_CHOICES = ['Kill & Quit', 'Keep in Background', 'Cancel'] as const;
+const RUNNING_SESSION_CLOSE_CANCEL_INDEX = 2;
+
+function mapRunningSessionCloseChoice(choice: number): RunningSessionCloseDecision {
+  switch (choice) {
+    case 0:
+      return 'kill';
+    case 1:
+      return 'hide';
+    default:
+      return 'cancel';
+  }
+}
 
 interface WindowSessionRuntimeOptions {
   electronRuntime: boolean;
@@ -213,24 +229,28 @@ export function createWindowSessionRuntime(options: WindowSessionRuntimeOptions)
           runningCount === 1
             ? '1 running terminal session'
             : `${runningCount} running terminal sessions`;
-        const shouldKill = await confirm(
+        const closeChoice = await choose(
           `You have ${countLabel}. They can be restored on app restart. Kill them and quit, or keep them alive in the background?`,
           {
             title: 'Running Terminals',
             kind: 'warning',
-            okLabel: 'Kill & Quit',
-            cancelLabel: 'Keep in Background',
+            choices: [...RUNNING_SESSION_CLOSE_CHOICES],
+            defaultIndex: 1,
+            cancelIndex: RUNNING_SESSION_CLOSE_CANCEL_INDEX,
           },
-        ).catch(() => false);
+        ).catch(() => RUNNING_SESSION_CLOSE_CANCEL_INDEX);
+        const decision = mapRunningSessionCloseChoice(closeChoice);
 
-        if (shouldKill) {
+        if (decision === 'kill') {
           await invoke(IPC.KillAllAgents).catch(console.error);
           allowClose = true;
           await appWindow.close().catch(console.error);
           return;
         }
 
-        await appWindow.hide().catch(console.error);
+        if (decision === 'hide') {
+          await appWindow.hide().catch(console.error);
+        }
       } finally {
         handlingClose = false;
       }

@@ -411,6 +411,7 @@ export interface RendererInvokeRequestMap {
   [IPC.WindowMinimize]: undefined;
   [IPC.WindowToggleMaximize]: undefined;
   [IPC.WindowClose]: undefined;
+  [IPC.WindowCloseHandled]: undefined;
   [IPC.WindowForceClose]: undefined;
   [IPC.WindowHide]: undefined;
   [IPC.WindowMaximize]: undefined;
@@ -426,6 +427,14 @@ export interface RendererInvokeRequestMap {
   [IPC.WindowGetPosition]: undefined;
   [IPC.WindowGetSize]: undefined;
 
+  [IPC.DialogChoose]: {
+    cancelIndex?: number;
+    choices: string[];
+    defaultIndex?: number;
+    kind?: string;
+    message: string;
+    title?: string;
+  };
   [IPC.DialogConfirm]: {
     cancelLabel?: string;
     kind?: string;
@@ -608,6 +617,7 @@ export interface RendererInvokeResponseMap {
   [IPC.WindowMinimize]: undefined;
   [IPC.WindowToggleMaximize]: undefined;
   [IPC.WindowClose]: undefined;
+  [IPC.WindowCloseHandled]: undefined;
   [IPC.WindowForceClose]: undefined;
   [IPC.WindowHide]: undefined;
   [IPC.WindowMaximize]: undefined;
@@ -617,6 +627,7 @@ export interface RendererInvokeResponseMap {
   [IPC.WindowGetPosition]: Position;
   [IPC.WindowGetSize]: Size;
 
+  [IPC.DialogChoose]: number;
   [IPC.DialogConfirm]: boolean;
   [IPC.DialogOpen]: string | string[] | null;
 

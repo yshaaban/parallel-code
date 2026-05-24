@@ -18,6 +18,7 @@ export interface WindowController {
   minimize: () => void;
   toggleMaximize: () => void;
   close: () => void;
+  closeHandled: () => void;
   forceClose: () => void;
   hide: () => void;
   show: () => void;
@@ -30,6 +31,14 @@ export interface WindowController {
 }
 
 export interface DialogController {
+  choose: (args: {
+    cancelIndex?: number;
+    choices: string[];
+    defaultIndex?: number;
+    kind?: string;
+    message: string;
+    title?: string;
+  }) => Promise<number>;
   confirm: (args: {
     message: string;
     title?: string;

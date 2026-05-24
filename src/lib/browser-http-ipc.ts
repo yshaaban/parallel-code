@@ -86,6 +86,7 @@ const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
   [IPC.ShowNotification]: true,
   [IPC.StopRemoteServer]: true,
   [IPC.WindowClose]: true,
+  [IPC.WindowCloseHandled]: true,
   [IPC.WindowForceClose]: true,
   [IPC.WindowHide]: true,
   [IPC.WindowMaximize]: true,

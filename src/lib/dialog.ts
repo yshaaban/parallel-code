@@ -8,6 +8,14 @@ interface ConfirmOptions {
   cancelLabel?: string;
 }
 
+interface ChoiceDialogOptions {
+  cancelIndex?: number;
+  choices: string[];
+  defaultIndex?: number;
+  kind?: string;
+  title?: string;
+}
+
 interface OpenDialogOptions {
   allowSshClone?: boolean;
   directory?: boolean;
@@ -45,6 +53,19 @@ export async function confirm(message: string, options?: ConfirmOptions): Promis
     };
     confirmNotify?.();
   });
+}
+
+export async function choose(message: string, options: ChoiceDialogOptions): Promise<number> {
+  if (isElectronRuntime()) {
+    return invoke(IPC.DialogChoose, {
+      message,
+      ...options,
+    });
+  }
+
+  const defaultIndex = options.defaultIndex ?? 0;
+  const cancelIndex = options.cancelIndex ?? options.choices.length - 1;
+  return window.confirm(message) ? defaultIndex : cancelIndex;
 }
 
 type ConfirmResolver = {

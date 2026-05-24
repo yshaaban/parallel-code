@@ -84,6 +84,7 @@ const ALLOWED_CHANNELS = new Set([
   '__window_minimize',
   '__window_toggle_maximize',
   '__window_close',
+  '__window_close_handled',
   '__window_force_close',
   '__window_hide',
   '__window_maximize',
@@ -98,6 +99,7 @@ const ALLOWED_CHANNELS = new Set([
   '__window_moved',
   '__window_close_requested',
   // Dialog
+  '__dialog_choose',
   '__dialog_confirm',
   '__dialog_open',
   // Shell
