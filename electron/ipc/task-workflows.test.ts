@@ -11,6 +11,7 @@ const {
   stopPlanWatcherMock,
   spawnAgentMock,
   createCurrentBranchTaskMock,
+  createNonGitTaskMock,
   createTaskMock,
   importExistingWorktreeTaskMock,
   deleteTaskMock,
@@ -32,6 +33,7 @@ const {
   stopPlanWatcherMock: vi.fn(),
   spawnAgentMock: vi.fn(),
   createCurrentBranchTaskMock: vi.fn(),
+  createNonGitTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
   importExistingWorktreeTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
@@ -68,6 +70,7 @@ vi.mock('./pty.js', async () => {
 
 vi.mock('./tasks.js', () => ({
   createCurrentBranchTask: createCurrentBranchTaskMock,
+  createNonGitTask: createNonGitTaskMock,
   createTask: createTaskMock,
   importExistingWorktreeTask: importExistingWorktreeTaskMock,
   deleteTask: deleteTaskMock,
@@ -275,6 +278,81 @@ describe('task workflows', () => {
     });
   });
 
+  it('starts managed worktrees from the selected base branch', async () => {
+    const context = createContext();
+    createTaskMock.mockResolvedValue({
+      id: 'task-2',
+      branch_name: 'task/workflow',
+      worktree_path: '/tmp/task-2',
+      git_isolation: 'worktree',
+    });
+    getMainBranchMock.mockResolvedValue('release/main');
+
+    const result = await createTaskWorkflow(context, {
+      name: 'Workflow task',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: ['node_modules'],
+      branchPrefix: 'task',
+      baseBranch: 'release/main',
+    });
+
+    expect(createTaskMock).toHaveBeenCalledWith(
+      'Workflow task',
+      '/tmp/project',
+      ['node_modules'],
+      'task',
+      'release/main',
+    );
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'release/main',
+      taskId: 'task-2',
+      worktreePath: '/tmp/task-2',
+    });
+    expect(result).toEqual({
+      id: 'task-2',
+      branch_name: 'task/workflow',
+      worktree_path: '/tmp/task-2',
+      base_branch: 'release/main',
+      git_isolation: 'worktree',
+    });
+  });
+
+  it('creates non-git task runtime without git metadata or watchers', async () => {
+    const context = createContext();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-task-'));
+    createNonGitTaskMock.mockReturnValue({
+      id: 'task-non-git',
+      branch_name: '',
+      project_mode: 'non-git',
+      worktree_path: tempRoot,
+    });
+
+    try {
+      const result = await createTaskWorkflow(context, {
+        name: 'Folder task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+        projectRoot: tempRoot,
+        symlinkDirs: [],
+        stepsTracking: true,
+      });
+
+      expect(createNonGitTaskMock).toHaveBeenCalledWith(tempRoot);
+      expect(createTaskMock).not.toHaveBeenCalled();
+      expect(getMainBranchMock).not.toHaveBeenCalled();
+      expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        id: 'task-non-git',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: tempRoot,
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('creates a current-branch task through the backend-owned branch workflow', async () => {
     const context = createContext();
     createCurrentBranchTaskMock.mockResolvedValue({
@@ -434,6 +512,51 @@ describe('task workflows', () => {
     }
   });
 
+  it('does not restore non-git task folders into the git worktree identity registry', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-registry-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-non-git': {
+              id: 'task-non-git',
+              projectMode: 'non-git',
+              worktreePath: folderPath,
+            },
+          },
+        }),
+      );
+
+      importExistingWorktreeTaskMock.mockResolvedValueOnce({
+        id: 'task-imported',
+        branch_name: 'task/imported',
+        worktree_path: folderPath,
+        base_branch: 'main',
+        git_isolation: 'existing-worktree',
+      });
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Imported task',
+          projectId: 'project-1',
+          projectRoot: '/tmp/project',
+          symlinkDirs: [],
+          branchPrefix: 'task',
+          gitIsolation: 'existing-worktree',
+          existingWorktreePath: folderPath,
+          baseBranch: 'main',
+        }),
+      ).resolves.toMatchObject({
+        id: 'task-imported',
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('logs and swallows git watcher startup failures during task creation', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     createTaskMock.mockResolvedValue({
@@ -554,6 +677,19 @@ describe('task workflows', () => {
     expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskContainerPreviewTargetsMock).toHaveBeenCalledWith('task-3');
     expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
+  });
+
+  it('does not remove git status snapshots for non-git runtime cleanup', () => {
+    cleanupTaskRuntimeWorkflow({
+      agentIds: ['agent-1'],
+      projectMode: 'non-git',
+      removeTaskState: true,
+      taskId: 'task-3',
+      worktreePath: '/tmp/folder',
+    });
+
+    expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
+    expect(removeGitStatusSnapshotMock).not.toHaveBeenCalled();
   });
 
   it('forwards plan watcher updates to the IPC event channel', () => {

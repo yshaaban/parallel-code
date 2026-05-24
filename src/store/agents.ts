@@ -31,6 +31,7 @@ export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promis
       if (!currentTask) return;
       s.agents[agentId] = agent;
       currentTask.agentIds.push(agentId);
+      currentTask.selectedAgentId = agentId;
       s.activeAgentId = agentId;
     }),
   );

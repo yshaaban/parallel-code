@@ -15,6 +15,7 @@ import {
   store,
   unregisterAction,
 } from '../store/store';
+import { getSelectedTaskAgentId } from '../store/task-agent-selection';
 import { uncollapseTask } from '../app/task-workflows';
 import { AgentGlyph } from './AgentGlyph';
 import { TaskActivityIndicator } from './TaskActivityIndicator';
@@ -137,7 +138,7 @@ function getPrimaryTaskAgentDef(taskId: string): AgentDef | null {
     return null;
   }
 
-  const primaryAgentId = task.agentIds[0];
+  const primaryAgentId = getSelectedTaskAgentId(task);
   if (primaryAgentId) {
     const primaryAgent = store.agents[primaryAgentId];
     if (primaryAgent?.def) {

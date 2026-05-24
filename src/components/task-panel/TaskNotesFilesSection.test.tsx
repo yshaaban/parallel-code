@@ -39,6 +39,20 @@ vi.mock('../../store/store', async () => {
   return {
     store: core.store,
     getProject: getProjectMock,
+    getSelectedTaskAgentId: (
+      task: { agentIds: string[]; selectedAgentId?: string },
+      preferredAgentId?: string | null,
+    ) => {
+      if (preferredAgentId && task.agentIds.includes(preferredAgentId)) {
+        return preferredAgentId;
+      }
+
+      if (task.selectedAgentId && task.agentIds.includes(task.selectedAgentId)) {
+        return task.selectedAgentId;
+      }
+
+      return task.agentIds[0] ?? null;
+    },
     isAgentAskingQuestion: isAgentAskingQuestionMock,
     setReviewPanelOpen: setReviewPanelOpenMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
@@ -284,10 +298,11 @@ describe('TaskNotesFilesSection', () => {
 
   it('sends notes through the task prompt workflow', async () => {
     const task = createTestTask({
-      agentIds: ['agent-1'],
+      agentIds: ['agent-1', 'agent-2'],
       id: 'task-1',
       notes: '  summarize this plan  ',
       projectId: 'project-1',
+      selectedAgentId: 'agent-2',
       worktreePath: '/tmp/project/task',
     });
     const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
@@ -309,7 +324,7 @@ describe('TaskNotesFilesSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send notes as prompt' }));
 
     await waitFor(() => {
-      expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-1', 'summarize this plan');
+      expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-2', 'summarize this plan');
     });
   });
 });

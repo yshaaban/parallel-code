@@ -1710,6 +1710,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         env: props.env ?? {},
         isShell: props.isShell,
         onOutput: outputChannel,
+        projectMode: props.projectMode,
         resumeOnStart: props.resumeOnStart === true,
         rows: term.rows,
         taskId,

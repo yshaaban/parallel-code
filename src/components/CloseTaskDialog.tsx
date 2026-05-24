@@ -12,6 +12,7 @@ import {
   isManagedWorktreeTask,
   normalizeTaskBaseBranch,
 } from '../store/task-git-isolation';
+import { isNonGitProject } from '../store/project-mode';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
@@ -98,13 +99,19 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
       title="Close Task"
       message={
         <div>
-          <Show when={isCurrentBranchTask(props.task)}>
+          <Show when={isNonGitProject(props.task)}>
+            <p style={{ margin: '0' }}>
+              This will stop all running agents and shells for this non-git task. No git operations
+              will be performed.
+            </p>
+          </Show>
+          <Show when={!isNonGitProject(props.task) && isCurrentBranchTask(props.task)}>
             <p style={{ margin: '0' }}>
               This will stop all running agents and shells for this task. No git operations will be
               performed.
             </p>
           </Show>
-          <Show when={isExistingWorktreeTask(props.task)}>
+          <Show when={!isNonGitProject(props.task) && isExistingWorktreeTask(props.task)}>
             <p style={{ margin: '0' }}>
               This will stop all running agents and shells for this task. The existing worktree and
               branch will be kept.

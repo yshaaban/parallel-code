@@ -52,14 +52,20 @@ function restoreExpandedProjectionAgents(storeState: typeof store): string[] {
   const restoredRunningAgentIds: string[] = [];
 
   for (const task of Object.values(storeState.tasks)) {
-    const agentId = task.agentIds[0];
-    const agentDef = task.savedAgentDef;
-    if (!agentId || !agentDef || task.collapsed) {
+    if (task.collapsed) {
       continue;
     }
 
-    storeState.agents[agentId] = createHydratedRunningAgent(task.id, agentId, agentDef);
-    restoredRunningAgentIds.push(agentId);
+    const agentDefs = task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []);
+    task.agentIds.forEach((agentId, index) => {
+      const agentDef = agentDefs[index];
+      if (!agentDef) {
+        return;
+      }
+
+      storeState.agents[agentId] = createHydratedRunningAgent(task.id, agentId, agentDef);
+      restoredRunningAgentIds.push(agentId);
+    });
   }
 
   return restoredRunningAgentIds;

@@ -9,6 +9,7 @@ import {
   getCachedMainBranch,
   setCachedMainBranch,
 } from './git-cache.js';
+import type { GitBranchInfo, GitBranchListResult } from '../../src/ipc/types.js';
 
 const exec = promisify(execFile);
 const configuredBaseBranchByProjectPath = new Map<string, string>();
@@ -33,7 +34,7 @@ export function syncConfiguredBaseBranchesFromSavedState(savedJson: string): voi
   const parsed = parsePersistedTaskLookupState(savedJson);
   configuredBaseBranchByProjectPath.clear();
   for (const project of parsed.projects) {
-    if (!project.path || !project.baseBranch) {
+    if (project.projectMode === 'non-git' || !project.path || !project.baseBranch) {
       continue;
     }
 
@@ -150,4 +151,145 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
 export async function getCurrentBranchName(repoRoot: string): Promise<string> {
   const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: repoRoot });
   return stdout.trim();
+}
+
+function splitRemoteBranch(refName: string): { branchName: string; remoteName: string } | null {
+  const remotePrefix = 'refs/remotes/';
+  if (!refName.startsWith(remotePrefix)) {
+    return null;
+  }
+
+  const remoteRef = refName.slice(remotePrefix.length);
+  const separatorIndex = remoteRef.indexOf('/');
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const remoteName = remoteRef.slice(0, separatorIndex);
+  const branchName = remoteRef.slice(separatorIndex + 1);
+  if (!branchName || branchName === 'HEAD') {
+    return null;
+  }
+
+  return { branchName, remoteName };
+}
+
+function createBranchSortKey(branch: GitBranchInfo, defaultBranch: string): string {
+  if (branch.name === defaultBranch) {
+    return `0:${branch.name}`;
+  }
+  if (branch.current) {
+    return `1:${branch.name}`;
+  }
+  if (branch.local) {
+    return `2:${branch.name}`;
+  }
+  return `3:${branch.name}`;
+}
+
+function sortBranches(branches: GitBranchInfo[], defaultBranch: string): GitBranchInfo[] {
+  return [...branches].sort((a, b) =>
+    createBranchSortKey(a, defaultBranch).localeCompare(
+      createBranchSortKey(b, defaultBranch),
+      undefined,
+      {
+        numeric: true,
+        sensitivity: 'base',
+      },
+    ),
+  );
+}
+
+function mergeBranchInfo(
+  branchesByName: Map<string, GitBranchInfo>,
+  name: string,
+  update: Partial<GitBranchInfo> & Pick<GitBranchInfo, 'name'>,
+): void {
+  const previous = branchesByName.get(name);
+  const merged: GitBranchInfo = {
+    current: previous?.current === true || update.current === true,
+    local: previous?.local === true || update.local === true,
+    name,
+    remote: previous?.remote === true || update.remote === true,
+  };
+
+  const remoteRef = update.remoteRef ?? previous?.remoteRef;
+  if (remoteRef !== undefined) {
+    merged.remoteRef = remoteRef;
+  }
+
+  const upstream = update.upstream ?? previous?.upstream;
+  if (upstream !== undefined) {
+    merged.upstream = upstream;
+  }
+
+  branchesByName.set(name, merged);
+}
+
+export async function listBranches(repoRoot: string): Promise<GitBranchListResult> {
+  const [defaultBranch, currentBranch] = await Promise.all([
+    detectMainBranch(repoRoot),
+    getCurrentBranchName(repoRoot).catch(() => null),
+  ]);
+  const { stdout } = await exec(
+    'git',
+    ['for-each-ref', '--format=%(refname)%09%(upstream:short)', 'refs/heads', 'refs/remotes'],
+    { cwd: repoRoot },
+  );
+  const branchesByName = new Map<string, GitBranchInfo>();
+
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const [refName, upstream] = trimmed.split('\t');
+    const localPrefix = 'refs/heads/';
+    if (refName?.startsWith(localPrefix)) {
+      const name = refName.slice(localPrefix.length);
+      mergeBranchInfo(branchesByName, name, {
+        current: currentBranch === name,
+        local: true,
+        name,
+        remote: false,
+        ...(upstream ? { upstream } : {}),
+      });
+      continue;
+    }
+
+    if (!refName) {
+      continue;
+    }
+
+    const remoteBranch = splitRemoteBranch(refName);
+    if (!remoteBranch) {
+      continue;
+    }
+
+    const remoteRef = `${remoteBranch.remoteName}/${remoteBranch.branchName}`;
+    const name = remoteBranch.remoteName === 'origin' ? remoteBranch.branchName : remoteRef;
+    mergeBranchInfo(branchesByName, name, {
+      current: currentBranch === name,
+      local: false,
+      name,
+      remote: true,
+      remoteRef,
+    });
+  }
+
+  if (!branchesByName.has(defaultBranch)) {
+    mergeBranchInfo(branchesByName, defaultBranch, {
+      current: currentBranch === defaultBranch,
+      local: false,
+      name: defaultBranch,
+      remote: false,
+    });
+  }
+
+  return {
+    branches: sortBranches([...branchesByName.values()], defaultBranch),
+    defaultBranch,
+    generatedAt: Date.now(),
+  };
 }

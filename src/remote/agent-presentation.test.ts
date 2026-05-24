@@ -10,6 +10,7 @@ import {
   getRemotePrimaryPreviewPort,
   getRemoteAgentTypeLabel,
   getRemoteAgentStatusPresentation,
+  isRemoteCurrentBranchTask,
   normalizeRemoteAgentGlyphKind,
   summarizeRemoteTaskReview,
   truncateRemoteAgentTail,
@@ -143,6 +144,23 @@ describe('formatRemoteTaskContext', () => {
     ).toBe('feature/imported (external worktree) \u00B7 imported-worktree');
     expect(formatRemoteTaskContext(null, 'imported-worktree', false, 'external')).toBe(
       'External Worktree \u00B7 imported-worktree',
+    );
+  });
+
+  it('uses explicit git isolation and project mode metadata when present', () => {
+    expect(
+      isRemoteCurrentBranchTask({
+        agentDefId: null,
+        agentDefName: null,
+        branchName: 'feature/direct',
+        directMode: false,
+        folderName: null,
+        gitIsolation: 'current-branch',
+        lastPrompt: null,
+      }),
+    ).toBe(true);
+    expect(formatRemoteTaskContext('main', 'docs', false, null, 'non-git')).toBe(
+      'Non-git project \u00B7 docs',
     );
   });
 

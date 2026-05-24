@@ -3,6 +3,7 @@ import { Show, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isTerminalHighLoadModeEnabled } from '../app/terminal-high-load-mode';
+import { IPC } from '../../electron/ipc/channels';
 import type { TaskNotificationCapability } from '../domain/task-notification';
 import { setStore, store } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
@@ -124,6 +125,33 @@ describe('SettingsDialog', () => {
     fireEvent.click(screen.getByLabelText('Task notifications'));
 
     expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+  });
+
+  it('renders explicit update unsupported state', async () => {
+    const invokeMock = vi.fn().mockResolvedValue({
+      checkedAt: null,
+      reason: 'browser',
+      status: 'unsupported',
+      supported: false,
+    });
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      value: {
+        ipcRenderer: {
+          invoke: invokeMock,
+          on: vi.fn(() => vi.fn()),
+          removeAllListeners: vi.fn(),
+        },
+      },
+    });
+
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    expect(await screen.findByText('Updates')).toBeDefined();
+    expect(
+      await screen.findByText('Updates are managed by the browser/server deployment.'),
+    ).toBeDefined();
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetUpdateStatus, undefined);
   });
 
   it('updates verbose logging from diagnostics settings', () => {

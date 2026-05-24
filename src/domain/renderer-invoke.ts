@@ -8,6 +8,7 @@ import type {
   CreateArenaWorktreeResult,
   CreateTaskResult,
   FileDiffResult,
+  GitBranchListResult,
   ImportableWorktree,
   MergeResult,
   MergeStatus,
@@ -17,8 +18,9 @@ import type {
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
 } from '../ipc/types.js';
-import type { ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
+import type { ProjectMode, ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
 import type { AskAboutCodeMessage, AskAboutCodeProviderId } from './ask-about-code.js';
+import type { AppUpdateStatus } from './app-update.js';
 import type { BranchCommitHistoryResult } from './review-commit-history.js';
 import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
@@ -105,6 +107,7 @@ export interface RendererInvokeRequestMap {
     env?: Record<string, string>;
     isShell?: boolean;
     onOutput: ChannelRefLike<string>;
+    projectMode?: ProjectMode;
     resumeOnStart?: boolean;
     rows?: number;
     taskId: string;
@@ -183,6 +186,7 @@ export interface RendererInvokeRequestMap {
     gitIsolation?: TaskGitIsolationMode;
     githubUrl?: string;
     name: string;
+    projectMode?: ProjectMode;
     projectId: string;
     projectRoot: string;
     symlinkDirs: string[];
@@ -200,6 +204,7 @@ export interface RendererInvokeRequestMap {
   [IPC.CleanupTaskRuntime]: {
     agentIds: string[];
     controllerId?: string;
+    projectMode?: ProjectMode;
     removeTaskState?: boolean;
     taskId: string;
     worktreePath?: string;
@@ -318,6 +323,9 @@ export interface RendererInvokeRequestMap {
   [IPC.GetGitignoredDirs]: {
     projectRoot: string;
   };
+  [IPC.ListBranches]: {
+    projectRoot: string;
+  };
   [IPC.ListImportableWorktrees]: {
     baseBranch?: string;
     projectRoot: string;
@@ -426,6 +434,10 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.WindowGetPosition]: undefined;
   [IPC.WindowGetSize]: undefined;
+
+  [IPC.GetUpdateStatus]: undefined;
+  [IPC.CheckForUpdates]: undefined;
+  [IPC.InstallUpdate]: undefined;
 
   [IPC.DialogChoose]: {
     cancelIndex?: number;
@@ -586,6 +598,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetAllFileDiffsFromBranch]: string;
   [IPC.GetGitRepoRoot]: string | null;
   [IPC.GetGitignoredDirs]: string[];
+  [IPC.ListBranches]: GitBranchListResult;
   [IPC.ListImportableWorktrees]: ImportableWorktree[];
   [IPC.GetWorktreeStatus]: WorktreeStatus;
   [IPC.CheckMergeStatus]: MergeStatus;
@@ -626,6 +639,10 @@ export interface RendererInvokeResponseMap {
   [IPC.WindowSetPosition]: undefined;
   [IPC.WindowGetPosition]: Position;
   [IPC.WindowGetSize]: Size;
+
+  [IPC.GetUpdateStatus]: AppUpdateStatus;
+  [IPC.CheckForUpdates]: AppUpdateStatus;
+  [IPC.InstallUpdate]: AppUpdateStatus;
 
   [IPC.DialogChoose]: number;
   [IPC.DialogConfirm]: boolean;

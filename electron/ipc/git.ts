@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
-import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
+import { detectMainBranch, getCurrentBranchName, listBranches } from './git-branch.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
 import { listGitWorktrees, worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
@@ -66,6 +66,8 @@ export async function getMainBranch(
 export async function getCurrentBranch(projectRoot: string): Promise<string> {
   return getCurrentBranchName(projectRoot);
 }
+
+export { listBranches };
 
 export async function checkoutBranch(projectRoot: string, branchName: string): Promise<void> {
   await exec('git', ['checkout', branchName], {

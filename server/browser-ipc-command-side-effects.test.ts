@@ -105,6 +105,31 @@ describe('browser IPC command side effects', () => {
     expect(context.removeGitStatus).toHaveBeenCalledWith('/repo');
   });
 
+  it('does not emit git-status refreshes for non-git cleanup removal', () => {
+    const context = createContext();
+
+    runBrowserIpcCommandSideEffects(
+      context,
+      IPC.CleanupTaskRuntime,
+      {
+        projectMode: 'non-git',
+        removeTaskState: true,
+        taskId: 'task-1',
+        worktreePath: '/tmp/folder',
+      },
+      undefined,
+    );
+
+    expect(context.broadcastControl).toHaveBeenCalledWith({
+      type: 'task-event',
+      event: 'deleted',
+      taskId: 'task-1',
+      worktreePath: '/tmp/folder',
+    });
+    expect(context.emitGitStatusChanged).not.toHaveBeenCalled();
+    expect(context.removeGitStatus).not.toHaveBeenCalled();
+  });
+
   it('falls back to requested git isolation when created task results omit optional metadata', () => {
     const context = createContext();
 
@@ -126,6 +151,7 @@ describe('browser IPC command side effects', () => {
       branchName: 'feature/imported',
       directMode: false,
       folderName: 'existing',
+      gitIsolation: 'existing-worktree',
       worktreeOwnership: 'external',
     });
   });

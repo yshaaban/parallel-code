@@ -38,6 +38,22 @@ export interface CreateTaskResult {
   worktree_path: string;
   base_branch?: string;
   git_isolation?: 'worktree' | 'current-branch' | 'existing-worktree';
+  project_mode?: 'git' | 'non-git';
+}
+
+export interface GitBranchInfo {
+  current: boolean;
+  local: boolean;
+  name: string;
+  remote: boolean;
+  remoteRef?: string;
+  upstream?: string;
+}
+
+export interface GitBranchListResult {
+  branches: GitBranchInfo[];
+  defaultBranch: string;
+  generatedAt: number;
 }
 
 export interface ImportableWorktree {

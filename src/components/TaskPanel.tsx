@@ -43,6 +43,7 @@ import {
   clearPendingAction,
   clearPrefillPrompt,
   getProject,
+  getSelectedTaskAgentId,
   getTaskFocusedPanel,
   getTaskActivityStatus,
   getStoredTaskFocusedPanel,
@@ -192,12 +193,25 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     unregisterFocusFn,
   });
 
-  const firstAgent = () => {
-    const firstAgentId = props.task.agentIds[0];
-    return firstAgentId ? store.agents[firstAgentId] : undefined;
-  };
+  function selectedTaskAgentId(): string | null {
+    return getSelectedTaskAgentId(
+      props.task,
+      store.activeTaskId === props.task.id ? store.activeAgentId : null,
+    );
+  }
 
-  const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
+  function promptAgentId(): string | null {
+    return selectedTaskAgentId() ?? permissionController.firstAgentId();
+  }
+
+  function selectedTaskAgent() {
+    const agentId = selectedTaskAgentId();
+    return agentId ? store.agents[agentId] : undefined;
+  }
+
+  function isHydraTask(): boolean {
+    return isHydraAgentDef(selectedTaskAgent()?.def);
+  }
 
   function handleApprovePermissionRequest(requestId: string): void {
     void permissionController.approvePermissionRequest(requestId);
@@ -316,24 +330,28 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                 />
               )}
             </For>
-            <PromptInput
-              taskId={props.task.id}
-              agentId={permissionController.firstAgentId()}
-              initialPrompt={props.task.initialPrompt}
-              prefillPrompt={props.task.prefillPrompt}
-              onSend={() => {
-                if (props.task.initialPrompt) {
-                  clearInitialPrompt(props.task.id);
-                }
-              }}
-              onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
-              setTextareaRef={(element) => {
-                promptRef = element;
-              }}
-              onHandle={(handle) => {
-                promptHandle = handle;
-              }}
-            />
+            <Show when={promptAgentId()} keyed>
+              {(agentId) => (
+                <PromptInput
+                  taskId={props.task.id}
+                  agentId={agentId}
+                  initialPrompt={props.task.initialPrompt}
+                  prefillPrompt={props.task.prefillPrompt}
+                  onSend={() => {
+                    if (props.task.initialPrompt) {
+                      clearInitialPrompt(props.task.id);
+                    }
+                  }}
+                  onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
+                  setTextareaRef={(element) => {
+                    promptRef = element;
+                  }}
+                  onHandle={(handle) => {
+                    promptHandle = handle;
+                  }}
+                />
+              )}
+            </Show>
           </div>
         </ScalablePanel>
       ),
@@ -509,7 +527,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
               projectRoot={getProject(props.task.projectId)?.path}
               branchName={props.task.branchName}
               taskId={props.task.id}
-              agentId={props.task.agentIds[0]}
+              agentId={selectedTaskAgentId() ?? props.task.agentIds[0]}
               onClose={() => dialogState.setDiffFile(null)}
             />
           )}

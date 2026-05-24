@@ -8,6 +8,7 @@ const {
   openDialogMock,
   saveCurrentRuntimeStateMock,
   setProjectPathMock,
+  updateProjectMock,
 } = vi.hoisted(() => ({
   addProjectMock: vi.fn(),
   clearMissingProjectMock: vi.fn(),
@@ -16,6 +17,7 @@ const {
   openDialogMock: vi.fn(),
   saveCurrentRuntimeStateMock: vi.fn(),
   setProjectPathMock: vi.fn(),
+  updateProjectMock: vi.fn(),
 }));
 
 vi.mock('../lib/dialog', () => ({
@@ -32,6 +34,7 @@ vi.mock('../store/projects', () => ({
   clearMissingProject: clearMissingProjectMock,
   removeProject: vi.fn(),
   setProjectPath: setProjectPathMock,
+  updateProject: updateProjectMock,
 }));
 
 vi.mock('../store/persistence-save', () => ({
@@ -192,9 +195,28 @@ describe('project workflows', () => {
     expect(confirmMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the old project path when relink selects a non-git folder', async () => {
+  it('adds an explicit non-git project when the selected folder is not a git repository', async () => {
     openDialogMock.mockResolvedValue('/tmp/not-a-repo');
     invokeMock.mockResolvedValue(null);
+    confirmMock.mockResolvedValue(true);
+
+    await expect(pickAndAddProject()).resolves.toBe('project-1');
+
+    expect(addProjectMock).toHaveBeenCalledWith('not-a-repo', '/tmp/not-a-repo', {
+      projectMode: 'non-git',
+    });
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.stringContaining('Add it as a non-git project?'),
+      expect.objectContaining({
+        title: 'Add non-git project',
+      }),
+    );
+  });
+
+  it('keeps the old project path when relink rejects a non-git folder', async () => {
+    openDialogMock.mockResolvedValue('/tmp/not-a-repo');
+    invokeMock.mockResolvedValue(null);
+    confirmMock.mockResolvedValue(false);
 
     await expect(relinkProject('project-1')).resolves.toBe(false);
 
@@ -202,10 +224,10 @@ describe('project workflows', () => {
     expect(clearMissingProjectMock).not.toHaveBeenCalled();
     expect(saveCurrentRuntimeStateMock).not.toHaveBeenCalled();
     expect(confirmMock).toHaveBeenCalledWith(
-      expect.stringContaining('not a git repository root'),
+      expect.stringContaining('Add it as a non-git project?'),
       expect.objectContaining({
         kind: 'warning',
-        title: 'Invalid project folder',
+        title: 'Add non-git project',
       }),
     );
   });

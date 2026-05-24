@@ -337,6 +337,22 @@ vi.mock('../store/store', async () => {
         ? { id: 'project-1', path: '/tmp/project', deleteBranchOnClose: true }
         : null,
     ),
+    getSelectedTaskAgentId: vi.fn(
+      (
+        task: { agentIds: string[]; selectedAgentId?: string },
+        preferredAgentId?: string | null,
+      ) => {
+        if (preferredAgentId && task.agentIds.includes(preferredAgentId)) {
+          return preferredAgentId;
+        }
+
+        if (task.selectedAgentId && task.agentIds.includes(task.selectedAgentId)) {
+          return task.selectedAgentId;
+        }
+
+        return task.agentIds[0] ?? null;
+      },
+    ),
     getStoredTaskFocusedPanel: vi.fn((taskId: string) => core.store.focusedPanel[taskId] ?? null),
     getTaskFocusedPanel: vi.fn(
       (taskId: string) => core.store.focusedPanel[taskId] ?? 'ai-terminal',

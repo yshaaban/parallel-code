@@ -123,6 +123,86 @@ describe('createTaskNameRegistry', () => {
     });
   });
 
+  it('prefers explicit git isolation metadata when it is available', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Direct Task',
+            branchName: 'main',
+            directMode: false,
+            gitIsolation: 'current-branch',
+            worktreePath: '/home/user/project',
+          },
+        },
+      }),
+    );
+
+    expect(registry.getTaskMetadata('task-1')).toEqual({
+      agentDefId: null,
+      agentDefName: null,
+      branchName: 'main',
+      directMode: true,
+      folderName: 'project',
+      gitIsolation: 'current-branch',
+      lastPrompt: null,
+    });
+  });
+
+  it('registers explicit git isolation for newly created remote tasks', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.registerCreatedTask('task-1', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'task/imported',
+      directMode: false,
+      gitIsolation: 'existing-worktree',
+      taskName: 'Imported Task',
+      worktreePath: '/tmp/imported',
+      worktreeOwnership: 'external',
+    });
+
+    expect(registry.getTaskMetadata('task-1')).toEqual({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'task/imported',
+      directMode: false,
+      folderName: 'imported',
+      gitIsolation: 'existing-worktree',
+      lastPrompt: null,
+      worktreeOwnership: 'external',
+    });
+  });
+
+  it('registers non-git project metadata explicitly', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.registerCreatedTask('task-1', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: '',
+      directMode: false,
+      projectMode: 'non-git',
+      taskName: 'Folder Task',
+      worktreePath: '/tmp/folder',
+      worktreeOwnership: null,
+    });
+
+    expect(registry.getTaskMetadata('task-1')).toEqual({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: '',
+      directMode: false,
+      folderName: 'folder',
+      lastPrompt: null,
+      projectMode: 'non-git',
+    });
+  });
+
   it('returns null metadata for unknown task', () => {
     const registry = createTaskNameRegistry();
     expect(registry.getTaskMetadata('task-unknown')).toBeNull();

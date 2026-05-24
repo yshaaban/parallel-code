@@ -90,11 +90,25 @@ function isWorktreeNameCollision(
   return message.includes('already exists') || message.includes('already checked out');
 }
 
+function createTaskWorktree(
+  projectRoot: string,
+  branchName: string,
+  symlinkDirs: string[],
+  baseBranch: string | undefined,
+): Promise<{ branch: string; path: string }> {
+  if (baseBranch === undefined) {
+    return createWorktree(projectRoot, branchName, symlinkDirs);
+  }
+
+  return createWorktree(projectRoot, branchName, symlinkDirs, false, baseBranch);
+}
+
 export async function createTask(
   name: string,
   projectRoot: string,
   symlinkDirs: string[],
   branchPrefix: string,
+  baseBranch?: string,
 ): Promise<{
   id: string;
   branch_name: string;
@@ -109,7 +123,7 @@ export async function createTask(
     const worktreePath = `${projectRoot}/.worktrees/${branchName}`;
 
     try {
-      const worktree = await createWorktree(projectRoot, branchName, symlinkDirs);
+      const worktree = await createTaskWorktree(projectRoot, branchName, symlinkDirs, baseBranch);
       return {
         id: randomUUID(),
         branch_name: worktree.branch,
@@ -150,6 +164,20 @@ export async function createCurrentBranchTask(
     worktree_path: projectRoot,
     base_branch: baseBranch,
     git_isolation: 'current-branch',
+  };
+}
+
+export function createNonGitTask(projectRoot: string): {
+  id: string;
+  branch_name: string;
+  project_mode: 'non-git';
+  worktree_path: string;
+} {
+  return {
+    id: randomUUID(),
+    branch_name: '',
+    project_mode: 'non-git',
+    worktree_path: projectRoot,
   };
 }
 

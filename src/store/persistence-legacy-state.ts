@@ -65,8 +65,16 @@ function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === 'string';
 }
 
+function isOptionalProjectMode(value: unknown): value is 'git' | 'non-git' | undefined {
+  return value === undefined || value === 'git' || value === 'non-git';
+}
+
 function isOptionalStringArray(value: unknown): value is string[] | undefined {
   return value === undefined || isStringArray(value);
+}
+
+function isOptionalPersistedAgentDefArray(value: unknown): value is AgentDef[] | undefined {
+  return value === undefined || (Array.isArray(value) && value.every(isPersistedAgentDef));
 }
 
 function isOptionalStringOrNull(value: unknown): value is string | null | undefined {
@@ -97,11 +105,15 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     typeof value.lastPrompt === 'string' &&
     (value.shellCount === undefined || isNonNegativeInteger(value.shellCount)) &&
     isOptionalStringOrNull(value.agentId) &&
+    isOptionalStringArray(value.agentIds) &&
+    isOptionalPersistedAgentDefArray(value.agentDefs) &&
+    isOptionalString(value.selectedAgentId) &&
     isOptionalStringArray(value.shellAgentIds) &&
     (value.agentDef === undefined ||
       value.agentDef === null ||
       isPersistedAgentDef(value.agentDef)) &&
     isOptionalString(value.baseBranch) &&
+    isOptionalProjectMode(value.projectMode) &&
     isOptionalBoolean(value.directMode) &&
     isOptionalBoolean(value.skipPermissions) &&
     isOptionalString(value.githubUrl) &&

@@ -9,6 +9,7 @@ import {
   formatRemoteTaskContext,
   getRemoteAgentListStatePresentation,
   summarizeRemoteTaskReview,
+  isRemoteCurrentBranchTask,
   shouldShowRemoteAgentPreview,
 } from './agent-presentation';
 import { RemoteAgentGlyph } from './RemoteAgentGlyph';
@@ -165,8 +166,9 @@ function getAgentTaskContext(agent: RemoteAgent): string | null {
   return formatRemoteTaskContext(
     agent.taskMeta?.branchName ?? null,
     agent.taskMeta?.folderName ?? null,
-    agent.taskMeta?.directMode === true,
+    isRemoteCurrentBranchTask(agent.taskMeta),
     agent.taskMeta?.worktreeOwnership ?? null,
+    agent.taskMeta?.projectMode ?? null,
   );
 }
 

@@ -14,6 +14,7 @@ import {
   getFileDiffFromBranch,
   getGitIgnoredDirs,
   getGitRepoRoot,
+  listBranches,
   listImportableWorktrees,
   getMainBranch,
   getProjectDiff,
@@ -55,6 +56,7 @@ import { defineIpcHandler } from './typed-handler.js';
 import { isChangedFileStatus, type ChangedFileStatus } from '../../src/domain/git-status.js';
 import {
   isReviewDiffMode,
+  type ProjectMode,
   type ReviewDiffMode,
   type TaskGitIsolationMode,
 } from '../../src/store/types.js';
@@ -118,6 +120,14 @@ function assertOptionalTaskGitIsolation(
   }
 }
 
+function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode | undefined {
+  if (value === undefined || value === 'git' || value === 'non-git') {
+    return;
+  }
+
+  throw new BadRequestError('projectMode must be one of: git, non-git');
+}
+
 function createOutputHandler(
   context: HandlerContext,
   channelId: string | undefined,
@@ -148,6 +158,17 @@ function assertTaskCommandLeaseHeld(
   }
 }
 
+function getCreatedTaskWorktreeOwnership(result: {
+  git_isolation?: TaskGitIsolationMode;
+  project_mode?: ProjectMode;
+}): 'external' | 'managed' | null {
+  if (result.project_mode === 'non-git') {
+    return null;
+  }
+
+  return result.git_isolation === 'existing-worktree' ? 'external' : 'managed';
+}
+
 export function createTaskAndGitIpcHandlers(
   context: HandlerContext,
   taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
@@ -164,9 +185,24 @@ export function createTaskAndGitIpcHandlers(
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.existingWorktreePath, 'existingWorktreePath');
       assertOptionalString(request.githubUrl, 'githubUrl');
+      assertOptionalProjectMode(request.projectMode);
       validateOptionalBranchName(request.branchPrefix, 'branchPrefix');
       assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
       assertOptionalTaskGitIsolation(request.gitIsolation);
+      if (request.projectMode === 'non-git') {
+        if (request.gitIsolation !== undefined) {
+          throw new BadRequestError('gitIsolation is not valid for non-git tasks');
+        }
+        if (request.baseBranch !== undefined) {
+          throw new BadRequestError('baseBranch is not valid for non-git tasks');
+        }
+        if (request.existingWorktreePath !== undefined) {
+          throw new BadRequestError('existingWorktreePath is not valid for non-git tasks');
+        }
+        if (request.branchPrefix !== undefined) {
+          throw new BadRequestError('branchPrefix is not valid for non-git tasks');
+        }
+      }
       if (request.gitIsolation === 'existing-worktree') {
         validatePath(request.existingWorktreePath, 'existingWorktreePath');
       } else if (typeof request.existingWorktreePath === 'string') {
@@ -179,23 +215,30 @@ export function createTaskAndGitIpcHandlers(
         projectId: request.projectId,
         projectRoot: request.projectRoot,
         ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
+        ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
         symlinkDirs: request.symlinkDirs,
-        branchPrefix: request.branchPrefix ?? 'task',
+        ...(request.projectMode !== 'non-git'
+          ? { branchPrefix: request.branchPrefix ?? 'task' }
+          : {}),
         ...(request.existingWorktreePath !== undefined
           ? { existingWorktreePath: request.existingWorktreePath }
           : {}),
         ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
         ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
       });
+      const gitIsolation = 'git_isolation' in result ? result.git_isolation : undefined;
+      const projectMode = 'project_mode' in result ? result.project_mode : undefined;
 
       taskNames.registerCreatedTask(result.id, {
         agentDefId: request.agentDefId ?? null,
         agentDefName: request.agentDefName ?? null,
         branchName: result.branch_name,
-        directMode: result.git_isolation === 'current-branch',
+        directMode: gitIsolation === 'current-branch',
+        ...(gitIsolation !== undefined ? { gitIsolation } : {}),
+        ...(projectMode !== undefined ? { projectMode } : {}),
         taskName: request.name,
         worktreePath: result.worktree_path,
-        worktreeOwnership: result.git_isolation === 'existing-worktree' ? 'external' : 'managed',
+        worktreeOwnership: getCreatedTaskWorktreeOwnership(result),
       });
       return result;
     }),
@@ -235,6 +278,7 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         assertStringArray(request.agentIds, 'agentIds');
         assertOptionalString(request.controllerId, 'controllerId');
+        assertOptionalProjectMode(request.projectMode);
         assertOptionalBoolean(request.removeTaskState, 'removeTaskState');
         assertString(request.taskId, 'taskId');
         assertOptionalString(request.worktreePath, 'worktreePath');
@@ -245,6 +289,7 @@ export function createTaskAndGitIpcHandlers(
 
         const cleanupResult = cleanupTaskRuntimeWorkflow({
           agentIds: request.agentIds,
+          ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
           removeTaskState: request.removeTaskState ?? false,
           taskId: request.taskId,
           ...(typeof request.worktreePath === 'string'
@@ -356,6 +401,12 @@ export function createTaskAndGitIpcHandlers(
         return getGitIgnoredDirs(request.projectRoot);
       },
     ),
+
+    [IPC.ListBranches]: defineIpcHandler<IPC.ListBranches>(IPC.ListBranches, (args) => {
+      const request = args;
+      validatePath(request.projectRoot, 'projectRoot');
+      return listBranches(request.projectRoot);
+    }),
 
     [IPC.ListImportableWorktrees]: defineIpcHandler<IPC.ListImportableWorktrees>(
       IPC.ListImportableWorktrees,

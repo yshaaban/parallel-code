@@ -18,6 +18,7 @@ import {
   getProjectPath,
   isProjectMissing,
 } from '../store/projects';
+import { buildTaskProjectModeFields, getProjectMode, isNonGitProject } from '../store/project-mode';
 import { setStore, store, updateWindowTitle } from '../store/state';
 import {
   buildTaskGitIsolationFields,
@@ -25,9 +26,10 @@ import {
   isExistingWorktreeTask,
   isManagedWorktreeTask,
 } from '../store/task-git-isolation';
+import { getSelectedTaskAgentId } from '../store/task-agent-selection';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
-import type { Agent, Task, TaskGitIsolationMode } from '../store/types';
+import type { Agent, ProjectMode, Task, TaskGitIsolationMode } from '../store/types';
 import { clearTaskConvergence } from './task-convergence';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
 import {
@@ -46,6 +48,7 @@ const collapsingTaskIds = new Set<string>();
 
 interface TaskRuntimeCleanupRequest {
   agentIds: string[];
+  projectMode?: ProjectMode;
   removeTaskState: boolean;
   taskId: string;
   worktreePath?: string;
@@ -64,11 +67,12 @@ function getRuntimeAgentIds(task: Pick<Task, 'agentIds' | 'shellAgentIds'>): str
 }
 
 function createTaskRuntimeCleanupRequest(
-  task: Pick<Task, 'agentIds' | 'shellAgentIds' | 'id' | 'worktreePath'>,
+  task: Pick<Task, 'agentIds' | 'shellAgentIds' | 'id' | 'projectMode' | 'worktreePath'>,
   options: TaskRuntimeCleanupOptions,
 ): TaskRuntimeCleanupRequest {
   return {
     agentIds: getRuntimeAgentIds(task),
+    ...(task.projectMode !== undefined ? { projectMode: task.projectMode } : {}),
     removeTaskState: options.removeTaskState,
     taskId: task.id,
     ...(options.includeWorktreePath && typeof task.worktreePath === 'string'
@@ -81,6 +85,7 @@ async function cleanupTaskRuntimeState(request: TaskRuntimeCleanupRequest): Prom
   await invoke(IPC.CleanupTaskRuntime, {
     agentIds: request.agentIds,
     controllerId: getRuntimeClientId(),
+    ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
     ...(request.removeTaskState ? { removeTaskState: true } : {}),
     taskId: request.taskId,
     ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
@@ -92,7 +97,7 @@ function isTaskCommandLeaseLossError(error: unknown): boolean {
 }
 
 async function cleanupTaskRuntimeForTask(
-  task: Pick<Task, 'agentIds' | 'shellAgentIds' | 'id' | 'worktreePath'>,
+  task: Pick<Task, 'agentIds' | 'shellAgentIds' | 'id' | 'projectMode' | 'worktreePath'>,
   options: TaskRuntimeCleanupOptions,
 ): Promise<void> {
   const request = createTaskRuntimeCleanupRequest(task, options);
@@ -116,6 +121,40 @@ async function killTaskAgentsBestEffort(
   await Promise.allSettled(
     getRuntimeAgentIds(task).map((agentId) => invoke(IPC.KillAgent, { agentId })),
   );
+}
+
+function getCompleteTaskAgentDefs(task: Pick<Task, 'agentIds'>): AgentDef[] | null {
+  const agentDefs: AgentDef[] = [];
+  for (const agentId of task.agentIds) {
+    const agentDef = store.agents[agentId]?.def;
+    if (!agentDef) {
+      return null;
+    }
+
+    agentDefs.push(agentDef);
+  }
+
+  return agentDefs;
+}
+
+function createRestoredAgent(taskId: string, agentDef: AgentDef): Agent {
+  return {
+    id: createRandomId(),
+    taskId,
+    def: agentDef,
+    resumed: true,
+    status: 'running',
+    exitCode: null,
+    signal: null,
+    lastOutput: [],
+    generation: 0,
+  };
+}
+
+function getTaskActiveAgentId(
+  task: Pick<Task, 'agentIds' | 'selectedAgentId'> | null | undefined,
+): string | null {
+  return task ? getSelectedTaskAgentId(task) : null;
 }
 
 function syncWindowTitleToActiveSelection(): void {
@@ -154,7 +193,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         if (state.activeTaskId === taskId) {
           state.activeTaskId = neighbor;
           const neighborTask = neighbor ? state.tasks[neighbor] : null;
-          state.activeAgentId = neighborTask?.agentIds[0] ?? null;
+          state.activeAgentId = getTaskActiveAgentId(neighborTask);
         }
 
         removeAgentScopedStoreState(state, agentIds);
@@ -176,6 +215,7 @@ export interface CreateTaskOptions {
   initialPrompt?: string;
   branchPrefixOverride?: string;
   githubUrl?: string;
+  projectMode?: ProjectMode;
   skipPermissions?: boolean;
   stepsTracking?: boolean;
 }
@@ -185,7 +225,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     name,
     agentDef,
     projectId,
-    baseBranch = getProjectBaseBranch(projectId),
+    baseBranch,
     gitIsolation = 'worktree',
     existingWorktreePath,
     symlinkDirs = [],
@@ -202,25 +242,34 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     throw new Error('Project folder not found');
   }
 
+  const project = getProject(projectId);
+  const projectMode = opts.projectMode ?? getProjectMode(project);
+  const resolvedBaseBranch =
+    projectMode === 'git' ? (baseBranch ?? getProjectBaseBranch(projectId)) : undefined;
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke(IPC.CreateTask, {
     agentDefId: agentDef.id,
     agentDefName: agentDef.name,
-    ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
+    ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
     name,
-    ...(gitIsolation !== undefined ? { gitIsolation } : {}),
-    ...(existingWorktreePath !== undefined ? { existingWorktreePath } : {}),
+    ...(projectMode === 'non-git' ? { projectMode } : {}),
+    ...(projectMode === 'git' ? { branchPrefix } : {}),
+    ...(projectMode === 'git' && gitIsolation !== undefined ? { gitIsolation } : {}),
+    ...(projectMode === 'git' && existingWorktreePath !== undefined
+      ? { existingWorktreePath }
+      : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     projectId,
     projectRoot,
     symlinkDirs,
-    branchPrefix,
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 
   const agentId = createRandomId();
   const resolvedGitIsolation = result.git_isolation ?? gitIsolation;
-  const resolvedBaseBranch = result.base_branch ?? baseBranch;
+  const resultProjectMode = result.project_mode ?? projectMode;
+  const taskBaseBranch =
+    resultProjectMode === 'git' ? (result.base_branch ?? resolvedBaseBranch) : undefined;
   const task: Task = {
     id: result.id,
     name,
@@ -228,11 +277,15 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
     agentIds: [agentId],
+    selectedAgentId: agentId,
     shellAgentIds: [],
     notes: '',
     lastPrompt: '',
-    ...buildTaskGitIsolationFields({ gitIsolation: resolvedGitIsolation }),
-    ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
+    ...buildTaskProjectModeFields({ projectMode: resultProjectMode }),
+    ...(resultProjectMode === 'git'
+      ? buildTaskGitIsolationFields({ gitIsolation: resolvedGitIsolation })
+      : {}),
+    ...(typeof taskBaseBranch === 'string' ? { baseBranch: taskBaseBranch } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(skipPermissions ? { skipPermissions: true } : {}),
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
@@ -407,7 +460,13 @@ export async function mergeTask(
   options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || isTaskRemoving(task) || task.collapsed || isCurrentBranchTask(task)) {
+  if (
+    !task ||
+    isTaskRemoving(task) ||
+    task.collapsed ||
+    isCurrentBranchTask(task) ||
+    isNonGitProject(task)
+  ) {
     return;
   }
 
@@ -452,7 +511,7 @@ export async function mergeTask(
 
 export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || isCurrentBranchTask(task)) {
+  if (!task || isCurrentBranchTask(task) || isNonGitProject(task)) {
     return;
   }
 
@@ -493,8 +552,8 @@ export async function collapseTask(taskId: string): Promise<void> {
   try {
     result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
       try {
-        const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
-        const agentDef = firstAgent?.def;
+        const agentDefs = getCompleteTaskAgentDefs(task);
+        const agentDef = agentDefs?.[0];
         const runtimeAgentIds = getRuntimeAgentIds(task);
 
         await killTaskAgentsBestEffort(task);
@@ -520,7 +579,13 @@ export async function collapseTask(taskId: string): Promise<void> {
             } else {
               delete state.tasks[taskId].savedAgentDef;
             }
+            if (agentDefs && agentDefs.length > 1) {
+              state.tasks[taskId].savedAgentDefs = agentDefs;
+            } else {
+              delete state.tasks[taskId].savedAgentDefs;
+            }
             state.tasks[taskId].agentIds = [];
+            delete state.tasks[taskId].selectedAgentId;
             state.tasks[taskId].shellAgentIds = [];
             const index = state.taskOrder.indexOf(taskId);
             if (index !== -1) {
@@ -534,7 +599,7 @@ export async function collapseTask(taskId: string): Promise<void> {
               const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
               state.activeTaskId = neighbor;
               const neighborTask = neighbor ? state.tasks[neighbor] : null;
-              state.activeAgentId = neighborTask?.agentIds[0] ?? null;
+              state.activeAgentId = getTaskActiveAgentId(neighborTask);
             }
           }),
         );
@@ -560,8 +625,8 @@ export async function uncollapseTask(taskId: string): Promise<void> {
   }
 
   const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
-    const savedDef = task.savedAgentDef;
-    const agentId = savedDef ? createRandomId() : null;
+    const savedDefs = task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []);
+    const restoredAgents = savedDefs.map((agentDef) => createRestoredAgent(taskId, agentDef));
 
     setStore(
       produce((state) => {
@@ -575,29 +640,27 @@ export async function uncollapseTask(taskId: string): Promise<void> {
         state.taskOrder.push(taskId);
         state.activeTaskId = taskId;
 
-        if (agentId && savedDef) {
-          const agent: Agent = {
-            id: agentId,
-            taskId,
-            def: savedDef,
-            resumed: true,
-            status: 'running',
-            exitCode: null,
-            signal: null,
-            lastOutput: [],
-            generation: 0,
-          };
-          state.agents[agentId] = agent;
-          currentTask.agentIds = [agentId];
+        if (restoredAgents.length > 0) {
+          for (const agent of restoredAgents) {
+            state.agents[agent.id] = agent;
+          }
+          currentTask.agentIds = restoredAgents.map((agent) => agent.id);
+          const firstRestoredAgentId = restoredAgents[0]?.id;
+          if (firstRestoredAgentId) {
+            currentTask.selectedAgentId = firstRestoredAgentId;
+          } else {
+            delete currentTask.selectedAgentId;
+          }
           delete currentTask.savedAgentDef;
+          delete currentTask.savedAgentDefs;
         }
 
-        state.activeAgentId = currentTask.agentIds[0] ?? null;
+        state.activeAgentId = getTaskActiveAgentId(currentTask);
       }),
     );
 
-    if (agentId) {
-      markAgentSpawned(agentId);
+    for (const agent of restoredAgents) {
+      markAgentSpawned(agent.id);
     }
 
     updateWindowTitle(task.name);

@@ -62,17 +62,17 @@ function toNonNegativeInt(value: unknown): number {
   return Math.max(0, Math.floor(value));
 }
 
-function withSavedAgentDef<TTask extends { savedAgentDef?: AgentDef }>(
-  task: TTask,
-  agentDef: AgentDef | null | undefined,
-): TTask {
-  if (!agentDef) {
+function withSavedAgentDefs<
+  TTask extends { savedAgentDef?: AgentDef; savedAgentDefs?: AgentDef[] },
+>(task: TTask, agentDefs: AgentDef[]): TTask {
+  if (agentDefs.length === 0) {
     return task;
   }
 
   return {
     ...task,
-    savedAgentDef: agentDef,
+    ...(agentDefs[0] ? { savedAgentDef: agentDefs[0] } : {}),
+    ...(agentDefs.length > 1 ? { savedAgentDefs: agentDefs } : {}),
   };
 }
 
@@ -115,7 +115,8 @@ export function buildBrowserColdBootstrapProjectionFromJson(
       return undefined;
     },
     visit(entry): void {
-      tempState.tasks[entry.taskId] = withSavedAgentDef(entry.task, entry.agentDef);
+      const agentDefs = entry.agentEntries.map((agentEntry) => agentEntry.agentDef);
+      tempState.tasks[entry.taskId] = withSavedAgentDefs(entry.task, agentDefs);
     },
   });
 

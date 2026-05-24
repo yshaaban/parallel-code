@@ -6,11 +6,13 @@ import { sanitizeBranchPrefix } from '../lib/branch-name';
 import { invoke } from '../lib/ipc';
 import { createRandomId } from '../lib/random-id';
 import { store, setStore } from './core';
+import { buildProjectModeFields, getProjectMode } from './project-mode';
 import {
   buildProjectGitIsolationFields,
+  clearProjectGitFields,
   getProjectDefaultTaskGitIsolation,
 } from './task-git-isolation';
-import type { Project } from './types.js';
+import type { Project, ProjectMode } from './types.js';
 
 export { PASTEL_HUES, randomPastelColor } from '../domain/project-colors.js';
 
@@ -27,7 +29,11 @@ export function getProject(projectId: string): Project | undefined {
   return store.projects.find((p) => p.id === projectId);
 }
 
-export function addProject(name: string, path: string): string {
+export function addProject(
+  name: string,
+  path: string,
+  options?: { projectMode?: ProjectMode },
+): string {
   const id = createRandomId();
   const color = randomPastelColor();
   const project: Project = {
@@ -35,7 +41,8 @@ export function addProject(name: string, path: string): string {
     name,
     path,
     color,
-    ...buildProjectGitIsolationFields(undefined),
+    ...buildProjectModeFields(options),
+    ...buildProjectGitIsolationFields(options),
   };
   setStore(
     produce((s) => {
@@ -92,6 +99,7 @@ export function updateProject(
       | 'deleteBranchOnClose'
       | 'defaultDirectMode'
       | 'defaultTaskGitIsolation'
+      | 'projectMode'
       | 'terminalBookmarks'
     >
   >,
@@ -105,21 +113,33 @@ export function updateProject(
 
       if (updates.name !== undefined) project.name = updates.name;
       if (updates.color !== undefined) project.color = updates.color;
-      if (updates.baseBranch !== undefined) {
-        const baseBranch = normalizeBaseBranch(updates.baseBranch);
-        if (baseBranch !== undefined) {
-          project.baseBranch = baseBranch;
+      if (updates.projectMode !== undefined) {
+        if (getProjectMode(updates) === 'non-git') {
+          project.projectMode = 'non-git';
         } else {
-          delete project.baseBranch;
+          delete project.projectMode;
+          Object.assign(project, buildProjectGitIsolationFields(project));
         }
       }
-      if (updates.branchPrefix !== undefined)
-        project.branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
-      if (updates.deleteBranchOnClose !== undefined)
-        project.deleteBranchOnClose = updates.deleteBranchOnClose;
+      if (getProjectMode(project) === 'non-git') {
+        clearProjectGitFields(project);
+      } else {
+        if (updates.baseBranch !== undefined) {
+          const baseBranch = normalizeBaseBranch(updates.baseBranch);
+          if (baseBranch !== undefined) {
+            project.baseBranch = baseBranch;
+          } else {
+            delete project.baseBranch;
+          }
+        }
+        if (updates.branchPrefix !== undefined)
+          project.branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
+        if (updates.deleteBranchOnClose !== undefined)
+          project.deleteBranchOnClose = updates.deleteBranchOnClose;
+      }
       if (
-        updates.defaultTaskGitIsolation !== undefined ||
-        updates.defaultDirectMode !== undefined
+        getProjectMode(project) === 'git' &&
+        (updates.defaultTaskGitIsolation !== undefined || updates.defaultDirectMode !== undefined)
       ) {
         const gitIsolation = getProjectDefaultTaskGitIsolation({
           defaultDirectMode: updates.defaultDirectMode ?? project.defaultDirectMode,
@@ -139,11 +159,17 @@ export function updateProject(
 }
 
 export function getProjectBaseBranch(projectId: string): string | undefined {
-  return normalizeBaseBranch(getProject(projectId)?.baseBranch);
+  const project = getProject(projectId);
+  if (getProjectMode(project) === 'non-git') {
+    return undefined;
+  }
+
+  return normalizeBaseBranch(project?.baseBranch);
 }
 
 export function getProjectBranchPrefix(projectId: string): string {
-  const raw = getProject(projectId)?.branchPrefix ?? 'task';
+  const project = getProject(projectId);
+  const raw = getProjectMode(project) === 'non-git' ? 'task' : (project?.branchPrefix ?? 'task');
   return sanitizeBranchPrefix(raw);
 }
 

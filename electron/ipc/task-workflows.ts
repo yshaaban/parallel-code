@@ -30,13 +30,14 @@ import { clearTaskCommandLeaseForTask } from './task-command-leases.js';
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 import {
   createCurrentBranchTask,
+  createNonGitTask,
   createTask,
   deleteTask,
   importExistingWorktreeTask,
 } from './tasks.js';
 import { getMainBranch } from './git.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
-import type { TaskGitIsolationMode } from '../../src/store/types.js';
+import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js';
 
 export interface TaskWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -54,6 +55,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   env: unknown;
   isShell?: boolean;
   onOutput: { __CHANNEL_ID__: string };
+  projectMode?: ProjectMode;
   resumeOnStart?: boolean;
   rows: number;
   taskId: string;
@@ -61,12 +63,13 @@ export interface SpawnTaskAgentWorkflowRequest {
 
 export interface CreateTaskWorkflowRequest {
   baseBranch?: string;
-  branchPrefix: string;
+  branchPrefix?: string;
   existingWorktreePath?: string;
   gitIsolation?: TaskGitIsolationMode;
   githubUrl?: string;
   name: string;
   projectId: string;
+  projectMode?: ProjectMode;
   projectRoot: string;
   stepsTracking?: boolean;
   symlinkDirs: string[];
@@ -83,6 +86,7 @@ export interface DeleteTaskWorkflowRequest {
 
 export interface CleanupTaskRuntimeWorkflowRequest {
   agentIds: string[];
+  projectMode?: ProjectMode;
   removeTaskState?: boolean;
   taskId: string;
   worktreePath?: string;
@@ -161,7 +165,7 @@ export function syncTaskWorkflowWorktreesFromSavedState(savedJson: string): void
 
   const parsed = parsePersistedTaskLookupState(savedJson);
   for (const task of Object.values(parsed.tasks)) {
-    if (!task.id || !task.worktreePath) {
+    if (task.projectMode === 'non-git' || !task.id || !task.worktreePath) {
       continue;
     }
 
@@ -322,6 +326,34 @@ function registerCreatedTaskRuntime(
   scheduleTaskReviewSignalsRefresh(result.id);
 }
 
+function registerCreatedNonGitTaskRuntime(
+  request: CreateTaskWorkflowRequest,
+  result: CreatedTaskRuntimeMetadata,
+): void {
+  registerTaskStepsMetadata({
+    taskId: result.id,
+    worktreePath: result.worktree_path,
+    ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
+  });
+}
+
+function createManagedWorktreeTask(
+  request: CreateTaskWorkflowRequest,
+): ReturnType<typeof createTask> {
+  const branchPrefix = request.branchPrefix ?? 'task';
+  if (request.baseBranch === undefined) {
+    return createTask(request.name, request.projectRoot, request.symlinkDirs, branchPrefix);
+  }
+
+  return createTask(
+    request.name,
+    request.projectRoot,
+    request.symlinkDirs,
+    branchPrefix,
+    request.baseBranch,
+  );
+}
+
 export function stopTaskWorktreeWatchers(taskId: string): void {
   stopPlanWatcher(taskId);
   stopTaskGitStatusWatcher(taskId);
@@ -351,7 +383,7 @@ export function cleanupTaskRuntimeWorkflow(
   removeTaskPorts(request.taskId);
   removeTaskContainerPreviewTargets(request.taskId);
   removeTaskWorktreeIdentity(request.taskId);
-  if (typeof request.worktreePath === 'string') {
+  if (request.projectMode !== 'non-git' && typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
   }
 
@@ -402,7 +434,7 @@ export function spawnTaskAgentWorkflow(
     onOutput: request.onOutput,
   });
 
-  if (request.isShell || !request.cwd) {
+  if (request.isShell || !request.cwd || request.projectMode === 'non-git') {
     return attachedExistingSession;
   }
 
@@ -416,8 +448,15 @@ export async function createTaskWorkflow(
 ): Promise<
   | (Awaited<ReturnType<typeof createTask>> & { base_branch: string })
   | Awaited<ReturnType<typeof createCurrentBranchTask>>
+  | ReturnType<typeof createNonGitTask>
   | Awaited<ReturnType<typeof importExistingWorktreeTask>>
 > {
+  if (request.projectMode === 'non-git') {
+    const result = createNonGitTask(request.projectRoot);
+    registerCreatedNonGitTaskRuntime(request, result);
+    return result;
+  }
+
   if (request.gitIsolation === 'current-branch') {
     assertWorktreeIdentityAvailable(undefined, request.projectRoot);
     const result = await createCurrentBranchTask(request.projectRoot, request.baseBranch);
@@ -444,12 +483,7 @@ export async function createTaskWorkflow(
     return result;
   }
 
-  const result = await createTask(
-    request.name,
-    request.projectRoot,
-    request.symlinkDirs,
-    request.branchPrefix,
-  );
+  const result = await createManagedWorktreeTask(request);
   const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
   registerCreatedTaskRuntime(context, request, result, baseBranch);
 

@@ -196,6 +196,7 @@ describe('browser IPC routes', () => {
       branchName: 'feature/task-1',
       directMode: false,
       folderName: 'task-1',
+      gitIsolation: 'existing-worktree',
       worktreeOwnership: 'external',
     });
     expect(broadcastControl).toHaveBeenCalledWith({

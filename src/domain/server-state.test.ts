@@ -444,11 +444,42 @@ describe('server state helpers', () => {
           branchName: 'feature/task-1',
           directMode: false,
           folderName: null,
+          gitIsolation: 'worktree',
           lastPrompt: null,
+          projectMode: 'git',
           worktreeOwnership: 'managed',
         },
       }),
     ).toBe(true);
+    expect(
+      isRemoteAgent({
+        ...remoteAgent,
+        taskMeta: {
+          agentDefId: null,
+          agentDefName: null,
+          branchName: null,
+          directMode: false,
+          folderName: 'non-git-project',
+          gitIsolation: 'current-branch',
+          lastPrompt: null,
+          projectMode: 'non-git',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isRemoteAgent({
+        ...remoteAgent,
+        taskMeta: {
+          agentDefId: null,
+          agentDefName: null,
+          branchName: null,
+          directMode: false,
+          folderName: null,
+          gitIsolation: 'detached',
+          lastPrompt: null,
+        },
+      }),
+    ).toBe(false);
   });
 
   it('exposes explicit remote-agent lifecycle predicates', () => {

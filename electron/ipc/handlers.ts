@@ -10,6 +10,7 @@ import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js
 import { createTaskContainerIpcHandlers } from './task-container-handlers.js';
 import { createTaskReviewSignalsIpcHandlers } from './task-review-signals-handlers.js';
 import { createTaskStepsIpcHandlers } from './task-steps-handlers.js';
+import { createUpdateIpcHandlers } from './update-handlers.js';
 import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
 import { syncTaskReviewSignalsFromSavedState } from './task-review-signals.js';
@@ -27,6 +28,7 @@ export type {
   IpcHandler,
   ShellController,
   WindowController,
+  UpdateController,
 } from './handler-context.js';
 
 export type IpcHandlerMap = Partial<Record<IPC, IpcHandler>>;
@@ -56,6 +58,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
     ...createTaskContainerIpcHandlers(context),
     ...createTaskPortIpcHandlers(),
     ...createNotificationIpcHandlers(context),
+    ...createUpdateIpcHandlers(context),
     ...createSystemIpcHandlers(context, {
       getTaskName: taskRegistry.getTaskName,
       getTaskMetadata: taskRegistry.getTaskMetadata,

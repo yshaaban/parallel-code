@@ -73,7 +73,8 @@ Parallel Code is best understood as one application with three runtime shells ar
 
 All three shells ultimately operate on the same underlying concepts:
 
-- a `Project` is a repo/worktree root plus defaults
+- a `Project` is a repo/worktree root plus defaults; `Project.projectMode` explicitly distinguishes
+  git projects from non-git projects when git-owned workflows are unavailable
 - `Project.containerConfig` is optional repo-scoped configuration for task-owned container
   environments; it is durable project truth, not live runtime state
 - a `Task` is the user-facing unit of work
@@ -912,6 +913,7 @@ A project is the persistent repo-level configuration:
 
 - path
 - display name
+- project mode, defaulting to git when omitted
 - branch prefix
 - delete-branch defaults
 - default direct mode
@@ -930,6 +932,7 @@ A task is the main desktop-level unit. It carries:
 - branch name
 - worktree path
 - agent IDs
+- selected agent ID, which is a projection hint for prompt and terminal targeting
 - shell agent IDs
 - notes
 - prompt state

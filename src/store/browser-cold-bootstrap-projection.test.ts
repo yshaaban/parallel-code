@@ -182,6 +182,48 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.peerSessions).toEqual({});
   });
 
+  it('hydrates every active multi-agent task terminal during browser cold bootstrap', () => {
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        projects: [],
+        taskOrder: ['task-1'],
+        tasks: {
+          'task-1': {
+            agentDefs: [
+              createTestAgentDef({ id: 'claude', name: 'Claude' }),
+              createTestAgentDef({ id: 'codex', name: 'Codex' }),
+            ],
+            agentIds: ['agent-1', 'agent-2'],
+            agentDef: createTestAgentDef({ id: 'claude', name: 'Claude' }),
+            branchName: 'feature/task-1',
+            id: 'task-1',
+            lastPrompt: '',
+            name: 'Task 1',
+            notes: '',
+            projectId: 'project-1',
+            selectedAgentId: 'agent-2',
+            shellCount: 0,
+            worktreePath: '/tmp/project/task-1',
+          },
+        },
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
+    expect(projection.tasks['task-1']?.savedAgentDefs?.map((agentDef) => agentDef.id)).toEqual([
+      'claude',
+      'codex',
+    ]);
+    expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1', 'agent-2']);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+    expect(store.agents['agent-1']?.def.id).toBe('claude');
+    expect(store.agents['agent-2']?.def.id).toBe('codex');
+  });
+
   it('resets local terminal typography settings during browser cold bootstrap', () => {
     const initialStore = createInitialAppStore();
     const projection = buildBrowserColdBootstrapProjectionFromJson(

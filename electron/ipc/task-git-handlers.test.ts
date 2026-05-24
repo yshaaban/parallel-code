@@ -9,6 +9,7 @@ const {
   getBranchCommitHistoryMock,
   getFileDiffFromBranchMock,
   getGitRepoRootMock,
+  listBranchesMock,
   listImportableWorktreesMock,
   isTaskCommandLeaseHeldMock,
 } = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const {
   getBranchCommitHistoryMock: vi.fn(),
   getFileDiffFromBranchMock: vi.fn(),
   getGitRepoRootMock: vi.fn(),
+  listBranchesMock: vi.fn(),
   listImportableWorktreesMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
 }));
@@ -39,6 +41,7 @@ vi.mock('./git.js', async () => {
     getBranchCommitHistory: getBranchCommitHistoryMock,
     getFileDiffFromBranch: getFileDiffFromBranchMock,
     getGitRepoRoot: getGitRepoRootMock,
+    listBranches: listBranchesMock,
     listImportableWorktrees: listImportableWorktreesMock,
   };
 });
@@ -98,6 +101,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       agentDefName: 'Codex CLI',
       branchName: 'task/auth',
       directMode: false,
+      gitIsolation: 'worktree',
       taskName: 'Auth Task',
       worktreePath: '/tmp/project/.worktrees/task-auth',
       worktreeOwnership: 'managed',
@@ -149,6 +153,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       agentDefName: 'Codex CLI',
       branchName: 'personal/main',
       directMode: true,
+      gitIsolation: 'current-branch',
       taskName: 'Direct Task',
       worktreePath: '/tmp/project',
       worktreeOwnership: 'managed',
@@ -201,6 +206,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       agentDefName: 'Codex CLI',
       branchName: 'task/imported',
       directMode: false,
+      gitIsolation: 'existing-worktree',
       taskName: 'Imported Task',
       worktreePath: '/tmp/imported-worktree',
       worktreeOwnership: 'external',
@@ -212,6 +218,83 @@ describe('createTaskAndGitIpcHandlers', () => {
       base_branch: 'main',
       git_isolation: 'existing-worktree',
     });
+  });
+
+  it('routes non-git task creation without git ownership metadata', async () => {
+    createTaskWorkflowMock.mockResolvedValue({
+      id: 'task-4',
+      branch_name: '',
+      project_mode: 'non-git',
+      worktree_path: '/tmp/folder',
+    });
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    const result = await handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      name: 'Folder Task',
+      projectId: 'project-1',
+      projectMode: 'non-git',
+      projectRoot: '/tmp/folder',
+      symlinkDirs: [],
+    });
+
+    expect(createTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        projectMode: 'non-git',
+      }),
+    );
+    expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-4', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: '',
+      directMode: false,
+      projectMode: 'non-git',
+      taskName: 'Folder Task',
+      worktreePath: '/tmp/folder',
+      worktreeOwnership: null,
+    });
+    expect(result).toEqual({
+      id: 'task-4',
+      branch_name: '',
+      project_mode: 'non-git',
+      worktree_path: '/tmp/folder',
+    });
+  });
+
+  it('rejects git-only fields on non-git task creation', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateTask]?.({
+        baseBranch: 'main',
+        name: 'Bad Folder Task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+        projectRoot: '/tmp/folder',
+        symlinkDirs: [],
+      }),
+    ).rejects.toThrow('baseBranch is not valid for non-git tasks');
+    await expect(
+      handlers[IPC.CreateTask]?.({
+        branchPrefix: 'task',
+        name: 'Bad Folder Task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+        projectRoot: '/tmp/folder',
+        symlinkDirs: [],
+      }),
+    ).rejects.toThrow('branchPrefix is not valid for non-git tasks');
+
+    expect(createTaskWorkflowMock).not.toHaveBeenCalled();
   });
 
   it('rejects malformed branch prefixes at the task creation boundary', async () => {
@@ -381,6 +464,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     handlers[IPC.CleanupTaskRuntime]?.({
       agentIds: ['agent-1'],
       controllerId: 'client-1',
+      projectMode: 'non-git',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/.worktrees/task-auth',
@@ -388,6 +472,7 @@ describe('createTaskAndGitIpcHandlers', () => {
 
     expect(cleanupTaskRuntimeWorkflowMock).toHaveBeenCalledWith({
       agentIds: ['agent-1'],
+      projectMode: 'non-git',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/.worktrees/task-auth',
@@ -498,6 +583,44 @@ describe('createTaskAndGitIpcHandlers', () => {
       baseBranch: 'main',
       registeredWorktreePaths: ['/tmp/project/.worktrees/registered'],
     });
+  });
+
+  it('registers the branch list handler through the git transport seam', async () => {
+    listBranchesMock.mockResolvedValue({
+      branches: [
+        {
+          current: false,
+          local: true,
+          name: 'main',
+          remote: true,
+        },
+      ],
+      defaultBranch: 'main',
+      generatedAt: 123,
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.ListBranches]?.({
+        projectRoot: '/tmp/project',
+      }),
+    ).resolves.toEqual({
+      branches: [
+        {
+          current: false,
+          local: true,
+          name: 'main',
+          remote: true,
+        },
+      ],
+      defaultBranch: 'main',
+      generatedAt: 123,
+    });
+
+    expect(listBranchesMock).toHaveBeenCalledWith('/tmp/project');
   });
 
   it('registers the branch commit history handler through the git transport seam', async () => {

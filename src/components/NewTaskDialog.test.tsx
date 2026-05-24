@@ -11,6 +11,7 @@ import {
 
 const {
   createCurrentBranchTaskMock,
+  createExistingWorktreeTaskMock,
   createTaskMock,
   hasCurrentBranchTaskMock,
   invokeMock,
@@ -19,6 +20,7 @@ const {
   updateProjectMock,
 } = vi.hoisted(() => ({
   createCurrentBranchTaskMock: vi.fn(),
+  createExistingWorktreeTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
   hasCurrentBranchTaskMock: vi.fn(() => false),
   invokeMock: vi.fn(),
@@ -64,6 +66,8 @@ vi.mock('../store/store', async () => {
     toggleNewTaskDialog: toggleNewTaskDialogMock,
     getProject: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId) ?? null,
+    getProjectMode: (project: { projectMode?: 'git' | 'non-git' } | null | undefined) =>
+      project?.projectMode === 'non-git' ? 'non-git' : 'git',
     getProjectPath: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.path,
     getProjectBaseBranch: (projectId: string) =>
@@ -80,6 +84,7 @@ vi.mock('../store/store', async () => {
 vi.mock('../app/task-workflows', () => ({
   createCurrentBranchTask: createCurrentBranchTaskMock,
   createDirectTask: createCurrentBranchTaskMock,
+  createExistingWorktreeTask: createExistingWorktreeTaskMock,
   createTask: createTaskMock,
 }));
 
@@ -116,7 +121,30 @@ describe('NewTaskDialog', () => {
         skip_permissions_args: ['--yolo'],
       }),
     ]);
-    invokeMock.mockResolvedValue([]);
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [
+            {
+              current: true,
+              local: true,
+              name: 'main',
+              remote: true,
+            },
+            {
+              current: false,
+              local: true,
+              name: 'release/main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+
+      return Promise.resolve([]);
+    });
   });
 
   afterEach(() => {
@@ -392,6 +420,24 @@ describe('NewTaskDialog', () => {
     const user = userEvent.setup();
     createCurrentBranchTaskMock.mockResolvedValue('task-1');
     setStore('projects', [createTestProject({ baseBranch: 'personal/main', path: '/repo' })]);
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [
+            {
+              current: false,
+              local: true,
+              name: 'personal/main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'personal/main',
+          generatedAt: 123,
+        });
+      }
+
+      return Promise.resolve([]);
+    });
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
     const currentBranchCheckbox = await screen.findByRole('checkbox', {
@@ -414,6 +460,63 @@ describe('NewTaskDialog', () => {
           baseBranch: 'personal/main',
           name: 'Ship it',
           projectId: 'project-1',
+        }),
+      );
+    });
+  });
+
+  it('passes the selected base branch through managed task creation', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-1');
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const branchSelect = (await screen.findByLabelText('Base branch')) as HTMLSelectElement;
+    await user.selectOptions(branchSelect, 'release/main');
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    await user.type(taskNameInput, 'Ship it');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseBranch: 'release/main',
+          name: 'Ship it',
+          projectId: 'project-1',
+        }),
+      );
+    });
+  });
+
+  it('creates non-git project tasks without branch controls', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-1');
+    setStore('projects', [
+      createTestProject({
+        path: '/tmp/folder',
+        projectMode: 'non-git',
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByLabelText('Base branch')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Work on current branch/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Use existing worktree/i })).toBeNull();
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    await user.type(taskNameInput, 'Inspect folder');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Inspect folder',
+          projectId: 'project-1',
+          projectMode: 'non-git',
         }),
       );
     });

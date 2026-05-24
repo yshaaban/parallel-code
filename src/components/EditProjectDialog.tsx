@@ -21,6 +21,7 @@ import {
   isProjectMissing,
   saveCurrentRuntimeState,
 } from '../store/store';
+import { isGitProject } from '../store/project-mode';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { theme } from '../lib/theme';
 import {
@@ -33,6 +34,8 @@ interface EditProjectDialogProps {
   project: Project | null;
   onClose: () => void;
 }
+
+type ProjectUpdates = Parameters<typeof updateProject>[1];
 
 function hueFromColor(color: string): number {
   const match = color.match(/hsl\((\d+)/);
@@ -107,19 +110,25 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
   async function handleSave(): Promise<void> {
     if (!canSave() || !props.project || saving()) return;
     const sanitizedPrefix = sanitizeBranchPrefix(branchPrefix());
-    setSaving(true);
-    try {
-      updateProject(props.project.id, {
-        name: name().trim(),
-        color: `hsl(${selectedHue()}, 70%, 75%)`,
+    const updates: ProjectUpdates = {
+      name: name().trim(),
+      color: `hsl(${selectedHue()}, 70%, 75%)`,
+      terminalBookmarks: bookmarks(),
+    };
+    if (isGitProject(props.project)) {
+      Object.assign(updates, {
         baseBranch: baseBranch(),
         branchPrefix: sanitizedPrefix,
         deleteBranchOnClose: deleteBranchOnClose(),
         ...buildProjectGitIsolationFields({
           defaultTaskGitIsolation: defaultCurrentBranchMode() ? 'current-branch' : 'worktree',
         }),
-        terminalBookmarks: bookmarks(),
       });
+    }
+
+    setSaving(true);
+    try {
+      updateProject(props.project.id, updates);
       await saveCurrentRuntimeState();
       props.onClose();
     } finally {
@@ -254,80 +263,83 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
               />
             </div>
 
-            {/* Branch prefix */}
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <SectionLabel as="label">Base branch</SectionLabel>
-              <input
-                class="input-field"
-                type="text"
-                value={baseBranch()}
-                onInput={(e) => setBaseBranch(e.currentTarget.value)}
-                onKeyDown={handleSaveOnEnter}
-                placeholder="Auto-detect from Git (for example: main, trunk, personal/main)"
-                style={{
-                  background: theme.bgInput,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  padding: '10px 14px',
-                  color: theme.fg,
-                  ...typography.monoUi,
-                  outline: 'none',
-                }}
-              />
-              <div
-                style={{
-                  ...typography.meta,
-                  color: theme.fgSubtle,
-                }}
-              >
-                Optional override for the repo&apos;s canonical base branch. Leave blank to use Git
-                auto-detection.
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <SectionLabel as="label">Branch prefix</SectionLabel>
-              <input
-                class="input-field"
-                type="text"
-                value={branchPrefix()}
-                onInput={(e) => setBranchPrefix(e.currentTarget.value)}
-                onKeyDown={handleSaveOnEnter}
-                placeholder="task"
-                style={{
-                  background: theme.bgInput,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  padding: '10px 14px',
-                  color: theme.fg,
-                  outline: 'none',
-                  ...typography.monoUi,
-                }}
-              />
-              <Show when={branchPrefix().trim()}>
-                <div
-                  style={{
-                    color: theme.fgSubtle,
-                    padding: '2px 2px 0',
-                    display: 'flex',
-                    'align-items': 'center',
-                    gap: '6px',
-                    ...typography.monoMeta,
-                  }}
-                >
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 16 16"
-                    fill="currentColor"
-                    style={{ 'flex-shrink': '0' }}
+            <Show when={isGitProject(project())}>
+              <>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+                  <SectionLabel as="label">Base branch</SectionLabel>
+                  <input
+                    class="input-field"
+                    type="text"
+                    value={baseBranch()}
+                    onInput={(e) => setBaseBranch(e.currentTarget.value)}
+                    onKeyDown={handleSaveOnEnter}
+                    placeholder="Auto-detect from Git (for example: main, trunk, personal/main)"
+                    style={{
+                      background: theme.bgInput,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      padding: '10px 14px',
+                      color: theme.fg,
+                      ...typography.monoUi,
+                      outline: 'none',
+                    }}
+                  />
+                  <div
+                    style={{
+                      ...typography.meta,
+                      color: theme.fgSubtle,
+                    }}
                   >
-                    <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
-                  </svg>
-                  {sanitizeBranchPrefix(branchPrefix())}/{toBranchName('example-branch-name')}
+                    Optional override for the repo&apos;s canonical base branch. Leave blank to use
+                    Git auto-detection.
+                  </div>
                 </div>
-              </Show>
-            </div>
+
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+                  <SectionLabel as="label">Branch prefix</SectionLabel>
+                  <input
+                    class="input-field"
+                    type="text"
+                    value={branchPrefix()}
+                    onInput={(e) => setBranchPrefix(e.currentTarget.value)}
+                    onKeyDown={handleSaveOnEnter}
+                    placeholder="task"
+                    style={{
+                      background: theme.bgInput,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      padding: '10px 14px',
+                      color: theme.fg,
+                      outline: 'none',
+                      ...typography.monoUi,
+                    }}
+                  />
+                  <Show when={branchPrefix().trim()}>
+                    <div
+                      style={{
+                        color: theme.fgSubtle,
+                        padding: '2px 2px 0',
+                        display: 'flex',
+                        'align-items': 'center',
+                        gap: '6px',
+                        ...typography.monoMeta,
+                      }}
+                    >
+                      <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 16 16"
+                        fill="currentColor"
+                        style={{ 'flex-shrink': '0' }}
+                      >
+                        <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
+                      </svg>
+                      {sanitizeBranchPrefix(branchPrefix())}/{toBranchName('example-branch-name')}
+                    </div>
+                  </Show>
+                </div>
+              </>
+            </Show>
 
             {/* Color palette */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
@@ -361,45 +373,49 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
               </div>
             </div>
 
-            {/* Merge cleanup preference */}
-            <label
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '8px',
-                cursor: 'pointer',
-                color: theme.fg,
-                ...typography.ui,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={deleteBranchOnClose()}
-                onChange={(e) => setDeleteBranchOnClose(e.currentTarget.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              Always delete branch and worklog on merge
-            </label>
+            <Show when={isGitProject(project())}>
+              <>
+                {/* Merge cleanup preference */}
+                <label
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '8px',
+                    cursor: 'pointer',
+                    color: theme.fg,
+                    ...typography.ui,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={deleteBranchOnClose()}
+                    onChange={(e) => setDeleteBranchOnClose(e.currentTarget.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  Always delete branch and worklog on merge
+                </label>
 
-            {/* Default current-branch preference */}
-            <label
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '8px',
-                cursor: 'pointer',
-                color: theme.fg,
-                ...typography.ui,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={defaultCurrentBranchMode()}
-                onChange={(e) => setDefaultCurrentBranchMode(e.currentTarget.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              Default new tasks to the current branch
-            </label>
+                {/* Default current-branch preference */}
+                <label
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '8px',
+                    cursor: 'pointer',
+                    color: theme.fg,
+                    ...typography.ui,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={defaultCurrentBranchMode()}
+                    onChange={(e) => setDefaultCurrentBranchMode(e.currentTarget.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  Default new tasks to the current branch
+                </label>
+              </>
+            </Show>
 
             {/* Command Bookmarks */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>

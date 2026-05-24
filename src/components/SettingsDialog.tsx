@@ -1,7 +1,17 @@
-import { For, Show, createEffect, createMemo, createUniqueId, type JSX } from 'solid-js';
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  type JSX,
+} from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { IPC } from '../../electron/ipc/channels';
 import { isElectronRuntime } from '../lib/browser-auth';
+import { invoke } from '../lib/ipc';
 import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from '../lib/fonts';
 import { HYDRA_STARTUP_MODES, isHydraStartupMode, type HydraStartupMode } from '../lib/hydra';
 import { LOOK_PRESETS } from '../lib/look';
@@ -13,6 +23,7 @@ import {
 } from '../app/task-notification-capabilities';
 import { setHydraCommand } from '../app/hydra-settings';
 import type { TaskNotificationCapability } from '../domain/task-notification';
+import type { AppUpdateStatus } from '../domain/app-update';
 import {
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
@@ -122,6 +133,8 @@ function getTaskNotificationSettingState(
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const titleId = createUniqueId();
+  const [updateStatus, setUpdateStatus] = createSignal<AppUpdateStatus | null>(null);
+  const [updateCheckPending, setUpdateCheckPending] = createSignal(false);
   const fonts = createMemo<TerminalFont[]>(() => {
     const available = getAvailableTerminalFonts();
     // Always include the currently selected font so it stays visible even if detection misses it
@@ -144,7 +157,37 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     }
 
     void refreshTaskNotificationCapability(isElectronRuntime());
+    void refreshUpdateStatus();
   });
+
+  async function refreshUpdateStatus(): Promise<void> {
+    const status = await invoke(IPC.GetUpdateStatus, undefined).catch(() => null);
+    setUpdateStatus(status);
+  }
+
+  async function handleCheckForUpdates(): Promise<void> {
+    setUpdateCheckPending(true);
+    try {
+      const status = await invoke(IPC.CheckForUpdates, undefined).catch(() => null);
+      if (status) {
+        setUpdateStatus(status);
+      }
+    } finally {
+      setUpdateCheckPending(false);
+    }
+  }
+
+  function getUpdateStatusDescription(status: AppUpdateStatus | null): string {
+    if (!status) {
+      return 'Update status has not been loaded yet.';
+    }
+
+    if (status.reason === 'browser') {
+      return 'Updates are managed by the browser/server deployment.';
+    }
+
+    return 'In-app updates are not configured for this Electron build.';
+  }
 
   async function handleTaskNotificationsChange(enabled: boolean): Promise<void> {
     setTaskNotificationsEnabled(enabled);
@@ -458,6 +501,48 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             </span>
           </div>
         </label>
+      </div>
+
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+        <SectionLabel>Updates</SectionLabel>
+        <div
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'space-between',
+            gap: '12px',
+            padding: '8px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>Update status</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
+              {getUpdateStatusDescription(updateStatus())}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={updateCheckPending()}
+            onClick={() => {
+              void handleCheckForUpdates();
+            }}
+            style={{
+              background: theme.taskPanelBg,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '8px',
+              color: theme.fg,
+              cursor: updateCheckPending() ? 'not-allowed' : 'pointer',
+              opacity: updateCheckPending() ? 0.55 : 1,
+              padding: '6px 10px',
+              ...typography.metaStrong,
+            }}
+          >
+            {updateCheckPending() ? 'Checking...' : 'Check'}
+          </button>
+        </div>
       </div>
 
       <KeybindingsSettingsSection />

@@ -23,9 +23,17 @@ function parsePersistedProjectLookup(value: unknown): PersistedProjectLookup | n
     return null;
   }
 
-  const baseBranch =
-    typeof value.baseBranch === 'string' ? normalizeBaseBranch(value.baseBranch) : undefined;
   if (typeof value.id === 'string' && typeof value.path === 'string') {
+    if (value.projectMode === 'non-git') {
+      return {
+        id: value.id,
+        path: value.path,
+        projectMode: 'non-git',
+      };
+    }
+
+    const baseBranch =
+      typeof value.baseBranch === 'string' ? normalizeBaseBranch(value.baseBranch) : undefined;
     const project: PersistedProjectLookup = {
       ...(baseBranch !== undefined ? { baseBranch } : {}),
       id: value.id,
@@ -53,13 +61,7 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
 
   const task: PersistedTaskLookup = {};
   let hasKnownField = false;
-  const baseBranch = normalizeTaskBaseBranch({
-    baseBranch: typeof value.baseBranch === 'string' ? value.baseBranch : undefined,
-  });
-  if (baseBranch !== undefined) {
-    task.baseBranch = baseBranch;
-    hasKnownField = true;
-  }
+  const isNonGitTask = value.projectMode === 'non-git';
   if (typeof value.branchName === 'string') {
     task.branchName = value.branchName;
     hasKnownField = true;
@@ -76,6 +78,10 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
     task.projectId = value.projectId;
     hasKnownField = true;
   }
+  if (isNonGitTask) {
+    task.projectMode = 'non-git';
+    hasKnownField = true;
+  }
   if (typeof value.githubUrl === 'string') {
     task.githubUrl = value.githubUrl;
     hasKnownField = true;
@@ -85,20 +91,29 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
     hasKnownField = true;
   }
 
-  if (
-    value.gitIsolation === 'worktree' ||
-    value.gitIsolation === 'current-branch' ||
-    value.gitIsolation === 'existing-worktree'
-  ) {
-    task.gitIsolation = value.gitIsolation;
-    hasKnownField = true;
-  } else if (value.directMode === true) {
-    task.gitIsolation = 'current-branch';
-    hasKnownField = true;
-  }
-  if (value.worktreeOwnership === 'managed' || value.worktreeOwnership === 'external') {
-    task.worktreeOwnership = value.worktreeOwnership;
-    hasKnownField = true;
+  if (!isNonGitTask) {
+    const baseBranch = normalizeTaskBaseBranch({
+      baseBranch: typeof value.baseBranch === 'string' ? value.baseBranch : undefined,
+    });
+    if (baseBranch !== undefined) {
+      task.baseBranch = baseBranch;
+      hasKnownField = true;
+    }
+    if (
+      value.gitIsolation === 'worktree' ||
+      value.gitIsolation === 'current-branch' ||
+      value.gitIsolation === 'existing-worktree'
+    ) {
+      task.gitIsolation = value.gitIsolation;
+      hasKnownField = true;
+    } else if (value.directMode === true) {
+      task.gitIsolation = 'current-branch';
+      hasKnownField = true;
+    }
+    if (value.worktreeOwnership === 'managed' || value.worktreeOwnership === 'external') {
+      task.worktreeOwnership = value.worktreeOwnership;
+      hasKnownField = true;
+    }
   }
 
   if (task.id === undefined && hasKnownField && taskId.length > 0) {

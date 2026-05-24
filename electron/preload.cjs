@@ -57,6 +57,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_all_file_diffs_from_branch',
   'get_git_repo_root',
   'get_gitignored_dirs',
+  'list_branches',
   'list_importable_worktrees',
   'get_worktree_status',
   'commit_all',
@@ -98,6 +99,11 @@ const ALLOWED_CHANNELS = new Set([
   '__window_resized',
   '__window_moved',
   '__window_close_requested',
+  // Updates
+  'get_update_status',
+  'check_for_updates',
+  'install_update',
+  'update_status_changed',
   // Dialog
   '__dialog_choose',
   '__dialog_confirm',

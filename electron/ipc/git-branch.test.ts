@@ -160,6 +160,46 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
     await expect(detectMainBranch('/repo')).resolves.toBe('main');
   });
 
+  it('ignores configured base branches from non-git project records', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+        return { stdout: 'refs/remotes/origin/main\n' };
+      }
+
+      if (
+        args[0] === 'rev-parse' &&
+        args[1] === '--verify' &&
+        args[2] === 'refs/remotes/origin/main'
+      ) {
+        return { stdout: 'abc123\n' };
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { detectMainBranch, syncConfiguredBaseBranchesFromSavedState } =
+      await import('./git-branch.js');
+
+    await syncConfiguredBaseBranchesFromSavedState(
+      JSON.stringify({
+        projects: [
+          {
+            id: 'project-1',
+            path: '/repo',
+            baseBranch: 'personal/main',
+            projectMode: 'non-git',
+          },
+        ],
+      }),
+    );
+
+    await expect(detectMainBranch('/repo')).resolves.toBe('main');
+  });
+
   it('refreshes a stale origin head before falling back', async () => {
     let symbolicRefCallCount = 0;
 
@@ -328,5 +368,73 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
     const { detectMainBranch } = await import('./git-branch.js');
 
     await expect(detectMainBranch('/repo')).resolves.toBe('main');
+  });
+
+  it('lists local and remote branches with default and current metadata', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+        return { stdout: 'refs/remotes/origin/main\n' };
+      }
+
+      if (args[0] === 'symbolic-ref' && args[1] === '--short' && args[2] === 'HEAD') {
+        return { stdout: 'feature/local\n' };
+      }
+
+      if (
+        args[0] === 'rev-parse' &&
+        args[1] === '--verify' &&
+        args[2] === 'refs/remotes/origin/main'
+      ) {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (args[0] === 'for-each-ref') {
+        return {
+          stdout: [
+            'refs/heads/feature/local\torigin/feature/local',
+            'refs/heads/main\torigin/main',
+            'refs/remotes/origin/HEAD\t',
+            'refs/remotes/origin/main\t',
+            'refs/remotes/origin/feature/remote\t',
+          ].join('\n'),
+        };
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { listBranches } = await import('./git-branch.js');
+
+    await expect(listBranches('/repo')).resolves.toMatchObject({
+      defaultBranch: 'main',
+      branches: [
+        {
+          current: false,
+          local: true,
+          name: 'main',
+          remote: true,
+          remoteRef: 'origin/main',
+          upstream: 'origin/main',
+        },
+        {
+          current: true,
+          local: true,
+          name: 'feature/local',
+          remote: false,
+          upstream: 'origin/feature/local',
+        },
+        {
+          current: false,
+          local: false,
+          name: 'feature/remote',
+          remote: true,
+          remoteRef: 'origin/feature/remote',
+        },
+      ],
+    });
   });
 });

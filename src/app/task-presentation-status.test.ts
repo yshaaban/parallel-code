@@ -673,6 +673,47 @@ describe('task presentation status', () => {
     );
   });
 
+  it('attributes task-step readiness to the selected task agent', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1', 'agent-2'],
+        selectedAgentId: 'agent-2',
+        stepsTracking: true,
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2' }),
+    });
+    setStore('taskStepSummaries', {
+      'task-1': {
+        taskId: 'task-1',
+        trackingEnabled: true,
+        revisionId: 'steps::1',
+        state: 'ready',
+        stepCount: 1,
+        preview: 'Review the selected agent plan',
+        nextAction: 'Review the selected agent plan',
+        latestStep: {
+          summary: 'Waiting for review',
+          status: 'awaiting_review',
+          next: 'Review the selected agent plan',
+          timestamp: '2026-04-17T08:00:00.000Z',
+        },
+        errorMessage: null,
+        updatedAt: 3_000,
+      },
+    });
+
+    expect(getTaskAttentionEntry('task-1')).toEqual(
+      expect.objectContaining({
+        agentId: 'agent-2',
+        reason: 'ready-for-next-step',
+      }),
+    );
+  });
+
   it('keeps active supervision busy instead of promoting awaiting-review task steps', () => {
     resetStoreForTest();
     setStore('tasks', {

@@ -2,6 +2,7 @@ import { createMemo, type Accessor } from 'solid-js';
 
 import { handleTaskPermissionResponse } from '../../app/task-permission-workflows';
 import { store } from '../../store/state';
+import { getSelectedTaskAgentId } from '../../store/task-agent-selection';
 import type { PermissionRequest, Task } from '../../store/types';
 
 interface TaskPanelPermissionControllerOptions {
@@ -90,7 +91,7 @@ export function createTaskPanelPermissionController(
   firstAgentId: Accessor<string>;
   pendingPermissionEntries: Accessor<TaskPermissionRequestEntry[]>;
 } {
-  const firstAgentId = createMemo(() => options.task().agentIds[0] ?? '');
+  const firstAgentId = createMemo(() => getSelectedTaskAgentId(options.task()) ?? '');
   const pendingPermissionEntries = createMemo(() =>
     getPendingTaskPermissionEntries(options.task()),
   );

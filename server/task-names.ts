@@ -4,6 +4,8 @@ import { parseSavedStateTasksRecord } from '../src/domain/saved-state-tasks.js';
 import { isRecord } from '../src/lib/type-guards.js';
 
 type RemoteWorktreeOwnership = NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>;
+type RemoteTaskGitIsolation = NonNullable<RemoteAgentTaskMeta['gitIsolation']>;
+type RemoteTaskProjectMode = NonNullable<RemoteAgentTaskMeta['projectMode']>;
 
 export interface TaskNameRegistry {
   deleteTask: (taskId: string) => void;
@@ -50,9 +52,11 @@ interface SavedStateTask {
   name?: unknown;
   agentDef?: SavedAgentDef;
   branchName?: unknown;
+  gitIsolation?: unknown;
   worktreePath?: unknown;
   directMode?: unknown;
   lastPrompt?: unknown;
+  projectMode?: unknown;
   savedAgentDef?: SavedAgentDef;
   worktreeOwnership?: unknown;
 }
@@ -62,6 +66,8 @@ export interface CreatedTaskRegistryEntry {
   agentDefName?: string | null;
   branchName?: string | null;
   directMode?: boolean;
+  gitIsolation?: RemoteTaskGitIsolation | null;
+  projectMode?: RemoteTaskProjectMode | null;
   taskName?: string | null;
   worktreePath?: string | null;
   worktreeOwnership?: RemoteWorktreeOwnership | null;
@@ -72,7 +78,9 @@ interface TaskMetadataSource {
   agentDefName?: string | null;
   branchName?: string | null;
   directMode?: boolean;
+  gitIsolation?: RemoteTaskGitIsolation | null;
   lastPrompt?: string | null;
+  projectMode?: RemoteTaskProjectMode | null;
   worktreePath?: string | null;
   worktreeOwnership?: RemoteWorktreeOwnership | null;
 }
@@ -81,16 +89,36 @@ function readWorktreeOwnership(value: unknown): RemoteWorktreeOwnership | null {
   return value === 'external' || value === 'managed' ? value : null;
 }
 
+function readGitIsolation(value: unknown): RemoteTaskGitIsolation | null {
+  if (value === 'worktree' || value === 'current-branch' || value === 'existing-worktree') {
+    return value;
+  }
+
+  return null;
+}
+
+function readProjectMode(value: unknown): RemoteTaskProjectMode | null {
+  if (value === 'git' || value === 'non-git') {
+    return value;
+  }
+
+  return null;
+}
+
 function buildTaskMetadata(source: TaskMetadataSource): RemoteAgentTaskMeta {
   const worktreeOwnership = readWorktreeOwnership(source.worktreeOwnership);
+  const gitIsolation = readGitIsolation(source.gitIsolation);
+  const projectMode = readProjectMode(source.projectMode);
   return {
     agentDefId: source.agentDefId ?? null,
     agentDefName: source.agentDefName ?? null,
     branchName: source.branchName ?? null,
-    directMode: source.directMode === true,
+    directMode: gitIsolation === 'current-branch' || source.directMode === true,
     folderName: source.worktreePath ? path.basename(source.worktreePath) : null,
+    ...(gitIsolation !== null ? { gitIsolation } : {}),
     lastPrompt:
       typeof source.lastPrompt === 'string' ? truncateLastPrompt(source.lastPrompt) : null,
+    ...(projectMode !== null ? { projectMode } : {}),
     ...(worktreeOwnership !== null ? { worktreeOwnership } : {}),
   };
 }
@@ -129,9 +157,11 @@ function parseSavedStateTask(value: unknown): SavedStateTask | null {
   return {
     branchName: value.branchName,
     directMode: value.directMode,
+    gitIsolation: value.gitIsolation,
     id: value.id,
     lastPrompt: value.lastPrompt,
     name: value.name,
+    projectMode: value.projectMode,
     worktreeOwnership: value.worktreeOwnership,
     worktreePath: value.worktreePath,
     ...(agentDef ? { agentDef } : {}),
@@ -175,7 +205,9 @@ function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
     agentDefName: readOptionalString(persistedAgentDef?.name),
     branchName: readOptionalString(task.branchName),
     directMode: task.directMode === true,
+    gitIsolation: readGitIsolation(task.gitIsolation),
     lastPrompt: readOptionalString(task.lastPrompt),
+    projectMode: readProjectMode(task.projectMode),
     worktreePath: readOptionalString(task.worktreePath),
     worktreeOwnership: readWorktreeOwnership(task.worktreeOwnership),
   });
@@ -241,6 +273,8 @@ export function createTaskNameRegistry(): TaskNameRegistry {
         agentDefName: task.agentDefName ?? null,
         branchName: task.branchName ?? null,
         directMode: task.directMode === true,
+        gitIsolation: task.gitIsolation ?? null,
+        projectMode: task.projectMode ?? null,
         worktreePath: task.worktreePath ?? null,
         worktreeOwnership: task.worktreeOwnership ?? null,
       }),

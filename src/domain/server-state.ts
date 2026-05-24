@@ -476,7 +476,9 @@ export interface RemoteAgentTaskMeta {
   branchName: string | null;
   directMode: boolean;
   folderName: string | null;
+  gitIsolation?: 'worktree' | 'current-branch' | 'existing-worktree';
   lastPrompt: string | null;
+  projectMode?: 'git' | 'non-git';
   worktreeOwnership?: 'external' | 'managed';
 }
 
@@ -495,6 +497,17 @@ const WORKTREE_OWNERSHIP_VALUES = {
   managed: true,
 } satisfies Record<NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>, true>;
 
+const REMOTE_TASK_GIT_ISOLATION_VALUES = {
+  'current-branch': true,
+  'existing-worktree': true,
+  worktree: true,
+} satisfies Record<NonNullable<RemoteAgentTaskMeta['gitIsolation']>, true>;
+
+const REMOTE_TASK_PROJECT_MODE_VALUES = {
+  git: true,
+  'non-git': true,
+} satisfies Record<NonNullable<RemoteAgentTaskMeta['projectMode']>, true>;
+
 export function isRemoteAgentStatus(value: unknown): value is RemoteAgentStatus {
   return isStringKeyOf(value, RUNNING_REMOTE_AGENT_STATUS);
 }
@@ -510,7 +523,11 @@ function isRemoteAgentTaskMeta(value: unknown): value is RemoteAgentTaskMeta {
     isNullableString(value.branchName) &&
     typeof value.directMode === 'boolean' &&
     isNullableString(value.folderName) &&
+    (value.gitIsolation === undefined ||
+      isStringMember(value.gitIsolation, REMOTE_TASK_GIT_ISOLATION_VALUES)) &&
     isNullableString(value.lastPrompt) &&
+    (value.projectMode === undefined ||
+      isStringMember(value.projectMode, REMOTE_TASK_PROJECT_MODE_VALUES)) &&
     (value.worktreeOwnership === undefined ||
       isStringMember(value.worktreeOwnership, WORKTREE_OWNERSHIP_VALUES))
   );

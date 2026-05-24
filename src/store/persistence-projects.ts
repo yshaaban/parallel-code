@@ -3,7 +3,8 @@ import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { createRandomId } from '../lib/random-id.js';
 import { isRecord } from '../lib/type-guards.js';
 import { isPersistedTask, type LegacyPersistedState } from './persistence-legacy-state.js';
-import { buildProjectGitIsolationFields } from './task-git-isolation.js';
+import { buildProjectModeFields, isNonGitProject } from './project-mode.js';
+import { buildProjectGitIsolationFields, clearProjectGitFields } from './task-git-isolation.js';
 import type { Project } from './types.js';
 
 type PersistedProjectInput = Omit<Project, 'color'> & { color?: string };
@@ -38,6 +39,12 @@ export function parseSharedProjects(raw: LegacyPersistedState): {
     if (!project.color) {
       project.color = randomPastelColor();
     }
+    Object.assign(project, buildProjectModeFields(project));
+    if (isNonGitProject(project)) {
+      clearProjectGitFields(project);
+      continue;
+    }
+
     const baseBranch = normalizeBaseBranch(project.baseBranch);
     if (baseBranch !== undefined) {
       project.baseBranch = baseBranch;
@@ -58,6 +65,7 @@ export function parseSharedProjects(raw: LegacyPersistedState): {
         name,
         path: raw.projectRoot,
         color: randomPastelColor(),
+        ...buildProjectModeFields(undefined),
         ...buildProjectGitIsolationFields(undefined),
       },
     ];

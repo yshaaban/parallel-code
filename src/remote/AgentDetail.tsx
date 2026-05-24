@@ -21,7 +21,7 @@ import {
   AgentMissingDialog,
   ScrollToBottomButton,
 } from './AgentDetailOverlays';
-import { formatRemoteTaskContext } from './agent-presentation';
+import { formatRemoteTaskContext, isRemoteCurrentBranchTask } from './agent-presentation';
 import {
   getRemoteTaskControllerOwnerStatus,
   getRemoteTaskOwnerStatus,
@@ -120,8 +120,9 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     return formatRemoteTaskContext(
       taskMeta?.branchName ?? null,
       taskMeta?.folderName ?? null,
-      taskMeta?.directMode === true,
+      isRemoteCurrentBranchTask(taskMeta),
       taskMeta?.worktreeOwnership ?? null,
+      taskMeta?.projectMode ?? null,
     );
   });
   const ownerStatus = createMemo(() => {

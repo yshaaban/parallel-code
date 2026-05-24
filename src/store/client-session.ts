@@ -29,6 +29,7 @@ import { normalizeSidebarSectionCollapsedState } from './sidebar-section-state';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import { normalizeKeybindings } from './keybindings';
 import { syncTerminalCounter } from './terminals';
+import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
 import type { ClientSessionState, ClientSessionTerminalPanels, PersistedTerminal } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
@@ -172,14 +173,17 @@ function hasClientSessionSelection(selectionId: string | null): selectionId is s
   return Boolean(store.tasks[selectionId] || store.terminals[selectionId]);
 }
 
-function getSelectionAgentId(selectionId: string | null): string | null {
+function getSelectionAgentId(
+  selectionId: string | null,
+  preferredAgentId?: string | null,
+): string | null {
   if (!selectionId) {
     return null;
   }
 
   const task = store.tasks[selectionId];
   if (task) {
-    return task.agentIds[0] ?? task.shellAgentIds[0] ?? null;
+    return getSelectedTaskRuntimeAgentId(task, preferredAgentId);
   }
 
   return store.terminals[selectionId]?.agentId ?? null;
@@ -208,7 +212,7 @@ function reconcileClientSessionSidebarFocus(): void {
 function reconcileClientSessionSelection(): void {
   const activeTaskId = store.activeTaskId;
   if (hasClientSessionSelection(activeTaskId)) {
-    setStore('activeAgentId', getSelectionAgentId(activeTaskId));
+    setStore('activeAgentId', getSelectionAgentId(activeTaskId, store.activeAgentId));
     return;
   }
 

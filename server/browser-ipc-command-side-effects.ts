@@ -34,12 +34,18 @@ type BrowserIpcCommandSideEffectChannel =
   | IPC.PushTask
   | IPC.SaveAppState;
 type CreateTaskGitIsolation = NonNullable<CreateTaskResult['git_isolation']>;
+type CreateTaskProjectMode = NonNullable<CreateTaskResult['project_mode']>;
 
 const CREATE_TASK_GIT_ISOLATION_VALUES = {
   'current-branch': true,
   'existing-worktree': true,
   worktree: true,
 } satisfies Record<CreateTaskGitIsolation, true>;
+
+const CREATE_TASK_PROJECT_MODE_VALUES = {
+  git: true,
+  'non-git': true,
+} satisfies Record<CreateTaskProjectMode, true>;
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -49,6 +55,23 @@ function readCreateTaskGitIsolation(value: unknown): CreateTaskGitIsolation | un
   return typeof value === 'string' && hasOwnKey(CREATE_TASK_GIT_ISOLATION_VALUES, value)
     ? value
     : undefined;
+}
+
+function readCreateTaskProjectMode(value: unknown): CreateTaskProjectMode | undefined {
+  return typeof value === 'string' && hasOwnKey(CREATE_TASK_PROJECT_MODE_VALUES, value)
+    ? value
+    : undefined;
+}
+
+function getCreatedTaskWorktreeOwnership(options: {
+  gitIsolation: CreateTaskGitIsolation | undefined;
+  projectMode: CreateTaskProjectMode | undefined;
+}): 'external' | 'managed' | null {
+  if (options.projectMode === 'non-git') {
+    return null;
+  }
+
+  return options.gitIsolation === 'existing-worktree' ? 'external' : 'managed';
 }
 
 function readOptionalRecord(value: unknown): Record<string, unknown> | null {
@@ -104,6 +127,8 @@ function syncCreatedTask(
     readCreateTaskGitIsolation(created.git_isolation) ??
     readCreateTaskGitIsolation(body?.gitIsolation);
   const branchName = readOptionalString(created.branch_name);
+  const projectMode =
+    readCreateTaskProjectMode(created.project_mode) ?? readCreateTaskProjectMode(body?.projectMode);
   const worktreePath = readOptionalString(created.worktree_path);
   const directMode = gitIsolation === 'current-branch' || body?.directMode === true;
 
@@ -112,9 +137,11 @@ function syncCreatedTask(
     agentDefName: readOptionalString(body?.agentDefName) ?? null,
     branchName: branchName ?? null,
     directMode,
+    gitIsolation: gitIsolation ?? null,
+    projectMode: projectMode ?? null,
     taskName: readOptionalString(body?.name) ?? null,
     worktreePath: worktreePath ?? null,
-    worktreeOwnership: gitIsolation === 'existing-worktree' ? 'external' : 'managed',
+    worktreeOwnership: getCreatedTaskWorktreeOwnership({ gitIsolation, projectMode }),
   });
   context.broadcastControl({
     type: 'task-event',
@@ -132,6 +159,7 @@ function syncDeletedTask(
 ): void {
   const taskId = readOptionalString(body?.taskId);
   const branchName = readOptionalString(body?.branchName);
+  const projectMode = readCreateTaskProjectMode(body?.projectMode);
   const projectRoot = readOptionalString(body?.projectRoot);
   const worktreePath = readOptionalString(body?.worktreePath);
 
@@ -144,6 +172,10 @@ function syncDeletedTask(
       ...(branchName !== undefined ? { branchName } : {}),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
     });
+  }
+
+  if (projectMode === 'non-git') {
+    return;
   }
 
   if (worktreePath !== undefined) {

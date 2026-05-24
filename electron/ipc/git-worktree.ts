@@ -102,6 +102,34 @@ export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeLis
   return parseGitWorktreeList(stdout);
 }
 
+async function gitRefExists(repoRoot: string, refName: string): Promise<boolean> {
+  try {
+    await exec('git', ['rev-parse', '--verify', refName], { cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveWorktreeStartRef(
+  repoRoot: string,
+  baseBranch?: string,
+): Promise<{ exists: boolean; refName: string }> {
+  const startRef = baseBranch || 'HEAD';
+  if (await gitRefExists(repoRoot, startRef)) {
+    return { exists: true, refName: startRef };
+  }
+
+  if (baseBranch) {
+    const originStartRef = `origin/${baseBranch}`;
+    if (await gitRefExists(repoRoot, originStartRef)) {
+      return { exists: true, refName: originStartRef };
+    }
+  }
+
+  return { exists: false, refName: startRef };
+}
+
 /**
  * "Shallow-symlink" a directory: create a real directory at `target` and
  * symlink each entry from `source` into it, EXCEPT entries in `exclude`.
@@ -160,10 +188,8 @@ export async function createWorktree(
     }
   }
 
-  const startRef = baseBranch || 'HEAD';
-  try {
-    await exec('git', ['rev-parse', '--verify', startRef], { cwd: repoRoot });
-  } catch {
+  const startRef = await resolveWorktreeStartRef(repoRoot, baseBranch);
+  if (!startRef.exists) {
     const isEmptyRepo = await exec('git', ['rev-list', '-n1', '--all'], { cwd: repoRoot })
       .then(({ stdout }) => !stdout.trim())
       .catch(() => true);
@@ -174,14 +200,14 @@ export async function createWorktree(
     }
 
     throw new Error(
-      `Branch "${startRef}" does not exist. Please select a valid base branch or create the branch first.`,
+      `Branch "${baseBranch || startRef.refName}" does not exist. Please select a valid base branch or create the branch first.`,
     );
   }
 
   // Create fresh worktree with new branch
   const worktreeArgs = ['worktree', 'add', '-b', branchName, worktreePath];
   if (baseBranch) {
-    worktreeArgs.push(baseBranch);
+    worktreeArgs.push(startRef.refName);
   }
   await exec('git', worktreeArgs, { cwd: repoRoot });
 

@@ -3,6 +3,7 @@ import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 
 interface IconButtonProps {
+  disabled?: boolean;
   icon: string | JSX.Element;
   onClick: (e: MouseEvent) => void;
   title?: string;
@@ -16,16 +17,21 @@ export function IconButton(props: IconButtonProps): JSX.Element {
     <button
       class="icon-btn"
       aria-label={props.title}
+      disabled={props.disabled}
       title={props.title}
       onClick={(e) => {
         e.stopPropagation();
+        if (props.disabled) {
+          return;
+        }
         props.onClick(e);
       }}
       style={{
         background: 'transparent',
         border: `1px solid ${theme.border}`,
         color: theme.fgMuted,
-        cursor: 'pointer',
+        cursor: props.disabled ? 'not-allowed' : 'pointer',
+        opacity: props.disabled ? 0.45 : 1,
         'border-radius': '6px',
         padding: isSm() ? '2px' : '4px',
         ...(isSm() ? typography.metaStrong : typography.uiStrong),

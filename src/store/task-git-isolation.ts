@@ -6,11 +6,13 @@ import type {
   TaskGitIsolationMode,
   WorktreeOwnership,
 } from './types.js';
+import { isNonGitProject } from './project-mode.js';
 
 type ProjectGitIsolationLike =
   | {
       defaultDirectMode?: boolean | undefined;
       defaultTaskGitIsolation?: DefaultTaskGitIsolationMode | undefined;
+      projectMode?: 'git' | 'non-git' | undefined;
     }
   | null
   | undefined;
@@ -19,6 +21,7 @@ type TaskGitIsolationLike =
   | {
       directMode?: boolean;
       gitIsolation?: TaskGitIsolationMode | undefined;
+      projectMode?: 'git' | 'non-git' | undefined;
       worktreeOwnership?: WorktreeOwnership | undefined;
     }
   | null
@@ -59,6 +62,10 @@ export function isExistingWorktreeTask(task: TaskGitIsolationLike): boolean {
 }
 
 export function isManagedWorktreeTask(task: TaskGitIsolationLike): boolean {
+  if (isNonGitProject(task)) {
+    return false;
+  }
+
   if (task?.worktreeOwnership === 'external') {
     return false;
   }
@@ -80,12 +87,24 @@ export function normalizeTaskBaseBranch(task: TaskBaseBranchLike): string | unde
 
 export function buildProjectGitIsolationFields(
   project: ProjectGitIsolationLike,
-): Pick<Project, 'defaultTaskGitIsolation'> & Partial<Pick<Project, 'defaultDirectMode'>> {
+): Partial<Pick<Project, 'defaultDirectMode' | 'defaultTaskGitIsolation'>> {
+  if (isNonGitProject(project)) {
+    return {};
+  }
+
   const defaultTaskGitIsolation = getProjectDefaultTaskGitIsolation(project);
   return {
     defaultTaskGitIsolation,
     ...(defaultTaskGitIsolation === 'current-branch' ? { defaultDirectMode: true } : {}),
   };
+}
+
+export function clearProjectGitFields(project: Project): void {
+  delete project.baseBranch;
+  delete project.branchPrefix;
+  delete project.defaultDirectMode;
+  delete project.defaultTaskGitIsolation;
+  delete project.deleteBranchOnClose;
 }
 
 export function buildTaskGitIsolationFields(

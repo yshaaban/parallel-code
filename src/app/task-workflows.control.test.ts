@@ -7,6 +7,7 @@ import { resetTaskCommandControllerStateForTests } from '../store/task-command-c
 import { clearAgentBusyState, markAgentOutput } from '../store/taskStatus';
 import {
   createTestAgent,
+  createTestAgentDef,
   createTestProject,
   createTestTask,
   resetStoreForTest,
@@ -56,6 +57,7 @@ import {
   collapseTask,
   closeShell,
   closeTask,
+  createTask,
   mergeTask,
   resetTaskLifecycleRuntimeStateForTests,
   retryCloseTask,
@@ -249,6 +251,57 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']?.lastPrompt).toBe('Ship it');
   });
 
+  it('creates non-git tasks without sending git-only creation fields', async () => {
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [
+      createTestProject({
+        id: 'project-1',
+        path: '/tmp/folder',
+        projectMode: 'non-git',
+      }),
+    ]);
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel !== IPC.CreateTask) {
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+
+      return Promise.resolve({
+        id: 'task-non-git',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: '/tmp/folder',
+      });
+    });
+
+    await expect(
+      createTask({
+        agentDef,
+        branchPrefixOverride: 'feature',
+        name: 'Folder task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+        symlinkDirs: [],
+      }),
+    ).resolves.toBe('task-non-git');
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.CreateTask,
+      expect.not.objectContaining({
+        baseBranch: expect.anything(),
+        branchPrefix: expect.anything(),
+        existingWorktreePath: expect.anything(),
+        gitIsolation: expect.anything(),
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.CreateTask,
+      expect.objectContaining({
+        projectMode: 'non-git',
+        projectRoot: '/tmp/folder',
+      }),
+    );
+  });
+
   it('waits longer before submitting multiline bracketed paste prompts', async () => {
     vi.useFakeTimers();
 
@@ -352,6 +405,33 @@ describe('task workflow control leases', () => {
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      IPC.DeleteTask,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+  });
+
+  it('marks non-git runtime cleanup so browser side effects skip git status refresh', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        branchName: '',
+        projectMode: 'non-git',
+        shellAgentIds: ['shell-1'],
+        worktreePath: '/tmp/folder',
+      }),
+    });
+
+    await closeTask('task-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
+      agentIds: ['agent-1', 'shell-1'],
+      controllerId: 'client-self',
+      projectMode: 'non-git',
+      removeTaskState: true,
+      taskId: 'task-1',
+      worktreePath: '/tmp/folder',
     });
     expect(invokeMock).not.toHaveBeenCalledWith(
       IPC.DeleteTask,
@@ -889,6 +969,37 @@ describe('task workflow control leases', () => {
     expect(store.agentSupervision['shell-1']).toBeUndefined();
   });
 
+  it('preserves all task agent definitions when collapsing a multi-agent task', async () => {
+    const codexDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('tasks', 'task-1', 'agentIds', ['agent-1', 'agent-2']);
+    setStore('tasks', 'task-1', 'selectedAgentId', 'agent-2');
+    setStore('agents', 'agent-2', createTestAgent({ def: codexDef, id: 'agent-2' }));
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.selectedAgentId).toBeUndefined();
+    expect(store.tasks['task-1']?.savedAgentDef?.id).toBe('claude');
+    expect(store.tasks['task-1']?.savedAgentDefs?.map((agentDef) => agentDef.id)).toEqual([
+      'claude',
+      'codex',
+    ]);
+  });
+
+  it('does not shift saved multi-agent definitions when an agent record is missing during collapse', async () => {
+    const codexDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('tasks', 'task-1', 'agentIds', ['missing-agent', 'agent-2']);
+    setStore('tasks', 'task-1', 'selectedAgentId', 'agent-2');
+    setStore('agents', 'agent-2', createTestAgent({ def: codexDef, id: 'agent-2' }));
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.selectedAgentId).toBeUndefined();
+    expect(store.tasks['task-1']?.savedAgentDef).toBeUndefined();
+    expect(store.tasks['task-1']?.savedAgentDefs).toBeUndefined();
+  });
+
   it('stops backend task watchers when collapsing a task', async () => {
     await collapseTask('task-1');
 
@@ -1194,6 +1305,34 @@ describe('task workflow control leases', () => {
       resumed: true,
     });
     expect(store.tasks['task-1']?.agentIds[0]).not.toBe('agent-1');
+  });
+
+  it('restores every saved agent definition when recycling a multi-agent collapsed task', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        savedAgentDefs: [
+          createTestAgentDef({ id: 'claude', name: 'Claude' }),
+          createTestAgentDef({ id: 'codex', name: 'Codex' }),
+        ],
+        shellAgentIds: [],
+      }),
+    });
+    setStore('agents', {});
+
+    await uncollapseTask('task-1');
+
+    const restoredTask = store.tasks['task-1'];
+    expect(restoredTask?.agentIds).toHaveLength(2);
+    expect(restoredTask?.selectedAgentId).toBe(restoredTask?.agentIds[0]);
+    expect(restoredTask?.savedAgentDefs).toBeUndefined();
+    expect(restoredTask?.agentIds.map((agentId) => store.agents[agentId]?.def.id)).toEqual([
+      'claude',
+      'codex',
+    ]);
   });
 
   it('no-ops restoring an already-active task', async () => {

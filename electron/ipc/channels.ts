@@ -54,6 +54,7 @@ export enum IPC {
   GetAllFileDiffsFromBranch = 'get_all_file_diffs_from_branch',
   GetGitRepoRoot = 'get_git_repo_root',
   GetGitignoredDirs = 'get_gitignored_dirs',
+  ListBranches = 'list_branches',
   ListImportableWorktrees = 'list_importable_worktrees',
   GetWorktreeStatus = 'get_worktree_status',
   CheckMergeStatus = 'check_merge_status',
@@ -97,6 +98,12 @@ export enum IPC {
   WindowResized = '__window_resized',
   WindowMoved = '__window_moved',
   WindowCloseRequested = '__window_close_requested',
+
+  // Updates
+  GetUpdateStatus = 'get_update_status',
+  CheckForUpdates = 'check_for_updates',
+  InstallUpdate = 'install_update',
+  UpdateStatusChanged = 'update_status_changed',
 
   // Dialog
   DialogChoose = '__dialog_choose',

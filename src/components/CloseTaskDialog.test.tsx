@@ -109,6 +109,25 @@ describe('CloseTaskDialog', () => {
     expect(refreshTaskGitStatusForTaskMock).not.toHaveBeenCalled();
   });
 
+  it('shows non-git close copy without refreshing git status', () => {
+    render(() => (
+      <CloseTaskDialog
+        open
+        task={createTestTask({
+          branchName: '',
+          projectMode: 'non-git',
+          worktreePath: '/tmp/folder',
+        })}
+        onDone={() => {}}
+      />
+    ));
+
+    expect(refreshTaskGitStatusForTaskMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/non-git task/u)).toBeDefined();
+    expect(screen.getByText(/No git operations will be performed/u)).toBeDefined();
+    expect(screen.queryByText(/will be permanently deleted/u)).toBeNull();
+  });
+
   it('skips git status refresh and deletion warning for external worktree tasks', () => {
     render(() => (
       <CloseTaskDialog

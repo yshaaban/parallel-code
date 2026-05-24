@@ -20,6 +20,7 @@ import { typography } from '../../lib/typography';
 import type { ChangedFile } from '../../ipc/types';
 import {
   getProject,
+  getSelectedTaskAgentId,
   isAgentAskingQuestion,
   setReviewPanelOpen,
   setTaskFocusedPanel,
@@ -27,6 +28,7 @@ import {
   store,
   updateTaskNotes,
 } from '../../store/store';
+import { isNonGitProject } from '../../store/project-mode';
 import type { Task } from '../../store/types';
 import { ChangedFilesList } from '../ChangedFilesList';
 import { Dialog } from '../Dialog';
@@ -136,11 +138,26 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     setShowFilesFullscreen(true);
   }
 
+  function selectedAiAgentId(): string | undefined {
+    const currentTask = task();
+    return (
+      getSelectedTaskAgentId(
+        currentTask,
+        store.activeTaskId === currentTask.id ? store.activeAgentId : null,
+      ) ?? undefined
+    );
+  }
+
+  function isNonGitTask(): boolean {
+    return isNonGitProject(task());
+  }
+
   async function openPlanViewer(): Promise<void> {
     const currentTask = task();
+    const agentId = selectedAiAgentId();
     if (currentTask.planRelativePath && currentTask.worktreePath) {
       const opened = await openMarkdownViewer({
-        agentId: currentTask.agentIds[0],
+        agentId,
         relativePath: currentTask.planRelativePath,
         taskId: currentTask.id,
         worktreePath: currentTask.worktreePath,
@@ -151,7 +168,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     }
 
     await openMarkdownViewer({
-      agentId: currentTask.agentIds[0],
+      agentId,
       content: currentTask.planContent ?? '',
       fileName: currentTask.planFileName,
       relativePath: currentTask.planRelativePath,
@@ -161,13 +178,24 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
   }
 
   function toggleReviewPanel(): void {
+    if (isNonGitTask()) {
+      return;
+    }
+
     setReviewPanelOpen(task().id, !reviewOpen());
   }
 
+  function getReviewToggleTitle(): string {
+    if (isNonGitTask()) {
+      return 'Git review is unavailable for non-git projects';
+    }
+
+    return reviewOpen() ? 'Show changed files' : 'Open review';
+  }
+
   const notesPromptText = (): string => task().notes.trim();
-  const primaryAgentId = (): string | undefined => task().agentIds[0];
   const canSendNotes = (): boolean => {
-    const agentId = primaryAgentId();
+    const agentId = selectedAiAgentId();
     return (
       !sendingNotes() &&
       notesPromptText().length > 0 &&
@@ -202,7 +230,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
       return;
     }
 
-    const agentId = primaryAgentId();
+    const agentId = selectedAiAgentId();
     const prompt = notesPromptText();
     if (!agentId || !prompt) {
       return;
@@ -220,6 +248,26 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
   }
 
   function filesOrReviewContent(fullscreen: boolean): JSX.Element {
+    if (isNonGitTask()) {
+      return (
+        <div
+          role="status"
+          style={{
+            color: theme.fgMuted,
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            height: '100%',
+            padding: '16px',
+            'text-align': 'center',
+            ...typography.meta,
+          }}
+        >
+          Git review is unavailable for non-git projects.
+        </div>
+      );
+    }
+
     return (
       <Show
         when={reviewOpen()}
@@ -237,7 +285,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
       >
         <Suspense>
           <ReviewPanel
-            agentId={task().agentIds[0]}
+            agentId={selectedAiAgentId()}
             baseBranch={task().baseBranch}
             taskId={task().id}
             worktreePath={task().worktreePath}
@@ -393,8 +441,9 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     <span>{filesPanelTitle()}</span>
                     <div style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
                       <IconButton
+                        disabled={isNonGitTask()}
                         size="sm"
-                        title={reviewOpen() ? 'Show changed files' : 'Open review'}
+                        title={getReviewToggleTitle()}
                         onClick={toggleReviewPanel}
                         icon={
                           reviewOpen() ? (

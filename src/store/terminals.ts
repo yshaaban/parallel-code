@@ -7,13 +7,20 @@ import { store, setStore, updateWindowTitle } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
 import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
+import { getSelectedTaskAgentId } from './task-agent-selection';
 import { warn as logWarn } from '../lib/log';
-import type { Terminal } from './types';
+import type { Task, Terminal } from './types';
 
 let terminalCounter = 0;
 let lastCreateTime = 0;
 
 const REMOVE_ANIMATION_MS = 300;
+
+function getTaskActiveAgentId(
+  task: Pick<Task, 'agentIds' | 'selectedAgentId'> | null | undefined,
+): string | null {
+  return task ? getSelectedTaskAgentId(task) : null;
+}
 
 function scrollPanelIntoView(panelId: string): void {
   if (typeof document === 'undefined' || typeof requestAnimationFrame !== 'function') return;
@@ -87,7 +94,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
     const neighbor = order[neighborIdx] ?? null;
     setStore('activeTaskId', neighbor);
     const neighborTask = neighbor ? store.tasks[neighbor] : null;
-    setStore('activeAgentId', neighborTask?.agentIds[0] ?? null);
+    setStore('activeAgentId', getTaskActiveAgentId(neighborTask));
   }
 
   // Phase 1: mark as removing so UI can animate
@@ -103,7 +110,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
         if (s.activeTaskId === terminalId) {
           s.activeTaskId = s.taskOrder[0] ?? null;
           const firstTask = s.activeTaskId ? s.tasks[s.activeTaskId] : null;
-          s.activeAgentId = firstTask?.agentIds[0] ?? null;
+          s.activeAgentId = getTaskActiveAgentId(firstTask);
         }
       }),
     );

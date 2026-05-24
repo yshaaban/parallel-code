@@ -1,5 +1,6 @@
 import type {
   AgentSupervisionSnapshot,
+  RemoteAgentTaskMeta,
   RemoteAgentStatus,
   TaskExposedPort,
   TaskPortSnapshot,
@@ -384,10 +385,13 @@ export function formatRemoteTaskContext(
   folderName: string | null,
   directMode: boolean,
   worktreeOwnership?: 'external' | 'managed' | null,
+  projectMode?: 'git' | 'non-git' | null,
 ): string | null {
   const parts: string[] = [];
 
-  if (branchName) {
+  if (projectMode === 'non-git') {
+    parts.push('Non-git project');
+  } else if (branchName) {
     if (directMode) {
       parts.push(`${branchName} (current branch)`);
     } else if (worktreeOwnership === 'external') {
@@ -410,6 +414,12 @@ export function formatRemoteTaskContext(
   }
 
   return parts.join(' \u00B7 ');
+}
+
+export function isRemoteCurrentBranchTask(
+  taskMeta: RemoteAgentTaskMeta | null | undefined,
+): boolean {
+  return taskMeta?.gitIsolation === 'current-branch' || taskMeta?.directMode === true;
 }
 
 const LAST_PROMPT_DISPLAY_LIMIT = 80;

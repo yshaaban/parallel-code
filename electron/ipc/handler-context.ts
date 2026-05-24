@@ -7,6 +7,7 @@ import {
 } from '../../src/domain/server-state.js';
 import type { StorageEnv } from './storage.js';
 import type { RemoteAccessController } from './remote-access-workflows.js';
+import type { AppUpdateStatus } from '../../src/domain/app-update.js';
 
 export type HandlerArgs = Record<string, unknown> | undefined;
 export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
@@ -67,6 +68,12 @@ export interface ClipboardController {
   saveDroppedImage?: (args: { data: string; name?: string }) => Promise<string | null>;
 }
 
+export interface UpdateController {
+  checkForUpdates: () => Promise<AppUpdateStatus>;
+  getStatus: () => AppUpdateStatus;
+  installUpdate: () => Promise<AppUpdateStatus>;
+}
+
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -76,6 +83,7 @@ export interface HandlerContext extends StorageEnv {
   dialog?: DialogController;
   shell?: ShellController;
   clipboard?: ClipboardController;
+  update?: UpdateController;
 }
 
 function requireContextFeature<K extends keyof HandlerContext>(

@@ -42,7 +42,13 @@ import {
   resetTaskGitStatusRuntimeState,
 } from './task-git-status';
 import { setStore } from './core';
-import { resetStoreForTest } from '../test/store-test-helpers';
+import {
+  createTestAgent,
+  createTestAgentDef,
+  createTestProject,
+  createTestTask,
+  resetStoreForTest,
+} from '../test/store-test-helpers';
 
 const {
   clearAgentActivityMock,
@@ -112,6 +118,170 @@ describe('persistence integration', () => {
       version: taskCommandControllerVersion,
     };
   }
+
+  it('persists and hydrates multi-agent task projection with selected agent', () => {
+    const project = createTestProject();
+    const firstAgentDef = createTestAgentDef({ id: 'claude', name: 'Claude' });
+    const secondAgentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [project]);
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1', 'agent-2'],
+        id: 'task-1',
+        selectedAgentId: 'agent-2',
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ def: firstAgentDef, id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ def: secondAgentDef, id: 'agent-2', taskId: 'task-1' }),
+    });
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    const persisted = JSON.parse(workspaceJson) as {
+      tasks: Record<
+        string,
+        {
+          agentDefs?: unknown[];
+          agentIds?: string[];
+          selectedAgentId?: string;
+        }
+      >;
+    };
+
+    expect(persisted.tasks['task-1']?.agentIds).toEqual(['agent-1', 'agent-2']);
+    expect(persisted.tasks['task-1']?.agentDefs).toHaveLength(2);
+    expect(persisted.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+
+    resetStoreForTest();
+    isElectronRuntimeMock.mockReturnValue(true);
+
+    expect(applyLoadedStateJson(workspaceJson)).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1', 'agent-2']);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+    expect(store.agents['agent-1']?.def.name).toBe('Claude');
+    expect(store.agents['agent-2']?.def.name).toBe('Codex');
+    expect(store.activeAgentId).toBe('agent-2');
+  });
+
+  it('does not persist incomplete multi-agent definitions as a restorable agent set', () => {
+    setStore('projects', [createTestProject()]);
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1', 'agent-2'],
+        id: 'task-1',
+        selectedAgentId: 'agent-2',
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        def: createTestAgentDef({ id: 'claude', name: 'Claude' }),
+        id: 'agent-1',
+        taskId: 'task-1',
+      }),
+    });
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    const persisted = JSON.parse(workspaceJson) as {
+      tasks: Record<
+        string,
+        {
+          agentDefs?: unknown[];
+          agentIds?: string[];
+          selectedAgentId?: string;
+        }
+      >;
+    };
+
+    expect(persisted.tasks['task-1']?.agentIds).toBeUndefined();
+    expect(persisted.tasks['task-1']?.agentDefs).toBeUndefined();
+    expect(persisted.tasks['task-1']?.selectedAgentId).toBeUndefined();
+  });
+
+  it('persists and hydrates every saved definition for collapsed multi-agent tasks', () => {
+    setStore('projects', [createTestProject()]);
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        id: 'task-1',
+        savedAgentDef: createTestAgentDef({ id: 'claude', name: 'Claude' }),
+        savedAgentDefs: [
+          createTestAgentDef({ id: 'claude', name: 'Claude' }),
+          createTestAgentDef({ id: 'codex', name: 'Codex' }),
+        ],
+      }),
+    });
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    const persisted = JSON.parse(workspaceJson) as {
+      tasks: Record<string, { agentDefs?: unknown[] }>;
+    };
+
+    expect(persisted.tasks['task-1']?.agentDefs).toHaveLength(2);
+
+    resetStoreForTest();
+    isElectronRuntimeMock.mockReturnValue(true);
+
+    expect(applyLoadedStateJson(workspaceJson)).toBe(true);
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(store.tasks['task-1']?.savedAgentDefs?.map((agentDef) => agentDef.id)).toEqual([
+      'claude',
+      'codex',
+    ]);
+  });
+
+  it('omits git-only project fields for non-git projects during save and hydration', () => {
+    const persistedJson = JSON.stringify({
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Folder',
+          path: '/tmp/folder',
+          color: '#123456',
+          baseBranch: 'personal/main',
+          branchPrefix: 'feature',
+          defaultDirectMode: true,
+          defaultTaskGitIsolation: 'current-branch',
+          deleteBranchOnClose: false,
+          projectMode: 'non-git',
+        },
+      ],
+      taskOrder: [],
+      tasks: {},
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.projects[0]).toMatchObject({
+      id: 'project-1',
+      projectMode: 'non-git',
+    });
+    expect(store.projects[0]).not.toHaveProperty('baseBranch');
+    expect(store.projects[0]).not.toHaveProperty('branchPrefix');
+    expect(store.projects[0]).not.toHaveProperty('defaultDirectMode');
+    expect(store.projects[0]).not.toHaveProperty('defaultTaskGitIsolation');
+    expect(store.projects[0]).not.toHaveProperty('deleteBranchOnClose');
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    const persisted = JSON.parse(workspaceJson) as {
+      projects: Array<Record<string, unknown>>;
+    };
+
+    expect(persisted.projects[0]).toEqual(
+      expect.objectContaining({
+        id: 'project-1',
+        projectMode: 'non-git',
+      }),
+    );
+    expect(persisted.projects[0]).not.toHaveProperty('baseBranch');
+    expect(persisted.projects[0]).not.toHaveProperty('branchPrefix');
+    expect(persisted.projects[0]).not.toHaveProperty('defaultDirectMode');
+    expect(persisted.projects[0]).not.toHaveProperty('defaultTaskGitIsolation');
+    expect(persisted.projects[0]).not.toHaveProperty('deleteBranchOnClose');
+  });
 
   it('migrates legacy projectRoot state and restores running agents', async () => {
     invokeMock.mockImplementation((channel: IPC) => {

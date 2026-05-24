@@ -21,6 +21,7 @@ export {
   isProjectMissing,
   PASTEL_HUES,
 } from './projects';
+export { getProjectMode, isGitProject, isNonGitProject } from './project-mode';
 export {
   addAgentToTask,
   markAgentExited,
@@ -29,6 +30,12 @@ export {
   restartAgent,
   switchAgent,
 } from './agents';
+export {
+  getSelectedTaskAgentId,
+  getSelectedTaskRuntimeAgentId,
+  isTaskAiAgentId,
+  isTaskRuntimeAgentId,
+} from './task-agent-selection';
 export {
   updateTaskName,
   updateTaskNotes,

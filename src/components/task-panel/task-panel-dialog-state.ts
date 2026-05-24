@@ -1,5 +1,6 @@
 import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
 import type { ChangedFile } from '../../ipc/types';
+import { isNonGitProject } from '../../store/project-mode';
 import { isCurrentBranchTask } from '../../store/task-git-isolation';
 import type { PendingAction, Task } from '../../store/types';
 
@@ -46,6 +47,10 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(pushSuccessTimer));
 
+  function canOpenGitActionDialog(task = options.task()): boolean {
+    return !isCurrentBranchTask(task) && !isNonGitProject(task);
+  }
+
   createEffect(() => {
     const action = options.pendingAction();
     const task = options.task();
@@ -59,12 +64,12 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
         setShowCloseConfirm(true);
         break;
       case 'merge':
-        if (!isCurrentBranchTask(task)) {
+        if (canOpenGitActionDialog(task)) {
           setShowMergeConfirm(true);
         }
         break;
       case 'push':
-        if (!isCurrentBranchTask(task)) {
+        if (canOpenGitActionDialog(task)) {
           setShowPushConfirm(true);
         }
         break;
@@ -126,8 +131,16 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
     handlePushFinished,
     handlePushStarted,
     openCloseConfirm: () => setShowCloseConfirm(true),
-    openMergeConfirm: () => setShowMergeConfirm(true),
-    openPushConfirm: () => setShowPushConfirm(true),
+    openMergeConfirm: () => {
+      if (canOpenGitActionDialog()) {
+        setShowMergeConfirm(true);
+      }
+    },
+    openPushConfirm: () => {
+      if (canOpenGitActionDialog()) {
+        setShowPushConfirm(true);
+      }
+    },
     pushSuccess,
     pushing,
     setDiffFile,

@@ -1,18 +1,28 @@
 import { store, setStore, updateWindowTitle } from './core';
 import { getTaskFocusedPanel, setTaskFocusedPanel } from './focus';
+import { getSelectedTaskAgentId } from './task-agent-selection';
 import { reorderTask } from './tasks';
 
 export function setActiveTask(id: string): void {
   const task = store.tasks[id];
   const terminal = store.terminals[id];
   if (!task && !terminal) return;
+  const selectedAgentId = task ? getSelectedTaskAgentId(task, store.activeAgentId) : null;
   setStore('activeTaskId', id);
-  setStore('activeAgentId', task?.agentIds[0] ?? null);
+  setStore('activeAgentId', selectedAgentId);
+  if (task && selectedAgentId) {
+    setStore('tasks', id, 'selectedAgentId', selectedAgentId);
+  }
   updateWindowTitle(task?.name ?? terminal?.name);
 }
 
 export function setActiveAgent(agentId: string): void {
   setStore('activeAgentId', agentId);
+  const taskId = store.agents[agentId]?.taskId ?? store.activeTaskId;
+  const task = taskId ? store.tasks[taskId] : undefined;
+  if (taskId && task?.agentIds.includes(agentId)) {
+    setStore('tasks', taskId, 'selectedAgentId', agentId);
+  }
 }
 
 export function navigateAgent(direction: 'up' | 'down'): void {
@@ -26,6 +36,7 @@ export function navigateAgent(direction: 'up' | 'down'): void {
   const nextAgentId = task.agentIds[next];
   if (!nextAgentId) return;
   setStore('activeAgentId', nextAgentId);
+  setStore('tasks', activeTaskId, 'selectedAgentId', nextAgentId);
 }
 
 export function moveActiveTask(direction: 'left' | 'right'): void {

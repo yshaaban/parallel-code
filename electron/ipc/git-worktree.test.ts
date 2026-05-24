@@ -115,6 +115,10 @@ describe('git-worktree', () => {
         throw new Error('missing base branch');
       }
 
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'origin/feature/base') {
+        throw new Error('missing remote base branch');
+      }
+
       if (args[0] === 'rev-list' && args[1] === '-n1' && args[2] === '--all') {
         return { stdout: 'abc123\n' };
       }
@@ -127,6 +131,42 @@ describe('git-worktree', () => {
     await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).rejects.toThrow(
       'Branch "feature/base" does not exist. Please select a valid base branch or create the branch first.',
     );
+  });
+
+  it('uses the origin tracking ref when the selected base branch is remote-only', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'feature/base') {
+        throw new Error('missing local base branch');
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'origin/feature/base') {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (
+        args[0] === 'worktree' &&
+        args[1] === 'add' &&
+        args[2] === '-b' &&
+        args[3] === 'task/test' &&
+        args[4] === '/repo/.worktrees/task/test' &&
+        args[5] === 'origin/feature/base'
+      ) {
+        return {};
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { createWorktree } = await import('./git-worktree.js');
+
+    await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).resolves.toEqual({
+      branch: 'task/test',
+      path: '/repo/.worktrees/task/test',
+    });
   });
 
   it('passes the validated base branch through to git worktree add', async () => {

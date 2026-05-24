@@ -3,9 +3,17 @@ import { assertNever } from '../lib/assert-never';
 import { isGitSshUrl } from '../lib/git-ssh-url';
 import { confirm, openDialog } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
-import { addProject, clearMissingProject, removeProject, setProjectPath } from '../store/projects';
+import {
+  addProject,
+  clearMissingProject,
+  removeProject,
+  setProjectPath,
+  updateProject,
+} from '../store/projects';
+import { getProjectMode } from '../store/project-mode';
 import { saveCurrentRuntimeState } from '../store/persistence-save';
 import { store } from '../store/state';
+import type { ProjectMode } from '../store/types';
 import { closeTask } from './task-workflows';
 
 function normalizeProjectPath(pathValue: string): string {
@@ -112,8 +120,18 @@ function getCloneFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function addProjectFromPath(projectPath: string): string {
-  return addProject(getProjectNameFromPath(projectPath), projectPath);
+interface ValidatedProjectRoot {
+  path: string;
+  projectMode: ProjectMode;
+}
+
+function addProjectFromPath(projectPath: string, projectMode: ProjectMode = 'git'): string {
+  const projectName = getProjectNameFromPath(projectPath);
+  if (projectMode === 'git') {
+    return addProject(projectName, projectPath);
+  }
+
+  return addProject(projectName, projectPath, { projectMode });
 }
 
 async function showInvalidProjectRootDialog(
@@ -128,17 +146,42 @@ async function showInvalidProjectRootDialog(
   });
 }
 
-async function validateSelectedProjectRoot(selectedPath: string): Promise<string | null> {
+async function confirmAddNonGitProject(selectedPath: string): Promise<boolean> {
+  return confirm(
+    [
+      'The selected folder is not a git repository.',
+      '',
+      'Add it as a non-git project? Agents can work in the folder, but review, branch, merge, and changed-file features will be unavailable.',
+      '',
+      `Folder: ${selectedPath}`,
+    ].join('\n'),
+    {
+      cancelLabel: 'Cancel',
+      kind: 'warning',
+      okLabel: 'Add non-git project',
+      title: 'Add non-git project',
+    },
+  );
+}
+
+async function validateSelectedProjectRoot(
+  selectedPath: string,
+): Promise<ValidatedProjectRoot | null> {
   const repoRoot = await invoke(IPC.GetGitRepoRoot, { path: selectedPath });
-  if (repoRoot === null || !isSelectedRootMatchingRepoRoot(selectedPath, repoRoot)) {
+  if (repoRoot === null) {
+    const approved = await confirmAddNonGitProject(selectedPath);
+    return approved ? { path: selectedPath, projectMode: 'non-git' } : null;
+  }
+
+  if (!isSelectedRootMatchingRepoRoot(selectedPath, repoRoot)) {
     await showInvalidProjectRootDialog(selectedPath, repoRoot);
     return null;
   }
 
-  return selectedPath;
+  return { path: selectedPath, projectMode: 'git' };
 }
 
-async function pickValidatedProjectRoot(): Promise<string | null> {
+async function pickValidatedProjectRoot(): Promise<ValidatedProjectRoot | null> {
   const projectPath = await openDialog({ directory: true, multiple: false });
   if (!projectPath) {
     return null;
@@ -227,21 +270,25 @@ export async function pickAndAddProject(): Promise<string | null> {
     return cloneAndAddProject(selectedPath);
   }
 
-  const projectPath = await validateSelectedProjectRoot(selectedPath);
-  if (!projectPath) {
+  const projectRoot = await validateSelectedProjectRoot(selectedPath);
+  if (!projectRoot) {
     return null;
   }
 
-  return addProjectFromPath(projectPath);
+  return addProjectFromPath(projectRoot.path, projectRoot.projectMode);
 }
 
 export async function relinkProject(projectId: string): Promise<boolean> {
-  const projectPath = await pickValidatedProjectRoot();
-  if (!projectPath) {
+  const projectRoot = await pickValidatedProjectRoot();
+  if (!projectRoot) {
     return false;
   }
 
-  setProjectPath(projectId, projectPath);
+  setProjectPath(projectId, projectRoot.path);
+  const currentProject = store.projects.find((project) => project.id === projectId);
+  if (getProjectMode(currentProject) !== projectRoot.projectMode) {
+    updateProject(projectId, { projectMode: projectRoot.projectMode });
+  }
   clearMissingProject(projectId);
   await saveCurrentRuntimeState();
   return true;

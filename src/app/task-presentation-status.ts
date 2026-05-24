@@ -4,6 +4,7 @@ import { isTerminalFocusedInputPromptSuppressionActive } from './terminal-focuse
 import { getAgentPromptDispatchAt, PROMPT_DISPATCH_WINDOW_MS } from './task-prompt-dispatch';
 import { getAgentLastOutputAt } from '../store/agent-output-activity';
 import { store } from '../store/state';
+import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import type { PanelId } from '../store/types';
 import type {
@@ -592,7 +593,7 @@ function getTaskStepsCandidate(taskId: string): TaskPresentationCandidate | null
   }
 
   const task = store.tasks[taskId];
-  const agentId = task?.agentIds[0] ?? task?.shellAgentIds[0];
+  const agentId = task ? getSelectedTaskRuntimeAgentId(task) : null;
   if (!agentId) {
     return null;
   }

@@ -49,6 +49,7 @@ import { getPersistedTaskNotificationsEnabled } from './task-notification-prefer
 import { normalizeKeybindings } from './keybindings';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers';
+import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
 import {
   clearRemovedTaskRuntimeState,
   collectTaskAgentIds,
@@ -132,7 +133,12 @@ function getLocalTerminalPanelOrder(): {
 }
 
 function getLoadedSelectionAgentId(storeState: AppStore, panelId: string): string | null {
-  return storeState.tasks[panelId]?.agentIds[0] ?? storeState.terminals[panelId]?.agentId ?? null;
+  const task = storeState.tasks[panelId];
+  if (task) {
+    return getSelectedTaskRuntimeAgentId(task, storeState.activeAgentId);
+  }
+
+  return storeState.terminals[panelId]?.agentId ?? null;
 }
 
 function reconcileLoadedActiveSelection(storeState: AppStore, electronRuntime: boolean): void {
@@ -300,16 +306,18 @@ export function applyLoadedStateJson(json: string): boolean {
         },
         visit(entry) {
           storeState.tasks[entry.taskId] = entry.task;
-          if (entry.collapsed || !entry.agentDef || !entry.primaryAgentId) {
+          if (entry.collapsed) {
             return;
           }
 
-          storeState.agents[entry.primaryAgentId] = createHydratedRunningAgent(
-            entry.taskId,
-            entry.primaryAgentId,
-            entry.agentDef,
-          );
-          restoredRunningAgentIds.push(entry.primaryAgentId);
+          for (const { agentDef, agentId } of entry.agentEntries) {
+            storeState.agents[agentId] = createHydratedRunningAgent(
+              entry.taskId,
+              agentId,
+              agentDef,
+            );
+            restoredRunningAgentIds.push(agentId);
+          }
         },
       });
 
@@ -416,14 +424,16 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
           collectTaskAgentIds(entry.task).forEach((agentId) => agentsToDelete.delete(agentId));
           storeState.tasks[taskId] = entry.task;
 
-          if (!entry.collapsed && entry.agentDef && entry.primaryAgentId) {
-            const previousAgent = storeState.agents[entry.primaryAgentId];
-            storeState.agents[entry.primaryAgentId] = createHydratedRunningAgent(
-              taskId,
-              entry.primaryAgentId,
-              entry.agentDef,
-              previousAgent,
-            );
+          if (!entry.collapsed) {
+            for (const { agentDef, agentId } of entry.agentEntries) {
+              const previousAgent = storeState.agents[agentId];
+              storeState.agents[agentId] = createHydratedRunningAgent(
+                taskId,
+                agentId,
+                agentDef,
+                previousAgent,
+              );
+            }
           }
         },
       });

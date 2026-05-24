@@ -1,4 +1,5 @@
 import type { PtyExitData } from '../../ipc/types';
+import type { ProjectMode } from '../../store/types';
 import type {
   TerminalPresentationMode,
   TerminalPresentationModeKind,
@@ -21,6 +22,7 @@ export interface TerminalViewProps {
   onExit?: (exitInfo: PtyExitData) => void;
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
+  projectMode?: ProjectMode;
   onReady?: (focusFn: () => void) => void;
   onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;

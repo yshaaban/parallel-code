@@ -221,6 +221,62 @@ describe('client session state', () => {
     expect(store.activeAgentId).toBe('terminal-agent-1');
   });
 
+  it('preserves browser-local selected agent for a multi-agent task', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'agent-2',
+        activeTaskId: 'task-1',
+      }),
+    );
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1', 'agent-2'],
+        selectedAgentId: 'agent-1',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.activeTaskId).toBe('task-1');
+    expect(store.activeAgentId).toBe('agent-2');
+  });
+
+  it('preserves browser-local shell selection for a task terminal', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'shell-agent-1',
+        activeTaskId: 'task-1',
+      }),
+    );
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: ['shell-agent-1'],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.activeAgentId).toBe('shell-agent-1');
+  });
+
   it('does not restore standalone terminal panels by default', () => {
     sessionStorage.setItem(
       'parallel-code-client-session',

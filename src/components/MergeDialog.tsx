@@ -17,6 +17,7 @@ import {
   refreshTaskGitStatusForTask,
 } from '../store/task-git-status';
 import { store } from '../store/state';
+import { getSelectedTaskAgentId } from '../store/task-agent-selection';
 import { normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
@@ -101,6 +102,15 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
 
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
+  const selectedAiAgentId = (): string | null => getSelectedTaskAgentId(props.task);
+  const aiRebaseAgentId = (): string | null => {
+    const agentId = selectedAiAgentId();
+    if (!agentId || store.agents[agentId]?.status === 'exited') {
+      return null;
+    }
+
+    return agentId;
+  };
   const hasBranchMismatch = () => {
     const status = mergeStatus();
     if (!status) {
@@ -364,26 +374,22 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                     >
                       {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
                     </button>
-                    <Show
-                      when={
-                        props.task.agentIds.length > 0 &&
-                        store.agents[props.task.agentIds[0]]?.status !== 'exited'
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const agentId = props.task.agentIds[0];
-                          props.onDone();
-                          sendPrompt(props.task.id, agentId, rebasePrompt()).catch((err) => {
-                            console.error('Failed to send rebase prompt:', err);
-                          });
-                        }}
-                        title="Close dialog and ask the AI agent to rebase"
-                        style={getRebaseButtonStyle(aiRebaseButtonTone())}
-                      >
-                        Rebase with AI
-                      </button>
+                    <Show when={aiRebaseAgentId()} keyed>
+                      {(agentId) => (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            props.onDone();
+                            sendPrompt(props.task.id, agentId, rebasePrompt()).catch((err) => {
+                              console.error('Failed to send rebase prompt:', err);
+                            });
+                          }}
+                          title="Close dialog and ask the AI agent to rebase"
+                          style={getRebaseButtonStyle(aiRebaseButtonTone())}
+                        >
+                          Rebase with AI
+                        </button>
+                      )}
                     </Show>
                     <Show when={rebaseSuccess()}>
                       <span style={{ color: theme.success, ...typography.meta }}>

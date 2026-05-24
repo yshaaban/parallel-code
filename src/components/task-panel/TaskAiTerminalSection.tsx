@@ -12,6 +12,7 @@ import { getHydraCommandOverride, isHydraAgentDef } from '../../lib/hydra';
 import { theme } from '../../lib/theme';
 import {
   getFontScale,
+  getSelectedTaskAgentId,
   isTaskPanelFocused,
   markAgentExited,
   markAgentOutput,
@@ -61,12 +62,16 @@ export function createTaskAiTerminalSection(props: TaskAiTerminalSectionProps): 
 
 export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.Element {
   const task = () => props.task();
-  const firstAgent = createMemo(() => {
-    const firstAgentId = task().agentIds[0];
-    return firstAgentId ? store.agents[firstAgentId] : undefined;
+  const selectedAgent = createMemo(() => {
+    const currentTask = task();
+    const selectedAgentId = getSelectedTaskAgentId(
+      currentTask,
+      store.activeTaskId === currentTask.id ? store.activeAgentId : null,
+    );
+    return selectedAgentId ? store.agents[selectedAgentId] : undefined;
   });
   const canResumeCurrentAgent = () => {
-    const currentAgent = firstAgent();
+    const currentAgent = selectedAgent();
     return currentAgent ? getAgentResumeStrategy(currentAgent.def) !== 'none' : false;
   };
   const availableAgents = createMemo(() =>
@@ -104,7 +109,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
           </span>
         </InfoBar>
         <div style={{ flex: '1', position: 'relative', overflow: 'hidden' }}>
-          <Show when={firstAgent()}>
+          <Show when={selectedAgent()}>
             {(agent) => (
               <>
                 <Show when={isExitedRemoteAgentStatus(agent().status)}>
@@ -210,6 +215,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                         adapter={currentAgentDef.adapter}
                         baseBranch={task().baseBranch}
                         cwd={task().worktreePath}
+                        projectMode={task().projectMode}
                         env={
                           isHydraAgentDef(currentAgentDef)
                             ? { PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode }

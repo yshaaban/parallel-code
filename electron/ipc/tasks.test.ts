@@ -37,7 +37,7 @@ vi.mock('./pty.js', () => ({
   notifyAgentListChanged: notifyAgentListChangedMock,
 }));
 
-import { createTask, importExistingWorktreeTask } from './tasks.js';
+import { createNonGitTask, createTask, importExistingWorktreeTask } from './tasks.js';
 
 function createBranchExistsError(
   branchName: string,
@@ -64,6 +64,28 @@ describe('createTask', () => {
     const result = await createTask('Test', '/tmp/project', [], 'task');
 
     expect(createWorktreeMock).toHaveBeenCalledWith('/tmp/project', 'task/test', []);
+    expect(result).toMatchObject({
+      branch_name: 'task/test',
+      worktree_path: '/tmp/project/.worktrees/task/test',
+      git_isolation: 'worktree',
+    });
+  });
+
+  it('passes the selected base branch into managed worktree creation', async () => {
+    createWorktreeMock.mockResolvedValue({
+      branch: 'task/test',
+      path: '/tmp/project/.worktrees/task/test',
+    });
+
+    const result = await createTask('Test', '/tmp/project', [], 'task', 'release/main');
+
+    expect(createWorktreeMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      'task/test',
+      [],
+      false,
+      'release/main',
+    );
     expect(result).toMatchObject({
       branch_name: 'task/test',
       worktree_path: '/tmp/project/.worktrees/task/test',
@@ -99,6 +121,16 @@ describe('createTask', () => {
       'not a git repository',
     );
     expect(createWorktreeMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createNonGitTask', () => {
+  it('creates a task rooted at the project folder without git metadata', () => {
+    expect(createNonGitTask('/tmp/folder')).toMatchObject({
+      branch_name: '',
+      project_mode: 'non-git',
+      worktree_path: '/tmp/folder',
+    });
   });
 });
 

@@ -9,6 +9,7 @@ import {
   isExistingWorktreeTask,
   normalizeTaskBaseBranch,
 } from '../store/task-git-isolation';
+import { isNonGitProject } from '../store/project-mode';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
 import {
@@ -125,6 +126,22 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             external
           </span>
         </Show>
+        <Show when={isNonGitProject(props.task)}>
+          <span
+            style={{
+              ...typography.metaStrong,
+              padding: '2px 8px',
+              'border-radius': '4px',
+              background: `color-mix(in srgb, ${theme.fgMuted} 14%, transparent)`,
+              color: theme.fgMuted,
+              border: `1px solid color-mix(in srgb, ${theme.fgMuted} 22%, transparent)`,
+              'flex-shrink': '0',
+              'white-space': 'nowrap',
+            }}
+          >
+            non-git
+          </span>
+        </Show>
         <Show when={peerViewerCount() > 0}>
           <span
             style={{
@@ -210,7 +227,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             />
           </Show>
         </div>
-        <Show when={!isCurrentBranchTask(props.task)}>
+        <Show when={!isCurrentBranchTask(props.task) && !isNonGitProject(props.task)}>
           <IconButton
             icon={
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

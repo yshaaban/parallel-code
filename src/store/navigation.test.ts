@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStore, store } from './core';
 import { registerFocusFn, resetFocusStateForTests } from './focus';
-import { jumpToTask, moveActiveTask } from './navigation';
+import { jumpToTask, moveActiveTask, navigateAgent, setActiveAgent } from './navigation';
 import {
   createTestAgent,
   createTestProject,
@@ -90,6 +90,52 @@ describe('moveActiveTask', () => {
     expect(store.activeTaskId).toBe('task-2');
     expect(store.activeAgentId).toBe('agent-2');
     expect(focusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the stored selected agent when activating a multi-agent task', () => {
+    const project = createTestProject();
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      id: 'task-1',
+      projectId: project.id,
+      selectedAgentId: 'agent-2',
+    });
+
+    setStore('projects', [project]);
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+    setStore('taskOrder', ['task-1']);
+
+    jumpToTask(0);
+
+    expect(store.activeAgentId).toBe('agent-2');
+  });
+
+  it('updates task selected-agent projection when the active agent changes', () => {
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      id: 'task-1',
+      selectedAgentId: 'agent-1',
+    });
+
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+    setStore('taskOrder', ['task-1']);
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+
+    navigateAgent('down');
+    expect(store.activeAgentId).toBe('agent-2');
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+
+    setActiveAgent('agent-1');
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-1');
   });
 
   it('jumps to a standalone terminal by task order index and focuses the terminal panel', () => {

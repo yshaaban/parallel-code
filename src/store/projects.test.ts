@@ -18,7 +18,13 @@ vi.mock('./tasks', () => ({
 
 import { IPC } from '../../electron/ipc/channels';
 import { createInitialAppStore, setStore, store } from './core';
-import { validateProjectPaths } from './projects';
+import {
+  addProject,
+  getProjectBaseBranch,
+  getProjectBranchPrefix,
+  updateProject,
+  validateProjectPaths,
+} from './projects';
 
 function createDeferred<T>(): {
   promise: Promise<T>;
@@ -42,6 +48,58 @@ describe('project path validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setStore(createInitialAppStore());
+  });
+
+  it('does not attach git-only defaults to newly added non-git projects', () => {
+    const projectId = addProject('Folder', '/tmp/folder', { projectMode: 'non-git' });
+
+    expect(store.projects.find((project) => project.id === projectId)).toEqual(
+      expect.objectContaining({
+        id: projectId,
+        name: 'Folder',
+        path: '/tmp/folder',
+        projectMode: 'non-git',
+      }),
+    );
+    expect(store.projects.find((project) => project.id === projectId)).not.toHaveProperty(
+      'defaultTaskGitIsolation',
+    );
+  });
+
+  it('clears and hides git-only project fields when a project becomes non-git', () => {
+    setStore('projects', [
+      {
+        id: 'project-1',
+        name: 'Project',
+        path: '/repo',
+        color: '#111111',
+        baseBranch: 'personal/main',
+        branchPrefix: 'feature',
+        defaultDirectMode: true,
+        defaultTaskGitIsolation: 'current-branch',
+        deleteBranchOnClose: false,
+      },
+    ]);
+
+    updateProject('project-1', {
+      baseBranch: 'ignored/main',
+      branchPrefix: 'ignored',
+      defaultTaskGitIsolation: 'worktree',
+      projectMode: 'non-git',
+    });
+
+    const project = store.projects.find((entry) => entry.id === 'project-1');
+    expect(project).toMatchObject({
+      id: 'project-1',
+      projectMode: 'non-git',
+    });
+    expect(project).not.toHaveProperty('baseBranch');
+    expect(project).not.toHaveProperty('branchPrefix');
+    expect(project).not.toHaveProperty('defaultDirectMode');
+    expect(project).not.toHaveProperty('defaultTaskGitIsolation');
+    expect(project).not.toHaveProperty('deleteBranchOnClose');
+    expect(getProjectBaseBranch('project-1')).toBeUndefined();
+    expect(getProjectBranchPrefix('project-1')).toBe('task');
   });
 
   afterEach(() => {

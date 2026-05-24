@@ -96,6 +96,47 @@ describe('EditProjectDialog', () => {
     });
   });
 
+  it('does not expose or save git-only settings for non-git projects', async () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+
+    render(() => (
+      <EditProjectDialog
+        project={createTestProject({
+          projectMode: 'non-git',
+          baseBranch: 'personal/main',
+          branchPrefix: 'feature',
+          defaultTaskGitIsolation: 'current-branch',
+          deleteBranchOnClose: false,
+        })}
+        onClose={onClose}
+      />
+    ));
+
+    expect(screen.queryByText('Base branch')).toBeNull();
+    expect(screen.queryByText('Branch prefix')).toBeNull();
+    expect(screen.queryByText('Always delete branch and worklog on merge')).toBeNull();
+    expect(screen.queryByText('Default new tasks to the current branch')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    expect(updateProjectMock).toHaveBeenCalledTimes(1);
+    const firstUpdateCall = updateProjectMock.mock.calls[0];
+    if (!firstUpdateCall) {
+      throw new Error('Expected project update call');
+    }
+    const [, updates] = firstUpdateCall;
+    expect(updates).not.toHaveProperty('baseBranch');
+    expect(updates).not.toHaveProperty('branchPrefix');
+    expect(updates).not.toHaveProperty('defaultDirectMode');
+    expect(updates).not.toHaveProperty('defaultTaskGitIsolation');
+    expect(updates).not.toHaveProperty('deleteBranchOnClose');
+  });
+
   it('re-links a missing project through the app workflow and closes on success', async () => {
     isProjectMissingMock.mockReturnValue(true);
     relinkProjectMock.mockResolvedValue(true);

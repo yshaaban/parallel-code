@@ -53,6 +53,7 @@ import type {
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
 } from '../../src/ipc/types.js';
+import type { ProjectMode } from '../../src/store/types.js';
 
 interface ScrollbackBatchEntrySnapshot {
   agentId: string;
@@ -375,6 +376,14 @@ function canApplyTaskResize(request: {
   return canResizeTaskTerminal(taskId, request.controllerId);
 }
 
+function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode | undefined {
+  if (value === undefined || value === 'git' || value === 'non-git') {
+    return;
+  }
+
+  throw new BadRequestError('projectMode must be one of: git, non-git');
+}
+
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
@@ -392,6 +401,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         throw new BadRequestError('resumeOnStart must be a boolean when provided');
       }
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
+      assertOptionalProjectMode(request.projectMode);
       assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
@@ -413,6 +423,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         isShell: request.isShell === true,
         resumeOnStart: request.resumeOnStart === true,
         onOutput: { __CHANNEL_ID__: channelId },
+        ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
         ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
       });
 

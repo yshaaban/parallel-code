@@ -15,10 +15,18 @@ import type {
 } from './types';
 import {
   buildProjectGitIsolationFields,
+  clearProjectGitFields,
   getTaskWorktreeOwnership,
   getTaskGitIsolation,
   normalizeTaskBaseBranch,
 } from './task-git-isolation';
+import {
+  buildProjectModeFields,
+  buildTaskProjectModeFields,
+  getProjectMode,
+  isNonGitProject,
+} from './project-mode';
+import { getSelectedTaskAgentId } from './task-agent-selection';
 
 export function isStringNumberRecord(value: unknown): value is Record<string, number> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -30,13 +38,34 @@ export function isStringNumberRecord(value: unknown): value is Record<string, nu
   );
 }
 
-function getPrimaryAgentDef(task: Task): AgentDef | null {
+function getPrimaryAgentDef(task: Task, fallbackAgentDefs: AgentDef[] = []): AgentDef | null {
   const agentId = task.agentIds[0];
   if (!agentId) {
-    return null;
+    return fallbackAgentDefs[0] ?? null;
   }
 
   return store.agents[agentId]?.def ?? null;
+}
+
+function getCompleteTaskAgentDefs(
+  task: Task,
+  fallbackAgentDefs: AgentDef[] = [],
+): AgentDef[] | null {
+  if (task.agentIds.length === 0) {
+    return fallbackAgentDefs.length > 0 ? fallbackAgentDefs : null;
+  }
+
+  const agentDefs: AgentDef[] = [];
+  for (const agentId of task.agentIds) {
+    const agentDef = store.agents[agentId]?.def;
+    if (!agentDef) {
+      return null;
+    }
+
+    agentDefs.push(agentDef);
+  }
+
+  return agentDefs;
 }
 
 function buildPersistedExposedPorts(taskId: string): PersistedTaskExposedPort[] | undefined {
@@ -57,13 +86,22 @@ function buildPersistedExposedPorts(taskId: string): PersistedTaskExposedPort[] 
 function buildPersistedProject(project: Project): Project {
   const persistedProject: Project = {
     ...project,
+    ...buildProjectModeFields(project),
     ...buildProjectGitIsolationFields(project),
   };
+  if (isNonGitProject(persistedProject)) {
+    clearProjectGitFields(persistedProject);
+    return persistedProject;
+  }
+
   const baseBranch = normalizeBaseBranch(project.baseBranch);
   if (baseBranch !== undefined) {
     persistedProject.baseBranch = baseBranch;
   } else {
     delete persistedProject.baseBranch;
+  }
+  if (persistedProject.projectMode !== 'non-git') {
+    delete persistedProject.projectMode;
   }
   delete persistedProject.defaultDirectMode;
   return persistedProject;
@@ -71,11 +109,28 @@ function buildPersistedProject(project: Project): Project {
 
 function buildPersistedTask(
   task: Task,
-  options?: { collapsed?: boolean; fallbackAgentDef?: AgentDef | null },
+  options?: { collapsed?: boolean; fallbackAgentDefs?: AgentDef[] },
 ): PersistedTask {
   const exposedPorts = buildPersistedExposedPorts(task.id);
-  const baseBranch = normalizeTaskBaseBranch(task);
-  const worktreeOwnership = getTaskWorktreeOwnership(task);
+  const taskProjectMode = getProjectMode(task);
+  const baseBranch = taskProjectMode === 'git' ? normalizeTaskBaseBranch(task) : undefined;
+  const gitIsolation = taskProjectMode === 'git' ? getTaskGitIsolation(task) : undefined;
+  const worktreeOwnership = taskProjectMode === 'git' ? getTaskWorktreeOwnership(task) : undefined;
+  const fallbackAgentDefs = options?.fallbackAgentDefs ?? [];
+  const agentDefs = getCompleteTaskAgentDefs(task, fallbackAgentDefs);
+  const hasCompleteActiveMultiAgentDefs =
+    task.agentIds.length > 1 && agentDefs?.length === task.agentIds.length;
+  const hasCompleteCollapsedMultiAgentDefs =
+    options?.collapsed === true &&
+    task.agentIds.length === 0 &&
+    fallbackAgentDefs.length > 1 &&
+    agentDefs?.length === fallbackAgentDefs.length;
+  const shouldPersistAgentDefs =
+    hasCompleteActiveMultiAgentDefs || hasCompleteCollapsedMultiAgentDefs;
+  const selectedAgentId =
+    task.agentIds.length <= 1 || hasCompleteActiveMultiAgentDefs
+      ? getSelectedTaskAgentId(task)
+      : null;
   const persistedTask: PersistedTask = {
     id: task.id,
     name: task.name,
@@ -86,9 +141,13 @@ function buildPersistedTask(
     lastPrompt: task.lastPrompt,
     shellCount: task.shellAgentIds.length,
     agentId: task.agentIds[0] ?? null,
+    ...(hasCompleteActiveMultiAgentDefs ? { agentIds: [...task.agentIds] } : {}),
+    ...(shouldPersistAgentDefs && agentDefs ? { agentDefs } : {}),
+    ...(selectedAgentId ? { selectedAgentId } : {}),
     shellAgentIds: [...task.shellAgentIds],
-    agentDef: getPrimaryAgentDef(task) ?? options?.fallbackAgentDef ?? null,
-    gitIsolation: getTaskGitIsolation(task),
+    agentDef: getPrimaryAgentDef(task, fallbackAgentDefs),
+    ...buildTaskProjectModeFields(task),
+    ...(gitIsolation !== undefined ? { gitIsolation } : {}),
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(worktreeOwnership === 'external' ? { worktreeOwnership } : {}),
     ...(task.skipPermissions !== undefined ? { skipPermissions: task.skipPermissions } : {}),
@@ -168,7 +227,7 @@ function buildPersistedTaskEntries(
 
     tasks[taskId] = buildPersistedTask(task, {
       collapsed: true,
-      fallbackAgentDef: task.savedAgentDef ?? null,
+      fallbackAgentDefs: task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []),
     });
   }
 

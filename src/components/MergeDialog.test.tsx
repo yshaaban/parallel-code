@@ -86,6 +86,7 @@ describe('MergeDialog', () => {
     resetStoreForTest();
     resetTaskReviewProjectionStateForTests();
     setStore('projects', [createTestProject({ baseBranch: 'main' })]);
+    sendPromptMock.mockResolvedValue(undefined);
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {
         case IPC.GetBranchLog:
@@ -476,6 +477,93 @@ describe('MergeDialog', () => {
     expect(await screen.findByRole('button', { name: 'Rebase with AI' })).toBeDefined();
 
     expect(rebaseButton.style.borderStyle).toBe('none');
+  });
+
+  it('sends AI rebase prompts to the selected task agent', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.GetBranchLog:
+          return Promise.resolve('');
+        case IPC.CheckMergeStatus:
+          return Promise.resolve({
+            conflicting_files: [],
+            current_branch: 'feature/task-1',
+            main_ahead_count: 2,
+          });
+        case IPC.RebaseTask:
+          return Promise.resolve(undefined);
+        default:
+          throw new Error(`Unexpected channel: ${channel}`);
+      }
+    });
+
+    setStore('agents', {
+      'agent-1': {
+        def: {
+          args: [],
+          command: 'claude',
+          description: 'Claude',
+          id: 'claude',
+          name: 'Claude',
+          resume_args: [],
+          skip_permissions_args: [],
+        },
+        exitCode: null,
+        generation: 0,
+        id: 'agent-1',
+        lastOutput: [],
+        resumed: true,
+        signal: null,
+        status: 'running',
+        taskId: 'task-1',
+      },
+      'agent-2': {
+        def: {
+          args: [],
+          command: 'codex',
+          description: 'Codex',
+          id: 'codex',
+          name: 'Codex',
+          resume_args: [],
+          skip_permissions_args: [],
+        },
+        exitCode: null,
+        generation: 0,
+        id: 'agent-2',
+        lastOutput: [],
+        resumed: true,
+        signal: null,
+        status: 'running',
+        taskId: 'task-1',
+      },
+    });
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    const onDone = vi.fn();
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask({
+          agentIds: ['agent-1', 'agent-2'],
+          selectedAgentId: 'agent-2',
+        })}
+        initialCleanup={true}
+        onDone={onDone}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rebase with AI' }));
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(sendPromptMock).toHaveBeenCalledWith(
+      'task-1',
+      'agent-2',
+      expect.stringContaining('rebase'),
+    );
   });
 
   it('ignores stale merge failures after switching tasks', async () => {

@@ -20,6 +20,7 @@ import type { PersistedKeybindingOverrides } from '../domain/keybindings.js';
 
 export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
 export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
+export type ProjectMode = 'git' | 'non-git';
 export type WorktreeOwnership = 'managed' | 'external';
 
 export interface TerminalBookmark {
@@ -38,6 +39,7 @@ export interface Project {
   defaultTaskGitIsolation?: DefaultTaskGitIsolationMode;
   deleteBranchOnClose?: boolean; // default true if unset
   defaultDirectMode?: boolean; // default false if unset
+  projectMode?: ProjectMode; // default "git" if unset
   terminalBookmarks?: TerminalBookmark[];
 }
 
@@ -67,6 +69,7 @@ export interface Task {
   branchName: string;
   worktreePath: string;
   agentIds: string[];
+  selectedAgentId?: string;
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
@@ -76,12 +79,14 @@ export interface Task {
   baseBranch?: string;
   closeState?: TaskCloseState;
   gitIsolation?: TaskGitIsolationMode;
+  projectMode?: ProjectMode;
   worktreeOwnership?: WorktreeOwnership;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
   collapsed?: boolean;
   savedAgentDef?: AgentDef;
+  savedAgentDefs?: AgentDef[];
   planContent?: string;
   planFileName?: string;
   planRelativePath?: string;
@@ -105,10 +110,14 @@ export interface PersistedTask {
   lastPrompt: string;
   shellCount: number;
   agentId?: string | null;
+  agentIds?: string[];
+  agentDefs?: AgentDef[];
+  selectedAgentId?: string;
   shellAgentIds?: string[];
   agentDef: AgentDef | null;
   baseBranch?: string;
   gitIsolation?: TaskGitIsolationMode;
+  projectMode?: ProjectMode;
   worktreeOwnership?: WorktreeOwnership;
   directMode?: boolean;
   skipPermissions?: boolean;
@@ -247,7 +256,7 @@ export interface ClientSessionState {
 }
 
 export type PersistedProjectLookup = Partial<
-  Pick<Project, 'baseBranch' | 'defaultTaskGitIsolation' | 'id' | 'path'>
+  Pick<Project, 'baseBranch' | 'defaultTaskGitIsolation' | 'id' | 'path' | 'projectMode'>
 >;
 export type PersistedTaskLookup = Partial<
   Pick<
@@ -258,6 +267,7 @@ export type PersistedTaskLookup = Partial<
     | 'id'
     | 'name'
     | 'projectId'
+    | 'projectMode'
     | 'githubUrl'
     | 'worktreeOwnership'
     | 'worktreePath'
