@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -19,7 +20,25 @@ export function validateBranchName(name: unknown, label: string): asserts name i
   if (typeof name !== 'string' || !name) {
     throw new BadRequestError(`${label} must be a non-empty string`);
   }
-  if (name.startsWith('-')) throw new BadRequestError(`${label} must not start with "-"`);
+  try {
+    execFileSync('git', ['check-ref-format', '--branch', name], {
+      encoding: 'utf8',
+      stdio: 'ignore',
+    });
+  } catch {
+    throw new BadRequestError(`${label} must be a valid branch name`);
+  }
+}
+
+export function validateOptionalBranchName(
+  name: unknown,
+  label: string,
+): asserts name is string | undefined {
+  if (name === undefined) {
+    return;
+  }
+
+  validateBranchName(name, label);
 }
 
 export function getHomeDirectory(): string {

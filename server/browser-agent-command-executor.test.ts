@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ptyMocks = vi.hoisted(() => ({
   killAgent: vi.fn(),
@@ -20,6 +20,10 @@ import {
 } from './browser-agent-command-executor.js';
 
 describe('browser agent command executor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('forwards terminal input, resize, pause, resume, and kill to the PTY owner', () => {
     const traceRequest = {
       clientId: 'client-1',
@@ -40,8 +44,8 @@ describe('browser agent command executor', () => {
     resumeBrowserAgent('agent-1', 'restore', 'channel-2');
     killBrowserAgent('agent-1');
 
-    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-1', 'pwd\n', traceRequest);
-    expect(ptyMocks.resizeAgent).toHaveBeenCalledWith('agent-1', 120, 32);
+    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-1', 'pwd\n', traceRequest, undefined);
+    expect(ptyMocks.resizeAgent).toHaveBeenCalledWith('agent-1', 120, 32, undefined);
     expect(ptyMocks.pauseAgent).toHaveBeenCalledWith('agent-1', 'flow-control', 'channel-1');
     expect(ptyMocks.resumeAgent).toHaveBeenCalledWith('agent-1', 'restore', 'channel-2');
     expect(ptyMocks.killAgent).toHaveBeenCalledWith('agent-1');
@@ -51,7 +55,7 @@ describe('browser agent command executor', () => {
     writeBrowserAgentPermissionResponse('agent-1', 'approve');
     writeBrowserAgentPermissionResponse('agent-2', 'deny');
 
-    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-1', 'y\n', undefined);
-    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-2', 'n\n', undefined);
+    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-1', 'y\n', undefined, undefined);
+    expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-2', 'n\n', undefined, undefined);
   });
 });

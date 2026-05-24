@@ -143,6 +143,28 @@ describe('Hydra spawn handling', () => {
     );
   });
 
+  it('rejects malformed spawn base branches at the IPC boundary', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+
+    await expect(
+      handlers[IPC.SpawnAgent]?.({
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: 'codex',
+        args: ['resume'],
+        baseBranch: 'feature..bad',
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+      }),
+    ).rejects.toThrow('baseBranch must be a valid branch name');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
   it('keeps non-Hydra spawns on the generic PTY path', () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);

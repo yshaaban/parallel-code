@@ -38,6 +38,7 @@ import {
   recordScrollbackReplayCacheMiss,
 } from './runtime-diagnostics.js';
 import { defineIpcHandler } from './typed-handler.js';
+import { validateOptionalBranchName } from './path-utils.js';
 import {
   assertInt,
   assertOptionalInt,
@@ -390,7 +391,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
         throw new BadRequestError('resumeOnStart must be a boolean when provided');
       }
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;

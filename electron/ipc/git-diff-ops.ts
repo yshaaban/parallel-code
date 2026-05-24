@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
@@ -68,6 +69,10 @@ interface MainComparisonState {
 
 function createDiffRevisionId(baseRevision: string, headRevision: string): string {
   return `${baseRevision}:${headRevision}`;
+}
+
+function hashCacheToken(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
@@ -584,10 +589,10 @@ function wrapBinaryDiffBlock(filePath: string, diff: string, status: 'A' | 'D' |
   return `diff --git a/${filePath} b/${filePath}\n${modePrefix}${trimmedDiff}`;
 }
 
-function collectNormalizedPaths(stdout: string, getRawPath: (line: string) => string): Set<string> {
+function collectNormalizedPathValues(rawPaths: Iterable<string>): Set<string> {
   const normalizedPaths = new Set<string>();
-  for (const line of stdout.split('\n')) {
-    const normalizedPath = normalizeStatusPath(getRawPath(line));
+  for (const rawPath of rawPaths) {
+    const normalizedPath = normalizeStatusPath(rawPath);
     if (normalizedPath) {
       normalizedPaths.add(normalizedPath);
     }
@@ -595,14 +600,54 @@ function collectNormalizedPaths(stdout: string, getRawPath: (line: string) => st
   return normalizedPaths;
 }
 
+function collectNormalizedPaths(stdout: string, getRawPath: (line: string) => string): Set<string> {
+  return collectNormalizedPathValues(stdout.split('\n').map(getRawPath));
+}
+
+function collectNulSeparatedNormalizedPaths(stdout: string): Set<string> {
+  return collectNormalizedPathValues(stdout.split('\0'));
+}
+
 async function listUntrackedPaths(worktreePath: string): Promise<Set<string>> {
-  const stdout = await execGitStdout(worktreePath, ['ls-files', '--others', '--exclude-standard']);
-  return collectNormalizedPaths(stdout, (line) => line);
+  const stdout = await execGitStdout(worktreePath, [
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '-z',
+  ]);
+  return collectNulSeparatedNormalizedPaths(stdout);
 }
 
 async function listConflictPaths(worktreePath: string): Promise<Set<string>> {
   const stdout = await execGitStdout(worktreePath, ['ls-files', '-u']);
   return collectNormalizedPaths(stdout, (line) => line.split('\t').pop() ?? '');
+}
+
+interface WorktreeChangedFilesState {
+  baseToWorkingTreeDiff: string;
+  fingerprint: string;
+  trackedUncommittedDiff: string;
+  untrackedPaths: Set<string>;
+}
+
+async function getWorktreeChangedFilesState(
+  worktreePath: string,
+  mergeBase: string,
+): Promise<WorktreeChangedFilesState> {
+  const [baseToWorkingTreeDiff, trackedUncommittedDiff, untrackedPathsOutput] = await Promise.all([
+    execGitStdout(worktreePath, ['diff', '--raw', '--numstat', mergeBase]),
+    execGitStdout(worktreePath, ['diff', '--raw', '--numstat', 'HEAD']),
+    execGitStdout(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z']),
+  ]);
+
+  return {
+    baseToWorkingTreeDiff,
+    fingerprint: hashCacheToken(
+      `${baseToWorkingTreeDiff}\0${trackedUncommittedDiff}\0${untrackedPathsOutput}`,
+    ),
+    trackedUncommittedDiff,
+    untrackedPaths: collectNulSeparatedNormalizedPaths(untrackedPathsOutput),
+  };
 }
 
 async function detectWorktreeFileStatus(
@@ -636,6 +681,14 @@ function getChangedFileCounts(
   filePath: string,
 ): [number, number] {
   return numstatMap.get(filePath) ?? [0, 0];
+}
+
+function hasChangedFileEntry(
+  statusMap: ReadonlyMap<string, ChangedFileStatus>,
+  numstatMap: ReadonlyMap<string, [number, number]>,
+  filePath: string,
+): boolean {
+  return statusMap.has(filePath) || numstatMap.has(filePath);
 }
 
 function getChangedFileStatusWithConflict(
@@ -735,28 +788,32 @@ async function getChangedFilesWithRevision(
     worktreePath,
     worktreeContext.mainBranch,
   );
+  const workingTreeState = await getWorktreeChangedFilesState(
+    worktreePath,
+    worktreeContext.mergeBase,
+  );
 
   const files = await withGitQueryCache(
-    `changed-files:${cacheKey(worktreePath)}:${mainComparisonState.fingerprint}:${headHash}`,
+    `changed-files:${cacheKey(worktreePath)}:${mainComparisonState.fingerprint}:${headHash}:${workingTreeState.fingerprint}`,
     async () => {
-      const [committedDiff, trackedUncommittedDiff, untrackedPaths, conflictPaths] =
-        await Promise.all([
-          execGitStdout(worktreePath, [
-            'diff',
-            '--raw',
-            '--numstat',
-            worktreeContext.mergeBase,
-            headHash,
-          ]),
-          execGitStdout(worktreePath, ['diff', '--raw', '--numstat', 'HEAD']),
-          listUntrackedPaths(worktreePath),
-          listConflictPaths(worktreePath),
-        ]);
+      const [committedDiff, conflictPaths] = await Promise.all([
+        execGitStdout(worktreePath, [
+          'diff',
+          '--raw',
+          '--numstat',
+          worktreeContext.mergeBase,
+          headHash,
+        ]),
+        listConflictPaths(worktreePath),
+      ]);
+      const { baseToWorkingTreeDiff, trackedUncommittedDiff, untrackedPaths } = workingTreeState;
 
       const { statusMap: committedStatusMap, numstatMap: committedNumstatMap } =
         parseDiffRawNumstat(committedDiff);
       const { statusMap: uncommittedStatusMap, numstatMap: uncommittedNumstatMap } =
         parseDiffRawNumstat(trackedUncommittedDiff);
+      const { numstatMap: baseToWorkingTreeNumstatMap } =
+        parseDiffRawNumstat(baseToWorkingTreeDiff);
       const committedPaths = await filesDifferingFromMain(
         worktreePath,
         headHash,
@@ -775,7 +832,14 @@ async function getChangedFilesWithRevision(
         ...committedStatusMap.keys(),
         ...committedNumstatMap.keys(),
       ])) {
-        const [added, removed] = getChangedFileCounts(committedNumstatMap, filePath);
+        const countSource = hasChangedFileEntry(
+          uncommittedStatusMap,
+          uncommittedNumstatMap,
+          filePath,
+        )
+          ? baseToWorkingTreeNumstatMap
+          : committedNumstatMap;
+        const [added, removed] = getChangedFileCounts(countSource, filePath);
         const status = getChangedFileStatusWithConflict(
           committedStatusMap,
           conflictPaths,

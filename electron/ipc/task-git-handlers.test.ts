@@ -214,6 +214,58 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
   });
 
+  it('rejects malformed branch prefixes at the task creation boundary', async () => {
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    await expect(
+      handlers[IPC.CreateTask]?.({
+        branchPrefix: 'feature..bad',
+        name: 'Bad Branch Task',
+        projectId: 'project-1',
+        projectRoot: '/tmp/project',
+        symlinkDirs: [],
+      }),
+    ).rejects.toThrow('branchPrefix must be a valid branch name');
+
+    expect(createTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(taskRegistry.registerCreatedTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed optional base branches before git handlers run', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    expect(() =>
+      handlers[IPC.GetChangedFiles]?.({
+        baseBranch: 'feature..bad',
+        worktreePath: '/tmp/project',
+      }),
+    ).toThrow('baseBranch must be a valid branch name');
+  });
+
+  it('rejects malformed branch names before branch diff handlers run', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    expect(() =>
+      handlers[IPC.GetFileDiffFromBranch]?.({
+        branchName: 'feature..bad',
+        filePath: 'src/new.ts',
+        projectRoot: '/tmp/project',
+      }),
+    ).toThrow('branchName must be a valid branch name');
+
+    expect(getFileDiffFromBranchMock).not.toHaveBeenCalled();
+  });
+
   it('removes created task metadata through the shared registry owner on delete', async () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {

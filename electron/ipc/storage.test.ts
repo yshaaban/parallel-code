@@ -28,14 +28,24 @@ function getDevStoragePath(env: StorageEnv, filename: string): string {
   return path.join(`${env.userDataPath}-dev`, filename);
 }
 
-function expectAtomicWriteCleanup(save: () => void, tmpPath: string, finalPath: string): void {
+function listAtomicTempFiles(finalPath: string): string[] {
+  const dir = path.dirname(finalPath);
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+
+  const prefix = `${path.basename(finalPath)}.`;
+  return fs.readdirSync(dir).filter((entry) => entry.startsWith(prefix) && entry.endsWith('.tmp'));
+}
+
+function expectAtomicWriteCleanup(save: () => void, finalPath: string): void {
   const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
     throw new Error('rename failed');
   });
 
   try {
     expect(save).toThrow('rename failed');
-    expect(fs.existsSync(tmpPath)).toBe(false);
+    expect(listAtomicTempFiles(finalPath)).toEqual([]);
     expect(fs.existsSync(finalPath)).toBe(false);
   } finally {
     renameSpy.mockRestore();
@@ -93,7 +103,6 @@ describe('loadTaskRegistryStateForEnv', () => {
     const statePath = getDevStoragePath(env, 'state.json');
     expectAtomicWriteCleanup(
       () => saveAppStateForEnv(env, JSON.stringify({ tasks: {} })),
-      `${statePath}.tmp`,
       statePath,
     );
   });
@@ -117,7 +126,6 @@ describe('loadTaskRegistryStateForEnv', () => {
     const statePath = getDevStoragePath(env, 'workspace-state.json');
     expectAtomicWriteCleanup(
       () => saveWorkspaceStateForEnv(env, JSON.stringify({ tasks: {} }), 1),
-      `${statePath}.tmp`,
       statePath,
     );
   });
@@ -129,9 +137,34 @@ describe('loadTaskRegistryStateForEnv', () => {
     const filePath = path.join(`${env.userDataPath}`, 'arena-demo.json');
     expectAtomicWriteCleanup(
       () => saveArenaDataForEnv(env, 'arena-demo.json', JSON.stringify({ demo: true })),
-      `${filePath}.tmp`,
       filePath,
     );
+  });
+
+  it('preserves existing app state when an atomic overwrite fails', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const statePath = getDevStoragePath(env, 'state.json');
+    const original = JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Original' } } });
+    saveAppStateForEnv(env, original);
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('rename failed');
+    });
+
+    try {
+      expect(() =>
+        saveAppStateForEnv(
+          env,
+          JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Replacement' } } }),
+        ),
+      ).toThrow('rename failed');
+      expect(fs.readFileSync(statePath, 'utf8')).toBe(original);
+      expect(listAtomicTempFiles(statePath)).toEqual([]);
+      expect(loadAppStateForEnv(env)).toBe(original);
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 
   it('falls back to backup app state when the primary file contains invalid JSON', () => {

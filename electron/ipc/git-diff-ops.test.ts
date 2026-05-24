@@ -247,6 +247,87 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     ]);
   });
 
+  it('counts tracked files with committed and dirty changes from merge-base to working tree', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(repoPath, 'README.md', '# repo\ncommitted\n', 'commit readme change');
+    writeRepoFile(repoPath, 'README.md', '# repo\ncommitted\nunstaged\n');
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: false,
+        lines_added: 2,
+        lines_removed: 0,
+        path: 'README.md',
+        status: 'M',
+      }),
+    );
+  });
+
+  it('reports zero working-tree counts when dirty changes cancel a committed file diff', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(repoPath, 'README.md', '# repo\ncommitted\n', 'commit readme change');
+    writeRepoFile(repoPath, 'README.md', '# repo\n');
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: false,
+        lines_added: 0,
+        lines_removed: 0,
+        path: 'README.md',
+        status: 'M',
+      }),
+    );
+  });
+
+  it('refreshes changed-file counts when a committed file becomes dirty under the same head', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(repoPath, 'README.md', '# repo\ncommitted\n', 'commit readme change');
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: true,
+        lines_added: 1,
+        path: 'README.md',
+      }),
+    );
+
+    writeRepoFile(repoPath, 'README.md', '# repo\ncommitted\nunstaged\n');
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: false,
+        lines_added: 2,
+        path: 'README.md',
+      }),
+    );
+  });
+
+  it('keeps unstaged-only tracked counts relative to HEAD', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    writeRepoFile(repoPath, 'README.md', '# repo\nunstaged\n');
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: false,
+        lines_added: 1,
+        lines_removed: 0,
+        path: 'README.md',
+        status: 'M',
+      }),
+    );
+  });
+
   it('includes committed deleted files in branch project diff mode', async () => {
     const repoPath = createRepo();
     repoPaths.push(repoPath);

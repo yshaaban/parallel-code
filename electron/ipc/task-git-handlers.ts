@@ -43,7 +43,12 @@ import {
   assertStringArray,
 } from './validate.js';
 import { BadRequestError } from './errors.js';
-import { validateBranchName, validatePath, validateRelativePath } from './path-utils.js';
+import {
+  validateBranchName,
+  validateOptionalBranchName,
+  validatePath,
+  validateRelativePath,
+} from './path-utils.js';
 import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
@@ -156,19 +161,16 @@ export function createTaskAndGitIpcHandlers(
       assertStringArray(request.symlinkDirs, 'symlinkDirs');
       assertOptionalString(request.agentDefId, 'agentDefId');
       assertOptionalString(request.agentDefName, 'agentDefName');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.existingWorktreePath, 'existingWorktreePath');
       assertOptionalString(request.githubUrl, 'githubUrl');
-      assertOptionalString(request.branchPrefix, 'branchPrefix');
+      validateOptionalBranchName(request.branchPrefix, 'branchPrefix');
       assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
       assertOptionalTaskGitIsolation(request.gitIsolation);
       if (request.gitIsolation === 'existing-worktree') {
         validatePath(request.existingWorktreePath, 'existingWorktreePath');
       } else if (typeof request.existingWorktreePath === 'string') {
         throw new BadRequestError('existingWorktreePath is only valid for existing-worktree tasks');
-      }
-      if (typeof request.baseBranch === 'string') {
-        validateBranchName(request.baseBranch, 'baseBranch');
       }
 
       const result = await createTaskWorkflow(context, {
@@ -262,7 +264,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetChangedFiles]: defineIpcHandler<IPC.GetChangedFiles>(IPC.GetChangedFiles, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       return getChangedFiles(request.worktreePath, request.baseBranch);
     }),
 
@@ -272,7 +274,7 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         return getChangedFilesFromBranch(
           request.projectRoot,
           request.branchName,
@@ -285,7 +287,7 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       validateRelativePath(request.filePath, 'filePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalChangedFileStatus(request.status, 'status');
       return getFileDiff(
         request.worktreePath,
@@ -301,7 +303,7 @@ export function createTaskAndGitIpcHandlers(
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
         validateRelativePath(request.filePath, 'filePath');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         assertOptionalChangedFileStatus(request.status, 'status');
         assertOptionalCommitHash(request.commitHash, 'commitHash');
         const diffOptions = {
@@ -321,7 +323,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetAllFileDiffs]: defineIpcHandler<IPC.GetAllFileDiffs>(IPC.GetAllFileDiffs, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       return getAllFileDiffs(request.worktreePath, request.baseBranch);
     }),
 
@@ -331,7 +333,7 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         return getAllFileDiffsFromBranch(
           request.projectRoot,
           request.branchName,
@@ -360,7 +362,7 @@ export function createTaskAndGitIpcHandlers(
       (args) => {
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         if (request.registeredWorktreePaths !== undefined) {
           assertStringArray(request.registeredWorktreePaths, 'registeredWorktreePaths');
           for (const worktreePath of request.registeredWorktreePaths) {
@@ -381,7 +383,7 @@ export function createTaskAndGitIpcHandlers(
       (args) => {
         const request = args;
         validatePath(request.worktreePath, 'worktreePath');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         return getWorktreeStatus(request.worktreePath, request.baseBranch);
       },
     ),
@@ -415,7 +417,7 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       assertReviewDiffMode(request.mode);
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
 
       return getProjectDiff(request.worktreePath, request.mode, request.baseBranch);
     }),
@@ -423,7 +425,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.CheckMergeStatus]: defineIpcHandler<IPC.CheckMergeStatus>(IPC.CheckMergeStatus, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       return checkMergeStatus(request.worktreePath, request.baseBranch);
     }),
 
@@ -436,7 +438,7 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.message, 'message');
       assertOptionalBoolean(request.cleanup, 'cleanup');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const projectRoot = request.projectRoot;
@@ -466,7 +468,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetBranchLog]: defineIpcHandler<IPC.GetBranchLog>(IPC.GetBranchLog, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       return getBranchLog(request.worktreePath, request.baseBranch);
     }),
 
@@ -476,7 +478,7 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        assertOptionalString(request.baseBranch, 'baseBranch');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
         return getBranchCommitHistory({
           ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
           branchName: request.branchName,
@@ -516,7 +518,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.RebaseTask]: defineIpcHandler<IPC.RebaseTask>(IPC.RebaseTask, async (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
@@ -531,7 +533,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetMainBranch]: defineIpcHandler<IPC.GetMainBranch>(IPC.GetMainBranch, (args) => {
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
-      assertOptionalString(request.baseBranch, 'baseBranch');
+      validateOptionalBranchName(request.baseBranch, 'baseBranch');
       return getMainBranch(request.projectRoot, request.baseBranch);
     }),
 

@@ -63,8 +63,36 @@ let cacheTime = 0;
 let cacheKey = '';
 const AGENT_CACHE_TTL = 30_000;
 
+function cloneAgentDef(agent: AgentDef): AgentDef {
+  return {
+    ...agent,
+    args: [...agent.args],
+    resume_args: [...agent.resume_args],
+    skip_permissions_args: [...agent.skip_permissions_args],
+  };
+}
+
 function hasFreshAgentCache(now: number, nextCacheKey: string): boolean {
   return cachedAgents !== null && cacheKey === nextCacheKey && now - cacheTime < AGENT_CACHE_TTL;
+}
+
+function getPathAvailabilityDetails(agent: AgentDef, available: boolean): Partial<AgentDef> {
+  const command = agent.command.trim();
+  if (!command) {
+    return {};
+  }
+
+  if (available) {
+    return {
+      availabilityReason: `Using ${command} from PATH.`,
+      availabilitySource: 'path',
+    };
+  }
+
+  return {
+    availabilityReason: `Command '${command}' was not found on PATH.`,
+    availabilitySource: 'unavailable',
+  };
 }
 
 async function withAvailability(agent: AgentDef): Promise<AgentDef> {
@@ -74,7 +102,7 @@ async function withAvailability(agent: AgentDef): Promise<AgentDef> {
     });
 
     return {
-      ...agent,
+      ...cloneAgentDef(agent),
       available: availability.available,
       availabilityReason: availability.detail,
       availabilitySource: availability.source,
@@ -84,19 +112,20 @@ async function withAvailability(agent: AgentDef): Promise<AgentDef> {
   const available = await isCommandAvailable(agent.command);
 
   return {
-    ...agent,
+    ...cloneAgentDef(agent),
     available,
-    ...(agent.command.trim()
-      ? available
-        ? {
-            availabilityReason: `Using ${agent.command.trim()} from PATH.`,
-            availabilitySource: 'path' as const,
-          }
-        : {
-            availabilityReason: `Command '${agent.command.trim()}' was not found on PATH.`,
-            availabilitySource: 'unavailable' as const,
-          }
-      : {}),
+    ...getPathAvailabilityDetails(agent, available),
+  };
+}
+
+function applyHydraCommandOverride(agent: AgentDef, command: string): AgentDef {
+  if (agent.adapter !== 'hydra' || !command) {
+    return agent;
+  }
+
+  return {
+    ...agent,
+    command,
   };
 }
 
@@ -106,22 +135,15 @@ export async function listAgents(hydraCommandOverride = ''): Promise<AgentDef[]>
   const nextCacheKey = normalizedHydraCommand || 'hydra';
 
   if (cachedAgents && hasFreshAgentCache(now, nextCacheKey)) {
-    return cachedAgents;
+    return cachedAgents.map(cloneAgentDef);
   }
 
   cachedAgents = await Promise.all(
     DEFAULT_AGENTS.map((agent) =>
-      withAvailability(
-        agent.adapter === 'hydra' && normalizedHydraCommand
-          ? {
-              ...agent,
-              command: normalizedHydraCommand,
-            }
-          : agent,
-      ),
+      withAvailability(applyHydraCommandOverride(agent, normalizedHydraCommand)),
     ),
   );
   cacheKey = nextCacheKey;
   cacheTime = now;
-  return cachedAgents;
+  return cachedAgents.map(cloneAgentDef);
 }

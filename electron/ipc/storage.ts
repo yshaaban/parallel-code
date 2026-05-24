@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -34,11 +35,11 @@ function removeFileIfExists(filePath: string): void {
 }
 
 function writeFileAtomically(filePath: string, contents: string): void {
-  const tmpPath = `${filePath}.tmp`;
-
-  fs.writeFileSync(tmpPath, contents, 'utf8');
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 
   try {
+    fs.writeFileSync(tmpPath, contents, 'utf8');
     fs.renameSync(tmpPath, filePath);
   } catch (error) {
     removeFileIfExists(tmpPath);
