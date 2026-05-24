@@ -14,6 +14,7 @@ import {
   triggerFocus,
   unregisterAction,
 } from './focus';
+import { setSidebarSectionCollapsed } from './sidebar-sections';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 import type { Task } from './types';
 
@@ -129,6 +130,70 @@ describe('focus shell toolbar navigation', () => {
     expect(store.sidebarFocusedTaskId).toBe('task-1');
   });
 
+  it('clears focused project when the Projects section collapses', () => {
+    setStore('projects', [
+      createTestProject({ id: 'project-1' }),
+      createTestProject({ id: 'project-2' }),
+    ]);
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedProjectId', 'project-2');
+
+    setSidebarSectionCollapsed('projects', true);
+
+    expect(store.sidebarSectionCollapsed.projects).toBe(true);
+    expect(store.sidebarFocusedProjectId).toBeNull();
+  });
+
+  it('skips restored hidden project focus during sidebar keyboard navigation', () => {
+    const project = createTestProject({ id: 'project-1' });
+    setStore('projects', [project]);
+    setStore('tasks', {
+      'task-1': createTestTask({ id: 'task-1', projectId: project.id }),
+      'task-2': createTestTask({ id: 'task-2', projectId: project.id }),
+    });
+    setStore('taskOrder', ['task-1', 'task-2']);
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedProjectId', project.id);
+    setStore('sidebarFocusedTaskId', null);
+    setStore('sidebarSectionCollapsed', {
+      ...store.sidebarSectionCollapsed,
+      projects: true,
+    });
+
+    navigateRow('down');
+
+    expect(store.sidebarFocusedProjectId).toBeNull();
+    expect(store.sidebarFocusedTaskId).toBe('task-1');
+
+    navigateRow('up');
+
+    expect(store.sidebarFocusedProjectId).toBeNull();
+    expect(store.sidebarFocusedTaskId).toBe('task-1');
+  });
+
+  it('normalizes stale project focus to visible project rows during sidebar navigation', () => {
+    setStore('projects', [
+      createTestProject({ id: 'project-1' }),
+      createTestProject({ id: 'project-2' }),
+    ]);
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedProjectId', 'deleted-project');
+    setStore('sidebarFocusedTaskId', null);
+
+    navigateRow('up');
+
+    expect(store.sidebarFocusedProjectId).toBe('project-2');
+    expect(store.sidebarFocusedTaskId).toBeNull();
+
+    setStore('sidebarFocusedProjectId', 'deleted-project');
+    setStore('sidebarFocusedTaskId', null);
+
+    navigateRow('down');
+
+    expect(store.sidebarFocusedProjectId).toBe('project-1');
+    expect(store.sidebarFocusedTaskId).toBeNull();
+  });
+
   it('restores a collapsed sidebar task when moving right', () => {
     const project = createTestProject({ id: 'project-1' });
     const restoreCollapsedTaskMock = vi.fn();
@@ -227,6 +292,42 @@ describe('focus shell toolbar navigation', () => {
 
     expect(store.activeTaskId).toBe('task-2');
     expect(store.focusedPanel['task-2']).toBe('ai-terminal');
+  });
+
+  it('preserves shell terminal index when moving across task columns', () => {
+    setupTwoTaskNavigationState(
+      { shellAgentIds: ['shell-1', 'shell-2'], stepsTracking: true },
+      { shellAgentIds: ['shell-3', 'shell-4'] },
+    );
+    setStore('focusedPanel', { 'task-1': 'shell:1' });
+
+    navigateColumn('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('shell:1');
+  });
+
+  it('falls back from shell terminal focus to ai terminal when the next task has no shells', () => {
+    setupTwoTaskNavigationState({ shellAgentIds: ['shell-1'], stepsTracking: true });
+    setStore('focusedPanel', { 'task-1': 'shell:0' });
+
+    navigateColumn('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('ai-terminal');
+  });
+
+  it('clamps shell terminal focus when switching directly to a task with fewer shells', () => {
+    setupTwoTaskNavigationState(
+      { shellAgentIds: ['shell-1', 'shell-2'] },
+      { shellAgentIds: ['shell-3'] },
+    );
+    setStore('focusedPanel', { 'task-1': 'shell:1' });
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('shell:0');
   });
 
   it('falls back to terminal focus when direct task switching reaches a terminal panel', () => {

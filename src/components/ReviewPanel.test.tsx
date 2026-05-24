@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import {
+  applyTaskReviewEvent,
+  replaceTaskReviewSnapshots,
+  resetTaskReviewProjectionStateForTests,
+} from '../app/task-review-state';
 import {
   replaceTaskReviewSignalsSnapshots,
   resetTaskReviewSignalsProjectionStateForTests,
@@ -129,6 +133,7 @@ describe('ReviewPanel', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    resetTaskReviewProjectionStateForTests();
     resetTaskReviewSignalsProjectionStateForTests();
     fetchBranchCommitHistoryMock.mockResolvedValue({
       baseHash: 'base',

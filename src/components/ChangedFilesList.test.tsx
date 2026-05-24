@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import {
+  applyTaskReviewEvent,
+  replaceTaskReviewSnapshots,
+  resetTaskReviewProjectionStateForTests,
+} from '../app/task-review-state';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
@@ -80,6 +84,7 @@ describe('ChangedFilesList', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    resetTaskReviewProjectionStateForTests();
     resetChangedFilesListRuntimeStateForTests();
     getRecentTaskGitStatusPollAgeMock.mockReturnValue(null);
     listenForGitStatusChangedMock.mockImplementation(() => () => {});

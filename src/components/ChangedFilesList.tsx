@@ -596,6 +596,7 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
                   padding: '2px var(--space-xs)',
                   'padding-left': `${8 + currentRow.depth * 10}px`,
                   'white-space': 'nowrap',
+                  'user-select': 'none',
                   cursor: currentRow.isDir || props.onFileClick ? 'pointer' : 'default',
                   'border-radius': '6px',
                   opacity: currentRow.isDir || currentFile?.committed ? '0.45' : '1',

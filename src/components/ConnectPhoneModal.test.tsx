@@ -192,6 +192,33 @@ describe('ConnectPhoneModal', () => {
     expect(image.getAttribute('src')).toBe('data:image/png;base64,dGFpbHNjYWxl');
   });
 
+  it('shows a visible QR placeholder when QR rendering fails', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    toDataUrlMock.mockRejectedValue(new Error('QR renderer unavailable'));
+    setStore('remoteAccess', {
+      enabled: true,
+      connectedClients: 0,
+      peerClients: 0,
+      port: 7777,
+      url: 'https://browser',
+      wifiUrl: 'https://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+    });
+
+    try {
+      render(() => <ConnectPhoneModal open onClose={vi.fn()} />);
+
+      expect(screen.getByRole('status', { name: 'Generating connection QR code' })).toBeDefined();
+      expect(await screen.findByRole('status', { name: 'QR code unavailable' })).toBeDefined();
+      expect(screen.queryByAltText('Connection QR code')).toBeNull();
+      expect(screen.getByText('https://wifi')).toBeDefined();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it('cancels stale dialog focus when the modal closes before the scheduled frame', () => {
     const animationFrame = installManualAnimationFrame();
     isElectronRuntimeMock.mockReturnValue(true);

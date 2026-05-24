@@ -222,7 +222,6 @@ describe('task workflow control leases', () => {
   it('sends prompts under a task command lease and records the last prompt', async () => {
     const promise = sendPrompt('task-1', 'agent-1', 'Ship it');
 
-    await Promise.resolve();
     await promise;
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
@@ -248,6 +247,51 @@ describe('task workflow control leases', () => {
       }),
     );
     expect(store.tasks['task-1']?.lastPrompt).toBe('Ship it');
+  });
+
+  it('waits longer before submitting multiline bracketed paste prompts', async () => {
+    vi.useFakeTimers();
+
+    const promise = sendPrompt('task-1', 'agent-1', 'line 1\nline 2\nline 3');
+
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(invokeMock.mock.calls.filter(([channel]) => channel === IPC.WriteToAgent)).toEqual([
+      [
+        IPC.WriteToAgent,
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-self',
+          data: '\x1b[200~line 1\nline 2\nline 3\x1b[201~',
+          taskId: 'task-1',
+        },
+      ],
+    ]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+
+    expect(invokeMock.mock.calls.filter(([channel]) => channel === IPC.WriteToAgent)).toEqual([
+      [
+        IPC.WriteToAgent,
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-self',
+          data: '\x1b[200~line 1\nline 2\nline 3\x1b[201~',
+          taskId: 'task-1',
+        },
+      ],
+      [
+        IPC.WriteToAgent,
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-self',
+          data: '\r',
+          taskId: 'task-1',
+        },
+      ],
+    ]);
+    expect(store.tasks['task-1']?.lastPrompt).toBe('line 1\nline 2\nline 3');
   });
 
   it('passes controller identity through close-task deletion requests', async () => {
@@ -1402,9 +1446,11 @@ describe('task workflow control leases', () => {
       }
     });
 
-    await expect(sendPrompt('task-1', 'agent-1', 'Ship it')).rejects.toThrow(
+    const promise = expect(sendPrompt('task-1', 'agent-1', 'Ship it')).rejects.toThrow(
       'Failed to release task command lease for task-1',
     );
+
+    await promise;
 
     expect(store.agentActive['agent-1']).toBe(false);
     expect(getAgentPromptDispatchAt('agent-1')).toBeNull();

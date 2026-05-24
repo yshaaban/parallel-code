@@ -1,5 +1,8 @@
-import { fireEvent, render, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setStore } from '../store/core';
+import { resetStoreForTest } from '../test/store-test-helpers';
 
 const { beginPanelResizeDragMock, endPanelResizeDragMock } = vi.hoisted(() => ({
   beginPanelResizeDragMock: vi.fn(),
@@ -16,6 +19,7 @@ import { ResizablePanel, type ResizablePanelHandle } from './ResizablePanel';
 describe('ResizablePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetStoreForTest();
   });
 
   it('clears the programmatic resize handle on unmount', async () => {
@@ -77,5 +81,123 @@ describe('ResizablePanel', () => {
     fireEvent.mouseUp(window);
 
     expect(endPanelResizeDragMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores invalid persisted panel sizes', async () => {
+    setStore('panelSizes', {
+      'layout:left': -10,
+      'layout:right': Number.NaN,
+    });
+
+    render(() => (
+      <ResizablePanel
+        direction="horizontal"
+        fitContent
+        persistKey="layout"
+        children={[
+          {
+            id: 'left',
+            initialSize: 120,
+            content: () => <div>Left</div>,
+          },
+          {
+            id: 'right',
+            initialSize: 140,
+            content: () => <div>Right</div>,
+          },
+        ]}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText('Left').parentElement?.style.width).toBe('120px');
+      expect(screen.getByText('Right').parentElement?.style.width).toBe('140px');
+    });
+  });
+
+  it('resets persisted panel sizes on handle double-click', async () => {
+    render(() => (
+      <ResizablePanel
+        direction="horizontal"
+        fitContent
+        persistKey="layout"
+        children={[
+          {
+            id: 'left',
+            initialSize: 120,
+            content: () => <div>Left</div>,
+          },
+          {
+            id: 'right',
+            initialSize: 120,
+            content: () => <div>Right</div>,
+          },
+        ]}
+      />
+    ));
+
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (!(resizeHandle instanceof HTMLElement)) {
+      throw new Error('Expected panel resize handle');
+    }
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 120 });
+    fireEvent.mouseMove(window, { clientX: 160 });
+    fireEvent.mouseUp(window);
+
+    await waitFor(() => {
+      expect(screen.getByText('Left').parentElement?.style.width).toBe('160px');
+    });
+
+    fireEvent.doubleClick(resizeHandle);
+
+    await waitFor(() => {
+      expect(screen.getByText('Left').parentElement?.style.width).toBe('120px');
+    });
+  });
+
+  it('caps request-sized panels to leave room for neighboring panel minimums', async () => {
+    const [requestedSize] = createSignal(500);
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'clientHeight',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => 240,
+    });
+
+    try {
+      render(() => (
+        <ResizablePanel
+          direction="vertical"
+          children={[
+            {
+              id: 'requested',
+              initialSize: 80,
+              minSize: 50,
+              stable: true,
+              requestSize: requestedSize,
+              content: () => <div>Requested</div>,
+            },
+            {
+              id: 'neighbor',
+              minSize: 50,
+              content: () => <div>Neighbor</div>,
+            },
+          ]}
+        />
+      ));
+
+      await waitFor(() => {
+        expect(screen.getByText('Requested').parentElement?.style.flex).toBe('0 0 184px');
+      });
+    } finally {
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+      }
+    }
   });
 });

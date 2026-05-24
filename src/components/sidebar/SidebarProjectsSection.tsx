@@ -1,8 +1,12 @@
-import { For, Show, createMemo, type JSX } from 'solid-js';
+import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
 import { IconButton } from '../IconButton';
 import { theme } from '../../lib/theme';
 import { typography } from '../../lib/typography';
-import { isSidebarSectionCollapsed, toggleSidebarSection } from '../../store/sidebar-sections';
+import {
+  clearSidebarFocusedProjectIfHidden,
+  isSidebarSectionCollapsed,
+  toggleSidebarSection,
+} from '../../store/sidebar-sections';
 import { isProjectMissing, store } from '../../store/store';
 import type { Project } from '../../store/types';
 import { SidebarSectionHeader } from './SidebarSectionHeader';
@@ -33,6 +37,10 @@ interface SidebarProjectsSectionProps {
 
 export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.Element {
   const collapsed = createMemo(() => isSidebarSectionCollapsed('projects'));
+
+  createEffect(() => {
+    clearSidebarFocusedProjectIfHidden();
+  });
 
   return (
     <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-3xs)' }}>

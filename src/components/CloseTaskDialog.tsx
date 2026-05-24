@@ -1,7 +1,11 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
-import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
+import {
+  getTaskGitStatus,
+  isTaskGitStatusFresh,
+  refreshTaskGitStatusForTask,
+} from '../store/task-git-status';
 import {
   isCurrentBranchTask,
   isExistingWorktreeTask,
@@ -77,11 +81,15 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
     normalizeTaskBaseBranch(props.task) ??
     getProject(props.task.projectId)?.baseBranch ??
     'base branch';
-  const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
+  const isGitStatusVerified = () =>
+    !gitStatusLoading() && gitStatusReady() && isTaskGitStatusFresh(worktreeStatus());
   const gitStatusUnavailable = () =>
-    isManagedWorktreeTask(props.task) && !gitStatusLoading() && !gitStatusReady();
+    isManagedWorktreeTask(props.task) &&
+    !gitStatusLoading() &&
+    (!gitStatusReady() || !isTaskGitStatusFresh(worktreeStatus()));
   const hasRiskyGitStatus = () =>
     Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
+  const gitStatusErrorMessage = () => worktreeStatus()?.errorMessage ?? '';
   const closeConfirmDisabled = () => isManagedWorktreeTask(props.task) && gitStatusLoading();
 
   return (
@@ -107,6 +115,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
               <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
                 Warning: Unable to verify current git status. Closing may remove uncommitted changes
                 or unmerged commits.
+                <Show when={gitStatusErrorMessage()}> Details: {gitStatusErrorMessage()}</Show>
               </InlineNotice>
             </Show>
             <Show when={isGitStatusVerified() && hasRiskyGitStatus()}>

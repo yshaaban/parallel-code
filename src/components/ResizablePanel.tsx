@@ -43,6 +43,45 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
 
   const isHorizontal = () => props.direction === 'horizontal';
 
+  function getMinimumSize(child: PanelChild | undefined, fallback = 30): number {
+    const min = child?.minSize ?? fallback;
+    return Number.isFinite(min) && min >= 0 ? min : fallback;
+  }
+
+  function getMaximumSize(child: PanelChild | undefined): number {
+    const max = child?.maxSize ?? Infinity;
+    return Number.isFinite(max) && max > 0 ? max : Infinity;
+  }
+
+  function clampPanelSize(
+    child: PanelChild | undefined,
+    value: number,
+    options: { fallback?: number; max?: number } = {},
+  ): number {
+    const fallback = options.fallback ?? child?.initialSize ?? getMinimumSize(child);
+    const minimum = getMinimumSize(child, 0);
+    const maximum = Math.max(minimum, Math.min(getMaximumSize(child), options.max ?? Infinity));
+    const finiteValue = Number.isFinite(value) && value > 0 ? value : fallback;
+    return Math.min(maximum, Math.max(minimum, finiteValue));
+  }
+
+  function isFixedSizePanel(child: PanelChild): boolean {
+    return Boolean(child.fixed || child.stable);
+  }
+
+  function getSavedPanelSize(child: PanelChild): number | undefined {
+    if (!props.persistKey) {
+      return undefined;
+    }
+
+    const saved = getPanelSize(`${props.persistKey}:${child.id}`);
+    if (typeof saved !== 'number' || !Number.isFinite(saved) || saved <= 0) {
+      return undefined;
+    }
+
+    return clampPanelSize(child, saved);
+  }
+
   function clearActiveDrag(): void {
     const cancel = cancelActiveDrag;
     cancelActiveDrag = undefined;
@@ -55,55 +94,61 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     endPanelResizeDrag();
   }
 
-  function initSizes() {
+  function getTotalSpace(): number {
+    return isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
+  }
+
+  function computeInitialSizes(usePersisted: boolean): number[] | undefined {
     if (!containerRef) return;
     const children = props.children;
     const handleSpace = Math.max(0, children.length - 1) * 6;
 
     // fitContent mode: use saved or initialSizes directly, no scaling
     if (props.fitContent) {
-      setSizes(
-        children.map((c) => {
-          if (props.persistKey) {
-            const saved = getPanelSize(`${props.persistKey}:${c.id}`);
-            if (saved !== undefined) return saved;
-          }
-          return c.initialSize ?? 200;
-        }),
+      return children.map(
+        (c) =>
+          (usePersisted ? getSavedPanelSize(c) : undefined) ??
+          clampPanelSize(c, c.initialSize ?? 200),
       );
-      return;
     }
 
-    const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
+    const totalSpace = getTotalSpace();
 
-    const fixedTotal = children.reduce(
-      (sum, c) => sum + (c.fixed || c.stable ? (c.initialSize ?? 0) : 0),
-      0,
+    const savedSizes = children.map((child) =>
+      usePersisted ? getSavedPanelSize(child) : undefined,
     );
-    const resizableSpace = totalSpace - fixedTotal - handleSpace;
-    const resizableCount = children.filter((c) => !c.fixed && !c.stable).length;
+    const fixedTotal = children.reduce((sum, child) => {
+      if (!isFixedSizePanel(child)) {
+        return sum;
+      }
+
+      return sum + clampPanelSize(child, child.initialSize ?? 0, { fallback: 0 });
+    }, 0);
+    const resizableSpace = Math.max(0, totalSpace - fixedTotal - handleSpace);
+    const resizableCount = children.filter((child) => !isFixedSizePanel(child)).length;
     const defaultSize = resizableCount > 0 ? resizableSpace / resizableCount : 0;
 
     // First pass: assign saved sizes, initialSizes, or 0
-    const initial = children.map((c) => {
-      if (c.fixed || c.stable) return c.initialSize ?? 0;
-      if (props.persistKey) {
-        const saved = getPanelSize(`${props.persistKey}:${c.id}`);
-        if (saved !== undefined) return saved;
+    const initial = children.map((child, index) => {
+      if (isFixedSizePanel(child)) {
+        return clampPanelSize(child, child.initialSize ?? 0, { fallback: 0 });
       }
-      return c.initialSize ?? 0;
+      const saved = savedSizes[index];
+      if (saved !== undefined) {
+        return saved;
+      }
+      return child.initialSize !== undefined ? clampPanelSize(child, child.initialSize) : 0;
     });
     // Compute how much space the resizable initialSizes consume
     const usedByResizable = children.reduce(
-      (sum, c, i) => sum + (c.fixed || c.stable ? 0 : initial[i]),
+      (sum, child, index) => sum + (isFixedSizePanel(child) ? 0 : initial[index]),
       0,
     );
     // Count panels without a saved or initial size
-    const unsetCount = children.filter((c) => {
-      if (c.fixed || c.stable) return false;
-      if (props.persistKey && getPanelSize(`${props.persistKey}:${c.id}`) !== undefined)
-        return false;
-      return !c.initialSize;
+    const unsetCount = children.filter((child, index) => {
+      if (isFixedSizePanel(child)) return false;
+      if (savedSizes[index] !== undefined) return false;
+      return !child.initialSize;
     }).length;
     // Distribute remaining space among resizable panels without a size
     const remaining = resizableSpace - usedByResizable;
@@ -111,29 +156,39 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     // If all have sizes but don't fill, scale them proportionally
     const scale = usedByResizable > 0 && unsetCount === 0 ? resizableSpace / usedByResizable : 1;
 
-    setSizes(
-      children.map((c, i) => {
-        if (c.fixed || c.stable) return initial[i];
-        if (initial[i] === 0) return extraEach > 0 ? extraEach : defaultSize;
-        return initial[i] * scale;
-      }),
-    );
+    return children.map((child, index) => {
+      if (isFixedSizePanel(child)) return initial[index];
+      if (initial[index] === 0) {
+        return clampPanelSize(child, extraEach > 0 ? extraEach : defaultSize);
+      }
+      return clampPanelSize(child, initial[index] * scale);
+    });
+  }
+
+  function initSizes(usePersisted = true): void {
+    const next = computeInitialSizes(usePersisted);
+    if (next) {
+      setSizes(next);
+    }
   }
 
   /** Compute actual rendered pixel sizes from flex-grow weights + container dimensions. */
   function computeRenderedSizes(): number[] {
     const current = sizes();
-    const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
+    const totalSpace = getTotalSpace();
     const handleSpace = Math.max(0, props.children.length - 1) * 6;
     let fixedTotal = 0;
     let totalWeight = 0;
     for (let i = 0; i < props.children.length; i++) {
-      if (props.children[i].fixed || props.children[i].stable) fixedTotal += current[i];
+      const child = props.children[i];
+      if (!child) continue;
+      if (isFixedSizePanel(child)) fixedTotal += current[i];
       else totalWeight += current[i];
     }
     const available = Math.max(0, totalSpace - fixedTotal - handleSpace);
     return current.map((s, i) => {
-      if (props.children[i]?.fixed || props.children[i]?.stable) return s;
+      const child = props.children[i];
+      if (child && isFixedSizePanel(child)) return s;
       return totalWeight > 0 ? (s / totalWeight) * available : 0;
     });
   }
@@ -147,22 +202,10 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
           prev.map((s, i) => {
             const child = props.children[i];
             if (child.fixed) return s;
-            const min = child.minSize ?? 30;
-            const max = child.maxSize ?? Infinity;
-            return Math.min(max, Math.max(min, s + deltaPx));
+            return clampPanelSize(child, s + deltaPx);
           }),
         );
-        if (props.persistKey) {
-          const current = sizes();
-          const entries: Record<string, number> = {};
-          for (let i = 0; i < props.children.length; i++) {
-            const child = props.children[i];
-            if (!child.fixed) {
-              entries[`${props.persistKey}:${child.id}`] = current[i];
-            }
-          }
-          setPanelSizes(entries);
-        }
+        persistCurrentSizes();
       },
     });
 
@@ -193,7 +236,9 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     for (let i = 0; i < props.children.length; i++) {
       const child = props.children[i];
       if (!child.requestSize) continue;
-      const requested = child.requestSize();
+      const requested = clampPanelSize(child, child.requestSize(), {
+        max: getRequestedPanelResponsiveCap(i),
+      });
       if (Math.abs(next[i] - requested) < 1) continue;
 
       const diff = requested - next[i];
@@ -201,7 +246,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       let absorbed = false;
       for (let j = i + 1; j < props.children.length; j++) {
         if (!props.children[j].fixed) {
-          next[j] = Math.max(props.children[j].minSize ?? 30, next[j] - diff);
+          next[j] = Math.max(getMinimumSize(props.children[j]), next[j] - diff);
           absorbed = true;
           break;
         }
@@ -209,7 +254,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       if (!absorbed) {
         for (let j = i - 1; j >= 0; j--) {
           if (!props.children[j].fixed) {
-            next[j] = Math.max(props.children[j].minSize ?? 30, next[j] - diff);
+            next[j] = Math.max(getMinimumSize(props.children[j]), next[j] - diff);
             break;
           }
         }
@@ -220,6 +265,57 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
 
     if (changed) setSizes(next);
   });
+
+  function getRequestedPanelResponsiveCap(index: number): number {
+    if (props.fitContent || !containerRef) {
+      return Infinity;
+    }
+
+    const totalSpace = getTotalSpace();
+    if (!Number.isFinite(totalSpace) || totalSpace <= 0) {
+      return Infinity;
+    }
+
+    const handleSpace = Math.max(0, props.children.length - 1) * 6;
+    const current = untrack(() => sizes());
+    const reservedByOtherPanels = props.children.reduce((sum, child, childIndex) => {
+      if (childIndex === index) {
+        return sum;
+      }
+
+      if (isFixedSizePanel(child)) {
+        return (
+          sum +
+          clampPanelSize(child, current[childIndex] ?? child.initialSize ?? 0, {
+            fallback: 0,
+          })
+        );
+      }
+
+      return sum + getMinimumSize(child);
+    }, 0);
+
+    return Math.max(
+      getMinimumSize(props.children[index], 0),
+      totalSpace - handleSpace - reservedByOtherPanels,
+    );
+  }
+
+  function persistCurrentSizes(): void {
+    if (!props.persistKey) {
+      return;
+    }
+
+    const current = sizes();
+    const entries: Record<string, number> = {};
+    for (let i = 0; i < props.children.length; i++) {
+      const child = props.children[i];
+      if (!child.fixed) {
+        entries[`${props.persistKey}:${child.id}`] = clampPanelSize(child, current[i]);
+      }
+    }
+    setPanelSizes(entries);
+  }
 
   function findResizable(start: number, direction: -1 | 1): number {
     for (let i = start; i >= 0 && i < props.children.length; i += direction) {
@@ -258,9 +354,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
 
       if (props.fitContent) {
         // In fitContent mode, only resize the left panel — container scrolls
-        const leftMin = leftPanel?.minSize ?? 30;
-        const leftMax = leftPanel?.maxSize ?? Infinity;
-        const newLeft = Math.max(leftMin, Math.min(leftMax, startSizes[resizeLeftIdx] + delta));
+        const newLeft = clampPanelSize(leftPanel, startSizes[resizeLeftIdx] + delta);
         setSizes((prev) => {
           const next = [...prev];
           next[resizeLeftIdx] = newLeft;
@@ -272,10 +366,10 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       let newLeft = startSizes[resizeLeftIdx] + delta;
       let newRight = startSizes[resizeRightIdx] - delta;
 
-      const leftMin = leftPanel?.minSize ?? 30;
-      const leftMax = leftPanel?.maxSize ?? Infinity;
-      const rightMin = rightPanel?.minSize ?? 30;
-      const rightMax = rightPanel?.maxSize ?? Infinity;
+      const leftMin = getMinimumSize(leftPanel);
+      const leftMax = getMaximumSize(leftPanel);
+      const rightMin = getMinimumSize(rightPanel);
+      const rightMax = getMaximumSize(rightPanel);
 
       if (newLeft < leftMin) {
         newRight += newLeft - leftMin;
@@ -300,17 +394,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     function onUp(): void {
       finishActiveDrag();
 
-      if (props.persistKey) {
-        const current = sizes();
-        const entries: Record<string, number> = {};
-        for (let i = 0; i < props.children.length; i++) {
-          const child = props.children[i];
-          if (!child.fixed) {
-            entries[`${props.persistKey}:${child.id}`] = current[i];
-          }
-        }
-        setPanelSizes(entries);
-      }
+      persistCurrentSizes();
     }
 
     cancelActiveDrag = startWindowMouseDragSession({
@@ -318,6 +402,11 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       onMove,
       onUp,
     });
+  }
+
+  function resetSizes(): void {
+    initSizes(false);
+    persistCurrentSizes();
   }
 
   return (
@@ -412,6 +501,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                   return (
                     <div
                       class={`resize-handle resize-handle-${isHorizontal() ? 'h' : 'v'} ${dragging() === idx ? 'dragging' : ''}`}
+                      onDblClick={resetSizes}
                       onMouseDown={(e) => handleMouseDown(idx, e)}
                     />
                   );

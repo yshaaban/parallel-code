@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   formatKeyChord,
   getEffectiveKeyChords,
+  getKeyChordSignature,
   getKeybindingDefinition,
+  KEYBINDING_DEFINITIONS,
   parsePersistedKeybindingOverrides,
 } from './keybindings';
 
@@ -68,5 +70,35 @@ describe('keybindings', () => {
         },
       },
     });
+  });
+
+  it('keeps task reorder defaults away from native word-selection chords', () => {
+    expect(getKeybindingDefinition('task.move-left')?.defaultChords).toEqual([
+      { key: 'PageUp', cmdOrCtrl: true, shift: true },
+    ]);
+    expect(getKeybindingDefinition('task.move-right')?.defaultChords).toEqual([
+      { key: 'PageDown', cmdOrCtrl: true, shift: true },
+    ]);
+
+    const forbiddenNativeSelectionChords = new Set(['mod+shift+arrowleft', 'mod+shift+arrowright']);
+    for (const actionId of ['task.move-left', 'task.move-right'] as const) {
+      const definition = getKeybindingDefinition(actionId);
+      expect(definition).toBeDefined();
+      for (const chord of definition?.defaultChords ?? []) {
+        expect(forbiddenNativeSelectionChords.has(getKeyChordSignature(chord))).toBe(false);
+      }
+    }
+  });
+
+  it('does not ship duplicate default keybinding chords', () => {
+    const seen = new Map<string, string>();
+
+    for (const definition of KEYBINDING_DEFINITIONS) {
+      for (const chord of definition.defaultChords) {
+        const signature = getKeyChordSignature(chord);
+        expect(seen.get(signature)).toBeUndefined();
+        seen.set(signature, definition.actionId);
+      }
+    }
   });
 });

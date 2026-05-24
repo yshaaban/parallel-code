@@ -1,6 +1,7 @@
 import { batch } from 'solid-js';
 import { store, setStore } from './core';
 import { setActiveTask } from './navigation';
+import { clearSidebarFocusedProjectIfHidden } from './sidebar-sections';
 import { computeSidebarTaskOrder } from './sidebar-order';
 
 // Imperative focus registry: components register focus callbacks on mount
@@ -137,6 +138,33 @@ function hasBlockingDialog(): boolean {
   );
 }
 
+function getNavigableSidebarProjects(): typeof store.projects {
+  return store.sidebarSectionCollapsed.projects ? [] : store.projects;
+}
+
+function focusFallbackSidebarRow(
+  direction: 'up' | 'down',
+  projects: typeof store.projects,
+  sidebarTaskOrder: string[],
+): void {
+  setStore('sidebarFocusedProjectId', null);
+  setStore('sidebarFocusedTaskId', null);
+
+  if (projects.length > 0) {
+    const fallbackProject = direction === 'up' ? projects[projects.length - 1] : projects[0];
+    if (fallbackProject) {
+      setStore('sidebarFocusedProjectId', fallbackProject.id);
+    }
+    return;
+  }
+
+  const fallbackTaskId =
+    direction === 'up' ? sidebarTaskOrder[sidebarTaskOrder.length - 1] : sidebarTaskOrder[0];
+  if (fallbackTaskId) {
+    setStore('sidebarFocusedTaskId', fallbackTaskId);
+  }
+}
+
 function replayPendingFocusIfCurrent(key: string): void {
   const pendingRequest = pendingFocusRequest;
   if (!pendingRequest || pendingRequest.key !== key) {
@@ -206,6 +234,38 @@ function findInGrid(grid: string[][], cell: string): GridPos | null {
     if (col !== -1) return { row, col };
   }
   return null;
+}
+
+function getShellPanelIndex(panelId: string): number | null {
+  if (!panelId.startsWith('shell:')) {
+    return null;
+  }
+
+  const index = Number.parseInt(panelId.slice('shell:'.length), 10);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function getTerminalFamilyPanelForTask(taskId: string, currentPanel: string): string | null {
+  const targetTask = store.tasks[taskId];
+  if (!targetTask) {
+    return null;
+  }
+
+  if (currentPanel === 'ai-terminal') {
+    return 'ai-terminal';
+  }
+
+  const shellIndex = getShellPanelIndex(currentPanel);
+  if (shellIndex === null) {
+    return null;
+  }
+
+  const shellCount = targetTask.shellAgentIds.length;
+  if (shellCount === 0) {
+    return 'ai-terminal';
+  }
+
+  return `shell:${Math.min(shellIndex, shellCount - 1)}`;
 }
 
 export function getTaskFocusedPanel(taskId: string): string {
@@ -299,12 +359,19 @@ export function navigateRow(direction: 'up' | 'down'): void {
   }
 
   if (store.sidebarFocused) {
-    const { projects, sidebarFocusedProjectId, sidebarFocusedTaskId } = store;
+    clearSidebarFocusedProjectIfHidden();
+    const projects = getNavigableSidebarProjects();
+    const { sidebarFocusedProjectId, sidebarFocusedTaskId } = store;
     const sidebarTaskOrder = computeSidebarTaskOrder();
 
     if (sidebarFocusedProjectId !== null) {
       // Project mode: navigate within projects
       const projectIdx = projects.findIndex((p) => p.id === sidebarFocusedProjectId);
+      if (projectIdx === -1) {
+        focusFallbackSidebarRow(direction, projects, sidebarTaskOrder);
+        return;
+      }
+
       if (direction === 'up') {
         if (projectIdx > 0) {
           const previousProject = projects[projectIdx - 1];
@@ -346,6 +413,11 @@ export function navigateRow(direction: 'up' | 'down'): void {
         const previousTaskId = sidebarTaskOrder[currentIdx - 1];
         if (previousTaskId) {
           setStore('sidebarFocusedTaskId', previousTaskId);
+        }
+      } else if (currentIdx === -1 && sidebarTaskOrder.length > 0) {
+        const lastTaskId = sidebarTaskOrder[sidebarTaskOrder.length - 1];
+        if (lastTaskId) {
+          setStore('sidebarFocusedTaskId', lastTaskId);
         }
       }
     } else {
@@ -452,6 +524,12 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       } else if (!store.tasks[prevTaskId]) {
         focusTaskPanel(prevTaskId, defaultPanelFor(prevTaskId));
       } else {
+        const terminalFamilyPanel = getTerminalFamilyPanelForTask(prevTaskId, current);
+        if (terminalFamilyPanel) {
+          focusTaskPanel(prevTaskId, terminalFamilyPanel);
+          return;
+        }
+
         const prevGrid = buildGrid(prevTaskId);
         const prevPos = findInGrid(prevGrid, current);
         const targetRow = prevPos ? prevPos.row : pos.row;
@@ -473,6 +551,12 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       } else if (!store.tasks[nextTaskId]) {
         focusTaskPanel(nextTaskId, defaultPanelFor(nextTaskId));
       } else {
+        const terminalFamilyPanel = getTerminalFamilyPanelForTask(nextTaskId, current);
+        if (terminalFamilyPanel) {
+          focusTaskPanel(nextTaskId, terminalFamilyPanel);
+          return;
+        }
+
         const nextGrid = buildGrid(nextTaskId);
         const nextPos = findInGrid(nextGrid, current);
         const targetRow = nextPos ? nextPos.row : pos.row;
@@ -506,8 +590,11 @@ export function navigateTask(direction: 'left' | 'right'): void {
 
   const currentPanel = getTaskFocusedPanel(activePanelId);
   const targetGrid = buildGrid(targetPanelId);
-  const targetPanel =
-    findInGrid(targetGrid, currentPanel) !== null ? currentPanel : defaultPanelFor(targetPanelId);
+  let targetPanel = currentPanel;
+  if (findInGrid(targetGrid, currentPanel) === null) {
+    targetPanel =
+      getTerminalFamilyPanelForTask(targetPanelId, currentPanel) ?? defaultPanelFor(targetPanelId);
+  }
 
   focusTaskPanel(targetPanelId, targetPanel);
 }

@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createSignal, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import {
+  applyTaskReviewEvent,
+  replaceTaskReviewSnapshots,
+  resetTaskReviewProjectionStateForTests,
+} from '../app/task-review-state';
 import { IPC } from '../../electron/ipc/channels';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
@@ -66,6 +70,10 @@ vi.mock('../store/task-git-status', async () => {
 
   return {
     getTaskGitStatus: vi.fn((taskId: string) => core.store.taskGitStatus[taskId]),
+    isTaskGitStatusFresh: vi.fn(
+      (status: { freshness?: 'fresh' | 'stale' } | undefined) =>
+        status !== undefined && status.freshness !== 'stale',
+    ),
     refreshTaskGitStatusForTask: refreshTaskGitStatusForTaskMock,
   };
 });
@@ -76,6 +84,7 @@ describe('MergeDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    resetTaskReviewProjectionStateForTests();
     setStore('projects', [createTestProject({ baseBranch: 'main' })]);
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {
@@ -333,6 +342,39 @@ describe('MergeDialog', () => {
       true,
     );
   });
+
+  it('does not treat stale failed git status as authoritative after refresh settles', async () => {
+    refreshTaskGitStatusForTaskMock.mockResolvedValueOnce(true);
+    setStore('taskGitStatus', 'task-1', {
+      errorMessage: 'git status failed',
+      freshness: 'stale',
+      has_committed_changes: true,
+      has_uncommitted_changes: true,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Details: git status failed/u)).toBeDefined();
+    });
+    expect(
+      screen.queryByText(
+        'Warning: You have uncommitted changes that will NOT be included in this merge.',
+      ),
+    ).toBeNull();
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it('shows a branch mismatch warning and blocks merge when the worktree branch drifted', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {

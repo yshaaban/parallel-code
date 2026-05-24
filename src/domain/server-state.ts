@@ -15,9 +15,19 @@ import {
   isTcpPortNumber,
 } from '../lib/type-guards.js';
 
+export type WorktreeStatusFreshness = 'fresh' | 'stale';
+
+const WORKTREE_STATUS_FRESHNESS_VALUES: Record<WorktreeStatusFreshness, true> = {
+  fresh: true,
+  stale: true,
+};
+
 export interface WorktreeStatus {
   has_committed_changes: boolean;
   has_uncommitted_changes: boolean;
+  freshness?: WorktreeStatusFreshness;
+  updatedAt?: number;
+  errorMessage?: string | null;
 }
 
 interface GitStatusSyncScopedEvent {
@@ -73,7 +83,11 @@ export function isWorktreeStatus(value: unknown): value is WorktreeStatus {
 
   return (
     typeof value.has_committed_changes === 'boolean' &&
-    typeof value.has_uncommitted_changes === 'boolean'
+    typeof value.has_uncommitted_changes === 'boolean' &&
+    (value.freshness === undefined ||
+      isStringMember(value.freshness, WORKTREE_STATUS_FRESHNESS_VALUES)) &&
+    isOptionalNonNegativeInteger(value.updatedAt) &&
+    (value.errorMessage === undefined || isNullableString(value.errorMessage))
   );
 }
 

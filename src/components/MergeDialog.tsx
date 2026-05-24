@@ -11,7 +11,11 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
 import { getProject } from '../store/projects';
-import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
+import {
+  getTaskGitStatus,
+  isTaskGitStatusFresh,
+  refreshTaskGitStatusForTask,
+} from '../store/task-git-status';
 import { store } from '../store/state';
 import { normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -111,8 +115,11 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
   const mergeTargetLabel = () => mergeBaseBranch() ?? 'base branch';
   const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
-  const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
-  const gitStatusUnavailable = () => !gitStatusLoading() && !gitStatusReady();
+  const isGitStatusVerified = () =>
+    !gitStatusLoading() && gitStatusReady() && isTaskGitStatusFresh(worktreeStatus());
+  const gitStatusUnavailable = () =>
+    !gitStatusLoading() && (!gitStatusReady() || !isTaskGitStatusFresh(worktreeStatus()));
+  const gitStatusErrorMessage = () => worktreeStatus()?.errorMessage ?? '';
 
   function getRebaseBlockedReason(): string | null {
     if (!isGitStatusVerified()) {
@@ -257,6 +264,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
             <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
               Unable to verify current git status. Reopen this dialog after the worktree is
               available.
+              <Show when={gitStatusErrorMessage()}> Details: {gitStatusErrorMessage()}</Show>
             </InlineNotice>
           </Show>
           <Show when={mergeStatus.loading}>

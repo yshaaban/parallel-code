@@ -121,14 +121,14 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   {
     actionId: 'task.move-left',
     category: 'Task Actions',
-    defaultChords: [{ key: 'ArrowLeft', cmdOrCtrl: true, shift: true }],
+    defaultChords: [{ key: 'PageUp', cmdOrCtrl: true, shift: true }],
     description: 'Move task left',
     global: true,
   },
   {
     actionId: 'task.move-right',
     category: 'Task Actions',
-    defaultChords: [{ key: 'ArrowRight', cmdOrCtrl: true, shift: true }],
+    defaultChords: [{ key: 'PageDown', cmdOrCtrl: true, shift: true }],
     description: 'Move task right',
     global: true,
   },

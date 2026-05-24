@@ -5,10 +5,9 @@ import {
   type GitStatusSyncSnapshotEvent,
   type WorktreeStatus,
 } from '../domain/server-state';
+import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
 import { getProjectPath } from './projects';
-import { setStore, store } from './state';
-import { assertNever } from '../lib/assert-never';
 import {
   createServerStateVersionTracker,
   getServerStatePayloadVersion,
@@ -18,6 +17,7 @@ import {
   shouldApplyServerStateEventVersion,
   shouldApplyServerStateReplacement,
 } from './server-state-versioning';
+import { setStore, store } from './state';
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;
@@ -28,6 +28,7 @@ export interface GitStatusSyncTarget {
 const recentTaskGitStatusPollAt = new Map<string, number>();
 const gitStatusVersionTracker = createServerStateVersionTracker();
 const gitStatusRefreshGenerationByTaskId = new Map<string, number>();
+const GENERIC_GIT_STATUS_ERROR = 'Unable to verify current git status.';
 
 function normalizeWorktreePath(worktreePath: string): string {
   return worktreePath.replace(/\/+$/, '');
@@ -106,6 +107,49 @@ export function getTaskGitStatus(taskId: string): WorktreeStatus | undefined {
   return store.taskGitStatus[taskId];
 }
 
+export function isTaskGitStatusFresh(status: WorktreeStatus | undefined): boolean {
+  return status !== undefined && status.freshness !== 'stale';
+}
+
+function createFreshWorktreeStatus(status: WorktreeStatus, updatedAt: number): WorktreeStatus {
+  return {
+    ...status,
+    errorMessage: null,
+    freshness: 'fresh',
+    updatedAt,
+  };
+}
+
+function getGitStatusRefreshErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+
+  return GENERIC_GIT_STATUS_ERROR;
+}
+
+function createStaleWorktreeStatus(
+  previousStatus: WorktreeStatus | undefined,
+  error: unknown,
+): WorktreeStatus {
+  const staleStatus: WorktreeStatus = {
+    has_committed_changes: previousStatus?.has_committed_changes ?? false,
+    has_uncommitted_changes: previousStatus?.has_uncommitted_changes ?? false,
+    errorMessage: getGitStatusRefreshErrorMessage(error),
+    freshness: 'stale',
+  };
+
+  if (previousStatus?.updatedAt !== undefined) {
+    staleStatus.updatedAt = previousStatus.updatedAt;
+  }
+
+  return staleStatus;
+}
+
 export async function refreshTaskGitStatusForTask(taskId: string): Promise<boolean> {
   const task = store.tasks[taskId];
   if (!task) {
@@ -124,11 +168,21 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
       return false;
     }
 
-    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
-    setStore('taskGitStatus', taskId, status);
+    const refreshedAt = Date.now();
+    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), refreshedAt);
+    setStore('taskGitStatus', taskId, createFreshWorktreeStatus(status, refreshedAt));
     return true;
-  } catch {
+  } catch (error) {
     // Worktree may not exist yet or was removed.
+    if (gitStatusRefreshGenerationByTaskId.get(taskId) !== refreshGeneration) {
+      return false;
+    }
+
+    setStore(
+      'taskGitStatus',
+      taskId,
+      createStaleWorktreeStatus(store.taskGitStatus[taskId], error),
+    );
     return false;
   }
 }
@@ -142,7 +196,9 @@ function applyGitStatusPush(
     return;
   }
 
-  recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), Date.now());
+  const refreshedAt = Date.now();
+  const freshStatus = createFreshWorktreeStatus(status, refreshedAt);
+  recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), refreshedAt);
 
   for (const task of Object.values(store.tasks)) {
     if (task.worktreePath !== worktreePath) {
@@ -153,7 +209,7 @@ function applyGitStatusPush(
       task.id,
       (gitStatusRefreshGenerationByTaskId.get(task.id) ?? 0) + 1,
     );
-    setStore('taskGitStatus', task.id, status);
+    setStore('taskGitStatus', task.id, freshStatus);
   }
   noteServerStateEventVersion(gitStatusVersionTracker, worktreePath, stateVersion);
 }
@@ -191,9 +247,11 @@ export function replaceGitStatusSnapshots(
     return;
   }
 
+  const refreshedAt = Date.now();
   const statusByWorktreePath = new Map<string, GitStatusSyncSnapshotEvent['status']>();
   for (const snapshot of snapshots) {
     statusByWorktreePath.set(snapshot.worktreePath, snapshot.status);
+    recentTaskGitStatusPollAt.set(normalizeWorktreePath(snapshot.worktreePath), refreshedAt);
   }
 
   setStore('taskGitStatus', () => {
@@ -205,7 +263,7 @@ export function replaceGitStatusSnapshots(
       );
       const status = statusByWorktreePath.get(task.worktreePath);
       if (status) {
-        next[task.id] = status;
+        next[task.id] = createFreshWorktreeStatus(status, refreshedAt);
       }
     }
     return next;

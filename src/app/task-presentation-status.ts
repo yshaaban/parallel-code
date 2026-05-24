@@ -394,6 +394,7 @@ function createAttentionEntry(
   preview: string,
   lastOutputAt: number | null,
   updatedAt: number,
+  label?: string,
 ): TaskAttentionEntry {
   const metadata = getAttentionMetadata(reason);
 
@@ -402,7 +403,7 @@ function createAttentionEntry(
     dotStatus,
     focusPanel: getFocusPanel(taskId, agentId, reason),
     group: metadata.group,
-    label: metadata.label,
+    label: label ?? metadata.label,
     lastOutputAt,
     preview,
     reason,
@@ -430,6 +431,7 @@ function createCandidateFromState(args: {
   taskId: string;
   agentId: string;
   dotStatus: TaskDotStatus;
+  label?: string;
   reason: TaskAttentionReason | null;
   state: AgentSupervisionState;
   preview: string;
@@ -447,6 +449,7 @@ function createCandidateFromState(args: {
           args.preview,
           args.lastOutputAt,
           args.updatedAt,
+          args.label,
         )
       : null,
     dotStatus: args.dotStatus,
@@ -584,13 +587,17 @@ function getTaskStepsCandidate(taskId: string): TaskPresentationCandidate | null
     return null;
   }
 
+  if (listTaskSupervisionSnapshots(taskId, true).some((snapshot) => snapshot.state === 'active')) {
+    return null;
+  }
+
   const task = store.tasks[taskId];
   const agentId = task?.agentIds[0] ?? task?.shellAgentIds[0];
   if (!agentId) {
     return null;
   }
 
-  return createCandidateFromState({
+  const candidateArgs: Parameters<typeof createCandidateFromState>[0] = {
     taskId,
     agentId,
     dotStatus: 'ready',
@@ -599,7 +606,12 @@ function getTaskStepsCandidate(taskId: string): TaskPresentationCandidate | null
     preview: summary.preview ?? summary.latestStep?.summary ?? '',
     lastOutputAt: null,
     updatedAt: summary.updatedAt,
-  });
+  };
+  if (summary.latestStep?.status === 'awaiting_review') {
+    candidateArgs.label = 'Review';
+  }
+
+  return createCandidateFromState(candidateArgs);
 }
 
 function pickBestCandidate(

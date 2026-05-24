@@ -456,7 +456,9 @@ function DiffLineView(props: {
               'padding-right': '8px',
             }}
           >
-            {highlightSearchMatches(props.line.content, props.searchQuery)}
+            <span data-diff-line-text="true">
+              {highlightSearchMatches(props.line.content, props.searchQuery)}
+            </span>
           </span>
         }
       >
@@ -467,9 +469,13 @@ function DiffLineView(props: {
               'overflow-wrap': 'break-word',
               'padding-right': '8px',
             }}
-            // eslint-disable-next-line solid/no-innerhtml -- HTML comes from the local syntax highlighter
-            innerHTML={highlightSearchInHtml(highlightedHtml(), props.searchQuery)}
-          />
+          >
+            <span
+              data-diff-line-text="true"
+              // eslint-disable-next-line solid/no-innerhtml -- HTML comes from the local syntax highlighter
+              innerHTML={highlightSearchInHtml(highlightedHtml(), props.searchQuery)}
+            />
+          </span>
         )}
       </Show>
     </div>
@@ -1191,6 +1197,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   const [pendingSelectionKey, setPendingSelectionKey] = createSignal<string | null>(null);
   const sectionRefs = new Map<string, HTMLDivElement>();
   let containerRef: HTMLDivElement | undefined;
+  let selectionStartedOnDiffText = false;
   let dimFrame: number | undefined;
   let scrollToPathFrame: number | undefined;
   let searchFrame: number | undefined;
@@ -1301,7 +1308,28 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
     });
   });
 
-  function handleMouseUp(): void {
+  function isDiffTextPointerTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLElement && target.closest('[data-diff-line-text]') !== null;
+  }
+
+  function handleMouseDown(event: MouseEvent): void {
+    selectionStartedOnDiffText = isDiffTextPointerTarget(event.target);
+  }
+
+  function handleDoubleClick(event: MouseEvent): void {
+    if (!isDiffTextPointerTarget(event.target)) {
+      selectionStartedOnDiffText = false;
+    }
+  }
+
+  function handleMouseUp(event: MouseEvent): void {
+    const shouldHandleSelection =
+      selectionStartedOnDiffText || isDiffTextPointerTarget(event.target);
+    selectionStartedOnDiffText = false;
+    if (!shouldHandleSelection) {
+      return;
+    }
+
     const selection = getDiffSelection();
     if (!selection) {
       return;
@@ -1349,7 +1377,9 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
     <div
       ref={containerRef}
       tabIndex={0}
-      onMouseUp={() => handleMouseUp()}
+      onDblClick={handleDoubleClick}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
       style={{
         height: '100%',
         'overflow-y': 'auto',

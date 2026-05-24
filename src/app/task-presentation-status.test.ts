@@ -442,6 +442,21 @@ describe('task presentation status', () => {
     expect(getTaskActivityStatus('task-1', 9_500)).toBe('live');
   });
 
+  it('uses local shell output to show live activity before supervision catches up', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], shellAgentIds: ['shell-1'] }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent(),
+      'shell-1': createTestAgent({ id: 'shell-1' }),
+    });
+
+    markAgentOutput('shell-1', new TextEncoder().encode('npm run dev\n'), 'task-1');
+
+    expect(getTaskActivityStatus('task-1', Date.now())).toBe('live');
+  });
+
   it('includes shell lifecycle when deriving task presentation status', () => {
     resetStoreForTest();
     setStore('tasks', {
@@ -649,12 +664,65 @@ describe('task presentation status', () => {
       expect.objectContaining({
         attention: expect.objectContaining({
           focusPanel: 'prompt',
+          label: 'Review',
           preview: 'Review the diff and send the next prompt',
           reason: 'ready-for-next-step',
         }),
         dotStatus: 'ready',
       }),
     );
+  });
+
+  it('keeps active supervision busy instead of promoting awaiting-review task steps', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        stepsTracking: true,
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent(),
+    });
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: null,
+        isShell: false,
+        lastOutputAt: 4_800,
+        preview: 'Still running tests',
+        state: 'active',
+        taskId: 'task-1',
+        updatedAt: 4_800,
+      },
+    });
+    setStore('taskStepSummaries', {
+      'task-1': {
+        taskId: 'task-1',
+        trackingEnabled: true,
+        revisionId: 'steps::review',
+        state: 'ready',
+        stepCount: 1,
+        preview: 'Review the diff',
+        nextAction: 'Review the diff',
+        latestStep: {
+          summary: 'Awaiting review',
+          status: 'awaiting_review',
+          next: 'Review the diff',
+          timestamp: '2026-04-17T08:00:00.000Z',
+        },
+        errorMessage: null,
+        updatedAt: 5_000,
+      },
+    });
+
+    expect(getTaskPresentationStatus('task-1')).toEqual(
+      expect.objectContaining({
+        attention: null,
+        dotStatus: 'busy',
+      }),
+    );
+    expect(getTaskActivityStatus('task-1', 5_500)).toBe('live');
   });
 
   it('does not map completed task-step summaries into ready-for-next-step attention', () => {

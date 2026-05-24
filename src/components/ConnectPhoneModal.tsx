@@ -29,6 +29,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
   const titleId = createUniqueId();
   const electronRuntime = isElectronRuntime();
   const [qrDataUrl, setQrDataUrl] = createSignal<string | null>(null);
+  const [qrError, setQrError] = createSignal<string | null>(null);
   const [starting, setStarting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [copied, setCopied] = createSignal(false);
@@ -56,6 +57,18 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
   createFocusRestore(() => props.open);
 
+  function getQrPlaceholderBorder(): string {
+    return qrError() ? theme.error : theme.border;
+  }
+
+  function getQrPlaceholderText(): string {
+    return qrError() ?? 'Generating QR code...';
+  }
+
+  function getQrPlaceholderTone(): string {
+    return qrError() ? theme.error : theme.fgMuted;
+  }
+
   function nextQrGeneration(): number {
     qrGeneration += 1;
     return qrGeneration;
@@ -80,6 +93,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
       }
 
       setQrDataUrl(dataUrl);
+      setQrError(null);
     } catch (error) {
       if (generation !== qrGeneration) {
         return;
@@ -87,6 +101,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
       console.error('[ConnectPhoneModal] QR generation failed:', error);
       setQrDataUrl(null);
+      setQrError('QR code unavailable');
     }
   }
 
@@ -96,10 +111,12 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
     if (!props.open || !url) {
       invalidateQrGeneration();
       setQrDataUrl(null);
+      setQrError(null);
       return;
     }
 
     setQrDataUrl(null);
+    setQrError(null);
     void generateQr(url);
   });
 
@@ -313,6 +330,29 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                     style={{ width: '200px', height: '200px', 'border-radius': '8px' }}
                   />
                 )}
+              </Show>
+              <Show when={!qrDataUrl()}>
+                <div
+                  role="status"
+                  aria-live="polite"
+                  aria-label={qrError() ?? 'Generating connection QR code'}
+                  style={{
+                    width: '200px',
+                    height: '200px',
+                    'border-radius': '8px',
+                    border: `1px solid ${getQrPlaceholderBorder()}`,
+                    background: theme.bgInput,
+                    color: getQrPlaceholderTone(),
+                    display: 'flex',
+                    'align-items': 'center',
+                    'justify-content': 'center',
+                    'text-align': 'center',
+                    padding: '16px',
+                    ...typography.meta,
+                  }}
+                >
+                  {getQrPlaceholderText()}
+                </div>
               </Show>
 
               {/* URL */}

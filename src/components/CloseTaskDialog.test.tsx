@@ -52,6 +52,10 @@ vi.mock('../store/task-git-status', async () => {
 
   return {
     getTaskGitStatus: vi.fn((taskId: string) => core.store.taskGitStatus[taskId]),
+    isTaskGitStatusFresh: vi.fn(
+      (status: { freshness?: 'fresh' | 'stale' } | undefined) =>
+        status !== undefined && status.freshness !== 'stale',
+    ),
     refreshTaskGitStatusForTask: refreshTaskGitStatusForTaskMock,
   };
 });
@@ -224,5 +228,24 @@ describe('CloseTaskDialog', () => {
     expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
       false,
     );
+  });
+
+  it('does not treat stale failed git status as authoritative after refresh settles', async () => {
+    refreshTaskGitStatusForTaskMock.mockResolvedValueOnce(true);
+    setStore('taskGitStatus', 'task-1', {
+      errorMessage: 'git status failed',
+      freshness: 'stale',
+      has_committed_changes: true,
+      has_uncommitted_changes: true,
+    });
+
+    render(() => <CloseTaskDialog open task={createTestTask()} onDone={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Details: git status failed/u)).toBeDefined();
+    });
+    expect(
+      screen.queryByText('Warning: There are uncommitted changes that will be permanently lost.'),
+    ).toBeNull();
   });
 });

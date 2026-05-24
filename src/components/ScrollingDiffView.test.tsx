@@ -52,6 +52,56 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   };
 }
 
+type SingleLineDiffViewRender = ReturnType<typeof render> & {
+  lineText: () => HTMLElement;
+  reviewSession: ReviewSession;
+  scrollContainer: () => HTMLDivElement;
+};
+
+function mockSingleLineDiffSelection(): void {
+  getDiffSelectionMock.mockReturnValue({
+    filePath: 'src/demo.ts',
+    startLine: 6,
+    endLine: 6,
+    selectedText: 'line 6',
+  });
+}
+
+function renderSingleLineDiffView(reviewSession = createReviewSession()): SingleLineDiffViewRender {
+  const result = render(() => (
+    <ScrollingDiffView
+      file={createChangedFile()}
+      files={[
+        {
+          path: 'src/demo.ts',
+          status: 'M',
+          binary: false,
+          hunks: [
+            {
+              oldStart: 6,
+              oldCount: 1,
+              newStart: 6,
+              newCount: 1,
+              lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
+            },
+          ],
+        },
+      ]}
+      request={{ worktreePath: '/tmp/task' }}
+      reviewSession={reviewSession}
+      scrollToPath={null}
+      startAskSession={startAskSessionMock}
+    />
+  ));
+
+  return {
+    ...result,
+    lineText: () => screen.getByText('line 6'),
+    reviewSession,
+    scrollContainer: () => result.container.querySelector('[tabindex="0"]') as HTMLDivElement,
+  };
+}
+
 vi.mock('../app/review-diffs', () => ({
   fetchTaskFileDiff: fetchTaskFileDiffMock,
 }));
@@ -315,7 +365,7 @@ describe('ScrollingDiffView', () => {
       />
     ));
 
-    const lineSpan = screen.getByText(/this is a very long diff line/i).closest('span');
+    const lineSpan = screen.getByText(/this is a very long diff line/i).parentElement;
     expect(lineSpan?.getAttribute('style')).toContain('white-space:pre-wrap');
     expect(lineSpan?.getAttribute('style')).toContain('overflow-wrap:break-word');
   });
@@ -353,41 +403,11 @@ describe('ScrollingDiffView', () => {
   });
 
   it('adds an inline review comment from the current diff selection', async () => {
-    const reviewSession = createReviewSession();
-    getDiffSelectionMock.mockReturnValue({
-      filePath: 'src/demo.ts',
-      startLine: 6,
-      endLine: 6,
-      selectedText: 'line 6',
-    });
+    mockSingleLineDiffSelection();
+    const { lineText } = renderSingleLineDiffView();
 
-    render(() => (
-      <ScrollingDiffView
-        file={createChangedFile()}
-        files={[
-          {
-            path: 'src/demo.ts',
-            status: 'M',
-            binary: false,
-            hunks: [
-              {
-                oldStart: 6,
-                oldCount: 1,
-                newStart: 6,
-                newCount: 1,
-                lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
-              },
-            ],
-          },
-        ]}
-        request={{ worktreePath: '/tmp/task' }}
-        reviewSession={reviewSession}
-        scrollToPath={null}
-        startAskSession={startAskSessionMock}
-      />
-    ));
-
-    fireEvent.mouseUp(screen.getByText('line 6'));
+    fireEvent.mouseDown(lineText());
+    fireEvent.mouseUp(lineText());
 
     const commentInput = await screen.findByPlaceholderText('Add review comment...');
 
@@ -397,6 +417,30 @@ describe('ScrollingDiffView', () => {
     fireEvent.keyDown(commentInput, { key: 'Enter' });
 
     await waitForVisibleText('Need more context here');
+  });
+
+  it('ignores stale selections when blank diff space is clicked', async () => {
+    mockSingleLineDiffSelection();
+    const { reviewSession, scrollContainer } = renderSingleLineDiffView();
+    const diffContainer = scrollContainer();
+
+    fireEvent.mouseDown(diffContainer);
+    fireEvent.doubleClick(diffContainer);
+    fireEvent.mouseUp(diffContainer);
+
+    expect(getDiffSelectionMock).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText('Add review comment...')).toBeNull();
+    expect(reviewSession.pendingSelection()).toBeNull();
+  });
+
+  it('preserves normal diff text selection after the pointer starts on line text', async () => {
+    mockSingleLineDiffSelection();
+    const { lineText, scrollContainer } = renderSingleLineDiffView();
+
+    fireEvent.mouseDown(lineText());
+    fireEvent.mouseUp(scrollContainer());
+
+    expect(await screen.findByPlaceholderText('Add review comment...')).toBeDefined();
   });
 
   it('indexes inline review insertions once for rendered diff lines', async () => {
@@ -465,41 +509,9 @@ describe('ScrollingDiffView', () => {
   });
 
   it('restores the scroll position when the first review comment opens the sidebar', async () => {
-    const reviewSession = createReviewSession();
-    getDiffSelectionMock.mockReturnValue({
-      filePath: 'src/demo.ts',
-      startLine: 6,
-      endLine: 6,
-      selectedText: 'line 6',
-    });
-
-    render(() => (
-      <ScrollingDiffView
-        file={createChangedFile()}
-        files={[
-          {
-            path: 'src/demo.ts',
-            status: 'M',
-            binary: false,
-            hunks: [
-              {
-                oldStart: 6,
-                oldCount: 1,
-                newStart: 6,
-                newCount: 1,
-                lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
-              },
-            ],
-          },
-        ]}
-        request={{ worktreePath: '/tmp/task' }}
-        reviewSession={reviewSession}
-        scrollToPath={null}
-        startAskSession={startAskSessionMock}
-      />
-    ));
-
-    const scrollContainer = screen.getByText('line 6').closest('[tabindex="0"]') as HTMLDivElement;
+    mockSingleLineDiffSelection();
+    const { lineText, scrollContainer: getScrollContainer } = renderSingleLineDiffView();
+    const scrollContainer = getScrollContainer();
     let currentScrollTop = 120;
     Object.defineProperty(scrollContainer, 'scrollTop', {
       configurable: true,
@@ -508,7 +520,8 @@ describe('ScrollingDiffView', () => {
         currentScrollTop = value;
       },
     });
-    fireEvent.mouseUp(screen.getByText('line 6'));
+    fireEvent.mouseDown(lineText());
+    fireEvent.mouseUp(lineText());
 
     const commentInput = await screen.findByPlaceholderText('Add review comment...');
     scrollContainer.scrollTop = 120;

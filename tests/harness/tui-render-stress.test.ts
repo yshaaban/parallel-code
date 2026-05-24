@@ -59,6 +59,11 @@ async function waitForOutputMatch(
   throw new Error(`Timed out waiting for fixture output ${String(pattern)}`);
 }
 
+function waitPatternThroughRestoreCursor(text: string): RegExp {
+  const escapedText = text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`${escapedText}[\\s\\S]*\\u001b\\[u`, 'u');
+}
+
 async function stopFixture(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
     activeChildren.delete(child);
@@ -84,7 +89,10 @@ describe('tui-render-stress fixture', () => {
     const fixture = spawnFixture(['control-heavy', '256', '96', '32', '8', '0']);
 
     try {
-      const stdout = await waitForOutputMatch(fixture.getStdout, /control-redraw fixture/u);
+      const stdout = await waitForOutputMatch(
+        fixture.getStdout,
+        waitPatternThroughRestoreCursor('control-redraw fixture'),
+      );
 
       expect(stdout).toContain('\u001b[?1049h');
       expect(stdout).toMatch(new RegExp(String.raw`\u001b\[[0-9;]*H`, 'u'));
@@ -123,7 +131,10 @@ describe('tui-render-stress fixture', () => {
     const fixture = spawnFixture(['prompt-middle', '256', '96', '32', '8', '0']);
 
     try {
-      const stdout = await waitForOutputMatch(fixture.getStdout, /input>/u);
+      const stdout = await waitForOutputMatch(
+        fixture.getStdout,
+        waitPatternThroughRestoreCursor('input>'),
+      );
 
       expect(stdout).toContain('\u001b[?1049h');
       expect(stdout).toContain('\u001b[s');
@@ -143,7 +154,7 @@ describe('tui-render-stress fixture', () => {
     try {
       const stdout = await waitForOutputMatch(
         fixture.getStdout,
-        /resize-friendly terminal repaint/u,
+        waitPatternThroughRestoreCursor('resize-friendly terminal repaint'),
       );
 
       expect(stdout).toContain('\u001b[?1049h');
