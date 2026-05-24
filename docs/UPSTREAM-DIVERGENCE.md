@@ -51,12 +51,12 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-05-08`, this repo has:
+As of `2026-05-24`, this repo has:
 
-- current upstream head: `7aaf640`
-- last reviewed upstream head before the latest intake: `af685eb`
+- current upstream head: `6097655`
+- last reviewed upstream head before the latest intake: `7aaf640`
 - last shared graph ancestor with upstream: `b250446`
-- latest upstream delta under active catch-up: `af685eb..7aaf640` (`3` commits)
+- latest upstream delta under active catch-up: `7aaf640..6097655` (`54` commits)
 
 Important nuance:
 
@@ -78,6 +78,10 @@ Important nuance:
   `af685eb..7aaf640`
 - the detailed per-commit ledger for that follow-up delta also lives in
   [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
+- the `2026-05-24` catch-up intake covers the new upstream-only span
+  `7aaf640..6097655`
+- the detailed per-commit ledger for that delta lives in
+  [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md)
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
 - the `2026-04-17` catch-up pass is now materially closed:
@@ -95,6 +99,8 @@ The detailed per-commit ledger for the `2026-04-17` pass lives in
 [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md).
 The detailed per-commit ledger for the `2026-05-08` pass lives in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md).
+The detailed per-commit ledger for the `2026-05-24` pass lives in
+[UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md).
 The consolidated per-commit action ledger for the full upstream-only range now lives in
 [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md).
 The execution plan for bringing those changes over lives in
@@ -109,6 +115,7 @@ The detailed historical port record lives in:
 - [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
 - [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
 - [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md)
+- [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md)
 - [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md)
 
 The main question for this file is narrower: what is still open right now?
@@ -119,18 +126,52 @@ closed. The `2026-05-08` catch-up pass covers `a0f5280..7aaf640`, tracked in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
 selective behavior catch-up work.
 
-After fetching on `2026-05-08`, `origin/main` was `7aaf640`, so there were `0` unreviewed
-upstream commits after the documented catch-up head. The local branch still reports graph
-divergence from `origin/main`; that is expected because this fork ports upstream behavior into
-local architecture owners rather than merging upstream history directly.
+The latest catch-up review covers `7aaf640..6097655`, tracked in
+[UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md). After fetching on
+`2026-05-24`, `origin/main` was `6097655`, so there were `0` unreviewed upstream commits after the
+documented catch-up head. The local branch still reports graph divergence from `origin/main`; that
+is expected because this fork ports upstream behavior into local architecture owners rather than
+merging upstream history directly.
 
-What remains is not a direct-port queue. Existing-worktree import, PR check watching, configurable
-keybindings, changed-files commit-history navigation, coverage radar, and MiniMax are now handled
-through local redesigns in the current catch-up work. The intentionally deferred product decisions
-are non-git projects, Docker/task-container runner ideas, and theme/focus-mode polish; those require
-separate local product decisions and architecture-first designs before implementation.
+The bring/remap queue from `7aaf640..6097655` landed locally without merging upstream history
+directly. The local result is recorded by behavior and by local implementation commits:
+
+- diff and changed-file correctness: blank-area diff double-click handling, selectable diff text,
+  changed-file chrome selection cleanup, and merge-base-to-working-tree counts
+- prompt and terminal interaction reliability: multiline bracketed-paste-aware prompt auto-send,
+  line-count-scaled submit delay, terminal-family focus navigation, and task-reorder keybindings
+  moved off native word-selection chords
+- window/session safety: three-choice running-session close decision and renderer close-handling
+  acknowledgement that clears the backend force-close fallback
+- backend/IPC hardening: strict branch validation, atomic write temp-file cleanup, and defensive
+  agent argument copying
+- sidebar/panel state: collapsed-project focus cleanup, hidden-project keyboard navigation, finite
+  persisted-size guards, double-click reset, and responsive request-size caps
+- dependency/security hygiene: local lock graph now resolves `ws@8.21.0`, `mermaid@11.15.0`, and
+  transitive `qs@6.15.2`
+- status/attention verification: shell activity, ready/review attention, busy precedence,
+  git-status freshness/error handling, and mobile QR stale-result/placeholder behavior
+
+The intentionally deferred product decisions now include non-git projects, Docker/task-container
+runner ideas, theme/focus-mode polish, multi-agent task terminals, MCP/coordinator orchestration,
+filterable branch selection, custom themes/appearance mode, and auto-update. Those require separate
+local product decisions and architecture-first designs before implementation.
 
 Recently landed locally:
+
+- `2026-05-24` upstream catch-up (`7aaf640..6097655`):
+  - `bafbd61`
+  - `cc445b4`
+  - `7e01cbe`
+  - `c4cbbef`
+  - status: `landed`
+  - reason: the upstream behaviors that fit current local ownership were remapped into backend
+    git/IPC owners, window/session owners, app workflow owners, store/presentation owners, and
+    focused component owners. Large product directions remain design-only instead of being
+    direct-ported.
+  - validation: targeted node and Solid owner tests, `npm run typecheck`, `git diff --check`,
+    `npm ls --package-lock-only ws mermaid qs`, `npm run test:browser:terminal`,
+    `npm run check -- --pretty false`, and `npm test` have passed.
 
 - backend git correctness family:
   - `c40d743`
