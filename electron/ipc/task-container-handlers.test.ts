@@ -53,6 +53,11 @@ describe('createTaskContainerIpcHandlers', () => {
         composeFile: 'compose.yaml',
         previewPorts: [{ label: 'Web', port: 3000, protocol: 'http' }],
         requiredEnvFiles: ['.env.local'],
+        runnerProfile: {
+          dockerfile: 'docker/Dockerfile',
+          image: 'parallel-code-agent:latest',
+          kind: 'docker',
+        },
       },
       projectPath: '/tmp/project',
       taskId: 'task-1',
@@ -64,6 +69,11 @@ describe('createTaskContainerIpcHandlers', () => {
         composeFile: 'compose.yaml',
         previewPorts: [{ label: 'Web', port: 3000, protocol: 'http' }],
         requiredEnvFiles: ['.env.local'],
+        runnerProfile: {
+          dockerfile: 'docker/Dockerfile',
+          image: 'parallel-code-agent:latest',
+          kind: 'docker',
+        },
       },
       projectPath: '/tmp/project',
       taskId: 'task-1',
@@ -93,6 +103,43 @@ describe('createTaskContainerIpcHandlers', () => {
         worktreePath: '/tmp/project/.worktrees/task-1',
       }),
     ).toThrow('projectContainerConfig.previewPorts[0].port must be an integer');
+
+    expect(inspectTaskContainersMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid runner profiles before reaching the backend owner', async () => {
+    const handlers = createTaskContainerIpcHandlers(createContext());
+
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: {
+          runnerProfile: 'docker',
+        },
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig.runnerProfile must be an object');
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: {
+          runnerProfile: { kind: 'podman' },
+        },
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig.runnerProfile.kind must be "compose" or "docker"');
+    expect(() =>
+      handlers[IPC.ContainersInspectTask]?.({
+        projectContainerConfig: {
+          runnerProfile: { dockerfile: '../Dockerfile', kind: 'docker' },
+        },
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('projectContainerConfig.runnerProfile.dockerfile must not contain ".."');
 
     expect(inspectTaskContainersMock).not.toHaveBeenCalled();
   });

@@ -20,6 +20,7 @@ import {
   startTaskContainers,
   stopTaskContainers,
   destroyTaskContainers,
+  __taskContainerTestExports,
 } from './task-containers.js';
 
 const tempDirs: string[] = [];
@@ -153,6 +154,117 @@ describe('task-containers', () => {
 
     expect(result.status).toBe('not_configured');
     expect(result.issues).toEqual([expect.objectContaining({ code: 'compose_file_missing' })]);
+    expect(result.runnerProfile).toMatchObject({
+      activeProfile: 'compose',
+      fallbackProfile: 'compose',
+      source: 'default',
+      status: 'not_configured',
+    });
+  });
+
+  it('resolves the default runner profile as a Compose fallback without requiring Docker', () => {
+    expect(__taskContainerTestExports.resolveTaskContainerRunnerProfile(undefined)).toEqual({
+      activeProfile: 'compose',
+      configuredProfile: null,
+      fallbackProfile: 'compose',
+      message:
+        'No runner profile is configured; using the Docker Compose task-container profile when a supported Compose file is present.',
+      source: 'default',
+      status: 'not_configured',
+    });
+  });
+
+  it('reports an explicitly configured Compose runner profile in inspect truth', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree();
+    const runtime = createRuntime();
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          runnerProfile: { kind: 'compose' },
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('ready');
+    expect(result.runnerProfile).toEqual({
+      activeProfile: 'compose',
+      configuredProfile: { kind: 'compose' },
+      fallbackProfile: null,
+      message: null,
+      source: 'project-config',
+      status: 'resolved',
+    });
+    expect(runtime.getDockerRuntimeAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports Docker runner profiles as unsupported without attempting Docker execution', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree();
+    const runtime = createRuntime();
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          runnerProfile: {
+            dockerfile: 'docker/Dockerfile',
+            image: 'parallel-code-agent:latest',
+            kind: 'docker',
+          },
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('unsupported');
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'unsupported_runner_profile',
+        message:
+          'Docker runner profiles require a separate backend runner execution policy and are not supported by task-container lifecycle yet.',
+      }),
+    ]);
+    expect(result.runnerProfile).toEqual({
+      activeProfile: null,
+      configuredProfile: {
+        dockerfile: 'docker/Dockerfile',
+        image: 'parallel-code-agent:latest',
+        kind: 'docker',
+      },
+      fallbackProfile: null,
+      message:
+        'Docker runner profiles require a separate backend runner execution policy and are not supported by task-container lifecycle yet.',
+      source: 'project-config',
+      status: 'unsupported',
+    });
+    expect(runtime.getDockerRuntimeAvailability).not.toHaveBeenCalled();
+    expect(runtime.getComposeRuntimeAvailability).not.toHaveBeenCalled();
+    expect(runtime.getComposeConfig).not.toHaveBeenCalled();
+    expect(runtime.composeUp).not.toHaveBeenCalled();
+
+    const startResult = await startTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          runnerProfile: {
+            dockerfile: 'docker/Dockerfile',
+            image: 'parallel-code-agent:latest',
+            kind: 'docker',
+          },
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(startResult.status).toBe('unsupported');
+    expect(runtime.getDockerRuntimeAvailability).not.toHaveBeenCalled();
+    expect(runtime.getComposeConfig).not.toHaveBeenCalled();
+    expect(runtime.composeUp).not.toHaveBeenCalled();
   });
 
   it('refuses configured compose files that resolve outside the task worktree', async () => {

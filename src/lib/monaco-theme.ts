@@ -1,7 +1,7 @@
 import type * as Monaco from 'monaco-editor';
 import type { LookPreset } from './look';
 
-interface PresetColors {
+export interface PresetColors {
   bgElevated: string;
   fg: string;
   fgMuted: string;
@@ -19,7 +19,7 @@ const presetColors: Record<LookPreset, PresetColors> = {
     fgMuted: '#8b8d93',
     fgSubtle: '#6d7076',
     border: '#2c2e31',
-    accent: '#4c6fff',
+    accent: '#3f62ff',
   },
   graphite: {
     bgElevated: '#121820',
@@ -54,14 +54,18 @@ const presetColors: Record<LookPreset, PresetColors> = {
     accent: '#50e2d3',
   },
   minimal: {
-    bgElevated: '#161514',
-    fg: '#e8e8e8',
-    fgMuted: '#b8b8b8',
-    fgSubtle: '#909090',
-    border: '#2a2a2a',
+    bgElevated: '#1d1c1b',
+    fg: '#ececec',
+    fgMuted: '#c0c0c0',
+    fgSubtle: '#999999',
+    border: '#333333',
     accent: '#c8bfa0',
   },
 };
+
+export function getMonacoPresetColorsForTests(preset: LookPreset): PresetColors {
+  return presetColors[preset];
+}
 
 type MonacoEditorNamespace = typeof Monaco.editor;
 

@@ -17,9 +17,40 @@ import {
   startTaskContainers,
   stopTaskContainers,
 } from './task-containers.js';
-import type { ProjectContainerConfig } from '../../src/domain/task-containers.js';
+import type {
+  ProjectContainerConfig,
+  ProjectContainerRunnerProfileConfig,
+} from '../../src/domain/task-containers.js';
 import { isTaskPortProtocol } from '../../src/domain/server-state.js';
 import { isRecord } from '../../src/lib/type-guards.js';
+
+function normalizeRunnerProfile(value: unknown): ProjectContainerRunnerProfileConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw new BadRequestError('projectContainerConfig.runnerProfile must be an object');
+  }
+
+  if (value.kind !== 'compose' && value.kind !== 'docker') {
+    throw new BadRequestError(
+      'projectContainerConfig.runnerProfile.kind must be "compose" or "docker"',
+    );
+  }
+
+  assertOptionalString(value.image, 'projectContainerConfig.runnerProfile.image');
+  assertOptionalString(value.dockerfile, 'projectContainerConfig.runnerProfile.dockerfile');
+  if (value.dockerfile !== undefined) {
+    validateRelativePath(value.dockerfile, 'projectContainerConfig.runnerProfile.dockerfile');
+  }
+
+  return {
+    ...(value.dockerfile !== undefined ? { dockerfile: value.dockerfile } : {}),
+    ...(value.image !== undefined ? { image: value.image } : {}),
+    kind: value.kind,
+  };
+}
 
 function normalizeProjectContainerConfig(value: unknown): ProjectContainerConfig | undefined {
   if (value === undefined) {
@@ -73,11 +104,13 @@ function normalizeProjectContainerConfig(value: unknown): ProjectContainerConfig
         ...(protocol !== undefined ? { protocol } : {}),
       };
     }) ?? undefined;
+  const runnerProfile = normalizeRunnerProfile(value.runnerProfile);
 
   return {
     ...(composeFile !== undefined ? { composeFile } : {}),
     ...(previewPorts !== undefined ? { previewPorts } : {}),
     ...(requiredEnvFiles !== undefined ? { requiredEnvFiles } : {}),
+    ...(runnerProfile !== undefined ? { runnerProfile } : {}),
   };
 }
 

@@ -12,6 +12,7 @@ export const TASK_CONTAINER_ISSUE_CODES = [
   'compose_file_missing',
   'docker_unavailable',
   'compose_unavailable',
+  'unsupported_runner_profile',
   'missing_required_env_file',
   'explicit_container_name',
   'named_network',
@@ -30,6 +31,9 @@ export type TaskContainerIssueCode = (typeof TASK_CONTAINER_ISSUE_CODES)[number]
 export type TaskContainerIssueSeverity = 'warning' | 'error';
 export type TaskContainerRuntimeKind = 'docker-compose';
 export type TaskContainerLifecycleAction = 'start' | 'stop' | 'destroy';
+export type TaskContainerRunnerProfileKind = 'compose' | 'docker';
+export type TaskContainerRunnerProfileStatus = 'not_configured' | 'resolved' | 'unsupported';
+export type TaskContainerRunnerProfileSource = 'default' | 'project-config';
 export type TaskContainerServiceState =
   | 'running'
   | 'stopped'
@@ -49,6 +53,22 @@ export interface ProjectContainerConfig {
   composeFile?: string;
   previewPorts?: ProjectContainerPreviewPort[];
   requiredEnvFiles?: string[];
+  runnerProfile?: ProjectContainerRunnerProfileConfig;
+}
+
+export interface ProjectContainerRunnerProfileConfig {
+  dockerfile?: string;
+  image?: string;
+  kind: TaskContainerRunnerProfileKind;
+}
+
+export interface TaskContainerRunnerProfileResolution {
+  activeProfile: TaskContainerRunnerProfileKind | null;
+  configuredProfile: ProjectContainerRunnerProfileConfig | null;
+  fallbackProfile: TaskContainerRunnerProfileKind | null;
+  message: string | null;
+  source: TaskContainerRunnerProfileSource;
+  status: TaskContainerRunnerProfileStatus;
 }
 
 export interface TaskContainerIssue {
@@ -87,6 +107,7 @@ export interface TaskContainerInspectResult {
   previews: TaskContainerPreview[];
   projectName: string | null;
   publishedPorts: TaskContainerPublishedPort[];
+  runnerProfile?: TaskContainerRunnerProfileResolution;
   runtime: TaskContainerRuntimeKind | null;
   services: TaskContainerServiceSnapshot[];
   status: TaskContainerInspectStatus;

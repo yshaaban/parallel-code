@@ -147,6 +147,7 @@ Structured issue codes currently include:
 - `compose_file_missing`
 - `docker_unavailable`
 - `compose_unavailable`
+- `unsupported_runner_profile`
 - `missing_required_env_file`
 - `explicit_container_name`
 - `named_network`
@@ -169,6 +170,12 @@ Missing Compose configuration is a normal state for browser-first task previews.
 returns `not_configured` with only `compose_file_missing`, the preview manager should present that
 as neutral container absence, not as the primary preview failure. Task-port discovery still owns
 host listener suggestions in this state.
+
+Inspect also reports a backend-owned runner-profile resolution. With no configured runner profile,
+the resolution is `not_configured` and falls back to the current Compose task-container profile.
+An explicit Compose runner profile resolves normally. Docker runner profiles are recorded as
+`unsupported` until a separate backend runner execution policy exists; inspect/start/stop/destroy
+must not fake Docker agent execution through the task-container lifecycle.
 
 Opening the preview manager performs one initial task-port scan to populate available local
 listeners, then leaves later listener refreshes behind the explicit rescan action. This scan must

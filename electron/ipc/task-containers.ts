@@ -6,6 +6,7 @@ import { promisify } from 'util';
 
 import type {
   ProjectContainerConfig,
+  ProjectContainerRunnerProfileConfig,
   TaskContainerInspectResult,
   TaskContainerIssue,
   TaskContainerIssueCode,
@@ -13,6 +14,7 @@ import type {
   TaskContainerLogsResult,
   TaskContainerPreview,
   TaskContainerPublishedPort,
+  TaskContainerRunnerProfileResolution,
   TaskContainerServiceSnapshot,
   TaskContainerServiceState,
 } from '../../src/domain/task-containers.js';
@@ -52,6 +54,20 @@ interface TaskContainerComposeSelection {
   issues: TaskContainerIssue[];
   status: TaskContainerInspectResult['status'];
 }
+
+interface UnsupportedRunnerProfileSelection {
+  inspect: TaskContainerInspectResult;
+  supported: false;
+}
+
+interface SupportedRunnerProfileSelection {
+  runnerProfile: TaskContainerRunnerProfileResolution;
+  supported: true;
+}
+
+type TaskContainerRunnerProfileSelection =
+  | SupportedRunnerProfileSelection
+  | UnsupportedRunnerProfileSelection;
 
 interface ComposeFileContainmentResult {
   composeFile: string;
@@ -197,10 +213,85 @@ function createInspectResult(
     projectName: null,
     publishedPorts: [],
     runtime: null,
+    ...(overrides.runnerProfile ? { runnerProfile: overrides.runnerProfile } : {}),
     services: [],
     status: 'not_configured',
     taskId,
     ...overrides,
+  };
+}
+
+function normalizeConfiguredRunnerProfile(
+  runnerProfile: ProjectContainerRunnerProfileConfig,
+): ProjectContainerRunnerProfileConfig {
+  return {
+    ...(runnerProfile.dockerfile !== undefined ? { dockerfile: runnerProfile.dockerfile } : {}),
+    ...(runnerProfile.image !== undefined ? { image: runnerProfile.image } : {}),
+    kind: runnerProfile.kind,
+  };
+}
+
+function createDefaultRunnerProfileResolution(): TaskContainerRunnerProfileResolution {
+  return {
+    activeProfile: 'compose',
+    configuredProfile: null,
+    fallbackProfile: 'compose',
+    message:
+      'No runner profile is configured; using the Docker Compose task-container profile when a supported Compose file is present.',
+    source: 'default',
+    status: 'not_configured',
+  };
+}
+
+function resolveTaskContainerRunnerProfile(
+  projectConfig: ProjectContainerConfig | undefined,
+): TaskContainerRunnerProfileResolution {
+  const configuredProfile = projectConfig?.runnerProfile;
+  if (!configuredProfile) {
+    return createDefaultRunnerProfileResolution();
+  }
+
+  const normalizedProfile = normalizeConfiguredRunnerProfile(configuredProfile);
+  if (normalizedProfile.kind === 'compose') {
+    return {
+      activeProfile: 'compose',
+      configuredProfile: normalizedProfile,
+      fallbackProfile: null,
+      message: null,
+      source: 'project-config',
+      status: 'resolved',
+    };
+  }
+
+  return {
+    activeProfile: null,
+    configuredProfile: normalizedProfile,
+    fallbackProfile: null,
+    message:
+      'Docker runner profiles require a separate backend runner execution policy and are not supported by task-container lifecycle yet.',
+    source: 'project-config',
+    status: 'unsupported',
+  };
+}
+
+function selectTaskContainerRunnerProfile(
+  request: TaskContainerActionRequest,
+): TaskContainerRunnerProfileSelection {
+  const runnerProfile = resolveTaskContainerRunnerProfile(request.projectContainerConfig);
+  if (runnerProfile.status !== 'unsupported') {
+    return {
+      runnerProfile,
+      supported: true,
+    };
+  }
+
+  return {
+    inspect: createInspectResult(request.taskId, {
+      issues: [createIssue('unsupported_runner_profile', runnerProfile.message ?? '')],
+      runnerProfile,
+      status: 'unsupported',
+    }),
+    supported: false,
   };
 }
 
@@ -1161,6 +1252,7 @@ export function clearTaskContainerPreviewTargets(): void {
 function createInspectFromSelection(
   request: TaskContainerActionRequest,
   selection: TaskContainerComposeSelection,
+  runnerProfile: TaskContainerRunnerProfileResolution,
 ): TaskContainerInspectResult {
   const projectName =
     selection.status === 'unsupported'
@@ -1175,6 +1267,7 @@ function createInspectFromSelection(
     composeFile: selection.composeFile || null,
     issues: selection.issues,
     projectName,
+    runnerProfile,
     runtime: null,
     status: selection.status,
   });
@@ -1212,6 +1305,7 @@ function createComposeStatusFailureResult(
   request: TaskContainerActionRequest,
   composeFile: string,
   composeProjectName: string,
+  runnerProfile: TaskContainerRunnerProfileResolution,
   error: unknown,
 ): TaskContainerInspectResult {
   return createInspectResult(request.taskId, {
@@ -1223,6 +1317,7 @@ function createComposeStatusFailureResult(
       ),
     ],
     projectName: composeProjectName,
+    runnerProfile,
     runtime: 'docker-compose',
     status: 'error',
   });
@@ -1232,9 +1327,15 @@ async function inspectTaskContainersInternal(
   request: TaskContainerActionRequest,
   runtime: TaskContainerRuntime = createDockerRuntime(),
 ): Promise<TaskContainerInspectResult> {
+  const runnerProfileSelection = selectTaskContainerRunnerProfile(request);
+  if (!runnerProfileSelection.supported) {
+    return runnerProfileSelection.inspect;
+  }
+  const { runnerProfile } = runnerProfileSelection;
+
   const selection = resolveComposeSelection(request);
   if (selection.issues.length > 0 || selection.status !== 'ready') {
-    return createInspectFromSelection(request, selection);
+    return createInspectFromSelection(request, selection, runnerProfile);
   }
 
   const dockerAvailability = await runtime.getDockerRuntimeAvailability();
@@ -1247,6 +1348,7 @@ async function inspectTaskContainersInternal(
           dockerAvailability.message ?? 'Docker is not available on this machine.',
         ),
       ],
+      runnerProfile,
       status: 'unsupported',
     });
   }
@@ -1261,6 +1363,7 @@ async function inspectTaskContainersInternal(
           composeAvailability.message ?? 'Docker Compose is not available on this machine.',
         ),
       ],
+      runnerProfile,
       runtime: 'docker-compose',
       status: 'unsupported',
     });
@@ -1284,6 +1387,7 @@ async function inspectTaskContainersInternal(
       composeFile: selection.composeFile,
       issues: [runtime.getComposeConfigErrorIssue(request.worktreePath, error)],
       projectName: identity.composeProjectName,
+      runnerProfile,
       runtime: 'docker-compose',
       status: 'unsupported',
     });
@@ -1301,6 +1405,7 @@ async function inspectTaskContainersInternal(
       request,
       selection.composeFile,
       identity.composeProjectName,
+      runnerProfile,
       error,
     );
   }
@@ -1325,6 +1430,7 @@ async function inspectTaskContainersInternal(
     ),
     projectName: identity.composeProjectName,
     publishedPorts: projectStatus.publishedPorts.map(convertPublishedPort),
+    runnerProfile,
     runtime: 'docker-compose',
     services: projectStatus.services.map(convertServiceSnapshot),
     status: hasErrorIssue ? 'unsupported' : isRunning ? 'running' : 'ready',
@@ -1576,4 +1682,5 @@ export const __taskContainerTestExports = {
   planTaskContainerAction,
   readConfiguredHostPorts,
   resolveComposeSelection,
+  resolveTaskContainerRunnerProfile,
 };

@@ -165,8 +165,8 @@ html[data-look='classic'] {
   --fg: #cccdd2;
   --fg-muted: #8b8d93;
   --fg-subtle: #6d7076;
-  --accent: #4c6fff;
-  --accent-hover: #3a5bff;
+  --accent: #3f62ff;
+  --accent-hover: #5676ff;
   --accent-text: #ffffff;
   --link: #6b8aff;
   --success: #0dbc79;
@@ -312,7 +312,7 @@ html[data-look='minimal'] {
   --accent-text: #090909;
   --link: #d8d0b8;
   --success: #8aaa7a;
-  --error: #c06060;
+  --error: #d87474;
   --warning: #d4aa58;
   --island-bg: #1a1a1a;
   --island-border: #2a2a2a;
