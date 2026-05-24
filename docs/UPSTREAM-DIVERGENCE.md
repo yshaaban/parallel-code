@@ -152,10 +152,28 @@ directly. The local result is recorded by behavior and by local implementation c
 - status/attention verification: shell activity, ready/review attention, busy precedence,
   git-status freshness/error handling, and mobile QR stale-result/placeholder behavior
 
-The intentionally deferred product decisions now include non-git projects, Docker/task-container
-runner ideas, theme/focus-mode polish, multi-agent task terminals, MCP/coordinator orchestration,
-filterable branch selection, custom themes/appearance mode, and auto-update. Those require separate
-local product decisions and architecture-first designs before implementation.
+The follow-up upstream-scope pass after the initial `2026-05-24` catch-up implemented the
+architecture-safe subset of the previously deferred queue without merging upstream history:
+
+- branch selection now has a backend branch-list contract and New Task dialog selection/retry
+  behavior.
+- non-git projects are explicit project/task mode, not relaxed git assumptions; git-only review,
+  merge, push, branch, and status affordances are unavailable from that mode.
+- task-container runner profiles are backend inspect truth. Compose remains the supported
+  task-container profile; Docker runner profiles are explicit `unsupported_runner_profile` until a
+  separate backend runner execution policy exists.
+- theme contrast, Monaco, and terminal background projections now have a source-level guard.
+- update status has typed IPC and settings presentation, with browser/not-configured unsupported
+  states instead of accidental upstream release checks.
+- selected-agent projection is now persisted and applied across task navigation, prompt/diff/notes
+  targeting, browser session restore, cold bootstrap, collapse/restore, and AI terminal rendering.
+- coordinator/MCP remains intentionally unsupported/deferred behind an explicit backend-owner
+  boundary instead of UI prompt injection.
+
+The remaining design-only scope is narrower: real Docker agent runner execution, arbitrary/custom
+theme editing beyond guarded built-in tokens, full side-by-side multi-agent terminal layout, and
+coordinator/MCP backend orchestration still require separate product decisions, replayable backend
+state machines, and browser/mobile proof before implementation.
 
 Recently landed locally:
 
