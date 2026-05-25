@@ -461,6 +461,7 @@ export function createSystemIpcHandlers(
   options: SavedStateSyncOptions & {
     getTaskMetadata?: (
       taskId: string,
+      agentId: string,
     ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
     getTaskName: (taskId: string) => string;
   },

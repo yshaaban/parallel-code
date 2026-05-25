@@ -40,7 +40,7 @@ export type RemoteAccessStatusListener = (status: RemoteAccessStatus) => void;
 
 export interface RemoteAccessStartRequest {
   getAgentStatus: (agentId: string) => AgentStatusSnapshot;
-  getTaskMetadata?: (taskId: string) => RemoteAgentTaskMeta | null;
+  getTaskMetadata?: (taskId: string, agentId: string) => RemoteAgentTaskMeta | null;
   getTaskName: (taskId: string) => string;
   port?: number;
 }

@@ -12,7 +12,7 @@ export interface TaskNameRegistry {
   deleteTaskName: (taskId: string) => void;
   deleteTaskMetadata: (taskId: string) => void;
   getTaskName: (taskId: string) => string;
-  getTaskMetadata: (taskId: string) => RemoteAgentTaskMeta | null;
+  getTaskMetadata: (taskId: string, agentId?: string) => RemoteAgentTaskMeta | null;
   registerCreatedTask: (taskId: string, task: CreatedTaskRegistryEntry) => void;
   setTaskName: (taskId: string, taskName: string) => void;
   setTaskMetadata: (taskId: string, meta: RemoteAgentTaskMeta) => void;
@@ -48,6 +48,8 @@ function readOptionalString(value: unknown): string | null {
 }
 
 interface SavedStateTask {
+  agentDefs?: Array<SavedAgentDef | undefined>;
+  agentIds?: Array<string | undefined>;
   id?: unknown;
   name?: unknown;
   agentDef?: SavedAgentDef;
@@ -146,12 +148,34 @@ function parseSavedAgentDef(value: unknown): SavedAgentDef | undefined {
   };
 }
 
+function parseSavedAgentDefs(value: unknown): Array<SavedAgentDef | undefined> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const agentDefs = value.map((entry) => parseSavedAgentDef(entry));
+
+  return agentDefs.some((entry) => entry !== undefined) ? agentDefs : undefined;
+}
+
+function parseSavedAgentIds(value: unknown): Array<string | undefined> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const agentIds = value.map((entry) => (typeof entry === 'string' ? entry : undefined));
+
+  return agentIds.some((entry) => entry !== undefined) ? agentIds : undefined;
+}
+
 function parseSavedStateTask(value: unknown): SavedStateTask | null {
   if (!isRecord(value)) {
     return null;
   }
 
   const agentDef = parseSavedAgentDef(value.agentDef);
+  const agentDefs = parseSavedAgentDefs(value.agentDefs);
+  const agentIds = parseSavedAgentIds(value.agentIds);
   const savedAgentDef = parseSavedAgentDef(value.savedAgentDef);
 
   return {
@@ -165,6 +189,8 @@ function parseSavedStateTask(value: unknown): SavedStateTask | null {
     worktreeOwnership: value.worktreeOwnership,
     worktreePath: value.worktreePath,
     ...(agentDef ? { agentDef } : {}),
+    ...(agentDefs ? { agentDefs } : {}),
+    ...(agentIds ? { agentIds } : {}),
     ...(savedAgentDef ? { savedAgentDef } : {}),
   };
 }
@@ -213,9 +239,43 @@ function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
   });
 }
 
+interface AgentMetadataRecord {
+  meta: RemoteAgentTaskMeta;
+  taskId: string;
+}
+
+function parseTaskAgentMetadata(
+  task: SavedStateTask,
+  taskMeta: RemoteAgentTaskMeta,
+): Map<string, AgentMetadataRecord> {
+  const metadata = new Map<string, AgentMetadataRecord>();
+  if (typeof task.id !== 'string' || !task.agentIds || !task.agentDefs) {
+    return metadata;
+  }
+
+  for (const [index, agentId] of task.agentIds.entries()) {
+    const agentDef = task.agentDefs[index];
+    if (typeof agentId !== 'string' || !agentDef) {
+      continue;
+    }
+
+    metadata.set(agentId, {
+      meta: {
+        ...taskMeta,
+        agentDefId: readOptionalString(agentDef.id),
+        agentDefName: readOptionalString(agentDef.name),
+      },
+      taskId: task.id,
+    });
+  }
+
+  return metadata;
+}
+
 export function createTaskNameRegistry(): TaskNameRegistry {
   const taskNames = new Map<string, string>();
   const taskMetadata = new Map<string, RemoteAgentTaskMeta>();
+  const agentMetadata = new Map<string, AgentMetadataRecord>();
 
   function syncFromSavedState(json: string): void {
     try {
@@ -226,6 +286,7 @@ export function createTaskNameRegistry(): TaskNameRegistry {
 
       const nextTaskNames = new Map<string, string>();
       const nextMetadata = new Map<string, RemoteAgentTaskMeta>();
+      const nextAgentMetadata = new Map<string, AgentMetadataRecord>();
 
       for (const task of tasks) {
         if (typeof task.id === 'string' && typeof task.name === 'string') {
@@ -235,11 +296,15 @@ export function createTaskNameRegistry(): TaskNameRegistry {
         const meta = parseTaskMetadata(task);
         if (meta && typeof task.id === 'string') {
           nextMetadata.set(task.id, meta);
+          for (const [agentId, agentMeta] of parseTaskAgentMetadata(task, meta)) {
+            nextAgentMetadata.set(agentId, agentMeta);
+          }
         }
       }
 
       replaceMapEntries(taskNames, nextTaskNames);
       replaceMapEntries(taskMetadata, nextMetadata);
+      replaceMapEntries(agentMetadata, nextAgentMetadata);
     } catch (error) {
       console.warn('Ignoring malformed saved state:', error);
     }
@@ -249,7 +314,14 @@ export function createTaskNameRegistry(): TaskNameRegistry {
     return taskNames.get(taskId) ?? formatTaskId(taskId);
   }
 
-  function getTaskMetadata(taskId: string): RemoteAgentTaskMeta | null {
+  function getTaskMetadata(taskId: string, agentId?: string): RemoteAgentTaskMeta | null {
+    if (agentId !== undefined) {
+      const agentMeta = agentMetadata.get(agentId);
+      if (agentMeta?.taskId === taskId) {
+        return agentMeta.meta;
+      }
+    }
+
     return taskMetadata.get(taskId) ?? null;
   }
 
@@ -257,7 +329,16 @@ export function createTaskNameRegistry(): TaskNameRegistry {
     taskNames.set(taskId, taskName);
   }
 
+  function deleteTaskAgentMetadata(taskId: string): void {
+    for (const [agentId, record] of agentMetadata) {
+      if (record.taskId === taskId) {
+        agentMetadata.delete(agentId);
+      }
+    }
+  }
+
   function setTaskMetadata(taskId: string, meta: RemoteAgentTaskMeta): void {
+    deleteTaskAgentMetadata(taskId);
     taskMetadata.set(taskId, meta);
   }
 
@@ -266,7 +347,7 @@ export function createTaskNameRegistry(): TaskNameRegistry {
       taskNames.set(taskId, task.taskName);
     }
 
-    taskMetadata.set(
+    setTaskMetadata(
       taskId,
       buildTaskMetadata({
         agentDefId: task.agentDefId ?? null,
@@ -287,6 +368,7 @@ export function createTaskNameRegistry(): TaskNameRegistry {
 
   function deleteTaskMetadata(taskId: string): void {
     taskMetadata.delete(taskId);
+    deleteTaskAgentMetadata(taskId);
   }
 
   function deleteTask(taskId: string): void {

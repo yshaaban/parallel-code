@@ -5,7 +5,7 @@ import { getActiveAgentIds, getAgentMeta, getAgentPauseState } from '../ipc/pty.
 export interface BuildRemoteAgentListOptions {
   getTaskName: (taskId: string) => string;
   getAgentStatus?: (agentId: string) => AgentStatusSnapshot;
-  getTaskMetadata?: (taskId: string) => RemoteAgentTaskMeta | null;
+  getTaskMetadata?: (taskId: string, agentId: string) => RemoteAgentTaskMeta | null;
 }
 
 function getDefaultAgentStatus(): AgentStatusSnapshot {
@@ -25,7 +25,7 @@ export function buildRemoteAgentList(options: BuildRemoteAgentListOptions): Remo
 
     const pauseReason = getAgentPauseState(agentId);
     const snapshot = options.getAgentStatus?.(agentId) ?? getDefaultAgentStatus();
-    const taskMeta = options.getTaskMetadata?.(meta.taskId) ?? null;
+    const taskMeta = options.getTaskMetadata?.(meta.taskId, agentId) ?? null;
     const agent: RemoteAgent = {
       agentId,
       taskId: meta.taskId,

@@ -123,6 +123,69 @@ describe('createTaskNameRegistry', () => {
     });
   });
 
+  it('overlays saved per-agent definitions for mixed-agent tasks', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Build Auth',
+            agentIds: ['agent-codex', 'agent-gemini'],
+            agentDefs: [
+              { id: 'codex', name: 'Codex CLI' },
+              { id: 'gemini', name: 'Gemini CLI' },
+            ],
+            branchName: 'feature/auth',
+            worktreePath: '/home/user/project/.worktrees/feature-auth',
+            savedAgentDef: { id: 'codex', name: 'Codex CLI' },
+          },
+        },
+      }),
+    );
+
+    expect(registry.getTaskMetadata('task-1', 'agent-codex')).toMatchObject({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'feature/auth',
+      folderName: 'feature-auth',
+    });
+    expect(registry.getTaskMetadata('task-1', 'agent-gemini')).toMatchObject({
+      agentDefId: 'gemini',
+      agentDefName: 'Gemini CLI',
+      branchName: 'feature/auth',
+      folderName: 'feature-auth',
+    });
+  });
+
+  it('keeps per-agent metadata aligned when saved agent id entries are malformed', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Build Auth',
+            agentIds: ['agent-codex', null, 'agent-gemini'],
+            agentDefs: [
+              { id: 'codex', name: 'Codex CLI' },
+              { id: 'invalid', name: 'Invalid CLI' },
+              { id: 'gemini', name: 'Gemini CLI' },
+            ],
+            branchName: 'feature/auth',
+            worktreePath: '/home/user/project/.worktrees/feature-auth',
+            savedAgentDef: { id: 'codex', name: 'Codex CLI' },
+          },
+        },
+      }),
+    );
+
+    expect(registry.getTaskMetadata('task-1', 'agent-codex')?.agentDefId).toBe('codex');
+    expect(registry.getTaskMetadata('task-1', 'agent-gemini')?.agentDefId).toBe('gemini');
+  });
+
   it('prefers explicit git isolation metadata when it is available', () => {
     const registry = createTaskNameRegistry();
 

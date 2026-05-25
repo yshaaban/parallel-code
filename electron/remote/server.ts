@@ -36,6 +36,7 @@ export async function startRemoteServer(opts: {
   };
   getTaskMetadata?: (
     taskId: string,
+    agentId: string,
   ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
   onAuthenticatedClientCountChanged?: (count: number) => void;
 }): Promise<RemoteServer> {

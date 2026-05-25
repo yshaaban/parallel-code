@@ -75,6 +75,26 @@ describe('buildRemoteAgentList', () => {
     });
   });
 
+  it('requests task metadata for the concrete agent instead of only the task', () => {
+    const agents = buildRemoteAgentList({
+      getTaskName: () => 'Task One',
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
+      getTaskMetadata: (taskId, agentId) => ({
+        agentDefId: agentId,
+        agentDefName: `${agentId} CLI`,
+        branchName: taskId,
+        directMode: false,
+        folderName: 'feature-auth',
+        lastPrompt: 'implement login',
+      }),
+    });
+
+    expect(agents.map((agent) => agent.taskMeta?.agentDefId)).toEqual([
+      'paused-agent',
+      'running-agent',
+    ]);
+  });
+
   it('omits taskMeta when getTaskMetadata is not provided', () => {
     const agents = buildRemoteAgentList({
       getTaskName: () => 'Task One',
