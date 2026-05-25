@@ -10,6 +10,34 @@ export type WebSocketConnectionState =
 type ConnectState = Extract<WebSocketConnectionState, 'connecting' | 'reconnecting'>;
 type TimerHandle = number | ReturnType<typeof globalThis.setTimeout>;
 type IntervalHandle = number | ReturnType<typeof globalThis.setInterval>;
+export type WebSocketDisconnectReason =
+  | 'auth-expired'
+  | 'close'
+  | 'connect-close'
+  | 'connect-error'
+  | 'manual'
+  | 'missed-pong'
+  | 'send-error';
+export interface WebSocketReconnectDelayContext {
+  hasConnected: boolean;
+  lastConnectedAt: number | null;
+  lastConnectionDurationMs: number | null;
+  lastDisconnectedAt: number | null;
+  lastDisconnectReason: WebSocketDisconnectReason | null;
+  lastRttMs: number | null;
+}
+export interface WebSocketReconnectScheduledEvent extends WebSocketReconnectDelayContext {
+  attempt: number;
+  delayMs: number;
+}
+export interface WebSocketDisconnectEvent extends WebSocketReconnectDelayContext {
+  reason: WebSocketDisconnectReason;
+}
+export interface WebSocketSequenceGapEvent {
+  actualSeq: number;
+  expectedSeq: number;
+  previousSeq: number;
+}
 type ConnectionRecord =
   | { kind: 'disconnected' }
   | {
@@ -82,13 +110,17 @@ export interface CreateWebSocketClientCoreOptions<
   isPongMessage?: (message: IncomingMessage) => boolean;
   onAuthenticated?: (socket: WebSocket) => void;
   onAuthExpired?: (error: Error) => void;
+  onDisconnect?: (event: WebSocketDisconnectEvent) => void;
   onMissingToken?: (error: Error) => void;
   onPong?: (rttMs: number | null) => void;
+  onReconnectScheduled?: (event: WebSocketReconnectScheduledEvent) => void;
+  onSequenceGap?: (event: WebSocketSequenceGapEvent) => void;
   onStateChange?: (state: WebSocketConnectionState) => void;
   onBinaryMessage?: (buffer: ArrayBuffer) => void | Promise<void>;
   pingIntervalMs?: number;
   pongTimeoutMs?: number;
-  reconnectDelayMs?: (attempt: number) => number;
+  maxMissedPongs?: number;
+  reconnectDelayMs?: (attempt: number, context: WebSocketReconnectDelayContext) => number;
 }
 
 export interface WebSocketClientCore<OutgoingMessage> {
@@ -153,13 +185,20 @@ export function createWebSocketClientCore<
   let hasConnected = false;
   let state: WebSocketConnectionState = 'disconnected';
   let lastSeq = -1;
+  let connectedAt: number | null = null;
+  let lastConnectedAt: number | null = null;
+  let lastConnectionDurationMs: number | null = null;
+  let lastDisconnectedAt: number | null = null;
+  let lastDisconnectReason: WebSocketDisconnectReason | null = null;
   let lastPingAt = 0;
   let lastRttMs: number | null = null;
   let heartbeatInterval: IntervalHandle | null = null;
   let pongTimeout: TimerHandle | null = null;
+  let missedPongs = 0;
 
   const pingIntervalMs = options.pingIntervalMs ?? 30_000;
   const pongTimeoutMs = options.pongTimeoutMs ?? 10_000;
+  const maxMissedPongs = Math.max(1, options.maxMissedPongs ?? 1);
   const reconnectDelayMs = options.reconnectDelayMs ?? getReconnectDelayWithJitter;
 
   function setState(nextState: WebSocketConnectionState): void {
@@ -182,12 +221,43 @@ export function createWebSocketClientCore<
     clearIntervalHandle(heartbeatInterval);
     heartbeatInterval = null;
     clearPongTimeout();
+    missedPongs = 0;
   }
 
   function recordPong(): void {
     clearPongTimeout();
+    missedPongs = 0;
     lastRttMs = lastPingAt > 0 ? Date.now() - lastPingAt : null;
     options.onPong?.(lastRttMs);
+  }
+
+  function createReconnectDelayContext(): WebSocketReconnectDelayContext {
+    return {
+      hasConnected,
+      lastConnectedAt,
+      lastConnectionDurationMs,
+      lastDisconnectedAt,
+      lastDisconnectReason,
+      lastRttMs,
+    };
+  }
+
+  function recordDisconnect(reason: WebSocketDisconnectReason): void {
+    if (reason === 'close' && connectedAt === null) {
+      return;
+    }
+
+    const now = Date.now();
+    lastDisconnectedAt = now;
+    lastDisconnectReason = reason;
+    if (connectedAt !== null) {
+      lastConnectionDurationMs = Math.max(0, now - connectedAt);
+    }
+    connectedAt = null;
+    options.onDisconnect?.({
+      ...createReconnectDelayContext(),
+      reason,
+    });
   }
 
   function trySendSerializedMessage(target: WebSocket, message: OutgoingMessage): boolean {
@@ -206,6 +276,7 @@ export function createWebSocketClientCore<
       return true;
     }
 
+    recordDisconnect('send-error');
     closeSocket(target);
     return false;
   }
@@ -214,6 +285,13 @@ export function createWebSocketClientCore<
     const seq = (message as { seq?: unknown }).seq;
     if (!isInteger(seq)) return true;
     if (seq <= lastSeq) return false;
+    if (lastSeq >= 0 && seq > lastSeq + 1) {
+      options.onSequenceGap?.({
+        actualSeq: seq,
+        expectedSeq: lastSeq + 1,
+        previousSeq: lastSeq,
+      });
+    }
     lastSeq = seq;
     return true;
   }
@@ -232,7 +310,11 @@ export function createWebSocketClientCore<
     pongTimeout = scheduleTimeout(() => {
       pongTimeout = null;
       if (isCurrentConnection(target) && target.readyState === WebSocket.OPEN) {
-        setState('disconnected');
+        missedPongs += 1;
+        if (missedPongs < maxMissedPongs) {
+          return;
+        }
+        recordDisconnect('missed-pong');
         target.close();
       }
     }, pongTimeoutMs);
@@ -291,6 +373,14 @@ export function createWebSocketClientCore<
   function scheduleReconnect(): void {
     if (reconnectTimer || !options.shouldReconnect()) return;
 
+    const attempt = reconnectAttempts;
+    const context = createReconnectDelayContext();
+    const delayMs = reconnectDelayMs(attempt, context);
+    options.onReconnectScheduled?.({
+      ...context,
+      attempt,
+      delayMs,
+    });
     reconnectTimer = scheduleTimeout(() => {
       reconnectTimer = null;
       if (!options.shouldReconnect()) {
@@ -298,13 +388,14 @@ export function createWebSocketClientCore<
       }
       reconnectAttempts += 1;
       void ensureConnected('reconnecting').catch(() => {});
-    }, reconnectDelayMs(reconnectAttempts));
+    }, delayMs);
   }
 
   function handleAuthExpired(message: string): Error {
     const error = new Error(message);
     clearReconnectTimer();
     clearHeartbeat();
+    recordDisconnect('auth-expired');
     options.clearToken?.();
     setState('auth-expired');
     options.onAuthExpired?.(error);
@@ -390,6 +481,7 @@ export function createWebSocketClientCore<
         if (!trySendSerializedMessage(ws, authMessage)) {
           clearPromiseIfCurrent();
           rejectPromise(new Error('WebSocket authentication failed'));
+          recordDisconnect('send-error');
           setState('disconnected');
           if (options.shouldReconnect()) {
             scheduleReconnect();
@@ -404,6 +496,8 @@ export function createWebSocketClientCore<
         socket: ws,
       };
       hasConnected = true;
+      connectedAt = Date.now();
+      lastConnectedAt = connectedAt;
       reconnectAttempts = 0;
       clearReconnectTimer();
       options.onAuthenticated?.(ws);
@@ -432,7 +526,10 @@ export function createWebSocketClientCore<
       }
 
       if (wasConnecting) {
+        recordDisconnect('connect-close');
         pendingReject?.(new Error('WebSocket closed before opening'));
+      } else {
+        recordDisconnect('close');
       }
       setState('disconnected');
       if (options.shouldReconnect()) {
@@ -448,6 +545,7 @@ export function createWebSocketClientCore<
         clearPromiseIfCurrent();
         rejectPromise(new Error('WebSocket connection failed'));
         clearHeartbeat();
+        recordDisconnect('connect-error');
         setState('disconnected');
         if (options.shouldReconnect()) {
           scheduleReconnect();
@@ -474,6 +572,7 @@ export function createWebSocketClientCore<
     }
 
     if (target) {
+      recordDisconnect(nextState === 'auth-expired' ? 'auth-expired' : 'manual');
       closeSocket(target);
     }
 
@@ -483,9 +582,15 @@ export function createWebSocketClientCore<
   function resetForTests(): void {
     disconnect();
     hasConnected = false;
+    connectedAt = null;
+    lastConnectedAt = null;
+    lastConnectionDurationMs = null;
+    lastDisconnectedAt = null;
+    lastDisconnectReason = null;
     lastPingAt = 0;
     lastRttMs = null;
     lastSeq = -1;
+    missedPongs = 0;
     reconnectAttempts = 0;
   }
 

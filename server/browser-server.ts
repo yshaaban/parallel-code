@@ -72,6 +72,8 @@ export interface StartBrowserServerOptions {
   browserChannelClientDegradedMaxQueueAgeMs?: number;
   browserChannelClientDegradedMaxQueuedBytes?: number;
   browserChannelCoalescedDataMaxBytes?: number;
+  browserControlHeartbeatIntervalMs?: number;
+  browserControlMaxMissedPongs?: number;
   distDir: string;
   distRemoteDir: string;
   port: number;
@@ -195,6 +197,12 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     },
     port: options.port,
     token: options.token,
+    ...(options.browserControlHeartbeatIntervalMs !== undefined
+      ? { heartbeatIntervalMs: options.browserControlHeartbeatIntervalMs }
+      : {}),
+    ...(options.browserControlMaxMissedPongs !== undefined
+      ? { maxMissedPongs: options.browserControlMaxMissedPongs }
+      : {}),
     ...(options.simulateJitterMs !== undefined
       ? { simulateJitterMs: options.simulateJitterMs }
       : {}),

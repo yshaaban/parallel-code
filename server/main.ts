@@ -54,6 +54,10 @@ const browserChannelClientDegradedMaxQueuedBytes = getOptionalEnvNumber(
 const browserChannelCoalescedDataMaxBytes = getOptionalEnvNumber(
   'BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES',
 );
+const browserControlHeartbeatIntervalMs = getOptionalEnvNumber(
+  'BROWSER_CONTROL_HEARTBEAT_INTERVAL_MS',
+);
+const browserControlMaxMissedPongs = getOptionalEnvNumber('BROWSER_CONTROL_MAX_MISSED_PONGS');
 const runtimeDiagnosticsLoggingConfig = getRuntimeDiagnosticsLoggingConfigFromEnv(process.env);
 
 interface BrowserChannelServerOptions {
@@ -62,6 +66,8 @@ interface BrowserChannelServerOptions {
   browserChannelClientDegradedMaxQueueAgeMs?: number;
   browserChannelClientDegradedMaxQueuedBytes?: number;
   browserChannelCoalescedDataMaxBytes?: number;
+  browserControlHeartbeatIntervalMs?: number;
+  browserControlMaxMissedPongs?: number;
 }
 
 function getBrowserChannelServerOptions(): BrowserChannelServerOptions {
@@ -81,6 +87,10 @@ function getBrowserChannelServerOptions(): BrowserChannelServerOptions {
     ...(browserChannelCoalescedDataMaxBytes === undefined
       ? {}
       : { browserChannelCoalescedDataMaxBytes }),
+    ...(browserControlHeartbeatIntervalMs === undefined
+      ? {}
+      : { browserControlHeartbeatIntervalMs }),
+    ...(browserControlMaxMissedPongs === undefined ? {} : { browserControlMaxMissedPongs }),
   };
 }
 

@@ -20,6 +20,7 @@ export enum IPC {
   GetBackendRuntimeDiagnostics = 'get_backend_runtime_diagnostics',
   ResetBackendRuntimeDiagnostics = 'reset_backend_runtime_diagnostics',
   GetBrowserColdBootstrap = 'get_browser_cold_bootstrap',
+  GetBrowserReconnectStatus = 'get_browser_reconnect_status',
   GetBrowserReconnectSnapshot = 'get_browser_reconnect_snapshot',
 
   // Task

@@ -13,6 +13,7 @@ import { hydrateAgentGeneration } from '../store/agents';
 import { reconcileClientSessionState } from '../store/client-session';
 import { showNotification } from '../store/notification';
 import { applyLoadedWorkspaceStateJson, loadWorkspaceState } from '../store/persistence-load';
+import { getLoadedWorkspaceRevision } from '../store/persistence-session';
 import { validateProjectPaths } from '../store/projects';
 
 type BrowserStateSyncStatus =
@@ -237,6 +238,13 @@ export function createBrowserStateSync(electronRuntime: boolean): {
         async () => {
           const workspaceStateJson = snapshot.workspaceStateJson ?? snapshot.appStateJson;
           if (!workspaceStateJson) {
+            return false;
+          }
+
+          if (
+            snapshot.workspaceRevision !== undefined &&
+            snapshot.workspaceRevision < getLoadedWorkspaceRevision()
+          ) {
             return false;
           }
 

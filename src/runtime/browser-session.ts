@@ -2,7 +2,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
 import type { BrowserControlConnectionState } from '../lib/browser-control-client';
-import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
+import type { BrowserReconnectSnapshot, BrowserReconnectStatus } from '../domain/renderer-invoke';
 import type { WorkspaceStateChangedNotification } from '../domain/renderer-events';
 import type {
   AgentLifecycleEvent,
@@ -13,6 +13,7 @@ import type {
 import {
   type BrowserServerMessage,
   getBrowserQueueDepth,
+  getBrowserReconnectContinuity,
   invoke,
   listenServerMessage,
   onBrowserAuthenticated,
@@ -26,6 +27,16 @@ import {
 } from '../app/browser-startup';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
+import { isWarmReconnectWindow } from '../lib/weak-connectivity-policy';
+import {
+  recordBrowserReconnectDisconnect,
+  recordBrowserReconnectDisconnectedDuration,
+  recordBrowserReconnectFullRestoreDeferred,
+  recordBrowserReconnectPong,
+  recordBrowserReconnectRestoreOutcome,
+  recordBrowserReconnectScheduled,
+  recordBrowserReconnectSequenceGap,
+} from '../app/runtime-diagnostics';
 
 export type ConnectionBannerState =
   | 'connecting'
@@ -63,7 +74,9 @@ interface BrowserLifecycleTransition {
 
 interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
+  getLoadedWorkspaceRevision: () => number;
   getTaskCommandControllerUpdateCount: () => number;
+  getTaskCommandControllerVersion: () => number;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
   onPeerPresence: (peers: PeerPresenceSnapshot[]) => void;
   onTaskCommandTakeoverRequest: (
@@ -115,6 +128,41 @@ function getReconnectTaskCommandControllerReplaceOptions(snapshot: BrowserReconn
   return {
     replaceVersion: snapshot.taskCommandControllerVersion,
   };
+}
+
+function isReconnectWorkspaceRevisionCurrent(
+  status: Pick<BrowserReconnectStatus, 'workspaceRevision'>,
+  currentRevision: number,
+): boolean {
+  return status.workspaceRevision === undefined || status.workspaceRevision === currentRevision;
+}
+
+function isReconnectWorkspaceRevisionStale(
+  status: Pick<BrowserReconnectStatus, 'workspaceRevision'>,
+  currentRevision: number,
+): boolean {
+  return status.workspaceRevision !== undefined && status.workspaceRevision < currentRevision;
+}
+
+function isReconnectTaskCommandVersionCurrent(
+  status: Pick<BrowserReconnectStatus, 'taskCommandControllerVersion'>,
+  currentVersion: number,
+): boolean {
+  return (
+    status.taskCommandControllerVersion === undefined ||
+    status.taskCommandControllerVersion === currentVersion
+  );
+}
+
+function canSkipFullReconnectRestore(
+  status: BrowserReconnectStatus,
+  currentWorkspaceRevision: number,
+  currentTaskCommandControllerVersion: number,
+): boolean {
+  return (
+    isReconnectWorkspaceRevisionCurrent(status, currentWorkspaceRevision) &&
+    isReconnectTaskCommandVersionCurrent(status, currentTaskCommandControllerVersion)
+  );
 }
 
 function createBrowserLifecycleTransition(
@@ -296,7 +344,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
     case 'reconnecting':
       return `Reconnecting (attempt ${banner.attempt ?? 1})...`;
     case 'restoring':
-      return 'Restoring state and terminal scrollback...';
+      return 'Refreshing server state...';
     case 'disconnected': {
       const queuedCount = getBrowserQueueDepth();
       return `Disconnected — ${queuedCount} request${queuedCount === 1 ? '' : 's'} queued`;
@@ -378,36 +426,113 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   function startRestore(): void {
     restoreAwaitingAuthentication = false;
-    beginBrowserReconnectRestore();
     const generation = ++restoreGeneration;
+    const restoreStartedAt = Date.now();
     const initialTaskCommandControllerUpdateCount = options.getTaskCommandControllerUpdateCount();
     let restoreCompleted = false;
-    options.onTaskNotificationRestoreStarted?.();
+    let fullRestoreStarted = false;
+    let restoreOutcome: 'full-restore' | 'short-disconnect-skip' | 'stale-snapshot-skip' | null =
+      null;
 
     void (async () => {
+      let shouldRunFullRestore = true;
+      const continuity = getBrowserReconnectContinuity();
+      recordBrowserReconnectDisconnectedDuration(continuity.disconnectedDurationMs);
+      if (
+        isWarmReconnectWindow(continuity.disconnectedDurationMs) &&
+        continuity.hasSequencedMessageSinceDisconnect &&
+        !continuity.hasSequenceGapSinceDisconnect
+      ) {
+        try {
+          const reconnectStatus = await invoke(IPC.GetBrowserReconnectStatus);
+          if (generation !== restoreGeneration) {
+            return;
+          }
+
+          const currentWorkspaceRevision = options.getLoadedWorkspaceRevision();
+          if (
+            isReconnectWorkspaceRevisionStale(reconnectStatus, currentWorkspaceRevision) &&
+            isReconnectTaskCommandVersionCurrent(
+              reconnectStatus,
+              options.getTaskCommandControllerVersion(),
+            )
+          ) {
+            await options.reconcileRunningAgentIds(reconnectStatus.runningAgentIds, true);
+            if (generation !== restoreGeneration) {
+              return;
+            }
+            restoreCompleted = true;
+            restoreOutcome = 'stale-snapshot-skip';
+            shouldRunFullRestore = false;
+          }
+
+          if (
+            shouldRunFullRestore &&
+            canSkipFullReconnectRestore(
+              reconnectStatus,
+              currentWorkspaceRevision,
+              options.getTaskCommandControllerVersion(),
+            )
+          ) {
+            await options.reconcileRunningAgentIds(reconnectStatus.runningAgentIds, true);
+            if (generation !== restoreGeneration) {
+              return;
+            }
+            restoreCompleted = true;
+            restoreOutcome = 'short-disconnect-skip';
+            shouldRunFullRestore = false;
+          }
+        } catch (error) {
+          if (generation !== restoreGeneration) {
+            return;
+          }
+          console.warn('Failed to inspect reconnect continuity before full restore:', error);
+        }
+      }
+
       try {
-        const reconnectSnapshot = await invoke(IPC.GetBrowserReconnectSnapshot);
-        if (generation !== restoreGeneration) {
-          return;
+        if (shouldRunFullRestore) {
+          fullRestoreStarted = true;
+          recordBrowserReconnectFullRestoreDeferred(Date.now() - restoreStartedAt);
+          beginBrowserReconnectRestore();
+          options.onTaskNotificationRestoreStarted?.();
+          const reconnectSnapshot = await invoke(IPC.GetBrowserReconnectSnapshot);
+          if (generation !== restoreGeneration) {
+            return;
+          }
+          await options.syncBrowserStateFromReconnectSnapshot(reconnectSnapshot);
+          if (generation !== restoreGeneration) {
+            return;
+          }
+          if (
+            options.getTaskCommandControllerUpdateCount() ===
+            initialTaskCommandControllerUpdateCount
+          ) {
+            options.replaceTaskCommandControllers(
+              reconnectSnapshot.taskCommandControllers ?? [],
+              getReconnectTaskCommandControllerReplaceOptions(reconnectSnapshot),
+            );
+          }
+          if (generation !== restoreGeneration) {
+            return;
+          }
+          await options.reconcileRunningAgentIds(reconnectSnapshot.runningAgentIds, true);
+          if (generation !== restoreGeneration) {
+            return;
+          }
+          restoreCompleted = true;
+          restoreOutcome = 'full-restore';
         }
-        await options.syncBrowserStateFromReconnectSnapshot(reconnectSnapshot);
-        if (generation !== restoreGeneration) {
-          return;
-        }
-        if (
-          options.getTaskCommandControllerUpdateCount() === initialTaskCommandControllerUpdateCount
-        ) {
-          options.replaceTaskCommandControllers(
-            reconnectSnapshot.taskCommandControllers ?? [],
-            getReconnectTaskCommandControllerReplaceOptions(reconnectSnapshot),
-          );
-        }
-        if (generation !== restoreGeneration) {
-          return;
-        }
-        await options.reconcileRunningAgentIds(reconnectSnapshot.runningAgentIds, true);
-        restoreCompleted = true;
       } catch (error) {
+        if (!fullRestoreStarted) {
+          recordBrowserReconnectRestoreOutcome(
+            'status-check-failed',
+            Date.now() - restoreStartedAt,
+          );
+          console.warn('Failed to inspect reconnect continuity before full restore:', error);
+          return;
+        }
+
         console.warn('Failed to restore browser state after reconnect:', error);
         if (generation === restoreGeneration) {
           options.showNotification(BROWSER_RESTORE_FAILURE_MESSAGE);
@@ -416,14 +541,17 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       } finally {
         if (generation === restoreGeneration) {
           lifecycleState = completeBrowserRestore(lifecycleState);
-          if (restoreCompleted) {
+          if (restoreOutcome) {
+            recordBrowserReconnectRestoreOutcome(restoreOutcome, Date.now() - restoreStartedAt);
+          }
+          if (restoreCompleted && fullRestoreStarted) {
             completeBrowserReconnectRestore();
-          } else {
+          } else if (fullRestoreStarted) {
             cancelBrowserReconnectRestore('restore-failed');
           }
           updateConnectionBanner();
           options.clearRestoringConnectionBanner();
-          if (restoreCompleted) {
+          if (restoreCompleted && fullRestoreStarted) {
             options.onTaskNotificationRestoreCompleted?.();
           }
         }
@@ -435,6 +563,25 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     if (event.kind === 'error') {
       options.showNotification(event.message);
       return;
+    }
+
+    if (event.kind === 'metrics') {
+      switch (event.payload.type) {
+        case 'disconnect':
+          recordBrowserReconnectDisconnect(event.payload.reason);
+          return;
+        case 'pong':
+          recordBrowserReconnectPong(event.payload.rttMs);
+          return;
+        case 'reconnect-scheduled':
+          recordBrowserReconnectScheduled(event.payload.delayMs);
+          return;
+        case 'sequence-gap':
+          recordBrowserReconnectSequenceGap();
+          return;
+        default:
+          assertNever(event.payload, 'Unhandled browser transport metric event');
+      }
     }
 
     if (event.state !== 'connected') {

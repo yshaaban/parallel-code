@@ -272,6 +272,10 @@ export function getTaskCommandControllerUpdateCount(): number {
   return taskCommandControllerUpdateCount;
 }
 
+export function getTaskCommandControllerVersion(): number {
+  return taskCommandControllerVersion;
+}
+
 export async function loadTaskCommandControllers(options?: {
   ifUnchangedSince?: number;
 }): Promise<void> {

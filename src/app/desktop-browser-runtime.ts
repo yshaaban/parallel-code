@@ -19,8 +19,10 @@ import {
 import {
   applyTaskCommandControllerChanged,
   getTaskCommandControllerUpdateCount,
+  getTaskCommandControllerVersion,
   replaceTaskCommandControllers,
 } from '../store/task-command-controllers';
+import { getLoadedWorkspaceRevision } from '../store/persistence-session';
 import { replacePeerSessions } from '../store/peer-presence';
 import { showNotification } from '../store/notification';
 
@@ -45,6 +47,8 @@ export function createBrowserRuntimeOptions(
 ): BrowserRuntimeCleanupOptions {
   const runtimeOptions: BrowserRuntimeCleanupOptions = {
     getTaskCommandControllerUpdateCount,
+    getTaskCommandControllerVersion,
+    getLoadedWorkspaceRevision,
     onAgentLifecycle: handleAgentLifecycleMessage,
     onPeerPresence: replacePeerSessions,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
@@ -83,6 +87,8 @@ export function createBrowserRuntimeCleanup(
       clearRestoringConnectionBanner(options.setConnectionBanner);
     },
     getTaskCommandControllerUpdateCount: runtimeOptions.getTaskCommandControllerUpdateCount,
+    getTaskCommandControllerVersion: runtimeOptions.getTaskCommandControllerVersion,
+    getLoadedWorkspaceRevision: runtimeOptions.getLoadedWorkspaceRevision,
     onAgentLifecycle: runtimeOptions.onAgentLifecycle,
     onPeerPresence: runtimeOptions.onPeerPresence,
     onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,

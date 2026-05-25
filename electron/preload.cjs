@@ -26,6 +26,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_backend_runtime_diagnostics',
   'reset_backend_runtime_diagnostics',
   'get_browser_cold_bootstrap',
+  'get_browser_reconnect_status',
   'get_browser_reconnect_snapshot',
   // Task
   'create_task',
@@ -64,6 +65,7 @@ const ALLOWED_CHANNELS = new Set([
   'discard_uncommitted',
   'check_merge_status',
   'merge_task',
+  'merge_arena_worktree',
   'get_branch_log',
   'get_branch_commit_history',
   'push_task',

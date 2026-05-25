@@ -81,6 +81,17 @@ const PlanViewerDialog = lazyNamed(
 );
 const SettingsDialog = lazyNamed(() => import('./components/SettingsDialog'), 'SettingsDialog');
 
+type ConnectionBannerPresentation = 'bar' | 'overlay';
+
+function getConnectionBannerPresentation(
+  state: ConnectionBanner['state'],
+): ConnectionBannerPresentation {
+  if (state === 'auth-expired' || state === 'disconnected') {
+    return 'bar';
+  }
+  return 'overlay';
+}
+
 function DropOverlay(): JSX.Element {
   return (
     <div
@@ -349,6 +360,7 @@ function App(): JSX.Element {
           {(banner) => (
             <AppConnectionBanner
               message={getConnectionBannerText(banner())}
+              presentation={getConnectionBannerPresentation(banner().state)}
               state={banner().state}
             />
           )}

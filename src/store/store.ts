@@ -102,6 +102,7 @@ export {
   applyTaskCommandControllerChanged,
   getTaskCommandOwnerStatus,
   getTaskCommandControllerUpdateCount,
+  getTaskCommandControllerVersion,
   getTaskCommandController,
   getPeerTaskCommandController,
   getPeerTaskCommandControlMessage,

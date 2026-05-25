@@ -4,7 +4,15 @@ import {
   type ServerMessage,
 } from '../../electron/remote/protocol';
 import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
-import { createWebSocketClientCore } from './websocket-client';
+import {
+  createWebSocketClientCore,
+  type WebSocketDisconnectReason,
+  type WebSocketReconnectDelayContext,
+} from './websocket-client';
+import {
+  getWeakConnectivityReconnectDelayMs,
+  WEAK_CONNECTIVITY_CLIENT_HEARTBEAT,
+} from './weak-connectivity-policy';
 
 export type BrowserServerMessage = Exclude<
   ServerMessage,
@@ -23,6 +31,30 @@ export type BrowserTransportEvent =
   | {
       kind: 'error';
       message: string;
+    }
+  | {
+      kind: 'metrics';
+      payload:
+        | {
+            connectedDurationMs: number | null;
+            reason: WebSocketDisconnectReason;
+            type: 'disconnect';
+          }
+        | {
+            attempt: number;
+            delayMs: number;
+            lastDisconnectReason: WebSocketDisconnectReason | null;
+            type: 'reconnect-scheduled';
+          }
+        | {
+            rttMs: number | null;
+            type: 'pong';
+          }
+        | {
+            actualSeq: number;
+            expectedSeq: number;
+            type: 'sequence-gap';
+          };
     };
 
 type BrowserEventListener = (payload: unknown) => void;
@@ -46,6 +78,9 @@ export interface BrowserControlClient {
   expireSession: () => void;
   getBufferedAmount: () => number;
   getConnectionState: () => BrowserControlConnectionState;
+  hasSequenceGapSinceDisconnect: () => boolean;
+  hasSequencedMessageSinceDisconnect: () => boolean;
+  getLastDisconnectDurationMs: () => number | null;
   emitError: (message: string) => void;
   ensureConnected: () => Promise<WebSocket>;
   isAuthenticated: () => boolean;
@@ -119,6 +154,10 @@ export function createBrowserControlClient(
   let browserConnectionState: BrowserControlConnectionState = 'disconnected';
   let lastBrowserErrorMessage: string | null = null;
   let lastBrowserErrorAt = 0;
+  let activeDisconnectStartedAt: number | null = null;
+  let lastDisconnectDurationMs: number | null = null;
+  let sequenceGapSinceDisconnect = false;
+  let sequencedMessageSinceDisconnect = false;
   let hasConfirmedAuthenticatedSession = false;
   let channelHandlers: {
     onBinaryMessage: ChannelBinaryHandler;
@@ -142,6 +181,11 @@ export function createBrowserControlClient(
   function setConnectionState(state: BrowserControlConnectionState): void {
     if (browserConnectionState === state) {
       return;
+    }
+
+    if (state === 'connected' && activeDisconnectStartedAt !== null) {
+      lastDisconnectDurationMs = Math.max(0, Date.now() - activeDisconnectStartedAt);
+      activeDisconnectStartedAt = null;
     }
 
     if (state !== 'connected') {
@@ -208,8 +252,47 @@ export function createBrowserControlClient(
   } satisfies BrowserServerMessageHandlerMap;
 
   function handleBrowserServerMessage(message: ServerMessage): void {
+    if (isSequencedServerMessage(message)) {
+      sequencedMessageSinceDisconnect = true;
+    }
     confirmAuthenticatedSession();
     dispatchByType(browserServerMessageHandlers, message);
+  }
+
+  function isSequencedServerMessage(message: ServerMessage): boolean {
+    const seq = (message as { seq?: unknown }).seq;
+    return typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0;
+  }
+
+  function getDisconnectConnectedDurationMs(event: {
+    lastConnectedAt: number | null;
+    lastConnectionDurationMs: number | null;
+    lastDisconnectedAt: number | null;
+  }): number | null {
+    if (event.lastConnectionDurationMs !== null) {
+      return event.lastConnectionDurationMs;
+    }
+    if (event.lastConnectedAt === null || event.lastDisconnectedAt === null) {
+      return null;
+    }
+    return Math.max(0, event.lastDisconnectedAt - event.lastConnectedAt);
+  }
+
+  function getActiveDisconnectStartedAt(event: {
+    hasConnected: boolean;
+    lastDisconnectedAt: number | null;
+  }): number | null {
+    if (!event.hasConnected || event.lastDisconnectedAt === null) {
+      return null;
+    }
+    return event.lastDisconnectedAt;
+  }
+
+  function getLastDisconnectDurationMs(): number | null {
+    if (activeDisconnectStartedAt === null) {
+      return lastDisconnectDurationMs;
+    }
+    return Math.max(0, Date.now() - activeDisconnectStartedAt);
   }
 
   function shouldKeepSocketAlive(): boolean {
@@ -238,8 +321,59 @@ export function createBrowserControlClient(
     onBinaryMessage: (buffer) => {
       channelHandlers?.onBinaryMessage(buffer);
     },
+    onDisconnect: (event) => {
+      activeDisconnectStartedAt = getActiveDisconnectStartedAt(event);
+      lastDisconnectDurationMs = null;
+      sequenceGapSinceDisconnect = false;
+      sequencedMessageSinceDisconnect = false;
+      emitTransportEvent({
+        kind: 'metrics',
+        payload: {
+          connectedDurationMs: getDisconnectConnectedDurationMs(event),
+          reason: event.reason,
+          type: 'disconnect',
+        },
+      });
+    },
     onMessage: handleBrowserServerMessage,
+    onPong: (rttMs) => {
+      emitTransportEvent({
+        kind: 'metrics',
+        payload: {
+          rttMs,
+          type: 'pong',
+        },
+      });
+    },
+    onReconnectScheduled: (event) => {
+      emitTransportEvent({
+        kind: 'metrics',
+        payload: {
+          attempt: event.attempt,
+          delayMs: event.delayMs,
+          lastDisconnectReason: event.lastDisconnectReason,
+          type: 'reconnect-scheduled',
+        },
+      });
+    },
+    onSequenceGap: (event) => {
+      sequenceGapSinceDisconnect = true;
+      sequencedMessageSinceDisconnect = true;
+      emitTransportEvent({
+        kind: 'metrics',
+        payload: {
+          actualSeq: event.actualSeq,
+          expectedSeq: event.expectedSeq,
+          type: 'sequence-gap',
+        },
+      });
+    },
     onStateChange: setConnectionState,
+    pingIntervalMs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.pingIntervalMs,
+    pongTimeoutMs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.pongTimeoutMs,
+    maxMissedPongs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.maxMissedPongs,
+    reconnectDelayMs: (attempt: number, context: WebSocketReconnectDelayContext): number =>
+      getWeakConnectivityReconnectDelayMs(attempt, context),
     shouldReconnect: shouldKeepSocketAlive,
   });
 
@@ -383,6 +517,10 @@ export function createBrowserControlClient(
     cleanupBrowserSocketLifecycle = null;
     browserSocketLifecycleBound = false;
     browserSocketClient.resetForTests();
+    activeDisconnectStartedAt = null;
+    lastDisconnectDurationMs = null;
+    sequenceGapSinceDisconnect = false;
+    sequencedMessageSinceDisconnect = false;
   }
 
   function setChannelHandlers(handlers: {
@@ -399,6 +537,9 @@ export function createBrowserControlClient(
     expireSession: () => browserSocketClient.disconnect('auth-expired'),
     getBufferedAmount: browserSocketClient.getBufferedAmount,
     getConnectionState: () => browserConnectionState,
+    hasSequenceGapSinceDisconnect: () => sequenceGapSinceDisconnect,
+    hasSequencedMessageSinceDisconnect: () => sequencedMessageSinceDisconnect,
+    getLastDisconnectDurationMs,
     isAuthenticated: () => hasConfirmedAuthenticatedSession,
     emitError,
     ensureConnected,

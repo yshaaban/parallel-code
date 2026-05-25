@@ -14,7 +14,12 @@ import {
   createWebSocketClientCore,
   type WebSocketClientCore,
   type WebSocketConnectionState,
+  type WebSocketReconnectDelayContext,
 } from '../lib/websocket-client';
+import {
+  getWeakConnectivityReconnectDelayMs,
+  WEAK_CONNECTIVITY_CLIENT_HEARTBEAT,
+} from '../lib/weak-connectivity-policy';
 import { tryB64Decode } from './base64';
 import {
   appendRemoteAgentTail,
@@ -540,7 +545,11 @@ const baseClientOptions = {
     }
     updateStatus(toConnectionStatus(nextState));
   },
-  reconnectDelayMs: () => 3_000,
+  pingIntervalMs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.pingIntervalMs,
+  pongTimeoutMs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.pongTimeoutMs,
+  maxMissedPongs: WEAK_CONNECTIVITY_CLIENT_HEARTBEAT.maxMissedPongs,
+  reconnectDelayMs: (attempt: number, context: WebSocketReconnectDelayContext): number =>
+    getWeakConnectivityReconnectDelayMs(attempt, context),
   shouldReconnect: () => shouldReconnect,
 } satisfies Omit<
   Parameters<typeof createWebSocketClientCore<RemoteIncomingServerMessage, ClientMessage>>[0],

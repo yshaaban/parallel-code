@@ -6,6 +6,7 @@ import { promisify } from 'util';
 
 import type {
   BrowserColdBootstrapSnapshot,
+  BrowserReconnectStatus,
   BrowserReconnectSnapshot,
 } from '../../src/domain/renderer-invoke.js';
 import { buildBrowserColdBootstrapProjectionFromJson } from '../../src/domain/browser-cold-bootstrap-projection-builder.js';
@@ -81,12 +82,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const RECONNECT_SNAPSHOT_CACHE_TTL_MS = 200;
+const RECONNECT_SNAPSHOT_CACHE_TTL_MS = 5_000;
 
 interface CachedReconnectSnapshot {
   expiresAt: number;
-  promise: Promise<BrowserReconnectSnapshot>;
+  promise: Promise<ReconnectSavedStateSnapshot>;
 }
+
+type ReconnectSavedStateSnapshot = Pick<
+  BrowserReconnectSnapshot,
+  'appStateJson' | 'workspaceRevision' | 'workspaceStateJson'
+>;
 
 interface SavedStateSyncOptions {
   syncProjectBaseBranchesFromJson: (json: string) => void;
@@ -138,7 +144,7 @@ function assertOptionalChoiceIndex(
 
 function cacheReconnectSnapshot(
   userDataPath: string,
-  promise: Promise<BrowserReconnectSnapshot>,
+  promise: Promise<ReconnectSavedStateSnapshot>,
   expiresAt: number,
 ): void {
   reconnectSnapshotCacheByUserDataPath.set(userDataPath, {
@@ -149,12 +155,27 @@ function cacheReconnectSnapshot(
 
 function clearReconnectSnapshotIfCurrent(
   userDataPath: string,
-  promise: Promise<BrowserReconnectSnapshot>,
+  promise: Promise<ReconnectSavedStateSnapshot>,
 ): void {
   const current = reconnectSnapshotCacheByUserDataPath.get(userDataPath);
   if (current?.promise === promise) {
     reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
   }
+}
+
+function cloneReconnectSavedStateSnapshot(
+  snapshot: ReconnectSavedStateSnapshot,
+): ReconnectSavedStateSnapshot {
+  const clone: ReconnectSavedStateSnapshot = {
+    appStateJson: snapshot.appStateJson,
+  };
+  if (snapshot.workspaceRevision !== undefined) {
+    clone.workspaceRevision = snapshot.workspaceRevision;
+  }
+  if (snapshot.workspaceStateJson !== undefined) {
+    clone.workspaceStateJson = snapshot.workspaceStateJson;
+  }
+  return clone;
 }
 
 function cloneBrowserReconnectSnapshot(
@@ -218,11 +239,10 @@ function syncSavedStateJson(json: string, options: SavedStateSyncOptions): void 
   options.syncProjectBaseBranchesFromJson(json);
 }
 
-function createBrowserReconnectSnapshot(
+function createBrowserReconnectSavedStateSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
-): BrowserReconnectSnapshot {
-  const runningAgentIds = getActiveAgentIds();
+): ReconnectSavedStateSnapshot {
   const appStateJson = loadSavedAppStateJson(context, options);
   const savedWorkspace = loadWorkspaceStateForEnv(context);
   if (savedWorkspace) {
@@ -235,15 +255,33 @@ function createBrowserReconnectSnapshot(
   };
 
   return {
+    appStateJson,
+    workspaceRevision: workspace.revision,
+    workspaceStateJson: workspace.json,
+  };
+}
+
+function createBrowserReconnectSnapshot(
+  savedState: ReconnectSavedStateSnapshot,
+): BrowserReconnectSnapshot {
+  const runningAgentIds = getActiveAgentIds();
+  return {
+    ...savedState,
     agentGenerations: Object.fromEntries(
       runningAgentIds.map((agentId) => [agentId, getAgentMeta(agentId)?.generation ?? 0]),
     ),
-    appStateJson,
     runningAgentIds,
     taskCommandControllers: getTaskCommandControllers(),
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
-    workspaceRevision: workspace.revision,
-    workspaceStateJson: workspace.json,
+  };
+}
+
+function getBrowserReconnectStatus(context: HandlerContext): BrowserReconnectStatus {
+  const workspace = loadWorkspaceStateForEnv(context);
+  return {
+    runningAgentIds: getActiveAgentIds(),
+    taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
+    workspaceRevision: workspace?.revision ?? 0,
   };
 }
 
@@ -286,12 +324,14 @@ function getBrowserReconnectSnapshot(
   const cached = reconnectSnapshotCacheByUserDataPath.get(context.userDataPath);
   if (cached && cached.expiresAt > now) {
     recordReconnectSnapshotCacheHit();
-    return cached.promise.then((snapshot) => cloneBrowserReconnectSnapshot(snapshot));
+    return cached.promise.then((snapshot) =>
+      cloneBrowserReconnectSnapshot(createBrowserReconnectSnapshot(snapshot)),
+    );
   }
 
   recordReconnectSnapshotCacheMiss();
-  const promise = Promise.resolve(createBrowserReconnectSnapshot(context, options)).then(
-    (snapshot) => cloneBrowserReconnectSnapshot(snapshot),
+  const promise = Promise.resolve(createBrowserReconnectSavedStateSnapshot(context, options)).then(
+    (snapshot) => cloneReconnectSavedStateSnapshot(snapshot),
   );
   cacheReconnectSnapshot(context.userDataPath, promise, now + RECONNECT_SNAPSHOT_CACHE_TTL_MS);
 
@@ -300,7 +340,7 @@ function getBrowserReconnectSnapshot(
       clearReconnectSnapshotIfCurrent(context.userDataPath, promise);
       throw error;
     })
-    .then((snapshot) => cloneBrowserReconnectSnapshot(snapshot));
+    .then((snapshot) => cloneBrowserReconnectSnapshot(createBrowserReconnectSnapshot(snapshot)));
 }
 
 const HOST_KEY_FAILURE_PATTERN = /Host key verification failed/i;
@@ -544,6 +584,7 @@ export function createSystemIpcHandlers(
       return loadSavedWorkspaceState(context, options);
     },
 
+    [IPC.GetBrowserReconnectStatus]: () => getBrowserReconnectStatus(context),
     [IPC.GetBrowserReconnectSnapshot]: () => getBrowserReconnectSnapshot(context, options),
     [IPC.GetBrowserColdBootstrap]: () => createBrowserColdBootstrapSnapshot(context, options),
 

@@ -64,6 +64,9 @@ declare global {
       disconnect: (nextState?: BrowserControlConnectionState) => void;
       ensureConnected: () => Promise<void>;
       getConnectionState: () => BrowserControlConnectionState;
+      getLastDisconnectDurationMs: () => number | null;
+      hasSequenceGapSinceDisconnect: () => boolean;
+      hasSequencedMessageSinceDisconnect: () => boolean;
     };
     electron?: {
       getPathForFile?: (file: File) => string;
@@ -256,6 +259,10 @@ function bindBrowserTransportTestHook(): void {
       await browserControlClient.ensureConnected();
     },
     getConnectionState: () => browserControlClient.getConnectionState(),
+    getLastDisconnectDurationMs: () => browserControlClient.getLastDisconnectDurationMs(),
+    hasSequenceGapSinceDisconnect: () => browserControlClient.hasSequenceGapSinceDisconnect(),
+    hasSequencedMessageSinceDisconnect: () =>
+      browserControlClient.hasSequencedMessageSinceDisconnect(),
   };
 }
 
@@ -1130,6 +1137,26 @@ export function getBrowserLastRttMs(): number | null {
   }
 
   return browserControlClient.getLastRttMs();
+}
+
+export function getBrowserReconnectContinuity(): {
+  disconnectedDurationMs: number | null;
+  hasSequenceGapSinceDisconnect: boolean;
+  hasSequencedMessageSinceDisconnect: boolean;
+} {
+  if (isElectronRuntime()) {
+    return {
+      disconnectedDurationMs: null,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: false,
+    };
+  }
+
+  return {
+    disconnectedDurationMs: browserControlClient.getLastDisconnectDurationMs(),
+    hasSequenceGapSinceDisconnect: browserControlClient.hasSequenceGapSinceDisconnect(),
+    hasSequencedMessageSinceDisconnect: browserControlClient.hasSequencedMessageSinceDisconnect(),
+  };
 }
 
 export function onBrowserHttpStateChange(

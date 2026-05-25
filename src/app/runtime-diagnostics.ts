@@ -87,6 +87,12 @@ const BROWSER_STARTUP_CANCEL_REASONS = [
   'restore-failed',
   'transport-lost',
 ] as const;
+const BROWSER_RECONNECT_RESTORE_OUTCOMES = [
+  'full-restore',
+  'short-disconnect-skip',
+  'stale-snapshot-skip',
+  'status-check-failed',
+] as const;
 
 export type TerminalFitDirtyReason = (typeof TERMINAL_FIT_DIRTY_REASONS)[number];
 export type TerminalFitExecutionSource = (typeof TERMINAL_FIT_EXECUTION_SOURCES)[number];
@@ -95,6 +101,7 @@ export type TerminalRecoveryReason = (typeof TERMINAL_RECOVERY_REASONS)[number];
 export type TerminalRecoveryKind = (typeof TERMINAL_RECOVERY_KINDS)[number];
 export type TerminalRecoveryResetReason = (typeof TERMINAL_RECOVERY_RESET_REASONS)[number];
 export type BrowserStartupCancelReason = (typeof BROWSER_STARTUP_CANCEL_REASONS)[number];
+export type BrowserReconnectRestoreOutcome = (typeof BROWSER_RECONNECT_RESTORE_OUTCOMES)[number];
 export type TerminalRendererSwapReason = 'attach' | 'restore' | 'selected-switch';
 export type TerminalResizeDeferReason = (typeof TERMINAL_RESIZE_DEFER_REASONS)[number];
 export type TerminalStartupPaintRole = (typeof TERMINAL_STARTUP_PAINT_ROLES)[number];
@@ -172,6 +179,30 @@ export interface RendererRuntimeDiagnosticsSnapshot {
       'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
       number
     >;
+  };
+  browserReconnect: {
+    disconnectCounts: Record<
+      | 'auth-expired'
+      | 'close'
+      | 'connect-close'
+      | 'connect-error'
+      | 'manual'
+      | 'missed-pong'
+      | 'send-error',
+      number
+    >;
+    fullRestoreDeferredMs: number;
+    lastDisconnectedDurationMs: number | null;
+    lastReconnectDelayMs: number | null;
+    lastRestoreDurationMs: number | null;
+    maxReconnectDelayMs: number;
+    maxRestoreDurationMs: number;
+    pongCount: number;
+    reconnectSchedules: number;
+    replayGaps: number;
+    restoreOutcomeCounts: Record<BrowserReconnectRestoreOutcome, number>;
+    rttLastMs: number | null;
+    rttMaxMs: number;
   };
   terminalInput: {
     bufferedCharsCurrent: number;
@@ -631,6 +662,32 @@ function createInitialBrowserStartupDiagnostics(): RendererRuntimeDiagnosticsSna
   };
 }
 
+function createInitialBrowserReconnectDiagnostics(): RendererRuntimeDiagnosticsSnapshot['browserReconnect'] {
+  return {
+    disconnectCounts: {
+      'auth-expired': 0,
+      close: 0,
+      'connect-close': 0,
+      'connect-error': 0,
+      manual: 0,
+      'missed-pong': 0,
+      'send-error': 0,
+    },
+    fullRestoreDeferredMs: 0,
+    lastDisconnectedDurationMs: null,
+    lastReconnectDelayMs: null,
+    lastRestoreDurationMs: null,
+    maxReconnectDelayMs: 0,
+    maxRestoreDurationMs: 0,
+    pongCount: 0,
+    reconnectSchedules: 0,
+    replayGaps: 0,
+    restoreOutcomeCounts: createCounterRecord(BROWSER_RECONNECT_RESTORE_OUTCOMES),
+    rttLastMs: null,
+    rttMaxMs: 0,
+  };
+}
+
 function createInitialTerminalFitDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalFit'] {
   return {
     dirtyMarks: 0,
@@ -651,6 +708,7 @@ function createInitialSnapshot(): RendererRuntimeDiagnosticsSnapshot {
     bootstrap: createInitialBootstrapDiagnostics(),
     browserSync: createInitialBrowserSyncDiagnostics(),
     browserStartup: createInitialBrowserStartupDiagnostics(),
+    browserReconnect: createInitialBrowserReconnectDiagnostics(),
     terminalInput: createInitialTerminalInputDiagnostics(),
     terminalOutputScheduler: createInitialTerminalOutputSchedulerDiagnostics(),
     terminalPresentation: createInitialTerminalPresentationDiagnostics(),
@@ -690,6 +748,13 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       modeStartCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeStartCounts },
       tierLastReachedMs: { ...rendererRuntimeDiagnostics.browserStartup.tierLastReachedMs },
       tierCounts: { ...rendererRuntimeDiagnostics.browserStartup.tierCounts },
+    },
+    browserReconnect: {
+      ...rendererRuntimeDiagnostics.browserReconnect,
+      disconnectCounts: { ...rendererRuntimeDiagnostics.browserReconnect.disconnectCounts },
+      restoreOutcomeCounts: {
+        ...rendererRuntimeDiagnostics.browserReconnect.restoreOutcomeCounts,
+      },
     },
     terminalInput: { ...rendererRuntimeDiagnostics.terminalInput },
     terminalOutputScheduler: {
@@ -911,6 +976,65 @@ export function recordBrowserStartupTierReached(
     snapshot.browserStartup.currentTier = tier;
     snapshot.browserStartup.tierCounts[tier] += 1;
     snapshot.browserStartup.tierLastReachedMs[tier] = elapsedMs;
+  });
+}
+
+export function recordBrowserReconnectDisconnect(
+  reason: keyof RendererRuntimeDiagnosticsSnapshot['browserReconnect']['disconnectCounts'],
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.disconnectCounts[reason] += 1;
+  });
+}
+
+export function recordBrowserReconnectPong(rttMs: number | null): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.pongCount += 1;
+    snapshot.browserReconnect.rttLastMs = rttMs;
+    if (rttMs !== null && rttMs > snapshot.browserReconnect.rttMaxMs) {
+      snapshot.browserReconnect.rttMaxMs = rttMs;
+    }
+  });
+}
+
+export function recordBrowserReconnectScheduled(delayMs: number): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.reconnectSchedules += 1;
+    snapshot.browserReconnect.lastReconnectDelayMs = delayMs;
+    if (delayMs > snapshot.browserReconnect.maxReconnectDelayMs) {
+      snapshot.browserReconnect.maxReconnectDelayMs = delayMs;
+    }
+  });
+}
+
+export function recordBrowserReconnectSequenceGap(): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.replayGaps += 1;
+  });
+}
+
+export function recordBrowserReconnectDisconnectedDuration(durationMs: number | null): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.lastDisconnectedDurationMs = durationMs;
+  });
+}
+
+export function recordBrowserReconnectRestoreOutcome(
+  outcome: BrowserReconnectRestoreOutcome,
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.restoreOutcomeCounts[outcome] += 1;
+    snapshot.browserReconnect.lastRestoreDurationMs = durationMs;
+    if (durationMs > snapshot.browserReconnect.maxRestoreDurationMs) {
+      snapshot.browserReconnect.maxRestoreDurationMs = durationMs;
+    }
+  });
+}
+
+export function recordBrowserReconnectFullRestoreDeferred(durationMs: number): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserReconnect.fullRestoreDeferredMs += Math.max(0, durationMs);
   });
 }
 

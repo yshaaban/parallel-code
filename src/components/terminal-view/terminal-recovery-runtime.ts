@@ -879,7 +879,7 @@ export function createTerminalRecoveryRuntime(
   function shouldDeferVisibleStartupRecoveryUntilPrimaryReady(
     reason: TerminalRecoveryReason,
   ): boolean {
-    if (reason !== 'attach') {
+    if (reason !== 'attach' && reason !== 'reconnect') {
       return false;
     }
 
@@ -928,7 +928,7 @@ export function createTerminalRecoveryRuntime(
   function shouldDeferHiddenStartupRecoveryUntilVisiblePaint(
     reason: TerminalRecoveryReason,
   ): boolean {
-    if (reason !== 'attach') {
+    if (reason !== 'attach' && reason !== 'reconnect') {
       return false;
     }
 

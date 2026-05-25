@@ -50,7 +50,9 @@ export interface BrowserStateSyncApi {
 }
 
 export interface BrowserRuntimeCleanupOptions {
+  getLoadedWorkspaceRevision: () => number;
   getTaskCommandControllerUpdateCount: () => number;
+  getTaskCommandControllerVersion: () => number;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
   onPeerPresence: (message: PeerPresenceSnapshot[]) => void;
   onTaskCommandControllerChanged: (message: TaskCommandControllerSnapshot) => void;
