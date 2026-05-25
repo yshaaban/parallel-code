@@ -26,7 +26,10 @@ import {
 } from './task-review-signals.js';
 import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
-import { removeTaskContainerPreviewTargets } from './task-containers.js';
+import {
+  destroyManagedTaskContainersByLabels,
+  removeTaskContainerPreviewTargets,
+} from './task-containers.js';
 import { clearTaskCommandLeaseForTask } from './task-command-leases.js';
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 import {
@@ -137,6 +140,10 @@ function assertWorktreeIdentityAvailable(taskId: string | undefined, worktreePat
   }
 }
 
+export function findRegisteredTaskIdForWorktreePath(worktreePath: string): string | null {
+  return taskIdByWorktreeIdentity.get(getWorktreeIdentity(worktreePath)) ?? null;
+}
+
 function registerTaskWorktreeIdentity(taskId: string, worktreePath: string): void {
   const previousIdentity = worktreeIdentityByTaskId.get(taskId);
   if (previousIdentity !== undefined) {
@@ -174,7 +181,7 @@ export function syncTaskWorkflowWorktreesFromSavedState(savedJson: string): void
 
   const parsed = parsePersistedTaskLookupState(savedJson);
   for (const task of Object.values(parsed.tasks)) {
-    if (task.projectMode === 'non-git' || !task.id || !task.worktreePath) {
+    if (!task.id || !task.worktreePath) {
       continue;
     }
 
@@ -339,6 +346,8 @@ function registerCreatedNonGitTaskRuntime(
   request: CreateTaskWorkflowRequest,
   result: CreatedTaskRuntimeMetadata,
 ): void {
+  registerTaskWorktreeIdentity(result.id, result.worktree_path);
+
   registerTaskStepsMetadata({
     taskId: result.id,
     worktreePath: result.worktree_path,
@@ -523,6 +532,7 @@ export async function createTaskWorkflow(
   | Awaited<ReturnType<typeof importExistingWorktreeTask>>
 > {
   if (request.projectMode === 'non-git') {
+    assertWorktreeIdentityAvailable(undefined, request.projectRoot);
     const result = createNonGitTask(request.projectRoot);
     registerCreatedNonGitTaskRuntime(request, result);
     return result;
@@ -567,6 +577,11 @@ export async function createTaskWorkflow(
 export async function deleteTaskWorkflow(
   request: DeleteTaskWorkflowRequest,
 ): Promise<CleanupTaskRuntimeWorkflowResult> {
+  await destroyManagedTaskContainersByLabels({
+    projectPath: request.projectRoot,
+    taskId: request.taskId,
+    worktreePath: request.worktreePath,
+  });
   await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
 
   return cleanupTaskRuntimeWorkflow({

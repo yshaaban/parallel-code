@@ -439,10 +439,12 @@ describe('system handlers', () => {
       revision: 7,
     });
     getActiveAgentIdsMock.mockReturnValue(['agent-1']);
+    getAgentMetaMock.mockReturnValue({ generation: 5 });
 
     const status = handlers[IPC.GetBrowserReconnectStatus]?.();
 
     expect(status).toEqual({
+      agentGenerations: { 'agent-1': 5 },
       runningAgentIds: ['agent-1'],
       taskCommandControllerVersion: 0,
       workspaceRevision: 7,

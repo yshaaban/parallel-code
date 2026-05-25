@@ -17,6 +17,7 @@ import {
   startTaskContainers,
   stopTaskContainers,
 } from './task-containers.js';
+import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import type {
   ProjectContainerConfig,
   ProjectContainerRunnerProfileConfig,
@@ -145,18 +146,29 @@ function createTaskContainerRequest(
   };
 }
 
+function assertTaskContainerMutationLease(request: { controllerId: string; taskId: string }): void {
+  assertString(request.taskId, 'taskId');
+  assertString(request.controllerId, 'controllerId');
+  if (!isTaskCommandLeaseHeld(request.taskId, request.controllerId)) {
+    throw new BadRequestError('Task is controlled by another client');
+  }
+}
+
 export function createTaskContainerIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
     [IPC.ContainersInspectTask]: defineIpcHandler(IPC.ContainersInspectTask, (request) => {
       return inspectTaskContainers(createTaskContainerRequest(request, context));
     }),
     [IPC.ContainersStartTask]: defineIpcHandler(IPC.ContainersStartTask, (request) => {
+      assertTaskContainerMutationLease(request);
       return startTaskContainers(createTaskContainerRequest(request, context));
     }),
     [IPC.ContainersStopTask]: defineIpcHandler(IPC.ContainersStopTask, (request) => {
+      assertTaskContainerMutationLease(request);
       return stopTaskContainers(createTaskContainerRequest(request, context));
     }),
     [IPC.ContainersDestroyTask]: defineIpcHandler(IPC.ContainersDestroyTask, (request) => {
+      assertTaskContainerMutationLease(request);
       return destroyTaskContainers(createTaskContainerRequest(request, context));
     }),
     [IPC.ContainersGetTaskLogs]: defineIpcHandler(IPC.ContainersGetTaskLogs, (request) => {

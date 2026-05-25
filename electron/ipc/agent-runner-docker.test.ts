@@ -112,6 +112,7 @@ describe('agent-runner-docker', () => {
 
     expect(launch.command).toBe('docker');
     expect(launch.args).toContain('run');
+    expect(launch.args).toContain('--rm');
     expect(launch.args).toContain('--name');
     expect(launch.args).toContain('--label');
     expect(launch.args).toContain('com.parallel-code.managed=true');

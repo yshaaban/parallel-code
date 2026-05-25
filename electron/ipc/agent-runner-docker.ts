@@ -371,7 +371,7 @@ export function createDockerAgentRunnerLaunch(
     createdAt,
   );
 
-  const dockerArgs = ['run', '--name', containerName, '--interactive', '--tty'];
+  const dockerArgs = ['run', '--rm', '--name', containerName, '--interactive', '--tty'];
   for (const [key, value] of Object.entries(labels)) {
     dockerArgs.push('--label', `${key}=${value}`);
   }

@@ -25,6 +25,7 @@ const {
   removeTaskReviewSignalsMock,
   removeTaskPortsMock,
   removeTaskContainerPreviewTargetsMock,
+  destroyManagedTaskContainersByLabelsMock,
   removeGitStatusSnapshotMock,
   removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
@@ -48,6 +49,7 @@ const {
   removeTaskReviewSignalsMock: vi.fn(),
   removeTaskPortsMock: vi.fn(),
   removeTaskContainerPreviewTargetsMock: vi.fn(),
+  destroyManagedTaskContainersByLabelsMock: vi.fn(),
   removeGitStatusSnapshotMock: vi.fn(),
   removeAgentSupervisionMock: vi.fn(),
 }));
@@ -123,6 +125,7 @@ vi.mock('./task-ports.js', () => ({
 }));
 
 vi.mock('./task-containers.js', () => ({
+  destroyManagedTaskContainersByLabels: destroyManagedTaskContainersByLabelsMock,
   removeTaskContainerPreviewTargets: removeTaskContainerPreviewTargetsMock,
 }));
 
@@ -674,7 +677,7 @@ describe('task workflows', () => {
     }
   });
 
-  it('does not restore non-git task folders into the git worktree identity registry', async () => {
+  it('restores non-git task folders into the shared task path identity registry', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-registry-'));
     const folderPath = path.join(tempRoot, 'folder');
     fs.mkdirSync(folderPath, { recursive: true });
@@ -711,9 +714,45 @@ describe('task workflows', () => {
           existingWorktreePath: folderPath,
           baseBranch: 'main',
         }),
-      ).resolves.toMatchObject({
-        id: 'task-imported',
+      ).rejects.toThrow('already registered for task task-non-git');
+      expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects duplicate non-git task folders across canonical path aliases', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-duplicate-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
+    createNonGitTaskMock.mockReturnValueOnce({
+      id: 'task-non-git',
+      branch_name: '',
+      project_mode: 'non-git',
+      worktree_path: folderPath,
+    });
+
+    try {
+      await createTaskWorkflow(createContext(), {
+        name: 'Folder task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+        projectRoot: folderPath,
+        symlinkDirs: [],
       });
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Duplicate folder task',
+          projectId: 'project-1',
+          projectMode: 'non-git',
+          projectRoot: aliasedFolderPath,
+          symlinkDirs: [],
+        }),
+      ).rejects.toThrow('already registered for task task-non-git');
+      expect(createNonGitTaskMock).toHaveBeenCalledTimes(1);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -755,6 +794,11 @@ describe('task workflows', () => {
       worktreePath: '/tmp/project/.worktrees/task-3',
     });
 
+    expect(destroyManagedTaskContainersByLabelsMock).toHaveBeenCalledWith({
+      projectPath: '/tmp/project',
+      taskId: 'task-3',
+      worktreePath: '/tmp/project/.worktrees/task-3',
+    });
     expect(deleteTaskMock).toHaveBeenCalledWith(['agent-1'], 'task/delete', true, '/tmp/project');
     expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
     expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
@@ -765,6 +809,10 @@ describe('task workflows', () => {
     expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskContainerPreviewTargetsMock).toHaveBeenCalledWith('task-3');
     expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
+    expect(
+      destroyManagedTaskContainersByLabelsMock.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(deleteTaskMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
     expect(deleteTaskMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(
       stopPlanWatcherMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );

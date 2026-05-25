@@ -169,6 +169,31 @@ describe('browser IPC command side effects', () => {
     });
   });
 
+  it('marks current-branch tasks as externally owned direct-mode worktrees', () => {
+    const context = createContext();
+
+    runBrowserIpcCommandSideEffects(
+      context,
+      IPC.CreateTask,
+      {
+        gitIsolation: 'current-branch',
+        name: 'Direct task',
+      },
+      {
+        branch_name: 'main',
+        git_isolation: 'current-branch',
+        id: 'task-1',
+        worktree_path: '/repo',
+      },
+    );
+
+    expect(context.taskNames.getTaskMetadata('task-1')).toMatchObject({
+      directMode: true,
+      gitIsolation: 'current-branch',
+      worktreeOwnership: 'external',
+    });
+  });
+
   it('does not broadcast task removal for cleanup_task_runtime best-effort cleanup', () => {
     const context = createContext();
 

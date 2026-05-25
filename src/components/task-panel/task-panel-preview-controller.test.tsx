@@ -5,12 +5,27 @@ import type { TaskPortSnapshot } from '../../domain/server-state';
 import type { TaskContainerInspectResult } from '../../domain/task-containers';
 import { createTaskPanelPreviewController } from './task-panel-preview-controller';
 
-const { createTaskPreviewSectionMock } = vi.hoisted(() => ({
-  createTaskPreviewSectionMock: vi.fn(),
-}));
+const { createTaskPreviewSectionMock, runWithTaskCommandLeaseMock, taskCommandLeaseSkipped } =
+  vi.hoisted(() => ({
+    createTaskPreviewSectionMock: vi.fn(),
+    runWithTaskCommandLeaseMock: vi.fn(),
+    taskCommandLeaseSkipped: Symbol('task-command-lease-skipped'),
+  }));
 
 vi.mock('./TaskPreviewSection', () => ({
   createTaskPreviewSection: createTaskPreviewSectionMock,
+}));
+
+vi.mock('../../app/task-command-lease', async () => {
+  return {
+    TASK_COMMAND_LEASE_SKIPPED: taskCommandLeaseSkipped,
+    isTaskCommandLeaseSkipped: (value: unknown) => value === taskCommandLeaseSkipped,
+    runWithTaskCommandLease: runWithTaskCommandLeaseMock,
+  };
+});
+
+vi.mock('../../lib/runtime-client-id', () => ({
+  getRuntimeClientId: () => 'client-self',
 }));
 
 function createControllerOptions(
@@ -114,6 +129,9 @@ function getLatestPreviewSectionProps() {
 describe('createTaskPanelPreviewController', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    runWithTaskCommandLeaseMock.mockImplementation(
+      async (_taskId: string, _action: string, run: () => Promise<unknown>) => run(),
+    );
     createTaskPreviewSectionMock.mockReturnValue({
       content: () => null,
       id: 'preview',
@@ -334,7 +352,48 @@ describe('createTaskPanelPreviewController', () => {
 
     await props?.onStartContainers();
     await Promise.resolve();
+    expect(runWithTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'manage task containers',
+      expect.any(Function),
+    );
+    expect(startTaskContainersForTask).toHaveBeenCalledWith({
+      controllerId: 'client-self',
+      projectPath: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-1',
+    });
     expect(getLatestPreviewSectionProps()?.containerActionError).toBe('Start failed');
+
+    dispose();
+  });
+
+  it('does not run container mutations when the task lease is skipped', async () => {
+    runWithTaskCommandLeaseMock.mockResolvedValue(taskCommandLeaseSkipped);
+    const startTaskContainersForTask = vi.fn().mockResolvedValue({ status: 'running' });
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({
+          startTaskContainersForTask,
+        }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+    await props?.onStartContainers();
+
+    expect(startTaskContainersForTask).not.toHaveBeenCalled();
+    expect(getLatestPreviewSectionProps()?.containerActionError).toBe(
+      'Task is controlled by another client',
+    );
 
     dispose();
   });

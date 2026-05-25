@@ -29,7 +29,7 @@ import {
   writeToAgent,
 } from './pty.js';
 import { decodeTerminalRenderedTail, serializeTerminalRecoveryEntry } from './terminal-recovery.js';
-import { canResizeTaskTerminal, getTaskCommandControllerSnapshot } from './task-command-leases.js';
+import { getTaskCommandControllerSnapshot, isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
@@ -352,29 +352,39 @@ function getSharedScrollbackBatch(
   return batchPromise;
 }
 
-function getTaskCommandTaskId(agentId: string, taskId?: string): string | null {
-  if (typeof taskId === 'string') {
-    return taskId;
+function getAgentTaskCommandTaskId(agentId: string, taskId?: string): string | null {
+  const agentTaskId = getAgentMeta(agentId)?.taskId ?? null;
+  if (taskId !== undefined && taskId !== agentTaskId) {
+    throw new BadRequestError('taskId must match the agent task');
   }
 
-  return getAgentMeta(agentId)?.taskId ?? null;
+  return agentTaskId;
 }
 
-function canApplyTaskResize(request: {
+function assertCanApplyTaskCommandMutation(request: {
   agentId: string;
   controllerId?: string;
   taskId?: string;
-}): boolean {
-  if (request.controllerId === undefined) {
-    return true;
-  }
-
-  const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
+}): string | null {
+  const taskId = getAgentTaskCommandTaskId(request.agentId, request.taskId);
   if (!taskId) {
-    throw new BadRequestError('Unable to resolve task for terminal resize');
+    return null;
   }
 
-  return canResizeTaskTerminal(taskId, request.controllerId);
+  if (request.controllerId === undefined) {
+    throw new BadRequestError('controllerId is required for task terminal mutations');
+  }
+
+  if (!isTaskCommandLeaseHeld(taskId, request.controllerId)) {
+    const snapshot = getTaskCommandControllerSnapshot(taskId);
+    throw new BadRequestError(
+      snapshot.controllerId
+        ? `Task is controlled by another client (${snapshot.controllerId})`
+        : 'Task is controlled by another client',
+    );
+  }
+
+  return taskId;
 }
 
 function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode | undefined {
@@ -446,15 +456,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertOptionalInt(request.inputSeq, 'inputSeq');
       assertOptionalString(request.taskId, 'taskId');
       assertTerminalOrderToken(request.inputEpoch, request.inputSeq, 'inputEpoch', 'inputSeq');
-      if (request.controllerId !== undefined) {
-        const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
-        if (!taskId) {
-          throw new BadRequestError('Unable to resolve task for terminal input');
-        }
-        if (!canResizeTaskTerminal(taskId, request.controllerId)) {
-          throw new BadRequestError('Task is controlled by another client');
-        }
-      }
+      const taskId = assertCanApplyTaskCommandMutation(request);
       writeToAgent(
         request.agentId,
         request.data,
@@ -462,7 +464,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           ? {
               clientId: request.controllerId ?? null,
               requestId: request.requestId,
-              taskId: request.taskId ?? getTaskCommandTaskId(request.agentId, request.taskId),
+              taskId,
               trace: request.trace,
             }
           : undefined,
@@ -595,17 +597,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertOptionalInt(request.resizeSeq, 'resizeSeq');
       assertOptionalString(request.taskId, 'taskId');
       assertTerminalOrderToken(request.resizeEpoch, request.resizeSeq, 'resizeEpoch', 'resizeSeq');
-      if (!canApplyTaskResize(request)) {
-        const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
-        const snapshot = taskId
-          ? getTaskCommandControllerSnapshot(taskId)
-          : { action: null, controllerId: null, taskId: '' };
-        throw new BadRequestError(
-          snapshot.controllerId
-            ? `Task is controlled by another client (${snapshot.controllerId})`
-            : 'Task is controlled by another client',
-        );
-      }
+      assertCanApplyTaskCommandMutation(request);
       resizeAgent(request.agentId, request.cols, request.rows, createResizeOrderToken(request));
       return undefined;
     }),

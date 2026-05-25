@@ -10,17 +10,19 @@ import type {
   TaskPortSnapshot,
   TaskPortsEvent,
 } from '../../domain/server-state';
-import type { TaskContainerRequest } from '../../app/task-containers';
+import type { TaskContainerMutationRequest, TaskContainerRequest } from '../../app/task-containers';
+import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from '../../app/task-command-lease';
 import type {
   ProjectContainerConfig,
   TaskContainerInspectResult,
   TaskContainerLogsResult,
 } from '../../domain/task-containers';
+import { getRuntimeClientId } from '../../lib/runtime-client-id';
 
 interface TaskPanelPreviewControllerOptions {
   applyTaskPortsEvent: (snapshot: TaskPortsEvent) => void;
   destroyTaskContainersForTask: (
-    request: TaskContainerRequest,
+    request: TaskContainerMutationRequest,
   ) => Promise<TaskContainerInspectResult>;
   exposeTaskPortForTask: (
     taskId: string,
@@ -49,9 +51,11 @@ interface TaskPanelPreviewControllerOptions {
   ) => Promise<TaskPortSnapshot | undefined>;
   setTaskFocusedPanel: (taskId: string, panelId: string) => void;
   startTaskContainersForTask: (
-    request: TaskContainerRequest,
+    request: TaskContainerMutationRequest,
   ) => Promise<TaskContainerInspectResult>;
-  stopTaskContainersForTask: (request: TaskContainerRequest) => Promise<TaskContainerInspectResult>;
+  stopTaskContainersForTask: (
+    request: TaskContainerMutationRequest,
+  ) => Promise<TaskContainerInspectResult>;
   taskId: Accessor<string>;
   unexposeTaskPortForTask: (taskId: string, port: number) => Promise<TaskPortSnapshot | undefined>;
   worktreePath: Accessor<string>;
@@ -132,6 +136,13 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       projectPath: options.projectPath(),
       taskId: options.taskId(),
       worktreePath: options.worktreePath(),
+    };
+  }
+
+  function createTaskContainerMutationRequest(): TaskContainerMutationRequest {
+    return {
+      ...createTaskContainerRequest(),
+      controllerId: getRuntimeClientId(),
     };
   }
 
@@ -255,7 +266,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   }
 
   async function runContainerAction(
-    action: (request: TaskContainerRequest) => Promise<TaskContainerInspectResult>,
+    action: (request: TaskContainerMutationRequest) => Promise<TaskContainerInspectResult>,
   ): Promise<void> {
     if (loadingContainerInspect()) {
       return;
@@ -267,7 +278,18 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     setContainerActionError(null);
     setLoadingContainerInspect(true);
     try {
-      const nextInspect = await action(createTaskContainerRequest());
+      const nextInspect = await runWithTaskCommandLease(
+        options.taskId(),
+        'manage task containers',
+        () => action(createTaskContainerMutationRequest()),
+      );
+      if (isTaskCommandLeaseSkipped(nextInspect)) {
+        if (!containerInspectRequest.isCurrent(requestId)) {
+          return;
+        }
+        setContainerActionError('Task is controlled by another client');
+        return;
+      }
       if (!containerInspectRequest.isCurrent(requestId)) {
         return;
       }

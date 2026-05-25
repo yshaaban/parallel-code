@@ -5,8 +5,10 @@ const {
   spawnAgentMock,
   ensurePlansDirectoryMock,
   getAgentColsMock,
+  getAgentMetaMock,
   getAgentRowsMock,
   hasAgentSessionMock,
+  isTaskCommandLeaseHeldMock,
   resizeAgentMock,
   startPlanWatcherMock,
   startTaskGitStatusMonitoringMock,
@@ -15,8 +17,10 @@ const {
   spawnAgentMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
   getAgentColsMock: vi.fn(),
+  getAgentMetaMock: vi.fn(),
   getAgentRowsMock: vi.fn(),
   hasAgentSessionMock: vi.fn(),
+  isTaskCommandLeaseHeldMock: vi.fn(),
   resizeAgentMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
@@ -29,10 +33,21 @@ vi.mock('./pty.js', async () => {
     ...actual,
     spawnAgent: spawnAgentMock,
     getAgentCols: getAgentColsMock,
+    getAgentMeta: getAgentMetaMock,
     getAgentRows: getAgentRowsMock,
     hasAgentSession: hasAgentSessionMock,
     resizeAgent: resizeAgentMock,
     writeToAgent: writeToAgentMock,
+  };
+});
+
+vi.mock('./task-command-leases.js', async () => {
+  const actual = await vi.importActual<typeof import('./task-command-leases.js')>(
+    './task-command-leases.js',
+  );
+  return {
+    ...actual,
+    isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
   };
 });
 
@@ -68,8 +83,10 @@ function buildContext(): HandlerContext {
 beforeEach(() => {
   vi.clearAllMocks();
   getAgentColsMock.mockReturnValue(80);
+  getAgentMetaMock.mockReturnValue(undefined);
   getAgentRowsMock.mockReturnValue(24);
   hasAgentSessionMock.mockReturnValue(false);
+  isTaskCommandLeaseHeldMock.mockReturnValue(true);
   startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
 });
 
@@ -223,6 +240,7 @@ describe('Hydra spawn handling', () => {
 
   it('keeps explicit ResizeAgent as the handler resize path', () => {
     const handlers = createIpcHandlers(buildContext());
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
 
     handlers[IPC.ResizeAgent]?.({
       agentId: 'agent-1',
@@ -233,6 +251,37 @@ describe('Hydra spawn handling', () => {
     });
 
     expect(resizeAgentMock).toHaveBeenCalledWith('agent-1', 120, 40, undefined);
+  });
+
+  it('rejects task terminal writes without controller lease identity', () => {
+    const handlers = createIpcHandlers(buildContext());
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
+
+    expect(() =>
+      handlers[IPC.WriteToAgent]?.({
+        agentId: 'agent-1',
+        data: 'pwd\r',
+        taskId: 'task-1',
+      }),
+    ).toThrow('controllerId is required for task terminal mutations');
+
+    expect(writeToAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects task terminal writes when taskId does not match agent metadata', () => {
+    const handlers = createIpcHandlers(buildContext());
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
+
+    expect(() =>
+      handlers[IPC.WriteToAgent]?.({
+        agentId: 'agent-1',
+        controllerId: 'client-1',
+        data: 'pwd\r',
+        taskId: 'task-2',
+      }),
+    ).toThrow('taskId must match the agent task');
+
+    expect(writeToAgentMock).not.toHaveBeenCalled();
   });
 
   it('passes paired terminal ordering tokens through handler validation', () => {

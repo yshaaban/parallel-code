@@ -1,9 +1,11 @@
 import { IPC } from '../electron/ipc/channels.js';
 import { getAgentMeta } from '../electron/ipc/pty.js';
+import { findRegisteredTaskIdForWorktreePath } from '../electron/ipc/task-workflows.js';
 import { hasOwnKey } from '../src/lib/type-guards.js';
 
 type BrowserIpcArgs = Record<string, unknown> | undefined;
 type GetAgentTaskId = (agentId: string) => string | undefined;
+type GetWorktreeTaskId = (worktreePath: string) => string | null;
 type BrowserIpcTaskMutationArgChannel =
   | IPC.CleanupTaskRuntime
   | IPC.DeleteTask
@@ -12,6 +14,12 @@ type BrowserIpcTaskMutationArgChannel =
   | IPC.RebaseTask;
 type BrowserIpcTaskCommandArgChannel =
   | BrowserIpcTaskMutationArgChannel
+  | IPC.CommitAll
+  | IPC.ContainersDestroyTask
+  | IPC.ContainersStartTask
+  | IPC.ContainersStopTask
+  | IPC.DiscardUncommitted
+  | IPC.MergeArenaWorktree
   | IPC.ResizeAgent
   | IPC.SpawnAgent
   | IPC.WriteToAgent;
@@ -19,6 +27,7 @@ type BrowserIpcTaskCommandArgNormalizer = (
   args: Record<string, unknown>,
   browserClientId: string,
   getAgentTaskId: GetAgentTaskId,
+  getWorktreeTaskId: GetWorktreeTaskId,
 ) => Record<string, unknown>;
 
 function getBackendAgentTaskId(agentId: string): string | undefined {
@@ -29,18 +38,18 @@ function resolveTaskCommandTaskId(
   args: Record<string, unknown>,
   getAgentTaskId: GetAgentTaskId,
 ): string | undefined {
-  if (typeof args.taskId === 'string') {
-    return args.taskId;
-  }
-
   if (typeof args.agentId !== 'string') {
+    if (typeof args.taskId === 'string') {
+      return args.taskId;
+    }
+
     return undefined;
   }
 
   return getAgentTaskId(args.agentId);
 }
 
-function normalizeSpawnAgentArgs(
+function normalizeBrowserOwnedTaskArgs(
   args: Record<string, unknown>,
   browserClientId: string,
 ): Record<string, unknown> {
@@ -55,53 +64,70 @@ function normalizeTerminalCommandArgs(
   browserClientId: string,
   getAgentTaskId: GetAgentTaskId,
 ): Record<string, unknown> {
+  const rest = { ...args };
+  delete rest.controllerId;
+  delete rest.taskId;
+
   const taskId = resolveTaskCommandTaskId(args, getAgentTaskId);
 
   return {
-    ...args,
+    ...rest,
     controllerId: browserClientId,
     ...(typeof taskId === 'string' ? { taskId } : {}),
   };
 }
 
-function normalizeTaskMutationArgs(
+function normalizeRegisteredWorktreeMutationArgs(
   args: Record<string, unknown>,
   browserClientId: string,
+  _getAgentTaskId: GetAgentTaskId,
+  getWorktreeTaskId: GetWorktreeTaskId,
 ): Record<string, unknown> {
+  const rest = stripTaskCommandIdentity(args);
+
+  if (typeof args.worktreePath !== 'string') {
+    return rest;
+  }
+
+  const taskId = getWorktreeTaskId(args.worktreePath);
+  if (!taskId) {
+    return rest;
+  }
+
   return {
-    ...args,
+    ...rest,
     controllerId: browserClientId,
+    taskId,
   };
 }
 
-function stripTaskMutationControllerIdentity(
-  args: Record<string, unknown>,
-): Record<string, unknown> {
+function stripTaskCommandIdentity(args: Record<string, unknown>): Record<string, unknown> {
   const rest = { ...args };
   delete rest.controllerId;
+  delete rest.taskId;
   return rest;
 }
 
 const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
-  [IPC.CleanupTaskRuntime]: normalizeTaskMutationArgs,
-  [IPC.DeleteTask]: normalizeTaskMutationArgs,
-  [IPC.MergeTask]: normalizeTaskMutationArgs,
-  [IPC.PushTask]: normalizeTaskMutationArgs,
-  [IPC.RebaseTask]: normalizeTaskMutationArgs,
+  [IPC.CleanupTaskRuntime]: normalizeBrowserOwnedTaskArgs,
+  [IPC.DeleteTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.MergeTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.PushTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.RebaseTask]: normalizeBrowserOwnedTaskArgs,
 } satisfies Record<BrowserIpcTaskMutationArgChannel, BrowserIpcTaskCommandArgNormalizer>;
 
 const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   ...BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS,
+  [IPC.CommitAll]: normalizeRegisteredWorktreeMutationArgs,
+  [IPC.ContainersDestroyTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.ContainersStartTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.ContainersStopTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.DiscardUncommitted]: normalizeRegisteredWorktreeMutationArgs,
+  [IPC.MergeArenaWorktree]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.ResizeAgent]: normalizeTerminalCommandArgs,
-  [IPC.SpawnAgent]: normalizeSpawnAgentArgs,
+  [IPC.SpawnAgent]: normalizeBrowserOwnedTaskArgs,
   [IPC.WriteToAgent]: normalizeTerminalCommandArgs,
 } satisfies Record<BrowserIpcTaskCommandArgChannel, BrowserIpcTaskCommandArgNormalizer>;
-
-function isBrowserIpcTaskMutationArgChannel(
-  channel: IPC,
-): channel is BrowserIpcTaskMutationArgChannel {
-  return hasOwnKey(BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS, channel);
-}
 
 function isBrowserIpcTaskCommandArgChannel(
   channel: IPC,
@@ -114,16 +140,17 @@ export function normalizeBrowserIpcTaskCommandArgs(
   args: BrowserIpcArgs,
   browserClientId: string | null,
   getAgentTaskId: GetAgentTaskId = getBackendAgentTaskId,
+  getWorktreeTaskId: GetWorktreeTaskId = findRegisteredTaskIdForWorktreePath,
 ): BrowserIpcArgs {
   if (!args) {
     return args;
   }
 
-  if (isBrowserIpcTaskMutationArgChannel(channel) && !browserClientId) {
-    return stripTaskMutationControllerIdentity(args);
-  }
-
   if (!browserClientId) {
+    if (isBrowserIpcTaskCommandArgChannel(channel)) {
+      return stripTaskCommandIdentity(args);
+    }
+
     return args;
   }
 
@@ -131,5 +158,10 @@ export function normalizeBrowserIpcTaskCommandArgs(
     return args;
   }
 
-  return BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS[channel](args, browserClientId, getAgentTaskId);
+  return BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS[channel](
+    args,
+    browserClientId,
+    getAgentTaskId,
+    getWorktreeTaskId,
+  );
 }

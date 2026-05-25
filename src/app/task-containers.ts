@@ -9,14 +9,22 @@ import { isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
 
 export interface TaskContainerRequest {
+  controllerId?: string;
   projectContainerConfig?: ProjectContainerConfig;
   projectPath: string;
   taskId: string;
   worktreePath: string;
 }
 
+export type TaskContainerMutationRequest = TaskContainerRequest & { controllerId: string };
+
+function createTaskContainerInvokeRequest(
+  request: TaskContainerMutationRequest,
+): TaskContainerMutationRequest;
+function createTaskContainerInvokeRequest(request: TaskContainerRequest): TaskContainerRequest;
 function createTaskContainerInvokeRequest(request: TaskContainerRequest): TaskContainerRequest {
   return {
+    ...(request.controllerId !== undefined ? { controllerId: request.controllerId } : {}),
     ...(request.projectContainerConfig !== undefined
       ? { projectContainerConfig: request.projectContainerConfig }
       : {}),
@@ -45,19 +53,19 @@ export async function inspectTaskContainerForTask(
 }
 
 export async function startTaskContainersForTask(
-  request: TaskContainerRequest,
+  request: TaskContainerMutationRequest,
 ): Promise<TaskContainerInspectResult> {
   return invoke(IPC.ContainersStartTask, createTaskContainerInvokeRequest(request));
 }
 
 export async function stopTaskContainersForTask(
-  request: TaskContainerRequest,
+  request: TaskContainerMutationRequest,
 ): Promise<TaskContainerInspectResult> {
   return invoke(IPC.ContainersStopTask, createTaskContainerInvokeRequest(request));
 }
 
 export async function destroyTaskContainersForTask(
-  request: TaskContainerRequest,
+  request: TaskContainerMutationRequest,
 ): Promise<TaskContainerInspectResult> {
   return invoke(IPC.ContainersDestroyTask, createTaskContainerInvokeRequest(request));
 }

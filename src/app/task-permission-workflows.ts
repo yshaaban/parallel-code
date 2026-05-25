@@ -1,6 +1,8 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { resolvePermission } from '../store/review';
+import { store } from '../store/state';
 import { isTaskCommandLeaseSkipped, runWithAgentTaskCommandLease } from './task-command-lease';
 
 export async function handleTaskPermissionResponse(
@@ -13,7 +15,13 @@ export async function handleTaskPermissionResponse(
     agentId,
     `${action} a permission request`,
     async () => {
-      await invoke(IPC.WriteToAgent, { agentId, data: response });
+      const taskId = store.agents?.[agentId]?.taskId;
+      await invoke(IPC.WriteToAgent, {
+        agentId,
+        controllerId: getRuntimeClientId(),
+        data: response,
+        ...(taskId ? { taskId } : {}),
+      });
     },
   );
 

@@ -1106,7 +1106,7 @@ async function isPortAvailable(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(true));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port);
   });
 }
 
@@ -1637,6 +1637,29 @@ export async function destroyTaskContainers(
   runtime?: TaskContainerRuntime,
 ): Promise<TaskContainerInspectResult> {
   return mutateTaskContainers('destroy', request, runtime);
+}
+
+export async function destroyManagedTaskContainersByLabels(
+  request: Pick<TaskContainerActionRequest, 'projectPath' | 'taskId' | 'worktreePath'>,
+  runtime: TaskContainerRuntime = createDockerRuntime(),
+): Promise<void> {
+  const availability = await runtime.getDockerRuntimeAvailability();
+  if (!availability.available) {
+    return;
+  }
+
+  const identity = createTaskContainerIdentity({
+    projectPath: request.projectPath,
+    taskId: request.taskId,
+    worktreePath: request.worktreePath,
+  });
+
+  await runtime.cleanupManagedProjectByLabels({
+    action: 'destroy',
+    composeProjectName: identity.composeProjectName,
+    ownershipLabels: identity.ownershipLabels,
+    worktreePath: request.worktreePath,
+  });
 }
 
 export async function getTaskContainerLogs(

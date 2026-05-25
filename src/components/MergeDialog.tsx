@@ -9,7 +9,10 @@ import {
 } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from '../app/task-command-lease';
+import {
+  isTaskCommandLeaseSkipped,
+  runWithTaskCommandLease,
+} from '../app/task-command-lease-session';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { getProject } from '../store/projects';

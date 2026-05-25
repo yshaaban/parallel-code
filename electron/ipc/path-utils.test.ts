@@ -4,6 +4,7 @@ import { BadRequestError } from './errors.js';
 import {
   isPathInside,
   isPathInsideOrEqual,
+  resolveUserPath,
   validateBranchName,
   validateOptionalBranchName,
 } from './path-utils.js';
@@ -51,5 +52,18 @@ describe('path containment helpers', () => {
     expect(isPathInsideOrEqual('/repo/task', '/repo/task')).toBe(true);
     expect(isPathInsideOrEqual('/repo/task', '/repo/task/app')).toBe(true);
     expect(isPathInsideOrEqual('/repo/task', '/repo/task-sibling')).toBe(false);
+  });
+});
+
+describe('resolveUserPath', () => {
+  it('rejects traversal before home-relative paths are normalized', () => {
+    expect(() => resolveUserPath('~/../../etc/passwd')).toThrow(BadRequestError);
+    expect(() => resolveUserPath('~/project/../other')).toThrow(BadRequestError);
+    expect(() => resolveUserPath('~//../other')).toThrow(BadRequestError);
+  });
+
+  it('normalizes absolute and home-relative paths without traversal segments', () => {
+    expect(resolveUserPath('/tmp/parallel-code')).toBe('/tmp/parallel-code');
+    expect(resolveUserPath('~/parallel-code')).toContain('/parallel-code');
   });
 });

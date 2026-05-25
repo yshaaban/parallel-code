@@ -20,6 +20,7 @@ import {
   startTaskContainers,
   stopTaskContainers,
   destroyTaskContainers,
+  destroyManagedTaskContainersByLabels,
   __taskContainerTestExports,
 } from './task-containers.js';
 
@@ -810,6 +811,38 @@ describe('task-containers', () => {
         action: 'destroy',
       }),
     );
+  });
+
+  it('destroys managed containers by labels before task worktree cleanup', async () => {
+    const runtime = createRuntime();
+    const request = createBaseRequest();
+
+    await destroyManagedTaskContainersByLabels(request, runtime);
+
+    expect(runtime.getDockerRuntimeAvailability).toHaveBeenCalled();
+    expect(runtime.cleanupManagedProjectByLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'destroy',
+        ownershipLabels: expect.objectContaining({
+          'io.parallel-code.managed': 'true',
+          'io.parallel-code.task-id': request.taskId,
+        }),
+        worktreePath: request.worktreePath,
+      }),
+    );
+  });
+
+  it('skips managed label cleanup when Docker is unavailable', async () => {
+    const runtime = createRuntime({
+      getDockerRuntimeAvailability: vi.fn().mockResolvedValue({
+        available: false,
+        message: 'Docker is unavailable',
+      }),
+    });
+
+    await destroyManagedTaskContainersByLabels(createBaseRequest(), runtime);
+
+    expect(runtime.cleanupManagedProjectByLabels).not.toHaveBeenCalled();
   });
 
   it('loads recent logs without claiming truncation just because the default tail size is below the maximum', async () => {

@@ -50,7 +50,7 @@ vi.mock('../app/task-workflows', () => ({
   sendPrompt: sendPromptMock,
 }));
 
-vi.mock('../app/task-command-lease', () => ({
+vi.mock('../app/task-command-lease-session', () => ({
   isTaskCommandLeaseSkipped: vi.fn(() => false),
   runWithTaskCommandLease: runWithTaskCommandLeaseMock,
 }));
@@ -130,28 +130,31 @@ describe('MergeDialog', () => {
 
   it('renders task-bound changed files from canonical review snapshots and reacts to shared git status', async () => {
     const onDiffFileClick = vi.fn();
-    replaceTaskReviewSnapshots([
-      {
-        branchName: 'feature/task-1',
-        files: [
-          {
-            committed: false,
-            lines_added: 4,
-            lines_removed: 1,
-            path: 'src/merge.ts',
-            status: 'modified',
-          },
-        ],
-        projectId: 'project-1',
-        revisionId: 'rev-1',
-        source: 'worktree',
-        taskId: 'task-1',
-        totalAdded: 4,
-        totalRemoved: 1,
-        updatedAt: Date.now(),
-        worktreePath: '/tmp/project/task-1',
-      },
-    ]);
+    replaceTaskReviewSnapshots(
+      [
+        {
+          branchName: 'feature/task-1',
+          files: [
+            {
+              committed: false,
+              lines_added: 4,
+              lines_removed: 1,
+              path: 'src/merge.ts',
+              status: 'modified',
+            },
+          ],
+          projectId: 'project-1',
+          revisionId: 'rev-1',
+          source: 'worktree',
+          taskId: 'task-1',
+          totalAdded: 4,
+          totalRemoved: 1,
+          updatedAt: 1_000,
+          worktreePath: '/tmp/project/task-1',
+        },
+      ],
+      { replaceVersion: 1 },
+    );
 
     render(() => (
       <MergeDialog
@@ -203,10 +206,11 @@ describe('MergeDialog', () => {
       projectId: 'project-1',
       revisionId: 'rev-2',
       source: 'worktree',
+      stateVersion: 2,
       taskId: 'task-1',
       totalAdded: 2,
       totalRemoved: 0,
-      updatedAt: Date.now(),
+      updatedAt: 2_000,
       worktreePath: '/tmp/project/task-1',
     });
 

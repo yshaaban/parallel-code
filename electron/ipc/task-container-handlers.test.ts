@@ -7,12 +7,14 @@ const {
   destroyTaskContainersMock,
   getTaskContainerLogsMock,
   inspectTaskContainersMock,
+  isTaskCommandLeaseHeldMock,
   startTaskContainersMock,
   stopTaskContainersMock,
 } = vi.hoisted(() => ({
   destroyTaskContainersMock: vi.fn(),
   getTaskContainerLogsMock: vi.fn(),
   inspectTaskContainersMock: vi.fn(),
+  isTaskCommandLeaseHeldMock: vi.fn(),
   startTaskContainersMock: vi.fn(),
   stopTaskContainersMock: vi.fn(),
 }));
@@ -23,6 +25,10 @@ vi.mock('./task-containers.js', () => ({
   inspectTaskContainers: inspectTaskContainersMock,
   startTaskContainers: startTaskContainersMock,
   stopTaskContainers: stopTaskContainersMock,
+}));
+
+vi.mock('./task-command-leases.js', () => ({
+  isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
 }));
 
 import { createTaskContainerIpcHandlers } from './task-container-handlers.js';
@@ -43,6 +49,7 @@ describe('createTaskContainerIpcHandlers', () => {
     stopTaskContainersMock.mockResolvedValue({ status: 'ready' });
     destroyTaskContainersMock.mockResolvedValue({ status: 'ready' });
     getTaskContainerLogsMock.mockResolvedValue({ text: '', truncated: false });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
   });
 
   it('normalizes repo-scoped container config before forwarding inspect requests', async () => {
@@ -205,5 +212,54 @@ describe('createTaskContainerIpcHandlers', () => {
       userDataPath: '/tmp/parallel-task-container-handlers',
       worktreePath: '/tmp/project/.worktrees/task-1',
     });
+  });
+
+  it('requires a held task lease before starting containers', async () => {
+    const handlers = createTaskContainerIpcHandlers(createContext());
+
+    await handlers[IPC.ContainersStartTask]?.({
+      controllerId: 'client-1',
+      projectPath: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-1',
+    });
+
+    expect(isTaskCommandLeaseHeldMock).toHaveBeenCalledWith('task-1', 'client-1');
+    expect(startTaskContainersMock).toHaveBeenCalledWith({
+      projectPath: '/tmp/project',
+      taskId: 'task-1',
+      userDataPath: '/tmp/parallel-task-container-handlers',
+      worktreePath: '/tmp/project/.worktrees/task-1',
+    });
+  });
+
+  it('rejects container mutations without lease identity', () => {
+    const handlers = createTaskContainerIpcHandlers(createContext());
+
+    expect(() =>
+      handlers[IPC.ContainersDestroyTask]?.({
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('controllerId must be a string');
+
+    expect(destroyTaskContainersMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects container mutations when another client holds the lease', () => {
+    isTaskCommandLeaseHeldMock.mockReturnValue(false);
+    const handlers = createTaskContainerIpcHandlers(createContext());
+
+    expect(() =>
+      handlers[IPC.ContainersStopTask]?.({
+        controllerId: 'client-2',
+        projectPath: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).toThrow('Task is controlled by another client');
+
+    expect(stopTaskContainersMock).not.toHaveBeenCalled();
   });
 });

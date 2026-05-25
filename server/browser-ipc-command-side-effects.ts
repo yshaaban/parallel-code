@@ -72,7 +72,9 @@ function getCreatedTaskWorktreeOwnership(options: {
     return null;
   }
 
-  return options.gitIsolation === 'existing-worktree' ? 'external' : 'managed';
+  return options.gitIsolation === 'worktree' || options.gitIsolation === undefined
+    ? 'managed'
+    : 'external';
 }
 
 function readOptionalRecord(value: unknown): Record<string, unknown> | null {

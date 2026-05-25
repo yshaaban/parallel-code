@@ -83,7 +83,7 @@ describe('browser control plane architecture guardrails', () => {
     expect(browserWebSocketSource).not.toContain('getAgentMeta');
     expect(browserWebSocketSource).not.toContain('canResizeTaskTerminal');
     expect(browserWebSocketTaskControlSource).toContain('getAgentMeta');
-    expect(browserWebSocketTaskControlSource).toContain('canResizeTaskTerminal');
+    expect(browserWebSocketTaskControlSource).toContain('isTaskCommandLeaseHeld');
     expect(browserAgentCommandRunnerSource).toContain('browserAgentControllerStillOwnsTask');
   });
 

@@ -4,10 +4,18 @@ import { IPC } from '../electron/ipc/channels.js';
 import { normalizeBrowserIpcTaskCommandArgs } from './browser-ipc-task-command-args.js';
 
 describe('browser IPC task-command args', () => {
-  it('leaves args unchanged when the browser client identity is missing', () => {
-    const args = { agentId: 'agent-1', data: 'echo ok\n' };
+  it('strips task command identity when the browser client identity is missing', () => {
+    const args = {
+      agentId: 'agent-1',
+      controllerId: 'spoofed-client',
+      data: 'echo ok\n',
+      taskId: 'task-1',
+    };
 
-    expect(normalizeBrowserIpcTaskCommandArgs(IPC.WriteToAgent, args, null)).toBe(args);
+    expect(normalizeBrowserIpcTaskCommandArgs(IPC.WriteToAgent, args, null)).toEqual({
+      agentId: 'agent-1',
+      data: 'echo ok\n',
+    });
   });
 
   it('injects browser controller identity into spawned agents', () => {
@@ -19,8 +27,8 @@ describe('browser IPC task-command args', () => {
     });
   });
 
-  it('preserves explicit task ids on browser terminal writes', () => {
-    const getAgentTaskId = vi.fn();
+  it('uses backend-owned agent task ids for browser terminal writes', () => {
+    const getAgentTaskId = vi.fn(() => 'task-from-agent');
 
     expect(
       normalizeBrowserIpcTaskCommandArgs(
@@ -28,7 +36,7 @@ describe('browser IPC task-command args', () => {
         {
           agentId: 'agent-1',
           data: 'echo ok\n',
-          taskId: 'task-explicit',
+          taskId: 'spoofed-task',
         },
         'client-1',
         getAgentTaskId,
@@ -37,9 +45,9 @@ describe('browser IPC task-command args', () => {
       agentId: 'agent-1',
       controllerId: 'client-1',
       data: 'echo ok\n',
-      taskId: 'task-explicit',
+      taskId: 'task-from-agent',
     });
-    expect(getAgentTaskId).not.toHaveBeenCalled();
+    expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
   });
 
   it('resolves missing task ids from backend-owned agent metadata for terminal commands', () => {
@@ -66,6 +74,28 @@ describe('browser IPC task-command args', () => {
     expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
   });
 
+  it('strips explicit browser terminal task ids when backend agent metadata has no task', () => {
+    const getAgentTaskId = vi.fn(() => undefined);
+
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.WriteToAgent,
+        {
+          agentId: 'agent-1',
+          data: 'echo ok\n',
+          taskId: 'spoofed-task',
+        },
+        'client-1',
+        getAgentTaskId,
+      ),
+    ).toEqual({
+      agentId: 'agent-1',
+      controllerId: 'client-1',
+      data: 'echo ok\n',
+    });
+    expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
+  });
+
   it('overrides browser task mutation controller identity from the request header identity', () => {
     expect(
       normalizeBrowserIpcTaskCommandArgs(
@@ -86,7 +116,77 @@ describe('browser IPC task-command args', () => {
     });
   });
 
-  it('removes spoofed task mutation controller identity when the browser client identity is missing', () => {
+  it('injects browser controller identity into registered worktree git mutations', () => {
+    const getAgentTaskId = vi.fn();
+    const getWorktreeTaskId = vi.fn(() => 'task-from-worktree');
+
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.CommitAll,
+        {
+          controllerId: 'spoofed-client',
+          message: 'save',
+          taskId: 'spoofed-task',
+          worktreePath: '/repo/.worktrees/task-1',
+        },
+        'browser-client-1',
+        getAgentTaskId,
+        getWorktreeTaskId,
+      ),
+    ).toEqual({
+      controllerId: 'browser-client-1',
+      message: 'save',
+      taskId: 'task-from-worktree',
+      worktreePath: '/repo/.worktrees/task-1',
+    });
+    expect(getWorktreeTaskId).toHaveBeenCalledWith('/repo/.worktrees/task-1');
+  });
+
+  it('keeps unregistered worktree git mutations outside task command ownership', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.MergeArenaWorktree,
+        {
+          branchName: 'arena/a',
+          controllerId: 'spoofed-client',
+          projectRoot: '/repo',
+          squash: true,
+          taskId: 'spoofed-task',
+          worktreePath: '/repo/.arena/a',
+        },
+        'browser-client-1',
+        vi.fn(),
+        vi.fn(() => null),
+      ),
+    ).toEqual({
+      branchName: 'arena/a',
+      projectRoot: '/repo',
+      squash: true,
+      worktreePath: '/repo/.arena/a',
+    });
+  });
+
+  it('injects browser controller identity into task container mutations', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.ContainersStartTask,
+        {
+          controllerId: 'spoofed-client',
+          projectPath: '/repo',
+          taskId: 'task-1',
+          worktreePath: '/repo/.worktrees/task-1',
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      controllerId: 'browser-client-1',
+      projectPath: '/repo',
+      taskId: 'task-1',
+      worktreePath: '/repo/.worktrees/task-1',
+    });
+  });
+
+  it('removes spoofed task mutation identity when the browser client identity is missing', () => {
     expect(
       normalizeBrowserIpcTaskCommandArgs(
         IPC.CleanupTaskRuntime,
@@ -101,7 +201,6 @@ describe('browser IPC task-command args', () => {
     ).toEqual({
       agentIds: [],
       removeTaskState: true,
-      taskId: 'task-1',
     });
   });
 

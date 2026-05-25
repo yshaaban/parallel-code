@@ -34,6 +34,7 @@ import {
   cleanupTaskRuntimeWorkflow,
   createTaskWorkflow,
   deleteTaskWorkflow,
+  findRegisteredTaskIdForWorktreePath,
 } from './task-workflows.js';
 import { scheduleTaskReviewSignalsRefresh } from './task-review-signals.js';
 import {
@@ -152,6 +153,32 @@ function assertTaskCommandLeaseHeld(taskId: string, controllerId: string): void 
   if (!isTaskCommandLeaseHeld(taskId, controllerId)) {
     throw new BadRequestError('Task is controlled by another client');
   }
+}
+
+function assertRegisteredTaskGitMutationLease(request: {
+  controllerId?: string;
+  taskId?: string;
+  worktreePath: string;
+}): void {
+  const registeredTaskId = findRegisteredTaskIdForWorktreePath(request.worktreePath);
+  if (!registeredTaskId) {
+    if (request.taskId !== undefined || request.controllerId !== undefined) {
+      throw new BadRequestError('taskId and controllerId require a registered task worktree');
+    }
+    return;
+  }
+
+  if (request.taskId === undefined) {
+    throw new BadRequestError('taskId is required for task git mutations');
+  }
+  if (request.controllerId === undefined) {
+    throw new BadRequestError('controllerId is required for task git mutations');
+  }
+  if (request.taskId !== registeredTaskId) {
+    throw new BadRequestError('taskId must match the registered task worktree');
+  }
+
+  assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 }
 
 interface MergeBranchRequest {
@@ -465,6 +492,9 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       assertString(request.message, 'message');
+      assertOptionalString(request.controllerId, 'controllerId');
+      assertOptionalString(request.taskId, 'taskId');
+      assertRegisteredTaskGitMutationLease(request);
       await commitAllWorkflow(context, {
         worktreePath: request.worktreePath,
         message: request.message,
@@ -478,6 +508,9 @@ export function createTaskAndGitIpcHandlers(
       async (args) => {
         const request = args;
         validatePath(request.worktreePath, 'worktreePath');
+        assertOptionalString(request.controllerId, 'controllerId');
+        assertOptionalString(request.taskId, 'taskId');
+        assertRegisteredTaskGitMutationLease(request);
         await discardUncommittedWorkflow(context, {
           worktreePath: request.worktreePath,
         });
@@ -529,6 +562,9 @@ export function createTaskAndGitIpcHandlers(
         assertOptionalString(request.message, 'message');
         assertOptionalBoolean(request.cleanup, 'cleanup');
         validateOptionalBranchName(request.baseBranch, 'baseBranch');
+        assertOptionalString(request.controllerId, 'controllerId');
+        assertOptionalString(request.taskId, 'taskId');
+        assertRegisteredTaskGitMutationLease(request);
         return mergeBranchAndRefreshGitStatus(request);
       },
     ),

@@ -73,6 +73,7 @@ export interface BrowserReconnectSnapshot {
 }
 
 export interface BrowserReconnectStatus {
+  agentGenerations: Record<string, number>;
   runningAgentIds: string[];
   taskCommandControllerVersion?: number;
   workspaceRevision?: number;
@@ -255,18 +256,21 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.ContainersStartTask]: {
+    controllerId: string;
     projectContainerConfig?: ProjectContainerConfig;
     projectPath: string;
     taskId: string;
     worktreePath: string;
   };
   [IPC.ContainersStopTask]: {
+    controllerId: string;
     projectContainerConfig?: ProjectContainerConfig;
     projectPath: string;
     taskId: string;
     worktreePath: string;
   };
   [IPC.ContainersDestroyTask]: {
+    controllerId: string;
     projectContainerConfig?: ProjectContainerConfig;
     projectPath: string;
     taskId: string;
@@ -363,9 +367,11 @@ export interface RendererInvokeRequestMap {
     baseBranch?: string;
     branchName: string;
     cleanup?: boolean;
+    controllerId?: string;
     message?: string | null;
     projectRoot: string;
     squash: boolean;
+    taskId?: string;
     worktreePath: string;
   };
   [IPC.GetBranchLog]: {
@@ -408,10 +414,14 @@ export interface RendererInvokeRequestMap {
     projectRoot: string;
   };
   [IPC.CommitAll]: {
+    controllerId?: string;
     message: string;
+    taskId?: string;
     worktreePath: string;
   };
   [IPC.DiscardUncommitted]: {
+    controllerId?: string;
+    taskId?: string;
     worktreePath: string;
   };
   [IPC.GetProjectDiff]: {

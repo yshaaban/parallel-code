@@ -267,19 +267,25 @@ function createBrowserReconnectSnapshot(
   const runningAgentIds = getActiveAgentIds();
   return {
     ...savedState,
-    agentGenerations: Object.fromEntries(
-      runningAgentIds.map((agentId) => [agentId, getAgentMeta(agentId)?.generation ?? 0]),
-    ),
+    agentGenerations: getAgentGenerationMap(runningAgentIds),
     runningAgentIds,
     taskCommandControllers: getTaskCommandControllers(),
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
   };
 }
 
+function getAgentGenerationMap(agentIds: string[]): Record<string, number> {
+  return Object.fromEntries(
+    agentIds.map((agentId) => [agentId, getAgentMeta(agentId)?.generation ?? 0]),
+  );
+}
+
 function getBrowserReconnectStatus(context: HandlerContext): BrowserReconnectStatus {
+  const runningAgentIds = getActiveAgentIds();
   const workspace = loadWorkspaceStateForEnv(context);
   return {
-    runningAgentIds: getActiveAgentIds(),
+    agentGenerations: getAgentGenerationMap(runningAgentIds),
+    runningAgentIds,
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
     workspaceRevision: workspace?.revision ?? 0,
   };

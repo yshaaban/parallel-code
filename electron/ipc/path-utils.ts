@@ -88,7 +88,11 @@ export function resolveUserPath(inputPath: string): string {
   if (resolvedPath === '~' || resolvedPath === '~/') {
     resolvedPath = home;
   } else if (resolvedPath.startsWith('~/')) {
-    resolvedPath = path.join(home, resolvedPath.slice(2));
+    const homeRelativePath = resolvedPath.slice(2);
+    if (hasTraversalSegment(homeRelativePath)) {
+      throw new BadRequestError('path must not contain ".."');
+    }
+    resolvedPath = path.join(home, homeRelativePath);
   }
 
   if (!path.isAbsolute(resolvedPath)) {

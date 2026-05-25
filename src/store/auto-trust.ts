@@ -5,6 +5,7 @@ import {
 } from '../lib/prompt-detection';
 import { invoke } from '../lib/ipc';
 import { warn as logWarn } from '../lib/log';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { runWithAgentTaskCommandLease } from '../app/task-command-lease';
 import { store } from './core';
 
@@ -88,7 +89,13 @@ export function createAutoTrustController(callbacks: AutoTrustCallbacks): AutoTr
         agentId,
         'respond to a trust prompt',
         async () => {
-          await invoke(IPC.WriteToAgent, { agentId, data: '\r' });
+          const taskId = store.agents?.[agentId]?.taskId;
+          await invoke(IPC.WriteToAgent, {
+            agentId,
+            controllerId: getRuntimeClientId(),
+            data: '\r',
+            ...(taskId ? { taskId } : {}),
+          });
         },
         { confirmTakeover: false },
       ).catch((error) => {

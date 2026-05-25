@@ -4,8 +4,11 @@ import type { HandlerContext } from './handler-context.js';
 
 const {
   cleanupTaskRuntimeWorkflowMock,
+  commitAllWorkflowMock,
   createTaskWorkflowMock,
   deleteTaskWorkflowMock,
+  discardUncommittedWorkflowMock,
+  findRegisteredTaskIdForWorktreePathMock,
   getBranchCommitHistoryMock,
   getFileDiffFromBranchMock,
   getGitRepoRootMock,
@@ -17,8 +20,11 @@ const {
   streamPushTaskMock,
 } = vi.hoisted(() => ({
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
+  commitAllWorkflowMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
   deleteTaskWorkflowMock: vi.fn(),
+  discardUncommittedWorkflowMock: vi.fn(),
+  findRegisteredTaskIdForWorktreePathMock: vi.fn(),
   getBranchCommitHistoryMock: vi.fn(),
   getFileDiffFromBranchMock: vi.fn(),
   getGitRepoRootMock: vi.fn(),
@@ -34,6 +40,7 @@ vi.mock('./task-workflows.js', () => ({
   cleanupTaskRuntimeWorkflow: cleanupTaskRuntimeWorkflowMock,
   createTaskWorkflow: createTaskWorkflowMock,
   deleteTaskWorkflow: deleteTaskWorkflowMock,
+  findRegisteredTaskIdForWorktreePath: findRegisteredTaskIdForWorktreePathMock,
 }));
 
 vi.mock('./task-command-leases.js', () => ({
@@ -41,8 +48,8 @@ vi.mock('./task-command-leases.js', () => ({
 }));
 
 vi.mock('./git-status-workflows.js', () => ({
-  commitAllWorkflow: vi.fn(),
-  discardUncommittedWorkflow: vi.fn(),
+  commitAllWorkflow: commitAllWorkflowMock,
+  discardUncommittedWorkflow: discardUncommittedWorkflowMock,
   rebaseTaskWorkflow: rebaseTaskWorkflowMock,
   scheduleTaskConvergenceRefreshForGitTarget: vi.fn(),
   scheduleTaskReviewRefreshForGitTarget: vi.fn(),
@@ -89,8 +96,11 @@ describe('createTaskAndGitIpcHandlers', () => {
       lines_added: 0,
       lines_removed: 0,
     });
+    commitAllWorkflowMock.mockResolvedValue(undefined);
+    discardUncommittedWorkflowMock.mockResolvedValue(undefined);
     rebaseTaskWorkflowMock.mockResolvedValue(undefined);
     streamPushTaskMock.mockResolvedValue(undefined);
+    findRegisteredTaskIdForWorktreePathMock.mockReturnValue(null);
   });
 
   it('registers created task metadata through the shared registry owner', async () => {
@@ -529,6 +539,65 @@ describe('createTaskAndGitIpcHandlers', () => {
 
     expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
     expect(rebaseTaskWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('requires a held task lease before committing a registered task worktree', async () => {
+    findRegisteredTaskIdForWorktreePathMock.mockReturnValue('task-1');
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await handlers[IPC.CommitAll]?.({
+      controllerId: 'client-1',
+      message: 'task commit',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-1',
+    });
+
+    expect(isTaskCommandLeaseHeldMock).toHaveBeenCalledWith('task-1', 'client-1');
+    expect(commitAllWorkflowMock).toHaveBeenCalledWith(expect.anything(), {
+      message: 'task commit',
+      worktreePath: '/tmp/project/.worktrees/task-1',
+    });
+  });
+
+  it('rejects registered task worktree commits without lease identity', async () => {
+    findRegisteredTaskIdForWorktreePathMock.mockReturnValue('task-1');
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CommitAll]?.({
+        message: 'task commit',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).rejects.toThrow('taskId is required for task git mutations');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(commitAllWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects registered task worktree discards when the lease is held by another client', async () => {
+    findRegisteredTaskIdForWorktreePathMock.mockReturnValue('task-1');
+    isTaskCommandLeaseHeldMock.mockReturnValue(false);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.DiscardUncommitted]?.({
+        controllerId: 'client-2',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-1',
+      }),
+    ).rejects.toThrow('Task is controlled by another client');
+
+    expect(discardUncommittedWorkflowMock).not.toHaveBeenCalled();
   });
 
   it('keeps arena merges on an explicit arena worktree route', async () => {
