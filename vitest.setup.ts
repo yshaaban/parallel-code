@@ -1,7 +1,7 @@
 import { cleanup } from '@solidjs/testing-library';
 import { afterEach, beforeEach, vi } from 'vitest';
 
-class TestWebSocket {
+class TestWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSING = 2;
@@ -17,13 +17,14 @@ class TestWebSocket {
   readonly url: string;
 
   constructor(url: string) {
+    super();
     this.url = url;
     queueMicrotask(() => {
       if (this.readyState !== TestWebSocket.CONNECTING) {
         return;
       }
       this.readyState = TestWebSocket.OPEN;
-      this.onopen?.call(this as unknown as WebSocket, new Event('open'));
+      this.emitOpen();
     });
   }
 
@@ -33,10 +34,28 @@ class TestWebSocket {
     }
 
     this.readyState = TestWebSocket.CLOSED;
-    this.onclose?.call(this as unknown as WebSocket, { code } as CloseEvent);
+    this.emitClose(code);
   }
 
   send(): void {}
+
+  private emitOpen(): void {
+    const event = new Event('open');
+    this.onopen?.call(this as unknown as WebSocket, event);
+    this.dispatchEvent(event);
+  }
+
+  private emitClose(code: number): void {
+    const event =
+      typeof CloseEvent === 'function'
+        ? new CloseEvent('close', { code })
+        : (Object.defineProperty(new Event('close'), 'code', {
+            configurable: true,
+            value: code,
+          }) as CloseEvent);
+    this.onclose?.call(this as unknown as WebSocket, event);
+    this.dispatchEvent(event);
+  }
 }
 
 if (typeof window !== 'undefined') {

@@ -5,10 +5,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 
+import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const TEST_TOKEN = 'test-integration-token-' + Date.now();
+export const TEST_CLIENT_ID = 'test-integration-client-' + Date.now();
 
 let serverProcess: ChildProcess | null = null;
 let testPort = 19876;
@@ -30,6 +33,7 @@ const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const SOCKET_MESSAGE_BUFFER_LIMIT = 500;
+const TASK_COMMAND_LEASE_RENEW_INTERVAL_MS = 5_000;
 
 interface BufferedSocketMessage {
   isBinary: boolean;
@@ -40,7 +44,25 @@ interface SocketMessageBuffer {
   messages: BufferedSocketMessage[];
 }
 
+interface TaskControlRegistration {
+  controllerId: string;
+  ownerId: string;
+  taskId: string;
+}
+
+interface TaskControlLeaseHandle extends TaskControlRegistration {
+  refCount: number;
+  renewTimer: ReturnType<typeof setInterval> | null;
+}
+
+interface TestServerProcess extends Pick<ChildProcess, 'exitCode' | 'kill' | 'off' | 'on'> {
+  stderr: NonNullable<ChildProcess['stderr']>;
+  stdout: NonNullable<ChildProcess['stdout']>;
+}
+
 const socketMessageBuffers = new WeakMap<WebSocket, SocketMessageBuffer>();
+const taskControlByAgentId = new Map<string, TaskControlRegistration>();
+const taskControlLeaseHandles = new Map<string, TaskControlLeaseHandle>();
 
 export function createChannelId(): string {
   return randomUUID();
@@ -199,6 +221,14 @@ function describeBufferedMessages(ws: WebSocket): string {
     .join(', ');
 }
 
+function clearTaskControlRegistrations(): void {
+  taskControlByAgentId.clear();
+  for (const handle of taskControlLeaseHandles.values()) {
+    stopTaskControlRenewal(handle);
+  }
+  taskControlLeaseHandles.clear();
+}
+
 function consumeBufferedLiveMatch(
   ws: WebSocket,
   isBinary: boolean,
@@ -241,6 +271,7 @@ export function channelMessageContains(
 export async function startServer(env: Record<string, string> = {}): Promise<void> {
   const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
   testPort = await reserveTestPort();
+  clearTaskControlRegistrations();
 
   serverProcess = spawn('node', [serverPath], {
     env: createTestServerEnv({
@@ -257,38 +288,87 @@ export async function startServer(env: Record<string, string> = {}): Promise<voi
     throw new Error('Server process or stdio streams unavailable');
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Server startup timeout')), 10_000);
+  await waitForTestServerStartup(proc as TestServerProcess);
+}
 
-    stdout.on('data', (data: Buffer) => {
-      const text = data.toString();
-      if (text.includes('listening on')) {
-        clearTimeout(timeout);
-        resolve();
+function terminateTestServerProcess(proc: TestServerProcess): void {
+  if (proc.exitCode !== null) {
+    return;
+  }
+
+  try {
+    proc.kill('SIGTERM');
+  } catch {
+    // The process can exit between the status check and signal delivery.
+  }
+}
+
+export function waitForTestServerStartup(
+  proc: TestServerProcess,
+  timeoutMs = 10_000,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let stdoutText = '';
+    let settled = false;
+
+    const cleanup = (): void => {
+      if (settled) {
+        return;
       }
-    });
 
-    stderr.on('data', (data: Buffer) => {
+      settled = true;
+      clearTimeout(timeout);
+      proc.stdout.off('data', onStdout);
+      proc.stderr.off('data', onStderr);
+      proc.off('error', onError);
+      proc.off('exit', onExit);
+    };
+
+    const rejectStartup = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    const timeout = setTimeout(() => {
+      terminateTestServerProcess(proc);
+      rejectStartup(new Error('Server startup timeout'));
+    }, timeoutMs);
+
+    function onStdout(data: Buffer): void {
+      stdoutText += data.toString();
+      if (!stdoutText.includes('listening on')) {
+        return;
+      }
+
+      cleanup();
+      resolve();
+    }
+
+    function onStderr(data: Buffer): void {
       const text = data.toString();
       if (text.includes('ExperimentalWarning') || text.includes('DeprecationWarning')) return;
       console.warn('[server stderr]', text);
-    });
+    }
 
-    proc.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
+    function onError(error: Error): void {
+      rejectStartup(error);
+    }
 
-    proc.on('exit', (code) => {
-      if (code !== null && code !== 0) {
-        clearTimeout(timeout);
-        reject(new Error(`Server exited with code ${code}`));
-      }
-    });
+    function onExit(code: number | null, signal: NodeJS.Signals | null): void {
+      rejectStartup(
+        new Error(`Server exited before startup with code ${code ?? signal ?? 'null'}`),
+      );
+    }
+
+    proc.stdout.on('data', onStdout);
+    proc.stderr.on('data', onStderr);
+    proc.on('error', onError);
+    proc.on('exit', onExit);
   });
 }
 
 export async function stopServer(): Promise<void> {
+  clearTaskControlRegistrations();
   const proc = serverProcess;
   serverProcess = null;
   if (!proc) return;
@@ -317,12 +397,19 @@ export function connectWs(query?: string): Promise<WebSocket> {
 
     ws.on('open', () => {
       if (query === undefined) {
-        ws.send(JSON.stringify({ type: 'auth', token: TEST_TOKEN }));
+        ws.send(JSON.stringify({ type: 'auth', token: TEST_TOKEN, clientId: TEST_CLIENT_ID }));
       } else if (query) {
         const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
         const token = params.get('token');
         if (token) {
-          ws.send(JSON.stringify({ type: 'auth', token }));
+          const clientId = params.get('clientId');
+          ws.send(
+            JSON.stringify({
+              type: 'auth',
+              token,
+              ...(clientId ? { clientId } : {}),
+            }),
+          );
         }
       }
       clearTimeout(timeout);
@@ -661,11 +748,13 @@ export function waitForChannelMarkerOccurrences(
 }
 
 export async function invokeIpcViaHttp<T>(channel: string, body: unknown): Promise<T> {
+  const browserClientId = getBrowserClientIdForIpcBody(body);
   const res = await fetch(`http://127.0.0.1:${getTestPort()}/api/ipc/${channel}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${TEST_TOKEN}`,
+      ...(browserClientId ? { [BROWSER_CLIENT_ID_HEADER]: browserClientId } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -677,24 +766,220 @@ export async function invokeIpcViaHttp<T>(channel: string, body: unknown): Promi
   return payload.result as T;
 }
 
+function getBrowserClientIdForIpcBody(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return null;
+  }
+
+  const candidate = body as { clientId?: unknown; controllerId?: unknown };
+  if (typeof candidate.controllerId === 'string' && candidate.controllerId.length > 0) {
+    return candidate.controllerId;
+  }
+  if (typeof candidate.clientId === 'string' && candidate.clientId.length > 0) {
+    return candidate.clientId;
+  }
+
+  return null;
+}
+
+function getTaskControlOwnerId(controllerId: string): string {
+  return `test-owner:${controllerId}`;
+}
+
+function getTaskControlLeaseKey(taskId: string, controllerId: string): string {
+  return `${taskId}\0${controllerId}`;
+}
+
+function hasRetainedTaskControlLease(registration: TaskControlRegistration): boolean {
+  const key = getTaskControlLeaseKey(registration.taskId, registration.controllerId);
+  return (taskControlLeaseHandles.get(key)?.refCount ?? 0) > 0;
+}
+
+async function acquireTaskControlForTest(
+  registration: TaskControlRegistration,
+  takeover = false,
+): Promise<void> {
+  const result = await invokeIpcViaHttp<{
+    acquired: boolean;
+    controllerId: string | null;
+    taskId: string;
+  }>('acquire_task_command_lease', {
+    action: 'type in the terminal',
+    clientId: registration.controllerId,
+    ownerId: registration.ownerId,
+    taskId: registration.taskId,
+    ...(takeover ? { takeover: true } : {}),
+  });
+
+  if (!result.acquired || result.controllerId !== registration.controllerId) {
+    throw new Error(
+      `Failed to acquire task command control for ${registration.controllerId} on ${registration.taskId}`,
+    );
+  }
+}
+
+export async function acquireTaskControlViaHttp(
+  taskId: string,
+  controllerId = TEST_CLIENT_ID,
+): Promise<void> {
+  await acquireTaskControlForTest({
+    controllerId,
+    ownerId: getTaskControlOwnerId(controllerId),
+    taskId,
+  });
+}
+
+export async function acquireAgentTaskControlViaHttp(agentId: string): Promise<void> {
+  const registration = taskControlByAgentId.get(agentId);
+  if (!registration) {
+    throw new Error(`No task control registration for ${agentId}`);
+  }
+
+  await acquireTaskControlForTest(registration);
+}
+
+async function releaseTaskControlForTest(registration: TaskControlRegistration): Promise<void> {
+  await invokeIpcViaHttp('release_task_command_lease', {
+    clientId: registration.controllerId,
+    ownerId: registration.ownerId,
+    taskId: registration.taskId,
+  });
+}
+
+function stopTaskControlRenewal(handle: TaskControlLeaseHandle): void {
+  if (!handle.renewTimer) {
+    return;
+  }
+
+  clearInterval(handle.renewTimer);
+  handle.renewTimer = null;
+}
+
+async function releaseTaskControlHandle(handle: TaskControlLeaseHandle): Promise<void> {
+  stopTaskControlRenewal(handle);
+  await releaseTaskControlForTest(handle).catch(() => {});
+}
+
+function releaseTaskControlHandleSoon(handle: TaskControlLeaseHandle): void {
+  void releaseTaskControlHandle(handle);
+}
+
+function startTaskControlRenewal(
+  registration: TaskControlRegistration,
+): ReturnType<typeof setInterval> {
+  const timer = setInterval(() => {
+    void acquireTaskControlForTest(registration).catch(() => {
+      // Individual tests will fail on the next command if the lease cannot be
+      // renewed; avoid surfacing an unhandled rejection from the background timer.
+    });
+  }, TASK_COMMAND_LEASE_RENEW_INTERVAL_MS);
+  timer.unref();
+  return timer;
+}
+
+function registerAgentTaskControl(
+  agentId: string,
+  registration: TaskControlRegistration,
+  renewTaskControl: boolean,
+): void {
+  const currentRegistration = taskControlByAgentId.get(agentId);
+  if (currentRegistration) {
+    const currentKey = getTaskControlLeaseKey(
+      currentRegistration.taskId,
+      currentRegistration.controllerId,
+    );
+    const nextKey = getTaskControlLeaseKey(registration.taskId, registration.controllerId);
+    const currentHandle = taskControlLeaseHandles.get(currentKey);
+    if (renewTaskControl && currentHandle && !currentHandle.renewTimer) {
+      currentHandle.renewTimer = startTaskControlRenewal(currentRegistration);
+    }
+    if (currentKey === nextKey) {
+      return;
+    }
+
+    if (currentHandle) {
+      currentHandle.refCount -= 1;
+      if (currentHandle.refCount <= 0) {
+        taskControlLeaseHandles.delete(currentKey);
+        releaseTaskControlHandleSoon(currentHandle);
+      }
+    }
+  }
+
+  taskControlByAgentId.set(agentId, registration);
+
+  const key = getTaskControlLeaseKey(registration.taskId, registration.controllerId);
+  const existing = taskControlLeaseHandles.get(key);
+  if (existing) {
+    existing.refCount += 1;
+    if (renewTaskControl && !existing.renewTimer) {
+      existing.renewTimer = startTaskControlRenewal(registration);
+    }
+    return;
+  }
+
+  taskControlLeaseHandles.set(key, {
+    ...registration,
+    refCount: 1,
+    renewTimer: renewTaskControl ? startTaskControlRenewal(registration) : null,
+  });
+}
+
+async function unregisterAgentTaskControl(agentId: string): Promise<void> {
+  const registration = taskControlByAgentId.get(agentId);
+  if (!registration) {
+    return;
+  }
+
+  taskControlByAgentId.delete(agentId);
+  const key = getTaskControlLeaseKey(registration.taskId, registration.controllerId);
+  const handle = taskControlLeaseHandles.get(key);
+  if (!handle) {
+    return;
+  }
+
+  handle.refCount -= 1;
+  if (handle.refCount > 0) {
+    return;
+  }
+
+  taskControlLeaseHandles.delete(key);
+  await releaseTaskControlHandle(handle);
+}
+
 export async function spawnAgentViaHttp(opts: {
   taskId: string;
   agentId: string;
   command: string;
   args?: string[];
+  acquireTaskControl?: boolean;
   cols?: number;
   controllerId?: string;
+  renewTaskControl?: boolean;
   rows?: number;
   channelId?: string;
   env?: Record<string, string>;
   isShell?: boolean;
 }): Promise<void> {
+  const controllerId = opts.controllerId ?? TEST_CLIENT_ID;
+  const registration = {
+    controllerId,
+    ownerId: getTaskControlOwnerId(controllerId),
+    taskId: opts.taskId,
+  };
+  const shouldAcquireTaskControl = opts.acquireTaskControl ?? true;
+  const shouldRenewTaskControl = opts.renewTaskControl ?? controllerId === TEST_CLIENT_ID;
+
+  if (shouldAcquireTaskControl) {
+    await acquireTaskControlForTest(registration);
+  }
+
   const body = {
     taskId: opts.taskId,
     agentId: opts.agentId,
     command: opts.command,
     args: opts.args ?? [],
-    ...(opts.controllerId ? { controllerId: opts.controllerId } : {}),
+    controllerId,
     cwd: '/tmp',
     env: opts.env ?? {},
     cols: opts.cols ?? 80,
@@ -702,15 +987,44 @@ export async function spawnAgentViaHttp(opts: {
     isShell: opts.isShell ?? true,
     onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
   };
-  await invokeIpcViaHttp('spawn_agent', body);
+  try {
+    await invokeIpcViaHttp('spawn_agent', body);
+  } catch (error) {
+    if (shouldAcquireTaskControl && !hasRetainedTaskControlLease(registration)) {
+      await releaseTaskControlForTest(registration).catch(() => {});
+    }
+    throw error;
+  }
+
+  if (shouldAcquireTaskControl) {
+    registerAgentTaskControl(opts.agentId, registration, shouldRenewTaskControl);
+  }
 }
 
 export async function killAgentViaHttp(agentId: string): Promise<void> {
-  await invokeIpcViaHttp('kill_agent', { agentId });
+  try {
+    await invokeIpcViaHttp('kill_agent', { agentId });
+  } finally {
+    await unregisterAgentTaskControl(agentId);
+  }
 }
 
 export async function writeToAgentViaHttp(agentId: string, data: string): Promise<void> {
-  await invokeIpcViaHttp('write_to_agent', { agentId, data });
+  const registration = taskControlByAgentId.get(agentId);
+  if (registration) {
+    await acquireTaskControlForTest(registration);
+  }
+
+  await invokeIpcViaHttp('write_to_agent', {
+    agentId,
+    data,
+    ...(registration
+      ? {
+          controllerId: registration.controllerId,
+          taskId: registration.taskId,
+        }
+      : {}),
+  });
 }
 
 export async function detachAgentOutputViaHttp(agentId: string, channelId: string): Promise<void> {

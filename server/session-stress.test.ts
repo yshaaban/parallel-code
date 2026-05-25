@@ -158,6 +158,22 @@ function createStressAgents(prefix: string, count: number): StressAgent[] {
   }));
 }
 
+function getStressAgentTaskId(agent: StressAgent): string {
+  return `${agent.agentId}-task`;
+}
+
+function getStressClientStateAt(
+  clientStates: readonly StressClientState[],
+  index: number,
+): StressClientState {
+  const clientState = clientStates[index];
+  if (!clientState) {
+    throw new Error(`Missing stress client state at index ${index}`);
+  }
+
+  return clientState;
+}
+
 function getAgentIds(agents: StressAgent[]): string[] {
   return agents.map((agent) => agent.agentId);
 }
@@ -553,6 +569,43 @@ function sendAgentInput(ws: WebSocket, agentId: string, data: string): void {
   }
 }
 
+async function sendAgentInputWithAck(
+  ws: WebSocket,
+  agentId: string,
+  data: string,
+  requestId: string,
+): Promise<void> {
+  const chunks = splitTerminalInputChunks(data, MAX_CLIENT_INPUT_DATA_LENGTH);
+  if (chunks.length !== 1) {
+    throw new Error('sendAgentInputWithAck expects input that fits in one browser message');
+  }
+
+  const ackPromise = waitForMessage(
+    ws,
+    (message) =>
+      message.type === 'agent-command-result' &&
+      message.agentId === agentId &&
+      message.command === 'input' &&
+      message.requestId === requestId,
+    10_000,
+  );
+
+  sendJson(ws, {
+    type: 'input',
+    agentId,
+    data: chunks[0]?.data ?? '',
+    requestId,
+  });
+
+  await expect(ackPromise).resolves.toMatchObject({
+    accepted: true,
+    agentId,
+    command: 'input',
+    requestId,
+    type: 'agent-command-result',
+  });
+}
+
 async function connectAuthenticatedClient(clientState: StressClientState): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${getServerUrl()}/ws?token=${TEST_TOKEN}`);
@@ -801,16 +854,18 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       clientStates.map((clientState) => connectAuthenticatedClient(clientState)),
     );
     const primaryClient = clients[0];
+    const primaryClientState = getStressClientStateAt(clientStates, 0);
 
     try {
       await bindClientToChannels(primaryClient, channelIds);
 
       for (const agent of agents) {
         await spawnAgentViaHttp({
-          taskId: 'stress-task',
+          taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           command: '/bin/sh',
           channelId: agent.channelId,
+          controllerId: primaryClientState.clientId,
         });
         const readyMarker = createReadyMarker(agent.agentId);
         await writeToAgentViaHttp(agent.agentId, `echo "${readyMarker}"\n`);
@@ -868,15 +923,17 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
     try {
       await bindClientToChannels(client, [agent.channelId]);
       await spawnAgentViaHttp({
-        taskId: 'stress-task',
+        taskId: getStressAgentTaskId(agent),
         agentId: agent.agentId,
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
         channelId: agent.channelId,
         command: process.execPath,
+        controllerId: clientState.clientId,
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
         isShell: false,
+        renewTaskControl: true,
       });
       await waitForChannelMarker(client, agent.channelId, createReadyMarker(agent.agentId));
 
@@ -917,17 +974,20 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
     try {
       await bindClientToChannels(primaryClient, channelIds);
 
-      for (const agent of agents) {
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writerState = getStressClientStateAt(clientStates, agentIndex % clients.length);
         await spawnAgentViaHttp({
-          taskId: 'stress-task',
+          taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
           channelId: agent.channelId,
           command: process.execPath,
+          controllerId: writerState.clientId,
           env: {
             STRESS_READY_MARKER: createReadyMarker(agent.agentId),
           },
           isShell: false,
+          renewTaskControl: true,
         });
         await waitForChannelMarker(
           primaryClient,
@@ -950,10 +1010,11 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
 
       for (const [agentIndex, agent] of agents.entries()) {
         const writer = clients[agentIndex % clients.length];
-        sendAgentInput(
+        await sendAgentInputWithAck(
           writer,
           agent.agentId,
           createStartOutputLine('mixed', agent.agentId, outputLineCount, outputLineBytes),
+          `mixed-start-${agentIndex}-${Date.now()}`,
         );
 
         for (let chunkIndex = 0; chunkIndex < inputChunkCount; chunkIndex += 1) {
@@ -970,7 +1031,12 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
           );
         }
 
-        sendAgentInput(writer, agent.agentId, `${createInputDoneMarker('mixed', agent.agentId)}\n`);
+        await sendAgentInputWithAck(
+          writer,
+          agent.agentId,
+          `${createInputDoneMarker('mixed', agent.agentId)}\n`,
+          `mixed-done-${agentIndex}-${Date.now()}`,
+        );
       }
 
       const timings = await Promise.all(watchers);
@@ -1017,6 +1083,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
         channelId: agent.channelId,
         command: process.execPath,
+        controllerId: ownerState.clientId,
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
@@ -1134,6 +1201,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
         channelId: agent.channelId,
         command: process.execPath,
+        controllerId: ownerState.clientId,
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
@@ -1241,17 +1309,23 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
     try {
       await bindClientToChannels(primaryClient, channelIds);
 
-      for (const agent of agents) {
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writerState = getStressClientStateAt(
+          existingClientStates,
+          agentIndex % existingClients.length,
+        );
         await spawnAgentViaHttp({
-          taskId: 'stress-task',
+          taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
           channelId: agent.channelId,
           command: process.execPath,
+          controllerId: writerState.clientId,
           env: {
             STRESS_READY_MARKER: createReadyMarker(agent.agentId),
           },
           isShell: false,
+          renewTaskControl: true,
         });
         await waitForChannelMarker(
           primaryClient,

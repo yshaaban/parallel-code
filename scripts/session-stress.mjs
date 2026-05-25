@@ -75,6 +75,7 @@ function parseArgs(argv) {
     redrawFooterTopRow: 20,
     redrawFrameDelayMs: 16,
     redrawFrames: 0,
+    serverStartupTimeoutMs: 30_000,
     serverUrl: null,
     skipBuild: false,
     terminals: 12,
@@ -111,6 +112,10 @@ function parseArgs(argv) {
         break;
       case '--server-url':
         overrides.serverUrl = requireArgValue(arg, next);
+        index += 1;
+        break;
+      case '--server-startup-timeout-ms':
+        overrides.serverStartupTimeoutMs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--auth-token':
@@ -290,6 +295,8 @@ function printHelp() {
 Options:
   --profile <name>          Apply a named stress profile before explicit overrides
   --server-url <url>        Target an existing browser server instead of starting a local one
+  --server-startup-timeout-ms <n>
+                             Local server startup timeout in ms (default: 30000)
   --auth-token <token>      Bearer/query token for --server-url (defaults to AUTH_TOKEN)
   --users <n>                Concurrent users bound to the same session (default: 3)
   --terminals <n>            Concurrent terminals/agents in the session (default: 12)
@@ -664,6 +671,180 @@ async function reservePort() {
   });
 }
 
+export function parseLocalServerReadyLine(text) {
+  const match = /\bParallel Code server listening on\s+(https?:\/\/[^\s]+)/u.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const url = new globalThis.URL(match[1]);
+    const port = getUrlPort(url);
+    if (!Number.isSafeInteger(port) || port <= 0) {
+      return null;
+    }
+
+    return {
+      port,
+      url: url.toString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getUrlPort(url) {
+  if (url.port) {
+    return Number(url.port);
+  }
+
+  if (url.protocol === 'https:') {
+    return 443;
+  }
+
+  return 80;
+}
+
+export function getLocalServerStartupTimeoutMs(options) {
+  const timeoutMs = Number(options.serverStartupTimeoutMs);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
+}
+
+function getLineBreakLength(text, newlineIndex) {
+  return text[newlineIndex] === '\r' ? 2 : 1;
+}
+
+function appendTextTail(previous, next, maxLength = 2_000) {
+  const combined = `${previous}${next}`;
+  return combined.length > maxLength ? combined.slice(-maxLength) : combined;
+}
+
+function createStartupTimeoutError(timeoutMs, port, stdoutTail, stderrTail) {
+  const details = [
+    stdoutTail ? `stdout=${JSON.stringify(stdoutTail)}` : null,
+    stderrTail ? `stderr=${JSON.stringify(stderrTail)}` : null,
+  ].filter(Boolean);
+  const detailsText = details.length > 0 ? ` (${details.join(' ')})` : '';
+  return new Error(
+    `Server startup timeout after ${timeoutMs}ms waiting for port ${port}${detailsText}`,
+  );
+}
+
+function terminateLocalServerProcess(serverProcess) {
+  if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
+    return;
+  }
+
+  try {
+    serverProcess.kill('SIGTERM');
+  } catch {
+    // The process may have exited between the status check and signal delivery.
+  }
+}
+
+function writeStressServerStderr(text) {
+  if (text.includes('Warning')) {
+    return;
+  }
+
+  process.stderr.write(`[stress-server] ${text}`);
+}
+
+function drainLocalServerOutputAfterStartup(serverProcess) {
+  serverProcess.stdout.on('data', () => {});
+  serverProcess.stderr.on('data', (chunk) => {
+    writeStressServerStderr(chunk.toString('utf8'));
+  });
+}
+
+export async function waitForLocalServerReady(serverProcess, options) {
+  const timeoutMs = getLocalServerStartupTimeoutMs(options);
+  const expectedPort = options.port;
+
+  await new Promise((resolve, reject) => {
+    let stdoutBuffer = '';
+    let stdoutTail = '';
+    let stderrTail = '';
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      terminateLocalServerProcess(serverProcess);
+      reject(createStartupTimeoutError(timeoutMs, expectedPort, stdoutTail, stderrTail));
+    }, timeoutMs);
+
+    function cleanup() {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      globalThis.clearTimeout(timeout);
+      serverProcess.stdout.off('data', onStdout);
+      serverProcess.stderr.off('data', onStderr);
+      serverProcess.off('exit', onExit);
+      serverProcess.off('error', onError);
+    }
+
+    function resolveReady() {
+      cleanup();
+      resolve();
+    }
+
+    function rejectStartup(error) {
+      cleanup();
+      reject(error);
+    }
+
+    function inspectReadyText(text) {
+      const ready = parseLocalServerReadyLine(text);
+      if (ready?.port === expectedPort) {
+        resolveReady();
+      }
+    }
+
+    function onStdout(chunk) {
+      const text = chunk.toString('utf8');
+      stdoutTail = appendTextTail(stdoutTail, text);
+      stdoutBuffer += text;
+
+      let newlineIndex = stdoutBuffer.search(/\r?\n/u);
+      while (newlineIndex >= 0) {
+        const line = stdoutBuffer.slice(0, newlineIndex);
+        stdoutBuffer = stdoutBuffer.slice(
+          newlineIndex + getLineBreakLength(stdoutBuffer, newlineIndex),
+        );
+        inspectReadyText(line);
+        if (settled) {
+          return;
+        }
+        newlineIndex = stdoutBuffer.search(/\r?\n/u);
+      }
+
+      inspectReadyText(stdoutBuffer);
+    }
+
+    function onStderr(chunk) {
+      const text = chunk.toString('utf8');
+      stderrTail = appendTextTail(stderrTail, text);
+      writeStressServerStderr(text);
+    }
+
+    function onExit(code) {
+      rejectStartup(new Error(`Server exited early with code ${code}`));
+    }
+
+    function onError(error) {
+      rejectStartup(error);
+    }
+
+    serverProcess.stdout.on('data', onStdout);
+    serverProcess.stderr.on('data', onStderr);
+    serverProcess.on('exit', onExit);
+    serverProcess.on('error', onError);
+  });
+}
+
 async function startLocalServer(options) {
   if (!options.skipBuild) {
     execSync('npx tsc -p server/tsconfig.json', {
@@ -681,36 +862,8 @@ async function startLocalServer(options) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Server startup timeout'));
-    }, 15_000);
-
-    serverProcess.stdout.on('data', (chunk) => {
-      if (chunk.toString('utf8').includes('listening on')) {
-        globalThis.clearTimeout(timeout);
-        resolve();
-      }
-    });
-
-    serverProcess.stderr.on('data', (chunk) => {
-      const text = chunk.toString('utf8');
-      if (text.includes('Warning')) {
-        return;
-      }
-      process.stderr.write(`[stress-server] ${text}`);
-    });
-
-    serverProcess.on('exit', (code) => {
-      globalThis.clearTimeout(timeout);
-      reject(new Error(`Server exited early with code ${code}`));
-    });
-
-    serverProcess.on('error', (error) => {
-      globalThis.clearTimeout(timeout);
-      reject(error);
-    });
-  });
+  await waitForLocalServerReady(serverProcess, { ...options, port });
+  drainLocalServerOutputAfterStartup(serverProcess);
 
   const client = createBrowserServerClient({
     authToken: DEFAULT_TOKEN,
@@ -734,7 +887,7 @@ async function startLocalServer(options) {
           globalThis.clearTimeout(timeout);
           resolve();
         });
-        serverProcess.kill('SIGTERM');
+        terminateLocalServerProcess(serverProcess);
       });
     },
   });
@@ -857,7 +1010,7 @@ async function connectClient(serverTarget, clientState) {
     socket.on('message', (data, isBinary) => {
       const message = parseServerMessage(data, isBinary);
       recordClientLastSeq(clientState, message);
-      if (message?.type !== 'agents') {
+      if (message?.type !== 'agents' || !Array.isArray(message.list)) {
         return;
       }
 
@@ -1076,6 +1229,20 @@ function createClientMarkerWatcher(ws, markersByChannel, timeoutMs, liveDataPref
     let resetMarkerCount = 0;
     let firstChannelDataMs = null;
     let firstLiveDataMs = null;
+    if (markersByChannel.size === 0) {
+      resolve({
+        bytes,
+        durationMs: 0,
+        firstChannelDataMs,
+        firstLiveDataMs,
+        messageCount,
+        resetChannelCount: 0,
+        resetMarkerCount,
+        timings: seen,
+      });
+      return;
+    }
+
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for ${markersByChannel.size - seen.size} done markers`));
@@ -1182,20 +1349,39 @@ function getPercentile(values, ratio) {
   return sorted[index] ?? 0;
 }
 
-function summarizeWatcherResults(results) {
+export function createEmptyPhaseMetrics() {
+  return {
+    avgDurationMs: 0,
+    maxDurationMs: 0,
+    maxSkewMs: 0,
+    p95SkewMs: 0,
+    totalBytes: 0,
+    totalMessages: 0,
+    totalResetChannels: 0,
+    totalResetMarkers: 0,
+  };
+}
+
+export function summarizeWatcherResults(results) {
+  if (results.length === 0) {
+    return createEmptyPhaseMetrics();
+  }
+
   const markerIds = Array.from(results[0]?.timings.keys() ?? []);
   const skews = markerIds.map((markerId) => {
     const samples = results
       .map((result) => result.timings.get(markerId))
       .filter((value) => typeof value === 'number');
+    if (samples.length === 0) {
+      return 0;
+    }
     return Math.max(...samples) - Math.min(...samples);
   });
 
   return {
-    avgDurationMs:
-      results.reduce((sum, result) => sum + result.durationMs, 0) / Math.max(results.length, 1),
-    maxDurationMs: Math.max(...results.map((result) => result.durationMs)),
-    maxSkewMs: Math.max(...skews),
+    avgDurationMs: results.reduce((sum, result) => sum + result.durationMs, 0) / results.length,
+    maxDurationMs: Math.max(0, ...results.map((result) => result.durationMs)),
+    maxSkewMs: Math.max(0, ...skews),
     p95SkewMs: getPercentile(skews, 0.95),
     totalResetChannels: results.reduce((sum, result) => sum + result.resetChannelCount, 0),
     totalResetMarkers: results.reduce((sum, result) => sum + result.resetMarkerCount, 0),
@@ -1303,19 +1489,6 @@ function createPhaseSummary(
   return {
     ...phaseSummary,
     writeMetadata,
-  };
-}
-
-function createEmptyPhaseMetrics() {
-  return {
-    avgDurationMs: 0,
-    maxDurationMs: 0,
-    maxSkewMs: 0,
-    p95SkewMs: 0,
-    totalBytes: 0,
-    totalMessages: 0,
-    totalResetChannels: 0,
-    totalResetMarkers: 0,
   };
 }
 
@@ -2431,4 +2604,6 @@ async function main() {
   }
 }
 
-await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  await main();
+}
