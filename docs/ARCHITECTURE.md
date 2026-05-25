@@ -194,6 +194,20 @@ Two current ownership splits matter in review:
   ownership; and `src/components/TaskContainersPanel.tsx` is presentation only. Container
   running/support state is not persisted store truth and must not drift into leaf-component
   inference
+- agent runner execution is separate from task-container preview lifecycle.
+  `src/domain/agent-runners.ts` owns runner profile/status/identity types,
+  `electron/ipc/agent-runner-handlers.ts` owns typed profile validation,
+  `electron/ipc/agent-runner-docker.ts` owns Docker CLI preflight, Dockerfile build/run argument
+  construction, managed labels, bind-mount policy, and exact-label cleanup, and
+  `electron/ipc/task-workflows.ts` selects the runner before PTY spawn. `electron/ipc/pty.ts` owns
+  live runner identity on the PTY session and projects it into backend supervision/remote agent
+  metadata. Renderer code may configure and present runner state, but it must not import Docker
+  runtime code or infer Docker truth from settings. Host remains the default runner; Docker
+  container execution is opt-in; Docker sandbox and Docker-backed Hydra adapter launches are
+  explicitly rejected until they have their own backend owner contract. Dockerfile-built images use
+  per-runner tags, cleanup removes only exact-label managed containers, and Docker runner env
+  forwarding blocks process-control variables such as `PATH`, `HOME`, `SHELL`, `USER`,
+  `NODE_OPTIONS`, and dynamic library injection hooks
 - arena competitor readiness is backend-owned. `electron/ipc/arena-competitors.ts` owns command
   availability, auth/env readiness, and quiet-output classification for known competitors;
   `src/arena/command-template.ts` owns the shared direct-executable parser/materializer contract;
@@ -235,6 +249,13 @@ Two current ownership splits matter in review:
   suppressed chunks may skip live writes, but `terminal-output-pipeline` must continue accounting
   those bytes toward pause/resume thresholds so noisy hidden terminals cannot bypass renderer-side
   backpressure just because their live renderer is asleep
+- task AI terminal layout is task-level presentation state. `src/store/task-terminal-layout.ts`
+  derives the visible agent set from selected agent, task agents, and the layout mode
+  (`focused`, `split`, `grid`, or `stacked`) instead of persisting a second visibility truth.
+  `src/components/task-panel/TaskAiTerminalSection.tsx` renders selected panes as the only command
+  target and visible siblings as passive-visible real terminal surfaces. TaskPanel owns the shared
+  switch-window lifecycle; mounted sibling terminals only report readiness and must not cancel the
+  task-level window independently
 - fit/layout correctness is separate from typing priority. `terminal-session` and
   `terminalFitManager` may yield non-critical stabilization while another terminal is typing, but
   they must still allow resize/correctness-critical work through instead of letting latency mode
@@ -962,6 +983,7 @@ An agent is the long-lived execution session. It carries:
 - exit information
 - last output tail
 - generation/restart identity
+- optional backend runner identity for non-host execution
 
 Status is partly authoritative from the backend and partly interpreted on the frontend.
 
@@ -977,6 +999,10 @@ That split exists because persisted workspace state can outlive backend PTY sess
 restart, the first attach still owns the real recovery decision. For Hydra, that recovery is now
 worktree-scoped and serialized in the backend/vendored runtime instead of being approximated in the
 renderer.
+
+Runner identity follows the same ownership rule: a project may configure the preferred runner, but
+the active runner instance is backend PTY/supervision metadata. Browser and mobile clients consume
+that projection; they do not decide whether a Docker container is live by reading project settings.
 
 ### Terminals
 

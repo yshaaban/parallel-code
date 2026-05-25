@@ -170,10 +170,12 @@ architecture-safe subset of the previously deferred queue without merging upstre
 - coordinator/MCP remains intentionally unsupported/deferred behind an explicit backend-owner
   boundary instead of UI prompt injection.
 
-The remaining design-only scope is narrower: real Docker agent runner execution, arbitrary/custom
-theme editing beyond guarded built-in tokens, full side-by-side multi-agent terminal layout, and
-coordinator/MCP backend orchestration still require separate product decisions, replayable backend
-state machines, and browser/mobile proof before implementation.
+The remaining design-only scope is narrower: arbitrary/custom theme editing beyond guarded built-in
+tokens and coordinator/MCP backend orchestration still require separate product decisions,
+replayable backend state machines, and browser/mobile proof before implementation. Real Docker
+agent runner execution and side-by-side multi-agent terminal layout now exist locally as
+browser-first opt-in implementations with backend-owned runner identity and dedicated validation
+lanes; Docker sandbox and Docker-backed Hydra adapter execution remain intentionally unsupported.
 
 Recently landed locally:
 

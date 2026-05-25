@@ -48,6 +48,8 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
    - `npm run test:browser:terminal:soak` for the isolated long-additive acceptance soak
 2. run the backend/runtime seams:
    - `npx vitest run --config vitest.config.ts --no-file-parallelism server/terminal-latency.test.ts server/session-stress.test.ts electron/ipc/pty.test.ts electron/ipc/handlers.restore.test.ts src/lib/scrollbackRestore.test.ts src/app/task-command-lease.test.ts`
+   - `npm run test:node:terminal:stress` when selected/passive terminal roles, multi-agent task
+     layout, or non-browser terminal stress profiles change
 3. if the issue is about latency or noisy background contention, run the scripted local profiler:
    - `npm run profile:terminal:latency`
    - when turning profiler findings into browser assertions, warm terminal input tracing once and
@@ -84,6 +86,8 @@ Treat steps `3` to `6` as performance-lab escalation, not as the default review 
 terminal change. The normal product-review minimum is:
 
 - targeted tests at the owner seam you changed
+- `npm run test:node:terminal:stress` when multi-agent task terminal layout or selected/passive
+  command targeting changed
 - `npm run test:browser:terminal` when browser terminal behavior changed
 - the specific browser stress/spec gate that matches the regression class under review
 

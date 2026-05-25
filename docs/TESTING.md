@@ -99,6 +99,17 @@ For task-container work specifically:
   auth/transport boundaries or other browser-owned multi-client ownership seams; backend Docker
   execution proof belongs in the dedicated real-Docker node lane
 
+For agent-runner work specifically:
+
+- keep Docker agent execution proof separate from task-container/Compose preview proof
+- prove profile normalization, Docker argument construction, exact-label cleanup, and runner
+  identity projection in `node / backend` tests
+- use `npm run test:node:docker:agent-runner` for optional local real-Docker proof and
+  `npm run test:node:docker:agent-runner:required` when pre-release proof must fail without a
+  reachable Docker daemon
+- keep renderer proof focused on configuration, command-target projection, and visible/passive
+  terminal behavior; renderer code must not own Docker lifecycle truth
+
 For terminal clipboard-image and shortcut work specifically:
 
 - keep native clipboard-image save proof in `node / backend` at the handler/transport seam
@@ -163,6 +174,16 @@ Use this split:
       Docker or Compose is unavailable
     - required when `electron/ipc/task-containers.ts`, `electron/ipc/task-container-identity.ts`,
       or task-container preview derivation / cleanup semantics change
+  - the real Docker integration lane for agent-runner execution:
+    - `npm run test:node:docker:agent-runner`
+    - use `npm run test:node:docker:agent-runner:required` when pre-release proof must fail if
+      Docker is unavailable
+    - required when `electron/ipc/agent-runner-docker.ts`,
+      `electron/ipc/task-workflows.ts` runner wrapping, or runner cleanup semantics change
+  - the non-browser multi-agent terminal stress lane:
+    - `npm run test:node:terminal:stress`
+    - required when task AI terminal layout, selected/passive command-target projection, or
+      visible terminal role assignment changes
 - exploratory perf-lab proof:
   - variant matrices
   - browser fluidity profilers
