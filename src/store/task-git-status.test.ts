@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import {
   getGitStatusSyncEventKind,
@@ -143,6 +143,11 @@ describe('task git status owner', () => {
       has_committed_changes: false,
       has_uncommitted_changes: true,
     });
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('applies pushed status directly when the server includes worktree status', () => {

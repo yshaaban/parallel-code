@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { detectMainBranchMock, execFileMock, worktreeExistsMock } = vi.hoisted(() => ({
   detectMainBranchMock: vi.fn(),
@@ -54,10 +54,17 @@ function setExecImplementation(
 
 describe('git phase 1 parity', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.resetModules();
     execFileMock.mockReset();
     detectMainBranchMock.mockReset();
     worktreeExistsMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('uses the merge base when checking for committed worktree changes', async () => {
@@ -79,7 +86,9 @@ describe('git phase 1 parity', () => {
 
     const { getWorktreeStatus } = await import('./git.js');
 
-    await expect(getWorktreeStatus('/repo/.worktrees/task')).resolves.toEqual({
+    const status = await getWorktreeStatus('/repo/.worktrees/task');
+
+    expect(status).toEqual({
       has_committed_changes: true,
       has_uncommitted_changes: false,
     });

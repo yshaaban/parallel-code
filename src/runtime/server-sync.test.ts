@@ -7,6 +7,7 @@ import {
 
 const {
   applyLoadedWorkspaceStateJsonMock,
+  getLoadedWorkspaceRevisionMock,
   hydrateAgentGenerationMock,
   isBrowserColdBootstrapPendingMock,
   invokeMock,
@@ -22,6 +23,7 @@ const {
   validateProjectPathsMock,
 } = vi.hoisted(() => ({
   applyLoadedWorkspaceStateJsonMock: vi.fn(),
+  getLoadedWorkspaceRevisionMock: vi.fn(() => 0),
   hydrateAgentGenerationMock: vi.fn(),
   isBrowserColdBootstrapPendingMock: vi.fn(() => false),
   invokeMock: vi.fn(),
@@ -79,6 +81,10 @@ vi.mock('../store/notification', () => ({
 vi.mock('../store/persistence-load', () => ({
   applyLoadedWorkspaceStateJson: applyLoadedWorkspaceStateJsonMock,
   loadWorkspaceState: loadWorkspaceStateMock,
+}));
+
+vi.mock('../store/persistence-session', () => ({
+  getLoadedWorkspaceRevision: getLoadedWorkspaceRevisionMock,
 }));
 
 vi.mock('../store/projects', () => ({
@@ -141,6 +147,7 @@ describe('server-sync reliability contracts', () => {
     storeState.agents = {};
     loadWorkspaceStateMock.mockResolvedValue(true);
     applyLoadedWorkspaceStateJsonMock.mockReturnValue(true);
+    getLoadedWorkspaceRevisionMock.mockReturnValue(0);
     isBrowserColdBootstrapPendingMock.mockReturnValue(false);
     hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(false);
     validateProjectPathsMock.mockResolvedValue(undefined);
@@ -498,6 +505,25 @@ describe('server-sync reliability contracts', () => {
 
     expect(hydrateAgentGenerationMock).toHaveBeenNthCalledWith(1, 'agent-1', 3);
     expect(hydrateAgentGenerationMock).toHaveBeenNthCalledWith(2, 'agent-2', 1);
+  });
+
+  it('skips stale reconnect workspace snapshots while still hydrating agent generations', async () => {
+    getLoadedWorkspaceRevisionMock.mockReturnValue(9);
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 3 },
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceRevision: 7,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+    });
+
+    expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 3);
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates reconnect agent generations even when the snapshot does not include workspace JSON', async () => {

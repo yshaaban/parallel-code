@@ -293,6 +293,14 @@ function buildHighlights(summary) {
   }
 
   return {
+    backpressureRejects: getSummaryHighlight(
+      summary,
+      'phases.mixed.diagnostics.browserControl.backpressureRejects',
+    ),
+    degradedChannels: getSummaryHighlight(
+      summary,
+      'phases.mixed.diagnostics.browserChannels.degradedClientChannels',
+    ),
     inputMs: getSummaryHighlight(summary, 'phases.input.wallClockMs'),
     lateJoinMs: getSummaryHighlight(summary, 'phases.lateJoin.wallClockMs'),
     lateJoinReplayMs: getSummaryHighlight(summary, 'phases.lateJoin.replay.wallClockMs'),
@@ -365,7 +373,7 @@ function formatProfileRunLabel(result) {
 function printProfileSummary(result) {
   const highlights = result.highlights;
   const timingSummary = highlights
-    ? `output=${formatMetric(highlights.outputMs)} input=${formatMetric(highlights.inputMs)} mixed=${formatMetric(highlights.mixedMs)} lateJoin=${formatMetric(highlights.lateJoinMs)} replay=${formatMetric(highlights.lateJoinReplayMs)}`
+    ? `output=${formatMetric(highlights.outputMs)} input=${formatMetric(highlights.inputMs)} mixed=${formatMetric(highlights.mixedMs)} lateJoin=${formatMetric(highlights.lateJoinMs)} replay=${formatMetric(highlights.lateJoinReplayMs)} rejects=${highlights.backpressureRejects ?? 'n/a'} degraded=${highlights.degradedChannels ?? 'n/a'}`
     : 'no-metrics';
 
   console.log(

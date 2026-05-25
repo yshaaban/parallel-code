@@ -391,6 +391,7 @@ vi.mock('../store/state', () => ({
 vi.mock('../store/task-command-controllers', () => ({
   applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
   getTaskCommandControllerUpdateCount: getTaskCommandControllerUpdateCountMock,
+  getTaskCommandControllerVersion: vi.fn(() => 0),
   replaceTaskCommandControllers: replaceTaskCommandControllersMock,
 }));
 
@@ -481,6 +482,9 @@ function createEmptyColdBootstrapProjection() {
     terminals: {},
   };
 }
+
+const BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS = 500;
+const BROWSER_COLD_BOOTSTRAP_TEST_FAILURE_WINDOW_MS = 2_000;
 
 describe('desktop session startup sequencing', () => {
   const originalDocument = globalThis.document;
@@ -1178,6 +1182,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   it('falls back to loading canonical workspace state when cold bootstrap projections are unavailable', async () => {
+    vi.useFakeTimers();
     fetchBrowserColdBootstrapMock.mockResolvedValue(null);
 
     const cleanup = startDesktopAppSession({
@@ -1189,20 +1194,21 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-      expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
-      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
-      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
-      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-        takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
-          Number.POSITIVE_INFINITY,
-      );
-      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-        loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-      );
-    });
+    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
+    await flushResolvedPromises();
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+    expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+      takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+      loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
 
     cleanup();
   });
@@ -1272,9 +1278,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-    });
+    await flushResolvedPromises();
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
 
     cleanup();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1285,6 +1290,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   it('retries canonical workspace load after a transient browser startup load failure', async () => {
+    vi.useFakeTimers();
     fetchBrowserColdBootstrapMock.mockResolvedValue(null);
     loadWorkspaceStateMock.mockRejectedValueOnce(new Error('workspace load unavailable'));
     loadWorkspaceStateMock.mockResolvedValueOnce(true);
@@ -1298,16 +1304,18 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
-      expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-    });
+    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
+    await flushResolvedPromises();
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
+    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });
 
   it('schedules a follow-up browser sync instead of aborting startup when browser cold bootstrap remains unavailable', async () => {
+    vi.useFakeTimers();
     fetchBrowserColdBootstrapMock.mockRejectedValue(new Error('bootstrap unavailable'));
     loadWorkspaceStateMock.mockResolvedValue(false);
 
@@ -1320,16 +1328,14 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(
-      () => {
-        expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-        expect(loadWorkspaceStateMock.mock.calls.length).toBeGreaterThanOrEqual(4);
-        expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-        expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
-        expect(getAppStartupSummary()).toBeNull();
-      },
-      { timeout: 3_000 },
-    );
+    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_FAILURE_WINDOW_MS);
+    await flushResolvedPromises();
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+    expect(loadWorkspaceStateMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(getAppStartupSummary()).toBeNull();
 
     const latestBrowserStateSyncResult =
       createBrowserStateSyncMock.mock.results[createBrowserStateSyncMock.mock.results.length - 1];
@@ -1342,6 +1348,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   it('retries browser cold bootstrap fetches before applying the backend projection', async () => {
+    vi.useFakeTimers();
     fetchBrowserColdBootstrapMock
       .mockRejectedValueOnce(new Error('temporary bootstrap failure'))
       .mockResolvedValueOnce({
@@ -1359,19 +1366,21 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(2);
-      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-        createMeaningfulColdBootstrapProjection(),
-        7,
-      );
-      expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-    });
+    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
+    await flushResolvedPromises();
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(2);
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
+      createMeaningfulColdBootstrapProjection(),
+      7,
+    );
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
 
     cleanup();
   });
 
   it('falls back to the same-tab handoff projection when cold bootstrap fetches keep failing', async () => {
+    vi.useFakeTimers();
     const handoffProjection = {
       ...createEmptyColdBootstrapProjection(),
       projects: [
@@ -1409,20 +1418,21 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-      expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
-      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-        handoffProjection,
-        0,
-      );
-      expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-      expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-        takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
-          Number.POSITIVE_INFINITY,
-      );
-    });
+    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
+    await flushResolvedPromises();
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+    expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
+      handoffProjection,
+      0,
+    );
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
+      takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
 
     cleanup();
   });
@@ -1444,10 +1454,9 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-      expect(isBrowserColdBootstrapPending()).toBe(true);
-    });
+    await flushResolvedPromises();
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+    expect(isBrowserColdBootstrapPending()).toBe(true);
 
     cleanup();
 
@@ -1639,9 +1648,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
-    });
+    await flushResolvedPromises();
+    expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
 
     const reviewEvent = {
       branchName: 'feature/task-after-load',
@@ -1733,9 +1741,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-    });
+    await flushResolvedPromises();
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
     expect(loadAgentsMock).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -1765,16 +1772,14 @@ describe('desktop session startup sequencing', () => {
     });
 
     try {
-      await vi.waitFor(() => {
-        expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-      });
+      await flushResolvedPromises();
+      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(2_000);
-      await vi.waitFor(() => {
-        expect(warnSpy).toHaveBeenCalledWith(
-          'Failed to refresh browser agent catalog during startup:',
-          refreshError,
-        );
-      });
+      await flushResolvedPromises();
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to refresh browser agent catalog during startup:',
+        refreshError,
+      );
     } finally {
       cleanup();
       warnSpy.mockRestore();

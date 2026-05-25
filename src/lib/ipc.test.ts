@@ -2029,7 +2029,7 @@ describe('Channel', () => {
     }
   });
 
-  it('uses reconnect jitter within the configured range', async () => {
+  it('uses fast warm reconnect delays for recently connected browser sessions', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: ControllableWebSocket,
@@ -2038,7 +2038,6 @@ describe('Channel', () => {
     window.setTimeout = setTimeoutSpy as unknown as typeof window.setTimeout;
     window.clearTimeout = vi.fn() as unknown as typeof window.clearTimeout;
 
-    const random = vi.spyOn(Math, 'random');
     const { onBrowserTransportEvent } = await import('./ipc');
     const cleanup = onBrowserTransportEvent(() => {});
 
@@ -2048,9 +2047,8 @@ describe('Channel', () => {
       firstSocket.open();
       await flushMicrotasks();
 
-      random.mockReturnValueOnce(0);
       firstSocket.close(1006);
-      expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(160);
+      expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(0);
 
       const firstReconnect = setTimeoutSpy.mock.calls[0]?.[0] as () => void;
       firstReconnect();
@@ -2059,9 +2057,8 @@ describe('Channel', () => {
       secondSocket.open();
       await flushMicrotasks();
 
-      random.mockReturnValueOnce(1);
       secondSocket.close(1006);
-      expect(setTimeoutSpy.mock.calls[1]?.[1]).toBe(240);
+      expect(setTimeoutSpy.mock.calls[1]?.[1]).toBe(0);
     } finally {
       cleanup();
     }
@@ -2086,12 +2083,12 @@ describe('Channel', () => {
       socket.open();
       await flushMicrotasks();
 
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       expect(socket.sent.some((message) => message.type === 'ping')).toBe(true);
 
       socket.receiveText({ type: 'pong' });
       await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(12_000);
 
       expect(closeSpy).not.toHaveBeenCalled();
       socket.close();

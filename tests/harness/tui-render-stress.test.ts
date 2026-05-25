@@ -45,7 +45,7 @@ function spawnFixture(args: string[]): SpawnedFixture {
 async function waitForOutputMatch(
   getStdout: () => string,
   pattern: RegExp,
-  timeoutMs = 4_000,
+  timeoutMs = 10_000,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

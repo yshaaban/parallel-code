@@ -290,6 +290,97 @@ describe('createWebSocketClientCore', () => {
     expect(client.getState()).toBe('disconnected');
   });
 
+  it('allows configured missed pong tolerance before disconnecting', async () => {
+    vi.useFakeTimers();
+
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      createPingMessage: () => ({ type: 'ping' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      isPongMessage: (message) => message.type === 'pong',
+      maxMissedPongs: 2,
+      onMessage: () => {},
+      pingIntervalMs: 10,
+      pongTimeoutMs: 5,
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    vi.advanceTimersByTime(15);
+    expect(client.getState()).toBe('connected');
+
+    vi.advanceTimersByTime(10);
+    expect(socket?.sent[socket.sent.length - 1]).toEqual({ type: 'ping' });
+    vi.advanceTimersByTime(5);
+    expect(client.getState()).toBe('disconnected');
+  });
+
+  it('passes recent connection context to reconnect delay selection', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const reconnectDelayMs = vi.fn(() => 10);
+
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      reconnectDelayMs,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    vi.setSystemTime(2_000);
+    socket?.close(1006);
+
+    expect(reconnectDelayMs).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({
+        hasConnected: true,
+        lastConnectedAt: 1_000,
+        lastConnectionDurationMs: 1_000,
+        lastDisconnectedAt: 2_000,
+        lastDisconnectReason: 'close',
+      }),
+    );
+  });
+
+  it('reports sequenced message gaps after the first processed sequence', async () => {
+    const onSequenceGap = vi.fn();
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: () => {},
+      onSequenceGap,
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    socket?.receive({ type: 'event', seq: 0 });
+    socket?.receive({ type: 'event', seq: 2 });
+
+    expect(onSequenceGap).toHaveBeenCalledWith({
+      actualSeq: 2,
+      expectedSeq: 1,
+      previousSeq: 0,
+    });
+  });
+
   it('clears stored auth state when the server expires the session', async () => {
     const clearToken = vi.fn();
     const onAuthExpired = vi.fn();
@@ -315,6 +406,29 @@ describe('createWebSocketClientCore', () => {
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(onAuthExpired).toHaveBeenCalledTimes(1);
     expect(client.getState()).toBe('auth-expired');
+  });
+
+  it('reports explicit auth-expired disconnects with the auth-expired reason', async () => {
+    const onDisconnect = vi.fn();
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onDisconnect,
+      onMessage: () => {},
+      shouldReconnect: () => false,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    client.disconnect('auth-expired');
+
+    expect(client.getState()).toBe('auth-expired');
+    expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({ reason: 'auth-expired' }));
   });
 
   it('does not reconnect after disconnect if demand disappears before the retry fires', async () => {

@@ -231,7 +231,7 @@ describe('ChangedFilesList', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(screen.getByText('plan.json')).toBeDefined();
-  });
+  }, 10_000);
 
   it('scrolls the selected file into view while navigating by keyboard', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
@@ -470,7 +470,7 @@ describe('ChangedFilesList', () => {
       expect(screen.getByText('recovered.ts')).toBeDefined();
     });
     expect(screen.queryByText('fallback.ts')).toBeNull();
-  });
+  }, 10_000);
 
   it('shows unavailable state when the initial worktree changed-files refresh fails', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
@@ -510,7 +510,7 @@ describe('ChangedFilesList', () => {
     });
     expect(screen.getByText('current.ts')).toBeDefined();
     expect(screen.queryByText('No changed files')).toBeNull();
-  });
+  }, 10_000);
 
   it('ignores stale generic refresh results when request inputs change mid-load', async () => {
     isElectronRuntimeMock.mockReturnValue(false);

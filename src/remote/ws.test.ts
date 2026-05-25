@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AgentsMessage,
   OutputMessage,
@@ -38,6 +38,8 @@ const terminalOrderState = vi.hoisted(() => ({
   resetAllMock: vi.fn(),
   resetAgentMock: vi.fn(),
 }));
+
+let loadedWsModule: typeof import('./ws') | null = null;
 
 vi.mock('../lib/client-id', () => ({
   getPersistentClientId: vi.fn(() => 'remote-client-1234'),
@@ -149,6 +151,7 @@ async function loadWsModule(): Promise<{
   websocketState.sendIfOpenMock.mockReset();
   websocketState.sendIfOpenMock.mockReturnValue(true);
   const module = await import('./ws');
+  loadedWsModule = module;
   module.resetRemoteWsRuntimeStateForTests();
   const options = websocketState.options;
   if (options === null) {
@@ -164,6 +167,11 @@ describe('remote ws projections', () => {
     taskState.applyRemoteTaskPortsChangedMock.mockReset();
     terminalOrderState.resetAgentMock.mockReset();
     terminalOrderState.resetAllMock.mockReset();
+  });
+
+  afterEach(() => {
+    loadedWsModule?.resetRemoteWsRuntimeStateForTests();
+    loadedWsModule = null;
   });
 
   it('refreshes inactive agent previews from authoritative agents snapshots', async () => {
@@ -446,6 +454,24 @@ describe('remote ws projections', () => {
     expect(url.pathname).toBe('/ws');
     expect(url.searchParams.get('clientId')).toBe('remote-mobile-client');
     expect(url.searchParams.get('lastSeq')).toBe('12');
+  });
+
+  it('uses the shared weak-connectivity heartbeat and warm reconnect policy', async () => {
+    const { options } = await loadWsModule();
+
+    expect(options.pingIntervalMs).toBe(20_000);
+    expect(options.pongTimeoutMs).toBe(12_000);
+    expect(options.maxMissedPongs).toBe(2);
+    expect(
+      options.reconnectDelayMs?.(0, {
+        hasConnected: true,
+        lastConnectedAt: Date.now(),
+        lastConnectionDurationMs: 1_000,
+        lastDisconnectedAt: Date.now(),
+        lastDisconnectReason: 'close',
+        lastRttMs: null,
+      }),
+    ).toBe(0);
   });
 
   it('waits for reconnect before sending critical control messages', async () => {

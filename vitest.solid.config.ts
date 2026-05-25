@@ -8,5 +8,9 @@ export default defineConfig({
     environment: 'jsdom',
     fileParallelism: false,
     setupFiles: ['./vitest.setup.ts'],
+    // Several Solid harness tests intentionally advance fake timers through 15s watchdog paths.
+    // Keep Vitest's own watchdog above that virtual-time ceiling so fake timer advancement cannot
+    // fail unrelated later tests.
+    testTimeout: 20_000,
   },
 });

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_FILE = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(TEST_FILE), '..');
@@ -59,6 +59,16 @@ function expectScriptsToBeUndefined(
 }
 
 describe('terminal ui fluidity gate consistency', () => {
+  beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('keeps the shared gate profiles and visible counts on the documented browser proof', async () => {
     const gateModule = await loadTerminalUiFluidityGateModule();
 

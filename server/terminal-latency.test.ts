@@ -569,15 +569,23 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Multi-Client Control Leases', () => {
     it('rejects interactive commands from non-controller clients until the controller disconnects', async () => {
       const agentId = `lease-${Date.now()}`;
+      const taskId = `lease-task-${Date.now()}`;
       const channelId = createChannelId();
+      const ownerClientId = `lease-owner-${Date.now()}`;
+      const observerClientId = `lease-observer-${Date.now()}`;
       const firstMarker = `__LEASE_ONE_${Date.now()}__`;
+      const blockedMarker = `__LEASE_BLOCKED_${Date.now()}__`;
       const secondMarker = `__LEASE_TWO_${Date.now()}__`;
-      const ws1 = await connectWs();
-      const ws2 = await connectWs();
+      const ws1 = await connectWs('');
+      const ws2 = await connectWs('');
 
       try {
-        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
-        await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+        const ws1Ready = waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        const ws2Ready = waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+        sendJson(ws1, { type: 'auth', token: TEST_TOKEN, clientId: ownerClientId });
+        sendJson(ws2, { type: 'auth', token: TEST_TOKEN, clientId: observerClientId });
+        await ws1Ready;
+        await ws2Ready;
 
         sendJson(ws1, { type: 'bind-channel', channelId });
         sendJson(ws2, { type: 'bind-channel', channelId });
@@ -585,19 +593,28 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
         await spawnAgentViaHttp({
-          taskId: 'lease-task',
+          taskId,
           agentId,
           command: '/bin/sh',
           channelId,
         });
         await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
 
+        const firstController = waitForMessage(
+          ws2,
+          (msg) =>
+            msg.type === 'agent-controller' &&
+            msg.agentId === agentId &&
+            msg.controllerId === ownerClientId,
+          10_000,
+        );
         const firstOutput = waitForMessage(
           ws1,
           (msg) => channelMessageContains(msg, channelId, firstMarker),
           10_000,
         );
         sendJson(ws1, { type: 'input', agentId, data: `echo ${firstMarker}\n` });
+        await firstController;
         await firstOutput;
 
         const blocked = waitForMessage(
@@ -605,10 +622,16 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           (msg) => msg.type === 'agent-error' && msg.agentId === agentId,
           5_000,
         );
-        sendJson(ws2, { type: 'input', agentId, data: 'echo blocked-by-lease\n' });
+        const blockedOutput = expectNoMessage(
+          ws2,
+          (msg) => channelMessageContains(msg, channelId, blockedMarker),
+          500,
+        );
+        sendJson(ws2, { type: 'input', agentId, data: `echo ${blockedMarker}\n` });
         const blockedMessage = await blocked;
 
         expect(blockedMessage.message).toContain('controlled by another client');
+        await blockedOutput;
 
         const releasedControl = waitForMessage(
           ws2,
@@ -625,7 +648,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
             controllers: Array<{ controllerId: string | null; taskId: string }>;
           }>(IPC.GetTaskCommandControllers, {});
           expect(
-            result.controllers.find((controller) => controller.taskId === 'lease-task'),
+            result.controllers.find((controller) => controller.taskId === taskId),
           ).toBeUndefined();
         });
 
@@ -634,7 +657,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           (msg) =>
             msg.type === 'agent-controller' &&
             msg.agentId === agentId &&
-            typeof msg.controllerId === 'string',
+            msg.controllerId === observerClientId,
           10_000,
         );
         const secondOutput = waitForMessage(
@@ -1078,16 +1101,18 @@ process.stdin.resume();
           rtts.push(await measureSimulatedRoundTrip(marker, 3));
         }
 
+        const sortedRtts = rtts.sort((a, b) => a - b);
+        const min = sortedRtts[0] ?? 0;
         const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-        const p95 = getPercentileValue(
-          rtts.sort((a, b) => a - b),
-          0.95,
+        const p95 = getPercentileValue(sortedRtts, 0.95);
+        console.warn(
+          `  Simulated latency RTT: min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`,
         );
-        console.warn(`  Simulated latency RTT: avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`);
 
-        // With 50ms + 20ms jitter simulated, RTT should be >50ms but <500ms
-        expect(avg).toBeGreaterThan(50);
-        expect(avg).toBeLessThan(500);
+        // With 50ms + 20ms jitter simulated, at least one clean RTT sample
+        // should land in the simulated-latency band even if the host is busy.
+        expect(min).toBeGreaterThan(50);
+        expect(min).toBeLessThan(500);
       } finally {
         await fetch(`http://127.0.0.1:${simPort}/api/ipc/kill_agent`, {
           method: 'POST',

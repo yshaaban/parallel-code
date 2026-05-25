@@ -12,12 +12,26 @@ type BrowserTransportEventTest =
       kind: 'connection';
       state: 'connecting' | 'reconnecting' | 'connected' | 'disconnected' | 'auth-expired';
     }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | {
+      kind: 'metrics';
+      payload:
+        | { connectedDurationMs: number | null; reason: 'close'; type: 'disconnect' }
+        | { rttMs: number | null; type: 'pong' }
+        | {
+            attempt: number;
+            delayMs: number;
+            lastDisconnectReason: 'close' | null;
+            type: 'reconnect-scheduled';
+          }
+        | { actualSeq: number; expectedSeq: number; type: 'sequence-gap' };
+    };
 
 const {
   browserAuthenticatedListeners,
   browserHttpStateListeners,
   browserTransportListeners,
+  getBrowserReconnectContinuityMock,
   invokeMock,
   taskCommandControllerListeners,
   listenTaskCommandControllerChangedMock,
@@ -27,6 +41,11 @@ const {
   browserAuthenticatedListeners: new Set<() => void>(),
   browserHttpStateListeners: new Set<(state: BrowserHttpStateTest) => void>(),
   browserTransportListeners: new Set<(event: BrowserTransportEventTest) => void>(),
+  getBrowserReconnectContinuityMock: vi.fn(() => ({
+    disconnectedDurationMs: null as number | null,
+    hasSequenceGapSinceDisconnect: false,
+    hasSequencedMessageSinceDisconnect: false,
+  })),
   invokeMock: vi.fn(),
   taskCommandControllerListeners: new Set<(payload: unknown) => void>(),
   listenTaskCommandControllerChangedMock: vi.fn((listener: (payload: unknown) => void) => {
@@ -41,6 +60,7 @@ const {
 
 vi.mock('../lib/ipc', () => ({
   getBrowserQueueDepth: vi.fn(() => 0),
+  getBrowserReconnectContinuity: getBrowserReconnectContinuityMock,
   invoke: invokeMock,
   listenServerMessage: vi.fn((type: string, listener: (payload: unknown) => void) => {
     const listeners = serverMessageListeners.get(type) ?? new Set<(payload: unknown) => void>();
@@ -115,6 +135,17 @@ function emitBrowserTransportEvent(event: BrowserTransportEventTest): void {
   }
 }
 
+function emitBrowserReconnectTransport(): void {
+  emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+  emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+  emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+}
+
+function emitBrowserReconnectAndAuthenticate(): void {
+  emitBrowserReconnectTransport();
+  emitBrowserAuthenticated();
+}
+
 function emitServerMessage(type: string, payload: unknown): void {
   for (const listener of [...(serverMessageListeners.get(type) ?? [])]) {
     listener(payload);
@@ -130,9 +161,11 @@ function emitTaskCommandControllerChanged(payload: unknown): void {
 function createBrowserRuntimeOptions(
   overrides: Partial<Parameters<typeof registerBrowserAppRuntime>[0]> = {},
 ): Parameters<typeof registerBrowserAppRuntime>[0] {
-  return {
+  const defaults: Parameters<typeof registerBrowserAppRuntime>[0] = {
     clearRestoringConnectionBanner: vi.fn(),
+    getLoadedWorkspaceRevision: vi.fn(() => 0),
     getTaskCommandControllerUpdateCount: vi.fn(() => 0),
+    getTaskCommandControllerVersion: vi.fn(() => 0),
     onAgentLifecycle: vi.fn(),
     onPeerPresence: vi.fn(),
     onTaskCommandControllerChanged: vi.fn(),
@@ -145,6 +178,9 @@ function createBrowserRuntimeOptions(
     showNotification: vi.fn(),
     syncAgentStatusesFromServer: vi.fn(),
     syncBrowserStateFromReconnectSnapshot: vi.fn().mockResolvedValue(undefined),
+  };
+  return {
+    ...defaults,
     ...overrides,
   };
 }
@@ -160,6 +196,11 @@ describe('browser runtime restore generation', () => {
     browserHttpStateListeners.clear();
     browserTransportListeners.clear();
     taskCommandControllerListeners.clear();
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: null as number | null,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: false,
+    });
     invokeMock.mockResolvedValue({
       appStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
@@ -203,10 +244,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
@@ -223,6 +261,235 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('skips full reconnect snapshot restore for a warm gap-free reconnect with current versions', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          runningAgentIds: ['agent-1'],
+          taskCommandControllerVersion: 0,
+          workspaceRevision: 0,
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const onTaskNotificationRestoreCompleted = vi.fn();
+    const onTaskNotificationRestoreStarted = vi.fn();
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onTaskNotificationRestoreCompleted,
+        onTaskNotificationRestoreStarted,
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+    expect(onTaskNotificationRestoreStarted).not.toHaveBeenCalled();
+    expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().browserStartup.modeStartCounts['reconnect-restore'],
+    ).toBe(0);
+    cleanup();
+  });
+
+  it('uses a full reconnect snapshot when no sequenced replay message has arrived yet', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: false,
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await flushResolvedPromises();
+
+    expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+
+    cleanup();
+  });
+
+  it('uses a full reconnect snapshot when the warm reconnect has a replay gap', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: true,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+
+    cleanup();
+  });
+
+  it('falls back to one full restore outcome when warm reconnect status inspection fails', async () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+    resetRendererRuntimeDiagnostics();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        throw new Error('status unavailable');
+      }
+      if (channel === IPC.GetBrowserReconnectSnapshot) {
+        return {
+          appStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+          runningAgentIds: ['agent-snapshot'],
+          workspaceRevision: 0,
+          workspaceStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        getRendererRuntimeDiagnosticsSnapshot().browserReconnect.restoreOutcomeCounts,
+      ).toMatchObject({
+        'full-restore': 1,
+        'status-check-failed': 0,
+      });
+    });
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+
+    warnSpy.mockRestore();
+    cleanup();
+  });
+
+  it('uses a full reconnect snapshot when warm status has stale workspace but newer task control', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          runningAgentIds: ['agent-status'],
+          taskCommandControllerVersion: 3,
+          workspaceRevision: 1,
+        };
+      }
+      if (channel === IPC.GetBrowserReconnectSnapshot) {
+        return {
+          appStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+          runningAgentIds: ['agent-snapshot'],
+          taskCommandControllers: [
+            {
+              action: 'merge this task',
+              controllerId: 'client-a',
+              taskId: 'task-1',
+              version: 3,
+            },
+          ],
+          taskCommandControllerVersion: 3,
+          workspaceRevision: 1,
+          workspaceStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const replaceTaskCommandControllers = vi.fn();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        getLoadedWorkspaceRevision: vi.fn(() => 2),
+        getTaskCommandControllerVersion: vi.fn(() => 2),
+        replaceTaskCommandControllers,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(replaceTaskCommandControllers).toHaveBeenCalledWith(
+      [
+        {
+          action: 'merge this task',
+          controllerId: 'client-a',
+          taskId: 'task-1',
+          version: 3,
+        },
+      ],
+      {
+        replaceVersion: 3,
+      },
+    );
+
+    cleanup();
+  });
+
   it('clears reconnect startup mode when transport churn cancels restore', async () => {
     const syncDeferred = createDeferred<undefined>();
     const cleanup = registerBrowserAppRuntime(
@@ -231,10 +498,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
     expect(getBrowserStartupState()).toMatchObject({
@@ -268,10 +532,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     emitBrowserHttpState('auth-expired');
 
     expect(getBrowserStartupState()).toMatchObject({
@@ -319,10 +580,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
 
     emitServerMessage('agents', {
       list: [{ agentId: 'agent-1', status: 'running' }],
@@ -353,10 +611,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await flushResolvedPromises();
 
     expect(onTaskNotificationRestoreStarted).toHaveBeenCalledTimes(1);
@@ -393,10 +648,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await flushResolvedPromises();
 
     expect(showNotification).toHaveBeenCalledWith(
@@ -439,10 +691,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
     emitBrowserTransportEvent({ kind: 'error', message: 'Agent agent-1: warning' });
@@ -490,10 +739,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
     await Promise.resolve();
 
@@ -562,10 +808,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
     emitTaskCommandControllerChanged({
@@ -598,10 +841,7 @@ describe('browser runtime restore generation', () => {
     );
 
     for (let index = 0; index < 10; index += 1) {
-      emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-      emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-      emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-      emitBrowserAuthenticated();
+      emitBrowserReconnectAndAuthenticate();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -628,9 +868,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserReconnectTransport();
     await Promise.resolve();
 
     expect(invokeMock).not.toHaveBeenCalled();
@@ -665,10 +903,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
     cleanup();
@@ -706,10 +941,7 @@ describe('browser runtime restore generation', () => {
 
     cleanupFirst();
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     emitServerMessage('peer-presences', { list: peerPresence });
     await flushResolvedPromises();
 
@@ -736,10 +968,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
-    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
-    emitBrowserAuthenticated();
+    emitBrowserReconnectAndAuthenticate();
     emitBrowserAuthenticated();
     await Promise.resolve();
 

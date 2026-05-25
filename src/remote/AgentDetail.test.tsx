@@ -436,7 +436,7 @@ describe('AgentDetail', () => {
 
     expect(remoteDetailState.resetSpy).toHaveBeenCalled();
     expect(remoteDetailState.writeSpy).toHaveBeenCalledWith(expect.any(Uint8Array));
-  });
+  }, 10_000);
 
   it('ignores stale structured recovery results for superseded mobile requests', () => {
     render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
@@ -594,7 +594,7 @@ describe('AgentDetail', () => {
     expect(decodeBytes(remoteDetailState.writeSpy.mock.calls[0]?.[0])).toBe(
       'buffered while recovery retries',
     );
-  });
+  }, 20_000);
 
   it('cancels stale settle fit frames when another fit is scheduled', () => {
     const pendingFrames = new Map<number, FrameRequestCallback>();

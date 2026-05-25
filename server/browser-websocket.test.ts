@@ -196,6 +196,8 @@ function cleanupTrackedClient(
 
 describe('registerBrowserWebSocketServer', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     getAgentColsMock.mockReturnValue(80);
     getAgentScrollbackMock.mockReturnValue(null);
@@ -217,6 +219,8 @@ describe('registerBrowserWebSocketServer', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -248,6 +252,7 @@ describe('registerBrowserWebSocketServer', () => {
     expect(cleanupClientState).toHaveBeenCalledWith(client);
     expect(recordTerminalInputTraceClientDisconnectedMock).toHaveBeenCalledTimes(1);
     expect(recordTerminalInputTraceClientDisconnectedMock).toHaveBeenCalledWith('client-1');
+    wss.close();
   });
 
   it('enables TCP no-delay on browser websocket connections', async () => {

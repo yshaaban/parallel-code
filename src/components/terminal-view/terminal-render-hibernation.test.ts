@@ -22,11 +22,14 @@ function createRenderHibernationController(
 
 describe('terminal-render-hibernation', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.useFakeTimers();
     vi.stubGlobal('window', globalThis);
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });

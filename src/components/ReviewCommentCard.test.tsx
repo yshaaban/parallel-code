@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ReviewAnnotation } from '../app/review-session';
@@ -17,7 +17,7 @@ function createAnnotation(overrides: Partial<ReviewAnnotation> = {}): ReviewAnno
 }
 
 describe('ReviewCommentCard', () => {
-  it('saves in-place edits through the shared update handler', async () => {
+  it('saves in-place edits through the shared update handler', () => {
     const onUpdate = vi.fn();
 
     render(() => (
@@ -30,9 +30,7 @@ describe('ReviewCommentCard', () => {
     fireEvent.input(editor, { target: { value: 'Use a clearer name' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => {
-      expect(onUpdate).toHaveBeenCalledWith('annotation-1', 'Use a clearer name');
-    });
+    expect(onUpdate).toHaveBeenCalledWith('annotation-1', 'Use a clearer name');
   });
 
   it('does not submit blank edits', () => {

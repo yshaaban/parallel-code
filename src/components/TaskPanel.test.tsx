@@ -426,15 +426,14 @@ describe('TaskPanel', () => {
   });
 
   it('opens the close dialog from the title bar action', async () => {
+    vi.useRealTimers();
     setStore('focusedPanel', { 'task-1': 'prompt' });
 
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
-    await waitFor(() => {
-      expect(screen.getByText('Close task dialog')).toBeDefined();
-    });
+    expect(await screen.findByText('Close task dialog')).toBeDefined();
   });
 
   it('owns task-level switch-window lifecycle when the panel gains or loses activity', () => {

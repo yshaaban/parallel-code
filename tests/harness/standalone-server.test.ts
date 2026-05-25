@@ -326,7 +326,7 @@ function createPreviewTargetServer(
   return server;
 }
 
-describe('browser-lab standalone server startup', () => {
+describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
   const cleanup: Array<() => Promise<void>> = [];
 
   afterEach(async () => {

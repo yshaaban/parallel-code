@@ -12,6 +12,23 @@ async function createTempDist(prefix: string): Promise<string> {
   return directory;
 }
 
+async function closeTestServer(server: import('http').Server): Promise<void> {
+  server.closeAllConnections?.();
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function drainResponses(...responses: Response[]): Promise<void> {
+  await Promise.all(responses.map((response) => response.arrayBuffer().then(() => undefined)));
+}
+
 describe('registerBrowserStaticRoutes', () => {
   const tempDirs: string[] = [];
 
@@ -53,16 +70,9 @@ describe('registerBrowserStaticRoutes', () => {
 
       expect(desktopResponse.headers.get('cache-control')).toBe('no-store, max-age=0');
       expect(remoteResponse.headers.get('cache-control')).toBe('no-store, max-age=0');
+      await drainResponses(desktopResponse, remoteResponse);
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closeTestServer(server);
     }
   }, 15_000);
 
@@ -97,16 +107,9 @@ describe('registerBrowserStaticRoutes', () => {
 
       expect(response.status).toBe(302);
       expect(response.headers.get('location')).toBe('/remote/?token=abc123&mode=mobile');
+      await drainResponses(response);
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closeTestServer(server);
     }
   });
 
@@ -147,16 +150,9 @@ describe('registerBrowserStaticRoutes', () => {
       expect(shellResponse.headers.get('location')).toBe('/auth?next=%2F');
       expect(assetResponse.status).toBe(302);
       expect(assetResponse.headers.get('location')).toBe('/auth?next=%2Fassets%2Fapp.js');
+      await drainResponses(shellResponse, assetResponse);
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closeTestServer(server);
     }
   });
 
@@ -190,16 +186,9 @@ describe('registerBrowserStaticRoutes', () => {
 
       expect(response.status).toBe(302);
       expect(response.headers.get('location')).toBe('/auth?next=%2Ftasks%2F123');
+      await drainResponses(response);
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closeTestServer(server);
     }
   });
 });

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createSignal, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyTaskReviewEvent,
   replaceTaskReviewSnapshots,
@@ -98,6 +98,8 @@ import { MergeDialog } from './MergeDialog';
 
 describe('MergeDialog', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     resetTaskReviewProjectionStateForTests();
@@ -119,6 +121,11 @@ describe('MergeDialog', () => {
           throw new Error(`Unexpected channel: ${channel}`);
       }
     });
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('renders task-bound changed files from canonical review snapshots and reacts to shared git status', async () => {

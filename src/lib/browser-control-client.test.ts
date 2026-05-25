@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClientMessage, ServerMessage } from '../../electron/remote/protocol';
 import type { BrowserControlClient } from './browser-control-client';
-import type { CreateWebSocketClientCoreOptions, WebSocketClientCore } from './websocket-client';
+import type {
+  CreateWebSocketClientCoreOptions,
+  WebSocketClientCore,
+  WebSocketDisconnectEvent,
+} from './websocket-client';
 
 const websocketState = vi.hoisted(() => ({
   ensureConnectedMock: vi.fn(async () => ({}) as WebSocket),
@@ -55,9 +59,28 @@ async function loadBrowserControlClient(): Promise<{
   return { client, options };
 }
 
+function createDisconnectEvent(
+  overrides: Partial<WebSocketDisconnectEvent> = {},
+): WebSocketDisconnectEvent {
+  return {
+    hasConnected: true,
+    lastConnectedAt: 0,
+    lastConnectionDurationMs: 1_000,
+    lastDisconnectedAt: 1_000,
+    lastDisconnectReason: 'close',
+    lastRttMs: null,
+    reason: 'close',
+    ...overrides,
+  };
+}
+
 describe('browser control client', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('emits structured terminal stream and recovery result messages to listeners', async () => {
@@ -102,5 +125,57 @@ describe('browser control client', () => {
 
     cleanupStream();
     cleanupRecovery();
+  });
+
+  it('freezes the disconnected duration once the reconnect reaches connected state', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { client, options } = await loadBrowserControlClient();
+
+    options.onDisconnect?.(createDisconnectEvent());
+
+    vi.setSystemTime(1_250);
+    expect(client.getLastDisconnectDurationMs()).toBe(250);
+
+    options.onStateChange?.('connected');
+    vi.setSystemTime(5_000);
+
+    expect(client.getLastDisconnectDurationMs()).toBe(250);
+  });
+
+  it('does not expose warm reconnect continuity for failed cold connection attempts', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { client, options } = await loadBrowserControlClient();
+
+    options.onDisconnect?.(
+      createDisconnectEvent({
+        hasConnected: false,
+        lastConnectedAt: null,
+        lastConnectionDurationMs: null,
+        lastDisconnectReason: 'connect-error',
+        reason: 'connect-error',
+      }),
+    );
+    vi.setSystemTime(1_250);
+
+    expect(client.getLastDisconnectDurationMs()).toBeNull();
+  });
+
+  it('tracks whether sequenced control replay has arrived after a disconnect', async () => {
+    const { client, options } = await loadBrowserControlClient();
+
+    options.onDisconnect?.(createDisconnectEvent());
+
+    expect(client.hasSequencedMessageSinceDisconnect()).toBe(false);
+
+    options.onMessage({
+      type: 'remote-status',
+      connectedClients: 1,
+      peerClients: 0,
+      seq: 3,
+    });
+
+    expect(client.hasSequencedMessageSinceDisconnect()).toBe(true);
   });
 });

@@ -68,7 +68,7 @@ describe('remote presence runtime', () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(sendMock).toHaveBeenCalledTimes(2);
-  });
+  }, 10_000);
 
   it('restarts heartbeats after returning from the background', async () => {
     const [displayName] = createSignal('Mobile A1B2');
@@ -120,7 +120,7 @@ describe('remote presence runtime', () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(sendMock).toHaveBeenCalledTimes(3);
-  });
+  }, 20_000);
 
   it('republishes presence when the mobile session name changes', async () => {
     const [displayName, setDisplayName] = createSignal('Mobile A1B2');

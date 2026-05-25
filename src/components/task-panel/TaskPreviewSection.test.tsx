@@ -20,6 +20,8 @@ vi.mock('../PreviewPanel', () => ({
 
 describe('TaskPreviewSection', () => {
   it('loads the preview panel lazily without dropping preview callbacks', async () => {
+    vi.useRealTimers();
+
     const onHide = vi.fn();
     function noop(): void {}
     const snapshot: TaskPortSnapshot = {

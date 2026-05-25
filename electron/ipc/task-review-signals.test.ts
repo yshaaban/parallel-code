@@ -81,25 +81,6 @@ function createDeferred<T>(): {
   };
 }
 
-function waitForTaskReviewSignalsSnapshot(taskId: string): Promise<void> {
-  return new Promise((resolve) => {
-    const existingSnapshot = getTaskReviewSignalsSnapshot(taskId);
-    if (existingSnapshot) {
-      resolve();
-      return;
-    }
-
-    const unsubscribe = subscribeTaskReviewSignals((event) => {
-      if (event.taskId !== taskId || 'removed' in event) {
-        return;
-      }
-
-      unsubscribe();
-      resolve();
-    });
-  });
-}
-
 describe('task-review-signals', () => {
   let worktreePath: string;
 
@@ -236,7 +217,6 @@ describe('task-review-signals', () => {
     });
     setTaskReviewSignalsFetchForTests(fetchMock);
 
-    const restoredSnapshot = waitForTaskReviewSignalsSnapshot('task-from-key');
     restoreSavedTaskReviewSignals(
       JSON.stringify({
         tasks: {
@@ -248,7 +228,7 @@ describe('task-review-signals', () => {
       }),
     );
 
-    await restoredSnapshot;
+    await refreshTaskReviewSignals('task-from-key');
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.github.com/repos/example/repo/pulls/99',

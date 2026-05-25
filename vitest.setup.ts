@@ -1,5 +1,5 @@
 import { cleanup } from '@solidjs/testing-library';
-import { afterEach } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
 
 class TestWebSocket {
   static readonly CONNECTING = 0;
@@ -65,6 +65,13 @@ if (typeof globalThis.CSS === 'undefined') {
   globalThis.CSS = { escape: (value: string) => value } as typeof CSS;
 }
 
+beforeEach(() => {
+  vi.useRealTimers();
+});
+
 afterEach(() => {
   cleanup();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });

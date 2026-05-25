@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderMarkdownWithHighlighting } from './marked-shiki';
 
 describe('renderMarkdownWithHighlighting', () => {
+  beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('renders fenced code blocks with Shiki markup', async () => {
     const html = await renderMarkdownWithHighlighting(
       ['# Plan', '', '```ts', 'const value = 42;', '```'].join('\n'),
@@ -48,7 +58,7 @@ describe('renderMarkdownWithHighlighting', () => {
     expect(html).toContain('class="shiki-block"');
     expect(html).toContain('data-lang="mermaid"');
     expect(html).not.toContain('plan-mermaid-block');
-  });
+  }, 15_000);
 
   it('lets local owners override special code blocks without widening global markdown behavior', async () => {
     const html = await renderMarkdownWithHighlighting(

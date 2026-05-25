@@ -5,11 +5,15 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import type { HandlerContext } from './handler-context.js';
-import type { BrowserColdBootstrapSnapshot } from '../../src/domain/renderer-invoke.js';
+import type {
+  BrowserColdBootstrapSnapshot,
+  BrowserReconnectSnapshot,
+} from '../../src/domain/renderer-invoke.js';
 import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
+import { acquireTaskCommandLease, resetTaskCommandLeasesForTest } from './task-command-leases.js';
 
 const {
   inspectArenaCompetitorMock,
@@ -17,12 +21,14 @@ const {
   getAgentMetaMock,
   listAgentsMock,
   loadAppStateForEnvMock,
+  loadWorkspaceStateForEnvMock,
 } = vi.hoisted(() => ({
   inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
   listAgentsMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
+  loadWorkspaceStateForEnvMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -39,6 +45,7 @@ vi.mock('./storage.js', async () => {
   return {
     ...actual,
     loadAppStateForEnv: loadAppStateForEnvMock,
+    loadWorkspaceStateForEnv: loadWorkspaceStateForEnvMock,
   };
 });
 
@@ -51,6 +58,8 @@ vi.mock('./agents.js', () => ({
 }));
 
 import { createSystemIpcHandlers } from './system-handlers.js';
+
+type SystemIpcHandlers = ReturnType<typeof createSystemIpcHandlers>;
 
 let contextCounter = 0;
 
@@ -83,6 +92,23 @@ function buildOptions(): {
   };
 }
 
+async function getBrowserReconnectSnapshot(
+  handlers: SystemIpcHandlers,
+): Promise<BrowserReconnectSnapshot> {
+  const snapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
+  if (!snapshot) {
+    throw new Error('reconnect snapshot handler returned no snapshot');
+  }
+  return snapshot as BrowserReconnectSnapshot;
+}
+
+function getTestAgentGeneration(agentId: string): number {
+  if (agentId === 'agent-2') {
+    return 2;
+  }
+  return 1;
+}
+
 describe('system handlers', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -90,15 +116,18 @@ describe('system handlers', () => {
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
     loadAppStateForEnvMock.mockReturnValue(null);
+    loadWorkspaceStateForEnvMock.mockReturnValue(null);
     inspectArenaCompetitorMock.mockReset();
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
     listAgentsMock.mockResolvedValue([]);
+    resetTaskCommandLeasesForTest();
   });
 
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    resetTaskCommandLeasesForTest();
   });
 
   it('returns null for clipboard-image paste when clipboard runtime support is unavailable', async () => {
@@ -314,16 +343,19 @@ describe('system handlers', () => {
     });
   });
 
-  it('dedupes reconnect snapshots within a short cache window', async () => {
+  it('dedupes reconnect saved-state reads within the warm reconnect cache window', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);
     loadAppStateForEnvMock
       .mockReturnValueOnce('{"version":1}')
       .mockReturnValueOnce('{"version":2}');
-    getActiveAgentIdsMock.mockReturnValueOnce(['agent-1']).mockReturnValueOnce(['agent-2']);
+    getActiveAgentIdsMock
+      .mockReturnValueOnce(['agent-1'])
+      .mockReturnValueOnce(['agent-2'])
+      .mockReturnValueOnce(['agent-2']);
 
-    const firstSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
-    const secondSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
+    const firstSnapshot = await getBrowserReconnectSnapshot(handlers);
+    const secondSnapshot = await getBrowserReconnectSnapshot(handlers);
 
     expect(firstSnapshot).toEqual({
       agentGenerations: { 'agent-1': 0 },
@@ -334,14 +366,18 @@ describe('system handlers', () => {
       workspaceRevision: 0,
       workspaceStateJson: '{"version":1}',
     });
-    expect(secondSnapshot).toEqual(firstSnapshot);
+    expect(secondSnapshot).toEqual({
+      ...firstSnapshot,
+      agentGenerations: { 'agent-2': 0 },
+      runningAgentIds: ['agent-2'],
+    });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(1);
-    expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(1);
+    expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
     expect(options.syncTaskNamesFromJson).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(201);
+    await vi.advanceTimersByTimeAsync(5_001);
 
-    const thirdSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
+    const thirdSnapshot = await getBrowserReconnectSnapshot(handlers);
 
     expect(thirdSnapshot).toEqual({
       agentGenerations: { 'agent-2': 0 },
@@ -353,11 +389,65 @@ describe('system handlers', () => {
       workspaceStateJson: '{"version":2}',
     });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
-    expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
+    expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(3);
     expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
       cacheHits: 1,
       cacheMisses: 2,
     });
+  });
+
+  it('keeps live reconnect snapshot fields fresh while saved-state payload is cached', async () => {
+    const options = buildOptions();
+    const handlers = createSystemIpcHandlers(buildContext(), options);
+    loadAppStateForEnvMock.mockReturnValue('{"version":1}');
+    getActiveAgentIdsMock.mockReturnValueOnce(['agent-1']).mockReturnValueOnce(['agent-2']);
+    getAgentMetaMock.mockImplementation((agentId: string) => ({
+      generation: getTestAgentGeneration(agentId),
+    }));
+
+    const firstSnapshot = await getBrowserReconnectSnapshot(handlers);
+    acquireTaskCommandLease('task-1', 'client-1', 'owner-1', 'merge this task');
+    const secondSnapshot = await getBrowserReconnectSnapshot(handlers);
+
+    expect(firstSnapshot).toMatchObject({
+      agentGenerations: { 'agent-1': 1 },
+      runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 0,
+      taskCommandControllers: [],
+    });
+    expect(secondSnapshot).toMatchObject({
+      agentGenerations: { 'agent-2': 2 },
+      runningAgentIds: ['agent-2'],
+      taskCommandControllerVersion: 1,
+      taskCommandControllers: [
+        expect.objectContaining({
+          action: 'merge this task',
+          controllerId: 'client-1',
+          taskId: 'task-1',
+        }),
+      ],
+    });
+    expect(secondSnapshot?.appStateJson).toBe(firstSnapshot?.appStateJson);
+    expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(1);
+    expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns lightweight reconnect status without loading full app state', () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    loadWorkspaceStateForEnvMock.mockReturnValue({
+      json: '{"version":1}',
+      revision: 7,
+    });
+    getActiveAgentIdsMock.mockReturnValue(['agent-1']);
+
+    const status = handlers[IPC.GetBrowserReconnectStatus]?.();
+
+    expect(status).toEqual({
+      runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 0,
+      workspaceRevision: 7,
+    });
+    expect(loadAppStateForEnvMock).not.toHaveBeenCalled();
   });
 
   it('returns a lightweight cold bootstrap snapshot with server-state categories', async () => {

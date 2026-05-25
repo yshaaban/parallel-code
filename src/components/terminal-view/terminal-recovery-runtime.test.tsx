@@ -988,6 +988,63 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(onStartupWriteRenderedMock).toHaveBeenCalled();
   });
 
+  it('defers active-visible reconnect recovery until selected recovery settles', async () => {
+    requestReconnectTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
+    );
+    switchWindowState.snapshot = {
+      active: true,
+      ageMs: 10,
+      firstPaintDurationMs: null,
+      inputReadyDurationMs: null,
+      lastCompletion: null,
+      phase: 'first-paint-pending',
+      remainingMs: 250,
+      selectedRecoveryActive: true,
+      targetTaskId: 'task-1',
+    };
+    let timeoutCallCount = 0;
+    vi.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      timeoutCallCount += 1;
+      if (timeoutCallCount > 1) {
+        queueMicrotask(() => {
+          if (typeof callback === 'function') {
+            callback();
+          }
+        });
+      }
+      return 0 as unknown as ReturnType<typeof globalThis.setTimeout>;
+    });
+    const fitReady = createDeferredPromise<boolean>();
+    const { ensureTerminalFitReadyMock, runtime, termWriteMock } = createRecoveryRuntimeFixture({
+      outputPriority: 'active-visible',
+    });
+    ensureTerminalFitReadyMock.mockImplementationOnce(() => fitReady.promise);
+
+    const restorePromise = runtime.restoreTerminalOutput('reconnect');
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+
+    fitReady.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+
+    switchWindowState.snapshot = {
+      ...switchWindowState.snapshot,
+      phase: 'settled-pending',
+      selectedRecoveryActive: false,
+    };
+    switchWindowState.listener?.();
+    await restorePromise;
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it('keeps active-visible attach recovery blocked when startup begins during input-ready-pending', async () => {
     requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
@@ -1092,6 +1149,52 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
     expect(onStartupWriteRenderedMock).toHaveBeenCalled();
+  });
+
+  it('defers hidden reconnect recovery until visible startup paint settles', async () => {
+    requestReconnectTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
+    );
+    let startupPaintSnapshot = {
+      hiddenPendingCount: 1,
+      hiddenReadyCount: 0,
+      selectedPaintReady: false,
+      selectedPendingCount: 1,
+      visiblePendingCount: 2,
+      visibleReadyCount: 0,
+    };
+    const fitReady = createDeferredPromise<boolean>();
+    const { ensureTerminalFitReadyMock, runtime, termWriteMock } = createRecoveryRuntimeFixture({
+      outputPriority: 'hidden',
+      startupPaintSnapshot: () => startupPaintSnapshot,
+    });
+    ensureTerminalFitReadyMock.mockImplementationOnce(() => fitReady.promise);
+
+    const restorePromise = runtime.restoreTerminalOutput('reconnect');
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+
+    fitReady.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+
+    startupPaintSnapshot = {
+      ...startupPaintSnapshot,
+      hiddenPendingCount: 0,
+      selectedPaintReady: true,
+      selectedPendingCount: 0,
+      visiblePendingCount: 0,
+      visibleReadyCount: 2,
+    };
+    switchWindowState.startupPaintListener?.();
+    await restorePromise;
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
   });
 
   it('does not defer non-selected visible attach recovery behind selected startup paint', async () => {

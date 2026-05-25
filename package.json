@@ -108,6 +108,7 @@
     "stress:session:profile:late-join": "npm run build:server && node scripts/session-stress-matrix.mjs --profile late_join --out-dir artifacts/session-stress/late-join --skip-build",
     "stress:session:profile:slow-link": "npm run build:server && node scripts/session-stress-matrix.mjs --profile slow_link --out-dir artifacts/session-stress/slow-link --skip-build",
     "stress:session:tune:slow-link": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/slow-link-tuning --skip-build",
+    "stress:session:weak-connectivity": "npm run build:frontend && npm run build:remote && npm run build:server && node scripts/session-stress-matrix.mjs --matrix weak_connectivity_experiments --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/weak-connectivity --skip-build",
     "stress:session:matrix": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix smoke --matrix production --out-dir artifacts/session-stress/matrix --skip-build",
     "stress:session:matrix:steady-state-verbose": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix steady_state_verbose --out-dir artifacts/session-stress/steady-state-verbose --skip-build",
     "stress:session:prod-gate": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/prod-gate --skip-build",

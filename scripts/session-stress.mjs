@@ -49,6 +49,8 @@ function parseArgs(argv) {
     browserChannelClientDegradedMaxQueueAgeMs: 500,
     browserChannelClientDegradedMaxQueuedBytes: 256 * 1024,
     browserChannelCoalescedDataMaxBytes: 256 * 1024,
+    browserControlHeartbeatIntervalMs: 20_000,
+    browserControlMaxMissedPongs: 3,
     bulkTextLineBytes: 4096,
     bulkTextLines: 0,
     inputChunkBytes: 4096,
@@ -137,6 +139,14 @@ function parseArgs(argv) {
         break;
       case '--browser-channel-coalesced-data-max-bytes':
         overrides.browserChannelCoalescedDataMaxBytes = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--browser-control-heartbeat-interval-ms':
+        overrides.browserControlHeartbeatIntervalMs = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--browser-control-max-missed-pongs':
+        overrides.browserControlMaxMissedPongs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--bulk-text-lines':
@@ -777,6 +787,8 @@ function createLocalServerEnv(options, port) {
       options.browserChannelClientDegradedMaxQueuedBytes,
     ),
     BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES: String(options.browserChannelCoalescedDataMaxBytes),
+    BROWSER_CONTROL_HEARTBEAT_INTERVAL_MS: String(options.browserControlHeartbeatIntervalMs),
+    BROWSER_CONTROL_MAX_MISSED_PONGS: String(options.browserControlMaxMissedPongs),
     PARALLEL_CODE_USER_DATA_DIR: path.resolve(ROOT_DIR, '.stress-server-data'),
     PORT: String(port),
     SIMULATE_JITTER_MS: String(options.jitterMs),

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 
 const {
@@ -59,8 +59,16 @@ function createContext(): GitStatusWorkflowContext {
   };
 }
 
+async function flushResolvedPromises(iterations = 6): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('git status workflows', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     commitAllMock.mockReset();
     discardUncommittedMock.mockReset();
@@ -75,6 +83,11 @@ describe('git status workflows', () => {
     discardUncommittedMock.mockResolvedValue(undefined);
     rebaseTaskMock.mockResolvedValue({ ok: true });
     startGitWatcherMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('refreshes git status and emits the updated payload', async () => {
@@ -192,32 +205,24 @@ describe('git status workflows', () => {
       }),
     );
 
-    await vi.waitFor(() => {
-      expect(startGitWatcherMock).toHaveBeenCalledWith(
-        'task-1',
-        '/tmp/task-1',
-        expect.any(Function),
-      );
-      expect(startGitWatcherMock).toHaveBeenCalledWith(
-        'task-2',
-        '/tmp/task-2',
-        expect.any(Function),
-      );
-      expect(emitGitStatusChanged).toHaveBeenCalledWith(
-        expect.objectContaining({
-          worktreePath: '/tmp/task-1',
-          status: dirtyWorktreeStatus,
-          stateVersion: expect.any(Number),
-        }),
-      );
-      expect(emitGitStatusChanged).toHaveBeenCalledWith(
-        expect.objectContaining({
-          worktreePath: '/tmp/task-2',
-          status: dirtyWorktreeStatus,
-          stateVersion: expect.any(Number),
-        }),
-      );
-    });
+    await flushResolvedPromises();
+
+    expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
+    expect(startGitWatcherMock).toHaveBeenCalledWith('task-2', '/tmp/task-2', expect.any(Function));
+    expect(emitGitStatusChanged).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: '/tmp/task-1',
+        status: dirtyWorktreeStatus,
+        stateVersion: expect.any(Number),
+      }),
+    );
+    expect(emitGitStatusChanged).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: '/tmp/task-2',
+        status: dirtyWorktreeStatus,
+        stateVersion: expect.any(Number),
+      }),
+    );
   });
 
   it('ignores malformed saved-task monitoring state', async () => {

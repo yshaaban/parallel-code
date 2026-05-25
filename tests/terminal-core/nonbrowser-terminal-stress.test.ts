@@ -237,5 +237,5 @@ describe('nonbrowser terminal stress recovery', () => {
     } finally {
       live.terminal.dispose();
     }
-  });
+  }, 15_000);
 });

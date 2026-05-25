@@ -182,6 +182,19 @@ function createSlowLinkVariantProfile(description, overrides) {
   };
 }
 
+function createWeakConnectivityExperimentProfile(description, overrides) {
+  return {
+    args: {
+      ...SLOW_LINK_ARGS,
+      browserControlHeartbeatIntervalMs: 20_000,
+      browserControlMaxMissedPongs: 3,
+      ...overrides,
+    },
+    budgets: SLOW_LINK_BUDGETS,
+    description,
+  };
+}
+
 export const SESSION_STRESS_PROFILES = {
   pr_smoke: {
     args: {
@@ -579,6 +592,36 @@ export const SESSION_STRESS_PROFILES = {
       browserChannelClientDegradedMaxDrainPasses: 6,
     },
   ),
+  weak_connectivity_high_latency: createWeakConnectivityExperimentProfile(
+    'Weak-connectivity experiment with high latency and jitter but modest retransmission loss.',
+    {
+      jitterMs: 120,
+      latencyMs: 160,
+      packetLoss: 0.02,
+      reconnects: 2,
+    },
+  ),
+  weak_connectivity_lossy_reconnect: createWeakConnectivityExperimentProfile(
+    'Weak-connectivity experiment with repeated reconnects and retransmission-style packet loss.',
+    {
+      jitterMs: 80,
+      latencyMs: 120,
+      packetLoss: 0.05,
+      reconnects: 4,
+    },
+  ),
+  weak_connectivity_late_join: createWeakConnectivityExperimentProfile(
+    'Weak-connectivity experiment for late join and warm scrollback under a mobile-style link.',
+    {
+      jitterMs: 150,
+      latencyMs: 180,
+      lateJoiners: 2,
+      packetLoss: 0.03,
+      reconnects: 2,
+      warmScrollbackLineBytes: 4096,
+      warmScrollbackLines: 120,
+    },
+  ),
 };
 
 export const SESSION_STRESS_MATRICES = {
@@ -616,6 +659,13 @@ export const SESSION_STRESS_MATRICES = {
     'slow_link_drain_50_passes_2',
     'slow_link_drain_50_passes_4',
     'slow_link_drain_50_passes_6',
+  ],
+  weak_connectivity_experiments: [
+    'slow_link',
+    'reconnect_storm',
+    'weak_connectivity_high_latency',
+    'weak_connectivity_lossy_reconnect',
+    'weak_connectivity_late_join',
   ],
   smoke: ['pr_smoke'],
 };
