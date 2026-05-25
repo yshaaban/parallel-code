@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   getAgentCols,
+  getAgentMeta,
   getAgentScrollback,
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
@@ -13,6 +14,10 @@ import {
   unsubscribeFromAgent,
   writeToAgent,
 } from '../ipc/pty.js';
+import {
+  getTaskCommandControllerSnapshot,
+  isTaskCommandLeaseHeld,
+} from '../ipc/task-command-leases.js';
 import {
   decodeTerminalRenderedTail,
   runWithTerminalRestorePause,
@@ -104,6 +109,37 @@ function enableSocketNoDelay(client: WebSocket): void {
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
+}
+
+function getTaskCommandMutationErrorMessage(taskId: string): string {
+  const snapshot = getTaskCommandControllerSnapshot(taskId);
+  if (snapshot.controllerId) {
+    return `Task is controlled by another client (${snapshot.controllerId})`;
+  }
+
+  return 'Task is controlled by another client';
+}
+
+function assertRemoteTaskCommandMutation(
+  message: Extract<AuthenticatedClientMessage, { type: 'input' | 'resize' }>,
+): void {
+  const agentTaskId = getAgentMeta(message.agentId)?.taskId ?? null;
+  if (!agentTaskId) {
+    if (message.taskId !== undefined || message.controllerId !== undefined) {
+      throw new Error('taskId and controllerId require a task agent');
+    }
+    return;
+  }
+
+  if (message.taskId !== agentTaskId) {
+    throw new Error('taskId must match the agent task');
+  }
+  if (message.controllerId === undefined) {
+    throw new Error('controllerId is required for task terminal mutations');
+  }
+  if (!isTaskCommandLeaseHeld(agentTaskId, message.controllerId)) {
+    throw new Error(getTaskCommandMutationErrorMessage(agentTaskId));
+  }
 }
 
 function getTraceNowMs(): number {
@@ -255,6 +291,7 @@ export function registerRemoteWebSocketServer(
       },
       input: (currentMessage) => {
         runAgentCommand(client, currentMessage.agentId, 'write', () => {
+          assertRemoteTaskCommandMutation(currentMessage);
           writeToAgent(
             currentMessage.agentId,
             currentMessage.data,
@@ -272,6 +309,7 @@ export function registerRemoteWebSocketServer(
       },
       resize: (currentMessage) => {
         runAgentCommand(client, currentMessage.agentId, 'resize', () => {
+          assertRemoteTaskCommandMutation(currentMessage);
           resizeAgent(
             currentMessage.agentId,
             currentMessage.cols,

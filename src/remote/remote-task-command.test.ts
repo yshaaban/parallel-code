@@ -6,7 +6,12 @@ import type {
 
 const mockState = vi.hoisted(() => {
   const controllerListeners = new Set<
-    (payload: { controllerId: string | null; taskId: string }) => void
+    (payload: {
+      action: string | null;
+      controllerId: string | null;
+      taskId: string;
+      version: number;
+    }) => void
   >();
   const connectionListeners = new Set<
     (status: 'connected' | 'connecting' | 'disconnected' | 'reconnecting') => void
@@ -15,7 +20,12 @@ const mockState = vi.hoisted(() => {
   return {
     acquireRemoteTaskCommandLeaseMock: vi.fn(),
     applyRemoteTaskCommandControllerChangedMock: vi.fn(
-      (snapshot: { controllerId: string | null; taskId: string }) => {
+      (snapshot: {
+        action: string | null;
+        controllerId: string | null;
+        taskId: string;
+        version: number;
+      }) => {
         mockState.currentControllerId = snapshot.controllerId;
         mockState.currentControllerOwnerStatus =
           snapshot.controllerId === 'remote-client-1234'
@@ -34,7 +44,7 @@ const mockState = vi.hoisted(() => {
                 }
               : null;
         for (const listener of controllerListeners) {
-          listener({ controllerId: snapshot.controllerId, taskId: snapshot.taskId });
+          listener(snapshot);
         }
       },
     ),
@@ -253,6 +263,7 @@ describe('remote task command control', () => {
     expect(mockState.writeRemoteAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
+        controllerId: 'remote-client-1234',
         data: 'pwd\r',
         inputEpoch: expect.any(String),
         inputSeq: 0,
@@ -287,12 +298,56 @@ describe('remote task command control', () => {
       expect.objectContaining({
         agentId: 'agent-1',
         cols: 100,
+        controllerId: 'remote-client-1234',
         resizeEpoch: expect.any(String),
         resizeSeq: 0,
         rows: 30,
         taskId: 'task-1',
       }),
     );
+  });
+
+  it('defers remote terminal resize until self controller bootstrap arrives', async () => {
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+
+    expect(mockState.resizeRemoteAgentMock).not.toHaveBeenCalled();
+    mockState.applyRemoteTaskCommandControllerChangedMock({
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    expect(mockState.resizeRemoteAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 100,
+        controllerId: 'remote-client-1234',
+        resizeEpoch: expect.any(String),
+        resizeSeq: 0,
+        rows: 30,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('drops deferred remote terminal resize when peer controller bootstrap arrives', async () => {
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+
+    mockState.applyRemoteTaskCommandControllerChangedMock({
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      taskId: 'task-1',
+      version: 2,
+    });
+    mockState.applyRemoteTaskCommandControllerChangedMock({
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      taskId: 'task-1',
+      version: 3,
+    });
+
+    expect(mockState.resizeRemoteAgentMock).not.toHaveBeenCalled();
   });
 
   it('rotates remote resize ordering after a failed resize attempt', async () => {

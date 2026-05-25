@@ -7,7 +7,7 @@ import {
 } from './browser-websocket-task-control.js';
 
 describe('browser websocket task control helpers', () => {
-  it('resolves explicit task ids before consulting backend agent metadata', () => {
+  it('resolves backend agent task ids before trusting explicit task ids', () => {
     const getAgentTaskId = vi.fn(() => 'task-from-agent');
 
     expect(
@@ -19,8 +19,23 @@ describe('browser websocket task control helpers', () => {
         },
         getAgentTaskId,
       ),
-    ).toBe('task-explicit');
-    expect(getAgentTaskId).not.toHaveBeenCalled();
+    ).toBe('task-from-agent');
+    expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('does not resolve client-supplied task ids without backend agent metadata', () => {
+    const getAgentTaskId = vi.fn(() => undefined);
+
+    expect(
+      resolveBrowserAgentTaskId(
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-1',
+          taskId: 'task-explicit',
+        },
+        getAgentTaskId,
+      ),
+    ).toBeUndefined();
   });
 
   it('rejects browser commands without authenticated client identity', () => {
@@ -64,10 +79,30 @@ describe('browser websocket task control helpers', () => {
     expect(canControlTask).not.toHaveBeenCalled();
   });
 
+  it('rejects task-scoped browser commands when backend agent metadata has no task id', () => {
+    const canControlTask = vi.fn(() => true);
+    const getAgentTaskId = vi.fn(() => undefined);
+
+    expect(
+      hasBrowserTaskControlForMessage(
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-1',
+          taskId: 'task-explicit',
+        },
+        'client-1',
+        canControlTask,
+        getAgentTaskId,
+      ),
+    ).toBe(false);
+    expect(canControlTask).not.toHaveBeenCalled();
+  });
+
   it('checks task-command ownership when a task id is available', () => {
     const canControlTask = vi.fn((taskId: string, controllerId: string) => {
       return taskId === 'task-1' && controllerId === 'client-1';
     });
+    const getAgentTaskId = vi.fn(() => 'task-1');
 
     expect(
       hasBrowserTaskControlForMessage(
@@ -78,9 +113,29 @@ describe('browser websocket task control helpers', () => {
         },
         'client-1',
         canControlTask,
+        getAgentTaskId,
       ),
     ).toBe(true);
     expect(canControlTask).toHaveBeenCalledWith('task-1', 'client-1');
+  });
+
+  it('rejects browser commands whose explicit task id does not match backend agent metadata', () => {
+    const canControlTask = vi.fn(() => true);
+    const getAgentTaskId = vi.fn(() => 'task-from-agent');
+
+    expect(
+      hasBrowserTaskControlForMessage(
+        {
+          agentId: 'agent-1',
+          controllerId: 'client-1',
+          taskId: 'task-from-message',
+        },
+        'client-1',
+        canControlTask,
+        getAgentTaskId,
+      ),
+    ).toBe(false);
+    expect(canControlTask).not.toHaveBeenCalled();
   });
 
   it('detects whether a stale agent controller still owns the resolved task', () => {

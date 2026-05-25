@@ -1,5 +1,5 @@
 import { getAgentMeta } from '../electron/ipc/pty.js';
-import { canResizeTaskTerminal } from '../electron/ipc/task-command-leases.js';
+import { isTaskCommandLeaseHeld } from '../electron/ipc/task-command-leases.js';
 import type { TaskControlContext } from '../electron/remote/protocol.js';
 
 export type BrowserAgentTaskMessage = {
@@ -17,13 +17,13 @@ export function resolveBrowserAgentTaskId(
   message: BrowserAgentTaskMessage,
   getAgentTaskId: GetAgentTaskId = getBackendAgentTaskId,
 ): string | undefined {
-  return typeof message.taskId === 'string' ? message.taskId : getAgentTaskId(message.agentId);
+  return getAgentTaskId(message.agentId);
 }
 
 export function hasBrowserTaskControlForMessage(
   message: BrowserAgentTaskMessage,
   clientId: string | null,
-  canControlTask: CanControlTask = canResizeTaskTerminal,
+  canControlTask: CanControlTask = isTaskCommandLeaseHeld,
   getAgentTaskId: GetAgentTaskId = getBackendAgentTaskId,
 ): boolean {
   if (!clientId) {
@@ -34,9 +34,13 @@ export function hasBrowserTaskControlForMessage(
     return false;
   }
 
-  const taskId = resolveBrowserAgentTaskId(message, getAgentTaskId);
+  const taskId = getAgentTaskId(message.agentId);
   if (typeof taskId !== 'string') {
-    return true;
+    return message.taskId === undefined && message.controllerId === undefined;
+  }
+
+  if (typeof message.taskId === 'string' && message.taskId !== taskId) {
+    return false;
   }
 
   return canControlTask(taskId, clientId);
@@ -45,7 +49,7 @@ export function hasBrowserTaskControlForMessage(
 export function browserAgentControllerStillOwnsTask(
   message: BrowserAgentTaskMessage,
   controllerId: string,
-  canControlTask: CanControlTask = canResizeTaskTerminal,
+  canControlTask: CanControlTask = isTaskCommandLeaseHeld,
   getAgentTaskId: GetAgentTaskId = getBackendAgentTaskId,
 ): boolean {
   const taskId = resolveBrowserAgentTaskId(message, getAgentTaskId);

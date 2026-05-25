@@ -101,6 +101,7 @@ export interface CreateWebSocketClientCoreOptions<
   getClientId: () => string;
   getSocketUrl: (context: { clientId: string; lastSeq: number; token: string | null }) => string;
   getToken?: () => string | null;
+  shouldSendAuthMessage?: (context: { token: string | null }) => boolean;
   shouldReconnect: () => boolean;
   onMessage: (message: IncomingMessage) => void;
   clearToken?: () => void;
@@ -190,6 +191,7 @@ export function createWebSocketClientCore<
   let lastConnectionDurationMs: number | null = null;
   let lastDisconnectedAt: number | null = null;
   let lastDisconnectReason: WebSocketDisconnectReason | null = null;
+  let activeDisconnectStartedAt: number | null = null;
   let lastPingAt = 0;
   let lastRttMs: number | null = null;
   let heartbeatInterval: IntervalHandle | null = null;
@@ -248,7 +250,16 @@ export function createWebSocketClientCore<
     }
 
     const now = Date.now();
-    lastDisconnectedAt = now;
+    if (
+      connectedAt !== null ||
+      activeDisconnectStartedAt === null ||
+      reason === 'auth-expired' ||
+      reason === 'manual' ||
+      !hasConnected
+    ) {
+      activeDisconnectStartedAt = now;
+    }
+    lastDisconnectedAt = activeDisconnectStartedAt;
     lastDisconnectReason = reason;
     if (connectedAt !== null) {
       lastConnectionDurationMs = Math.max(0, now - connectedAt);
@@ -416,7 +427,10 @@ export function createWebSocketClientCore<
       createAuthMessage: NonNullable<typeof options.createAuthMessage>;
       token: string;
     } = null;
-    if (options.createAuthMessage !== undefined) {
+    const shouldSendAuthMessage =
+      options.createAuthMessage !== undefined &&
+      (options.shouldSendAuthMessage?.({ token }) ?? true);
+    if (options.createAuthMessage !== undefined && shouldSendAuthMessage) {
       if (!token) {
         const error = new Error('Missing auth token');
         options.onMissingToken?.(error);
@@ -498,6 +512,7 @@ export function createWebSocketClientCore<
       hasConnected = true;
       connectedAt = Date.now();
       lastConnectedAt = connectedAt;
+      activeDisconnectStartedAt = null;
       reconnectAttempts = 0;
       clearReconnectTimer();
       options.onAuthenticated?.(ws);
@@ -583,6 +598,7 @@ export function createWebSocketClientCore<
     disconnect();
     hasConnected = false;
     connectedAt = null;
+    activeDisconnectStartedAt = null;
     lastConnectedAt = null;
     lastConnectionDurationMs = null;
     lastDisconnectedAt = null;

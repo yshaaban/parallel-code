@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { IPC } from '../../electron/ipc/channels.js';
+import { BROWSER_CLIENT_ID_HEADER } from '../../src/domain/browser-ipc.js';
 import type { FileDiffResult, ProjectDiffResult } from '../../src/ipc/types.js';
 import {
   createInteractiveNodeScenario,
@@ -54,11 +55,13 @@ async function invokeStandaloneIpc<TResult>(
   channel: IPC,
   body?: unknown,
 ): Promise<TResult> {
+  const browserClientId = getBrowserClientIdForIpcBody(body);
   const response = await fetch(`${server.baseUrl}/api/ipc/${channel}`, {
     body: JSON.stringify(body ?? {}),
     headers: {
       Authorization: `Bearer ${server.authToken}`,
       'Content-Type': 'application/json',
+      ...(browserClientId ? { [BROWSER_CLIENT_ID_HEADER]: browserClientId } : {}),
     },
     method: 'POST',
   });
@@ -66,6 +69,22 @@ async function invokeStandaloneIpc<TResult>(
   expect(response.ok).toBe(true);
   const payload = (await response.json()) as { result: TResult };
   return payload.result;
+}
+
+function getBrowserClientIdForIpcBody(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return null;
+  }
+
+  const candidate = body as { clientId?: unknown; controllerId?: unknown };
+  if (typeof candidate.controllerId === 'string' && candidate.controllerId.length > 0) {
+    return candidate.controllerId;
+  }
+  if (typeof candidate.clientId === 'string' && candidate.clientId.length > 0) {
+    return candidate.clientId;
+  }
+
+  return null;
 }
 
 function listPaths(result: ProjectDiffResult): string[] {
@@ -145,10 +164,33 @@ describe('review diff contract', () => {
     });
     expect(worktreeBinaryDiff.diff).toContain('Binary files');
 
-    await invokeStandaloneIpc<null>(server, IPC.CommitAll, {
-      message: 'review diff contract refresh',
-      worktreePath: repoDir,
-    });
+    const controllerId = 'review-diff-contract-client';
+    const ownerId = 'review-diff-contract-owner';
+    const lease = await invokeStandaloneIpc<{ leaseGeneration: number }>(
+      server,
+      IPC.AcquireTaskCommandLease,
+      {
+        action: 'commit review diff contract changes',
+        clientId: controllerId,
+        ownerId,
+        taskId: server.taskId,
+      },
+    );
+    try {
+      await invokeStandaloneIpc<null>(server, IPC.CommitAll, {
+        controllerId,
+        message: 'review diff contract refresh',
+        taskId: server.taskId,
+        worktreePath: repoDir,
+      });
+    } finally {
+      await invokeStandaloneIpc(server, IPC.ReleaseTaskCommandLease, {
+        clientId: controllerId,
+        leaseGeneration: lease.leaseGeneration,
+        ownerId,
+        taskId: server.taskId,
+      });
+    }
 
     expect(
       readGit(repoDir, 'diff', '--name-status', 'main..HEAD').trim().split('\n').sort(),

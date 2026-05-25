@@ -24,6 +24,7 @@ import {
   beginBrowserReconnectRestore,
   cancelBrowserReconnectRestore,
   completeBrowserReconnectRestore,
+  isBrowserColdBootstrapPending,
 } from '../app/browser-startup';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
@@ -37,6 +38,7 @@ import {
   recordBrowserReconnectScheduled,
   recordBrowserReconnectSequenceGap,
 } from '../app/runtime-diagnostics';
+import { hydrateBrowserReconnectAgentGenerations } from './browser-state-sync-controller';
 
 export type ConnectionBannerState =
   | 'connecting'
@@ -154,12 +156,19 @@ function isReconnectTaskCommandVersionCurrent(
   );
 }
 
+function hasReconnectAgentGenerations<
+  T extends Partial<Pick<BrowserReconnectStatus, 'agentGenerations'>>,
+>(status: T): status is T & { agentGenerations: Record<string, number> } {
+  return status.agentGenerations !== undefined;
+}
+
 function canSkipFullReconnectRestore(
   status: BrowserReconnectStatus,
   currentWorkspaceRevision: number,
   currentTaskCommandControllerVersion: number,
 ): boolean {
   return (
+    hasReconnectAgentGenerations(status) &&
     isReconnectWorkspaceRevisionCurrent(status, currentWorkspaceRevision) &&
     isReconnectTaskCommandVersionCurrent(status, currentTaskCommandControllerVersion)
   );
@@ -425,6 +434,14 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   }
 
   function startRestore(): void {
+    if (isBrowserColdBootstrapPending()) {
+      restoreAwaitingAuthentication = false;
+      lifecycleState = completeBrowserRestore(lifecycleState);
+      updateConnectionBanner();
+      options.clearRestoringConnectionBanner();
+      return;
+    }
+
     restoreAwaitingAuthentication = false;
     const generation = ++restoreGeneration;
     const restoreStartedAt = Date.now();
@@ -451,12 +468,14 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
           const currentWorkspaceRevision = options.getLoadedWorkspaceRevision();
           if (
+            hasReconnectAgentGenerations(reconnectStatus) &&
             isReconnectWorkspaceRevisionStale(reconnectStatus, currentWorkspaceRevision) &&
             isReconnectTaskCommandVersionCurrent(
               reconnectStatus,
               options.getTaskCommandControllerVersion(),
             )
           ) {
+            hydrateBrowserReconnectAgentGenerations(reconnectStatus.agentGenerations);
             await options.reconcileRunningAgentIds(reconnectStatus.runningAgentIds, true);
             if (generation !== restoreGeneration) {
               return;
@@ -474,6 +493,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
               options.getTaskCommandControllerVersion(),
             )
           ) {
+            hydrateBrowserReconnectAgentGenerations(reconnectStatus.agentGenerations);
             await options.reconcileRunningAgentIds(reconnectStatus.runningAgentIds, true);
             if (generation !== restoreGeneration) {
               return;

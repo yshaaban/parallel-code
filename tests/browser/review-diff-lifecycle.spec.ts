@@ -6,11 +6,6 @@ import { IPC } from '../../electron/ipc/channels.js';
 import { expect, test } from './harness/fixtures.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
 
-interface BrowserLabIpcServer {
-  authToken: string;
-  baseUrl: string;
-}
-
 function git(repoDir: string, ...args: string[]): void {
   try {
     execFileSync('git', args, {
@@ -46,25 +41,6 @@ function writeRepoFile(repoDir: string, relativePath: string, content: string | 
 
 function deleteRepoFile(repoDir: string, relativePath: string): void {
   rmSync(path.join(repoDir, relativePath), { force: true });
-}
-
-async function invokeBrowserLabIpc<TResult>(
-  server: BrowserLabIpcServer,
-  channel: IPC,
-  body?: unknown,
-): Promise<TResult> {
-  const response = await fetch(`${server.baseUrl}/api/ipc/${channel}`, {
-    body: JSON.stringify(body ?? {}),
-    headers: {
-      Authorization: `Bearer ${server.authToken}`,
-      'Content-Type': 'application/json',
-    },
-    method: 'POST',
-  });
-
-  expect(response.ok, `IPC ${channel} should return 2xx`).toBe(true);
-  const payload = (await response.json()) as { result: TResult };
-  return payload.result;
 }
 
 async function openReviewPanel(page: import('@playwright/test').Page): Promise<void> {
@@ -159,10 +135,14 @@ test.describe('browser-lab review diff lifecycle', () => {
   test('tracks worktree and branch review diffs through the standalone browser server', async ({
     browser,
     browserLab,
+    request,
   }) => {
     const repoDir = browserLab.server.repoDir;
+    const clientId = 'review-diff-lifecycle-client';
+    const ownerId = 'review-diff-lifecycle-owner';
 
     const session = await browserLab.openSession(browser, {
+      clientId,
       displayName: 'Review Diff Lifecycle',
     });
     const { context, page } = session;
@@ -192,10 +172,30 @@ test.describe('browser-lab review diff lifecycle', () => {
       await clickReviewFile(reviewSurface, 'assets/blob.bin');
       await expectBinaryReviewFallback(reviewSurface);
 
-      await invokeBrowserLabIpc(browserLab.server, IPC.CommitAll, {
-        message: 'browser lab review diff refresh',
-        worktreePath: repoDir,
-      });
+      const lease = await browserLab.invokeSessionIpc<{ leaseGeneration: number }>(
+        request,
+        page,
+        IPC.AcquireTaskCommandLease,
+        {
+          action: 'commit browser lab review diff changes',
+          clientId,
+          ownerId,
+          taskId: browserLab.server.taskId,
+        },
+      );
+      try {
+        await browserLab.invokeSessionIpc(request, page, IPC.CommitAll, {
+          message: 'browser lab review diff refresh',
+          worktreePath: repoDir,
+        });
+      } finally {
+        await browserLab.invokeSessionIpc(request, page, IPC.ReleaseTaskCommandLease, {
+          clientId,
+          leaseGeneration: lease.leaseGeneration,
+          ownerId,
+          taskId: browserLab.server.taskId,
+        });
+      }
 
       await expect
         .poll(

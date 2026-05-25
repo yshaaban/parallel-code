@@ -226,7 +226,6 @@ describe('browser IPC routes', () => {
       branchName: 'feature/task-1',
       deleteBranch: true,
       projectRoot: '/repo',
-      taskId: 'task-1',
       worktreePath: '/repo/.worktrees/task-1',
     });
   });

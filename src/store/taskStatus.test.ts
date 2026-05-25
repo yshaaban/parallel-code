@@ -363,6 +363,7 @@ describe('markAgentOutput', () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.WriteToAgent, {
       agentId: 'agent-1',
+      controllerId: expect.any(String),
       data: '\r',
     });
   });

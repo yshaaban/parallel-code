@@ -457,7 +457,7 @@ describe('server-sync reliability contracts', () => {
     });
   });
 
-  it('hydrates reconnect metadata after applying workspace state so regenerated agents get the backend generation', async () => {
+  it('hydrates reconnect metadata after reading workspace state so regenerated agents get the backend generation', async () => {
     const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
     let appliedWorkspaceState = false;
     applyLoadedWorkspaceStateJsonMock.mockImplementation(() => {
@@ -487,7 +487,7 @@ describe('server-sync reliability contracts', () => {
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(markAutosaveCleanMock).not.toHaveBeenCalled();
-    expect(reconcileClientSessionStateMock).not.toHaveBeenCalled();
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates backend agent generations from reconnect snapshots before later lifecycle gating', async () => {
@@ -523,6 +523,7 @@ describe('server-sync reliability contracts', () => {
 
     expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
     expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 3);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
   });
 
@@ -540,7 +541,32 @@ describe('server-sync reliability contracts', () => {
     expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 4);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves reconnect generation and session reconciliation when autosave blocks workspace apply', async () => {
+    hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(true);
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 8 },
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceRevision: 1,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+    });
+
+    expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 8);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(showNotificationMock).toHaveBeenCalledWith(
+      'Another browser updated the shared workspace while this tab has unsaved changes.',
+    );
+    expect(validateProjectPathsMock).not.toHaveBeenCalled();
   });
 
   it('does not overwrite local unsaved workspace changes during browser sync', async () => {

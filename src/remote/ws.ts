@@ -1,4 +1,4 @@
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
 import {
   isServerMessage,
   type ClientMessage,
@@ -72,6 +72,21 @@ type TerminalStreamListener = (event: RemoteTerminalStreamEvent) => void;
 type TerminalSubscriptionProtocol = NonNullable<
   Extract<ClientMessage, { type: 'subscribe' }>['terminalProtocol']
 >;
+type PendingPreAgentTerminalEvent =
+  | {
+      byteLength: number;
+      kind: 'output';
+      text: string;
+    }
+  | {
+      byteLength: number;
+      kind: 'scrollback';
+      tail: string;
+    };
+
+const MAX_PRE_AGENT_TERMINAL_EVENT_COUNT_PER_AGENT = 64;
+const MAX_PRE_AGENT_TERMINAL_TEXT_BYTES_PER_AGENT = 64 * 1024;
+const MAX_PRE_AGENT_TERMINAL_AGENT_COUNT = 64;
 
 const agentDecoders = new Map<string, TextDecoder>();
 const connectionStatusListeners = new Set<ConnectionStatusListener>();
@@ -87,6 +102,7 @@ const outputListeners = new Map<string, Set<OutputListener>>();
 const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 const terminalRecoveryResultListeners = new Set<TerminalRecoveryResultListener>();
 const terminalStreamListeners = new Map<string, Set<TerminalStreamListener>>();
+const pendingPreAgentTerminalEventsByAgent = new Map<string, PendingPreAgentTerminalEvent[]>();
 
 let shouldReconnect = true;
 let lifecycleBound = false;
@@ -275,6 +291,61 @@ function updateAgentPreviewFromTail(agent: RemoteAgent, nextTail: string): void 
   setAgentPreview(agent.agentId, deriveRemoteAgentPreview(nextTail, agent.status), nextTail);
 }
 
+function getPendingPreAgentEventTotalBytes(events: PendingPreAgentTerminalEvent[]): number {
+  return events.reduce((total, event) => total + event.byteLength, 0);
+}
+
+function trimPendingPreAgentEvents(events: PendingPreAgentTerminalEvent[]): void {
+  while (
+    events.length > MAX_PRE_AGENT_TERMINAL_EVENT_COUNT_PER_AGENT ||
+    getPendingPreAgentEventTotalBytes(events) > MAX_PRE_AGENT_TERMINAL_TEXT_BYTES_PER_AGENT
+  ) {
+    events.shift();
+  }
+}
+
+function bufferPreAgentTerminalEvent(agentId: string, event: PendingPreAgentTerminalEvent): void {
+  if (
+    !pendingPreAgentTerminalEventsByAgent.has(agentId) &&
+    pendingPreAgentTerminalEventsByAgent.size >= MAX_PRE_AGENT_TERMINAL_AGENT_COUNT
+  ) {
+    const oldestAgentId = pendingPreAgentTerminalEventsByAgent.keys().next().value;
+    if (typeof oldestAgentId === 'string') {
+      pendingPreAgentTerminalEventsByAgent.delete(oldestAgentId);
+    }
+  }
+
+  const events = pendingPreAgentTerminalEventsByAgent.get(agentId) ?? [];
+  events.push(event);
+  trimPendingPreAgentEvents(events);
+
+  if (events.length > 0) {
+    pendingPreAgentTerminalEventsByAgent.set(agentId, events);
+  } else {
+    pendingPreAgentTerminalEventsByAgent.delete(agentId);
+  }
+}
+
+function applyPendingPreAgentTerminalEvents(agent: RemoteAgent): void {
+  const events = pendingPreAgentTerminalEventsByAgent.get(agent.agentId);
+  if (!events || events.length === 0) {
+    return;
+  }
+
+  pendingPreAgentTerminalEventsByAgent.delete(agent.agentId);
+  let nextTail = agentTailById()[agent.agentId] ?? agent.lastLine;
+  for (const event of events) {
+    if (event.kind === 'output') {
+      nextTail = appendRemoteAgentTail(nextTail, event.text);
+    } else {
+      nextTail = event.tail;
+    }
+  }
+
+  updateAgentPreviewFromTail(agent, nextTail);
+  updateAgentActivity(agent.agentId);
+}
+
 function notifyTerminalStreamListeners(agentId: string, event: RemoteTerminalStreamEvent): void {
   const listeners = terminalStreamListeners.get(agentId);
   if (!listeners) {
@@ -351,6 +422,10 @@ function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>
 
     sendSubscriptionMessage(agentId, terminalProtocol);
   }
+
+  for (const agent of message.list) {
+    applyPendingPreAgentTerminalEvents(agent);
+  }
 }
 
 function applyRemoteOutputData(agentId: string, data: string, context: string): void {
@@ -366,12 +441,17 @@ function applyRemoteOutputData(agentId: string, data: string, context: string): 
     }
   }
 
+  const decodedChunk = decodeOutputChunk(agentId, bytes, true);
   const agent = agents().find((item) => item.agentId === agentId);
   if (!agent) {
+    bufferPreAgentTerminalEvent(agentId, {
+      byteLength: bytes.byteLength,
+      kind: 'output',
+      text: decodedChunk,
+    });
     return;
   }
 
-  const decodedChunk = decodeOutputChunk(agentId, bytes, true);
   const shouldStartFreshTail = agentTailResetPendingById.delete(agentId);
   const previousTail = shouldStartFreshTail ? '' : (agentTailById()[agentId] ?? agent.lastLine);
   const nextTail = appendRemoteAgentTail(previousTail, decodedChunk);
@@ -397,12 +477,18 @@ function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scroll
   }
 
   const agent = agents().find((item) => item.agentId === message.agentId);
+  const decodedScrollback = decodeScrollbackSnapshot(bytes);
+  const nextTail = truncateRemoteAgentTail(decodedScrollback);
   if (!agent) {
+    bufferPreAgentTerminalEvent(message.agentId, {
+      byteLength: bytes.byteLength,
+      kind: 'scrollback',
+      tail: nextTail,
+    });
     return;
   }
 
-  const decodedScrollback = decodeScrollbackSnapshot(bytes);
-  updateAgentPreviewFromTail(agent, truncateRemoteAgentTail(decodedScrollback));
+  updateAgentPreviewFromTail(agent, nextTail);
   updateAgentActivity(message.agentId);
 }
 
@@ -557,10 +643,6 @@ const baseClientOptions = {
 >;
 
 function createRemoteWebSocketClient(): WebSocketClientCore<ClientMessage> {
-  if (!getToken()) {
-    return createWebSocketClientCore<RemoteIncomingServerMessage, ClientMessage>(baseClientOptions);
-  }
-
   return createWebSocketClientCore<RemoteIncomingServerMessage, ClientMessage>({
     ...baseClientOptions,
     createAuthMessage: ({ clientId, lastSeq, token }) => ({
@@ -570,6 +652,7 @@ function createRemoteWebSocketClient(): WebSocketClientCore<ClientMessage> {
       token,
     }),
     getToken,
+    shouldSendAuthMessage: ({ token }) => token !== null,
   });
 }
 
@@ -614,6 +697,9 @@ export function connect(nextStatus: ConnectStatus = 'connecting'): void {
   updateStatus(nextStatus);
   void client.ensureConnected(nextStatus).catch((error) => {
     logRemoteWsWarning(`Failed to establish websocket session (${nextStatus})`, error);
+    if (untrack(status) === nextStatus && !client.isOpen() && !client.hasPendingConnection()) {
+      updateStatus('disconnected');
+    }
   });
 }
 
@@ -658,6 +744,21 @@ export function resetRemoteWsRuntimeStateForTests(): void {
   visibilityChangeListener = null;
   lifecycleBound = false;
   shouldReconnect = true;
+  connectionStatusListeners.clear();
+  resetAllAgentDecoders();
+  agentTailResetPendingById.clear();
+  outputListeners.clear();
+  scrollbackListeners.clear();
+  terminalRecoveryResultListeners.clear();
+  terminalStreamListeners.clear();
+  pendingPreAgentTerminalEventsByAgent.clear();
+  client.resetForTests();
+  setAgents([]);
+  setStatus('disconnected');
+  setAuthRequired(false);
+  setAgentLastActivityAt({});
+  setAgentPreviewById({});
+  setAgentTailById({});
   resetRemoteTerminalOrderForAllAgents();
 }
 

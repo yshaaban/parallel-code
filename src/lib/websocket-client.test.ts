@@ -256,6 +256,28 @@ describe('createWebSocketClientCore', () => {
     expect(socket?.sent).toEqual([]);
   });
 
+  it('allows callers to skip auth messages when token auth is not available', async () => {
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: ({ token }) => `ws://localhost/ws?token=${token ?? 'none'}`,
+      getToken: () => null,
+      onMessage: () => {},
+      onMissingToken: vi.fn(),
+      shouldReconnect: () => false,
+      shouldSendAuthMessage: ({ token }) => token !== null,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    expect(socket?.url).toBe('ws://localhost/ws?token=none');
+
+    socket?.open();
+    await connectPromise;
+
+    expect(socket?.sent).toEqual([]);
+  });
+
   it('tracks pong round trips and disconnects after a missed pong timeout', async () => {
     vi.useFakeTimers();
 
@@ -352,6 +374,46 @@ describe('createWebSocketClientCore', () => {
         lastConnectionDurationMs: 1_000,
         lastDisconnectedAt: 2_000,
         lastDisconnectReason: 'close',
+      }),
+    );
+  });
+
+  it('keeps disconnected age anchored to the first outage across failed retries', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const reconnectDelayMs = vi.fn(() => 10);
+
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      reconnectDelayMs,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.open();
+    await connectPromise;
+
+    vi.setSystemTime(2_000);
+    firstSocket?.close(1006);
+
+    await vi.advanceTimersByTimeAsync(10);
+    const retrySocket = FakeWebSocket.instances[1];
+    expect(retrySocket).toBeDefined();
+
+    vi.setSystemTime(3_000);
+    retrySocket?.onerror?.();
+
+    expect(reconnectDelayMs).toHaveBeenLastCalledWith(
+      1,
+      expect.objectContaining({
+        hasConnected: true,
+        lastDisconnectedAt: 2_000,
+        lastDisconnectReason: 'connect-error',
       }),
     );
   });

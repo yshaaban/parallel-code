@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   beginBrowserColdBootstrap,
   cancelBrowserReconnectRestore,
+  completeBrowserColdBootstrap,
   beginBrowserReconnectRestore,
   completeBrowserReconnectRestore,
   getBrowserStartupState,
@@ -56,13 +57,28 @@ describe('browser-startup', () => {
     setBrowserStartupTier('summary');
 
     beginBrowserReconnectRestore();
+    setBrowserStartupTier('selected-task');
     markBrowserStartupSelectedTerminalReady();
+    completeBrowserColdBootstrap();
 
     expect(isBrowserColdBootstrapPending()).toBe(false);
     expect(getBrowserStartupState()).toMatchObject({
       coldBootstrapPending: false,
       currentMode: 'reconnect-restore',
       tier: 'summary',
+    });
+  });
+
+  it('does not let a stale cold bootstrap begin cancel an active reconnect restore', () => {
+    beginBrowserReconnectRestore();
+
+    beginBrowserColdBootstrap();
+
+    expect(isBrowserColdBootstrapPending()).toBe(false);
+    expect(getBrowserStartupState()).toMatchObject({
+      coldBootstrapPending: false,
+      currentMode: 'reconnect-restore',
+      tier: 'idle',
     });
   });
 

@@ -39,6 +39,12 @@ const terminalOrderState = vi.hoisted(() => ({
   resetAgentMock: vi.fn(),
 }));
 
+const authState = vi.hoisted(() => ({
+  clearTokenMock: vi.fn(),
+  getTokenMock: vi.fn(() => null as string | null),
+  redirectToRemoteAuthGateMock: vi.fn(async () => false),
+}));
+
 let loadedWsModule: typeof import('./ws') | null = null;
 
 vi.mock('../lib/client-id', () => ({
@@ -46,9 +52,9 @@ vi.mock('../lib/client-id', () => ({
 }));
 
 vi.mock('./auth', () => ({
-  clearToken: vi.fn(),
-  getToken: vi.fn(() => null),
-  redirectToRemoteAuthGate: vi.fn(async () => false),
+  clearToken: authState.clearTokenMock,
+  getToken: authState.getTokenMock,
+  redirectToRemoteAuthGate: authState.redirectToRemoteAuthGateMock,
 }));
 
 vi.mock('./remote-collaboration', () => ({
@@ -143,6 +149,11 @@ async function loadWsModule(): Promise<{
   options: CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown>;
 }> {
   vi.resetModules();
+  authState.clearTokenMock.mockReset();
+  authState.getTokenMock.mockReset();
+  authState.getTokenMock.mockReturnValue(null);
+  authState.redirectToRemoteAuthGateMock.mockReset();
+  authState.redirectToRemoteAuthGateMock.mockResolvedValue(false);
   websocketState.ensureConnectedMock.mockReset();
   websocketState.ensureConnectedMock.mockResolvedValue({} as WebSocket);
   websocketState.options = null;
@@ -203,6 +214,51 @@ describe('remote ws projections', () => {
     expect(module.getAgentPreview('agent-1')).toBe('live detail output');
 
     cleanup();
+  });
+
+  it('buffers output that arrives before the agent snapshot and applies it after agents load', async () => {
+    const { module, options } = await loadWsModule();
+
+    options.onMessage(
+      createOutputMessage(Buffer.from('\npre-agent live output', 'utf8').toString('base64')),
+    );
+    expect(module.getAgentPreview('agent-1')).toBe('');
+
+    options.onMessage(createAgentsMessage([createAgent({ lastLine: 'snapshot seed' })]));
+
+    expect(module.getAgentPreview('agent-1')).toBe('pre-agent live output');
+    expect(module.getAgentLastActivityAt('agent-1')).not.toBeNull();
+  });
+
+  it('buffers scrollback snapshots that arrive before the agent snapshot', async () => {
+    const { module, options } = await loadWsModule();
+
+    options.onMessage(
+      createScrollbackMessage(
+        Buffer.from('older line\npre-agent scrollback ready', 'utf8').toString('base64'),
+      ),
+    );
+
+    options.onMessage(createAgentsMessage([createAgent({ lastLine: 'stale snapshot prompt' })]));
+
+    expect(module.getAgentPreview('agent-1')).toBe('pre-agent scrollback ready');
+  });
+
+  it('bounds pre-agent output buffering per agent before the snapshot arrives', async () => {
+    const { module, options } = await loadWsModule();
+
+    options.onMessage(
+      createOutputMessage(Buffer.from('very-old-ready '.repeat(5_000)).toString('base64')),
+    );
+    options.onMessage(
+      createOutputMessage(Buffer.from('\nnewest bounded ready', 'utf8').toString('base64')),
+    );
+
+    options.onMessage(createAgentsMessage([createAgent({ lastLine: '' })]));
+
+    const preview = module.getAgentPreview('agent-1');
+    expect(preview).not.toContain('very-old-ready');
+    expect(preview).toBe('newest bounded ready');
   });
 
   it('routes structured terminal Data through the legacy output listener alias', async () => {
@@ -454,6 +510,25 @@ describe('remote ws projections', () => {
     expect(url.pathname).toBe('/ws');
     expect(url.searchParams.get('clientId')).toBe('remote-mobile-client');
     expect(url.searchParams.get('lastSeq')).toBe('12');
+  });
+
+  it('chooses token auth at connect time while allowing cookie-auth websocket sessions', async () => {
+    const { options } = await loadWsModule();
+
+    expect(options.shouldSendAuthMessage?.({ token: null })).toBe(false);
+    expect(options.shouldSendAuthMessage?.({ token: 'bootstrap-token' })).toBe(true);
+    expect(
+      options.createAuthMessage?.({
+        clientId: 'remote-mobile-client',
+        lastSeq: 12,
+        token: 'bootstrap-token',
+      }),
+    ).toEqual({
+      type: 'auth',
+      clientId: 'remote-mobile-client',
+      lastSeq: 12,
+      token: 'bootstrap-token',
+    });
   });
 
   it('uses the shared weak-connectivity heartbeat and warm reconnect policy', async () => {
@@ -885,6 +960,53 @@ describe('remote ws projections', () => {
     expect(listener).toHaveBeenLastCalledWith('connected');
 
     cleanup();
+  });
+
+  it('returns to disconnected when the initial remote websocket connect fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { module } = await loadWsModule();
+    const listener = vi.fn();
+    module.subscribeRemoteConnectionStatus(listener);
+    websocketState.ensureConnectedMock.mockRejectedValueOnce(new Error('connect failed'));
+
+    module.connect();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(module.status()).toBe('disconnected');
+    expect(listener).toHaveBeenLastCalledWith('disconnected');
+    warnSpy.mockRestore();
+  });
+
+  it('clears remote websocket listeners and projections during test reset', async () => {
+    const { module, options } = await loadWsModule();
+    const statusListener = vi.fn();
+    const outputListener = vi.fn();
+
+    module.subscribeRemoteConnectionStatus(statusListener);
+    module.onOutput('agent-1', outputListener);
+    options.onMessage(createAgentsMessage([createAgent({ lastLine: 'snapshot ready' })]));
+    options.onMessage(createOutputMessage(Buffer.from('\nlive ready', 'utf8').toString('base64')));
+
+    expect(module.agents()).toHaveLength(1);
+    expect(module.getAgentPreview('agent-1')).toBe('live ready');
+    expect(outputListener).toHaveBeenCalledTimes(1);
+
+    statusListener.mockClear();
+    outputListener.mockClear();
+    module.resetRemoteWsRuntimeStateForTests();
+
+    expect(module.agents()).toEqual([]);
+    expect(module.status()).toBe('disconnected');
+    expect(module.authRequired()).toBe(false);
+    expect(module.getAgentPreview('agent-1')).toBe('');
+    expect(module.getAgentLastActivityAt('agent-1')).toBeNull();
+
+    options.onStateChange?.('connected');
+    options.onMessage(createOutputMessage(Buffer.from('\nafter reset', 'utf8').toString('base64')));
+
+    expect(statusListener).not.toHaveBeenCalled();
+    expect(outputListener).not.toHaveBeenCalled();
   });
 
   it('reconnects on pageshow and when the document becomes visible again', async () => {

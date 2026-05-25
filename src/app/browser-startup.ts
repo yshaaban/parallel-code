@@ -93,6 +93,10 @@ function cancelBrowserStartupMode(reason: BrowserStartupCancelReason): void {
 }
 
 export function beginBrowserColdBootstrap(): void {
+  if (browserStartupState.currentMode === 'reconnect-restore') {
+    return;
+  }
+
   cancelBrowserStartupMode('replaced');
   browserStartupState = {
     coldBootstrapPending: true,
@@ -105,6 +109,13 @@ export function beginBrowserColdBootstrap(): void {
 }
 
 export function setBrowserStartupTier(tier: BrowserStartupTier): void {
+  if (
+    browserStartupState.currentMode !== 'cold-bootstrap' ||
+    !browserStartupState.coldBootstrapPending
+  ) {
+    return;
+  }
+
   if (TIER_ORDER[tier] < TIER_ORDER[browserStartupState.tier]) {
     return;
   }
@@ -121,7 +132,10 @@ export function setBrowserStartupTier(tier: BrowserStartupTier): void {
 }
 
 export function markBrowserStartupSelectedTerminalReady(): void {
-  if (!browserStartupState.coldBootstrapPending) {
+  if (
+    browserStartupState.currentMode !== 'cold-bootstrap' ||
+    !browserStartupState.coldBootstrapPending
+  ) {
     return;
   }
 
@@ -130,7 +144,10 @@ export function markBrowserStartupSelectedTerminalReady(): void {
 }
 
 export function completeBrowserColdBootstrap(): void {
-  if (!browserStartupState.coldBootstrapPending) {
+  if (
+    browserStartupState.currentMode !== 'cold-bootstrap' ||
+    !browserStartupState.coldBootstrapPending
+  ) {
     return;
   }
 

@@ -1,6 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBrowserStartupState, resetBrowserStartupStateForTests } from '../app/browser-startup';
+import {
+  beginBrowserColdBootstrap,
+  getBrowserStartupState,
+  resetBrowserStartupStateForTests,
+} from '../app/browser-startup';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
@@ -32,6 +36,7 @@ const {
   browserHttpStateListeners,
   browserTransportListeners,
   getBrowserReconnectContinuityMock,
+  hydrateBrowserReconnectAgentGenerationsMock,
   invokeMock,
   taskCommandControllerListeners,
   listenTaskCommandControllerChangedMock,
@@ -46,6 +51,7 @@ const {
     hasSequenceGapSinceDisconnect: false,
     hasSequencedMessageSinceDisconnect: false,
   })),
+  hydrateBrowserReconnectAgentGenerationsMock: vi.fn(),
   invokeMock: vi.fn(),
   taskCommandControllerListeners: new Set<(payload: unknown) => void>(),
   listenTaskCommandControllerChangedMock: vi.fn((listener: (payload: unknown) => void) => {
@@ -96,6 +102,10 @@ vi.mock('../lib/ipc', () => ({
 vi.mock('../lib/ipc-events', () => ({
   listenTaskCommandControllerChanged: listenTaskCommandControllerChangedMock,
   listenWorkspaceStateChanged: listenWorkspaceStateChangedMock,
+}));
+
+vi.mock('./browser-state-sync-controller', () => ({
+  hydrateBrowserReconnectAgentGenerations: hydrateBrowserReconnectAgentGenerationsMock,
 }));
 
 import { registerBrowserAppRuntime } from './browser-session';
@@ -270,6 +280,7 @@ describe('browser runtime restore generation', () => {
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.GetBrowserReconnectStatus) {
         return {
+          agentGenerations: { 'agent-1': 9 },
           runningAgentIds: ['agent-1'],
           taskCommandControllerVersion: 0,
           workspaceRevision: 0,
@@ -299,12 +310,146 @@ describe('browser runtime restore generation', () => {
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(hydrateBrowserReconnectAgentGenerationsMock).toHaveBeenCalledWith({ 'agent-1': 9 });
     expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
     expect(onTaskNotificationRestoreStarted).not.toHaveBeenCalled();
     expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
     expect(
       getRendererRuntimeDiagnosticsSnapshot().browserStartup.modeStartCounts['reconnect-restore'],
     ).toBe(0);
+    cleanup();
+  });
+
+  it('does not start reconnect restore while cold bootstrap is still pending', async () => {
+    beginBrowserColdBootstrap();
+    const clearRestoringConnectionBanner = vi.fn();
+    const setConnectionBanner = vi.fn();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        reconcileRunningAgentIds,
+        setConnectionBanner,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+    await flushResolvedPromises();
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+    expect(reconcileRunningAgentIds).not.toHaveBeenCalled();
+    expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+    expect(setConnectionBanner).toHaveBeenLastCalledWith(null);
+    expect(getBrowserStartupState()).toMatchObject({
+      coldBootstrapPending: true,
+      currentMode: 'cold-bootstrap',
+    });
+
+    cleanup();
+  });
+
+  it('uses a full reconnect snapshot when warm status lacks agent generations', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          runningAgentIds: ['agent-status'],
+          taskCommandControllerVersion: 0,
+          workspaceRevision: 0,
+        };
+      }
+      if (channel === IPC.GetBrowserReconnectSnapshot) {
+        return {
+          agentGenerations: { 'agent-snapshot': 4 },
+          appStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+          runningAgentIds: ['agent-snapshot'],
+          workspaceRevision: 0,
+          workspaceStateJson:
+            '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentGenerations: { 'agent-snapshot': 4 },
+      }),
+    );
+    expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-snapshot'], true);
+    expect(hydrateBrowserReconnectAgentGenerationsMock).not.toHaveBeenCalled();
+
+    cleanup();
+  });
+
+  it('hydrates generations before stale-workspace warm reconnect skips the full snapshot', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          agentGenerations: { 'agent-status': 6 },
+          runningAgentIds: ['agent-status'],
+          taskCommandControllerVersion: 2,
+          workspaceRevision: 4,
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        getLoadedWorkspaceRevision: vi.fn(() => 5),
+        getTaskCommandControllerVersion: vi.fn(() => 2),
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-status'], true);
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(hydrateBrowserReconnectAgentGenerationsMock).toHaveBeenCalledWith({
+      'agent-status': 6,
+    });
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+
     cleanup();
   });
 
@@ -427,6 +572,7 @@ describe('browser runtime restore generation', () => {
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.GetBrowserReconnectStatus) {
         return {
+          agentGenerations: { 'agent-status': 5 },
           runningAgentIds: ['agent-status'],
           taskCommandControllerVersion: 3,
           workspaceRevision: 1,

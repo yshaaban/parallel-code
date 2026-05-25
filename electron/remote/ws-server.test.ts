@@ -6,8 +6,25 @@ import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport
 const writeToAgentMock = vi.fn();
 const resizeAgentMock = vi.fn();
 const recordTerminalInputTraceClientUpdateMock = vi.fn();
+const getAgentMetaMock = vi.fn<
+  () => { agentId: string; generation: number; isShell: boolean; taskId: string } | null
+>(() => null);
 const getAgentTerminalRecoveryMock = vi.fn();
 const getAgentTerminalStartupRecoveryMock = vi.fn();
+const getTaskCommandControllerSnapshotMock = vi.fn<
+  (taskId: string) => {
+    action: string | null;
+    controllerId: string | null;
+    taskId: string;
+    version: number;
+  }
+>((taskId: string) => ({
+  action: null,
+  controllerId: null,
+  taskId,
+  version: 0,
+}));
+const isTaskCommandLeaseHeldMock = vi.fn(() => false);
 const onPtyEventMock = vi.fn(
   (_event: string, _listener: (agentId: string, data?: unknown) => void) => () => {},
 );
@@ -16,6 +33,7 @@ const unsubscribeFromAgentMock = vi.fn();
 
 vi.mock('../ipc/pty.js', () => ({
   getAgentCols: vi.fn(() => 80),
+  getAgentMeta: getAgentMetaMock,
   getAgentPauseState: vi.fn(() => null),
   getAgentScrollback: vi.fn(() => null),
   getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
@@ -29,6 +47,11 @@ vi.mock('../ipc/pty.js', () => ({
   subscribeToAgent: subscribeToAgentMock,
   unsubscribeFromAgent: unsubscribeFromAgentMock,
   writeToAgent: writeToAgentMock,
+}));
+
+vi.mock('../ipc/task-command-leases.js', () => ({
+  getTaskCommandControllerSnapshot: getTaskCommandControllerSnapshotMock,
+  isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
 }));
 
 vi.mock('../ipc/runtime-diagnostics.js', () => ({
@@ -115,6 +138,14 @@ describe('registerRemoteWebSocketServer', () => {
       outputCursor: 0,
       rows: 24,
     });
+    getAgentMetaMock.mockReturnValue(null);
+    getTaskCommandControllerSnapshotMock.mockImplementation((taskId: string) => ({
+      action: null,
+      controllerId: null,
+      taskId,
+      version: 0,
+    }));
+    isTaskCommandLeaseHeldMock.mockReturnValue(false);
     subscribeToAgentMock.mockReturnValue(false);
   });
 
@@ -668,6 +699,13 @@ describe('registerRemoteWebSocketServer', () => {
     const client = createFakeClient();
     const wss = createFakeWebSocketServer();
     wss.clients.add(client);
+    getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-1',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-1',
+    });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
 
     registerRemoteWebSocketServer({
       authenticateConnection: () => true,
@@ -754,6 +792,97 @@ describe('registerRemoteWebSocketServer', () => {
       inputEpoch: 'input-epoch-1',
       inputSeq: 7,
     });
+  });
+
+  it('rejects task terminal input when the websocket client does not hold the task lease', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-1',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-1',
+    });
+    getTaskCommandControllerSnapshotMock.mockReturnValue({
+      action: 'type in the terminal',
+      controllerId: 'client-2',
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'input',
+        agentId: 'agent-1',
+        controllerId: 'client-1',
+        data: 'blocked input',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(writeToAgentMock).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'agent-error',
+      agentId: 'agent-1',
+      message: 'Task is controlled by another client (client-2)',
+    });
+  });
+
+  it('passes task terminal input when the websocket client holds the task lease', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-1',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-1',
+    });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport(),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'input',
+        agentId: 'agent-1',
+        controllerId: 'client-1',
+        data: 'allowed input',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(writeToAgentMock).toHaveBeenCalledWith('agent-1', 'allowed input', undefined, undefined);
   });
 
   it('passes resize order tokens to agent resizes', async () => {

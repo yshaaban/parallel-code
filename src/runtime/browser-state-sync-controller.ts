@@ -27,6 +27,20 @@ const BROWSER_SYNC_CONFLICT_MESSAGE =
   'Another browser updated the shared workspace while this tab has unsaved changes.';
 const BROWSER_COLD_BOOTSTRAP_SYNC_RETRY_MS = 50;
 
+interface BrowserStateSyncAttemptOptions {
+  afterReadStateChange?: () => void;
+  onAutosaveConflict?: () => void;
+  reconcileClientSessionAfterRead?: boolean;
+}
+
+export function hydrateBrowserReconnectAgentGenerations(
+  agentGenerations: Record<string, number> | undefined,
+): void {
+  for (const [agentId, generation] of Object.entries(agentGenerations ?? {})) {
+    hydrateAgentGeneration(agentId, generation);
+  }
+}
+
 function mergeSyncNotify(current: boolean | null, notify: boolean): boolean {
   return (current ?? false) || notify;
 }
@@ -115,7 +129,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   async function runBrowserStateSyncAttempt(
     notify: boolean,
     readStateChange: () => Promise<boolean>,
-    afterReadStateChange?: () => void,
+    attemptOptions: BrowserStateSyncAttemptOptions = {},
   ): Promise<boolean | null> {
     if (isBrowserStateSyncDisposed(state)) {
       return null;
@@ -131,6 +145,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
 
     try {
       if (hasPendingWorkspaceAutosaveChanges()) {
+        attemptOptions.onAutosaveConflict?.();
         showNotification(BROWSER_SYNC_CONFLICT_MESSAGE);
         recordBrowserSyncFailed(Date.now() - startedAt);
         const finalized = finalizeBrowserStateSync(state);
@@ -143,10 +158,13 @@ export function createBrowserStateSync(electronRuntime: boolean): {
         return null;
       }
 
-      afterReadStateChange?.();
+      attemptOptions.afterReadStateChange?.();
+
+      if (stateChanged || attemptOptions.reconcileClientSessionAfterRead) {
+        reconcileClientSessionState();
+      }
 
       if (stateChanged) {
-        reconcileClientSessionState();
         markAutosaveClean();
       }
 
@@ -254,10 +272,15 @@ export function createBrowserStateSync(electronRuntime: boolean): {
           );
           return didApply;
         },
-        () => {
-          for (const [agentId, generation] of Object.entries(snapshot.agentGenerations ?? {})) {
-            hydrateAgentGeneration(agentId, generation);
-          }
+        {
+          afterReadStateChange: () => {
+            hydrateBrowserReconnectAgentGenerations(snapshot.agentGenerations);
+          },
+          onAutosaveConflict: () => {
+            hydrateBrowserReconnectAgentGenerations(snapshot.agentGenerations);
+            reconcileClientSessionState();
+          },
+          reconcileClientSessionAfterRead: true,
         },
       );
 
