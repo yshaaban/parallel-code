@@ -101,7 +101,7 @@ export function createMergeWorkflow() {
       }
       const promptSnippet =
         arenaStore.prompt.slice(0, 60) + (arenaStore.prompt.length > 60 ? '...' : '');
-      await invoke(IPC.MergeTask, {
+      await invoke(IPC.MergeArenaWorktree, {
         projectRoot: arenaStore.cwd,
         branchName: competitor.branchName,
         squash: true,

@@ -86,8 +86,8 @@ export interface DeleteTaskWorkflowRequest {
   branchName: string;
   deleteBranch: boolean;
   projectRoot: string;
-  taskId?: string;
-  worktreePath?: string;
+  taskId: string;
+  worktreePath: string;
 }
 
 export interface CleanupTaskRuntimeWorkflowRequest {
@@ -569,19 +569,10 @@ export async function deleteTaskWorkflow(
 ): Promise<CleanupTaskRuntimeWorkflowResult> {
   await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
 
-  if (!request.taskId) {
-    for (const agentId of request.agentIds) {
-      removeAgentSupervision(agentId);
-    }
-    return {
-      releasedTaskCommandController: null,
-    };
-  }
-
   return cleanupTaskRuntimeWorkflow({
     agentIds: request.agentIds,
     removeTaskState: true,
     taskId: request.taskId,
-    ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
+    worktreePath: request.worktreePath,
   });
 }

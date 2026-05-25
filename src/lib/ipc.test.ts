@@ -1511,6 +1511,7 @@ describe('Channel', () => {
     await expect(
       invoke(IPC.CleanupTaskRuntime, {
         agentIds: [],
+        controllerId: 'client-1',
         removeTaskState: true,
         taskId: 'task-1',
       }),

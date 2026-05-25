@@ -752,11 +752,19 @@ describe('task workflows', () => {
       branchName: 'task/delete',
       deleteBranch: true,
       projectRoot: '/tmp/project',
+      worktreePath: '/tmp/project/.worktrees/task-3',
     });
 
     expect(deleteTaskMock).toHaveBeenCalledWith(['agent-1'], 'task/delete', true, '/tmp/project');
     expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
     expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskConvergenceMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskReviewMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskReviewSignalsMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskContainerPreviewTargetsMock).toHaveBeenCalledWith('task-3');
+    expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
     expect(deleteTaskMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(
       stopPlanWatcherMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
@@ -777,24 +785,10 @@ describe('task workflows', () => {
         branchName: 'task/delete',
         deleteBranch: true,
         projectRoot: '/tmp/project',
+        worktreePath: '/tmp/project/.worktrees/task-3',
       }),
     ).rejects.toThrow('delete failed');
 
-    expect(stopPlanWatcherMock).not.toHaveBeenCalled();
-    expect(stopTaskGitStatusWatcherMock).not.toHaveBeenCalled();
-  });
-
-  it('still removes agent supervision when deletion has no task id', async () => {
-    deleteTaskMock.mockResolvedValue(undefined);
-
-    await deleteTaskWorkflow({
-      agentIds: ['agent-1'],
-      branchName: 'task/delete',
-      deleteBranch: true,
-      projectRoot: '/tmp/project',
-    });
-
-    expect(removeAgentSupervisionMock).toHaveBeenCalledWith('agent-1');
     expect(stopPlanWatcherMock).not.toHaveBeenCalled();
     expect(stopTaskGitStatusWatcherMock).not.toHaveBeenCalled();
   });

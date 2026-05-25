@@ -59,6 +59,7 @@ export enum IPC {
   GetWorktreeStatus = 'get_worktree_status',
   CheckMergeStatus = 'check_merge_status',
   MergeTask = 'merge_task',
+  MergeArenaWorktree = 'merge_arena_worktree',
   GetBranchLog = 'get_branch_log',
   GetBranchCommitHistory = 'get_branch_commit_history',
   PushTask = 'push_task',

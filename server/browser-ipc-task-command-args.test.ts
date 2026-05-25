@@ -66,6 +66,45 @@ describe('browser IPC task-command args', () => {
     expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
   });
 
+  it('overrides browser task mutation controller identity from the request header identity', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.DeleteTask,
+        {
+          branchName: 'task/delete',
+          controllerId: 'spoofed-client',
+          projectRoot: '/repo',
+          taskId: 'task-1',
+          worktreePath: '/repo/.worktrees/task-1',
+        },
+        'browser-client-1',
+      ),
+    ).toMatchObject({
+      branchName: 'task/delete',
+      controllerId: 'browser-client-1',
+      taskId: 'task-1',
+    });
+  });
+
+  it('removes spoofed task mutation controller identity when the browser client identity is missing', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.CleanupTaskRuntime,
+        {
+          agentIds: [],
+          controllerId: 'spoofed-client',
+          removeTaskState: true,
+          taskId: 'task-1',
+        },
+        null,
+      ),
+    ).toEqual({
+      agentIds: [],
+      removeTaskState: true,
+      taskId: 'task-1',
+    });
+  });
+
   it('does not add controller identity to unrelated IPC channels', () => {
     const args = { json: '{}' };
 

@@ -10,14 +10,21 @@ import { IPC } from '../../electron/ipc/channels';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
-const { invokeMock, mergeTaskMock, refreshTaskGitStatusForTaskMock, sendPromptMock } = vi.hoisted(
-  () => ({
-    invokeMock: vi.fn(),
-    mergeTaskMock: vi.fn(),
-    refreshTaskGitStatusForTaskMock: vi.fn(() => Promise.resolve(true)),
-    sendPromptMock: vi.fn(),
-  }),
-);
+const {
+  invokeMock,
+  mergeTaskMock,
+  refreshTaskGitStatusForTaskMock,
+  runWithTaskCommandLeaseMock,
+  sendPromptMock,
+} = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  mergeTaskMock: vi.fn(),
+  refreshTaskGitStatusForTaskMock: vi.fn(() => Promise.resolve(true)),
+  runWithTaskCommandLeaseMock: vi.fn((_taskId: string, _action: string, run: () => unknown) =>
+    run(),
+  ),
+  sendPromptMock: vi.fn(),
+}));
 
 function createDeferredPromise<T>(): {
   promise: Promise<T>;
@@ -41,6 +48,15 @@ vi.mock('../lib/ipc', () => ({
 vi.mock('../app/task-workflows', () => ({
   mergeTask: mergeTaskMock,
   sendPrompt: sendPromptMock,
+}));
+
+vi.mock('../app/task-command-lease', () => ({
+  isTaskCommandLeaseSkipped: vi.fn(() => false),
+  runWithTaskCommandLease: runWithTaskCommandLeaseMock,
+}));
+
+vi.mock('../lib/runtime-client-id', () => ({
+  getRuntimeClientId: vi.fn(() => 'client-self'),
 }));
 
 vi.mock('./ConfirmDialog', () => ({
@@ -477,6 +493,55 @@ describe('MergeDialog', () => {
     expect(await screen.findByRole('button', { name: 'Rebase with AI' })).toBeDefined();
 
     expect(rebaseButton.style.borderStyle).toBe('none');
+  });
+
+  it('runs plain rebase under task command lease identity', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.GetBranchLog:
+          return Promise.resolve('');
+        case IPC.CheckMergeStatus:
+          return Promise.resolve({
+            conflicting_files: [],
+            current_branch: 'feature/task-1',
+            main_ahead_count: 1,
+          });
+        case IPC.RebaseTask:
+          return Promise.resolve(undefined);
+        default:
+          throw new Error(`Unexpected channel: ${channel}`);
+      }
+    });
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rebase onto main' }));
+
+    await waitFor(() => {
+      expect(runWithTaskCommandLeaseMock).toHaveBeenCalledWith(
+        'task-1',
+        'rebase this task',
+        expect.any(Function),
+      );
+      expect(invokeMock).toHaveBeenCalledWith(IPC.RebaseTask, {
+        baseBranch: 'main',
+        controllerId: 'client-self',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/task-1',
+      });
+    });
   });
 
   it('sends AI rebase prompts to the selected task agent', async () => {

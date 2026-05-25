@@ -62,6 +62,7 @@ import {
 } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
+import type { MergeResult } from '../../src/ipc/types.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (typeof value !== 'string' || !isReviewDiffMode(value)) {
@@ -128,6 +129,12 @@ function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode
   throw new BadRequestError('projectMode must be one of: git, non-git');
 }
 
+function assertArenaBranchName(branchName: string): void {
+  if (!branchName.startsWith('arena/')) {
+    throw new BadRequestError('branchName must be an arena branch');
+  }
+}
+
 function createOutputHandler(
   context: HandlerContext,
   channelId: string | undefined,
@@ -141,21 +148,39 @@ function createOutputHandler(
   };
 }
 
-function assertTaskCommandLeaseHeld(
-  taskId: string | undefined,
-  controllerId: string | undefined,
-): void {
-  if (taskId === undefined && controllerId === undefined) {
-    return;
-  }
-
-  if (typeof taskId !== 'string' || typeof controllerId !== 'string') {
-    throw new BadRequestError('taskId and controllerId must both be provided');
-  }
-
+function assertTaskCommandLeaseHeld(taskId: string, controllerId: string): void {
   if (!isTaskCommandLeaseHeld(taskId, controllerId)) {
     throw new BadRequestError('Task is controlled by another client');
   }
+}
+
+interface MergeBranchRequest {
+  baseBranch?: string;
+  branchName: string;
+  cleanup?: boolean;
+  message?: string | null;
+  projectRoot: string;
+  squash: boolean;
+  worktreePath: string;
+}
+
+function mergeBranchAndRefreshGitStatus(request: MergeBranchRequest): Promise<MergeResult> {
+  return mergeTask(
+    request.projectRoot,
+    request.worktreePath,
+    request.branchName,
+    request.squash,
+    request.message ?? null,
+    request.cleanup ?? false,
+    request.baseBranch,
+  ).finally(() => {
+    scheduleTaskConvergenceRefreshForGitTarget({
+      projectRoot: request.projectRoot,
+    });
+    scheduleTaskReviewRefreshForGitTarget({
+      projectRoot: request.projectRoot,
+    });
+  });
 }
 
 function getCreatedTaskWorktreeOwnership(result: {
@@ -250,9 +275,8 @@ export function createTaskAndGitIpcHandlers(
       validatePath(request.worktreePath, 'worktreePath');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
-      assertOptionalString(request.controllerId, 'controllerId');
-      assertOptionalString(request.taskId, 'taskId');
-      assertOptionalString(request.worktreePath, 'worktreePath');
+      assertString(request.controllerId, 'controllerId');
+      assertString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 
       const cleanupResult = await deleteTaskWorkflow({
@@ -260,14 +284,12 @@ export function createTaskAndGitIpcHandlers(
         branchName: request.branchName,
         deleteBranch: request.deleteBranch,
         projectRoot: request.projectRoot,
-        ...(typeof request.taskId === 'string' ? { taskId: request.taskId } : {}),
-        ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
+        taskId: request.taskId,
+        worktreePath: request.worktreePath,
       });
       emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
 
-      if (typeof request.taskId === 'string') {
-        taskNames.deleteTask(request.taskId);
-      }
+      taskNames.deleteTask(request.taskId);
 
       return undefined;
     }),
@@ -277,7 +299,7 @@ export function createTaskAndGitIpcHandlers(
       (args) => {
         const request = args;
         assertStringArray(request.agentIds, 'agentIds');
-        assertOptionalString(request.controllerId, 'controllerId');
+        assertString(request.controllerId, 'controllerId');
         assertOptionalProjectMode(request.projectMode);
         assertOptionalBoolean(request.removeTaskState, 'removeTaskState');
         assertString(request.taskId, 'taskId');
@@ -486,35 +508,30 @@ export function createTaskAndGitIpcHandlers(
       validatePath(request.worktreePath, 'worktreePath');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.squash, 'squash');
-      assertOptionalString(request.controllerId, 'controllerId');
+      assertString(request.controllerId, 'controllerId');
       assertOptionalString(request.message, 'message');
       assertOptionalBoolean(request.cleanup, 'cleanup');
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
-      assertOptionalString(request.taskId, 'taskId');
+      assertString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
-      const projectRoot = request.projectRoot;
-      const worktreePath = request.worktreePath;
-      const branchName = request.branchName;
-      const squash = request.squash;
-      const message = request.message ?? null;
-      const cleanup = request.cleanup ?? false;
-      return mergeTask(
-        projectRoot,
-        worktreePath,
-        branchName,
-        squash,
-        message,
-        cleanup,
-        request.baseBranch,
-      ).finally(() => {
-        scheduleTaskConvergenceRefreshForGitTarget({
-          projectRoot,
-        });
-        scheduleTaskReviewRefreshForGitTarget({
-          projectRoot,
-        });
-      });
+      return mergeBranchAndRefreshGitStatus(request);
     }),
+
+    [IPC.MergeArenaWorktree]: defineIpcHandler<IPC.MergeArenaWorktree>(
+      IPC.MergeArenaWorktree,
+      (args) => {
+        const request = args;
+        validatePath(request.projectRoot, 'projectRoot');
+        validatePath(request.worktreePath, 'worktreePath');
+        validateBranchName(request.branchName, 'branchName');
+        assertArenaBranchName(request.branchName);
+        assertBoolean(request.squash, 'squash');
+        assertOptionalString(request.message, 'message');
+        assertOptionalBoolean(request.cleanup, 'cleanup');
+        validateOptionalBranchName(request.baseBranch, 'baseBranch');
+        return mergeBranchAndRefreshGitStatus(request);
+      },
+    ),
 
     [IPC.GetBranchLog]: defineIpcHandler<IPC.GetBranchLog>(IPC.GetBranchLog, (args) => {
       const request = args;
@@ -542,8 +559,8 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
-      assertOptionalString(request.controllerId, 'controllerId');
-      assertOptionalString(request.taskId, 'taskId');
+      assertString(request.controllerId, 'controllerId');
+      assertString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const channelId = getOptionalChannelId(request.onOutput);
       const projectRoot = request.projectRoot;
@@ -558,9 +575,7 @@ export function createTaskAndGitIpcHandlers(
           branchName,
           projectRoot,
         });
-        if (typeof request.taskId === 'string') {
-          scheduleTaskReviewSignalsRefresh(request.taskId);
-        }
+        scheduleTaskReviewSignalsRefresh(request.taskId);
       });
 
       return undefined;
@@ -570,8 +585,8 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
-      assertOptionalString(request.controllerId, 'controllerId');
-      assertOptionalString(request.taskId, 'taskId');
+      assertString(request.controllerId, 'controllerId');
+      assertString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       await rebaseTaskWorkflow(context, {
         ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),

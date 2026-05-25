@@ -9,7 +9,9 @@ import {
 } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from '../app/task-command-lease';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { getProject } from '../store/projects';
 import {
   getTaskGitStatus,
@@ -222,6 +224,49 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
       });
   }
 
+  function rebaseTaskFromDialog(): void {
+    const generation = nextRebaseGeneration();
+    const taskId = props.task.id;
+    const worktreePath = props.task.worktreePath;
+    const baseBranch = mergeBaseBranch();
+    setRebasing(true);
+    setRebaseError('');
+    setRebaseSuccess(false);
+
+    void runWithTaskCommandLease(taskId, 'rebase this task', () =>
+      invoke(IPC.RebaseTask, {
+        controllerId: getRuntimeClientId(),
+        taskId,
+        worktreePath,
+        ...getBaseBranchRequest(baseBranch),
+      }),
+    )
+      .then((result) => {
+        if (generation !== rebaseGeneration || isTaskCommandLeaseSkipped(result)) {
+          return;
+        }
+
+        setRebaseSuccess(true);
+        refetchMergeStatus();
+        refetchBranchLog();
+        refreshDialogGitStatus(taskId);
+      })
+      .catch((err) => {
+        if (generation !== rebaseGeneration) {
+          return;
+        }
+
+        setRebaseError(String(err));
+      })
+      .finally(() => {
+        if (generation !== rebaseGeneration) {
+          return;
+        }
+
+        setRebasing(false);
+      });
+  }
+
   createEffect(() => {
     const taskId = props.task.id;
     if (!props.open) {
@@ -331,44 +376,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                     <button
                       type="button"
                       disabled={rebaseDisabled()}
-                      onClick={() => {
-                        const generation = nextRebaseGeneration();
-                        const taskId = props.task.id;
-                        const worktreePath = props.task.worktreePath;
-                        const baseBranch = mergeBaseBranch();
-                        setRebasing(true);
-                        setRebaseError('');
-                        setRebaseSuccess(false);
-
-                        void invoke(IPC.RebaseTask, {
-                          worktreePath,
-                          ...getBaseBranchRequest(baseBranch),
-                        })
-                          .then(() => {
-                            if (generation !== rebaseGeneration) {
-                              return;
-                            }
-
-                            setRebaseSuccess(true);
-                            refetchMergeStatus();
-                            refetchBranchLog();
-                            refreshDialogGitStatus(taskId);
-                          })
-                          .catch((err) => {
-                            if (generation !== rebaseGeneration) {
-                              return;
-                            }
-
-                            setRebaseError(String(err));
-                          })
-                          .finally(() => {
-                            if (generation !== rebaseGeneration) {
-                              return;
-                            }
-
-                            setRebasing(false);
-                          });
-                      }}
+                      onClick={rebaseTaskFromDialog}
                       title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
                       style={getRebaseButtonStyle(plainRebaseButtonTone(), rebaseDisabled())}
                     >

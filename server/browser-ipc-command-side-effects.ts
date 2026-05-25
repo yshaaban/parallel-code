@@ -30,6 +30,7 @@ type BrowserIpcCommandSideEffectChannel =
   | IPC.CleanupTaskRuntime
   | IPC.CreateTask
   | IPC.DeleteTask
+  | IPC.MergeArenaWorktree
   | IPC.MergeTask
   | IPC.PushTask
   | IPC.SaveAppState;
@@ -228,6 +229,7 @@ const BROWSER_IPC_COMMAND_SIDE_EFFECTS = {
   [IPC.CleanupTaskRuntime]: syncCleanedUpTaskRuntime,
   [IPC.CreateTask]: syncCreatedTask,
   [IPC.DeleteTask]: syncDeletedTask,
+  [IPC.MergeArenaWorktree]: refreshBranchGitStatus,
   [IPC.MergeTask]: refreshBranchGitStatus,
   [IPC.PushTask]: refreshBranchGitStatus,
   [IPC.SaveAppState]: syncTaskNamesFromSavedState,

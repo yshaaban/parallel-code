@@ -197,15 +197,15 @@ export interface RendererInvokeRequestMap {
   [IPC.DeleteTask]: {
     agentIds: string[];
     branchName: string;
-    controllerId?: string;
+    controllerId: string;
     deleteBranch: boolean;
     projectRoot: string;
-    taskId?: string;
-    worktreePath?: string;
+    taskId: string;
+    worktreePath: string;
   };
   [IPC.CleanupTaskRuntime]: {
     agentIds: string[];
-    controllerId?: string;
+    controllerId: string;
     projectMode?: ProjectMode;
     removeTaskState?: boolean;
     taskId: string;
@@ -345,11 +345,20 @@ export interface RendererInvokeRequestMap {
     baseBranch?: string;
     branchName: string;
     cleanup?: boolean;
-    controllerId?: string;
+    controllerId: string;
     message?: string | null;
     projectRoot: string;
     squash: boolean;
-    taskId?: string;
+    taskId: string;
+    worktreePath: string;
+  };
+  [IPC.MergeArenaWorktree]: {
+    baseBranch?: string;
+    branchName: string;
+    cleanup?: boolean;
+    message?: string | null;
+    projectRoot: string;
+    squash: boolean;
     worktreePath: string;
   };
   [IPC.GetBranchLog]: {
@@ -363,10 +372,10 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.PushTask]: {
     branchName: string;
-    controllerId?: string;
+    controllerId: string;
     onOutput?: ChannelRefLike<string>;
     projectRoot: string;
-    taskId?: string;
+    taskId: string;
   };
   [IPC.AskAboutCode]: {
     cwd: string;
@@ -380,8 +389,8 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.RebaseTask]: {
     baseBranch?: string;
-    controllerId?: string;
-    taskId?: string;
+    controllerId: string;
+    taskId: string;
     worktreePath: string;
   };
   [IPC.GetMainBranch]: {
@@ -605,6 +614,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetWorktreeStatus]: WorktreeStatus;
   [IPC.CheckMergeStatus]: MergeStatus;
   [IPC.MergeTask]: MergeResult;
+  [IPC.MergeArenaWorktree]: MergeResult;
   [IPC.GetBranchLog]: string;
   [IPC.GetBranchCommitHistory]: BranchCommitHistoryResult;
   [IPC.PushTask]: undefined;

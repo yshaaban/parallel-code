@@ -40,7 +40,7 @@ describe('browser IPC command side effects', () => {
     expect(context.taskNames.getTaskName('task-1')).toBe('Saved task');
   });
 
-  it('emits branch-scoped git refreshes for merge and push commands', () => {
+  it('emits branch-scoped git refreshes for merge, arena merge, and push commands', () => {
     const context = createContext();
 
     runBrowserIpcCommandSideEffects(
@@ -48,6 +48,15 @@ describe('browser IPC command side effects', () => {
       IPC.MergeTask,
       {
         branchName: 'feature/task-1',
+        projectRoot: '/repo',
+      },
+      undefined,
+    );
+    runBrowserIpcCommandSideEffects(
+      context,
+      IPC.MergeArenaWorktree,
+      {
+        branchName: 'arena/run-1',
         projectRoot: '/repo',
       },
       undefined,
@@ -64,6 +73,10 @@ describe('browser IPC command side effects', () => {
 
     expect(context.emitGitStatusChanged).toHaveBeenCalledWith({
       branchName: 'feature/task-1',
+      projectRoot: '/repo',
+    });
+    expect(context.emitGitStatusChanged).toHaveBeenCalledWith({
+      branchName: 'arena/run-1',
       projectRoot: '/repo',
     });
     expect(context.emitGitStatusChanged).toHaveBeenCalledWith({

@@ -11,7 +11,10 @@ const {
   getGitRepoRootMock,
   listBranchesMock,
   listImportableWorktreesMock,
+  mergeTaskMock,
+  rebaseTaskWorkflowMock,
   isTaskCommandLeaseHeldMock,
+  streamPushTaskMock,
 } = vi.hoisted(() => ({
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
@@ -21,7 +24,10 @@ const {
   getGitRepoRootMock: vi.fn(),
   listBranchesMock: vi.fn(),
   listImportableWorktreesMock: vi.fn(),
+  mergeTaskMock: vi.fn(),
+  rebaseTaskWorkflowMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
+  streamPushTaskMock: vi.fn(),
 }));
 
 vi.mock('./task-workflows.js', () => ({
@@ -34,6 +40,18 @@ vi.mock('./task-command-leases.js', () => ({
   isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
 }));
 
+vi.mock('./git-status-workflows.js', () => ({
+  commitAllWorkflow: vi.fn(),
+  discardUncommittedWorkflow: vi.fn(),
+  rebaseTaskWorkflow: rebaseTaskWorkflowMock,
+  scheduleTaskConvergenceRefreshForGitTarget: vi.fn(),
+  scheduleTaskReviewRefreshForGitTarget: vi.fn(),
+}));
+
+vi.mock('./task-review-signals.js', () => ({
+  scheduleTaskReviewSignalsRefresh: vi.fn(),
+}));
+
 vi.mock('./git.js', async () => {
   const actual = await vi.importActual<typeof import('./git.js')>('./git.js');
   return {
@@ -43,6 +61,8 @@ vi.mock('./git.js', async () => {
     getGitRepoRoot: getGitRepoRootMock,
     listBranches: listBranchesMock,
     listImportableWorktrees: listImportableWorktreesMock,
+    mergeTask: mergeTaskMock,
+    streamPushTask: streamPushTaskMock,
   };
 });
 
@@ -65,6 +85,12 @@ describe('createTaskAndGitIpcHandlers', () => {
     deleteTaskWorkflowMock.mockResolvedValue({
       releasedTaskCommandController: null,
     });
+    mergeTaskMock.mockResolvedValue({
+      lines_added: 0,
+      lines_removed: 0,
+    });
+    rebaseTaskWorkflowMock.mockResolvedValue(undefined);
+    streamPushTaskMock.mockResolvedValue(undefined);
   });
 
   it('registers created task metadata through the shared registry owner', async () => {
@@ -431,6 +457,125 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
   });
 
+  it('rejects task deletion without lease identity before deleting anything', async () => {
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    await expect(
+      handlers[IPC.DeleteTask]?.({
+        agentIds: ['agent-1'],
+        branchName: 'task/auth',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).rejects.toThrow('controllerId must be a string');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(deleteTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects task merge without lease identity before merging', () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    expect(() =>
+      handlers[IPC.MergeTask]?.({
+        branchName: 'task/auth',
+        projectRoot: '/tmp/project',
+        squash: false,
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).toThrow('controllerId must be a string');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(mergeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects task pushes without lease identity before pushing', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.PushTask]?.({
+        branchName: 'task/auth',
+        projectRoot: '/tmp/project',
+      }),
+    ).rejects.toThrow('controllerId must be a string');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(streamPushTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects task rebases without lease identity before rebasing', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.RebaseTask]?.({
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).rejects.toThrow('controllerId must be a string');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(rebaseTaskWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps arena merges on an explicit arena worktree route', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await handlers[IPC.MergeArenaWorktree]?.({
+      branchName: 'arena/codex-run-1',
+      cleanup: true,
+      message: 'arena: merge Codex',
+      projectRoot: '/tmp/project',
+      squash: true,
+      worktreePath: '/tmp/project/.worktrees/arena/codex-run-1',
+    });
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
+    expect(mergeTaskMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      '/tmp/project/.worktrees/arena/codex-run-1',
+      'arena/codex-run-1',
+      true,
+      'arena: merge Codex',
+      true,
+      undefined,
+    );
+  });
+
+  it('rejects non-arena branches on the explicit arena merge route', () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    expect(() =>
+      handlers[IPC.MergeArenaWorktree]?.({
+        branchName: 'task/auth',
+        projectRoot: '/tmp/project',
+        squash: true,
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).toThrow('branchName must be an arena branch');
+
+    expect(mergeTaskMock).not.toHaveBeenCalled();
+  });
+
   it('cleans backend task runtime without deleting registry metadata for collapse-style cleanup', () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
@@ -532,6 +677,26 @@ describe('createTaskAndGitIpcHandlers', () => {
       }),
     ).toThrow('Task is controlled by another client');
 
+    expect(cleanupTaskRuntimeWorkflowMock).not.toHaveBeenCalled();
+    expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects runtime cleanup without lease identity before cleanup', () => {
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    expect(() =>
+      handlers[IPC.CleanupTaskRuntime]?.({
+        agentIds: ['agent-1'],
+        removeTaskState: true,
+        taskId: 'task-1',
+      }),
+    ).toThrow('controllerId must be a string');
+
+    expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
     expect(cleanupTaskRuntimeWorkflowMock).not.toHaveBeenCalled();
     expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
   });

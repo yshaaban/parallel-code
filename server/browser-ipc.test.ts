@@ -5,6 +5,7 @@ import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IPC } from '../electron/ipc/channels.js';
+import { BadRequestError } from '../electron/ipc/handlers.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
 import { registerBrowserIpcRoutes } from './browser-ipc.js';
 import { createTaskNameRegistry, type TaskNameRegistry } from './task-names.js';
@@ -153,6 +154,80 @@ describe('browser IPC routes', () => {
       agentId: 'agent-1',
       controllerId: 'browser-client-1',
       data: 'echo ok\n',
+    });
+  });
+
+  it('overrides browser task mutation controller identity from the request header identity', async () => {
+    const deleteTask = vi.fn().mockResolvedValue({ ok: true });
+    const server = await startTestServer({
+      handlers: {
+        [IPC.DeleteTask]: deleteTask,
+      },
+    });
+    cleanup.push(server.close);
+
+    const response = await postBrowserIpc(
+      server.baseUrl,
+      IPC.DeleteTask,
+      {
+        branchName: 'feature/task-1',
+        controllerId: 'spoofed-client',
+        deleteBranch: true,
+        projectRoot: '/repo',
+        taskId: 'task-1',
+        worktreePath: '/repo/.worktrees/task-1',
+      },
+      {
+        [BROWSER_CLIENT_ID_HEADER]: ' browser-client-1 ',
+      },
+    );
+
+    await expect(response.json()).resolves.toEqual({ result: { ok: true } });
+    expect(response.status).toBe(200);
+    expect(deleteTask).toHaveBeenCalledWith({
+      branchName: 'feature/task-1',
+      controllerId: 'browser-client-1',
+      deleteBranch: true,
+      projectRoot: '/repo',
+      taskId: 'task-1',
+      worktreePath: '/repo/.worktrees/task-1',
+    });
+  });
+
+  it('strips spoofed task mutation controller identity when browser client identity is missing', async () => {
+    const deleteTask = vi.fn((args: Record<string, unknown> | undefined) => {
+      if (args?.controllerId !== undefined) {
+        throw new Error('controller identity leaked');
+      }
+
+      throw new BadRequestError('controllerId must be a string');
+    });
+    const server = await startTestServer({
+      handlers: {
+        [IPC.DeleteTask]: deleteTask,
+      },
+    });
+    cleanup.push(server.close);
+
+    const response = await postBrowserIpc(server.baseUrl, IPC.DeleteTask, {
+      branchName: 'feature/task-1',
+      controllerId: 'spoofed-client',
+      deleteBranch: true,
+      projectRoot: '/repo',
+      taskId: 'task-1',
+      worktreePath: '/repo/.worktrees/task-1',
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: 'controllerId must be a string',
+    });
+    expect(response.status).toBe(400);
+    expect(deleteTask).toHaveBeenCalledWith({
+      branchName: 'feature/task-1',
+      deleteBranch: true,
+      projectRoot: '/repo',
+      taskId: 'task-1',
+      worktreePath: '/repo/.worktrees/task-1',
     });
   });
 
