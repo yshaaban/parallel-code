@@ -1,4 +1,5 @@
 import { assertNever } from '../lib/assert-never.js';
+import { isAgentRunnerProvider, type AgentRunnerProvider } from './agent-runners.js';
 import { isRemovedTaskScopedKindEvent } from './removed-task-event.js';
 import {
   isArrayOf,
@@ -425,6 +426,8 @@ export function isAgentSupervisionSnapshot(value: unknown): value is AgentSuperv
     typeof value.isShell === 'boolean' &&
     isNullableNonNegativeInteger(value.lastOutputAt) &&
     typeof value.preview === 'string' &&
+    (value.runnerInstanceId === undefined || typeof value.runnerInstanceId === 'string') &&
+    (value.runnerProvider === undefined || isAgentRunnerProvider(value.runnerProvider)) &&
     isAgentSupervisionState(value.state) &&
     typeof value.taskId === 'string' &&
     isNonNegativeInteger(value.updatedAt)
@@ -437,6 +440,8 @@ export interface AgentSupervisionSnapshot {
   isShell: boolean;
   lastOutputAt: number | null;
   preview: string;
+  runnerInstanceId?: string;
+  runnerProvider?: AgentRunnerProvider;
   state: AgentSupervisionState;
   taskId: string;
   updatedAt: number;
@@ -489,6 +494,8 @@ export interface RemoteAgent {
   status: RemoteAgentStatus;
   exitCode: number | null;
   lastLine: string;
+  runnerInstanceId?: string;
+  runnerProvider?: AgentRunnerProvider;
   taskMeta?: RemoteAgentTaskMeta;
 }
 
@@ -545,6 +552,8 @@ export function isRemoteAgent(value: unknown): value is RemoteAgent {
     isRemoteAgentStatus(value.status) &&
     isNullableNonNegativeInteger(value.exitCode) &&
     typeof value.lastLine === 'string' &&
+    (value.runnerInstanceId === undefined || typeof value.runnerInstanceId === 'string') &&
+    (value.runnerProvider === undefined || isAgentRunnerProvider(value.runnerProvider)) &&
     (value.taskMeta === undefined || isRemoteAgentTaskMeta(value.taskMeta))
   );
 }

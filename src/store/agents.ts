@@ -23,6 +23,7 @@ export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promis
     signal: null,
     lastOutput: [],
     generation: 0,
+    terminalSessionVersion: 0,
   };
 
   setStore(
@@ -113,6 +114,12 @@ export function hydrateAgentGeneration(agentId: string, generation: number): voi
   );
 }
 
+export function getAgentTerminalSessionVersion(
+  agent: Pick<Agent, 'terminalSessionVersion'>,
+): number {
+  return agent.terminalSessionVersion ?? 0;
+}
+
 export function restartAgent(agentId: string, resumed: boolean): void {
   clearTaskPromptDispatch(agentId);
   setStore(
@@ -124,6 +131,8 @@ export function restartAgent(agentId: string, resumed: boolean): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = resumed;
         s.agents[agentId].generation += 1;
+        s.agents[agentId].terminalSessionVersion =
+          getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
       }
     }),
   );
@@ -142,6 +151,8 @@ export function switchAgent(agentId: string, newDef: AgentDef): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = false;
         s.agents[agentId].generation += 1;
+        s.agents[agentId].terminalSessionVersion =
+          getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
       }
     }),
   );

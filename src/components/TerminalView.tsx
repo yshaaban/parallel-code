@@ -68,6 +68,7 @@ import {
   isTerminalAnomalyMonitorEnabled,
   registerTerminalAnomalyMonitorTerminal,
   subscribeTerminalAnomalyMonitorChanges,
+  type TerminalAnomalyLifecycleState,
   type TerminalAnomalySeverity,
   type TerminalAnomalySnapshot,
 } from '../app/terminal-anomaly-monitor';
@@ -102,6 +103,8 @@ import type {
   TerminalViewStatus,
 } from './terminal-view/types';
 import { getTerminalOutputPriority } from '../lib/terminal-output-priority';
+
+let nextTerminalViewInstanceId = 1;
 
 function isElementVisibleInViewport(element: Element): boolean {
   if (typeof window === 'undefined') {
@@ -316,19 +319,20 @@ function isRestoringTerminalStatus(status: TerminalViewStatus): boolean {
 function syncTerminalStartupPhaseForStatus(
   terminalStartupKey: string,
   status: TerminalViewStatus,
+  ownerId?: number,
 ): void {
   switch (status) {
     case 'binding':
       return;
     case 'attaching':
-      setTerminalStartupPhase(terminalStartupKey, 'attaching');
+      setTerminalStartupPhase(terminalStartupKey, 'attaching', ownerId);
       return;
     case 'restoring':
-      setTerminalStartupPhase(terminalStartupKey, 'restoring');
+      setTerminalStartupPhase(terminalStartupKey, 'restoring', ownerId);
       return;
     case 'ready':
     case 'error':
-      clearTerminalStartupEntry(terminalStartupKey);
+      clearTerminalStartupEntry(terminalStartupKey, ownerId);
       return;
     default:
       return assertNever(status, 'Unhandled terminal startup status');
@@ -415,6 +419,8 @@ function getTerminalAnomalyPresentation(
 }
 
 export function TerminalView(props: TerminalViewProps): JSX.Element {
+  const terminalInstanceId = nextTerminalViewInstanceId;
+  nextTerminalViewInstanceId += 1;
   let shellRef!: HTMLDivElement;
   let containerRef!: HTMLDivElement;
   let session: TerminalSession | undefined;
@@ -434,6 +440,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let takeOverGeneration = 0;
   let sessionStartGeneration = 0;
   let pendingRecoveryFocusRestore = false;
+  let terminalAttachInProgress = false;
+  let terminalAttachQueued = false;
+  let terminalAttachUnregisterPending = false;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
   let sessionStartedOnce = false;
   let sessionStartupMeasurementGeneration = 0;
@@ -458,8 +467,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const terminalStartupKey = `${taskId}:${agentId}`;
   const switchWindowOwnerId = managesTaskSwitchWindowLifecycle ? terminalStartupKey : taskId;
   const isInitiallyFocused = untrack(() => props.isFocused === true);
+  const isInitiallyCommandTarget = untrack(() => props.isCommandTarget !== false);
   isFocusedNow = isInitiallyFocused;
-  isSelectedNow = untrack(() => store.activeTaskId === taskId);
+  isSelectedNow = untrack(() => store.activeTaskId === taskId && isInitiallyCommandTarget);
   isVisibleNow = isInitiallyFocused;
   let previouslyFocused = isFocusedNow;
   let previouslySelected = isSelectedNow;
@@ -479,7 +489,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [sessionVersion, setSessionVersion] = createSignal(0);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
-    return getTerminalSurfaceTier(terminalStartupKey);
+    const registeredTier = getTerminalSurfaceTier(terminalStartupKey);
+    if (registeredTier !== 'cold-hidden' || !shouldPinSelectedSurfaceTier()) {
+      return registeredTier;
+    }
+
+    return shouldUseInteractiveSurfaceTier() ? 'interactive-live' : 'handoff-live';
   });
   const isCurrentTerminalSwitchTarget = createMemo(() => {
     switchWindowVersion();
@@ -490,7 +505,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return 0;
     }
 
-    if (store.activeTaskId === props.taskId) {
+    if (isActiveCommandTarget()) {
       return 1;
     }
 
@@ -502,7 +517,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
   const outputPriority = createMemo(() =>
     getTerminalOutputPriority({
-      isActiveTask: store.activeTaskId === props.taskId,
+      isActiveTask: isActiveCommandTarget(),
       isFocused: props.isFocused === true,
       isRestoring: isRestoringTerminalStatus(sessionStatus()),
       isSwitchTarget: isCurrentTerminalSwitchTarget(),
@@ -527,12 +542,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     setAnomalyMonitorVersion((version) => version + 1);
   }
 
-  function getCurrentTerminalAnomalyLifecycleState() {
+  function isActiveCommandTarget(): boolean {
+    return store.activeTaskId === props.taskId && props.isCommandTarget !== false;
+  }
+
+  function getCurrentTerminalAnomalyLifecycleState(): TerminalAnomalyLifecycleState {
     return {
       cursorBlink: shouldBlinkTerminalCursor(),
       hasPeerController: hasPeerController(),
       isFocused: isTerminalFocused(),
-      isSelected: store.activeTaskId === props.taskId,
+      isSelected: isActiveCommandTarget(),
       isVisible: isVisible(),
       liveRenderReady: isLiveRenderReady(),
       presentationMode: presentationMode().kind,
@@ -541,7 +560,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       sessionDormant: sessionDormant(),
       status: sessionStatus(),
       surfaceTier: surfaceTier(),
-    } as const;
+    };
   }
 
   async function handleTakeOver(): Promise<void> {
@@ -647,6 +666,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     beginSwitchWindowEchoGraceIfNeeded();
   }
 
+  function shouldReportTaskOwnedSwitchWindowCompletion(): boolean {
+    if (managesTaskSwitchWindowLifecycle) {
+      return switchWindowCompletionPending;
+    }
+
+    return isCurrentTerminalSwitchTarget() && isVisible() && isActiveCommandTarget();
+  }
+
   function isTerminalPaintReady(status: TerminalViewStatus): boolean {
     return (
       status === 'ready' &&
@@ -663,11 +690,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function isSelectedSwitchTargetTerminal(): boolean {
-    return store.activeTaskId === props.taskId && isCurrentTerminalSwitchTarget();
+    return isActiveCommandTarget() && isCurrentTerminalSwitchTarget();
   }
 
   function canCompleteSwitchWindowForStatus(status: TerminalViewStatus): boolean {
-    if (!switchWindowCompletionPending || !ownsTaskSwitchWindow()) {
+    if (!shouldReportTaskOwnedSwitchWindowCompletion() || !ownsTaskSwitchWindow()) {
       return false;
     }
 
@@ -783,7 +810,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function isSelectedTerminalInteractive(): boolean {
     return (
-      store.activeTaskId === props.taskId &&
+      isActiveCommandTarget() &&
       isVisible() &&
       sessionStatus() === 'ready' &&
       isPaintSettledReady() &&
@@ -820,7 +847,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function shouldManageTaskSwitchWindow(): boolean {
-    return managesTaskSwitchWindowLifecycle && store.activeTaskId === props.taskId;
+    return managesTaskSwitchWindowLifecycle && isActiveCommandTarget();
   }
 
   function ownsTaskSwitchWindow(): boolean {
@@ -828,10 +855,52 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function shouldPinSelectedSurfaceTier(): boolean {
-    return (
-      isSelectedNow &&
-      (props.isFocused === true || (isVisibleNow && isSelectedSwitchTargetTerminal()))
-    );
+    return isActiveCommandTarget() && (props.isFocused === true || props.isCommandTarget === true);
+  }
+
+  function shouldUseInteractiveSurfaceTier(): boolean {
+    return props.isFocused === true || (props.isCommandTarget === true && isActiveCommandTarget());
+  }
+
+  function focusLiveCommandTargetFromPointer(): void {
+    if (
+      !session ||
+      !isActiveCommandTarget() ||
+      hasPeerController() ||
+      presentationMode().kind !== 'live'
+    ) {
+      return;
+    }
+
+    session.term.focus();
+  }
+
+  function getCommandTargetAttribute(): 'default' | 'false' | 'true' {
+    if (props.isCommandTarget === true) {
+      return 'true';
+    }
+
+    if (props.isCommandTarget === false) {
+      return 'false';
+    }
+
+    return 'default';
+  }
+
+  function syncTerminalSurfaceRegistrations(): void {
+    isFocusedNow = props.isFocused === true;
+    isVisibleNow = isVisible();
+    isSelectedNow = isActiveCommandTarget();
+    terminalVisibilityRegistration?.update({
+      isFocused: isFocusedNow,
+      isSelected: isSelectedNow,
+      isVisible: isVisibleNow,
+    });
+    terminalSurfaceTierRegistration?.update({
+      isFocused: shouldUseInteractiveSurfaceTier(),
+      isSelected: shouldPinSelectedSurfaceTier(),
+      isVisible: isVisibleNow,
+    });
   }
 
   function getRenderHibernationDelayMs(): number | null {
@@ -866,7 +935,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function getTerminalStartupPaintRole(): 'hidden' | 'selected' | 'visible-sibling' {
-    if (store.activeTaskId === props.taskId && isVisible()) {
+    if (isActiveCommandTarget() && isVisible()) {
       return 'selected';
     }
 
@@ -878,11 +947,15 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function syncTerminalStartupPaintCoordination(): void {
-    setTerminalStartupPaintCoordinationEntry(terminalStartupKey, {
-      paintReady: isTerminalPaintReady(sessionStatus()),
-      role: getTerminalStartupPaintRole(),
-      taskId,
-    });
+    setTerminalStartupPaintCoordinationEntry(
+      terminalStartupKey,
+      {
+        paintReady: isTerminalPaintReady(sessionStatus()),
+        role: getTerminalStartupPaintRole(),
+        taskId,
+      },
+      terminalInstanceId,
+    );
   }
 
   function isStartupPaintAttributionActive(): boolean {
@@ -1008,6 +1081,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function cleanupTerminalSessionLifetime(): void {
     sessionStartGeneration += 1;
     takeOverGeneration += 1;
+    terminalAttachInProgress = false;
+    terminalAttachQueued = false;
+    terminalAttachUnregisterPending = false;
     terminalSessionLoadFailed = false;
     selectedInteractiveBreadcrumbEmitted = false;
     setTakingOver(false);
@@ -1026,6 +1102,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
+    terminalAttachInProgress = false;
     session = nextSession;
     setSessionVersion((version) => version + 1);
     syncCurrentSessionRuntimeState();
@@ -1036,11 +1113,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
+    terminalAttachInProgress = false;
     console.warn('Failed to load terminal runtime:', error);
     terminalSessionLoadFailed = true;
     sessionStartedOnce = false;
-    attachRegistration?.unregister();
-    attachRegistration = undefined;
+    if (attachRegistration) {
+      attachRegistration.unregister();
+      attachRegistration = undefined;
+    } else {
+      terminalAttachUnregisterPending = true;
+    }
     setSessionStatus('error');
   }
 
@@ -1086,14 +1168,26 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function ensureTerminalSessionRegistered(): void {
     setSessionDormant(false);
-    if (terminalSessionLoadFailed || attachRegistration || session) {
+    if (terminalSessionLoadFailed || session) {
+      return;
+    }
+
+    if (attachRegistration && !terminalAttachQueued && !terminalAttachInProgress) {
+      attachRegistration.unregister();
+      attachRegistration = undefined;
+    }
+
+    if (attachRegistration) {
       return;
     }
 
     selectedInteractiveBreadcrumbEmitted = false;
     beginTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
-    attachRegistration = registerTerminalAttachCandidate({
+    terminalAttachQueued = true;
+    const nextAttachRegistration = registerTerminalAttachCandidate({
       attach: () => {
+        terminalAttachQueued = false;
+        terminalAttachInProgress = true;
         const generation = ++sessionStartGeneration;
         updateTerminalAttachTrace(terminalStartupKey, (entry) => {
           entry.attachStartedAtMs = getRoundedPerformanceNow();
@@ -1101,53 +1195,59 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         });
         sessionStartedOnce = true;
         beginStartupMeasurement();
-        const startedSession = startLoadedTerminalSession({
-          canAcceptInput: canAcceptTerminalInput,
-          containerRef,
-          getOutputPriority: outputPriority,
-          getStartupPaintRole: getTerminalStartupPaintRole,
-          getRenderHibernationDelayMs,
-          getStartupPaintCoordinationSnapshot: getGlobalTerminalStartupPaintCoordinationSnapshot,
-          isSelectedRecoveryProtected: isSelectedSwitchTargetTerminal,
-          onAttachBound: () => {
-            updateTerminalAttachTrace(terminalStartupKey, (entry) => {
-              entry.attachBoundAtMs = getRoundedPerformanceNow();
-            });
-            attachRegistration?.release();
-          },
-          onAttachMilestone: (milestone) => {
-            recordTerminalAttachMilestone(terminalStartupKey, milestone);
-          },
-          onBlockedInputAttempt: () => {
-            recordTerminalPresentationBlockedInput(presentationMode().kind);
-            anomalyMonitorRegistration?.recordInteraction('blocked-input');
-          },
-          onPaintReadyChange: handleSessionPaintReadyChange,
-          onStartupFitExecuted: recordStartupFitExecutionIfPending,
-          onStartupFitScheduled: recordStartupFitScheduleIfPending,
-          onStartupRenderEvent: recordStartupRenderEventIfPending,
-          onStartupWriteRendered: recordStartupWriteIfPending,
-          onRenderHibernationChange: handleSessionRenderHibernationChange,
-          onReadOnlyInputAttempt: () => {
-            anomalyMonitorRegistration?.recordInteraction('read-only-input');
-            controlVisualState.expandBanner();
-          },
-          onRestoreBlockedChange: handleSessionRestoreBlockedChange,
-          onResizeTransactionChange: () => undefined,
-          onSelectedRecoverySettle: () => {
-            markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
-            requestTerminalOutputDrain();
-          },
-          onSelectedRecoveryStart: () => {
-            markTerminalSwitchWindowRecoveryStarted(taskId, switchWindowOwnerId);
-          },
-          onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
-          onStatusChange: handleSessionStatusChange,
-          props,
-          subscribeStartupPaintCoordinationChanges:
-            subscribeTerminalStartupPaintCoordinationChanges,
-          shouldCommitResize: shouldKeepTerminalGeometryLive,
-        });
+        let startedSession: TerminalSession | Promise<TerminalSession>;
+        try {
+          startedSession = startLoadedTerminalSession({
+            canAcceptInput: canAcceptTerminalInput,
+            containerRef,
+            getOutputPriority: outputPriority,
+            getStartupPaintRole: getTerminalStartupPaintRole,
+            getRenderHibernationDelayMs,
+            getStartupPaintCoordinationSnapshot: getGlobalTerminalStartupPaintCoordinationSnapshot,
+            isSelectedRecoveryProtected: isSelectedSwitchTargetTerminal,
+            onAttachBound: () => {
+              updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+                entry.attachBoundAtMs = getRoundedPerformanceNow();
+              });
+              attachRegistration?.release();
+            },
+            onAttachMilestone: (milestone) => {
+              recordTerminalAttachMilestone(terminalStartupKey, milestone);
+            },
+            onBlockedInputAttempt: () => {
+              recordTerminalPresentationBlockedInput(presentationMode().kind);
+              anomalyMonitorRegistration?.recordInteraction('blocked-input');
+            },
+            onPaintReadyChange: handleSessionPaintReadyChange,
+            onStartupFitExecuted: recordStartupFitExecutionIfPending,
+            onStartupFitScheduled: recordStartupFitScheduleIfPending,
+            onStartupRenderEvent: recordStartupRenderEventIfPending,
+            onStartupWriteRendered: recordStartupWriteIfPending,
+            onRenderHibernationChange: handleSessionRenderHibernationChange,
+            onReadOnlyInputAttempt: () => {
+              anomalyMonitorRegistration?.recordInteraction('read-only-input');
+              controlVisualState.expandBanner();
+            },
+            onRestoreBlockedChange: handleSessionRestoreBlockedChange,
+            onResizeTransactionChange: () => undefined,
+            onSelectedRecoverySettle: () => {
+              markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
+              requestTerminalOutputDrain();
+            },
+            onSelectedRecoveryStart: () => {
+              markTerminalSwitchWindowRecoveryStarted(taskId, switchWindowOwnerId);
+            },
+            onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
+            onStatusChange: handleSessionStatusChange,
+            props,
+            subscribeStartupPaintCoordinationChanges:
+              subscribeTerminalStartupPaintCoordinationChanges,
+            shouldCommitResize: shouldKeepTerminalGeometryLive,
+          });
+        } catch (error) {
+          handleTerminalSessionLoadFailure(generation, error);
+          return;
+        }
 
         if (startedSession instanceof Promise) {
           void startedSession
@@ -1166,8 +1266,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       },
       getPriority: attachPriority,
       key: terminalStartupKey,
+      ownerId: terminalInstanceId,
       taskId,
     });
+    attachRegistration = nextAttachRegistration;
+    if (terminalAttachUnregisterPending) {
+      terminalAttachUnregisterPending = false;
+      nextAttachRegistration.unregister();
+      if (attachRegistration === nextAttachRegistration) {
+        attachRegistration = undefined;
+      }
+    }
   }
 
   function syncTerminalSessionLiveness(): void {
@@ -1260,16 +1369,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       bumpDocumentFocusVersion();
       queueDomFocusWithinSync();
     };
+    surfaceTierCleanup = subscribeTerminalSurfaceTierChanges(bumpSurfaceTierVersion);
+    denseOverloadCleanup = subscribeTerminalDenseOverloadChanges(bumpSurfaceTierVersion);
+    recentHiddenReservationCleanup =
+      subscribeTerminalRecentHiddenReservationChanges(bumpSurfaceTierVersion);
     terminalVisibilityRegistration = registerTerminalVisibility(terminalStartupKey, {
       isFocused: isFocusedNow,
       isSelected: isSelectedNow,
       isVisible: isVisibleNow,
     });
     terminalSurfaceTierRegistration = registerTerminalSurfaceTier(terminalStartupKey, {
-      isFocused: isFocusedNow,
+      isFocused: shouldUseInteractiveSurfaceTier(),
       isSelected: shouldPinSelectedSurfaceTier(),
       isVisible: isVisibleNow,
     });
+    syncTerminalSurfaceRegistrations();
+    queueMicrotask(syncTerminalSurfaceRegistrations);
     prewarmCleanup = subscribeTerminalPrewarm(taskId, () => {
       prewarmHiddenTerminalIfNeeded();
     });
@@ -1280,10 +1395,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     });
     anomalyMonitorRegistration.updateLifecycle(untrack(getCurrentTerminalAnomalyLifecycleState));
     anomalyMonitorCleanup = subscribeTerminalAnomalyMonitorChanges(bumpAnomalyMonitorVersion);
-    surfaceTierCleanup = subscribeTerminalSurfaceTierChanges(bumpSurfaceTierVersion);
-    denseOverloadCleanup = subscribeTerminalDenseOverloadChanges(bumpSurfaceTierVersion);
-    recentHiddenReservationCleanup =
-      subscribeTerminalRecentHiddenReservationChanges(bumpSurfaceTierVersion);
     const switchWindowCleanup = subscribeTerminalSwitchWindowChanges(bumpSwitchWindowVersion);
     const initialVisibility = isInitiallyFocused || isElementVisibleInViewport(shellRef);
     setIsVisible(initialVisibility);
@@ -1293,7 +1404,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('focus', handleWindowFocus);
-    if (store.activeTaskId === props.taskId && initialVisibility) {
+    if (isActiveCommandTarget() && initialVisibility) {
       startSwitchWindowForSelection();
     }
 
@@ -1320,7 +1431,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       clearSessionDormancyTimer();
       cleanupTerminalSessionLifetime();
       cancelSwitchWindowState();
-      clearTerminalStartupPaintCoordinationEntry(terminalStartupKey);
+      clearTerminalStartupPaintCoordinationEntry(terminalStartupKey, terminalInstanceId);
       terminalVisibilityRegistration?.unregister();
       terminalVisibilityRegistration = undefined;
       terminalSurfaceTierRegistration?.unregister();
@@ -1389,7 +1500,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   createEffect(() => {
     const isFocused = props.isFocused === true;
-    const isSelected = store.activeTaskId === props.taskId;
+    const isSelected = isActiveCommandTarget();
     const visibleNow = isVisible();
     const gainedFocusedPriority = isFocused && !previouslyFocused;
     const gainedTaskSelection = isSelected && !previouslySelected;
@@ -1426,24 +1537,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    const focused = props.isFocused === true;
-    const visible = isVisible();
     const status = sessionStatus();
-    const activeTaskId = store.activeTaskId;
     switchWindowVersion();
-    isFocusedNow = focused;
-    isVisibleNow = visible;
-    isSelectedNow = activeTaskId === props.taskId;
-    terminalVisibilityRegistration?.update({
-      isFocused: isFocusedNow,
-      isSelected: isSelectedNow,
-      isVisible: isVisibleNow,
-    });
-    terminalSurfaceTierRegistration?.update({
-      isFocused: isFocusedNow,
-      isSelected: shouldPinSelectedSurfaceTier(),
-      isVisible: isVisibleNow,
-    });
+    syncTerminalSurfaceRegistrations();
     void status;
     syncTerminalSessionLiveness();
   });
@@ -1481,7 +1577,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
     });
 
-    syncTerminalStartupPhaseForStatus(terminalStartupKey, status);
+    syncTerminalStartupPhaseForStatus(terminalStartupKey, status, terminalInstanceId);
 
     if (canCompleteSwitchWindowForStatus(status)) {
       if (switchWindowCompletionRaf !== undefined) {
@@ -1690,6 +1786,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     <div
       ref={shellRef}
       data-terminal-agent-id={props.agentId}
+      data-terminal-active-command-target={isActiveCommandTarget() ? 'true' : undefined}
       data-terminal-anomaly-count={
         terminalAnomalyPresentation().count > 0
           ? String(terminalAnomalyPresentation().count)
@@ -1697,6 +1794,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
       data-terminal-anomaly-kinds={terminalAnomalyPresentation().kinds ?? undefined}
       data-terminal-anomaly-severity={terminalAnomalyPresentation().severity ?? undefined}
+      data-terminal-command-target={getCommandTargetAttribute()}
       data-terminal-cursor-blink={shouldBlinkTerminalCursor() ? 'true' : undefined}
       data-terminal-dormant={sessionDormant() ? 'true' : undefined}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
@@ -1706,6 +1804,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       data-terminal-presentation-mode={presentationMode().kind}
       data-terminal-surface-tier={surfaceTier()}
       data-terminal-status={sessionStatus()}
+      onMouseDown={focusLiveCommandTargetFromPointer}
       style={{
         width: '100%',
         height: '100%',

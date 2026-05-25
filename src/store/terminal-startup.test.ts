@@ -67,4 +67,28 @@ describe('terminal-startup', () => {
 
     expect(getTerminalStartupSummary()).toEqual(queuedSummary);
   });
+
+  it('ignores stale owner phase and clear updates after the same key is re-registered', () => {
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1', 1);
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1', 2);
+
+    setTerminalStartupPhase('task-1:agent-1', 'attaching', 1);
+    clearTerminalStartupEntry('task-1:agent-1', 1);
+
+    expect(getTerminalStartupSummary()).toEqual({
+      attachingCount: 0,
+      bindingCount: 0,
+      detail: '1 queued',
+      label: 'Preparing terminal…',
+      pendingCount: 1,
+      queuedCount: 1,
+      restoringCount: 0,
+    });
+
+    setTerminalStartupPhase('task-1:agent-1', 'attaching', 2);
+    expect(getTerminalStartupSummary()?.attachingCount).toBe(1);
+
+    clearTerminalStartupEntry('task-1:agent-1', 2);
+    expect(getTerminalStartupSummary()).toBeNull();
+  });
 });

@@ -181,6 +181,9 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       ...(options.persistedTask.stepsTracking !== undefined
         ? { stepsTracking: options.persistedTask.stepsTracking }
         : {}),
+      ...(options.persistedTask.terminalLayoutMode !== undefined
+        ? { terminalLayoutMode: options.persistedTask.terminalLayoutMode }
+        : {}),
     },
   };
 }

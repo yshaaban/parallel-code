@@ -24,6 +24,7 @@ import {
   resetTerminalSwitchEchoGraceForTests,
 } from '../app/terminal-switch-echo-grace';
 import {
+  beginTerminalSwitchWindow,
   getTerminalSwitchWindowSnapshot,
   resetTerminalSwitchWindowForTests,
 } from '../app/terminal-switch-window';
@@ -976,6 +977,63 @@ describe('TerminalView', () => {
     }
   });
 
+  it('clears failed lazy session attach state when the loader throws synchronously', async () => {
+    const loadError = new Error('terminal runtime sync failure');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const unregisterMocks: Array<ReturnType<typeof vi.fn>> = [];
+    const [focused, setFocused] = createSignal(true);
+
+    startTerminalSessionMock
+      .mockImplementationOnce(() => {
+        throw loadError;
+      })
+      .mockReturnValueOnce(createMockTerminalSession());
+    registerTerminalAttachCandidateMock.mockImplementation(
+      (options: { attach: () => void; getPriority: () => number }) => {
+        const unregister = vi.fn();
+        unregisterMocks.push(unregister);
+        void options.getPriority();
+        options.attach();
+        return {
+          release: vi.fn(),
+          unregister,
+          updatePriority: vi.fn(),
+        };
+      },
+    );
+    setStore('activeTaskId', 'task-1');
+
+    try {
+      render(() => (
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused={focused()}
+        />
+      ));
+
+      await vi.waitFor(() => {
+        expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+        expect(unregisterMocks[0]).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith('Failed to load terminal runtime:', loadError);
+      });
+
+      setFocused(false);
+      await Promise.resolve();
+      setFocused(true);
+
+      await vi.waitFor(() => {
+        expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+      });
+      expect(unregisterMocks).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('flushes the trailing PTY resize when panel dragging ends', async () => {
     const flushPendingResizeMock = vi.fn();
     startTerminalSessionMock.mockReturnValue(
@@ -1461,6 +1519,29 @@ describe('TerminalView', () => {
       expect(requestInputTakeoverMock).toHaveBeenCalledTimes(1);
     });
     expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
+    expect(session.term.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('focuses the live command target session when its terminal surface is pressed', () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isCommandTarget
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    getLastStatusChangeHandler()?.('ready');
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    terminalRoot?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
     expect(session.term.focus).toHaveBeenCalledTimes(1);
   });
 
@@ -1957,6 +2038,43 @@ describe('TerminalView', () => {
       }),
     );
 
+    getLastPaintReadyChangeHandler()?.(true);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: expect.objectContaining({
+          reason: 'completed',
+          taskId: 'task-1',
+        }),
+      }),
+    );
+  });
+
+  it('reports readiness to a task-owned switch window without owning its lifecycle', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: undefined,
+    });
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+        manageTaskSwitchWindowLifecycle={false}
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    beginTerminalSwitchWindow('task-1', 250, 0, 'task-1', 3);
+
+    getLastStatusChangeHandler()?.('ready');
     getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
@@ -2500,6 +2618,151 @@ describe('TerminalView', () => {
 
     expect(focusedRoot?.getAttribute('data-terminal-surface-tier')).toBe('interactive-live');
     expect(visibleRoot?.getAttribute('data-terminal-surface-tier')).toBe('passive-visible');
+  });
+
+  it('keeps the selected visible command target live after the switch window is gone', () => {
+    let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallback = callback;
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp"
+        isCommandTarget
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    intersectionCallback?.([{ isIntersecting: true }]);
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(getTerminalSwitchWindowSnapshot().active).toBe(false);
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('interactive-live');
+  });
+
+  it('keeps an explicit command target live before visibility observer catch-up', () => {
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp"
+        isCommandTarget
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('interactive-live');
+  });
+
+  it('keeps an initially active explicit command target live on first mount', () => {
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp"
+        isCommandTarget
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-active-command-target')).toBe('true');
+    expect(terminalRoot?.getAttribute('data-terminal-command-target')).toBe('true');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('interactive-live');
+  });
+
+  it('keeps a newly selected command target live when visibility has not caught up', () => {
+    const [isCommandTarget, setIsCommandTarget] = createSignal(false);
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp"
+        isCommandTarget={isCommandTarget()}
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('cold-hidden');
+
+    setIsCommandTarget(true);
+
+    expect(terminalRoot?.getAttribute('data-terminal-active-command-target')).toBe('true');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('interactive-live');
+  });
+
+  it('keeps an active-task terminal passive when it is not the command target', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-passive"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isCommandTarget={false}
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-passive"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('passive-visible');
+    expect(terminalRoot?.getAttribute('data-terminal-cursor-blink')).toBeNull();
   });
 
   it('arms focused output preemption when a terminal becomes visible', () => {

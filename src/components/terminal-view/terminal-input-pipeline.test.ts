@@ -372,6 +372,54 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('attributes immediately flushed keyboard input as unbuffered client-side', async () => {
+    setTerminalTraceClockAlignment(0, 0);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.recordKeyboardTraceStart({
+      altKey: false,
+      ctrlKey: false,
+      key: 'x',
+      metaKey: false,
+      shiftKey: false,
+    });
+    pipeline.handleTerminalData('x');
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    const request = vi.mocked(sendTerminalInput).mock.calls[0]?.[0] as
+      | {
+          trace?: {
+            bufferedAtMs: number;
+            startedAtMs: number;
+          };
+        }
+      | undefined;
+
+    expect(request?.trace?.bufferedAtMs).toBe(request?.trace?.startedAtMs);
+
+    pipeline.cleanup();
+  });
+
   it('marks split interactive echoes at their earliest visible match instead of waiting for a final suffix', async () => {
     setTerminalTraceClockAlignment(0, 0);
 

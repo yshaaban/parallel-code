@@ -94,6 +94,16 @@ function createHydratedRunningAgent(
   };
 }
 
+function replaceRecordContents<T extends object>(target: T, source: T): void {
+  for (const key of Object.keys(target) as Array<keyof T>) {
+    if (!(key in source)) {
+      delete target[key];
+    }
+  }
+
+  Object.assign(target, source);
+}
+
 function getSharedWorkspaceTaskOrder(raw: {
   collapsedTaskOrder?: string[];
   taskOrder: string[];
@@ -422,17 +432,26 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
           const previousTask = storeState.tasks[taskId];
           collectTaskAgentIds(previousTask).forEach((agentId) => agentsToDelete.add(agentId));
           collectTaskAgentIds(entry.task).forEach((agentId) => agentsToDelete.delete(agentId));
-          storeState.tasks[taskId] = entry.task;
+          if (previousTask) {
+            replaceRecordContents(previousTask, entry.task);
+          } else {
+            storeState.tasks[taskId] = entry.task;
+          }
 
           if (!entry.collapsed) {
             for (const { agentDef, agentId } of entry.agentEntries) {
               const previousAgent = storeState.agents[agentId];
-              storeState.agents[agentId] = createHydratedRunningAgent(
+              const hydratedAgent = createHydratedRunningAgent(
                 taskId,
                 agentId,
                 agentDef,
                 previousAgent,
               );
+              if (previousAgent) {
+                replaceRecordContents(previousAgent, hydratedAgent);
+              } else {
+                storeState.agents[agentId] = hydratedAgent;
+              }
             }
           }
         },

@@ -24,6 +24,7 @@ export {
 export { getProjectMode, isGitProject, isNonGitProject } from './project-mode';
 export {
   addAgentToTask,
+  getAgentTerminalSessionVersion,
   markAgentExited,
   markAgentRunning,
   setAgentStatus,
@@ -36,6 +37,11 @@ export {
   isTaskAiAgentId,
   isTaskRuntimeAgentId,
 } from './task-agent-selection';
+export {
+  getTaskTerminalLayoutMode,
+  getTaskVisibleAiTerminalAgentIds,
+  setTaskTerminalLayoutMode,
+} from './task-terminal-layout';
 export {
   updateTaskName,
   updateTaskNotes,

@@ -4,6 +4,7 @@ import { assertNever } from '../lib/assert-never';
 export type TerminalStartupPhase = 'queued' | 'binding' | 'attaching' | 'restoring';
 
 interface TerminalStartupEntry {
+  ownerId?: number;
   phase: TerminalStartupPhase;
   taskId: string;
 }
@@ -104,20 +105,33 @@ function getTerminalStartupDetail(
   return detailParts.join(' · ');
 }
 
-export function registerTerminalStartupCandidate(key: string, taskId: string): void {
+export function registerTerminalStartupCandidate(
+  key: string,
+  taskId: string,
+  ownerId?: number,
+): void {
   setTerminalStartupEntries((previousEntries) => ({
     ...previousEntries,
     [key]: {
       phase: 'queued',
       taskId,
+      ...(ownerId === undefined ? {} : { ownerId }),
     },
   }));
 }
 
-export function setTerminalStartupPhase(key: string, phase: TerminalStartupPhase): void {
+export function setTerminalStartupPhase(
+  key: string,
+  phase: TerminalStartupPhase,
+  ownerId?: number,
+): void {
   setTerminalStartupEntries((previousEntries) => {
     const currentEntry = previousEntries[key];
-    if (!currentEntry || currentEntry.phase === phase) {
+    if (
+      !currentEntry ||
+      (currentEntry.ownerId !== undefined && currentEntry.ownerId !== ownerId) ||
+      currentEntry.phase === phase
+    ) {
       return previousEntries;
     }
 
@@ -131,9 +145,12 @@ export function setTerminalStartupPhase(key: string, phase: TerminalStartupPhase
   });
 }
 
-export function clearTerminalStartupEntry(key: string): void {
+export function clearTerminalStartupEntry(key: string, ownerId?: number): void {
   setTerminalStartupEntries((previousEntries) => {
-    if (!previousEntries[key]) {
+    if (
+      !previousEntries[key] ||
+      (previousEntries[key].ownerId !== undefined && previousEntries[key].ownerId !== ownerId)
+    ) {
       return previousEntries;
     }
 

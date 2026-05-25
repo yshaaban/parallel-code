@@ -181,6 +181,7 @@ export interface BrowserLabTerminalDiagnosticsSnapshot {
   outputDiagnostics: unknown | null;
   pageLifecycle: BrowserLabPageLifecycleSnapshot;
   rendererDiagnostics: unknown | null;
+  terminalAttachTrace: unknown | null;
   terminalSnapshots: BrowserLabTerminalSnapshot[];
   uiFluidityDiagnostics: unknown | null;
 }
@@ -196,7 +197,7 @@ declare global {
 }
 
 function getTerminalInput(page: Page, terminalIndex = 0): Locator {
-  return page.locator(TERMINAL_INPUT_SELECTOR).nth(terminalIndex);
+  return getTerminalStatusRoot(page, terminalIndex).locator(TERMINAL_INPUT_SELECTOR).first();
 }
 
 function getTerminalStatusRoot(page: Page, terminalIndex = 0): Locator {
@@ -204,9 +205,7 @@ function getTerminalStatusRoot(page: Page, terminalIndex = 0): Locator {
 }
 
 function getTerminalRoot(page: Page, terminalIndex = 0): Locator {
-  return page
-    .locator(`${TERMINAL_STATUS_SELECTOR}:has(${TERMINAL_INPUT_SELECTOR})`)
-    .nth(terminalIndex);
+  return getTerminalStatusRoot(page, terminalIndex);
 }
 
 export function getTerminalLoadingOverlay(page: Page, terminalIndex = 0): Locator {
@@ -414,25 +413,41 @@ async function readTerminalKeyboardFocusState(
   hasFocus: boolean;
   visibilityState: string;
 }> {
-  return page.evaluate((index) => {
-    const inputs = Array.from(
-      document.querySelectorAll<HTMLTextAreaElement>('textarea[aria-label="Terminal input"]'),
-    );
-    const input = inputs[index];
-    if (!input) {
+  return page.evaluate(
+    ({ inputSelector, index, statusSelector }) => {
+      const statusRoots = Array.from(document.querySelectorAll<HTMLElement>(statusSelector));
+      const statusRoot = statusRoots[index];
+      const input = statusRoot?.querySelector<HTMLTextAreaElement>(inputSelector);
+      if (!input) {
+        return {
+          activeIndex: -1,
+          hasFocus: document.hasFocus(),
+          visibilityState: document.visibilityState,
+        };
+      }
+
+      const activeElement = document.activeElement;
+      if (!(activeElement instanceof HTMLElement)) {
+        return {
+          activeIndex: -1,
+          hasFocus: document.hasFocus(),
+          visibilityState: document.visibilityState,
+        };
+      }
+
+      const activeIndex = statusRoots.findIndex((root) => root.contains(activeElement));
       return {
-        activeIndex: -1,
+        activeIndex,
         hasFocus: document.hasFocus(),
         visibilityState: document.visibilityState,
       };
-    }
-
-    return {
-      activeIndex: inputs.findIndex((element) => element === document.activeElement),
-      hasFocus: document.hasFocus(),
-      visibilityState: document.visibilityState,
-    };
-  }, terminalIndex);
+    },
+    {
+      index: terminalIndex,
+      inputSelector: TERMINAL_INPUT_SELECTOR,
+      statusSelector: TERMINAL_STATUS_SELECTOR,
+    },
+  );
 }
 
 async function readTerminalStatusElement(input: Locator): Promise<{
@@ -568,8 +583,10 @@ export const test = base.extend<
         };
 
         const windowWithLifecycle = window as typeof window & {
+          __PARALLEL_CODE_TERMINAL_ATTACH_TRACE__?: Record<string, unknown>;
           [key: string]: BrowserLabPageLifecycleStore | undefined;
         };
+        windowWithLifecycle.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ ??= {};
         const lifecycle =
           windowWithLifecycle[storageKey] ??
           (windowWithLifecycle[storageKey] = {
@@ -641,6 +658,27 @@ export const test = base.extend<
           );
         }
 
+        function getFocusEventTargetLabel(target: EventTarget | null): string | null {
+          if (!(target instanceof HTMLElement)) {
+            return null;
+          }
+
+          const terminalInput = target.closest('textarea[aria-label="Terminal input"]');
+          if (terminalInput instanceof HTMLTextAreaElement) {
+            return 'terminal-input';
+          }
+
+          return target.tagName.toLowerCase();
+        }
+
+        function getUnhandledRejectionMessage(reason: unknown): string {
+          if (reason instanceof Error) {
+            return reason.message;
+          }
+
+          return String(reason ?? '');
+        }
+
         const bannerObserver = new MutationObserver(() => {
           recordBanner();
         });
@@ -687,10 +725,7 @@ export const test = base.extend<
           recordWindowEvent('pageshow');
         });
         window.addEventListener('unhandledrejection', (event) => {
-          recordWindowEvent(
-            'unhandledrejection',
-            event.reason instanceof Error ? event.reason.message : String(event.reason ?? ''),
-          );
+          recordWindowEvent('unhandledrejection', getUnhandledRejectionMessage(event.reason));
         });
         document.addEventListener('visibilitychange', () => {
           recordWindowEvent('visibilitychange', document.visibilityState);
@@ -698,28 +733,14 @@ export const test = base.extend<
         document.addEventListener(
           'focusin',
           (event) => {
-            const target = event.target instanceof HTMLElement ? event.target : null;
-            const terminalInput =
-              target?.closest('textarea[aria-label="Terminal input"]') instanceof
-              HTMLTextAreaElement;
-            recordWindowEvent(
-              'focusin',
-              terminalInput ? 'terminal-input' : (target?.tagName?.toLowerCase() ?? null),
-            );
+            recordWindowEvent('focusin', getFocusEventTargetLabel(event.target));
           },
           true,
         );
         document.addEventListener(
           'focusout',
           (event) => {
-            const target = event.target instanceof HTMLElement ? event.target : null;
-            const terminalInput =
-              target?.closest('textarea[aria-label="Terminal input"]') instanceof
-              HTMLTextAreaElement;
-            recordWindowEvent(
-              'focusout',
-              terminalInput ? 'terminal-input' : (target?.tagName?.toLowerCase() ?? null),
-            );
+            recordWindowEvent('focusout', getFocusEventTargetLabel(event.target));
           },
           true,
         );
@@ -744,6 +765,8 @@ export const test = base.extend<
                 },
                 rendererDiagnostics:
                   window.__parallelCodeRendererRuntimeDiagnostics?.getSnapshot() ?? null,
+                terminalAttachTrace:
+                  windowWithLifecycle.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ ?? null,
                 terminalSnapshots: readTerminalSnapshots(),
                 uiFluidityDiagnostics:
                   window.__parallelCodeUiFluidityDiagnostics?.getSnapshot() ?? null,
@@ -1074,7 +1097,7 @@ export const test = base.extend<
       const terminalRoot = getTerminalRoot(page, terminalIndex);
       await page.bringToFront();
       await terminalRoot.scrollIntoViewIfNeeded();
-      await terminalRoot.click();
+      await terminalRoot.click({ position: { x: 12, y: 12 } });
       await input.focus();
       await waitForTerminalKeyboardFocus(page, terminalIndex);
     }

@@ -113,6 +113,7 @@ interface TerminalAnomalyMonitorEntry {
   lastStatus: TerminalAnomalyMonitorStatus | null;
   lifecycle: TerminalAnomalyLifecycleState;
   recentEvents: TerminalAnomalyMonitorEvent[];
+  registrationId: number;
   taskId: string;
   updatedAtMs: number;
   visibleAnomalies: Set<TerminalAnomalyKind>;
@@ -205,6 +206,7 @@ const terminalEntries = new Map<string, TerminalAnomalyMonitorEntry>();
 const terminalAnomalyMonitorListeners = new Set<TerminalAnomalyMonitorListener>();
 const terminalAnomalyMonitorEvents: TerminalAnomalyMonitorEvent[] = [];
 let terminalAnomalyMonitorTimer: ReturnType<typeof setTimeout> | undefined;
+let nextTerminalAnomalyMonitorRegistrationId = 1;
 
 function getTerminalAnomalyMonitorNow(): number {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
@@ -439,9 +441,11 @@ function getOrCreateTerminalEntry(
   key: string,
   taskId: string,
   agentId: string,
+  registrationId: number,
 ): TerminalAnomalyMonitorEntry {
   const existingEntry = terminalEntries.get(key);
   if (existingEntry) {
+    existingEntry.registrationId = registrationId;
     return existingEntry;
   }
 
@@ -458,6 +462,7 @@ function getOrCreateTerminalEntry(
     lastStatus: null,
     lifecycle: { ...DEFAULT_LIFECYCLE_STATE },
     recentEvents: [],
+    registrationId,
     taskId,
     updatedAtMs: now,
     visibleAnomalies: new Set<TerminalAnomalyKind>(),
@@ -564,11 +569,26 @@ export function registerTerminalAnomalyMonitorTerminal(details: {
   key: string;
   taskId: string;
 }): TerminalAnomalyMonitorRegistration {
-  const entry = getOrCreateTerminalEntry(details.key, details.taskId, details.agentId);
+  const registrationId = nextTerminalAnomalyMonitorRegistrationId;
+  nextTerminalAnomalyMonitorRegistrationId += 1;
+  const entry = getOrCreateTerminalEntry(
+    details.key,
+    details.taskId,
+    details.agentId,
+    registrationId,
+  );
   notifyTerminalAnomalyMonitorMutation();
+
+  function isCurrentRegistration(): boolean {
+    return terminalEntries.get(details.key)?.registrationId === registrationId;
+  }
 
   return {
     recordInteraction(kind): void {
+      if (!isCurrentRegistration()) {
+        return;
+      }
+
       const now = getTerminalAnomalyMonitorNow();
       if (kind === 'blocked-input') {
         entry.counters.blockedInputAttempts += 1;
@@ -583,7 +603,7 @@ export function registerTerminalAnomalyMonitorTerminal(details: {
     },
     unregister(): void {
       const currentEntry = terminalEntries.get(details.key);
-      if (!currentEntry) {
+      if (!currentEntry || currentEntry.registrationId !== registrationId) {
         return;
       }
 
@@ -595,6 +615,10 @@ export function registerTerminalAnomalyMonitorTerminal(details: {
       notifyTerminalAnomalyMonitorMutation();
     },
     updateLifecycle(state): void {
+      if (!isCurrentRegistration()) {
+        return;
+      }
+
       updateEntryLifecycle(entry, state);
       notifyTerminalAnomalyMonitorMutation();
     },
@@ -656,5 +680,6 @@ export function resetTerminalAnomalyMonitor(): void {
   terminalEntries.clear();
   terminalAnomalyMonitorEvents.length = 0;
   terminalAnomalyMonitorListeners.clear();
+  nextTerminalAnomalyMonitorRegistrationId = 1;
   attachTerminalAnomalyMonitorStore();
 }

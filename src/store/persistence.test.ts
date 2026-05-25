@@ -283,6 +283,45 @@ describe('persistence integration', () => {
     expect(persisted.projects[0]).not.toHaveProperty('deleteBranchOnClose');
   });
 
+  it('hydrates only valid persisted project agent runner config', () => {
+    expect(
+      applyLoadedStateJson(
+        JSON.stringify({
+          projects: [
+            {
+              id: 'project-1',
+              name: 'Project',
+              path: '/tmp/project',
+              color: '#123456',
+              agentRunnerConfig: {
+                image: 'agent:latest',
+                provider: 'docker-container',
+              },
+            },
+            {
+              id: 'project-2',
+              name: 'Invalid',
+              path: '/tmp/invalid',
+              color: '#654321',
+              agentRunnerConfig: {
+                image: 'agent:latest',
+                provider: 'podman',
+              },
+            },
+          ],
+          taskOrder: [],
+          tasks: {},
+        }),
+      ),
+    ).toBe(true);
+
+    expect(store.projects[0]?.agentRunnerConfig).toEqual({
+      image: 'agent:latest',
+      provider: 'docker-container',
+    });
+    expect(store.projects[1]?.agentRunnerConfig).toBeUndefined();
+  });
+
   it('migrates legacy projectRoot state and restores running agents', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.LoadAppState) {
@@ -1577,6 +1616,60 @@ describe('persistence integration', () => {
 
     await expect(loadWorkspaceState()).resolves.toBe(true);
     expect(store.tasks['task-1']?.name).toBe('Remote');
+  });
+
+  it('preserves existing task and agent identities during incremental browser workspace sync', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    const agentDef = createTestAgentDef({ id: 'claude', name: 'Claude' });
+    setStore('projects', [createTestProject({ id: 'project-1', path: '/tmp/project' })]);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        id: 'task-1',
+        projectId: 'project-1',
+        agentIds: ['agent-1'],
+        selectedAgentId: 'agent-1',
+      }),
+    });
+    setStore('agents', {
+      'agent-1': {
+        ...createTestAgent({
+          id: 'agent-1',
+          taskId: 'task-1',
+          def: agentDef,
+          generation: 4,
+        }),
+        terminalSessionVersion: 2,
+      },
+    });
+
+    const previousTask = store.tasks['task-1'];
+    const previousAgent = store.agents['agent-1'];
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Remote',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: 'remote notes',
+          lastPrompt: '',
+          shellCount: 0,
+          agentId: 'agent-1',
+          agentDef,
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 1)).toBe(true);
+
+    expect(store.tasks['task-1']).toBe(previousTask);
+    expect(store.agents['agent-1']).toBe(previousAgent);
+    expect(store.tasks['task-1']?.name).toBe('Remote');
+    expect(store.agents['agent-1']?.generation).toBe(4);
+    expect(store.agents['agent-1']?.terminalSessionVersion).toBe(2);
   });
 
   it('surfaces browser workspace load transport failures to the caller', async () => {

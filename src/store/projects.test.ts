@@ -102,6 +102,35 @@ describe('project path validation', () => {
     expect(getProjectBranchPrefix('project-1')).toBe('task');
   });
 
+  it('updates and clears project agent runner config explicitly', () => {
+    setStore('projects', [
+      {
+        id: 'project-1',
+        name: 'Project',
+        path: '/repo',
+        color: '#111111',
+      },
+    ]);
+
+    updateProject('project-1', {
+      agentRunnerConfig: {
+        image: 'agent:latest',
+        provider: 'docker-container',
+      },
+    });
+
+    expect(store.projects.find((entry) => entry.id === 'project-1')?.agentRunnerConfig).toEqual({
+      image: 'agent:latest',
+      provider: 'docker-container',
+    });
+
+    updateProject('project-1', { agentRunnerConfig: undefined });
+
+    expect(store.projects.find((entry) => entry.id === 'project-1')).not.toHaveProperty(
+      'agentRunnerConfig',
+    );
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

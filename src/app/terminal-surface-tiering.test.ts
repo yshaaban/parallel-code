@@ -69,6 +69,32 @@ describe('terminal-surface-tiering', () => {
     visible.unregister();
   });
 
+  it('ignores stale unregisters and updates after the same key is re-registered', () => {
+    const stale = registerTerminalSurfaceTier('same-key', {
+      isFocused: true,
+      isSelected: true,
+      isVisible: true,
+    });
+    const current = registerTerminalSurfaceTier('same-key', {
+      isFocused: false,
+      isSelected: false,
+      isVisible: true,
+    });
+
+    stale.unregister();
+    expect(getTerminalSurfaceTier('same-key')).toBe('passive-visible');
+
+    stale.update({
+      isFocused: false,
+      isSelected: false,
+      isVisible: false,
+    });
+    expect(getTerminalSurfaceTier('same-key')).toBe('passive-visible');
+
+    current.unregister();
+    expect(getTerminalSurfaceTier('same-key')).toBe('cold-hidden');
+  });
+
   it('keeps selected visible terminals in the handoff-live role', () => {
     const selected = registerTerminalSurfaceTier('selected', {
       isFocused: false,
@@ -81,14 +107,14 @@ describe('terminal-surface-tiering', () => {
     selected.unregister();
   });
 
-  it('does not keep hidden selected terminals in the handoff-live role', () => {
+  it('keeps selected terminals in the handoff-live role when visibility observation flickers', () => {
     const selectedHidden = registerTerminalSurfaceTier('selected-hidden', {
       isFocused: false,
       isSelected: true,
       isVisible: false,
     });
 
-    expect(getTerminalSurfaceTier('selected-hidden')).toBe('cold-hidden');
+    expect(getTerminalSurfaceTier('selected-hidden')).toBe('handoff-live');
 
     selectedHidden.unregister();
   });

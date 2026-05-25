@@ -6,6 +6,7 @@ import { IPC } from './channels.js';
 
 const {
   resolveHydraAdapterLaunchMock,
+  createDockerAgentRunnerLaunchMock,
   ensurePlansDirectoryMock,
   startPlanWatcherMock,
   stopPlanWatcherMock,
@@ -28,6 +29,7 @@ const {
   removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
   resolveHydraAdapterLaunchMock: vi.fn(),
+  createDockerAgentRunnerLaunchMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
   stopPlanWatcherMock: vi.fn(),
@@ -52,6 +54,10 @@ const {
 
 vi.mock('./hydra-adapter.js', () => ({
   resolveHydraAdapterLaunch: resolveHydraAdapterLaunchMock,
+}));
+
+vi.mock('./agent-runner-docker.js', () => ({
+  createDockerAgentRunnerLaunch: createDockerAgentRunnerLaunchMock,
 }));
 
 vi.mock('./plans.js', () => ({
@@ -155,6 +161,22 @@ describe('task workflows', () => {
       env: { HYDRA_BOOT: '1' },
       isInternalNodeProcess: true,
     });
+    createDockerAgentRunnerLaunchMock.mockReturnValue({
+      args: ['run', '--name', 'parallel-code-agent', 'agent:latest', 'codex'],
+      cleanup: vi.fn(),
+      command: 'docker',
+      cwd: '/tmp/task-1',
+      env: {},
+      identity: {
+        agentId: 'agent-1',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
     getMainBranchMock.mockResolvedValue('main');
     startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
   });
@@ -217,6 +239,146 @@ describe('task workflows', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/task-1',
     });
+  });
+
+  it('wraps non-shell agent launches through a configured Docker runner', () => {
+    const context = createContext();
+    const cleanup = vi.fn();
+    createDockerAgentRunnerLaunchMock.mockReturnValueOnce({
+      args: ['run', '--name', 'parallel-code-agent', 'agent:latest', 'codex', 'run'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/task-1',
+      env: {},
+      identity: {
+        agentId: 'agent-1',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
+
+    spawnTaskAgentWorkflow(context, {
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      command: 'codex',
+      args: ['run'],
+      baseBranch: 'main',
+      cwd: '/tmp/task-1',
+      env: { KEEP_ME: 'yes', DROP_ME: 42 },
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+      runnerProfile: {
+        image: 'agent:latest',
+        provider: 'docker-container',
+      },
+    });
+
+    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      args: ['run'],
+      command: 'codex',
+      cwd: '/tmp/task-1',
+      env: { KEEP_ME: 'yes' },
+      profile: {
+        image: 'agent:latest',
+        provider: 'docker-container',
+      },
+      taskId: 'task-1',
+    });
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        args: ['run', '--name', 'parallel-code-agent', 'agent:latest', 'codex', 'run'],
+        command: 'docker',
+        cwd: '/tmp/task-1',
+        env: {},
+        isInternalNodeProcess: false,
+        onExitCleanup: cleanup,
+        runnerIdentity: expect.objectContaining({
+          provider: 'docker-container',
+          runnerInstanceId: 'runner-1',
+        }),
+      }),
+    );
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'main',
+      taskId: 'task-1',
+      worktreePath: '/tmp/task-1',
+    });
+  });
+
+  it('cleans a prepared Docker runner when PTY spawn fails', () => {
+    const context = createContext();
+    const cleanup = vi.fn();
+    createDockerAgentRunnerLaunchMock.mockReturnValueOnce({
+      args: ['run', '--name', 'parallel-code-agent', 'agent:latest', 'codex'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/task-1',
+      env: {},
+      identity: {
+        agentId: 'agent-1',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
+    spawnAgentMock.mockImplementationOnce(() => {
+      throw new Error('pty spawn failed');
+    });
+
+    expect(() =>
+      spawnTaskAgentWorkflow(context, {
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: 'codex',
+        args: ['run'],
+        cwd: '/tmp/task-1',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+        runnerProfile: {
+          image: 'agent:latest',
+          provider: 'docker-container',
+        },
+      }),
+    ).toThrow('pty spawn failed');
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects Hydra adapter agents for Docker container runners before creating Docker resources', () => {
+    const context = createContext();
+
+    expect(() =>
+      spawnTaskAgentWorkflow(context, {
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        adapter: 'hydra',
+        command: 'hydra',
+        args: ['agents=codex'],
+        cwd: '/tmp/task-1',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+        runnerProfile: {
+          image: 'agent:latest',
+          provider: 'docker-container',
+        },
+      }),
+    ).toThrow('Docker container agent runners do not support Hydra adapter agents yet.');
+    expect(createDockerAgentRunnerLaunchMock).not.toHaveBeenCalled();
+    expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
   it('skips plan and git watchers for shell agents', () => {

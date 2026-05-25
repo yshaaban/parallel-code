@@ -137,6 +137,190 @@ describe('EditProjectDialog', () => {
     expect(updates).not.toHaveProperty('deleteBranchOnClose');
   });
 
+  it('saves Docker container agent runner settings', async () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+
+    render(() => <EditProjectDialog project={createTestProject()} onClose={onClose} />);
+
+    fireEvent.change(screen.getByDisplayValue('Host'), {
+      target: { value: 'docker-container' },
+    });
+    fireEvent.input(screen.getByPlaceholderText('Docker image, for example node:22-alpine'), {
+      target: { value: 'parallel-code-agent:latest' },
+    });
+    fireEvent.input(screen.getByPlaceholderText('Optional Dockerfile path inside the worktree'), {
+      target: { value: 'docker/Dockerfile' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    expect(updateProjectMock).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({
+        agentRunnerConfig: {
+          dockerfile: 'docker/Dockerfile',
+          image: 'parallel-code-agent:latest',
+          provider: 'docker-container',
+        },
+      }),
+    );
+  });
+
+  it('removes legacy container runner settings when saving canonical runner config', async () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+
+    render(() => (
+      <EditProjectDialog
+        project={createTestProject({
+          containerConfig: {
+            composeFile: 'compose.yaml',
+            runnerProfile: {
+              image: 'legacy-agent:latest',
+              kind: 'docker',
+            },
+          },
+        })}
+        onClose={onClose}
+      />
+    ));
+
+    fireEvent.input(screen.getByPlaceholderText('Docker image, for example node:22-alpine'), {
+      target: { value: 'parallel-code-agent:latest' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    expect(updateProjectMock).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({
+        agentRunnerConfig: {
+          image: 'parallel-code-agent:latest',
+          provider: 'docker-container',
+        },
+        containerConfig: {
+          composeFile: 'compose.yaml',
+        },
+      }),
+    );
+  });
+
+  it('clears agent runner settings when switching back to host', async () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+
+    render(() => (
+      <EditProjectDialog
+        project={createTestProject({
+          agentRunnerConfig: {
+            image: 'parallel-code-agent:latest',
+            provider: 'docker-container',
+          },
+        })}
+        onClose={onClose}
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('Docker container'), {
+      target: { value: 'host' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    expect(updateProjectMock).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({
+        agentRunnerConfig: undefined,
+      }),
+    );
+  });
+
+  it('clears legacy container runner settings when switching back to host', async () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+
+    render(() => (
+      <EditProjectDialog
+        project={createTestProject({
+          containerConfig: {
+            composeFile: 'compose.yaml',
+            runnerProfile: {
+              image: 'parallel-code-agent:latest',
+              kind: 'docker',
+            },
+          },
+        })}
+        onClose={onClose}
+      />
+    ));
+
+    expect(screen.getByDisplayValue('Docker container')).toBeDefined();
+
+    fireEvent.change(screen.getByDisplayValue('Docker container'), {
+      target: { value: 'host' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    expect(updateProjectMock).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({
+        agentRunnerConfig: undefined,
+        containerConfig: {
+          composeFile: 'compose.yaml',
+        },
+      }),
+    );
+  });
+
+  it('blocks unsupported Docker sandbox agent runner saves', () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+
+    render(() => <EditProjectDialog project={createTestProject()} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByDisplayValue('Host'), {
+      target: { value: 'docker-sandbox' },
+    });
+
+    expect(
+      screen.getByText(
+        'Docker sandbox runners are reserved for a future provider and are not supported by this build.',
+      ),
+    ).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('blocks Dockerfile paths that backend validation would reject', () => {
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+
+    render(() => <EditProjectDialog project={createTestProject()} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByDisplayValue('Host'), {
+      target: { value: 'docker-container' },
+    });
+    fireEvent.input(screen.getByPlaceholderText('Optional Dockerfile path inside the worktree'), {
+      target: { value: '../Dockerfile' },
+    });
+
+    expect(
+      screen.getByText('Dockerfile path must be relative and stay inside the worktree.'),
+    ).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('re-links a missing project through the app workflow and closes on success', async () => {
     isProjectMissingMock.mockReturnValue(true);
     relinkProjectMock.mockResolvedValue(true);

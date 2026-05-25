@@ -10,12 +10,13 @@ interface TerminalSurfaceTierState {
   isSelected: boolean;
   isVisible: boolean;
   lastIntentAtMs: number;
+  registrationId: number;
 }
 
 export interface TerminalSurfaceTierRegistration {
   noteIntent: () => void;
   unregister: () => void;
-  update: (state: Omit<TerminalSurfaceTierState, 'lastIntentAtMs'>) => void;
+  update: (state: Omit<TerminalSurfaceTierState, 'lastIntentAtMs' | 'registrationId'>) => void;
 }
 
 export type TerminalSurfaceTier =
@@ -29,6 +30,7 @@ const terminalSurfaceTierStates = new Map<string, TerminalSurfaceTierState>();
 const terminalSurfaceTierListeners = new Set<() => void>();
 const TERMINAL_RECENT_HIDDEN_RESERVATION_LIMIT = 2;
 let lastTerminalSurfaceTierNow = 0;
+let nextTerminalSurfaceTierRegistrationId = 1;
 
 function getTerminalSurfaceTierNow(): number {
   const candidateNow =
@@ -55,12 +57,13 @@ function cloneTerminalSurfaceTierState(
     isSelected: state.isSelected,
     isVisible: state.isVisible,
     lastIntentAtMs: getTerminalSurfaceTierNow(),
+    registrationId: state.registrationId,
   };
 }
 
-function promoteTerminalSurfaceTierIntent(key: string): void {
+function promoteTerminalSurfaceTierIntent(key: string, registrationId: number): void {
   const existingState = terminalSurfaceTierStates.get(key);
-  if (!existingState) {
+  if (!existingState || existingState.registrationId !== registrationId) {
     return;
   }
 
@@ -71,7 +74,7 @@ function promoteTerminalSurfaceTierIntent(key: string): void {
 function isVisibleTerminalState(
   state: Pick<TerminalSurfaceTierState, 'isFocused' | 'isSelected' | 'isVisible'>,
 ): boolean {
-  return state.isFocused || state.isVisible;
+  return state.isFocused || state.isSelected || state.isVisible;
 }
 
 function getHotHiddenTerminalKeys(): Set<string> {
@@ -168,26 +171,45 @@ function shouldApplyRecentHiddenReservation(visibleTerminalCount: number): boole
 
 export function registerTerminalSurfaceTier(
   key: string,
-  initialState: Omit<TerminalSurfaceTierState, 'lastIntentAtMs'>,
+  initialState: Omit<TerminalSurfaceTierState, 'lastIntentAtMs' | 'registrationId'>,
 ): TerminalSurfaceTierRegistration {
-  terminalSurfaceTierStates.set(key, cloneTerminalSurfaceTierState(initialState));
+  const registrationId = nextTerminalSurfaceTierRegistrationId;
+  nextTerminalSurfaceTierRegistrationId += 1;
+  terminalSurfaceTierStates.set(
+    key,
+    cloneTerminalSurfaceTierState({
+      ...initialState,
+      registrationId,
+    }),
+  );
   notifyTerminalSurfaceTierListeners();
 
   function noteIntent(): void {
-    promoteTerminalSurfaceTierIntent(key);
+    promoteTerminalSurfaceTierIntent(key, registrationId);
   }
 
-  function update(state: Omit<TerminalSurfaceTierState, 'lastIntentAtMs'>): void {
+  function update(
+    state: Omit<TerminalSurfaceTierState, 'lastIntentAtMs' | 'registrationId'>,
+  ): void {
     const existingState = terminalSurfaceTierStates.get(key);
+    if (!existingState || existingState.registrationId !== registrationId) {
+      return;
+    }
+
     const nextState = {
       ...state,
-      lastIntentAtMs: existingState?.lastIntentAtMs ?? getTerminalSurfaceTierNow(),
+      lastIntentAtMs: existingState.lastIntentAtMs,
+      registrationId,
     };
     terminalSurfaceTierStates.set(key, nextState);
     notifyTerminalSurfaceTierListeners();
   }
 
   function unregister(): void {
+    if (terminalSurfaceTierStates.get(key)?.registrationId !== registrationId) {
+      return;
+    }
+
     terminalSurfaceTierStates.delete(key);
     notifyTerminalSurfaceTierListeners();
   }
@@ -209,7 +231,7 @@ export function getTerminalSurfaceTier(key: string): TerminalSurfaceTier {
     return 'interactive-live';
   }
 
-  if (state.isSelected && state.isVisible) {
+  if (state.isSelected) {
     return 'handoff-live';
   }
 
@@ -231,4 +253,5 @@ export function resetTerminalSurfaceTieringForTests(): void {
   terminalSurfaceTierStates.clear();
   terminalSurfaceTierListeners.clear();
   lastTerminalSurfaceTierNow = 0;
+  nextTerminalSurfaceTierRegistrationId = 1;
 }

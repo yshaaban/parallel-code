@@ -1713,6 +1713,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         projectMode: props.projectMode,
         resumeOnStart: props.resumeOnStart === true,
         rows: term.rows,
+        runnerProfile: props.runnerProfile,
         taskId,
       });
       if (disposed) {

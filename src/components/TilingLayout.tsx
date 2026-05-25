@@ -157,24 +157,23 @@ export function TilingLayout(): JSX.Element {
                     </div>
                   )}
                 >
-                  {(() => {
-                    let panelContent: JSX.Element | null = null;
-
-                    if (task) {
-                      panelContent = (
-                        <TaskPanel task={task} isActive={store.activeTaskId === panelId} />
-                      );
-                    } else if (terminal) {
-                      panelContent = (
-                        <TerminalPanel
-                          terminal={terminal}
-                          isActive={store.activeTaskId === panelId}
-                        />
-                      );
+                  <Show
+                    when={store.tasks[panelId]}
+                    fallback={
+                      <Show when={store.terminals[panelId]}>
+                        {(currentTerminal) => (
+                          <TerminalPanel
+                            terminal={currentTerminal()}
+                            isActive={store.activeTaskId === panelId}
+                          />
+                        )}
+                      </Show>
                     }
-
-                    return panelContent;
-                  })()}
+                  >
+                    {(currentTask) => (
+                      <TaskPanel task={currentTask()} isActive={store.activeTaskId === panelId} />
+                    )}
+                  </Show>
                 </ErrorBoundary>
               </div>
             );

@@ -72,6 +72,36 @@ describe('terminal-startup-paint', () => {
     });
   });
 
+  it('ignores stale clears after the same key is claimed by a newer owner', () => {
+    setTerminalStartupPaintCoordinationEntry(
+      'task-1:selected',
+      {
+        paintReady: false,
+        role: 'selected',
+        taskId: 'task-1',
+      },
+      1,
+    );
+
+    setTerminalStartupPaintCoordinationEntry(
+      'task-1:selected',
+      {
+        paintReady: true,
+        role: 'selected',
+        taskId: 'task-1',
+      },
+      2,
+    );
+
+    clearTerminalStartupPaintCoordinationEntry('task-1:selected', 1);
+    expect(getTaskTerminalStartupPaintCoordinationSnapshot('task-1').selectedPaintReady).toBe(true);
+
+    clearTerminalStartupPaintCoordinationEntry('task-1:selected', 2);
+    expect(getTaskTerminalStartupPaintCoordinationSnapshot('task-1').selectedPaintReady).toBe(
+      false,
+    );
+  });
+
   it('summarizes startup paint state across all tasks', () => {
     setTerminalStartupPaintCoordinationEntry('task-1:selected', {
       paintReady: true,

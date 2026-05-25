@@ -95,7 +95,9 @@ export function updateProject(
       | 'name'
       | 'color'
       | 'baseBranch'
+      | 'agentRunnerConfig'
       | 'branchPrefix'
+      | 'containerConfig'
       | 'deleteBranchOnClose'
       | 'defaultDirectMode'
       | 'defaultTaskGitIsolation'
@@ -113,6 +115,20 @@ export function updateProject(
 
       if (updates.name !== undefined) project.name = updates.name;
       if (updates.color !== undefined) project.color = updates.color;
+      if (Object.prototype.hasOwnProperty.call(updates, 'agentRunnerConfig')) {
+        if (updates.agentRunnerConfig) {
+          project.agentRunnerConfig = updates.agentRunnerConfig;
+        } else {
+          delete project.agentRunnerConfig;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'containerConfig')) {
+        if (updates.containerConfig) {
+          project.containerConfig = updates.containerConfig;
+        } else {
+          delete project.containerConfig;
+        }
+      }
       if (updates.projectMode !== undefined) {
         if (getProjectMode(updates) === 'non-git') {
           project.projectMode = 'non-git';
@@ -169,7 +185,11 @@ export function getProjectBaseBranch(projectId: string): string | undefined {
 
 export function getProjectBranchPrefix(projectId: string): string {
   const project = getProject(projectId);
-  const raw = getProjectMode(project) === 'non-git' ? 'task' : (project?.branchPrefix ?? 'task');
+  if (getProjectMode(project) === 'non-git') {
+    return sanitizeBranchPrefix('task');
+  }
+
+  const raw = project?.branchPrefix ?? 'task';
   return sanitizeBranchPrefix(raw);
 }
 

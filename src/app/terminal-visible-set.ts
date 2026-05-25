@@ -4,34 +4,50 @@ interface TerminalVisibilityState {
   isFocused: boolean;
   isSelected: boolean;
   isVisible: boolean;
+  registrationId: number;
 }
 
 export interface TerminalVisibilityRegistration {
   unregister: () => void;
-  update: (state: TerminalVisibilityState) => void;
+  update: (state: Omit<TerminalVisibilityState, 'registrationId'>) => void;
 }
 
 const terminalVisibilityStates = new Map<string, TerminalVisibilityState>();
+let nextTerminalVisibilityRegistrationId = 1;
 
-function cloneTerminalVisibilityState(state: TerminalVisibilityState): TerminalVisibilityState {
+function cloneTerminalVisibilityState(
+  state: Omit<TerminalVisibilityState, 'registrationId'>,
+  registrationId: number,
+): TerminalVisibilityState {
   return {
     isFocused: state.isFocused,
     isSelected: state.isSelected,
     isVisible: state.isVisible,
+    registrationId,
   };
 }
 
 export function registerTerminalVisibility(
   key: string,
-  initialState: TerminalVisibilityState,
+  initialState: Omit<TerminalVisibilityState, 'registrationId'>,
 ): TerminalVisibilityRegistration {
-  terminalVisibilityStates.set(key, cloneTerminalVisibilityState(initialState));
+  const registrationId = nextTerminalVisibilityRegistrationId;
+  nextTerminalVisibilityRegistrationId += 1;
+  terminalVisibilityStates.set(key, cloneTerminalVisibilityState(initialState, registrationId));
 
-  function update(state: TerminalVisibilityState): void {
-    terminalVisibilityStates.set(key, cloneTerminalVisibilityState(state));
+  function update(state: Omit<TerminalVisibilityState, 'registrationId'>): void {
+    if (terminalVisibilityStates.get(key)?.registrationId !== registrationId) {
+      return;
+    }
+
+    terminalVisibilityStates.set(key, cloneTerminalVisibilityState(state, registrationId));
   }
 
   function unregister(): void {
+    if (terminalVisibilityStates.get(key)?.registrationId !== registrationId) {
+      return;
+    }
+
     terminalVisibilityStates.delete(key);
   }
 
@@ -69,4 +85,5 @@ export function getTerminalVisibilityDensity(
 
 export function resetTerminalVisibleSetForTests(): void {
   terminalVisibilityStates.clear();
+  nextTerminalVisibilityRegistrationId = 1;
 }

@@ -28,6 +28,11 @@ import {
   buildProjectGitIsolationFields,
   getProjectDefaultTaskGitIsolation,
 } from '../store/task-git-isolation';
+import {
+  resolveAgentRunnerProfile,
+  type AgentRunnerProfileConfig,
+  type AgentRunnerProvider,
+} from '../domain/agent-runners.js';
 import type { Project, TerminalBookmark } from '../store/types';
 
 interface EditProjectDialogProps {
@@ -42,6 +47,69 @@ function hueFromColor(color: string): number {
   return match ? Number(match[1]) : 0;
 }
 
+function getProjectAgentRunnerProfile(project: Project): AgentRunnerProfileConfig | undefined {
+  const resolution = resolveAgentRunnerProfile(project.agentRunnerConfig, project.containerConfig);
+  return resolution.configuredProfile ?? undefined;
+}
+
+function isValidDockerfileRelativePath(value: string): boolean {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return true;
+  }
+
+  return (
+    !trimmedValue.startsWith('/') &&
+    !trimmedValue.startsWith('\\') &&
+    !/^[a-zA-Z]:[\\/]/u.test(trimmedValue) &&
+    !trimmedValue.includes('..')
+  );
+}
+
+function clearContainerRunnerProfile(
+  containerConfig: Project['containerConfig'],
+): Project['containerConfig'] {
+  if (!containerConfig?.runnerProfile) {
+    return containerConfig;
+  }
+
+  const { runnerProfile: _runnerProfile, ...nextContainerConfig } = containerConfig;
+  return Object.keys(nextContainerConfig).length > 0 ? nextContainerConfig : undefined;
+}
+
+function buildAgentRunnerConfig(
+  provider: AgentRunnerProvider,
+  image: string,
+  dockerfile: string,
+): AgentRunnerProfileConfig | undefined {
+  if (provider === 'host') {
+    return undefined;
+  }
+
+  const trimmedImage = image.trim();
+  const trimmedDockerfile = dockerfile.trim();
+  return {
+    ...(trimmedDockerfile ? { dockerfile: trimmedDockerfile } : {}),
+    ...(trimmedImage ? { image: trimmedImage } : {}),
+    provider,
+  };
+}
+
+function applyAgentRunnerUpdates(
+  updates: ProjectUpdates,
+  project: Project,
+  provider: AgentRunnerProvider,
+  image: string,
+  dockerfile: string,
+): void {
+  updates.agentRunnerConfig = buildAgentRunnerConfig(provider, image, dockerfile);
+
+  const containerConfig = clearContainerRunnerProfile(project.containerConfig);
+  if (containerConfig !== project.containerConfig) {
+    updates.containerConfig = containerConfig;
+  }
+}
+
 export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
   const titleId = createUniqueId();
   const [name, setName] = createSignal('');
@@ -50,6 +118,9 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
   const [branchPrefix, setBranchPrefix] = createSignal('task');
   const [deleteBranchOnClose, setDeleteBranchOnClose] = createSignal(true);
   const [defaultCurrentBranchMode, setDefaultCurrentBranchMode] = createSignal(false);
+  const [agentRunnerProvider, setAgentRunnerProvider] = createSignal<AgentRunnerProvider>('host');
+  const [agentRunnerImage, setAgentRunnerImage] = createSignal('');
+  const [agentRunnerDockerfile, setAgentRunnerDockerfile] = createSignal('');
   const [bookmarks, setBookmarks] = createSignal<TerminalBookmark[]>([]);
   const [newCommand, setNewCommand] = createSignal('');
   const [saving, setSaving] = createSignal(false);
@@ -70,6 +141,10 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
     setBranchPrefix(sanitizeBranchPrefix(p.branchPrefix ?? 'task'));
     setDeleteBranchOnClose(p.deleteBranchOnClose ?? true);
     setDefaultCurrentBranchMode(getProjectDefaultTaskGitIsolation(p) === 'current-branch');
+    const runnerProfile = getProjectAgentRunnerProfile(p);
+    setAgentRunnerProvider(runnerProfile?.provider ?? 'host');
+    setAgentRunnerImage(runnerProfile?.image ?? '');
+    setAgentRunnerDockerfile(runnerProfile?.dockerfile ?? '');
     setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
     setNewCommand('');
     focusFrame.schedule(() => {
@@ -83,9 +158,12 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
 
   onCleanup(focusFrame.cancel);
 
-  function addBookmark() {
+  function addBookmark(): void {
     const cmd = newCommand().trim();
-    if (!cmd) return;
+    if (!cmd) {
+      return;
+    }
+
     const existing = bookmarks();
     const bookmark: TerminalBookmark = {
       id: createRandomId(),
@@ -95,11 +173,35 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
     setNewCommand('');
   }
 
-  function removeBookmark(id: string) {
+  function removeBookmark(id: string): void {
     setBookmarks(bookmarks().filter((b) => b.id !== id));
   }
 
-  const canSave = () => name().trim().length > 0;
+  function getAgentRunnerSettingsError(): string | null {
+    if (agentRunnerProvider() === 'docker-sandbox') {
+      return 'Docker sandbox runners are not supported by this build.';
+    }
+
+    if (agentRunnerProvider() !== 'docker-container') {
+      return null;
+    }
+
+    const image = agentRunnerImage().trim();
+    const dockerfile = agentRunnerDockerfile().trim();
+    if (!image && !dockerfile) {
+      return 'Provide a Docker image or a Dockerfile path before saving this runner.';
+    }
+
+    if (!isValidDockerfileRelativePath(dockerfile)) {
+      return 'Dockerfile path must be relative and stay inside the worktree.';
+    }
+
+    return null;
+  }
+
+  function canSave(): boolean {
+    return name().trim().length > 0 && getAgentRunnerSettingsError() === null;
+  }
 
   function handleSaveOnEnter(e: KeyboardEvent): void {
     if (e.key === 'Enter' && canSave() && !saving()) {
@@ -108,7 +210,10 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
   }
 
   async function handleSave(): Promise<void> {
-    if (!canSave() || !props.project || saving()) return;
+    if (!canSave() || !props.project || saving()) {
+      return;
+    }
+
     const sanitizedPrefix = sanitizeBranchPrefix(branchPrefix());
     const updates: ProjectUpdates = {
       name: name().trim(),
@@ -125,6 +230,13 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
         }),
       });
     }
+    applyAgentRunnerUpdates(
+      updates,
+      props.project,
+      agentRunnerProvider(),
+      agentRunnerImage(),
+      agentRunnerDockerfile(),
+    );
 
     setSaving(true);
     try {
@@ -371,6 +483,77 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   }}
                 </For>
               </div>
+            </div>
+
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+              <SectionLabel as="label">Agent runner</SectionLabel>
+              <select
+                class="input-field"
+                value={agentRunnerProvider()}
+                onChange={(event) =>
+                  setAgentRunnerProvider(event.currentTarget.value as AgentRunnerProvider)
+                }
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  padding: '10px 14px',
+                  color: theme.fg,
+                  outline: 'none',
+                  ...typography.ui,
+                }}
+              >
+                <option value="host">Host</option>
+                <option value="docker-container">Docker container</option>
+                <option value="docker-sandbox">Docker sandbox</option>
+              </select>
+              <Show when={agentRunnerProvider() === 'docker-container'}>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+                  <input
+                    class="input-field"
+                    type="text"
+                    value={agentRunnerImage()}
+                    onInput={(event) => setAgentRunnerImage(event.currentTarget.value)}
+                    onKeyDown={handleSaveOnEnter}
+                    placeholder="Docker image, for example node:22-alpine"
+                    style={{
+                      background: theme.bgInput,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      padding: '10px 14px',
+                      color: theme.fg,
+                      outline: 'none',
+                      ...typography.monoUi,
+                    }}
+                  />
+                  <input
+                    class="input-field"
+                    type="text"
+                    value={agentRunnerDockerfile()}
+                    onInput={(event) => setAgentRunnerDockerfile(event.currentTarget.value)}
+                    onKeyDown={handleSaveOnEnter}
+                    placeholder="Optional Dockerfile path inside the worktree"
+                    style={{
+                      background: theme.bgInput,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      padding: '10px 14px',
+                      color: theme.fg,
+                      outline: 'none',
+                      ...typography.monoUi,
+                    }}
+                  />
+                  <Show when={getAgentRunnerSettingsError()}>
+                    {(message) => <InlineNotice tone="warning">{message()}</InlineNotice>}
+                  </Show>
+                </div>
+              </Show>
+              <Show when={agentRunnerProvider() === 'docker-sandbox'}>
+                <InlineNotice tone="warning">
+                  Docker sandbox runners are reserved for a future provider and are not supported by
+                  this build.
+                </InlineNotice>
+              </Show>
             </div>
 
             <Show when={isGitProject(project())}>

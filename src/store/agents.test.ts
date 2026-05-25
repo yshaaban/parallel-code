@@ -2,8 +2,24 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getAgentPromptDispatchAt, markTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import { setStore, store } from './core';
-import { hydrateAgentGeneration, markAgentExited, restartAgent, switchAgent } from './agents';
+import {
+  getAgentTerminalSessionVersion,
+  hydrateAgentGeneration,
+  markAgentExited,
+  restartAgent,
+  switchAgent,
+} from './agents';
 import { createTestAgent, resetStoreForTest } from '../test/store-test-helpers';
+import type { Agent } from './types';
+
+function requireAgent(agentId: string): Agent {
+  const agent = store.agents[agentId];
+  if (!agent) {
+    throw new Error(`Expected agent ${agentId} to exist`);
+  }
+
+  return agent;
+}
 
 describe('agents store lifecycle guards', () => {
   beforeEach(() => {
@@ -83,6 +99,35 @@ describe('agents store lifecycle guards', () => {
     hydrateAgentGeneration('agent-1', 1.5);
 
     expect(store.agents['agent-1']?.generation).toBe(1);
+  });
+
+  it('keeps terminal session remount version separate from hydrated backend generations', () => {
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        generation: 0,
+        id: 'agent-1',
+      }),
+    });
+
+    hydrateAgentGeneration('agent-1', 4);
+    expect(store.agents['agent-1']?.generation).toBe(4);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(0);
+
+    restartAgent('agent-1', false);
+    expect(store.agents['agent-1']?.generation).toBe(5);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(1);
+
+    switchAgent('agent-1', {
+      id: 'replacement',
+      name: 'Replacement',
+      command: 'replacement',
+      args: [],
+      resume_args: [],
+      skip_permissions_args: [],
+      description: 'replacement',
+    });
+    expect(store.agents['agent-1']?.generation).toBe(6);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(2);
   });
 
   it('clears prompt dispatch state when an agent exits', () => {

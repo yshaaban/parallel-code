@@ -1,6 +1,6 @@
 import { batch } from 'solid-js';
 import { store, setStore } from './core';
-import { setActiveTask } from './navigation';
+import { setActiveTaskState } from './active-task-selection';
 import { clearSidebarFocusedProjectIfHidden } from './sidebar-sections';
 import { computeSidebarTaskOrder } from './sidebar-order';
 
@@ -287,9 +287,14 @@ export function setTaskFocusedPanelState(taskId: string, panel: string): void {
 
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
   const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
-  setTaskFocusedPanelState(taskId, normalizedPanel);
-  setStore('sidebarFocused', false);
-  setStore('placeholderFocused', false);
+  batch(() => {
+    setStore('focusedPanel', taskId, normalizedPanel);
+    setStore('sidebarFocused', false);
+    setStore('placeholderFocused', false);
+    if (store.activeTaskId !== taskId) {
+      setActiveTaskState(taskId);
+    }
+  });
   triggerFocus(`${taskId}:${normalizedPanel}`);
   scrollTaskIntoView(taskId);
 }
@@ -343,7 +348,7 @@ function focusTaskPanel(taskId: string, panel: string): void {
     setStore('focusedPanel', taskId, normalizedPanel);
     setStore('sidebarFocused', false);
     setStore('placeholderFocused', false);
-    setActiveTask(taskId);
+    setActiveTaskState(taskId);
   });
   triggerFocus(`${taskId}:${normalizedPanel}`);
 }
@@ -462,7 +467,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       unfocusPlaceholder();
       const lastTaskId = store.taskOrder[store.taskOrder.length - 1];
       if (lastTaskId) {
-        setActiveTask(lastTaskId);
+        setActiveTaskState(lastTaskId);
         setTaskFocusedPanel(lastTaskId, getTaskFocusedPanel(lastTaskId));
       } else if (store.sidebarVisible) {
         focusSidebar();
@@ -480,7 +485,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
           triggerAction(getSidebarRestoreTaskActionKey(targetTaskId));
           return;
         }
-        if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);
+        if (targetTaskId !== store.activeTaskId) setActiveTaskState(targetTaskId);
         unfocusSidebar();
         setTaskFocusedPanel(targetTaskId, getTaskFocusedPanel(targetTaskId));
       }

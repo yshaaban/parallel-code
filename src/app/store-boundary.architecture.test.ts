@@ -42,6 +42,7 @@ function listSourceFiles(relativePath: string): string[] {
 }
 
 const nonStoreSources = LAYER_ROOTS.flatMap((relativePath) => listSourceFiles(relativePath));
+const rendererSources = listSourceFiles('src');
 const appRuntimeSources = ['src/app', 'src/runtime'].flatMap((relativePath) =>
   listSourceFiles(relativePath),
 );
@@ -90,6 +91,13 @@ describe('store boundary architecture guardrails', () => {
     for (const sourcePath of appRuntimeSources) {
       const source = readFileSync(sourcePath, 'utf8');
       expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain('store/store');
+    }
+  });
+
+  it('keeps Docker runner execution behind the backend runtime owner', () => {
+    for (const sourcePath of rendererSources) {
+      const source = readFileSync(sourcePath, 'utf8');
+      expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain('agent-runner-docker');
     }
   });
 

@@ -95,6 +95,56 @@ describe('terminal-attach-scheduler', () => {
     background.unregister();
   });
 
+  it('ignores stale release and unregister calls after the same key is re-registered', async () => {
+    const attachOrder: string[] = [];
+
+    const stale = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('stale');
+      },
+      getPriority: () => 0,
+      key: 'same-terminal',
+      taskId: 'task-1',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['stale']);
+
+    const current = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('current');
+      },
+      getPriority: () => 0,
+      key: 'same-terminal',
+      taskId: 'task-1',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['stale', 'current']);
+
+    const contender = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('contender');
+      },
+      getPriority: () => 0,
+      key: 'contender-terminal',
+      taskId: 'task-2',
+    });
+
+    stale.release();
+    stale.unregister();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['stale', 'current']);
+    expect(getTerminalStartupSummary()?.pendingCount).toBe(2);
+
+    current.release();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['stale', 'current', 'contender']);
+
+    current.unregister();
+    contender.unregister();
+  });
+
   it('limits background attaches to the scheduler budget and drains queued work on release', async () => {
     const attachOrder: string[] = [];
 

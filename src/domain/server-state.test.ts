@@ -186,6 +186,8 @@ describe('server state helpers', () => {
       isShell: false,
       lastOutputAt: null,
       preview: 'Ready',
+      runnerInstanceId: 'runner-1',
+      runnerProvider: 'docker-container',
       state: 'idle-at-prompt',
       taskId: 'task-1',
       updatedAt: 10,
@@ -222,6 +224,7 @@ describe('server state helpers', () => {
     ).toBe(true);
     expect(isAgentSupervisionSnapshot({ ...snapshot, attentionReason: 'blocked' })).toBe(false);
     expect(isAgentSupervisionSnapshot({ ...snapshot, lastOutputAt: -1 })).toBe(false);
+    expect(isAgentSupervisionSnapshot({ ...snapshot, runnerProvider: 'container' })).toBe(false);
     expect(isAgentSupervisionSnapshot({ ...snapshot, updatedAt: 1.5 })).toBe(false);
     expect(isAgentSupervisionEvent({ ...snapshot, kind: 'removed' })).toBe(false);
     expect(
@@ -433,7 +436,15 @@ describe('server state helpers', () => {
     expect(isRemoteAgentStatus('flow-controlled')).toBe(true);
     expect(isRemoteAgentStatus('waiting')).toBe(false);
     expect(isRemoteAgent(remoteAgent)).toBe(true);
+    expect(
+      isRemoteAgent({
+        ...remoteAgent,
+        runnerInstanceId: 'runner-1',
+        runnerProvider: 'docker-container',
+      }),
+    ).toBe(true);
     expect(isRemoteAgent({ ...remoteAgent, exitCode: 1.5 })).toBe(false);
+    expect(isRemoteAgent({ ...remoteAgent, runnerProvider: 'container' })).toBe(false);
     expect(isRemoteAgent({ ...remoteAgent, taskMeta: { directMode: false } })).toBe(false);
     expect(
       isRemoteAgent({

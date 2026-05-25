@@ -3,6 +3,7 @@ import path from 'path';
 
 import { IPC } from './channels.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
+import { createDockerAgentRunnerLaunch } from './agent-runner-docker.js';
 import { removeAgentSupervision, removeTaskSupervision } from './agent-supervision.js';
 import { removeGitStatusSnapshot } from './git-status-state.js';
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
@@ -37,6 +38,10 @@ import {
 } from './tasks.js';
 import { getMainBranch } from './git.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
+import type {
+  AgentRunnerProfileConfig,
+  AgentRuntimeIdentity,
+} from '../../src/domain/agent-runners.js';
 import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js';
 
 export interface TaskWorkflowContext {
@@ -58,6 +63,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   projectMode?: ProjectMode;
   resumeOnStart?: boolean;
   rows: number;
+  runnerProfile?: AgentRunnerProfileConfig;
   taskId: string;
 }
 
@@ -99,8 +105,11 @@ export interface CleanupTaskRuntimeWorkflowResult {
 interface ResolvedSpawnLaunch {
   args: string[];
   command: string;
+  cwd?: string;
   env: Record<string, string>;
   isInternalNodeProcess: boolean;
+  onExitCleanup?: () => void;
+  runnerIdentity?: AgentRuntimeIdentity;
 }
 
 interface CreatedTaskRuntimeMetadata {
@@ -414,25 +423,87 @@ function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpa
   };
 }
 
+function resolveRunnerLaunch(
+  request: SpawnTaskAgentWorkflowRequest,
+  launch: ResolvedSpawnLaunch,
+): ResolvedSpawnLaunch {
+  const profile = request.runnerProfile;
+  if (!profile || profile.provider === 'host') {
+    return launch;
+  }
+
+  if (profile.provider === 'docker-sandbox') {
+    throw new Error('Docker sandbox agent runners are not supported in this build.');
+  }
+
+  if (request.adapter === 'hydra') {
+    throw new Error('Docker container agent runners do not support Hydra adapter agents yet.');
+  }
+
+  const dockerLaunch = createDockerAgentRunnerLaunch({
+    agentId: request.agentId,
+    args: launch.args,
+    command: launch.command,
+    cwd: request.cwd,
+    env: launch.env,
+    profile,
+    taskId: request.taskId,
+  });
+
+  return {
+    args: dockerLaunch.args,
+    command: dockerLaunch.command,
+    cwd: dockerLaunch.cwd,
+    env: dockerLaunch.env,
+    isInternalNodeProcess: false,
+    onExitCleanup: dockerLaunch.cleanup,
+    runnerIdentity: dockerLaunch.identity,
+  };
+}
+
+function cleanupResolvedLaunchAfterSpawnFailure(resolvedLaunch: ResolvedSpawnLaunch): void {
+  if (!resolvedLaunch.onExitCleanup) {
+    return;
+  }
+
+  try {
+    resolvedLaunch.onExitCleanup();
+  } catch (error) {
+    logWorkflowWarning('Failed to clean up runner after spawn failure:', error);
+  }
+}
+
 export function spawnTaskAgentWorkflow(
   context: TaskWorkflowContext,
   request: SpawnTaskAgentWorkflowRequest,
 ): boolean {
-  const resolvedLaunch = resolveSpawnLaunch(request);
+  const resolvedLaunch = resolveRunnerLaunch(request, resolveSpawnLaunch(request));
 
-  const attachedExistingSession = spawnPtyAgent(context.sendToChannel, {
-    taskId: request.taskId,
-    agentId: request.agentId,
-    command: resolvedLaunch.command,
-    args: resolvedLaunch.args,
-    cwd: request.cwd,
-    env: resolvedLaunch.env,
-    cols: request.cols,
-    rows: request.rows,
-    isShell: request.isShell === true,
-    isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
-    onOutput: request.onOutput,
-  });
+  let attachedExistingSession: boolean;
+  try {
+    attachedExistingSession = spawnPtyAgent(context.sendToChannel, {
+      taskId: request.taskId,
+      agentId: request.agentId,
+      command: resolvedLaunch.command,
+      args: resolvedLaunch.args,
+      cwd: resolvedLaunch.cwd ?? request.cwd,
+      env: resolvedLaunch.env,
+      cols: request.cols,
+      rows: request.rows,
+      isShell: request.isShell === true,
+      isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
+      onOutput: request.onOutput,
+      ...(resolvedLaunch.runnerIdentity !== undefined
+        ? { runnerIdentity: resolvedLaunch.runnerIdentity }
+        : {}),
+      ...(resolvedLaunch.onExitCleanup !== undefined
+        ? { onExitCleanup: resolvedLaunch.onExitCleanup }
+        : {}),
+    });
+  } catch (error) {
+    cleanupResolvedLaunchAfterSpawnFailure(resolvedLaunch);
+    throw error;
+  }
 
   if (request.isShell || !request.cwd || request.projectMode === 'non-git') {
     return attachedExistingSession;

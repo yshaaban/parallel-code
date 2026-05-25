@@ -1,5 +1,4 @@
 import type { AgentStatusSnapshot, RemoteAgentTaskMeta } from '../../src/domain/server-state.js';
-import { isRunningRemoteAgentStatus } from '../../src/domain/server-state.js';
 import { getRemoteAgentStatus, type RemoteAgent } from './protocol.js';
 import { getActiveAgentIds, getAgentMeta, getAgentPauseState } from '../ipc/pty.js';
 
@@ -18,7 +17,7 @@ function getDefaultAgentStatus(): AgentStatusSnapshot {
 }
 
 export function buildRemoteAgentList(options: BuildRemoteAgentListOptions): RemoteAgent[] {
-  const byTask = new Map<string, RemoteAgent>();
+  const agents: RemoteAgent[] = [];
 
   for (const agentId of getActiveAgentIds()) {
     const meta = getAgentMeta(agentId);
@@ -34,17 +33,17 @@ export function buildRemoteAgentList(options: BuildRemoteAgentListOptions): Remo
       status: getRemoteAgentStatus(pauseReason, snapshot.status),
       exitCode: snapshot.exitCode,
       lastLine: snapshot.lastLine,
+      ...(meta.runnerIdentity !== undefined
+        ? {
+            runnerInstanceId: meta.runnerIdentity.runnerInstanceId,
+            runnerProvider: meta.runnerIdentity.provider,
+          }
+        : {}),
       ...(taskMeta ? { taskMeta } : {}),
     };
 
-    const current = byTask.get(meta.taskId);
-    if (
-      !current ||
-      (isRunningRemoteAgentStatus(agent.status) && !isRunningRemoteAgentStatus(current.status))
-    ) {
-      byTask.set(meta.taskId, agent);
-    }
+    agents.push(agent);
   }
 
-  return Array.from(byTask.values());
+  return agents;
 }

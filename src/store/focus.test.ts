@@ -86,6 +86,17 @@ describe('focus shell toolbar navigation', () => {
     expect(store.focusedPanel[taskId]).toBe('shell-toolbar:1');
   });
 
+  it('activates the owning task when focusing one of its panels', () => {
+    setupTwoTaskNavigationState();
+
+    setTaskFocusedPanel('task-2', 'prompt');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('prompt');
+    expect(store.sidebarFocused).toBe(false);
+    expect(store.placeholderFocused).toBe(false);
+  });
+
   it('clamps shell toolbar columns when moving into narrower rows', () => {
     const { taskId } = setupTaskWithToolbar();
 

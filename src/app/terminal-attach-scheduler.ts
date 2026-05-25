@@ -12,6 +12,7 @@ interface TerminalAttachCandidate {
   attachedReleased: boolean;
   getPriority: () => number;
   key: string;
+  ownerId?: number;
   taskId: string;
 }
 
@@ -60,6 +61,10 @@ function countActiveForegroundTerminalAttaches(): number {
 }
 
 function canAttachTerminalCandidate(candidate: TerminalAttachCandidate): boolean {
+  if (terminalAttachCandidates.get(candidate.key) !== candidate) {
+    return false;
+  }
+
   if (isForegroundTerminalAttachPriority(candidate.getPriority())) {
     return countActiveForegroundTerminalAttaches() < MAX_CONCURRENT_FOREGROUND_ATTACHES;
   }
@@ -90,7 +95,11 @@ function drainTerminalAttachQueue(): void {
       break;
     }
 
-    setTerminalStartupPhase(candidate.key, 'binding');
+    if (terminalAttachCandidates.get(candidate.key) !== candidate) {
+      continue;
+    }
+
+    setTerminalStartupPhase(candidate.key, 'binding', candidate.ownerId);
     candidate.attached = true;
     activeTerminalAttachKeys.add(candidate.key);
     candidate.attach();
@@ -115,6 +124,7 @@ export interface RegisterTerminalAttachCandidateOptions {
   attach: () => void;
   getPriority: () => number;
   key: string;
+  ownerId?: number;
   taskId: string;
 }
 
@@ -128,9 +138,11 @@ export function registerTerminalAttachCandidate(
     getPriority: options.getPriority,
     key: options.key,
     taskId: options.taskId,
+    ...(options.ownerId === undefined ? {} : { ownerId: options.ownerId }),
   };
+  activeTerminalAttachKeys.delete(candidate.key);
   terminalAttachCandidates.set(candidate.key, candidate);
-  registerTerminalStartupCandidate(candidate.key, candidate.taskId);
+  registerTerminalStartupCandidate(candidate.key, candidate.taskId, candidate.ownerId);
   queueTerminalAttachDrain();
 
   function release(): void {
@@ -139,17 +151,27 @@ export function registerTerminalAttachCandidate(
     }
 
     candidate.attachedReleased = true;
-    activeTerminalAttachKeys.delete(candidate.key);
+    if (terminalAttachCandidates.get(candidate.key) === candidate) {
+      activeTerminalAttachKeys.delete(candidate.key);
+    }
     queueTerminalAttachDrain();
   }
 
   function unregister(): void {
-    terminalAttachCandidates.delete(candidate.key);
-    clearTerminalStartupEntry(candidate.key);
+    if (terminalAttachCandidates.get(candidate.key) !== candidate) {
+      return;
+    }
+
     release();
+    terminalAttachCandidates.delete(candidate.key);
+    clearTerminalStartupEntry(candidate.key, candidate.ownerId);
   }
 
   function updatePriority(): void {
+    if (terminalAttachCandidates.get(candidate.key) !== candidate) {
+      return;
+    }
+
     if (candidate.attached) {
       return;
     }

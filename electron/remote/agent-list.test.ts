@@ -3,15 +3,28 @@ import { buildRemoteAgentList } from './agent-list.js';
 
 vi.mock('../ipc/pty.js', () => ({
   getActiveAgentIds: () => ['paused-agent', 'running-agent'],
-  getAgentMeta: (_agentId: string) => ({
+  getAgentMeta: (agentId: string) => ({
     isShell: false,
+    ...(agentId === 'running-agent'
+      ? {
+          runnerIdentity: {
+            agentId,
+            labels: {},
+            profileId: 'profile-1',
+            provider: 'docker-container',
+            runnerInstanceId: 'runner-1',
+            startedAt: '2026-05-24T00:00:00.000Z',
+            taskId: 'task-1',
+          },
+        }
+      : {}),
     taskId: 'task-1',
   }),
   getAgentPauseState: (agentId: string) => (agentId === 'paused-agent' ? 'manual' : null),
 }));
 
 describe('buildRemoteAgentList', () => {
-  it('prefers the running agent for a task without raw status string checks', () => {
+  it('returns every non-shell agent for a task', () => {
     const byAgentId = new Map([
       ['paused-agent', { exitCode: null, lastLine: '', status: 'running' as const }],
       ['running-agent', { exitCode: null, lastLine: '', status: 'running' as const }],
@@ -25,7 +38,13 @@ describe('buildRemoteAgentList', () => {
 
     expect(agents).toEqual([
       expect.objectContaining({
+        agentId: 'paused-agent',
+        status: 'paused',
+      }),
+      expect.objectContaining({
         agentId: 'running-agent',
+        runnerInstanceId: 'runner-1',
+        runnerProvider: 'docker-container',
         status: 'running',
       }),
     ]);
@@ -45,8 +64,8 @@ describe('buildRemoteAgentList', () => {
       }),
     });
 
-    expect(agents).toHaveLength(1);
-    expect(agents[0].taskMeta).toEqual({
+    expect(agents).toHaveLength(2);
+    expect(agents[0]?.taskMeta).toEqual({
       agentDefId: 'claude-code',
       agentDefName: 'Claude Code',
       branchName: 'feature/auth',
@@ -62,8 +81,8 @@ describe('buildRemoteAgentList', () => {
       getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
     });
 
-    expect(agents).toHaveLength(1);
-    expect(agents[0].taskMeta).toBeUndefined();
+    expect(agents).toHaveLength(2);
+    expect(agents[0]?.taskMeta).toBeUndefined();
   });
 
   it('omits taskMeta when getTaskMetadata returns null', () => {
@@ -73,7 +92,7 @@ describe('buildRemoteAgentList', () => {
       getTaskMetadata: () => null,
     });
 
-    expect(agents).toHaveLength(1);
-    expect(agents[0].taskMeta).toBeUndefined();
+    expect(agents).toHaveLength(2);
+    expect(agents[0]?.taskMeta).toBeUndefined();
   });
 });

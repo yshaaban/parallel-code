@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 
 import { IPC } from './channels.js';
+import { normalizeAgentRunnerProfileConfig } from './agent-runner-handlers.js';
 import { listAgentSupervisionSnapshots } from './agent-supervision.js';
 import { listAgents } from './agents.js';
 import {
@@ -407,6 +408,9 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
       const requestedRows = typeof request.rows === 'number' ? request.rows : 24;
       const hasExistingSession = hasAgentSession(request.agentId);
+      const runnerProfile = hasExistingSession
+        ? undefined
+        : normalizeAgentRunnerProfileConfig(request.runnerProfile);
       const cols = hasExistingSession ? getAgentCols(request.agentId) : requestedCols;
       const rows = hasExistingSession ? getAgentRows(request.agentId) : requestedRows;
 
@@ -425,6 +429,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         onOutput: { __CHANNEL_ID__: channelId },
         ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
         ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
+        ...(!hasExistingSession && runnerProfile !== undefined ? { runnerProfile } : {}),
       });
 
       return {

@@ -69,6 +69,18 @@ function isOptionalProjectMode(value: unknown): value is 'git' | 'non-git' | und
   return value === undefined || value === 'git' || value === 'non-git';
 }
 
+function isOptionalTaskTerminalLayoutMode(
+  value: unknown,
+): value is 'focused' | 'split' | 'grid' | 'stacked' | undefined {
+  return (
+    value === undefined ||
+    value === 'focused' ||
+    value === 'split' ||
+    value === 'grid' ||
+    value === 'stacked'
+  );
+}
+
 function isOptionalStringArray(value: unknown): value is string[] | undefined {
   return value === undefined || isStringArray(value);
 }
@@ -108,6 +120,7 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     isOptionalStringArray(value.agentIds) &&
     isOptionalPersistedAgentDefArray(value.agentDefs) &&
     isOptionalString(value.selectedAgentId) &&
+    isOptionalTaskTerminalLayoutMode(value.terminalLayoutMode) &&
     isOptionalStringArray(value.shellAgentIds) &&
     (value.agentDef === undefined ||
       value.agentDef === null ||

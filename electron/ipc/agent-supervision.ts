@@ -44,6 +44,8 @@ export interface CreateAgentSupervisionControllerOptions {
 export interface AgentSpawnMetadata {
   agentId: string;
   isShell: boolean;
+  runnerInstanceId?: string;
+  runnerProvider?: AgentSupervisionSnapshot['runnerProvider'];
   taskId: string;
 }
 
@@ -172,6 +174,12 @@ export function createAgentSupervisionController(
         isShell: metadata.isShell,
         lastOutputAt: timestamp,
         preview: '',
+        ...(metadata.runnerInstanceId !== undefined
+          ? { runnerInstanceId: metadata.runnerInstanceId }
+          : {}),
+        ...(metadata.runnerProvider !== undefined
+          ? { runnerProvider: metadata.runnerProvider }
+          : {}),
         state: 'active',
         taskId: metadata.taskId,
         updatedAt: timestamp,

@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
 import type { PauseReason } from '../remote/protocol.js';
+import type { AgentRuntimeIdentity } from '../../src/domain/agent-runners.js';
 import type { TerminalInputTraceMessage } from '../../src/domain/terminal-input-tracing.js';
 import {
   getTerminalInputBatchPlan,
@@ -52,6 +53,7 @@ interface PtySession {
   sendToChannel: (channelId: string, msg: unknown) => void;
   taskId: string;
   agentId: string;
+  runnerIdentity?: AgentRuntimeIdentity;
   isShell: boolean;
   isInternalNodeProcess: boolean;
   acceptsInput: boolean;
@@ -682,6 +684,8 @@ export function spawnAgent(
     rows: number;
     isShell?: boolean;
     isInternalNodeProcess?: boolean;
+    runnerIdentity?: AgentRuntimeIdentity;
+    onExitCleanup?: () => Promise<void> | void;
     onOutput: { __CHANNEL_ID__: string };
   },
 ): boolean {
@@ -766,6 +770,7 @@ export function spawnAgent(
     sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
+    ...(args.runnerIdentity !== undefined ? { runnerIdentity: args.runnerIdentity } : {}),
     isShell: args.isShell ?? false,
     isInternalNodeProcess: args.isInternalNodeProcess ?? false,
     acceptsInput: true,
@@ -863,11 +868,20 @@ export function spawnAgent(
     });
     session.terminalStateMirror.dispose();
     sessions.delete(args.agentId);
+    void Promise.resolve(args.onExitCleanup?.()).catch((error: unknown) => {
+      console.warn(`Failed to clean up runner for agent ${args.agentId}:`, error);
+    });
   });
 
   recordAgentSpawn({
     agentId: args.agentId,
     isShell: args.isShell ?? false,
+    ...(args.runnerIdentity !== undefined
+      ? {
+          runnerInstanceId: args.runnerIdentity.runnerInstanceId,
+          runnerProvider: args.runnerIdentity.provider,
+        }
+      : {}),
     taskId: args.taskId,
   });
   emitPtyEvent('spawn', args.agentId, { generation: session.lifecycleGeneration });
@@ -1157,16 +1171,21 @@ export function getActiveAgentIds(): string[] {
 }
 
 /** Return metadata for a specific agent, or null if not found. */
-export function getAgentMeta(
-  agentId: string,
-): { taskId: string; agentId: string; isShell: boolean; generation: number } | null {
+export function getAgentMeta(agentId: string): {
+  agentId: string;
+  generation: number;
+  isShell: boolean;
+  runnerIdentity?: AgentRuntimeIdentity;
+  taskId: string;
+} | null {
   const s = sessions.get(agentId);
   return s
     ? {
-        taskId: s.taskId,
         agentId: s.agentId,
-        isShell: s.isShell,
         generation: s.lifecycleGeneration,
+        isShell: s.isShell,
+        ...(s.runnerIdentity !== undefined ? { runnerIdentity: s.runnerIdentity } : {}),
+        taskId: s.taskId,
       }
     : null;
 }

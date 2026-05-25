@@ -1,5 +1,6 @@
 import type { PtyExitData } from '../../ipc/types';
 import type { ProjectMode } from '../../store/types';
+import type { AgentRunnerProfileConfig } from '../../domain/agent-runners.js';
 import type {
   TerminalPresentationMode,
   TerminalPresentationModeKind,
@@ -19,6 +20,7 @@ export interface TerminalViewProps {
   env?: Record<string, string>;
   isShell?: boolean;
   resumeOnStart?: boolean;
+  runnerProfile?: AgentRunnerProfileConfig;
   onExit?: (exitInfo: PtyExitData) => void;
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
@@ -27,6 +29,7 @@ export interface TerminalViewProps {
   onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;
   initialCommand?: string;
+  isCommandTarget?: boolean;
   isFocused?: boolean;
   manageTaskSwitchWindowLifecycle?: boolean;
 }

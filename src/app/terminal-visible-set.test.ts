@@ -45,4 +45,30 @@ describe('terminal-visible-set', () => {
     visibleBackground.unregister();
     hidden.unregister();
   });
+
+  it('ignores stale unregisters and updates after the same key is re-registered', () => {
+    const stale = registerTerminalVisibility('same-key', {
+      isFocused: true,
+      isSelected: true,
+      isVisible: true,
+    });
+    const current = registerTerminalVisibility('same-key', {
+      isFocused: false,
+      isSelected: false,
+      isVisible: true,
+    });
+
+    stale.unregister();
+    expect(getVisibleTerminalCount()).toBe(1);
+
+    stale.update({
+      isFocused: false,
+      isSelected: false,
+      isVisible: false,
+    });
+    expect(getVisibleTerminalCount()).toBe(1);
+
+    current.unregister();
+    expect(getVisibleTerminalCount()).toBe(0);
+  });
 });

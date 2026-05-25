@@ -1,6 +1,7 @@
 export type TerminalStartupPaintCoordinationRole = 'hidden' | 'selected' | 'visible-sibling';
 
 interface TerminalStartupPaintEntry {
+  ownerId?: number;
   paintReady: boolean;
   role: TerminalStartupPaintCoordinationRole;
   taskId: string;
@@ -80,10 +81,12 @@ function summarizeTerminalStartupPaintEntries(
 
 export function setTerminalStartupPaintCoordinationEntry(
   key: string,
-  entry: TerminalStartupPaintEntry,
+  entry: Omit<TerminalStartupPaintEntry, 'ownerId'>,
+  ownerId?: number,
 ): void {
   const previousEntry = terminalStartupPaintEntries.get(key);
   if (
+    previousEntry?.ownerId === ownerId &&
     previousEntry?.taskId === entry.taskId &&
     previousEntry.role === entry.role &&
     previousEntry.paintReady === entry.paintReady
@@ -91,15 +94,20 @@ export function setTerminalStartupPaintCoordinationEntry(
     return;
   }
 
-  terminalStartupPaintEntries.set(key, entry);
+  terminalStartupPaintEntries.set(key, {
+    ...entry,
+    ...(ownerId === undefined ? {} : { ownerId }),
+  });
   notifyTerminalStartupPaintListeners();
 }
 
-export function clearTerminalStartupPaintCoordinationEntry(key: string): void {
-  if (!terminalStartupPaintEntries.delete(key)) {
+export function clearTerminalStartupPaintCoordinationEntry(key: string, ownerId?: number): void {
+  const previousEntry = terminalStartupPaintEntries.get(key);
+  if (!previousEntry || previousEntry.ownerId !== ownerId) {
     return;
   }
 
+  terminalStartupPaintEntries.delete(key);
   notifyTerminalStartupPaintListeners();
 }
 

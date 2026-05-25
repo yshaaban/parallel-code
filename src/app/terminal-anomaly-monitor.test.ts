@@ -110,6 +110,62 @@ describe('terminal-anomaly-monitor', () => {
     );
   });
 
+  it('ignores stale unregisters and lifecycle updates after the same key is re-registered', () => {
+    const stale = registerTerminalAnomalyMonitorTerminal({
+      agentId: 'agent-1',
+      key: 'task-1:agent-1',
+      taskId: 'task-1',
+    });
+    const current = registerTerminalAnomalyMonitorTerminal({
+      agentId: 'agent-1',
+      key: 'task-1:agent-1',
+      taskId: 'task-1',
+    });
+
+    stale.unregister();
+    stale.updateLifecycle({
+      cursorBlink: false,
+      hasPeerController: false,
+      isFocused: false,
+      isSelected: false,
+      isVisible: false,
+      liveRenderReady: false,
+      presentationMode: 'loading',
+      renderHibernating: false,
+      restoreBlocked: false,
+      sessionDormant: true,
+      status: 'binding',
+      surfaceTier: 'cold-hidden',
+    });
+
+    current.updateLifecycle({
+      cursorBlink: false,
+      hasPeerController: false,
+      isFocused: true,
+      isSelected: true,
+      isVisible: true,
+      liveRenderReady: true,
+      presentationMode: 'live',
+      renderHibernating: false,
+      restoreBlocked: false,
+      sessionDormant: false,
+      status: 'ready',
+      surfaceTier: 'interactive-live',
+    });
+
+    expect(getTerminalAnomalyTerminalSnapshot('task-1:agent-1')?.lifecycle).toEqual(
+      expect.objectContaining({
+        isFocused: true,
+        sessionDormant: false,
+        status: 'ready',
+        surfaceTier: 'interactive-live',
+      }),
+    );
+
+    current.unregister();
+    expect(getTerminalAnomalyTerminalSnapshot('task-1:agent-1')).toBeNull();
+  });
+
   it('records live interaction events, notifies listeners when thresholds trip, and clears anomalies after recovery', () => {
     const changes = vi.fn();
     const unsubscribe = subscribeTerminalAnomalyMonitorChanges(changes);

@@ -18,6 +18,25 @@ describe('agent supervision', () => {
     vi.useRealTimers();
   });
 
+  it('records runner identity on backend-owned supervision snapshots', () => {
+    const controller = createAgentSupervisionController({
+      now: () => currentTime,
+    });
+
+    controller.recordSpawn({
+      agentId: 'agent-1',
+      isShell: false,
+      runnerInstanceId: 'runner-1',
+      runnerProvider: 'docker-container',
+      taskId: 'task-1',
+    });
+
+    expect(controller.getSnapshot('agent-1')).toMatchObject({
+      runnerInstanceId: 'runner-1',
+      runnerProvider: 'docker-container',
+    });
+  });
+
   it('marks agents awaiting input when the tail shows a question', () => {
     const controller = createAgentSupervisionController({
       now: () => currentTime,

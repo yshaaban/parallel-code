@@ -9,6 +9,7 @@ import type {
 } from '../domain/server-state.js';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
 import type { ProjectContainerConfig } from '../domain/task-containers.js';
+import type { AgentRunnerProfileConfig } from '../domain/agent-runners.js';
 import type { TaskStepsSnapshot, TaskStepsSummarySnapshot } from '../domain/task-steps.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
 import type { TaskReviewSignalsSnapshot } from '../domain/task-review-signals.js';
@@ -35,6 +36,7 @@ export interface Project {
   color: string;
   baseBranch?: string;
   branchPrefix?: string; // default "task" if unset
+  agentRunnerConfig?: AgentRunnerProfileConfig;
   containerConfig?: ProjectContainerConfig;
   defaultTaskGitIsolation?: DefaultTaskGitIsolationMode;
   deleteBranchOnClose?: boolean; // default true if unset
@@ -55,6 +57,7 @@ export interface Agent {
   signal: string | null;
   lastOutput: string[];
   generation: number;
+  terminalSessionVersion?: number;
 }
 
 export type TaskCloseState =
@@ -70,6 +73,7 @@ export interface Task {
   worktreePath: string;
   agentIds: string[];
   selectedAgentId?: string;
+  terminalLayoutMode?: TaskTerminalLayoutMode;
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
@@ -113,6 +117,7 @@ export interface PersistedTask {
   agentIds?: string[];
   agentDefs?: AgentDef[];
   selectedAgentId?: string;
+  terminalLayoutMode?: TaskTerminalLayoutMode;
   shellAgentIds?: string[];
   agentDef: AgentDef | null;
   baseBranch?: string;
@@ -153,6 +158,8 @@ export interface PersistedWindowState {
 }
 
 export type SidebarSectionKey = 'projects' | 'progress' | 'sessions' | 'tips';
+
+export type TaskTerminalLayoutMode = 'focused' | 'split' | 'grid' | 'stacked';
 
 export interface SidebarSectionCollapsedState {
   projects: boolean;

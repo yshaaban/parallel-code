@@ -21,6 +21,7 @@ import type {
 import type { ProjectMode, ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
 import type { AskAboutCodeMessage, AskAboutCodeProviderId } from './ask-about-code.js';
 import type { AppUpdateStatus } from './app-update.js';
+import type { AgentRunnerProfileConfig } from './agent-runners.js';
 import type { BranchCommitHistoryResult } from './review-commit-history.js';
 import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
@@ -109,6 +110,7 @@ export interface RendererInvokeRequestMap {
     onOutput: ChannelRefLike<string>;
     projectMode?: ProjectMode;
     resumeOnStart?: boolean;
+    runnerProfile?: AgentRunnerProfileConfig;
     rows?: number;
     taskId: string;
   };

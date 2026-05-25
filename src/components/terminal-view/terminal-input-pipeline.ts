@@ -103,6 +103,10 @@ interface PendingKeyboardTraceStart {
   startedAtMs: number;
 }
 
+interface FlushPendingInputOptions {
+  traceAsImmediate?: boolean;
+}
+
 interface TerminalGeometry {
   cols: number;
   rows: number;
@@ -615,6 +619,18 @@ export function createTerminalInputPipeline(
     };
   }
 
+  function getPendingInputBufferedTraceTimestamp(options: FlushPendingInputOptions): number {
+    if (!hasTerminalTraceClockAlignment()) {
+      return -1;
+    }
+
+    if (options.traceAsImmediate === true && pendingInputStartedAtMs >= 0) {
+      return pendingInputStartedAtMs;
+    }
+
+    return getTerminalTraceTimestampMs();
+  }
+
   function summarizeQueuedInputTrace(queueEntries: readonly QueuedInputChunk[]): {
     bufferedAtMs: number;
     inputKind: TerminalInputTraceKind;
@@ -1039,7 +1055,7 @@ export function createTerminalInputPipeline(
       });
   }
 
-  function flushPendingInput(): void {
+  function flushPendingInput(options: FlushPendingInputOptions = {}): void {
     if (inputFlushTimer !== undefined) {
       clearTimeout(inputFlushTimer);
       inputFlushTimer = undefined;
@@ -1050,14 +1066,15 @@ export function createTerminalInputPipeline(
 
     recordTerminalInputFlush(false);
     const queuedAt = recordInputBuffered(pendingInputQueuedAt);
-    const bufferedAtMs = hasTerminalTraceClockAlignment() ? getTerminalTraceTimestampMs() : -1;
+    const traceStartedAtMs = pendingInputStartedAtMs;
+    const bufferedAtMs = getPendingInputBufferedTraceTimestamp(options);
     inputQueue.push(
       ...splitTerminalInputChunks(pendingInput).map((chunk) => ({
         ...chunk,
         bufferedAtMs,
         inputKind: pendingInputKind,
         queuedAt,
-        startedAtMs: pendingInputStartedAtMs >= 0 ? pendingInputStartedAtMs : bufferedAtMs,
+        startedAtMs: traceStartedAtMs >= 0 ? traceStartedAtMs : bufferedAtMs,
       })),
     );
     resetPendingInputState();
@@ -1093,7 +1110,7 @@ export function createTerminalInputPipeline(
       pendingInput.length >= pendingInputCharLimit ||
       (plan.preferImmediateFlushWhenIdle && wasIdle)
     ) {
-      flushPendingInput();
+      flushPendingInput({ traceAsImmediate: true });
       drainInputQueue();
       return;
     }

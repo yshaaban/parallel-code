@@ -1,3 +1,4 @@
+import { parseAgentRunnerProfileConfig } from '../domain/agent-runners.js';
 import { randomPastelColor } from '../domain/project-colors.js';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { createRandomId } from '../lib/random-id.js';
@@ -21,10 +22,15 @@ function isPersistedProject(value: unknown): value is PersistedProjectInput {
 
 function getPersistedProjects(value: unknown): Project[] {
   return Array.isArray(value)
-    ? value.filter(isPersistedProject).map((project) => ({
-        ...project,
-        color: project.color ?? '',
-      }))
+    ? value.filter(isPersistedProject).map((project) => {
+        const { agentRunnerConfig: rawAgentRunnerConfig, ...persistedProject } = project;
+        const agentRunnerConfig = parseAgentRunnerProfileConfig(rawAgentRunnerConfig);
+        return {
+          ...persistedProject,
+          ...(agentRunnerConfig !== undefined ? { agentRunnerConfig } : {}),
+          color: project.color ?? '',
+        };
+      })
     : [];
 }
 

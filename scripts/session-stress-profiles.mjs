@@ -261,6 +261,37 @@ export const SESSION_STRESS_PROFILES = {
     ],
     description: 'Heavy TUI-style output and input on a hot shared session.',
   },
+  multi_agent_layout: {
+    args: {
+      inputChunkBytes: 2048,
+      inputChunks: 8,
+      lateJoiners: 1,
+      lines: 80,
+      mixedLineBytes: 2048,
+      mixedLines: 12,
+      outputLineBytes: 2048,
+      reconnects: 1,
+      terminals: 4,
+      users: 2,
+      warmScrollbackLines: 200,
+    },
+    budgets: [
+      createMaxBudget('input wall clock', 10_000, (result) => getPhaseWallClock(result, 'input')),
+      createMaxBudget('mixed max skew', 1_000, (result) =>
+        getRequiredNumber(result.phases.mixed?.metrics?.maxSkewMs),
+      ),
+      createMaxBudget('mixed queued chars', 131_072, (result) =>
+        getRequiredNumber(result.phases.mixed?.diagnostics?.ptyInput?.maxQueuedChars),
+      ),
+      createMaxBudget('output degraded channels', 0, (result) =>
+        getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        ),
+      ),
+    ],
+    description:
+      'Four-terminal selected/passive sibling stress profile for multi-agent terminal layout changes.',
+  },
   verbose_bulk_text: {
     args: {
       bulkTextLineBytes: 6144,

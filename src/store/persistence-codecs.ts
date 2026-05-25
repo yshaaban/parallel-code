@@ -144,6 +144,9 @@ function buildPersistedTask(
     ...(hasCompleteActiveMultiAgentDefs ? { agentIds: [...task.agentIds] } : {}),
     ...(shouldPersistAgentDefs && agentDefs ? { agentDefs } : {}),
     ...(selectedAgentId ? { selectedAgentId } : {}),
+    ...(task.terminalLayoutMode !== undefined
+      ? { terminalLayoutMode: task.terminalLayoutMode }
+      : {}),
     shellAgentIds: [...task.shellAgentIds],
     agentDef: getPrimaryAgentDef(task, fallbackAgentDefs),
     ...buildTaskProjectModeFields(task),
