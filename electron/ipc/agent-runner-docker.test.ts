@@ -257,6 +257,89 @@ describe('agent-runner-docker', () => {
     expect(getDockerBuildCall()).toBeUndefined();
   });
 
+  it('rejects Dockerfile symlinks that resolve outside the worktree', async () => {
+    const worktreePath = await createTempDir();
+    const outsidePath = await createTempDir();
+    await fs.promises.writeFile(path.join(outsidePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
+    await fs.promises.symlink(
+      path.join(outsidePath, 'Dockerfile'),
+      path.join(worktreePath, 'Dockerfile'),
+    );
+
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          dockerfile: 'Dockerfile',
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow('Dockerfile must stay inside the task worktree');
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly when a configured Dockerfile is missing', async () => {
+    const worktreePath = await createTempDir();
+    const dockerfilePath = path.join(worktreePath, 'Dockerfile');
+
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          dockerfile: 'Dockerfile',
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow(`Dockerfile does not exist: ${dockerfilePath}`);
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('keeps Dockerfile paths behind relative-path validation', async () => {
+    const worktreePath = await createTempDir();
+    const dockerfilePath = path.join(worktreePath, 'Dockerfile');
+    await fs.promises.writeFile(dockerfilePath, 'FROM busybox\n', 'utf8');
+
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          dockerfile: dockerfilePath,
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow('agentRunnerProfile.dockerfile must not be absolute');
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          dockerfile: '../Dockerfile',
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow('agentRunnerProfile.dockerfile must not contain ".."');
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
   it('uses a stable container workspace default instead of the host worktree path', async () => {
     const worktreePath = await createTempDir();
     const launch = createDockerAgentRunnerLaunch({

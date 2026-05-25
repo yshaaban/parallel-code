@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { isInteger, isTcpPortNumber } from '../../src/lib/type-guards.js';
+import { isPathInsideOrEqual } from './path-utils.js';
 import { compareTaskPortExposureCandidateOrder } from './task-port-candidate-order.js';
 
 export interface TaskPortDiscoveryTarget {
@@ -42,7 +43,7 @@ function getTaskPathMatch(
 
   for (const task of tasks) {
     const normalizedWorktreePath = path.resolve(task.worktreePath);
-    if (cwd !== normalizedWorktreePath && !cwd.startsWith(`${normalizedWorktreePath}${path.sep}`)) {
+    if (!isPathInsideOrEqual(normalizedWorktreePath, cwd)) {
       continue;
     }
 

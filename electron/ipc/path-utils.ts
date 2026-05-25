@@ -62,6 +62,25 @@ export function hasTraversalSegment(inputPath: string): boolean {
   return inputPath.split(/[\\/]+/).some((segment) => segment === '..');
 }
 
+function isRelativeChildPath(relativePath: string): boolean {
+  return (
+    relativePath !== '' &&
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+export function isPathInside(parentPath: string, childPath: string): boolean {
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return isRelativeChildPath(relativePath);
+}
+
+export function isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relativePath === '' || isRelativeChildPath(relativePath);
+}
+
 export function resolveUserPath(inputPath: string): string {
   const home = getHomeDirectory();
   let resolvedPath = inputPath.trim();

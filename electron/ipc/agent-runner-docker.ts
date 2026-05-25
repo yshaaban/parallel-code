@@ -12,6 +12,7 @@ import {
   isAllowedAgentRunnerEnvName,
   isValidAgentRunnerEnvName,
 } from '../../src/domain/agent-runners.js';
+import { isPathInside, validateRelativePath } from './path-utils.js';
 
 interface DockerAgentRunnerLaunchRequest {
   agentId: string;
@@ -139,13 +140,19 @@ function resolveDockerfilePath(profile: AgentRunnerProfileConfig, cwd: string): 
     return undefined;
   }
 
+  validateRelativePath(profile.dockerfile, 'agentRunnerProfile.dockerfile');
   const resolvedCwd = path.resolve(cwd);
   const dockerfilePath = path.resolve(resolvedCwd, profile.dockerfile);
-  if (!dockerfilePath.startsWith(`${resolvedCwd}${path.sep}`)) {
+  if (!isPathInside(resolvedCwd, dockerfilePath)) {
     throw new Error('Dockerfile must stay inside the task worktree');
   }
   if (!fs.existsSync(dockerfilePath)) {
     throw new Error(`Dockerfile does not exist: ${dockerfilePath}`);
+  }
+  const realCwd = fs.realpathSync(resolvedCwd);
+  const realDockerfilePath = fs.realpathSync(dockerfilePath);
+  if (!isPathInside(realCwd, realDockerfilePath)) {
+    throw new Error('Dockerfile must stay inside the task worktree');
   }
 
   return dockerfilePath;
