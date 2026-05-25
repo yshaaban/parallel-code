@@ -478,6 +478,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [sessionDormant, setSessionDormant] = createSignal(false);
   const [renderHibernating, setRenderHibernating] = createSignal(false);
   const [restoreBlocked, setRestoreBlocked] = createSignal(false);
+  const [resizeTransactionActive, setResizeTransactionActive] = createSignal(false);
   const [paintReady, setPaintReady] = createSignal(false);
   const [surfaceTierVersion, setSurfaceTierVersion] = createSignal(0);
   const [switchWindowVersion, setSwitchWindowVersion] = createSignal(0);
@@ -800,11 +801,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function shouldBlinkTerminalCursor(): boolean {
     return (
       isTerminalFocused() &&
+      isActiveCommandTarget() &&
       sessionStatus() === 'ready' &&
       presentationMode().kind === 'live' &&
       !hasPeerController() &&
       !renderHibernating() &&
-      !restoreBlocked()
+      !restoreBlocked() &&
+      !resizeTransactionActive()
     );
   }
 
@@ -815,11 +818,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       sessionStatus() === 'ready' &&
       isPaintSettledReady() &&
       !restoreBlocked() &&
+      !resizeTransactionActive() &&
       shouldBlinkTerminalCursor()
     );
   }
 
   function canAcceptTerminalInput(): boolean {
+    if (!isActiveCommandTarget() || hasPeerController() || resizeTransactionActive()) {
+      return false;
+    }
+
     const status = sessionStatus();
     switch (status) {
       case 'attaching':
@@ -1089,6 +1097,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     setTakingOver(false);
     setRenderHibernating(false);
     setRestoreBlocked(false);
+    setResizeTransactionActive(false);
     session?.cleanup();
     session = undefined;
     setSessionVersion((version) => version + 1);
@@ -1153,6 +1162,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function handleSessionRestoreBlockedChange(isBlocked: boolean): void {
     setRestoreBlocked(isBlocked);
+    syncCurrentSessionRuntimeState();
+  }
+
+  function handleSessionResizeTransactionChange(isActive: boolean): void {
+    setResizeTransactionActive(isActive);
     syncCurrentSessionRuntimeState();
   }
 
@@ -1229,7 +1243,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               controlVisualState.expandBanner();
             },
             onRestoreBlockedChange: handleSessionRestoreBlockedChange,
-            onResizeTransactionChange: () => undefined,
+            onResizeTransactionChange: handleSessionResizeTransactionChange,
             onSelectedRecoverySettle: () => {
               markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
               requestTerminalOutputDrain();
@@ -1693,12 +1707,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const masked = shouldMaskLiveTerminalSurface();
     const hibernating = renderHibernating();
     const blocked = restoreBlocked();
+    const resizing = resizeTransactionActive();
     const priority = outputPriority();
     const status = sessionStatus();
     void focused;
     void masked;
     void hibernating;
     void blocked;
+    void resizing;
     void priority;
     void status;
     if (!session) return;
@@ -1766,6 +1782,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const dormant = sessionDormant();
     const hibernating = renderHibernating();
     const blocked = restoreBlocked();
+    const resizing = resizeTransactionActive();
     const peerControlled = hasPeerController();
     const liveReady = isLiveRenderReady();
     const paintSettledReady = isPaintSettledReady();
@@ -1775,6 +1792,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void dormant;
     void hibernating;
     void blocked;
+    void resizing;
     void peerControlled;
     void liveReady;
     void paintSettledReady;

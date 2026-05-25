@@ -191,6 +191,7 @@ type BrowserResizeOrderContext = Partial<
 
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
 const pendingTerminalTraceClockSyncRequests = new Map<string, number>();
+let browserAgentCommandSendChain: Promise<void> = Promise.resolve();
 let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
 let terminalTraceClockSyncBound = false;
 let terminalTraceClockSyncTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -385,6 +386,12 @@ function waitForBrowserAgentCommandResult(
 
 async function sendBrowserCommand(message: ClientMessage): Promise<void> {
   await browserControlClient.send(message);
+}
+
+function enqueueBrowserAgentCommandSend(send: () => Promise<void>): Promise<void> {
+  const run = browserAgentCommandSendChain.then(send, send);
+  browserAgentCommandSendChain = run.catch(() => undefined);
+  return run;
 }
 
 async function sendNonQueueableBrowserCommand(
@@ -859,10 +866,12 @@ async function sendBrowserAgentCommand(
   message: Extract<ClientMessage, { type: 'input' | 'resize' }>,
 ): Promise<number> {
   return await waitForBrowserAgentCommandResult(requestId, details, () =>
-    sendNonQueueableBrowserCommand(message, {
-      canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
-      waitForConnection: true,
-    }),
+    enqueueBrowserAgentCommandSend(() =>
+      sendNonQueueableBrowserCommand(message, {
+        canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
+        waitForConnection: true,
+      }),
+    ),
   );
 }
 
@@ -1251,6 +1260,7 @@ export function resetBrowserAgentCommandRequestStateForTests(): void {
   rejectPendingBrowserAgentCommandRequests(new Error('Browser agent command test state reset'));
   cleanupBrowserAgentCommandRequestListeners?.();
   cleanupBrowserAgentCommandRequestListeners = null;
+  browserAgentCommandSendChain = Promise.resolve();
   pendingTerminalTraceClockSyncRequests.clear();
   clearTerminalTraceClockSyncTimer();
   resetTerminalTraceClockAlignmentForTests();

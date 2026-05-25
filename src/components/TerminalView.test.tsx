@@ -155,6 +155,7 @@ import { TerminalView } from './TerminalView';
 type SessionStatus = 'attaching' | 'error' | 'ready' | 'restoring';
 type MockSessionOptions = Pick<
   StartTerminalSessionOptions,
+  | 'canAcceptInput'
   | 'getRenderHibernationDelayMs'
   | 'isSelectedRecoveryProtected'
   | 'onAttachBound'
@@ -362,6 +363,7 @@ describe('TerminalView', () => {
   it('reacts to focus, font size, terminal font, and theme changes', async () => {
     const [fontSize, setFontSize] = createSignal<number | undefined>(12);
     const [focused, setFocused] = createSignal(false);
+    setStore('activeTaskId', 'task-1');
 
     render(() => (
       <TerminalView
@@ -409,6 +411,7 @@ describe('TerminalView', () => {
 
   it('suppresses cursor blinking while restore is blocked and reenables it when recovery settles', () => {
     const [focused] = createSignal(true);
+    setStore('activeTaskId', 'task-1');
     const result = render(() => (
       <TerminalView
         taskId="task-1"
@@ -439,6 +442,7 @@ describe('TerminalView', () => {
   });
 
   it('suppresses cursor blinking while the terminal is render-hibernating', () => {
+    setStore('activeTaskId', 'task-1');
     const result = render(() => (
       <TerminalView
         taskId="task-1"
@@ -472,6 +476,7 @@ describe('TerminalView', () => {
 
   it('only blinks the cursor while the focused terminal is ready and live', () => {
     const [focused, setFocused] = createSignal(false);
+    setStore('activeTaskId', 'task-1');
     render(() => (
       <TerminalView
         taskId="task-1"
@@ -508,7 +513,71 @@ describe('TerminalView', () => {
     expect(session.term.options.cursorBlink).toBe(false);
   });
 
+  it('requires the active command target before blinking the cursor or accepting input', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const sessionOptions = getLastSessionOptions();
+
+    getLastStatusChangeHandler()?.('ready');
+
+    expect(session.term.options.cursorBlink).toBe(false);
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+    expect(terminalRoot?.hasAttribute('data-terminal-cursor-blink')).toBe(false);
+
+    setStore('activeTaskId', 'task-1');
+
+    expect(session.term.options.cursorBlink).toBe(true);
+    expect(session.term.options.disableStdin).toBe(false);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+    expect(terminalRoot?.getAttribute('data-terminal-cursor-blink')).toBe('true');
+  });
+
+  it('suppresses cursor blinking and stdin while a resize transaction is active', () => {
+    setStore('activeTaskId', 'task-1');
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const sessionOptions = getLastSessionOptions();
+
+    getLastStatusChangeHandler()?.('ready');
+    expect(session.term.options.cursorBlink).toBe(true);
+    expect(session.term.options.disableStdin).toBe(false);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+
+    getLastResizeTransactionChangeHandler()?.(true);
+    expect(session.term.options.cursorBlink).toBe(false);
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+
+    getLastResizeTransactionChangeHandler()?.(false);
+    expect(session.term.options.cursorBlink).toBe(true);
+    expect(session.term.options.disableStdin).toBe(false);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+  });
+
   it('updates cursor blinking when DOM focus moves into and out of the terminal', async () => {
+    setStore('activeTaskId', 'task-1');
     const result = render(() => (
       <TerminalView
         taskId="task-1"
@@ -658,6 +727,7 @@ describe('TerminalView', () => {
   });
 
   it('suppresses cursor blinking while another client controls the terminal', () => {
+    setStore('activeTaskId', 'task-1');
     render(() => (
       <TerminalView
         taskId="task-1"

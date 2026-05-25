@@ -19,6 +19,7 @@ import type { ServerMessage } from '../electron/remote/protocol.js';
 const TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE = 'Task is controlled by another client';
 
 export interface AgentCommandExecutionOptions {
+  deferSuccessResult?: boolean;
   onFailure?: (reason: string) => void;
   request?: AgentCommandRequest;
   taskId?: string;
@@ -61,6 +62,12 @@ export interface BrowserAgentCommandRunner<Client> {
     requireControl?: boolean,
     commandOptions?: AgentCommandExecutionOptions,
   ) => void;
+  sendCommandResult: (
+    client: Client,
+    request: AgentCommandRequest | undefined,
+    accepted: boolean,
+    reason?: string,
+  ) => boolean;
   sendTaskControlFailure: (
     client: Client,
     message: {
@@ -228,7 +235,9 @@ export function createBrowserAgentCommandRunner<Client>(
       }
 
       execute();
-      sendRequestedAgentCommandResult(client, request, true);
+      if (commandOptions?.deferSuccessResult !== true) {
+        sendRequestedAgentCommandResult(client, request, true);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : `${action} failed`;
       commandOptions?.onFailure?.(errorMessage);
@@ -244,6 +253,7 @@ export function createBrowserAgentCommandRunner<Client>(
     claimControlOrSendError,
     createExecutionOptions,
     run,
+    sendCommandResult: sendRequestedAgentCommandResult,
     sendTaskControlFailure,
   };
 }

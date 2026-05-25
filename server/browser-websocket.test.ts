@@ -8,21 +8,23 @@ import type {
 } from './browser-websocket.js';
 
 const {
-  canResizeTaskTerminalMock,
   getAgentColsMock,
+  getAgentMetaMock,
   getAgentScrollbackMock,
   getAgentTerminalRecoveryMock,
   getAgentTerminalStartupRecoveryMock,
+  isTaskCommandLeaseHeldMock,
   onPtyEventMock,
   recordTerminalInputTraceClientDisconnectedMock,
   subscribeToAgentMock,
   writeToAgentMock,
 } = vi.hoisted(() => ({
-  canResizeTaskTerminalMock: vi.fn(() => true),
   getAgentColsMock: vi.fn<() => number>(() => 80),
+  getAgentMetaMock: vi.fn(() => ({ taskId: 'task-1' })),
   getAgentScrollbackMock: vi.fn<() => string | null>(() => null),
   getAgentTerminalRecoveryMock: vi.fn(),
   getAgentTerminalStartupRecoveryMock: vi.fn(),
+  isTaskCommandLeaseHeldMock: vi.fn(() => true),
   onPtyEventMock: vi.fn(() => () => {}),
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
   subscribeToAgentMock: vi.fn<(agentId: string, callback: (data: string) => void) => boolean>(
@@ -42,7 +44,7 @@ const AGENT_INPUT_MESSAGE = JSON.stringify({
 
 vi.mock('../electron/ipc/pty.js', () => ({
   getAgentCols: getAgentColsMock,
-  getAgentMeta: vi.fn(() => null),
+  getAgentMeta: getAgentMetaMock,
   getAgentPauseState: vi.fn(() => null),
   getAgentScrollback: getAgentScrollbackMock,
   getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
@@ -59,7 +61,7 @@ vi.mock('../electron/ipc/pty.js', () => ({
 }));
 
 vi.mock('../electron/ipc/task-command-leases.js', () => ({
-  canResizeTaskTerminal: canResizeTaskTerminalMock,
+  isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
 }));
 
 vi.mock('../electron/ipc/runtime-diagnostics.js', () => ({
@@ -200,6 +202,7 @@ describe('registerBrowserWebSocketServer', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     getAgentColsMock.mockReturnValue(80);
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
     getAgentScrollbackMock.mockReturnValue(null);
     getAgentTerminalRecoveryMock.mockReturnValue({
       cols: 100,

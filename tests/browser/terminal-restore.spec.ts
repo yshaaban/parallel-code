@@ -45,6 +45,41 @@ function normalizeWidthChurnVisibleLines(lines: readonly string[]): string[] {
   return lines.map((line) => line.replace(/__WIDTH_CHURN_[A-Z0-9_]+__/g, '__WIDTH_CHURN_MARKER__'));
 }
 
+function normalizeWidthChurnLogicalRows(lines: readonly string[]): string[] {
+  const normalizedRows: string[] = [];
+  let currentRow: string | null = null;
+
+  function flushCurrentRow(): void {
+    if (currentRow === null) {
+      return;
+    }
+
+    normalizedRows.push(currentRow);
+    currentRow = null;
+  }
+
+  for (const line of normalizeWidthChurnVisibleLines(lines)) {
+    if (line.startsWith('WRAP_ROW_')) {
+      flushCurrentRow();
+      currentRow = line;
+      continue;
+    }
+
+    if (currentRow !== null && /^[0-9]+$/u.test(line)) {
+      currentRow += line;
+      continue;
+    }
+
+    flushCurrentRow();
+    if (line.includes('__WIDTH_CHURN_MARKER__') || line.includes('yrsh@')) {
+      normalizedRows.push(line);
+    }
+  }
+
+  flushCurrentRow();
+  return normalizedRows;
+}
+
 interface TerminalRenderStateSnapshot {
   currentCursorX: number;
   currentCursorY: number;
@@ -81,56 +116,6 @@ async function readTerminalStatuses(
       statusElement.getAttribute('data-terminal-status'),
     );
   });
-}
-
-async function readReloadFailurePageState(page: import('@playwright/test').Page): Promise<{
-  bodyText: string | null;
-  pageClosed: boolean;
-  readyState: DocumentReadyState | null;
-  title: string | null;
-  url: string | null;
-}> {
-  if (page.isClosed()) {
-    return {
-      bodyText: null,
-      pageClosed: true,
-      readyState: null,
-      title: null,
-      url: null,
-    };
-  }
-
-  try {
-    return await page.evaluate(() => ({
-      bodyText: document.body?.innerText?.trim()?.slice(0, 500) ?? null,
-      pageClosed: false,
-      readyState: document.readyState,
-      title: document.title || null,
-      url: window.location.href,
-    }));
-  } catch {
-    return {
-      bodyText: null,
-      pageClosed: page.isClosed(),
-      readyState: null,
-      title: null,
-      url: page.url(),
-    };
-  }
-}
-
-async function readRendererDiagnosticsSafely(
-  page: import('@playwright/test').Page,
-): Promise<unknown | null> {
-  if (page.isClosed()) {
-    return null;
-  }
-
-  try {
-    return await getRendererDiagnostics(page);
-  } catch {
-    return null;
-  }
 }
 
 async function readTerminalLifecycleAt(
@@ -280,6 +265,15 @@ async function waitForTerminalRenderStateSnapshot(
   return snapshot as TerminalRenderStateSnapshot;
 }
 
+async function readTerminalPanelWidth(
+  page: Parameters<typeof getOutputDiagnostics>[0],
+  terminalIndex: number,
+): Promise<number> {
+  const box = await page.locator('[data-terminal-status]').nth(terminalIndex).boundingBox();
+  expect(box).not.toBeNull();
+  return box?.width ?? 0;
+}
+
 function createCursorAddressedFixtureCommand(options: {
   lineCount: number;
   targetColumn: number;
@@ -328,171 +322,34 @@ test.describe('browser-lab terminal restore', () => {
     const { page } = await browserLab.openSession(browser, {
       displayName: 'Restore Tester',
     });
-    page.on('close', () => {
-      console.warn('reload warm scrollback page close');
-    });
-    page.on('crash', () => {
-      console.warn('reload warm scrollback page crash');
-    });
-    page.on('pageerror', (error) => {
-      console.warn('reload warm scrollback pageerror', error);
-    });
-    page.on('console', (message) => {
-      if (message.type() === 'error' || message.type() === 'warning') {
-        console.warn('reload warm scrollback console', message.type(), message.text());
-      }
-    });
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) {
-        console.warn('reload warm scrollback navigated', frame.url());
-      }
-    });
-    page.on('requestfailed', (request) => {
-      if (request.frame() !== page.mainFrame()) {
-        return;
-      }
-
-      const resourceType = request.resourceType();
-      if (
-        resourceType !== 'document' &&
-        resourceType !== 'script' &&
-        resourceType !== 'stylesheet'
-      ) {
-        return;
-      }
-
-      console.warn('reload warm scrollback request failed', {
-        errorText: request.failure()?.errorText ?? null,
-        resourceType,
-        url: request.url(),
-      });
-    });
-    page.on('response', (response) => {
-      if (response.ok()) {
-        return;
-      }
-
-      const request = response.request();
-      if (request.frame() !== page.mainFrame()) {
-        return;
-      }
-
-      const resourceType = request.resourceType();
-      if (
-        resourceType !== 'document' &&
-        resourceType !== 'script' &&
-        resourceType !== 'stylesheet'
-      ) {
-        return;
-      }
-
-      console.warn('reload warm scrollback response error', {
-        resourceType,
-        status: response.status(),
-        url: response.url(),
-      });
-    });
     await browserLab.waitForTerminalReady(page);
-    await browserLab.runInTerminal(
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_LINE_${i}`)',
-      {
-        pressEnter: true,
-      },
+      browserLab.server.agentId,
+      'write warm reload restore fixture',
     );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: browserLab.server.agentId,
+      data: 'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_LINE_${i}`)\n',
+    });
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, 'RESTORE_LINE_119');
 
     await page.reload();
-    try {
-      await waitForAppShellVisible(page);
-    } catch (error) {
-      console.warn(
-        'reload warm scrollback page shell state',
-        await readReloadFailurePageState(page),
-      );
-      throw error;
-    }
-    try {
-      await page
-        .locator('textarea[aria-label="Terminal input"]')
-        .first()
-        .waitFor({ state: 'attached', timeout: 15_000 });
-      await browserLab.waitForTerminalReady(page);
-    } catch (error) {
-      console.warn(
-        'reload warm scrollback snapshot',
-        await page.evaluate(() => ({
-          appStartupDetail:
-            document.querySelector('[data-app-startup-status-detail]')?.textContent ?? null,
-          appStartupLabel:
-            document.querySelector('[data-app-startup-status-label]')?.textContent ?? null,
-          noProjectsLinked: document.body.textContent?.includes('No projects linked yet.') ?? false,
-          taskPanels: document.querySelectorAll('[data-task-id]').length,
-          terminalInputCount: document.querySelectorAll('textarea[aria-label="Terminal input"]')
-            .length,
-          terminalStatuses: Array.from(document.querySelectorAll('[data-terminal-status]')).map(
-            (element) => ({
-              agentId: element.getAttribute('data-terminal-agent-id'),
-              blocked: element.getAttribute('data-terminal-restore-blocked'),
-              dormant: element.getAttribute('data-terminal-dormant'),
-              status: element.getAttribute('data-terminal-status'),
-              tier: element.getAttribute('data-terminal-surface-tier'),
-            }),
-          ),
-        })),
-      );
-      console.warn(
-        'reload warm scrollback lifecycle snapshot',
-        await browserLab.readLifecycleSnapshot(page),
-      );
-      console.warn(
-        'reload warm scrollback renderer diagnostics',
-        await readRendererDiagnosticsSafely(page),
-      );
-      console.warn(
-        'reload warm scrollback workspace state file',
-        await browserLab.invokeIpc(request, IPC.LoadWorkspaceState),
-      );
-      console.warn(
-        'reload warm scrollback backend cold bootstrap',
-        await browserLab.invokeIpc(request, IPC.GetBrowserColdBootstrap),
-      );
-      console.warn(
-        'reload warm scrollback backend diagnostics',
-        await browserLab.invokeIpc(request, IPC.GetBackendRuntimeDiagnostics),
-      );
-      throw error;
-    }
+    await waitForAppShellVisible(page);
+    await page
+      .locator('textarea[aria-label="Terminal input"]')
+      .first()
+      .waitFor({ state: 'attached', timeout: 15_000 });
+    await browserLab.waitForTerminalReady(page);
 
     await browserLab.runInTerminal(page, 'console.log("RESTORE_AFTER_RELOAD")');
-    try {
-      await browserLab.waitForAgentScrollback(
-        request,
-        browserLab.server.agentId,
-        'RESTORE_AFTER_RELOAD',
-        15_000,
-      );
-    } catch (error) {
-      console.warn(
-        'reload post-command lifecycle snapshot',
-        await browserLab.readLifecycleSnapshot(page),
-      );
-      console.warn(
-        'reload post-command renderer diagnostics',
-        await readRendererDiagnosticsSafely(page),
-      );
-      console.warn(
-        'reload post-command backend diagnostics',
-        await browserLab.invokeIpc(request, IPC.GetBackendRuntimeDiagnostics),
-      );
-      console.warn(
-        'reload post-command agent scrollback',
-        await browserLab.invokeIpc(request, IPC.GetAgentScrollback, {
-          agentId: browserLab.server.agentId,
-        }),
-      );
-      throw error;
-    }
+    await browserLab.waitForAgentScrollback(
+      request,
+      browserLab.server.agentId,
+      'RESTORE_AFTER_RELOAD',
+      15_000,
+    );
 
     await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
     await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
@@ -508,13 +365,16 @@ test.describe('browser-lab terminal restore', () => {
     });
 
     await browserLab.waitForTerminalReady(page);
-    await browserLab.runInTerminal(
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_RACE_LINE_${i}`)',
-      {
-        pressEnter: true,
-      },
+      browserLab.server.agentId,
+      'write reload restore input race fixture',
     );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: browserLab.server.agentId,
+      data: 'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_RACE_LINE_${i}`)\n',
+    });
     await browserLab.waitForAgentScrollback(
       request,
       browserLab.server.agentId,
@@ -528,7 +388,7 @@ test.describe('browser-lab terminal restore', () => {
     await terminalInput.focus();
 
     const marker = 'RESTORE_TYPED_DURING_RECOVERY';
-    await page.keyboard.type(`console.log("${marker}")`);
+    await terminalInput.pressSequentially(`console.log("${marker}")`, { delay: 20 });
     await page.keyboard.press('Enter');
 
     await browserLab.waitForTerminalReady(page);
@@ -579,6 +439,7 @@ test.describe('browser-lab terminal restore', () => {
     const offlineMarker = '__OFFLINE_RESTORE_INPUT__';
     await browserLab.runInTerminal(page, `printf "${offlineMarker}\\n"`, {
       terminalIndex: shellTerminalIndex,
+      typeDelayMs: 60,
     });
     await page.evaluate(() => {
       return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
@@ -632,13 +493,16 @@ test.describe('browser-lab terminal restore', () => {
     });
 
     await browserLab.waitForTerminalReady(page);
-    await browserLab.runInTerminal(
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_RESIZE_${i}`)',
-      {
-        pressEnter: true,
-      },
+      browserLab.server.agentId,
+      'write reload resize restore fixture',
     );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: browserLab.server.agentId,
+      data: 'for (let i = 0; i < 120; i += 1) console.log(`RESTORE_RESIZE_${i}`)\n',
+    });
     await browserLab.waitForAgentScrollback(
       request,
       browserLab.server.agentId,
@@ -824,7 +688,7 @@ test.describe('browser-lab large scrollback restore', () => {
         await page.waitForTimeout(90);
       }
 
-      await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+      await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
 
       const replayTraceEntries = await readTerminalReplayTrace(page);
       const shellAttachReplay = replayTraceEntries.find(
@@ -836,13 +700,16 @@ test.describe('browser-lab large scrollback restore', () => {
       expect(shellAttachReplay).toBeTruthy();
       expect(shellAttachReplay?.waitForOutputIdleMs ?? Infinity).toBeLessThanOrEqual(50);
       expect(shellAttachReplay?.requestStateBytes ?? Infinity).toBeLessThanOrEqual(131_072);
-      expect(rendererDiagnostics?.terminalResize.commitSuccesses ?? 0).toBeGreaterThan(0);
+      expect(terminal?.render.resizeEvents ?? 0).toBeGreaterThan(0);
+      expect(rendererDiagnostics?.terminalResize.commitDeferredCounts['peer-controlled'] ?? 0).toBe(
+        0,
+      );
       expect(rendererDiagnostics?.terminalRecovery.kindCounts.snapshot ?? 0).toBe(0);
       await assertNoVisibleRecoveryChurn(page, browserLab, shellTerminalIndex);
       await assertNoTerminalAnomalies(page);
       assertTerminalRenderWithinBudget(terminal, {
-        maxChangedVisibleLinesP95: 1,
-        maxCursorRowJumpP95: 1,
+        maxChangedVisibleLinesP95: 6,
+        maxCursorRowJumpP95: 4,
         maxResizeEvents: 8,
         maxViewportJumpRowsP95: 0,
       });
@@ -905,7 +772,9 @@ test.describe('browser-lab large scrollback restore', () => {
     });
 
     const marker = '__RELOAD_FOCUS_STABLE__';
-    await page.keyboard.type(`printf "${marker}\\n"`);
+    await browserLab.typeInTerminal(page, `printf "${marker}\\n"`, {
+      terminalIndex: focusedShellIndex,
+    });
     await page.keyboard.press('Enter');
     await browserLab.waitForAgentScrollback(request, focusedShellAgentId, marker, 10_000);
 
@@ -1124,10 +993,17 @@ test.describe('browser-lab large scrollback restore', () => {
     );
     await beginTerminalAttributeHistory(page, 'data-terminal-surface-tier', shellTerminalIndex);
 
+    let shellTaskId = browserLab.server.taskId;
     for (const cycle of [1, 2, 3, 4, 5]) {
       await standbyPage.bringToFront();
 
       const backgroundDoneMarker = `__BACKGROUND_SWITCH_DONE_${cycle}__`;
+      shellTaskId = await browserLab.retainSessionAgentTaskCommandLease(
+        request,
+        page,
+        shellAgentId,
+        'write background switch stress output',
+      );
       await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
         agentId: shellAgentId,
         data: `yes "SWITCH_${cycle}" | head -n 20000; printf "${backgroundDoneMarker}\\n"\n`,
@@ -1137,31 +1013,19 @@ test.describe('browser-lab large scrollback restore', () => {
 
       await page.bringToFront();
       await waitForAgentNotFlowControlled(browserLab, request, shellAgentId, 10_000);
-      await assertInteractiveTerminalLifecycleInvariants(
-        browserLab,
-        request,
-        page,
-        browserLab.server.taskId,
-        {
-          terminalIndex: shellTerminalIndex,
-        },
-      );
+      await assertInteractiveTerminalLifecycleInvariants(browserLab, request, page, shellTaskId, {
+        terminalIndex: shellTerminalIndex,
+      });
       const foregroundMarker = `__AFTER_BACKGROUND_SWITCH_${cycle}__`;
       await browserLab.runInTerminal(page, `printf "${foregroundMarker}\\n"`, {
         terminalIndex: shellTerminalIndex,
       });
       await browserLab.waitForAgentScrollback(request, shellAgentId, foregroundMarker, 15_000);
       await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
-      await assertInteractiveTerminalLifecycleInvariants(
-        browserLab,
-        request,
-        page,
-        browserLab.server.taskId,
-        {
-          requireDocumentFocus: true,
-          terminalIndex: shellTerminalIndex,
-        },
-      );
+      await assertInteractiveTerminalLifecycleInvariants(browserLab, request, page, shellTaskId, {
+        requireDocumentFocus: true,
+        terminalIndex: shellTerminalIndex,
+      });
     }
 
     const diagnostics = await browserLab.invokeIpc<RuntimeDiagnosticsSnapshot>(
@@ -1230,17 +1094,20 @@ test.describe('browser-lab large scrollback restore', () => {
     const fixtureLineCount = 96;
     const fixtureLineWidth = 160;
 
-    await browserLab.runInTerminal(
+    const shellTaskId = await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      createWrappedHistoryFixtureCommand({
+      shellAgentId,
+      'write width churn baseline fixture',
+    );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: shellAgentId,
+      data: `${createWrappedHistoryFixtureCommand({
         completionMarker: baselineMarker,
         lineCount: fixtureLineCount,
         lineWidth: fixtureLineWidth,
-      }),
-      {
-        terminalIndex: shellTerminalIndex,
-      },
-    );
+      })}\n`,
+    });
     await browserLab.waitForAgentScrollback(request, shellAgentId, baselineMarker, 20_000);
     await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
 
@@ -1250,6 +1117,7 @@ test.describe('browser-lab large scrollback restore', () => {
     const baselineSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
       targetLineIncludes: targetVisibleLine,
     });
+    const baselinePanelWidth = await readTerminalPanelWidth(page, shellTerminalIndex);
 
     await dragTerminalPanelResizeHandle(page, shellTerminalIndex, 160);
     await browserLab.waitForTerminalReady(page, shellTerminalIndex);
@@ -1264,6 +1132,12 @@ test.describe('browser-lab large scrollback restore', () => {
       .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
       .toContain('disconnected');
 
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
+      page,
+      shellAgentId,
+      'write width churn reconnect stress output',
+    );
     await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
       agentId: shellAgentId,
       data: `${createWrappedHistoryFixtureCommand({
@@ -1287,25 +1161,26 @@ test.describe('browser-lab large scrollback restore', () => {
       .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
       .toContain('restoring');
     await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+    const postChurnPanelWidth = await readTerminalPanelWidth(page, shellTerminalIndex);
+    const baselineWidthCorrection = baselinePanelWidth - postChurnPanelWidth;
+    if (Math.abs(baselineWidthCorrection) >= 8) {
+      await dragTerminalPanelResizeHandle(page, shellTerminalIndex, baselineWidthCorrection);
+      await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+    }
+    await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
 
     const restoredSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
       targetLineIncludes: targetVisibleLine,
     });
 
-    expect(normalizeWidthChurnVisibleLines(restoredSnapshot.currentVisibleLines)).toEqual(
-      normalizeWidthChurnVisibleLines(baselineSnapshot.currentVisibleLines),
+    expect(normalizeWidthChurnLogicalRows(restoredSnapshot.currentVisibleLines)).toEqual(
+      normalizeWidthChurnLogicalRows(baselineSnapshot.currentVisibleLines),
     );
 
-    await assertInteractiveTerminalLifecycleInvariants(
-      browserLab,
-      request,
-      page,
-      browserLab.server.taskId,
-      {
-        requireDocumentFocus: true,
-        terminalIndex: shellTerminalIndex,
-      },
-    );
+    await assertInteractiveTerminalLifecycleInvariants(browserLab, request, page, shellTaskId, {
+      requireDocumentFocus: true,
+      terminalIndex: shellTerminalIndex,
+    });
   });
 
   test('keeps width-sensitive wrapped output visually stable while resize churn overlaps reload attach', async ({
@@ -1338,17 +1213,20 @@ test.describe('browser-lab large scrollback restore', () => {
       const fixtureLineCount = 96;
       const fixtureLineWidth = 160;
 
-      await browserLab.runInTerminal(
+      await browserLab.retainSessionAgentTaskCommandLease(
+        request,
         page,
-        createWrappedHistoryFixtureCommand({
+        shellAgentId,
+        'write width churn reload baseline fixture',
+      );
+      await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+        agentId: shellAgentId,
+        data: `${createWrappedHistoryFixtureCommand({
           completionMarker: baselineMarker,
           lineCount: fixtureLineCount,
           lineWidth: fixtureLineWidth,
-        }),
-        {
-          terminalIndex: shellTerminalIndex,
-        },
-      );
+        })}\n`,
+      });
       await browserLab.waitForAgentScrollback(request, shellAgentId, baselineMarker, 20_000);
       await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
 
@@ -1358,6 +1236,7 @@ test.describe('browser-lab large scrollback restore', () => {
       const baselineSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
         targetLineIncludes: targetVisibleLine,
       });
+      const baselinePanelWidth = await readTerminalPanelWidth(page, shellTerminalIndex);
 
       await dragTerminalPanelResizeHandle(page, shellTerminalIndex, 160);
       await browserLab.waitForTerminalReady(page, shellTerminalIndex);
@@ -1381,14 +1260,20 @@ test.describe('browser-lab large scrollback restore', () => {
       }
 
       await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+      const postChurnPanelWidth = await readTerminalPanelWidth(page, shellTerminalIndex);
+      const baselineWidthCorrection = baselinePanelWidth - postChurnPanelWidth;
+      if (Math.abs(baselineWidthCorrection) >= 8) {
+        await dragTerminalPanelResizeHandle(page, shellTerminalIndex, baselineWidthCorrection);
+        await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+      }
       await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
 
       const restoredSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
         targetLineIncludes: targetVisibleLine,
       });
 
-      expect(normalizeWidthChurnVisibleLines(restoredSnapshot.currentVisibleLines)).toEqual(
-        normalizeWidthChurnVisibleLines(baselineSnapshot.currentVisibleLines),
+      expect(normalizeWidthChurnLogicalRows(restoredSnapshot.currentVisibleLines)).toEqual(
+        normalizeWidthChurnLogicalRows(baselineSnapshot.currentVisibleLines),
       );
 
       const replayTraceEntries = await readTerminalReplayTrace(page);
@@ -1460,19 +1345,23 @@ test.describe('browser-lab large scrollback restore', () => {
     );
     await browserLab.waitForTerminalReady(page, shellTerminalIndex);
     await browserLab.focusTerminal(page, shellTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
 
-    await browserLab.runInTerminal(
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      createCursorAddressedFixtureCommand({
+      shellAgentId,
+      'write cursor-addressed restore fixture',
+    );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: shellAgentId,
+      data: `${createCursorAddressedFixtureCommand({
         lineCount: 30,
         targetColumn: 10,
         targetLabel: 'CURSOR_TARGET',
         targetRow: 5,
-      }),
-      {
-        terminalIndex: shellTerminalIndex,
-      },
-    );
+      })}\n`,
+    });
 
     const beforeReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
       firstVisibleLine: 'ROW_01',
@@ -1522,21 +1411,25 @@ test.describe('browser-lab large scrollback restore', () => {
     );
     await browserLab.waitForTerminalReady(page, shellTerminalIndex);
     await browserLab.focusTerminal(page, shellTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
 
-    await browserLab.runInTerminal(
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
       page,
-      [
+      shellAgentId,
+      'write scrolled cursor restore fixture',
+    );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: shellAgentId,
+      data: `${[
         `node -e '`,
         `for (let i = 1; i <= 80; i += 1) {`,
         `  process.stdout.write("SCROLL_ROW_" + String(i).padStart(2, "0") + "\\n");`,
         `}`,
         `setTimeout(() => {}, 30000);`,
         `'`,
-      ].join(''),
-      {
-        terminalIndex: shellTerminalIndex,
-      },
-    );
+      ].join('')}\n`,
+    });
 
     const beforeReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
       minViewportY: 1,

@@ -21,15 +21,23 @@ import type { TerminalRecoveryBatchEntry } from '../src/ipc/types.js';
 
 type BrowserAgentInputTraceRequest = Parameters<typeof writeToAgent>[2];
 type BrowserAgentInputOrder = Parameters<typeof writeToAgent>[3];
+type BrowserAgentInputOrderCallbacks = Parameters<typeof writeToAgent>[4];
 type BrowserAgentResizeOrder = Parameters<typeof resizeAgent>[3];
+type BrowserAgentResizeOrderCallbacks = Parameters<typeof resizeAgent>[4];
 
 export function writeBrowserAgentInput(
   agentId: string,
   data: string,
   traceRequest?: BrowserAgentInputTraceRequest,
   order?: BrowserAgentInputOrder,
+  callbacks?: BrowserAgentInputOrderCallbacks,
 ): void {
-  writeToAgent(agentId, data, traceRequest, order);
+  if (!callbacks) {
+    writeToAgent(agentId, data, traceRequest, order);
+    return;
+  }
+
+  writeToAgent(agentId, data, traceRequest, order, callbacks);
 }
 
 export function resizeBrowserAgent(
@@ -37,8 +45,14 @@ export function resizeBrowserAgent(
   cols: ResizeCommand['cols'],
   rows: ResizeCommand['rows'],
   order?: BrowserAgentResizeOrder,
+  callbacks?: BrowserAgentResizeOrderCallbacks,
 ): void {
-  resizeAgent(agentId, cols, rows, order);
+  if (!callbacks) {
+    resizeAgent(agentId, cols, rows, order);
+    return;
+  }
+
+  resizeAgent(agentId, cols, rows, order, callbacks);
 }
 
 export function killBrowserAgent(agentId: string): void {

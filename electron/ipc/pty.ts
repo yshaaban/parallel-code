@@ -13,7 +13,6 @@ import {
   enqueueTerminalOrderedRequest,
   hasTerminalInputOrder,
   hasTerminalResizeOrder,
-  type OrderedTerminalInputRequest,
   type OrderedTerminalResizeRequest,
   type TerminalOrderedState,
   type TerminalInputOrderToken,
@@ -88,7 +87,14 @@ interface TerminalInputTraceRequest {
   trace: TerminalInputTraceMessage;
 }
 
+interface TerminalOrderCallbacks {
+  onApplied?: () => void;
+  onDropped?: () => void;
+}
+
 interface QueuedPtyInputBatch extends QueuedTerminalInputBatch {
+  onApplied?: () => void;
+  onDropped?: () => void;
   traceRequest?: TerminalInputTraceRequest;
 }
 
@@ -515,11 +521,9 @@ function stopAcceptingInput(session: PtySession): void {
   clearPendingInput(session);
 }
 
-function enqueueTerminalInputRequest(
-  session: PtySession,
-  request: OrderedTerminalInputRequest<TerminalInputTraceRequest>,
-): void {
+function enqueueTerminalInputRequest(session: PtySession, request: QueuedPtyInputBatch): void {
   enqueuePendingInput(session, request.data, request.traceRequest);
+  request.onApplied?.();
 }
 
 function flushPendingInput(session: PtySession): void {
@@ -893,10 +897,12 @@ export function writeToAgent(
   data: string,
   traceRequest?: TerminalInputTraceRequest,
   order?: TerminalInputOrderToken,
+  callbacks?: TerminalOrderCallbacks,
 ): void {
   const session = getSessionOrThrow(agentId);
   if (!hasTerminalInputOrder(order)) {
     enqueuePendingInput(session, data, traceRequest);
+    callbacks?.onApplied?.();
     return;
   }
 
@@ -905,10 +911,21 @@ export function writeToAgent(
     order,
     {
       data,
+      ...(callbacks?.onApplied ? { onApplied: callbacks.onApplied } : {}),
+      ...(callbacks?.onDropped ? { onDropped: callbacks.onDropped } : {}),
       ...(traceRequest ? { traceRequest } : {}),
     },
     (request) => enqueueTerminalInputRequest(session, request),
+    (request) => request.onDropped?.(),
   );
+}
+
+function applyTerminalResizeRequest(
+  session: PtySession,
+  request: OrderedTerminalResizeRequest,
+): void {
+  applyTerminalResize(session, request.cols, request.rows);
+  request.onApplied?.();
 }
 
 function applyTerminalResize(session: PtySession, cols: number, rows: number): void {
@@ -921,15 +938,26 @@ export function resizeAgent(
   cols: number,
   rows: number,
   order?: TerminalResizeOrderToken,
+  callbacks?: TerminalOrderCallbacks,
 ): void {
   const session = getSessionOrThrow(agentId);
   if (!hasTerminalResizeOrder(order)) {
     applyTerminalResize(session, cols, rows);
+    callbacks?.onApplied?.();
     return;
   }
 
-  enqueueTerminalOrderedRequest(session.orderedResizeState, order, { cols, rows }, (request) =>
-    applyTerminalResize(session, request.cols, request.rows),
+  enqueueTerminalOrderedRequest(
+    session.orderedResizeState,
+    order,
+    {
+      cols,
+      ...(callbacks?.onApplied ? { onApplied: callbacks.onApplied } : {}),
+      ...(callbacks?.onDropped ? { onDropped: callbacks.onDropped } : {}),
+      rows,
+    },
+    (request) => applyTerminalResizeRequest(session, request),
+    (request) => request.onDropped?.(),
   );
 }
 

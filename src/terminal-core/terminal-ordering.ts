@@ -10,15 +10,21 @@ export interface TerminalResizeOrderToken {
 
 export interface OrderedTerminalInputRequest<TTrace = unknown> {
   data: string;
+  onApplied?: () => void;
+  onDropped?: () => void;
   traceRequest?: TTrace;
 }
 
 export interface OrderedTerminalResizeRequest {
   cols: number;
+  onApplied?: () => void;
+  onDropped?: () => void;
   rows: number;
 }
 
 export const TERMINAL_ORDER_PENDING_LIMIT = 128;
+
+export type TerminalOrderedRequestDisposition = 'applied' | 'dropped' | 'queued';
 
 export interface TerminalOrderedState<TRequest> {
   epoch: string | null;
@@ -67,9 +73,16 @@ function rememberRetiredEpoch<TRequest>(
   state.retiredEpochs.add(epoch);
 }
 
-function startOrderedEpoch<TRequest>(state: TerminalOrderedState<TRequest>, epoch: string): void {
+function startOrderedEpoch<TRequest>(
+  state: TerminalOrderedState<TRequest>,
+  epoch: string,
+  onDrop?: (request: TRequest) => void,
+): void {
   if (state.epoch !== null && state.epoch !== epoch) {
     rememberRetiredEpoch(state, state.epoch);
+    for (const pendingRequest of state.pending.values()) {
+      onDrop?.(pendingRequest);
+    }
   }
 
   state.epoch = epoch;
@@ -82,28 +95,39 @@ export function enqueueTerminalOrderedRequest<TRequest>(
   token: Required<TerminalInputOrderToken> | Required<TerminalResizeOrderToken>,
   request: TRequest,
   apply: (request: TRequest) => void,
-): void {
+  onDrop?: (request: TRequest) => void,
+): TerminalOrderedRequestDisposition {
   const epoch = 'inputEpoch' in token ? token.inputEpoch : token.resizeEpoch;
   const seq = 'inputSeq' in token ? token.inputSeq : token.resizeSeq;
 
   if (state.retiredEpochs.has(epoch)) {
-    return;
+    onDrop?.(request);
+    return 'dropped';
   }
 
   if (shouldStartOrderedEpoch(state, epoch, seq)) {
-    startOrderedEpoch(state, epoch);
+    startOrderedEpoch(state, epoch, onDrop);
   }
 
   if (state.epoch !== epoch || seq < state.nextSeq) {
-    return;
+    onDrop?.(request);
+    return 'dropped';
   }
 
   if (seq > state.nextSeq) {
+    const replacedRequest = state.pending.get(seq);
+    if (replacedRequest !== undefined) {
+      onDrop?.(replacedRequest);
+    }
     state.pending.set(seq, request);
     if (state.pending.size > TERMINAL_ORDER_PENDING_LIMIT) {
+      for (const pendingRequest of state.pending.values()) {
+        onDrop?.(pendingRequest);
+      }
       state.pending.clear();
+      return 'dropped';
     }
-    return;
+    return 'queued';
   }
 
   apply(request);
@@ -111,7 +135,7 @@ export function enqueueTerminalOrderedRequest<TRequest>(
 
   while (true) {
     if (!state.pending.has(state.nextSeq)) {
-      return;
+      return 'applied';
     }
 
     const pendingRequest = state.pending.get(state.nextSeq);

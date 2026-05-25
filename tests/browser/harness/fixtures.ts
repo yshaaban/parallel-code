@@ -22,13 +22,14 @@ import { waitForShellTerminalCreation } from './terminal-creation.js';
 
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
+const REMOTE_CLIENT_ID_STORAGE_KEY = 'parallel-code-remote-client-id';
 const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const TERMINAL_STATUS_HISTORY_STORAGE_KEY = '__parallelCodeTerminalStatusHistory';
 const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
-const TASK_PANEL_SELECTOR = '[data-task-id]';
 const TERMINAL_LOADING_OVERLAY_SELECTOR = '[data-terminal-loading-overlay="true"]';
 const BROWSER_LAB_PAGE_LIFECYCLE_STORAGE_KEY = '__parallelCodeBrowserLabPageLifecycle';
+const DEFAULT_TERMINAL_TYPE_DELAY_MS = 20;
 
 interface BrowserLabOpenPageOptions {
   clientId?: string;
@@ -54,6 +55,11 @@ type WaitForTerminalInteractiveReadyOptions = WaitForTerminalReadyOptions;
 interface TypeInTerminalOptions {
   requireInteractiveReady?: boolean;
   terminalIndex?: number;
+  typeDelayMs?: number;
+}
+
+interface RunInTerminalOptions extends TypeInTerminalOptions {
+  pressEnter?: boolean;
 }
 
 interface BrowserLabHarness {
@@ -80,11 +86,19 @@ interface BrowserLabHarness {
   readConnectionBannerHistory: (page: Page) => Promise<Array<string | null>>;
   readLifecycleSnapshot: (page: Page) => Promise<BrowserLabLifecycleSnapshot>;
   readTerminalStatusHistory: (page: Page, terminalIndex?: number) => Promise<string[]>;
-  runInTerminal: (
+  retainSessionTaskCommandLease: (
+    request: APIRequestContext,
     page: Page,
-    text: string,
-    options?: { pressEnter?: boolean; terminalIndex?: number },
+    taskId: string,
+    action: string,
   ) => Promise<void>;
+  retainSessionAgentTaskCommandLease: (
+    request: APIRequestContext,
+    page: Page,
+    agentId: string,
+    action: string,
+  ) => Promise<string>;
+  runInTerminal: (page: Page, text: string, options?: RunInTerminalOptions) => Promise<void>;
   server: BrowserLabServer;
   typeInTerminal: (
     page: Page,
@@ -463,31 +477,24 @@ async function readTerminalStatusElement(input: Locator): Promise<{
   }, TERMINAL_STATUS_SELECTOR);
 }
 
-async function readRenderedTerminalAgentIds(page: Page): Promise<string[]> {
-  return page.evaluate((statusSelector) => {
-    return Array.from(document.querySelectorAll(statusSelector))
-      .map((element) => element.getAttribute('data-terminal-agent-id'))
-      .filter((agentId): agentId is string => typeof agentId === 'string' && agentId.length > 0);
-  }, TERMINAL_STATUS_SELECTOR);
-}
-
-async function readActiveTerminalInputIndex(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const inputs = Array.from(
-      document.querySelectorAll<HTMLTextAreaElement>('textarea[aria-label="Terminal input"]'),
-    );
-    return inputs.findIndex((element) => element === document.activeElement);
-  });
-}
-
 async function readSessionClientId(page: Page): Promise<string | null> {
-  return page.evaluate((storageKey) => {
-    try {
-      return window.sessionStorage.getItem(storageKey);
-    } catch {
-      return null;
-    }
-  }, CLIENT_ID_STORAGE_KEY);
+  return page.evaluate(
+    ([remoteStorageKey, legacyStorageKey]) => {
+      try {
+        return (
+          window.sessionStorage.getItem(remoteStorageKey) ??
+          window.sessionStorage.getItem(legacyStorageKey)
+        );
+      } catch {
+        return null;
+      }
+    },
+    [REMOTE_CLIENT_ID_STORAGE_KEY, CLIENT_ID_STORAGE_KEY] as const,
+  );
+}
+
+function createBrowserLabClientId(): string {
+  return `browser-lab-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export async function waitForAppShellVisible(page: Page, timeoutMs = 15_000): Promise<void> {
@@ -542,33 +549,32 @@ export const test = base.extend<
     ): Promise<{ context: BrowserContext; page: Page }> {
       const context = await browser.newContext();
       contexts.add(context);
+      const clientId = options.clientId ?? createBrowserLabClientId();
 
-      if (options.displayName || options.clientId) {
-        await context.addInitScript(
-          ([displayNameStorageKey, displayName, clientIdStorageKey, clientId]) => {
-            if (displayName) {
-              try {
-                window.localStorage.setItem(displayNameStorageKey, displayName);
-              } catch {
-                /* ignore storage bootstrap failures in opaque documents */
-              }
+      await context.addInitScript(
+        ([displayNameStorageKey, displayName, clientIdStorageKey, injectedClientId]) => {
+          if (displayName) {
+            try {
+              window.localStorage.setItem(displayNameStorageKey, displayName);
+            } catch {
+              /* ignore storage bootstrap failures in opaque documents */
             }
-            if (clientId) {
-              try {
-                window.sessionStorage.setItem(clientIdStorageKey, clientId);
-              } catch {
-                /* ignore storage bootstrap failures in opaque documents */
-              }
+          }
+          try {
+            for (const storageKey of clientIdStorageKey) {
+              window.sessionStorage.setItem(storageKey, injectedClientId);
             }
-          },
-          [
-            DISPLAY_NAME_STORAGE_KEY,
-            options.displayName ?? null,
-            CLIENT_ID_STORAGE_KEY,
-            options.clientId ?? null,
-          ] as const,
-        );
-      }
+          } catch {
+            /* ignore storage bootstrap failures in opaque documents */
+          }
+        },
+        [
+          DISPLAY_NAME_STORAGE_KEY,
+          options.displayName ?? null,
+          [REMOTE_CLIENT_ID_STORAGE_KEY, CLIENT_ID_STORAGE_KEY],
+          clientId,
+        ] as const,
+      );
       await options.prepareContext?.(context);
       await context.addInitScript((storageKey) => {
         type BrowserLabPageLifecycleStore = {
@@ -863,21 +869,6 @@ export const test = base.extend<
       return invokeIpcWithClientId<TResult>(request, channel, body);
     }
 
-    async function invokeServerIpc<TResult>(channel: IPC, body?: unknown): Promise<TResult> {
-      const response = await fetch(`${server.baseUrl}/api/ipc/${channel}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${server.authToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body ?? {}),
-      });
-
-      expect(response.ok, `IPC ${channel} should return 2xx`).toBeTruthy();
-      const payload = (await response.json()) as { result: TResult };
-      return payload.result;
-    }
-
     async function invokeIpcWithClientId<TResult>(
       request: APIRequestContext,
       channel: IPC,
@@ -892,7 +883,11 @@ export const test = base.extend<
         },
       });
 
-      expect(response.ok(), `IPC ${channel} should return 2xx`).toBeTruthy();
+      if (!response.ok()) {
+        expect(response.ok(), `IPC ${channel} should return 2xx: ${await response.text()}`).toBe(
+          true,
+        );
+      }
       const payload = (await response.json()) as { result: TResult };
       return payload.result;
     }
@@ -905,6 +900,78 @@ export const test = base.extend<
     ): Promise<TResult> {
       const clientId = await readSessionClientId(page);
       return invokeIpcWithClientId<TResult>(request, channel, body, clientId);
+    }
+
+    async function readRequiredSessionClientId(page: Page): Promise<string> {
+      const clientId = await readSessionClientId(page);
+      expect(clientId, 'browser session client id should be available').toBeTruthy();
+      if (!clientId) {
+        throw new Error('Browser session client id was not available');
+      }
+
+      return clientId;
+    }
+
+    async function retainSessionTaskCommandLease(
+      request: APIRequestContext,
+      page: Page,
+      taskId: string,
+      action: string,
+    ): Promise<void> {
+      const clientId = await readRequiredSessionClientId(page);
+
+      const lease = await invokeIpcWithClientId<{
+        acquired: boolean;
+        controllerId: string | null;
+      }>(
+        request,
+        IPC.AcquireTaskCommandLease,
+        {
+          action,
+          clientId,
+          ownerId: `${clientId}:browser-lab`,
+          taskId,
+        },
+        clientId,
+      );
+      expect(lease.controllerId).toBe(clientId);
+      expect(lease.acquired).toBe(true);
+    }
+
+    async function readAgentTaskIdForLease(
+      request: APIRequestContext,
+      agentId: string,
+    ): Promise<string> {
+      let taskId: string | null = null;
+      await expect
+        .poll(
+          async () => {
+            const snapshots = await invokeIpc<Array<{ agentId: string; taskId: string }>>(
+              request,
+              IPC.GetAgentSupervision,
+            );
+            taskId = snapshots.find((snapshot) => snapshot.agentId === agentId)?.taskId ?? null;
+            return taskId;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeTruthy();
+
+      if (!taskId) {
+        throw new Error(`No supervised task id was available for ${agentId}`);
+      }
+      return taskId;
+    }
+
+    async function retainSessionAgentTaskCommandLease(
+      request: APIRequestContext,
+      page: Page,
+      agentId: string,
+      action: string,
+    ): Promise<string> {
+      const taskId = await readAgentTaskIdForLease(request, agentId);
+      await retainSessionTaskCommandLease(request, page, taskId, action);
+      return taskId;
     }
 
     async function waitForAgentScrollback(
@@ -1093,13 +1160,26 @@ export const test = base.extend<
 
     async function focusTerminal(page: Page, terminalIndex = 0): Promise<void> {
       await waitForTerminalLogicalReady(page, terminalIndex);
-      const input = getTerminalInput(page, terminalIndex);
-      const terminalRoot = getTerminalRoot(page, terminalIndex);
       await page.bringToFront();
-      await terminalRoot.scrollIntoViewIfNeeded();
-      await terminalRoot.click({ position: { x: 12, y: 12 } });
-      await input.focus();
-      await waitForTerminalKeyboardFocus(page, terminalIndex);
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const input = getTerminalInput(page, terminalIndex);
+          const terminalRoot = getTerminalRoot(page, terminalIndex);
+          await terminalRoot.scrollIntoViewIfNeeded({ timeout: 5_000 });
+          await terminalRoot.click({ position: { x: 12, y: 12 }, timeout: 5_000 });
+          await input.focus({ timeout: 5_000 });
+          await waitForTerminalKeyboardFocus(page, terminalIndex);
+          return;
+        } catch (error) {
+          lastError = error;
+          await page.waitForTimeout(100);
+          await waitForTerminalLogicalReady(page, terminalIndex);
+        }
+      }
+
+      throw lastError ?? new Error(`Failed to focus terminal ${terminalIndex}`);
     }
 
     async function typeInTerminal(
@@ -1117,36 +1197,31 @@ export const test = base.extend<
       if (terminalOptions.requireInteractiveReady !== false) {
         await waitForTerminalInteractiveReady(page, terminalIndex);
       }
-      await getTerminalInput(page, terminalIndex).pressSequentially(text);
+      await getTerminalInput(page, terminalIndex).pressSequentially(text, {
+        delay: terminalOptions.typeDelayMs ?? DEFAULT_TERMINAL_TYPE_DELAY_MS,
+      });
     }
 
     async function runInTerminal(
       page: Page,
       text: string,
-      options: {
-        pressEnter?: boolean;
-        terminalIndex?: number;
-      } = {},
+      options: RunInTerminalOptions = {},
     ): Promise<void> {
       const terminalIndex = options.terminalIndex ?? 0;
       await focusTerminal(page, terminalIndex);
       await waitForTerminalInteractiveReady(page, terminalIndex);
-      await getTerminalInput(page, terminalIndex).pressSequentially(text);
+      await getTerminalInput(page, terminalIndex).pressSequentially(text, {
+        delay: options.typeDelayMs ?? DEFAULT_TERMINAL_TYPE_DELAY_MS,
+      });
       if (options.pressEnter !== false) {
         await waitForTerminalKeyboardFocus(page, terminalIndex);
-        await getTerminalInput(page, terminalIndex).press('Enter');
+        await page.keyboard.press('Enter');
       }
     }
 
     async function createShellTerminal(page: Page): Promise<number> {
-      const terminalList = page.locator(TERMINAL_INPUT_SELECTOR);
       const terminalStatusList = page.locator(TERMINAL_STATUS_SELECTOR);
-      const taskPanelList = page.locator(TASK_PANEL_SELECTOR);
       const terminalCount = await terminalStatusList.count();
-      const inputCount = await terminalList.count();
-      const taskPanelCount = await taskPanelList.count();
-      const renderedAgentIds = new Set(await readRenderedTerminalAgentIds(page));
-      const runningAgentIds = await invokeServerIpc<string[]>(IPC.ListRunningAgentIds);
       const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
       await waitForShellTerminalCreation({
         clickCreateTerminal: async () => {
@@ -1155,7 +1230,9 @@ export const test = base.extend<
         },
         waitForCreationSignal: async (timeoutMs) => {
           try {
-            await expect.poll(() => hasShellCreationSignal(), { timeout: timeoutMs }).toBe(true);
+            await expect
+              .poll(() => terminalStatusList.count(), { timeout: timeoutMs })
+              .toBeGreaterThan(terminalCount);
             return true;
           } catch {
             return false;
@@ -1163,57 +1240,14 @@ export const test = base.extend<
         },
       });
 
-      const nextInputCount = await terminalList.count();
-      const createdTerminalIndex =
-        nextInputCount > inputCount
-          ? inputCount
-          : Math.max(0, await readActiveTerminalInputIndex(page));
-      const createdTerminalStatus = getCreatedTerminalStatusRoot(
-        nextInputCount,
-        createdTerminalIndex,
-      );
+      const createdTerminalIndex = terminalCount;
+      const createdTerminalStatus = getTerminalStatusRoot(page, createdTerminalIndex);
       await createdTerminalStatus.waitFor({ state: 'attached' });
       await expect.poll(() => readTerminalStatusReady(createdTerminalStatus)).toBe(true);
       await expect
         .poll(() => readTerminalPaintReadyFromStatusRoot(createdTerminalStatus))
         .toBe(true);
       await page.waitForTimeout(TERMINAL_CREATE_DEBOUNCE_BUFFER_MS);
-
-      async function hasShellCreationSignal(): Promise<boolean> {
-        const nextInputCount = await terminalList.count();
-        if (nextInputCount > inputCount) {
-          return true;
-        }
-
-        const nextTaskPanelCount = await taskPanelList.count();
-        if (nextTaskPanelCount > taskPanelCount) {
-          return true;
-        }
-
-        const nextStatusCount = await terminalStatusList.count();
-        if (nextStatusCount > terminalCount) {
-          return true;
-        }
-
-        const nextRunningAgentIds = await invokeServerIpc<string[]>(IPC.ListRunningAgentIds);
-        if (nextRunningAgentIds.length > runningAgentIds.length) {
-          return true;
-        }
-
-        const nextRenderedAgentIds = await readRenderedTerminalAgentIds(page);
-        return nextRenderedAgentIds.some((agentId) => !renderedAgentIds.has(agentId));
-      }
-
-      function getCreatedTerminalStatusRoot(
-        currentInputCount: number,
-        currentTerminalIndex: number,
-      ): Locator {
-        if (currentInputCount > inputCount) {
-          return getTerminalStatusRoot(page, terminalCount);
-        }
-
-        return getTerminalRoot(page, currentTerminalIndex);
-      }
 
       return createdTerminalIndex;
     }
@@ -1231,6 +1265,8 @@ export const test = base.extend<
         readConnectionBannerHistory,
         readTerminalStatusHistory,
         readLifecycleSnapshot,
+        retainSessionAgentTaskCommandLease,
+        retainSessionTaskCommandLease,
         runInTerminal,
         server,
         typeInTerminal,

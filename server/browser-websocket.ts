@@ -227,6 +227,32 @@ export function registerBrowserWebSocketServer(
     };
   }
 
+  function createOrderedAgentCommandCallbacks(
+    client: WebSocket,
+    request: ReturnType<typeof getAgentCommandRequest>,
+    failureReason: string,
+    onDropped?: () => void,
+  ):
+    | {
+        onApplied: () => void;
+        onDropped: () => void;
+      }
+    | undefined {
+    if (!request) {
+      return undefined;
+    }
+
+    return {
+      onApplied: () => {
+        agentCommandRunner.sendCommandResult(client, request, true);
+      },
+      onDropped: () => {
+        onDropped?.();
+        agentCommandRunner.sendCommandResult(client, request, false, failureReason);
+      },
+    };
+  }
+
   function runTaskControlledAgentCommand(
     client: WebSocket,
     currentMessage: Extract<AuthenticatedClientMessage, { type: 'input' | 'resize' }>,
@@ -288,6 +314,20 @@ export function registerBrowserWebSocketServer(
         const clientId = options.transport.getClientId(client);
         const traceRequestId = currentMessage.requestId;
         const traceTaskId = resolveBrowserAgentTaskId(currentMessage) ?? null;
+        const request = getAgentCommandRequest(currentMessage);
+        const inputOrder = createInputOrderToken(currentMessage);
+        const orderedCallbacks = createOrderedAgentCommandCallbacks(
+          client,
+          inputOrder ? request : undefined,
+          'terminal input order dropped',
+          () => {
+            recordBrowserTerminalInputFailure(
+              currentMessage.agentId,
+              traceRequestId,
+              'terminal-input-order-dropped',
+            );
+          },
+        );
         recordBrowserTerminalInputServerReceived(currentMessage, clientId, traceTaskId);
         runTaskControlledAgentCommand(
           client,
@@ -298,16 +338,24 @@ export function registerBrowserWebSocketServer(
               currentMessage.agentId,
               currentMessage.data,
               createBrowserTerminalInputTraceRequest(currentMessage, clientId, traceTaskId),
-              createInputOrderToken(currentMessage),
+              inputOrder,
+              orderedCallbacks,
             );
           },
-          traceRequestId
-            ? {
-                onFailure: (reason: string) => {
-                  recordBrowserTerminalInputFailure(currentMessage.agentId, traceRequestId, reason);
-                },
-              }
-            : undefined,
+          mergeAgentCommandExecutionOptions(
+            orderedCallbacks ? { deferSuccessResult: true } : undefined,
+            traceRequestId
+              ? {
+                  onFailure: (reason: string) => {
+                    recordBrowserTerminalInputFailure(
+                      currentMessage.agentId,
+                      traceRequestId,
+                      reason,
+                    );
+                  },
+                }
+              : undefined,
+          ),
           () => {
             recordBrowserTerminalInputFailure(
               currentMessage.agentId,
@@ -318,14 +366,28 @@ export function registerBrowserWebSocketServer(
         );
       },
       resize: (currentMessage) => {
-        runTaskControlledAgentCommand(client, currentMessage, 'resize', () => {
-          resizeBrowserAgent(
-            currentMessage.agentId,
-            currentMessage.cols,
-            currentMessage.rows,
-            createResizeOrderToken(currentMessage),
-          );
-        });
+        const request = getAgentCommandRequest(currentMessage);
+        const resizeOrder = createResizeOrderToken(currentMessage);
+        const orderedCallbacks = createOrderedAgentCommandCallbacks(
+          client,
+          resizeOrder ? request : undefined,
+          'terminal resize order dropped',
+        );
+        runTaskControlledAgentCommand(
+          client,
+          currentMessage,
+          'resize',
+          () => {
+            resizeBrowserAgent(
+              currentMessage.agentId,
+              currentMessage.cols,
+              currentMessage.rows,
+              resizeOrder,
+              orderedCallbacks,
+            );
+          },
+          orderedCallbacks ? { deferSuccessResult: true } : undefined,
+        );
       },
       kill: (currentMessage) => {
         agentCommandRunner.run(client, currentMessage.agentId, 'kill', () => {

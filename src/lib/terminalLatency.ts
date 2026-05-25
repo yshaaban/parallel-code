@@ -19,6 +19,8 @@ export {
 import { invoke } from './ipc';
 import { IPC } from '../../electron/ipc/channels';
 import type { ClientMessage } from '../../electron/remote/protocol';
+import { getRuntimeClientId } from './runtime-client-id';
+import { store } from '../store/state';
 
 // ---------------------------------------------------------------------------
 // Performance timestamp tracking (opt-in via window.__TERMINAL_PERF__)
@@ -714,8 +716,13 @@ export function measureRoundTrip(agentId: string, timeoutMs = 5000): Promise<num
   attachTerminalLatencyDiagnosticsStore();
   const marker = makeProbeMarker();
   const promise = createPendingProbe(marker, performance.now(), false, timeoutMs).promise;
+  const taskId = store.agents?.[agentId]?.taskId;
 
-  invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` })
+  invoke(IPC.WriteToAgent, {
+    agentId,
+    ...(taskId ? { controllerId: getRuntimeClientId(), taskId } : {}),
+    data: `echo ${marker}\r`,
+  })
     .then(() => {
       scheduleProbeTimeout(marker);
     })

@@ -1306,6 +1306,58 @@ describe('Channel', () => {
     expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
   });
 
+  it('preserves browser terminal input send order for concurrent reconnect sends', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    const firstPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'first',
+      inputEpoch: 'ordered-epoch',
+      inputSeq: 0,
+      requestId: 'ordered-first',
+    });
+    const secondPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'second',
+      inputEpoch: 'ordered-epoch',
+      inputSeq: 1,
+      requestId: 'ordered-second',
+    });
+
+    await flushMicrotasks();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks(8);
+
+    const inputMessages = reconnectSocket.sent.filter((message) => message.type === 'input');
+    expect(inputMessages).toMatchObject([
+      { data: 'first', inputSeq: 0, requestId: 'ordered-first' },
+      { data: 'second', inputSeq: 1, requestId: 'ordered-second' },
+    ]);
+
+    receiveAcceptedAgentCommandResult(reconnectSocket, inputMessages[1]);
+    receiveAcceptedAgentCommandResult(reconnectSocket, inputMessages[0]);
+    await expect(Promise.all([firstPromise, secondPromise])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
   it('chunks large terminal input sends on the browser hot path', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,

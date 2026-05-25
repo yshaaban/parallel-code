@@ -646,19 +646,24 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('applies terminal-state recovery by resetting and replaying serialized terminal state', async () => {
+    const terminalState = '\x1b[?1049h\x1b[4;5Hinput>';
     requestStartupTerminalRecoveryMock.mockResolvedValue(
-      createTerminalStateRecoveryEntry('agent-1', '\x1b[?1049h\x1b[4;5Hinput>'),
+      createTerminalStateRecoveryEntry('agent-1', terminalState),
     );
-    const { outputPipelineMock, runtime, term, termWriteMock } = createRecoveryRuntimeFixture();
+    const { outputPipelineMock, runtime, term, termRefreshMock, termWriteMock } =
+      createRecoveryRuntimeFixture();
 
     await runtime.restoreTerminalOutput('attach');
 
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(termWriteMock).toHaveBeenCalledTimes(1);
-    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledWith(new Uint8Array(0));
-    expect(outputPipelineMock.setRenderedOutputCursor).toHaveBeenCalledWith(
-      Buffer.byteLength('\x1b[?1049h\x1b[4;5Hinput>', 'utf8'),
+    expect(Buffer.from(outputPipelineMock.setRenderedOutputHistoryMock.mock.calls[0]?.[0])).toEqual(
+      Buffer.from(terminalState, 'utf8'),
     );
+    expect(outputPipelineMock.setRenderedOutputCursor).toHaveBeenCalledWith(
+      Buffer.byteLength(terminalState, 'utf8'),
+    );
+    expect(termRefreshMock).not.toHaveBeenCalled();
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.resetCounts.attach).toBe(1);
   });
 
@@ -888,6 +893,67 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(termWriteMock).toHaveBeenCalledTimes(5);
     expect(requestAnimationFrameMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('aborts chunked recovery replay when the runtime is disposed', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', LARGE_FOCUSED_ATTACH_RECOVERY_BYTES),
+    );
+    vi.spyOn(window, 'setTimeout').mockImplementation(
+      () => 3 as unknown as ReturnType<typeof globalThis.setTimeout>,
+    );
+    const { outputPipelineMock, runtime, term } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+    });
+    const deferredTermWriteMock = vi.fn();
+    const writeCallbacks: Array<() => void> = [];
+    term.write = (_chunk, callback) => {
+      deferredTermWriteMock();
+      if (callback) {
+        writeCallbacks.push(callback);
+      }
+    };
+
+    const restorePromise = runtime.restoreTerminalOutput('attach');
+    for (let index = 0; index < 20 && deferredTermWriteMock.mock.calls.length === 0; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(deferredTermWriteMock).toHaveBeenCalledTimes(1);
+
+    runtime.dispose();
+    await restorePromise;
+    writeCallbacks[0]?.();
+    await flushRecoveryRuntimeMicrotasks();
+
+    expect(deferredTermWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it('uses a bounded fallback when reveal double-RAF callbacks do not fire', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(
+      () => 10 as unknown as ReturnType<typeof window.requestAnimationFrame>,
+    );
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout').mockImplementation((callback, delay) => {
+      if (Number(delay) === 250) {
+        queueMicrotask(() => {
+          if (typeof callback === 'function') {
+            callback();
+          }
+        });
+      }
+      return 4 as unknown as ReturnType<typeof globalThis.setTimeout>;
+    });
+    const { markTerminalReadyMock, runtime } = createRecoveryRuntimeFixture({
+      isSelectedRecoveryProtected: () => true,
+      outputPriority: 'focused',
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 250);
   });
 
   it('skips the fixed reveal-settle timeout for selected attach recovery', async () => {
@@ -1734,7 +1800,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false]]);
   });
 
-  it('refreshes the visible terminal after delta recovery to resync the cursor layer', async () => {
+  it('does not force a viewport refresh after cursor-addressed delta recovery', async () => {
     requestReconnectTerminalRecoveryMock.mockResolvedValue(
       createDeltaRecoveryEntryWithSource('agent-1', 128, 'cursor'),
     );
@@ -1745,7 +1811,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('reconnect');
 
-    expect(termRefreshMock).toHaveBeenCalledWith(0, 23);
+    expect(termRefreshMock).not.toHaveBeenCalled();
   });
 
   it('does not switch into blocking restore state for attach when not ready', async () => {
@@ -2159,21 +2225,23 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await secondRestoreRequested.promise;
     expect(outputPipelineMock.scheduleOutputFlush).not.toHaveBeenCalled();
+    expect(outputPipelineMock.recoverFlowControlIfIdle).not.toHaveBeenCalled();
 
     secondRestore.resolve(createRecoveryEntry('agent-1'));
     await secondRestore.promise;
 
     await secondRestoreSettled.promise;
     expect(outputPipelineMock.scheduleOutputFlush).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.recoverFlowControlIfIdle).toHaveBeenCalledTimes(1);
     expect(runtime.isRestoreBlocked()).toBe(false);
   });
 
-  it('does not settle selected recovery from a stale reconnect restore replacement', async () => {
+  it('settles selected recovery when a reconnect restore generation is superseded', async () => {
     const firstRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();
     const secondRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();
     const firstRestoreRequested = createDeferredPromise<undefined>();
     const secondRestoreRequested = createDeferredPromise<undefined>();
-    const secondSelectedRecoverySettled = createDeferredPromise<undefined>();
+    const selectedRecoverySettled = createDeferredPromise<undefined>();
     requestReconnectTerminalRecoveryMock
       .mockImplementationOnce(() => {
         firstRestoreRequested.resolve(undefined);
@@ -2190,7 +2258,7 @@ describe('createTerminalRecoveryRuntime', () => {
         renderedOutputCursor: 12,
       });
     onSelectedRecoverySettleMock.mockImplementation(() => {
-      secondSelectedRecoverySettled.resolve(undefined);
+      selectedRecoverySettled.resolve(undefined);
     });
 
     connectAuthenticatedBrowserControl(runtime);
@@ -2204,13 +2272,16 @@ describe('createTerminalRecoveryRuntime', () => {
 
     firstRestore.resolve(createRecoveryEntry('agent-1'));
     await firstRestore.promise;
+    await selectedRecoverySettled.promise;
 
     await secondRestoreRequested.promise;
-    expect(onSelectedRecoverySettleMock).not.toHaveBeenCalled();
+    expect(onSelectedRecoverySettleMock).toHaveBeenCalledTimes(1);
 
     secondRestore.resolve(createRecoveryEntry('agent-1'));
     await secondRestore.promise;
-    await secondSelectedRecoverySettled.promise;
+    await vi.waitFor(() => {
+      expect(onSelectedRecoverySettleMock).toHaveBeenCalledTimes(2);
+    });
 
     expect(onSelectedRecoveryStartMock).toHaveBeenCalledTimes(2);
     expect(runtime.isRestoreBlocked()).toBe(false);
@@ -2246,7 +2317,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(setStatusMock).toHaveBeenCalledWith('restoring');
   });
 
-  it('keeps restore blocked when backend resume fails after recovery', async () => {
+  it('surfaces an error and unblocks output when backend resume fails after recovery', async () => {
     requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', 32),
     );
@@ -2276,9 +2347,11 @@ describe('createTerminalRecoveryRuntime', () => {
     });
     expect(markTerminalReadyMock).not.toHaveBeenCalled();
     expect(onRestoreSettledMock).not.toHaveBeenCalled();
-    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true]]);
+    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false]]);
     expect(setStatusMock).toHaveBeenCalledWith('restoring');
-    expect(runtime.isRestoreBlocked()).toBe(true);
+    expect(setStatusMock).toHaveBeenCalledWith('error');
+    expect(runtime.isRestoreBlocked()).toBe(false);
+    expect(runtime.isOutputFlushBlocked()).toBe(false);
   });
 
   it('keeps waiting for fit readiness before applying restore state', async () => {
@@ -2360,7 +2433,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(queuedRafCallbacks).toHaveLength(0);
   });
 
-  it('retries a blocked restore after resume failure and clears the block once resume succeeds', async () => {
+  it('retries a restore after resume failure and clears the block once resume succeeds', async () => {
     requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', 32),
     );
@@ -2375,14 +2448,14 @@ describe('createTerminalRecoveryRuntime', () => {
       });
 
     await runtime.restoreTerminalOutput('attach');
-    expect(runtime.isRestoreBlocked()).toBe(true);
+    expect(runtime.isRestoreBlocked()).toBe(false);
 
     await runtime.restoreTerminalOutput('attach');
 
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
-    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false]]);
+    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false], [true], [false]]);
     expect(runtime.isRestoreBlocked()).toBe(false);
   });
 

@@ -102,6 +102,7 @@ const DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY = {
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS = 3;
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS = 750;
 const POST_RECOVERY_REVEAL_SETTLE_MS = 32;
+const STABLE_REVEAL_FRAME_FALLBACK_MS = 250;
 const MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS = 2_000;
 const MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS = 4_000;
 const DENSE_STARTUP_VISIBLE_TERMINAL_THRESHOLD = 4;
@@ -702,8 +703,38 @@ export function createTerminalRecoveryRuntime(
     }
 
     await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => resolve());
+      let settled = false;
+      let firstFrame: number | undefined;
+      let secondFrame: number | undefined;
+      let unregisterWaitCleanup = (): void => {};
+
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        unregisterWaitCleanup();
+        window.clearTimeout(timeoutId);
+        if (firstFrame !== undefined) {
+          window.cancelAnimationFrame(firstFrame);
+          firstFrame = undefined;
+        }
+        if (secondFrame !== undefined) {
+          window.cancelAnimationFrame(secondFrame);
+          secondFrame = undefined;
+        }
+        resolve();
+      };
+
+      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(finish);
+      const timeoutId = window.setTimeout(finish, STABLE_REVEAL_FRAME_FALLBACK_MS);
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = undefined;
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = undefined;
+          finish();
+        });
       });
     });
   }
@@ -788,63 +819,91 @@ export function createTerminalRecoveryRuntime(
     return options.onStartupWriteRendered ?? null;
   }
 
-  async function writeTerminalRestoreChunk(chunk: Uint8Array): Promise<void> {
+  async function writeTerminalRestoreChunk(
+    generation: number,
+    chunk: Uint8Array,
+  ): Promise<boolean> {
     if (chunk.length === 0) {
-      return;
+      return true;
     }
 
-    await new Promise<void>((resolve) => {
+    if (!isActiveRestoreGeneration(generation)) {
+      return false;
+    }
+
+    return new Promise<boolean>((resolve) => {
       let settled = false;
-      const finishWrite = (): void => {
+      let unregisterWaitCleanup = (): void => {};
+      const finishWrite = (completed: boolean): void => {
         if (settled) {
           return;
         }
 
         settled = true;
+        unregisterWaitCleanup();
         window.clearTimeout(timeoutId);
-        resolve();
+        resolve(completed && isActiveRestoreGeneration(generation));
       };
-      const timeoutId = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
-      term.write(chunk, finishWrite);
+      unregisterWaitCleanup = registerPendingRecoveryWaitCleanup(() => finishWrite(false));
+      const timeoutId = window.setTimeout(
+        () => finishWrite(true),
+        OUTPUT_WRITE_CALLBACK_TIMEOUT_MS,
+      );
+      term.write(chunk, () => finishWrite(true));
     });
   }
 
   async function writeTerminalPayloadChunked(
+    generation: number,
     payload: Uint8Array,
     chunkSize: number,
     yieldBetweenChunks: boolean,
     reason: TerminalRecoveryReason,
     onStartupWriteRendered: ((byteLength: number) => void) | null = null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (payload.length === 0) {
-      return;
+      return true;
     }
 
     for (let offset = 0; offset < payload.length; offset += chunkSize) {
+      if (!isActiveRestoreGeneration(generation)) {
+        return false;
+      }
+
       const chunk = payload.subarray(offset, Math.min(payload.length, offset + chunkSize));
       const schedulingRole = getStartupTaskSchedulingRole(reason);
       const schedulingMode = getConfiguredStartupTaskSchedulingMode(reason);
-      restoreWriteChunkCount += 1;
-      restoreWrittenBytes += chunk.length;
+      let chunkWritten = false;
       if (schedulingRole && schedulingMode !== 'off') {
         const continuationStartedAtMs = performance.now();
         const schedulingResult = await scheduleTerminalStartupTask(
           schedulingRole,
           schedulingMode,
-          () => writeTerminalRestoreChunk(chunk),
+          () => writeTerminalRestoreChunk(generation, chunk),
         );
         recordTerminalStartupTaskScheduling(schedulingRole, {
           delayMs: Math.max(0, performance.now() - continuationStartedAtMs),
           outcome: schedulingResult.outcome,
         });
+        chunkWritten = schedulingResult.value;
       } else {
-        await writeTerminalRestoreChunk(chunk);
+        chunkWritten = await writeTerminalRestoreChunk(generation, chunk);
       }
+      if (!chunkWritten || !isActiveRestoreGeneration(generation)) {
+        return false;
+      }
+      restoreWriteChunkCount += 1;
+      restoreWrittenBytes += chunk.length;
       onStartupWriteRendered?.(chunk.length);
       if (yieldBetweenChunks && offset + chunkSize < payload.length) {
         await waitForRestoreYield(reason);
+        if (!isActiveRestoreGeneration(generation)) {
+          return false;
+        }
       }
     }
+
+    return true;
   }
 
   function shouldYieldBetweenRestoreChunks(reason: TerminalRecoveryReason): boolean {
@@ -1043,19 +1102,25 @@ export function createTerminalRecoveryRuntime(
   }
 
   async function restoreTerminalScrollbackData(
+    generation: number,
     scrollback: Uint8Array,
     reason: Extract<TerminalRecoveryReason, 'attach' | 'backpressure' | 'hibernate' | 'reconnect'>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     recordTerminalRecoveryReset(reason);
     term.reset();
-    await writeTerminalPayloadChunked(
+    const replayCompleted = await writeTerminalPayloadChunked(
+      generation,
       scrollback,
       getRestoreChunkSize(reason),
       shouldYieldBetweenRestoreChunks(reason),
       reason,
       getStartupWriteRenderedCallback(reason),
     );
+    if (!replayCompleted) {
+      return false;
+    }
     outputPipeline.setRenderedOutputHistory(scrollback);
+    return true;
   }
 
   function buildTerminalRecoveryHistory(overlapBytes: number, delta: Uint8Array): Uint8Array {
@@ -1347,22 +1412,27 @@ export function createTerminalRecoveryRuntime(
   }
 
   async function applyTerminalRecoveryEntry(
+    generation: number,
     entry: TerminalRecoveryBatchEntry,
     reason: TerminalRecoveryReason,
-  ): Promise<void> {
+  ): Promise<boolean> {
     switch (entry.recovery.kind) {
       case 'noop':
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
-        return;
+        return true;
       case 'delta': {
         const delta = decodeBase64ToUint8Array(entry.recovery.data);
         if (delta.length > 0) {
-          await writeTerminalPayloadChunked(
+          const deltaWritten = await writeTerminalPayloadChunked(
+            generation,
             delta,
             getRestoreChunkSize(reason),
             shouldYieldBetweenRestoreChunks(reason),
             reason,
           );
+          if (!deltaWritten) {
+            return false;
+          }
         }
         if (entry.recovery.source === 'cursor') {
           outputPipeline.appendRenderedOutputHistory(delta);
@@ -1372,37 +1442,58 @@ export function createTerminalRecoveryRuntime(
           );
         }
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
-        return;
+        return true;
       }
       case 'snapshot': {
         const scrollback = entry.recovery.data
           ? decodeBase64ToUint8Array(entry.recovery.data)
           : new Uint8Array(0);
         if (reason === 'renderer-loss') {
-          return;
+          return true;
         }
-        await restoreTerminalScrollbackData(scrollback, reason);
+        const snapshotWritten = await restoreTerminalScrollbackData(generation, scrollback, reason);
+        if (!snapshotWritten) {
+          return false;
+        }
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
-        return;
+        return true;
       }
       case 'terminal-state': {
         const terminalState = decodeBase64ToUint8Array(entry.recovery.data);
         if (reason === 'renderer-loss') {
-          return;
+          return true;
         }
         recordTerminalRecoveryReset(reason);
         term.reset();
-        await writeTerminalPayloadChunked(
+        const terminalStateWritten = await writeTerminalPayloadChunked(
+          generation,
           terminalState,
           getRestoreChunkSize(reason),
           shouldYieldBetweenRestoreChunks(reason),
           reason,
           getStartupWriteRenderedCallback(reason),
         );
-        outputPipeline.setRenderedOutputHistory(new Uint8Array(0));
+        if (!terminalStateWritten) {
+          return false;
+        }
+        outputPipeline.setRenderedOutputHistory(terminalState);
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
-        return;
+        return true;
       }
+    }
+
+    return assertNever(entry.recovery, 'Unhandled terminal recovery entry');
+  }
+
+  function shouldRefreshTerminalViewportAfterRecovery(entry: TerminalRecoveryBatchEntry): boolean {
+    switch (entry.recovery.kind) {
+      case 'noop':
+        return true;
+      case 'delta':
+        return entry.recovery.source !== 'cursor';
+      case 'snapshot':
+      case 'terminal-state':
+        return false;
     }
 
     return assertNever(entry.recovery, 'Unhandled terminal recovery entry');
@@ -1556,8 +1647,11 @@ export function createTerminalRecoveryRuntime(
       }
       setRecoveryPhase(generation, 'applying-recovery');
       const applyStartedAtMs = performance.now();
-      await applyTerminalRecoveryEntry(recoveryEntry, reason);
+      const recoveryApplied = await applyTerminalRecoveryEntry(generation, recoveryEntry, reason);
       applyMs = performance.now() - applyStartedAtMs;
+      if (!recoveryApplied || !isActiveRestoreGeneration(generation)) {
+        return;
+      }
       recordTerminalRecoveryApply({
         blockingUi: shouldBlockUi,
         kind: recoveryKind,
@@ -1571,9 +1665,9 @@ export function createTerminalRecoveryRuntime(
       if (!postRecoveryFitReady || generation !== restoreGeneration || isRuntimeDisposed()) {
         return;
       }
-      // Snapshot replay already reconstructs the terminal buffer, viewport, and cursor state.
-      // Forcing a follow-up scroll breaks cursor-addressed TUIs by overriding the restored viewport.
-      refreshTerminalViewport();
+      if (shouldRefreshTerminalViewportAfterRecovery(recoveryEntry)) {
+        refreshTerminalViewport();
+      }
       setRecoveryPhase(generation, 'waiting-post-reveal');
       revealSettleMs += await waitForPostRecoveryRevealSettle(reason);
       if (generation !== restoreGeneration || isRuntimeDisposed()) {
@@ -1586,6 +1680,19 @@ export function createTerminalRecoveryRuntime(
         recoveryState.kind === 'restoring' &&
         recoveryState.generation === generation &&
         recoveryState.selectedRecoveryStarted;
+      let selectedRecoverySettled = false;
+      const settleSelectedRecoveryIfNeeded = (force = false): void => {
+        if (selectedRecoverySettled || !selectedRecoveryStarted || isRuntimeDisposed()) {
+          return;
+        }
+
+        if (!force && (!terminalMarkedReady || !isActiveRestoreGeneration(generation))) {
+          return;
+        }
+
+        selectedRecoverySettled = true;
+        options.onSelectedRecoverySettle?.();
+      };
       if (
         recoveryState.kind === 'restoring' &&
         recoveryState.generation === generation &&
@@ -1639,20 +1746,24 @@ export function createTerminalRecoveryRuntime(
           kind: 'resume-failed',
           reason,
         };
-        options.setStatus('restoring');
+        setRestoreBlocked(false);
+        settleSelectedRecoveryIfNeeded(true);
+        outputPipeline.recoverFlowControlIfIdle();
+        options.setStatus('error');
         shouldExitAfterFinally = true;
       } else {
         options.onRestoreSettled();
         const restoreStaleOrDisposed = restoreGeneration !== generation || isRuntimeDisposed();
+        if (restoreStaleOrDisposed && !isRuntimeDisposed()) {
+          settleSelectedRecoveryIfNeeded(true);
+        }
         if (pendingReconnectRestoreState === 'queued') {
           clearRecoveryStateIfActive(generation);
         }
         if (pendingReconnectRestoreState === 'queued' && startReconnectRestoreIfReady()) {
           shouldRestartQueuedRestore = true;
-          outputPipeline.recoverFlowControlIfIdle();
         } else if (restoreStaleOrDisposed) {
           clearRecoveryStateIfActive(generation);
-          outputPipeline.recoverFlowControlIfIdle();
           shouldExitAfterFinally = true;
         } else if (outputPipeline.hasQueuedOutput()) {
           outputPipeline.scheduleOutputFlush();
@@ -1703,9 +1814,9 @@ export function createTerminalRecoveryRuntime(
           terminalMarkedReady &&
           isActiveRestoreGeneration(generation)
         ) {
-          options.onSelectedRecoverySettle?.();
+          settleSelectedRecoveryIfNeeded();
         }
-        if (!shouldExitAfterFinally) {
+        if (!shouldExitAfterFinally && !shouldRestartQueuedRestore) {
           clearRecoveryStateIfActive(generation);
           outputPipeline.recoverFlowControlIfIdle();
         }

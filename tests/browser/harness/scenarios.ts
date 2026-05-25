@@ -105,7 +105,9 @@ export function createInteractiveNodeScenario(): BrowserLabScenario {
   return {
     name: 'interactive-node',
     taskName: 'Interactive Node Fixture',
-    agentDef: createAgentDef('browser-lab-node', 'Browser Lab Node REPL', process.execPath, []),
+    agentDef: createAgentDef('browser-lab-node', 'Browser Lab Node REPL', process.execPath, [
+      '--no-warnings',
+    ]),
   };
 }
 

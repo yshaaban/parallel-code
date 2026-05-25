@@ -15,7 +15,10 @@ import {
   sendPagehideInvoke,
 } from '../../lib/ipc';
 import type { TerminalFitLifecycle } from '../../lib/terminalFitLifecycle';
-import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
+import {
+  getTaskCommandController,
+  subscribeTaskCommandControllerChanges,
+} from '../../store/task-command-controllers';
 import type { TerminalInputPipeline } from './terminal-input-pipeline';
 import type { TerminalRecoveryRuntime } from './terminal-recovery-runtime';
 import type { TerminalViewProps } from './types';
@@ -446,6 +449,7 @@ vi.mock('../../store/store', () => ({
 }));
 
 vi.mock('../../store/task-command-controllers', () => ({
+  getTaskCommandController: vi.fn(() => null),
   subscribeTaskCommandControllerChanges: vi.fn(() => vi.fn()),
 }));
 
@@ -564,6 +568,7 @@ describe('startTerminalSession render hibernation', () => {
     vi.mocked(isElectronRuntime).mockReturnValue(true);
     vi.mocked(isBrowserControlAuthenticated).mockReturnValue(false);
     vi.mocked(getBrowserTransportConnectionState).mockReturnValue('disconnected');
+    vi.mocked(getTaskCommandController).mockReturnValue(null);
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
         return { attachedExistingSession: false };
@@ -2154,6 +2159,28 @@ describe('startTerminalSession render hibernation', () => {
     expect(handleControllerChange).not.toHaveBeenCalledWith('client-2');
     expect(flushPendingInput).toHaveBeenCalled();
     expect(drainInputQueue).toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('applies existing task command controller state when a terminal session starts', async () => {
+    vi.mocked(getTaskCommandController).mockReturnValue({
+      action: 'type in the terminal',
+      controllerId: 'client-1',
+      version: 1,
+    });
+    const container = createMeasuredContainer();
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const inputPipeline = createTerminalInputPipelineMock.mock.results[0]?.value;
+    expect(inputPipeline?.handleControllerChange).toHaveBeenCalledWith('client-1');
 
     session.cleanup();
   });

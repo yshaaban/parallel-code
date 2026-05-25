@@ -173,6 +173,12 @@ test.describe('browser-lab terminal scroll preservation under fit churn', () => 
 
       await browserLab.waitForTerminalReady(page, shellTerminalIndex);
       await browserLab.focusTerminal(page, shellTerminalIndex);
+      await browserLab.retainSessionAgentTaskCommandLease(
+        request,
+        page,
+        shellAgentId,
+        'write scroll preservation stress output',
+      );
 
       const seedCommand =
         'i=0; while [ "$i" -lt 1600 ]; do printf "SCROLL_SEED_%04d seeded-scrollback-line-seeded-scrollback-line-seeded-scrollback-line\\n" "$i"; i=$((i+1)); done; printf "__SCROLL_SEED_DONE__\\n"';
@@ -198,6 +204,12 @@ test.describe('browser-lab terminal scroll preservation under fit churn', () => 
 
       const noisyCommand =
         'i=0; while [ "$i" -lt 900 ]; do printf "SCROLL_NOISY_%04d noisy-scroll-line-noisy-scroll-line-noisy-scroll-line\\n" "$i"; i=$((i+1)); sleep 0.004; done; printf "__SCROLL_NOISY_DONE__\\n"';
+      await browserLab.retainSessionAgentTaskCommandLease(
+        request,
+        page,
+        shellAgentId,
+        'write scroll preservation stress output',
+      );
       await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
         agentId: shellAgentId,
         data: `${noisyCommand}\r`,

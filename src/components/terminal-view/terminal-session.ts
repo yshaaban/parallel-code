@@ -76,7 +76,10 @@ import {
 } from '../../app/terminal-interactivity-governor';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
-import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
+import {
+  getTaskCommandController,
+  subscribeTaskCommandControllerChanges,
+} from '../../store/task-command-controllers';
 import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import type { PtyExitData, PtyOutput } from '../../ipc/types';
 import { createTerminalInputPipeline } from './terminal-input-pipeline';
@@ -1312,6 +1315,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     taskId,
     term,
   });
+  const initialTaskCommandController = getTaskCommandController(taskId);
+  if (initialTaskCommandController) {
+    inputPipeline.handleControllerChange(initialTaskCommandController.controllerId);
+  }
 
   recoveryRuntime = createTerminalRecoveryRuntime({
     agentId,

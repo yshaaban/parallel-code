@@ -156,6 +156,30 @@ describe('browser agent command runner', () => {
     );
   });
 
+  it('defers request-tracked success results when ordered commands report success later', () => {
+    const sendMessage = vi.fn(() => true);
+    const request = createRequest();
+    const { runner } = createRunner({ sendMessage });
+
+    runner.run(CLIENT, 'agent-1', 'write', vi.fn(), true, {
+      deferSuccessResult: true,
+      request,
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    runner.sendCommandResult(CLIENT, request, true);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      CLIENT,
+      expect.objectContaining({
+        accepted: true,
+        requestId: 'request-1',
+        type: 'agent-command-result',
+      }),
+    );
+  });
+
   it('does not notify when request-tracked result send fails', () => {
     const onAgentCommandResultSent = vi.fn();
     const request = createRequest();

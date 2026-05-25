@@ -469,6 +469,13 @@ test.describe('browser-lab terminal render stress', () => {
       const { context, page } = await openDiagnosticSession(browser, browserLab);
       try {
         await browserLab.waitForTerminalReady(page);
+        await browserLab.retainSessionTaskCommandLease(
+          request,
+          page,
+          browserLab.server.taskId,
+          'type in the terminal',
+        );
+        await browserLab.waitForTerminalInteractiveReady(page);
         await browserLab.beginTerminalStatusHistory(page);
         await beginTerminalPresentationModeHistory(page);
         await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
@@ -693,6 +700,13 @@ test.describe('browser-lab terminal render stress', () => {
           'control redraw fixture ready',
           30_000,
         );
+        await browserLab.retainSessionTaskCommandLease(
+          request,
+          page,
+          browserLab.server.taskId,
+          'type in the terminal',
+        );
+        await browserLab.waitForTerminalInteractiveReady(page);
         await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
         await page.evaluate(() => {
           window.__parallelCodeRendererRuntimeDiagnostics?.reset();
@@ -888,6 +902,13 @@ test.describe('browser-lab terminal render stress', () => {
             'save-restore resize fixture ready',
             30_000,
           );
+          await browserLab.retainSessionTaskCommandLease(
+            request,
+            page,
+            browserLab.server.taskId,
+            'type in the terminal',
+          );
+          await browserLab.waitForTerminalInteractiveReady(page);
 
           const viewportSizes = [
             { width: 1260, height: 860 },
@@ -970,6 +991,12 @@ test.describe('browser-lab terminal render stress', () => {
           .poll(() => getTerminalSurfaceTier(page, shellTerminalIndex))
           .toBe('interactive-live');
         await expect.poll(() => getTerminalPresentationMode(page, shellTerminalIndex)).toBe('live');
+        const shellTaskId = await browserLab.retainSessionAgentTaskCommandLease(
+          request,
+          page,
+          shellAgentId,
+          'write additive resize stress output',
+        );
 
         const shellReadyMarker = '__REAL_SHELL_READY__';
         await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
@@ -994,6 +1021,12 @@ test.describe('browser-lab terminal render stress', () => {
         const noisyCommand =
           'i=0; while [ "$i" -lt 2200 ]; do printf "REAL_AGENT_ADD_%05d real-agent-additive-catch-up-real-agent-additive-catch-up-real-agent-additive-catch-up\\n" "$i"; if [ $((i % 80)) -eq 0 ]; then printf "REAL_AGENT_PROGRESS_%05d\\n" "$i"; fi; i=$((i+1)); sleep 0.004; done; printf "__REAL_AGENT_ADDITIVE_DONE__\\n"';
 
+        await browserLab.retainSessionAgentTaskCommandLease(
+          request,
+          page,
+          shellAgentId,
+          'write additive resize stress output',
+        );
         await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
           agentId: shellAgentId,
           data: `${noisyCommand}\r`,
@@ -1025,16 +1058,10 @@ test.describe('browser-lab terminal render stress', () => {
         await expect
           .poll(() => getTerminalPresentationMode(page, shellTerminalIndex), { timeout: 10_000 })
           .toBe('live');
-        await assertInteractiveTerminalLifecycleInvariants(
-          browserLab,
-          request,
-          page,
-          browserLab.server.taskId,
-          {
-            requireDocumentFocus: true,
-            terminalIndex: shellTerminalIndex,
-          },
-        );
+        await assertInteractiveTerminalLifecycleInvariants(browserLab, request, page, shellTaskId, {
+          requireDocumentFocus: true,
+          terminalIndex: shellTerminalIndex,
+        });
 
         const outputDiagnostics = await getOutputDiagnostics(page);
         const rendererDiagnostics = await getRendererDiagnostics(page);

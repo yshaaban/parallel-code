@@ -43,6 +43,32 @@ export async function waitForCompletedTerminalInputTraces(
   return getTerminalInputTracingSnapshot(browserLab, request);
 }
 
+export function getCompletedTerminalInputTraceChars(
+  snapshot: TerminalInputTraceDiagnosticsSnapshot,
+): number {
+  return snapshot.completedTraces.reduce((totalChars, trace) => {
+    return trace.completed ? totalChars + trace.inputChars : totalChars;
+  }, 0);
+}
+
+export async function waitForCompletedTerminalInputTraceChars(
+  browserLab: Pick<TerminalInputTracingHarness, 'invokeIpc'>,
+  request: APIRequestContext,
+  minimumChars: number,
+): Promise<TerminalInputTraceDiagnosticsSnapshot> {
+  await expect
+    .poll(
+      async () => {
+        const snapshot = await getTerminalInputTracingSnapshot(browserLab, request);
+        return getCompletedTerminalInputTraceChars(snapshot);
+      },
+      { timeout: 8_000 },
+    )
+    .toBeGreaterThanOrEqual(minimumChars);
+
+  return getTerminalInputTracingSnapshot(browserLab, request);
+}
+
 export async function warmTerminalInputTracing(
   browserLab: TerminalInputTracingHarness,
   page: Page,
@@ -92,11 +118,13 @@ export async function measureTypedTextTrace(
   text: string,
   options?: {
     focusTerminal?: boolean;
+    minimumChars?: number;
     minimumCount?: number;
     terminalIndex?: number;
   },
 ): Promise<TerminalInputTraceDiagnosticsSnapshot> {
   const focusTerminal = options?.focusTerminal ?? true;
+  const minimumChars = options?.minimumChars ?? 0;
   const minimumCount = options?.minimumCount ?? 1;
   const terminalIndex = options?.terminalIndex ?? 0;
 
@@ -105,7 +133,16 @@ export async function measureTypedTextTrace(
   }
   await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
   await page.keyboard.type(text);
-  return waitForCompletedTerminalInputTraces(browserLab, request, minimumCount);
+  const countSnapshot = await waitForCompletedTerminalInputTraces(
+    browserLab,
+    request,
+    minimumCount,
+  );
+  if (minimumChars <= 0) {
+    return countSnapshot;
+  }
+
+  return waitForCompletedTerminalInputTraceChars(browserLab, request, minimumChars);
 }
 
 export async function measureRepeatedKeyTrace(

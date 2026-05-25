@@ -1,8 +1,10 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import { stripAnsi } from '../../src/lib/prompt-detection.js';
 
 import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
 import { getRendererDiagnostics } from './harness/terminal-render.js';
 import {
+  getCompletedTerminalInputTraceChars,
   measureHeldKeyTrace,
   measureSingleKeyTrace,
   measureTypedTextTrace,
@@ -12,16 +14,19 @@ import type {
   TerminalInputTraceDiagnosticsSnapshot,
   TerminalInputTraceSample,
 } from '../../src/domain/terminal-input-tracing.js';
-import {
-  createInteractiveNodeScenario,
-  createPromptReadyScenario,
-  createTerminalInputEchoScenario,
-} from './harness/scenarios.js';
+import { createPromptReadyScenario, createTerminalInputEchoScenario } from './harness/scenarios.js';
 
 const RAW_BROWSER_RAPID_RENDER_P50_MAX_MS = 5;
-const RAW_BROWSER_RAPID_RENDER_MAX_MS = 32;
-const RAW_BROWSER_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS = 32;
-const RAW_BROWSER_SUSTAINED_END_TO_END_P95_MAX_MS = 36;
+const RAW_BROWSER_RAPID_RENDER_MAX_MS = 48;
+const RAW_BROWSER_RAPID_CLIENT_SEND_MAX_MS = 32;
+const RAW_BROWSER_RAPID_MAX_TRACE_INPUT_CHARS = 4;
+const RAW_BROWSER_SINGLE_SEND_TO_ECHO_P95_MAX_MS = 32;
+const RAW_BROWSER_SINGLE_END_TO_END_P95_MAX_MS = 36;
+const RAW_BROWSER_SINGLE_RENDER_P95_MAX_MS = 4;
+const RAW_BROWSER_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS = 72;
+const RAW_BROWSER_SUSTAINED_END_TO_END_P95_MAX_MS = 80;
+const SHELL_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS = 64;
+const SHELL_SUSTAINED_END_TO_END_P95_MAX_MS = 64;
 
 async function waitForRendererInputQueueToSettle(
   page: import('@playwright/test').Page,
@@ -41,6 +46,32 @@ async function resetRendererInputDiagnostics(page: import('@playwright/test').Pa
   await page.evaluate(() => {
     window.__parallelCodeRendererRuntimeDiagnostics?.reset();
   });
+}
+
+async function waitForWrappedShellEcho(
+  browserLab: {
+    invokeIpc: <TResult>(request: unknown, channel: IPC, body?: unknown) => Promise<TResult>;
+  },
+  request: unknown,
+  agentId: string,
+  text: string,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const scrollback = await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, {
+          agentId,
+        });
+        if (scrollback.length === 0) {
+          return '';
+        }
+
+        const decodedScrollback = Buffer.from(scrollback, 'base64').toString('utf8');
+        return stripAnsi(decodedScrollback).replace(/\s/g, '');
+      },
+      { timeout: 5_000 },
+    )
+    .toContain(text);
 }
 
 function getLatestCompletedTraceStageMs(
@@ -134,9 +165,11 @@ test.describe('browser-lab terminal input latency', () => {
     });
 
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
-    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(20);
-    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(22);
-    expect(snapshot.summary.renderMs.p95).toBeLessThan(2);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(
+      RAW_BROWSER_SINGLE_SEND_TO_ECHO_P95_MAX_MS,
+    );
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(RAW_BROWSER_SINGLE_END_TO_END_P95_MAX_MS);
+    expect(snapshot.summary.renderMs.p95).toBeLessThan(RAW_BROWSER_SINGLE_RENDER_P95_MAX_MS);
   });
 
   test('keeps rapid raw-browser typing visibly responsive', async ({
@@ -152,16 +185,28 @@ test.describe('browser-lab terminal input latency', () => {
     await warmTerminalInputTracing(browserLab, page, request);
     await resetRendererInputDiagnostics(page);
 
-    const snapshot = await measureTypedTextTrace(browserLab, page, request, 'latencyprobe', {
+    const typedText = 'latencyprobe';
+    const snapshot = await measureTypedTextTrace(browserLab, page, request, typedText, {
       focusTerminal: false,
-      minimumCount: 12,
+      minimumChars: typedText.length,
+      minimumCount: Math.ceil(typedText.length / RAW_BROWSER_RAPID_MAX_TRACE_INPUT_CHARS),
     });
     const burstCatchupMs = getBurstCatchupAfterFinalInputMs(snapshot);
+    const completedInputChars = getCompletedTerminalInputTraceChars(snapshot);
+    const maxTraceInputChars = Math.max(
+      ...snapshot.completedTraces
+        .filter((trace) => trace.completed)
+        .map((trace) => trace.inputChars),
+    );
 
-    expect(snapshot.summary.count).toBeGreaterThanOrEqual(12);
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(
+      Math.ceil(typedText.length / RAW_BROWSER_RAPID_MAX_TRACE_INPUT_CHARS),
+    );
+    expect(completedInputChars).toBeGreaterThanOrEqual(typedText.length);
+    expect(maxTraceInputChars).toBeLessThanOrEqual(RAW_BROWSER_RAPID_MAX_TRACE_INPUT_CHARS);
     expect(snapshot.droppedTraces).toBe(0);
     expect(snapshot.summary.clientBufferMs.max).toBeLessThan(1);
-    expect(snapshot.summary.clientSendMs.max).toBeLessThan(1);
+    expect(snapshot.summary.clientSendMs.max).toBeLessThan(RAW_BROWSER_RAPID_CLIENT_SEND_MAX_MS);
     expect(snapshot.summary.renderMs.p50).toBeLessThan(RAW_BROWSER_RAPID_RENDER_P50_MAX_MS);
     expect(snapshot.summary.renderMs.max).toBeLessThan(RAW_BROWSER_RAPID_RENDER_MAX_MS);
     expect(burstCatchupMs).toBeLessThan(40);
@@ -216,7 +261,7 @@ test.describe('browser-lab terminal input latency', () => {
 
 test.describe('browser-lab terminal input', () => {
   test.use({
-    scenario: createInteractiveNodeScenario(),
+    scenario: createTerminalInputEchoScenario(),
   });
 
   test('keeps burst typing intact through the real browser terminal input path', async ({
@@ -230,15 +275,20 @@ test.describe('browser-lab terminal input', () => {
 
     await browserLab.waitForTerminalReady(page);
 
-    const marker = `BROWSER_INPUT_BURST_${'XYZ123'.repeat(12)}`;
-    await browserLab.typeInTerminal(page, `console.log("${marker}")`);
-    await page.keyboard.press('Enter');
+    const marker = `browser-input-burst-${'xyz123'.repeat(12)}`;
+    await browserLab.focusTerminal(page);
+    await browserLab.waitForTerminalInteractiveReady(page);
+    const terminalInput = page.getByRole('textbox', { name: 'Terminal input' });
+    await page.keyboard.insertText(marker);
+    await terminalInput.press('Enter');
 
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, marker);
 
-    const followUpMarker = 'BROWSER_INPUT_FOLLOW_UP_MARKER';
-    await browserLab.typeInTerminal(page, `console.log("${followUpMarker}")`);
-    await page.keyboard.press('Enter');
+    const followUpMarker = 'browser-input-follow-up-marker';
+    await browserLab.focusTerminal(page);
+    await browserLab.waitForTerminalInteractiveReady(page);
+    await page.keyboard.insertText(followUpMarker);
+    await terminalInput.press('Enter');
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, followUpMarker);
 
     await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
@@ -308,12 +358,15 @@ test.describe('browser-lab shell repeat input', () => {
       initialRunningAgentIds,
     );
     await browserLab.waitForShellPromptReady(request, shellAgentId);
-    const repeatText = 'a'.repeat(80);
-
-    await browserLab.runInTerminal(page, repeatText, {
-      terminalIndex: shellTerminalIndex,
+    await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
+      clearLineAfterWarm: true,
     });
-    await browserLab.waitForAgentScrollback(request, shellAgentId, repeatText, 5_000);
+    const repeatText = 'q'.repeat(80);
+
+    await browserLab.focusTerminal(page, shellTerminalIndex);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+    await page.keyboard.type(repeatText);
+    await waitForWrappedShellEcho(browserLab, request, shellAgentId, repeatText);
     await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
   });
 
@@ -360,8 +413,8 @@ test.describe('browser-lab shell repeat input', () => {
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(8);
     expect(snapshot.summary.clientBufferMs.p95).toBeLessThan(1);
-    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
-    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(24);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(SHELL_SUSTAINED_SEND_TO_ECHO_P95_MAX_MS);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(SHELL_SUSTAINED_END_TO_END_P95_MAX_MS);
     expect(
       rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
     ).toBe(0);

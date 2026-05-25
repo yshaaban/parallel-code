@@ -59,14 +59,15 @@ import {
 const INPUT_RETRY_DELAY_MS = 50;
 const MAX_CONCURRENT_INPUT_BATCHES = 16;
 const MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES = MAX_CONCURRENT_INPUT_BATCHES;
+const MAX_CONCURRENT_CONTROL_INPUT_BATCHES = 1;
 const MAX_INITIAL_INTERACTIVE_SEND_BATCH_CHARS = 4;
 const RESIZE_FLUSH_DELAY_MS = 48;
 const ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS = 120;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
 const INPUT_TRACE_BACKEND_ECHO_TEXT_MAX_CHARS = 512;
+const MAX_PENDING_INPUT_TRACE_ECHOES = 256;
 const KEYBOARD_TRACE_START_MAX_AGE_MS = 250;
-const INPUT_TRACE_TEXT_DECODER = new TextDecoder();
 
 interface QueuedInputChunk {
   bufferedAtMs: number;
@@ -83,6 +84,7 @@ interface InFlightInputBatch {
   inputEpoch: string;
   inputKind: TerminalInputTraceKind;
   inputSeq: number;
+  queueBacked: boolean;
   queuedAt: number;
   requestId: string;
   startedAtMs: number;
@@ -210,12 +212,20 @@ function coalesceTerminalInputTraceKind(
   return 'burst';
 }
 
+function isTraceEchoTextChar(char: string): boolean {
+  const charCode = char.charCodeAt(0);
+  return (
+    (charCode >= 32 && charCode < 127) ||
+    charCode > 159 ||
+    char === '\t' ||
+    char === '\n' ||
+    char === '\r'
+  );
+}
+
 function getTraceEchoText(data: string): string | null {
-  const printableText = Array.from(data)
-    .filter((char) => {
-      const charCode = char.charCodeAt(0);
-      return charCode >= 32 || char === '\t' || char === '\n' || char === '\r';
-    })
+  const printableText = Array.from(stripAnsi(data))
+    .filter(isTraceEchoTextChar)
     .join('')
     .replace(/\r/g, '');
   return printableText.length > 0 ? printableText : null;
@@ -318,6 +328,7 @@ export function createTerminalInputPipeline(
     startedAtMs: number;
   } | null = null;
   const inputQueue: QueuedInputChunk[] = [];
+  const pendingRetryInputBatches: InFlightInputBatch[] = [];
   const inFlightInputBatches: InFlightInputBatch[] = [];
   let inputEpoch = createRandomId();
   let nextInputSeq = 0;
@@ -332,6 +343,7 @@ export function createTerminalInputPipeline(
   let inFlightResizeCommitPromise: Promise<void> | null = null;
   let peerDeferredResize: TerminalGeometry | null = null;
   let pendingInputTraceOutputTail = '';
+  let inputTraceTextDecoder = new TextDecoder();
   const pendingInputTraceEchoes = new Map<
     string,
     {
@@ -354,15 +366,39 @@ export function createTerminalInputPipeline(
 
   function clearQueuedInputState(): void {
     inputQueue.length = 0;
+    pendingRetryInputBatches.length = 0;
     inFlightInputBatches.length = 0;
     inputBuffer = '';
     resetPendingInputState();
     pendingKeyboardTraceStarts.length = 0;
     nextProgrammaticInputTrace = null;
-    pendingInputTraceEchoes.clear();
-    pendingInputTraceOutputTail = '';
+    clearPendingInputTraceEchoes();
     rotateInputOrderingEpoch();
     updateInputQueueDiagnostics();
+  }
+
+  function resetInputTraceDecoder(): void {
+    inputTraceTextDecoder = new TextDecoder();
+  }
+
+  function clearPendingInputTraceEchoes(): void {
+    pendingInputTraceEchoes.clear();
+    pendingInputTraceOutputTail = '';
+    resetInputTraceDecoder();
+  }
+
+  function resetInputTraceEchoStateIfIdle(): void {
+    if (pendingInputTraceEchoes.size > 0) {
+      return;
+    }
+
+    pendingInputTraceOutputTail = '';
+    resetInputTraceDecoder();
+  }
+
+  function deletePendingInputTraceEcho(requestId: string): void {
+    pendingInputTraceEchoes.delete(requestId);
+    resetInputTraceEchoStateIfIdle();
   }
 
   function rotateInputOrderingEpoch(): void {
@@ -386,7 +422,8 @@ export function createTerminalInputPipeline(
   function getBufferedInputChars(): number {
     return (
       pendingInput.length +
-      inputQueue.reduce((totalChars, entry) => totalChars + entry.data.length, 0)
+      inputQueue.reduce((totalChars, entry) => totalChars + entry.data.length, 0) +
+      pendingRetryInputBatches.reduce((totalChars, entry) => totalChars + entry.batch.length, 0)
     );
   }
 
@@ -398,7 +435,7 @@ export function createTerminalInputPipeline(
     recordTerminalInputQueueState({
       bufferedChars: getBufferedInputChars(),
       inFlightBatches: inFlightInputBatches.length,
-      queuedChunks: inputQueue.length,
+      queuedChunks: inputQueue.length + pendingRetryInputBatches.length,
     });
   }
 
@@ -409,7 +446,7 @@ export function createTerminalInputPipeline(
 
     for (const batch of inFlightInputBatches) {
       cancelBrowserAgentCommandRequest(batch.requestId);
-      pendingInputTraceEchoes.delete(batch.requestId);
+      deletePendingInputTraceEcho(batch.requestId);
     }
     inFlightInputBatches.length = 0;
     rotateInputOrderingEpoch();
@@ -499,6 +536,14 @@ export function createTerminalInputPipeline(
   }
 
   function deferResize(pending: TerminalGeometry, reason: ResizeCommitDeferReason): void {
+    if (resizeState.kind === 'sending') {
+      setResizeState({
+        ...resizeState,
+        pending,
+      });
+      return;
+    }
+
     setResizeState({
       kind: 'deferred',
       lastSent: resizeState.lastSent,
@@ -693,14 +738,36 @@ export function createTerminalInputPipeline(
       return MAX_CONCURRENT_INPUT_BATCHES;
     }
 
-    switch (firstEntry.inputKind) {
+    return getInputBatchConcurrencyLimit(firstEntry.inputKind);
+  }
+
+  function getInputBatchConcurrencyLimit(inputKind: TerminalInputTraceKind): number {
+    switch (inputKind) {
       case 'interactive':
-      case 'control':
         return MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES;
+      case 'control':
+        return MAX_CONCURRENT_CONTROL_INPUT_BATCHES;
       case 'burst':
       case 'paste':
         return MAX_CONCURRENT_INPUT_BATCHES;
     }
+  }
+
+  function trackPendingInputTraceEcho(requestId: string, expectedText: string): void {
+    while (pendingInputTraceEchoes.size >= MAX_PENDING_INPUT_TRACE_ECHOES) {
+      const oldestRequestId = pendingInputTraceEchoes.keys().next().value;
+      if (typeof oldestRequestId !== 'string') {
+        break;
+      }
+
+      pendingInputTraceEchoes.delete(oldestRequestId);
+    }
+
+    pendingInputTraceEchoes.set(requestId, {
+      expectedText,
+      outputReceivedAtMs: null,
+      outputTransportReceivedAtMs: null,
+    });
   }
 
   function detectPendingInputTraceEcho(
@@ -712,7 +779,8 @@ export function createTerminalInputPipeline(
       return;
     }
 
-    const combinedText = pendingInputTraceOutputTail + INPUT_TRACE_TEXT_DECODER.decode(chunk);
+    const combinedText =
+      pendingInputTraceOutputTail + inputTraceTextDecoder.decode(chunk, { stream: true });
     pendingInputTraceOutputTail = combinedText.slice(-INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS);
     const visibleTail = stripAnsi(pendingInputTraceOutputTail).replace(/\r/g, '');
     const pendingEntries = Array.from(pendingInputTraceEchoes.entries()).filter(
@@ -750,6 +818,8 @@ export function createTerminalInputPipeline(
       });
       pendingInputTraceEchoes.delete(requestId);
     }
+
+    resetInputTraceEchoStateIfIdle();
   }
 
   function getOrCreateInFlightInputBatch(): InFlightInputBatch | null {
@@ -772,6 +842,7 @@ export function createTerminalInputPipeline(
       inputEpoch,
       inputKind: traceSummary.inputKind,
       inputSeq: nextInputSeq,
+      queueBacked: true,
       queuedAt: queuedBatchEntries[0]?.queuedAt ?? 0,
       requestId: createRandomId(),
       startedAtMs: traceSummary.startedAtMs,
@@ -805,21 +876,19 @@ export function createTerminalInputPipeline(
   function getDispatchedInputCount(): number {
     let count = 0;
     for (const batch of inFlightInputBatches) {
-      count += batch.count;
+      if (batch.queueBacked) {
+        count += batch.count;
+      }
     }
     return count;
   }
 
   function hasUndispatchedInput(): boolean {
-    return inputQueue.length > getDispatchedInputCount();
+    return pendingRetryInputBatches.length > 0 || inputQueue.length > getDispatchedInputCount();
   }
 
-  function hasTrackedResizeGeometry(geometry: TerminalGeometry): boolean {
-    return (
-      isSameResizeGeometry(getPendingResize(), geometry) ||
-      isSameResizeGeometry(getInFlightResize(), geometry) ||
-      isSameResizeGeometry(peerDeferredResize, geometry)
-    );
+  function getLatestTargetResizeGeometry(): TerminalGeometry | null {
+    return getPendingResize() ?? getInFlightResize() ?? peerDeferredResize ?? resizeState.lastSent;
   }
 
   function getInFlightInputBatch(requestId: string): InFlightInputBatch | null {
@@ -833,30 +902,63 @@ export function createTerminalInputPipeline(
         break;
       }
 
-      inputQueue.splice(0, batch.count);
+      if (batch.queueBacked) {
+        inputQueue.splice(0, batch.count);
+      }
     }
     updateInputQueueDiagnostics();
   }
 
-  function dropDispatchedInputSuffix(requestId: string): void {
-    const batchIndex = inFlightInputBatches.findIndex((batch) => batch.requestId === requestId);
-    if (batchIndex < 0) {
-      return;
+  function getQueueBackedInputCountBeforeBatch(batchIndex: number): number {
+    let count = 0;
+    for (let index = 0; index < batchIndex; index += 1) {
+      const batch = inFlightInputBatches[index];
+      if (batch?.queueBacked) {
+        count += batch.count;
+      }
     }
 
+    return count;
+  }
+
+  function createRetryInputBatch(batch: InFlightInputBatch): InFlightInputBatch {
+    return {
+      ...batch,
+      queueBacked: false,
+      requestId: createRandomId(),
+      status: 'sending',
+    };
+  }
+
+  function dropDispatchedInputSuffix(requestId: string): boolean {
+    const batchIndex = inFlightInputBatches.findIndex((batch) => batch.requestId === requestId);
+    if (batchIndex < 0) {
+      return false;
+    }
+
+    const queueStartIndex = getQueueBackedInputCountBeforeBatch(batchIndex);
     const droppedBatches = inFlightInputBatches.splice(batchIndex);
-    const firstDroppedBatch = droppedBatches[0];
+    let queueBackedDroppedCount = 0;
+    const retryBatches: InFlightInputBatch[] = [];
     for (const [index, batch] of droppedBatches.entries()) {
-      pendingInputTraceEchoes.delete(batch.requestId);
-      if (index > 0) {
+      if (batch.queueBacked) {
+        queueBackedDroppedCount += batch.count;
+      }
+
+      deletePendingInputTraceEcho(batch.requestId);
+      retryBatches.push(createRetryInputBatch(batch));
+      if (index > 0 && batch.status === 'sending') {
         cancelBrowserAgentCommandRequest(batch.requestId);
       }
     }
-    if (firstDroppedBatch) {
-      nextInputSeq = firstDroppedBatch.inputSeq;
+
+    if (queueBackedDroppedCount > 0) {
+      inputQueue.splice(queueStartIndex, queueBackedDroppedCount);
     }
+    pendingRetryInputBatches.unshift(...retryBatches);
     recordTerminalInputDroppedSuffixBatches(droppedBatches.length);
     updateInputQueueDiagnostics();
+    return retryBatches.length > 0;
   }
 
   function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
@@ -886,11 +988,7 @@ export function createTerminalInputPipeline(
         : null;
 
     if (trace && batch.traceEchoText) {
-      pendingInputTraceEchoes.set(batch.requestId, {
-        expectedText: batch.traceEchoText,
-        outputReceivedAtMs: null,
-        outputTransportReceivedAtMs: null,
-      });
+      trackPendingInputTraceEcho(batch.requestId, batch.traceEchoText);
     }
 
     let commandResultReceivedAtMs = -1;
@@ -935,8 +1033,7 @@ export function createTerminalInputPipeline(
         }
 
         if (!sent) {
-          dropDispatchedInputSuffix(batch.requestId);
-          retryAfterFlight = true;
+          retryAfterFlight = dropDispatchedInputSuffix(batch.requestId);
           return;
         }
 
@@ -952,14 +1049,14 @@ export function createTerminalInputPipeline(
         }
 
         if (isTaskControlledAgentError(error)) {
-          dropDispatchedInputSuffix(batch.requestId);
+          void dropDispatchedInputSuffix(batch.requestId);
           handleTaskControlLoss();
           return;
         }
 
-        dropDispatchedInputSuffix(batch.requestId);
+        retryAfterFlight = dropDispatchedInputSuffix(batch.requestId);
         if (isTerminalInputRetryAllowed()) {
-          retryAfterFlight = true;
+          retryAfterFlight ||= hasUndispatchedInput();
         }
       })
       .finally(() => {
@@ -972,7 +1069,7 @@ export function createTerminalInputPipeline(
         }
 
         if (retryAfterFlight || !options.isSpawnReady()) {
-          if (inputQueue.length > 0) {
+          if (hasUndispatchedInput()) {
             retryInputDrain();
           }
           return;
@@ -1020,6 +1117,20 @@ export function createTerminalInputPipeline(
         }
 
         while (hasUndispatchedInput()) {
+          const retryBatch = pendingRetryInputBatches.shift();
+          if (retryBatch) {
+            const concurrencyLimit = getInputBatchConcurrencyLimit(retryBatch.inputKind);
+            if (inFlightInputBatches.length >= concurrencyLimit) {
+              pendingRetryInputBatches.unshift(retryBatch);
+              break;
+            }
+
+            inFlightInputBatches.push(retryBatch);
+            updateInputQueueDiagnostics();
+            startSendingQueuedInputBatch(retryBatch, inputGeneration);
+            continue;
+          }
+
           const queuedEntries = inputQueue.slice(getDispatchedInputCount());
           const concurrencyLimit = getQueuedInputConcurrencyLimit(queuedEntries);
           if (inFlightInputBatches.length >= concurrencyLimit) {
@@ -1087,6 +1198,11 @@ export function createTerminalInputPipeline(
     }
 
     const plan = getTerminalInputBatchPlan(data);
+    if (pendingInput && hasImmediateFlushTerminalInput(data)) {
+      flushPendingInput({ traceAsImmediate: true });
+      drainInputQueue();
+    }
+
     const wasIdle =
       pendingInput.length === 0 && inputQueue.length === 0 && inFlightInputBatches.length === 0;
     const hadPendingInput = pendingInput.length > 0;
@@ -1175,6 +1291,12 @@ export function createTerminalInputPipeline(
     resizeFlushTimer = undefined;
   }
 
+  function waitForResizeFlushRetryDelay(): Promise<void> {
+    return new Promise((resolve) => {
+      globalThis.setTimeout(resolve, getResizeFlushDelayMs());
+    });
+  }
+
   function isAlternateBufferActive(): boolean {
     return options.term.buffer?.active?.type === 'alternate';
   }
@@ -1189,31 +1311,40 @@ export function createTerminalInputPipeline(
     return options.shouldCommitResize?.() !== false;
   }
 
-  function flushPendingResize(forceRecoveryAlignmentCommit = false): Promise<void> {
+  function canRetainPendingResizeAfterFlight(): boolean {
+    return !options.isDisposed() && !options.isSpawnFailed() && !options.isProcessExited();
+  }
+
+  async function flushPendingResize(forceRecoveryAlignmentCommit = false): Promise<void> {
     recordTerminalResizeFlush();
     const pendingResize = getPendingResize();
     if (!pendingResize || resizeState.kind === 'sending') {
       if (resizeState.kind === 'sending') {
         recordTerminalResizeCommitDeferred('in-flight');
       }
-      return inFlightResizeCommitPromise ?? Promise.resolve();
+      await (inFlightResizeCommitPromise ?? Promise.resolve());
+      return;
+    }
+    if (options.isDisposed() || options.isSpawnFailed() || options.isProcessExited()) {
+      clearPendingResize();
+      return;
     }
     if (options.isRestoreBlocked() && !forceRecoveryAlignmentCommit) {
       recordTerminalResizeCommitDeferred('restore-blocked');
       deferResize(pendingResize, 'restore-blocked');
       scheduleResizeFlush(getResizeFlushDelayMs());
-      return Promise.resolve();
+      return;
     }
     if (!options.isSpawnReady() && !options.isSpawnFailed() && !options.isDisposed()) {
       recordTerminalResizeCommitDeferred('spawn-pending');
       deferResize(pendingResize, 'spawn-pending');
       scheduleResizeFlush(getResizeFlushDelayMs());
-      return Promise.resolve();
+      return;
     }
     if (!canCommitResizeNow() && !forceRecoveryAlignmentCommit) {
       recordTerminalResizeCommitDeferred('not-live');
       deferResize(pendingResize, 'not-live');
-      return Promise.resolve();
+      return;
     }
 
     const { cols, rows } = pendingResize;
@@ -1221,7 +1352,7 @@ export function createTerminalInputPipeline(
     if (controller && controller.controllerId !== runtimeClientId) {
       recordTerminalResizeCommitDeferred('peer-controlled');
       preserveResizeForPeerControl(pendingResize);
-      return Promise.resolve();
+      return;
     }
 
     if (hasLastSentResizeGeometry(cols, rows)) {
@@ -1231,13 +1362,39 @@ export function createTerminalInputPipeline(
       }
       recordTerminalResizeCommitNoopSkip();
       notifyResizeCommitted({ cols, rows });
-      return Promise.resolve();
+      return;
     }
 
     if (isSameResizeGeometry(pendingResize, getInFlightResize())) {
       clearPendingResize();
       recordTerminalResizeCommitNoopSkip();
-      return Promise.resolve();
+      return;
+    }
+
+    if (!inputLeaseSession.touch()) {
+      if (!controller || controller.controllerId !== runtimeClientId) {
+        recordTerminalResizeCommitDeferred('not-live');
+        setResizeIdle();
+        return;
+      }
+
+      const leaseAcquired = await ensureInputLease();
+      if (!leaseAcquired) {
+        if (!hasTaskCommandLeaseTransportAvailability()) {
+          deferResize(pendingResize, 'not-live');
+          scheduleResizeFlush(getResizeFlushDelayMs());
+          return;
+        }
+
+        recordTerminalResizeCommitDeferred('peer-controlled');
+        handleTaskControlLoss();
+        return;
+      }
+
+      if (getInFlightResize() || !isSameResizeGeometry(getPendingResize(), pendingResize)) {
+        await flushPendingResize(forceRecoveryAlignmentCommit);
+        return;
+      }
     }
 
     recordTerminalResizeCommitAttempt();
@@ -1302,7 +1459,7 @@ export function createTerminalInputPipeline(
             pending: resizeState.pending ?? { cols, rows },
           });
         }
-        if (!options.isDisposed() && !options.isSpawnFailed()) {
+        if (canRetainPendingResizeAfterFlight()) {
           scheduleResizeFlush(getResizeFlushDelayMs());
         }
       })
@@ -1311,11 +1468,23 @@ export function createTerminalInputPipeline(
           resizeState.kind === 'sending' && resizeState.requestId === requestId
             ? resizeState.pending
             : getPendingResize();
+        const shouldDeferPendingAfterFlight =
+          canRetainPendingResizeAfterFlight() && pendingAfterFlight !== null;
         if (resizeState.kind === 'sending' && resizeState.requestId === requestId) {
-          setResizeIdle();
-        }
-        if (!options.isDisposed() && pendingAfterFlight) {
+          if (shouldDeferPendingAfterFlight) {
+            setResizeState({
+              kind: 'deferred',
+              lastSent: resizeState.lastSent,
+              pending: pendingAfterFlight,
+              reason: 'in-flight',
+            });
+          } else {
+            setResizeIdle();
+          }
+        } else if (shouldDeferPendingAfterFlight) {
           deferResize(pendingAfterFlight, 'in-flight');
+        }
+        if (shouldDeferPendingAfterFlight) {
           scheduleResizeFlush(getResizeFlushDelayMs());
         }
       });
@@ -1324,7 +1493,7 @@ export function createTerminalInputPipeline(
         inFlightResizeCommitPromise = null;
       }
     });
-    return commitPromise;
+    await commitPromise;
   }
 
   async function flushPendingResizeAndWait(forceRecoveryAlignmentCommit = false): Promise<void> {
@@ -1333,12 +1502,15 @@ export function createTerminalInputPipeline(
       if (
         resizeState.kind !== 'deferred' ||
         resizeState.reason !== 'in-flight' ||
-        options.isDisposed()
+        options.isDisposed() ||
+        options.isSpawnFailed() ||
+        options.isProcessExited()
       ) {
         return;
       }
 
       clearResizeFlushTimer();
+      await waitForResizeFlushRetryDelay();
     }
   }
 
@@ -1398,12 +1570,8 @@ export function createTerminalInputPipeline(
     handleTaskControlLoss,
     handleTerminalData,
     handleTerminalResize(cols: number, rows: number): void {
-      if (hasLastSentResizeGeometry(cols, rows)) {
-        return;
-      }
-
       const nextResize = { cols, rows };
-      if (hasTrackedResizeGeometry(nextResize)) {
+      if (isSameResizeGeometry(getLatestTargetResizeGeometry(), nextResize)) {
         return;
       }
 

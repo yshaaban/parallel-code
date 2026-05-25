@@ -57,4 +57,63 @@ describe('terminal ordering', () => {
     expect(applied).toEqual(['gap-0']);
     expect(state.pending.size).toBe(0);
   });
+
+  it('reports dropped pending requests when the gap protection cap clears the queue', () => {
+    const state = createTerminalOrderedState<string>();
+    const applied: string[] = [];
+    const dropped: string[] = [];
+
+    for (let seq = 1; seq <= TERMINAL_ORDER_PENDING_LIMIT + 1; seq += 1) {
+      enqueueTerminalOrderedRequest(
+        state,
+        {
+          inputEpoch: 'gap-epoch',
+          inputSeq: seq,
+        },
+        `gap-${seq}`,
+        (nextRequest) => {
+          applied.push(nextRequest);
+        },
+        (nextRequest) => {
+          dropped.push(nextRequest);
+        },
+      );
+    }
+
+    expect(applied).toEqual([]);
+    expect(dropped).toHaveLength(TERMINAL_ORDER_PENDING_LIMIT + 1);
+    expect(state.pending.size).toBe(0);
+  });
+
+  it('applies queued requests only after missing earlier sequences arrive', () => {
+    const state = createTerminalOrderedState<string>();
+    const applied: string[] = [];
+
+    const secondDisposition = enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'ordered-epoch',
+        inputSeq: 1,
+      },
+      'second',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+    );
+    const firstDisposition = enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'ordered-epoch',
+        inputSeq: 0,
+      },
+      'first',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+    );
+
+    expect(secondDisposition).toBe('queued');
+    expect(firstDisposition).toBe('applied');
+    expect(applied).toEqual(['first', 'second']);
+  });
 });
