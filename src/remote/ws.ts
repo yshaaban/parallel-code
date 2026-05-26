@@ -45,6 +45,7 @@ export type ConnectionStatus = PresenceConnectionStatus;
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
 type RemoteIncomingServerMessage = ServerMessage | { type: string };
 type RemoteHandledServerMessageType =
+  | 'agent-error'
   | 'agents'
   | 'ipc-event'
   | 'output'
@@ -118,7 +119,6 @@ function logRemoteWsWarning(context: string, error: unknown): void {
 const REMOTE_IGNORED_SERVER_MESSAGE_TYPES = {
   'agent-command-result': true,
   'agent-controller': true,
-  'agent-error': true,
   'agent-lifecycle': true,
   channel: true,
   'channel-bound': true,
@@ -141,6 +141,7 @@ const CONNECTION_STATUS_BY_WEBSOCKET_STATE = {
 type RemoteHandledServerMessage = Extract<ServerMessage, { type: RemoteHandledServerMessageType }>;
 
 const REMOTE_SERVER_MESSAGE_HANDLERS = {
+  'agent-error': handleAgentErrorMessage,
   agents: handleAgentsMessage,
   output: handleOutputMessage,
   scrollback: handleScrollbackMessage,
@@ -154,6 +155,10 @@ const REMOTE_SERVER_MESSAGE_HANDLERS = {
   'terminal-recovery-result': handleTerminalRecoveryResultMessage,
   'terminal-stream': handleTerminalStreamMessage,
 } satisfies DispatchByTypeHandlerMap<RemoteHandledServerMessage>;
+
+function handleAgentErrorMessage(message: Extract<ServerMessage, { type: 'agent-error' }>): void {
+  logRemoteWsWarning(`Agent ${message.agentId} command rejected`, new Error(message.message));
+}
 
 function updateStatus(nextStatus: ConnectionStatus): void {
   setStatus(nextStatus);
@@ -625,6 +630,11 @@ const baseClientOptions = {
   onAuthenticated,
   onAuthExpired,
   onMessage: handleServerMessage,
+  onSequenceGap: (event) => {
+    logRemoteWsWarning('Sequence gap detected; reconnecting remote websocket session', event);
+    client.disconnect();
+    connect('reconnecting');
+  },
   onStateChange: (nextState: WebSocketConnectionState) => {
     if (nextState !== 'connected') {
       resetAllAgentDecoders();

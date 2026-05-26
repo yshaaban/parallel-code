@@ -16,6 +16,7 @@ import type {
 type CapturedRemoteServerMessage = ServerMessage | { type: string; [key: string]: unknown };
 
 const websocketState = vi.hoisted(() => ({
+  disconnectMock: vi.fn(),
   ensureConnectedMock: vi.fn(async () => ({}) as WebSocket),
   options: null as CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown> | null,
   sendAsyncMock: vi.fn(async () => {}),
@@ -81,7 +82,7 @@ vi.mock('../lib/websocket-client', () => ({
     ): WebSocketClientCore<unknown> => {
       websocketState.options = options;
       return {
-        disconnect: vi.fn(),
+        disconnect: websocketState.disconnectMock,
         ensureConnected: websocketState.ensureConnectedMock,
         getBufferedAmount: () => 0,
         getLastRttMs: () => null,
@@ -154,6 +155,7 @@ async function loadWsModule(): Promise<{
   authState.getTokenMock.mockReturnValue(null);
   authState.redirectToRemoteAuthGateMock.mockReset();
   authState.redirectToRemoteAuthGateMock.mockResolvedValue(false);
+  websocketState.disconnectMock.mockReset();
   websocketState.ensureConnectedMock.mockReset();
   websocketState.ensureConnectedMock.mockResolvedValue({} as WebSocket);
   websocketState.options = null;
@@ -691,6 +693,48 @@ describe('remote ws projections', () => {
     warnSpy.mockRestore();
   });
 
+  it('reconnects when the websocket client detects a sequence gap', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { options } = await loadWsModule();
+
+    options.onSequenceGap?.({
+      actualSeq: 3,
+      expectedSeq: 2,
+      previousSeq: 1,
+    });
+
+    expect(websocketState.disconnectMock).toHaveBeenCalledTimes(1);
+    expect(websocketState.ensureConnectedMock).toHaveBeenCalledWith('reconnecting');
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[remote-ws] Sequence gap detected; reconnecting remote websocket session',
+      {
+        actualSeq: 3,
+        expectedSeq: 2,
+        previousSeq: 1,
+      },
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('logs remote agent command errors instead of silently ignoring them', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { options } = await loadWsModule();
+
+    options.onMessage({
+      type: 'agent-error',
+      agentId: 'agent-1',
+      message: 'ownership rejected',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[remote-ws] Agent agent-1 command rejected',
+      expect.any(Error),
+    );
+
+    warnSpy.mockRestore();
+  });
+
   it('explicitly ignores remote server message types that the mobile UI does not consume', async () => {
     const { options } = await loadWsModule();
     const ignoredMessages: ServerMessage[] = [
@@ -743,11 +787,6 @@ describe('remote ws projections', () => {
         tool: 'bash',
         description: 'Run command',
         arguments: '{}',
-      },
-      {
-        type: 'agent-error',
-        agentId: 'agent-1',
-        message: 'boom',
       },
       {
         type: 'agent-command-result',

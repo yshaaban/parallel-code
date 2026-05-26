@@ -191,6 +191,7 @@ export function createWebSocketClientCore<
   let lastConnectionDurationMs: number | null = null;
   let lastDisconnectedAt: number | null = null;
   let lastDisconnectReason: WebSocketDisconnectReason | null = null;
+  let sequencedMessageSeenOnConnection = false;
   let activeDisconnectStartedAt: number | null = null;
   let lastPingAt = 0;
   let lastRttMs: number | null = null;
@@ -295,6 +296,9 @@ export function createWebSocketClientCore<
   function shouldProcessMessage(message: IncomingMessage): boolean {
     const seq = (message as { seq?: unknown }).seq;
     if (!isInteger(seq)) return true;
+    if (!sequencedMessageSeenOnConnection && lastSeq >= 0 && seq < lastSeq) {
+      lastSeq = -1;
+    }
     if (seq <= lastSeq) return false;
     if (lastSeq >= 0 && seq > lastSeq + 1) {
       options.onSequenceGap?.({
@@ -304,6 +308,7 @@ export function createWebSocketClientCore<
       });
     }
     lastSeq = seq;
+    sequencedMessageSeenOnConnection = true;
     return true;
   }
 
@@ -452,6 +457,7 @@ export function createWebSocketClientCore<
         token,
       }),
     );
+    sequencedMessageSeenOnConnection = false;
     let resolvePromise!: (value: WebSocket) => void;
     let rejectPromise!: (error: Error) => void;
     const promise = new Promise<WebSocket>((resolve, reject) => {
@@ -606,6 +612,7 @@ export function createWebSocketClientCore<
     lastPingAt = 0;
     lastRttMs = null;
     lastSeq = -1;
+    sequencedMessageSeenOnConnection = false;
     missedPongs = 0;
     reconnectAttempts = 0;
   }

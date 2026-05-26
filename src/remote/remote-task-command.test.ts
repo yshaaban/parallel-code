@@ -179,7 +179,7 @@ function createDeferred<T>(): {
   return { promise, reject, resolve };
 }
 
-async function flushMicrotasks(rounds = 4): Promise<void> {
+async function flushMicrotasks(rounds = 12): Promise<void> {
   for (let index = 0; index < rounds; index += 1) {
     await Promise.resolve();
   }
@@ -293,6 +293,7 @@ describe('remote task command control', () => {
     await expect(sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r')).resolves.toBe(true);
 
     sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+    await flushMicrotasks();
 
     expect(mockState.resizeRemoteAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -307,6 +308,55 @@ describe('remote task command control', () => {
     );
   });
 
+  it('serializes retained remote resize behind in-flight terminal input', async () => {
+    const write = createDeferred<undefined>();
+    mockState.writeRemoteAgentMock.mockReturnValueOnce(write.promise);
+
+    const inputPromise = sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r');
+    await flushMicrotasks();
+    expect(mockState.writeRemoteAgentMock).toHaveBeenCalledTimes(1);
+
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+    await flushMicrotasks();
+    expect(mockState.resizeRemoteAgentMock).not.toHaveBeenCalled();
+
+    write.resolve(undefined);
+    await expect(inputPromise).resolves.toBe(true);
+    await flushMicrotasks();
+
+    expect(mockState.resizeRemoteAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 100,
+        rows: 30,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('drops queued retained remote resize if ownership changes before the queue reaches it', async () => {
+    const write = createDeferred<undefined>();
+    mockState.writeRemoteAgentMock.mockReturnValueOnce(write.promise);
+
+    const inputPromise = sendRemoteAgentInput('agent-1', 'task-1', 'pwd\r');
+    await flushMicrotasks();
+    sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+    await flushMicrotasks();
+
+    mockState.applyRemoteTaskCommandControllerChangedMock({
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      taskId: 'task-1',
+      version: 3,
+    });
+    write.resolve(undefined);
+
+    await expect(inputPromise).resolves.toBe(false);
+    await flushMicrotasks();
+
+    expect(mockState.resizeRemoteAgentMock).not.toHaveBeenCalled();
+  });
+
   it('defers remote terminal resize until self controller bootstrap arrives', async () => {
     sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
 
@@ -317,6 +367,7 @@ describe('remote task command control', () => {
       taskId: 'task-1',
       version: 2,
     });
+    await flushMicrotasks();
 
     expect(mockState.resizeRemoteAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -357,8 +408,9 @@ describe('remote task command control', () => {
       .mockResolvedValue(undefined);
 
     sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
-    await Promise.resolve();
+    await flushMicrotasks();
     sendRemoteAgentResize('agent-1', 'task-1', 101, 31);
+    await flushMicrotasks();
 
     const firstRequest = mockState.resizeRemoteAgentMock.mock.calls[0]?.[0];
     const secondRequest = mockState.resizeRemoteAgentMock.mock.calls[1]?.[0];
@@ -521,11 +573,13 @@ describe('remote task command control', () => {
   it('resets remote input and resize ordering after same-id terminal respawn', async () => {
     await expect(sendRemoteAgentInput('agent-1', 'task-1', 'first\r')).resolves.toBe(true);
     sendRemoteAgentResize('agent-1', 'task-1', 100, 30);
+    await flushMicrotasks();
 
     resetRemoteTerminalOrderForAgent('agent-1');
 
     await expect(sendRemoteAgentInput('agent-1', 'task-1', 'second\r')).resolves.toBe(true);
     sendRemoteAgentResize('agent-1', 'task-1', 101, 31);
+    await flushMicrotasks();
 
     expect(mockState.writeRemoteAgentMock.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({

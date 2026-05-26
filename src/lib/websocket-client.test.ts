@@ -156,6 +156,56 @@ describe('createWebSocketClientCore', () => {
     expect(client.getLastSeq()).toBe(2);
   });
 
+  it('accepts a lower first sequence after reconnect when the server cursor resets', async () => {
+    const received: TestIncomingMessage[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: ({ clientId, lastSeq, token }) => ({
+        type: 'auth',
+        clientId,
+        lastSeq,
+        token,
+      }),
+      getClientId: () => 'client-1',
+      getSocketUrl: ({ clientId, lastSeq }) =>
+        `ws://localhost/ws?clientId=${clientId}&lastSeq=${lastSeq}`,
+      getToken: () => 'token-1',
+      onMessage: (message) => {
+        received.push(message);
+      },
+      shouldReconnect: () => false,
+    });
+
+    const firstConnect = client.ensureConnected();
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.open();
+    await firstConnect;
+
+    firstSocket?.receive({ type: 'event', seq: 7 });
+    expect(client.getLastSeq()).toBe(7);
+    firstSocket?.close(1006);
+
+    const secondConnect = client.ensureConnected('reconnecting');
+    const secondSocket = FakeWebSocket.instances[1];
+    expect(secondSocket?.url).toBe('ws://localhost/ws?clientId=client-1&lastSeq=7');
+    secondSocket?.open();
+    await secondConnect;
+
+    expect(secondSocket?.sent[0]).toEqual({
+      type: 'auth',
+      clientId: 'client-1',
+      lastSeq: 7,
+      token: 'token-1',
+    });
+
+    secondSocket?.receive({ type: 'event', seq: 0 });
+
+    expect(received).toEqual([
+      { type: 'event', seq: 7 },
+      { type: 'event', seq: 0 },
+    ]);
+    expect(client.getLastSeq()).toBe(0);
+  });
+
   it('reports the active socket buffered amount only while open', async () => {
     const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
       getClientId: () => 'client-1',

@@ -121,19 +121,38 @@ function sendRemoteAgentResizeNow(
   taskId: string,
   cols: number,
   rows: number,
-): void {
+): Promise<boolean> {
+  if (!hasRetainedTaskCommandOwnership(taskId)) {
+    return Promise.resolve(false);
+  }
+
   const order = nextRemoteResizeOrder(agentId);
-  void resizeRemoteAgent({
-    agentId,
-    cols,
-    controllerId: getRemoteClientId(),
-    resizeEpoch: order.epoch,
-    resizeSeq: order.seq,
-    rows,
-    taskId,
-  }).catch(() => {
-    rotateRemoteResizeOrder(agentId);
-  });
+  return Promise.resolve()
+    .then(() =>
+      resizeRemoteAgent({
+        agentId,
+        cols,
+        controllerId: getRemoteClientId(),
+        resizeEpoch: order.epoch,
+        resizeSeq: order.seq,
+        rows,
+        taskId,
+      }),
+    )
+    .then(() => true)
+    .catch(() => {
+      rotateRemoteResizeOrder(agentId);
+      return false;
+    });
+}
+
+function enqueueRemoteAgentResize(
+  agentId: string,
+  taskId: string,
+  cols: number,
+  rows: number,
+): void {
+  void enqueueAgentWrite(agentId, () => sendRemoteAgentResizeNow(agentId, taskId, cols, rows));
 }
 
 function flushPendingRemoteResize(taskId: string): void {
@@ -144,7 +163,7 @@ function flushPendingRemoteResize(taskId: string): void {
 
   pendingRemoteResizesByTaskId.delete(taskId);
   cleanupPendingRemoteResizeSubscription();
-  sendRemoteAgentResizeNow(pending.agentId, pending.taskId, pending.cols, pending.rows);
+  enqueueRemoteAgentResize(pending.agentId, pending.taskId, pending.cols, pending.rows);
 }
 
 function handlePendingRemoteResizeControllerChanged(snapshot: {
@@ -470,7 +489,7 @@ export function sendRemoteAgentResize(
   if (hasRetainedTaskCommandOwnership(taskId)) {
     pendingRemoteResizesByTaskId.delete(taskId);
     cleanupPendingRemoteResizeSubscription();
-    sendRemoteAgentResizeNow(agentId, taskId, cols, rows);
+    enqueueRemoteAgentResize(agentId, taskId, cols, rows);
     return;
   }
 
