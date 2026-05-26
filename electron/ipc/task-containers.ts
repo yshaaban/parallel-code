@@ -325,6 +325,11 @@ function createDockerRuntime(): TaskContainerRuntime {
       if (networkIds.length > 0) {
         await execDocker(['network', 'rm', ...networkIds]);
       }
+
+      const volumeIds = await listDockerIdsForLabelSets(['volume', 'ls', '-q'], labelFilters);
+      if (volumeIds.length > 0) {
+        await execDocker(['volume', 'rm', '-f', ...volumeIds]);
+      }
     },
     getDockerRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
       try {
@@ -433,7 +438,16 @@ function createDockerRuntime(): TaskContainerRuntime {
     },
     composeDown: async ({ composeFile, composeProjectName, worktreePath }): Promise<void> => {
       await execDocker(
-        ['compose', '-p', composeProjectName, '-f', composeFile, 'down', '--remove-orphans'],
+        [
+          'compose',
+          '-p',
+          composeProjectName,
+          '-f',
+          composeFile,
+          'down',
+          '--remove-orphans',
+          '--volumes',
+        ],
         worktreePath,
       );
     },

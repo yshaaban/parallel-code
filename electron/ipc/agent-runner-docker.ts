@@ -12,7 +12,8 @@ import {
   isAllowedAgentRunnerEnvName,
   isValidAgentRunnerEnvName,
 } from '../../src/domain/agent-runners.js';
-import { isPathInside, validateRelativePath } from './path-utils.js';
+import { isPathInside, isPathInsideOrEqual, validateRelativePath } from './path-utils.js';
+import { BadRequestError } from './errors.js';
 
 interface DockerAgentRunnerLaunchRequest {
   agentId: string;
@@ -144,15 +145,15 @@ function resolveDockerfilePath(profile: AgentRunnerProfileConfig, cwd: string): 
   const resolvedCwd = path.resolve(cwd);
   const dockerfilePath = path.resolve(resolvedCwd, profile.dockerfile);
   if (!isPathInside(resolvedCwd, dockerfilePath)) {
-    throw new Error('Dockerfile must stay inside the task worktree');
+    throw new BadRequestError('Dockerfile must stay inside the task worktree');
   }
   if (!fs.existsSync(dockerfilePath)) {
-    throw new Error(`Dockerfile does not exist: ${dockerfilePath}`);
+    throw new BadRequestError(`Dockerfile does not exist: ${dockerfilePath}`);
   }
   const realCwd = fs.realpathSync(resolvedCwd);
   const realDockerfilePath = fs.realpathSync(dockerfilePath);
   if (!isPathInside(realCwd, realDockerfilePath)) {
-    throw new Error('Dockerfile must stay inside the task worktree');
+    throw new BadRequestError('Dockerfile must stay inside the task worktree');
   }
 
   return dockerfilePath;
@@ -160,22 +161,31 @@ function resolveDockerfilePath(profile: AgentRunnerProfileConfig, cwd: string): 
 
 function assertAbsoluteContainerPath(value: string, fieldName: string): void {
   if (!value.startsWith('/')) {
-    throw new Error(`${fieldName} must be an absolute container path`);
+    throw new BadRequestError(`${fieldName} must be an absolute container path`);
   }
 }
 
 function assertDockerMountValueSafe(value: string, fieldName: string): void {
   if (value.includes(',') || value.includes('=')) {
-    throw new Error(`${fieldName} must not contain "," or "="`);
+    throw new BadRequestError(`${fieldName} must not contain "," or "="`);
   }
 }
 
-function assertExistingHostPath(value: string, fieldName: string): void {
+function assertExistingHostPath(value: string, fieldName: string, allowedParent?: string): void {
   if (!path.isAbsolute(value)) {
-    throw new Error(`${fieldName} must be an absolute host path`);
+    throw new BadRequestError(`${fieldName} must be an absolute host path`);
   }
   if (!fs.existsSync(value)) {
-    throw new Error(`${fieldName} does not exist: ${value}`);
+    throw new BadRequestError(`${fieldName} does not exist: ${value}`);
+  }
+  if (allowedParent === undefined) {
+    return;
+  }
+
+  const realAllowedParent = fs.realpathSync(allowedParent);
+  const realValue = fs.realpathSync(value);
+  if (!isPathInsideOrEqual(realAllowedParent, realValue)) {
+    throw new BadRequestError(`${fieldName} must stay inside the task worktree`);
   }
 }
 
@@ -205,7 +215,7 @@ function resolveImage(
   }
 
   if (!profile.image) {
-    throw new Error('Docker agent runner requires an image or dockerfile');
+    throw new BadRequestError('Docker agent runner requires an image or dockerfile');
   }
 
   return {
@@ -214,10 +224,10 @@ function resolveImage(
   };
 }
 
-function createMountArg(mount: AgentRunnerMountConfig): string {
-  assertExistingHostPath(mount.source, 'agentRunnerProfile.mounts.source');
-  assertAbsoluteContainerPath(mount.target, 'agentRunnerProfile.mounts.target');
+function createMountArg(mount: AgentRunnerMountConfig, worktreePath: string): string {
   assertDockerMountValueSafe(mount.source, 'agentRunnerProfile.mounts.source');
+  assertExistingHostPath(mount.source, 'agentRunnerProfile.mounts.source', worktreePath);
+  assertAbsoluteContainerPath(mount.target, 'agentRunnerProfile.mounts.target');
   assertDockerMountValueSafe(mount.target, 'agentRunnerProfile.mounts.target');
 
   const parts = [`type=bind`, `src=${mount.source}`, `dst=${mount.target}`];
@@ -255,11 +265,11 @@ function collectDockerEnv(
 
 function assertDockerEnvNameAllowed(value: string, fieldName: string): void {
   if (!isValidAgentRunnerEnvName(value)) {
-    throw new Error(`${fieldName} must be a valid environment variable name`);
+    throw new BadRequestError(`${fieldName} must be a valid environment variable name`);
   }
 
   if (!isAllowedAgentRunnerEnvName(value)) {
-    throw new Error(`${fieldName} is not allowed for Docker agent runners`);
+    throw new BadRequestError(`${fieldName} is not allowed for Docker agent runners`);
   }
 }
 
@@ -340,7 +350,7 @@ export function createDockerAgentRunnerLaunch(
 
   const dockerfilePath = resolveDockerfilePath(request.profile, request.cwd);
   if (!request.profile.image && dockerfilePath === undefined) {
-    throw new Error('Docker agent runner requires an image or dockerfile');
+    throw new BadRequestError('Docker agent runner requires an image or dockerfile');
   }
 
   const workspaceMountTarget = request.profile.workspaceMountTarget ?? '/workspace';
@@ -349,7 +359,9 @@ export function createDockerAgentRunnerLaunch(
   assertAbsoluteContainerPath(workdir, 'agentRunnerProfile.workdir');
   assertDockerMountValueSafe(request.cwd, 'cwd');
   assertDockerMountValueSafe(workspaceMountTarget, 'agentRunnerProfile.workspaceMountTarget');
-  const profileMountArgs = (request.profile.mounts ?? []).map((mount) => createMountArg(mount));
+  const profileMountArgs = (request.profile.mounts ?? []).map((mount) =>
+    createMountArg(mount, request.cwd),
+  );
   const dockerEnv = collectDockerEnv(request.profile, request.env);
 
   assertDockerAvailable();

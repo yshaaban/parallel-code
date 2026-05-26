@@ -258,6 +258,52 @@ describe('agent-runner-docker', () => {
     expect(getDockerBuildCall()).toBeUndefined();
   });
 
+  it('rejects extra bind mounts outside the task worktree', async () => {
+    const worktreePath = await createTempDir();
+    const outsidePath = await createTempDir();
+
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          image: 'agent:latest',
+          mounts: [{ source: outsidePath, target: '/outside' }],
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('rejects extra bind mount symlinks that resolve outside the worktree', async () => {
+    const worktreePath = await createTempDir();
+    const outsidePath = await createTempDir();
+    const symlinkPath = path.join(worktreePath, 'outside-link');
+    await fs.promises.symlink(outsidePath, symlinkPath);
+
+    expect(() =>
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-1',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: {
+          image: 'agent:latest',
+          mounts: [{ source: symlinkPath, target: '/outside' }],
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    ).toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
   it('rejects Dockerfile symlinks that resolve outside the worktree', async () => {
     const worktreePath = await createTempDir();
     const outsidePath = await createTempDir();
