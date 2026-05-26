@@ -57,13 +57,12 @@ export function createTerminalOrderedState<TRequest>(): TerminalOrderedState<TRe
 function shouldStartOrderedEpoch<TRequest>(
   state: TerminalOrderedState<TRequest>,
   epoch: string,
-  seq: number,
 ): boolean {
   if (state.epoch === null) {
     return true;
   }
 
-  return state.epoch !== epoch && seq === 0;
+  return state.epoch !== epoch;
 }
 
 function rememberRetiredEpoch<TRequest>(
@@ -96,6 +95,7 @@ export function enqueueTerminalOrderedRequest<TRequest>(
   request: TRequest,
   apply: (request: TRequest) => void,
   onDrop?: (request: TRequest) => void,
+  onDuplicate?: (request: TRequest) => void,
 ): TerminalOrderedRequestDisposition {
   const epoch = 'inputEpoch' in token ? token.inputEpoch : token.resizeEpoch;
   const seq = 'inputSeq' in token ? token.inputSeq : token.resizeSeq;
@@ -105,13 +105,18 @@ export function enqueueTerminalOrderedRequest<TRequest>(
     return 'dropped';
   }
 
-  if (shouldStartOrderedEpoch(state, epoch, seq)) {
+  if (shouldStartOrderedEpoch(state, epoch)) {
     startOrderedEpoch(state, epoch, onDrop);
   }
 
-  if (state.epoch !== epoch || seq < state.nextSeq) {
+  if (state.epoch !== epoch) {
     onDrop?.(request);
     return 'dropped';
+  }
+
+  if (seq < state.nextSeq) {
+    onDuplicate?.(request);
+    return 'applied';
   }
 
   if (seq > state.nextSeq) {

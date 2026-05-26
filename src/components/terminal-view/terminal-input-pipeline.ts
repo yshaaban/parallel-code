@@ -1318,10 +1318,18 @@ export function createTerminalInputPipeline(
   async function flushPendingResize(forceRecoveryAlignmentCommit = false): Promise<void> {
     recordTerminalResizeFlush();
     const pendingResize = getPendingResize();
-    if (!pendingResize || resizeState.kind === 'sending') {
-      if (resizeState.kind === 'sending') {
-        recordTerminalResizeCommitDeferred('in-flight');
-      }
+    if (!pendingResize) {
+      await (inFlightResizeCommitPromise ?? Promise.resolve());
+      return;
+    }
+    if (isSameResizeGeometry(pendingResize, getInFlightResize())) {
+      clearPendingResize();
+      recordTerminalResizeCommitNoopSkip();
+      await (inFlightResizeCommitPromise ?? Promise.resolve());
+      return;
+    }
+    if (resizeState.kind === 'sending') {
+      recordTerminalResizeCommitDeferred('in-flight');
       await (inFlightResizeCommitPromise ?? Promise.resolve());
       return;
     }
@@ -1362,12 +1370,6 @@ export function createTerminalInputPipeline(
       }
       recordTerminalResizeCommitNoopSkip();
       notifyResizeCommitted({ cols, rows });
-      return;
-    }
-
-    if (isSameResizeGeometry(pendingResize, getInFlightResize())) {
-      clearPendingResize();
-      recordTerminalResizeCommitNoopSkip();
       return;
     }
 

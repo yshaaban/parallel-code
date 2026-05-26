@@ -305,8 +305,25 @@ async function readTerminalStatus(input: Locator): Promise<string | null> {
   return readTerminalStatusAttribute(input, 'data-terminal-status');
 }
 
-async function readTerminalLiveRenderReady(input: Locator): Promise<string | null> {
-  return readTerminalStatusAttribute(input, 'data-terminal-live-render-ready');
+async function readTerminalFullReady(input: Locator): Promise<boolean> {
+  return input.evaluate(
+    (element, { overlaySelector, statusSelector }) => {
+      const statusElement = element.closest(statusSelector);
+      if (!(statusElement instanceof HTMLElement)) {
+        return false;
+      }
+
+      return (
+        statusElement.getAttribute('data-terminal-status') === 'ready' &&
+        statusElement.getAttribute('data-terminal-live-render-ready') === 'true' &&
+        !(statusElement.querySelector(overlaySelector) instanceof HTMLElement)
+      );
+    },
+    {
+      overlaySelector: TERMINAL_LOADING_OVERLAY_SELECTOR,
+      statusSelector: TERMINAL_STATUS_SELECTOR,
+    },
+  );
 }
 
 async function readTerminalStatusAttribute(
@@ -1031,9 +1048,7 @@ export const test = base.extend<
       }
 
       await input.waitFor({ state: 'attached' });
-      await expect.poll(() => readTerminalStatus(input)).toBe('ready');
-      await expect.poll(() => readTerminalLiveRenderReady(input)).toBe('true');
-      await expect.poll(() => readTerminalLoadingOverlayVisible(input)).toBe(false);
+      await expect.poll(() => readTerminalFullReady(input)).toBe(true);
     }
 
     async function waitForTerminalInteractiveReady(

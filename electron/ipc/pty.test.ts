@@ -1026,6 +1026,33 @@ describe('spawnAgent', () => {
     });
   });
 
+  it('acknowledges request-tracked terminal input after the PTY write flushes', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    const onApplied = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-input-ack',
+      agentId: 'agent-input-ack',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'input-ack' },
+    });
+
+    writeToAgent('agent-input-ack', 'abc', undefined, undefined, { onApplied });
+    expect(onApplied).not.toHaveBeenCalled();
+
+    vi.runOnlyPendingTimers();
+
+    expect(proc.write).toHaveBeenCalledWith('abc');
+    expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+
   it('flushes control input immediately', () => {
     vi.useFakeTimers();
     const proc = createMockProc();
@@ -1082,6 +1109,48 @@ describe('spawnAgent', () => {
         .mock.calls.map(([data]) => data)
         .join(''),
     ).toBe('first\rsecond\r');
+  });
+
+  it('acknowledges duplicate ordered terminal input without writing it twice', () => {
+    const proc = createMockProc();
+    const duplicateApplied = vi.fn();
+    const duplicateDropped = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-ordered-input-duplicate',
+      agentId: 'agent-ordered-input-duplicate',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'ordered-input-duplicate' },
+    });
+
+    writeToAgent('agent-ordered-input-duplicate', 'first\r', undefined, {
+      inputEpoch: 'epoch-one',
+      inputSeq: 0,
+    });
+    writeToAgent(
+      'agent-ordered-input-duplicate',
+      'first-duplicate\r',
+      undefined,
+      {
+        inputEpoch: 'epoch-one',
+        inputSeq: 0,
+      },
+      {
+        onApplied: duplicateApplied,
+        onDropped: duplicateDropped,
+      },
+    );
+
+    expect(proc.write).toHaveBeenCalledTimes(1);
+    expect(proc.write).toHaveBeenCalledWith('first\r');
+    expect(duplicateApplied).toHaveBeenCalledTimes(1);
+    expect(duplicateDropped).not.toHaveBeenCalled();
   });
 
   it('rotates ordered terminal input epochs and ignores stale gaps', () => {
@@ -1171,9 +1240,10 @@ describe('spawnAgent', () => {
     expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput.clearedQueues).toBe(1);
   });
 
-  it('clears queued input and records a failure when proc.write throws', () => {
+  it('clears queued input, rejects callbacks, and records a failure when proc.write throws', () => {
     vi.useFakeTimers();
     const proc = createMockProc();
+    const onDropped = vi.fn();
     proc.write = vi.fn(() => {
       throw new Error('pty closed');
     });
@@ -1191,9 +1261,10 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'write-fail' },
     });
 
-    writeToAgent('agent-write-fail', 'pending');
+    writeToAgent('agent-write-fail', 'pending', undefined, undefined, { onDropped });
 
     expect(() => vi.runOnlyPendingTimers()).not.toThrow();
+    expect(onDropped).toHaveBeenCalledTimes(1);
     expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput).toMatchObject({
       clearedQueues: 1,
       writeFailures: 1,

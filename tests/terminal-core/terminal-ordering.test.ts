@@ -116,4 +116,84 @@ describe('terminal ordering', () => {
     expect(firstDisposition).toBe('applied');
     expect(applied).toEqual(['first', 'second']);
   });
+
+  it('queues a new epoch packet that arrives before sequence zero', () => {
+    const state = createTerminalOrderedState<string>();
+    const applied: string[] = [];
+
+    enqueueInput(state, 'old-epoch', 0, 'old-0', applied);
+    const secondDisposition = enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'new-epoch',
+        inputSeq: 1,
+      },
+      'new-1',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+    );
+    const firstDisposition = enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'new-epoch',
+        inputSeq: 0,
+      },
+      'new-0',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+    );
+
+    expect(secondDisposition).toBe('queued');
+    expect(firstDisposition).toBe('applied');
+    expect(applied).toEqual(['old-0', 'new-0', 'new-1']);
+  });
+
+  it('acknowledges duplicate active-epoch packets without applying or dropping them', () => {
+    const state = createTerminalOrderedState<string>();
+    const applied: string[] = [];
+    const dropped: string[] = [];
+    const duplicates: string[] = [];
+
+    enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'epoch-1',
+        inputSeq: 0,
+      },
+      'first',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+      (nextRequest) => {
+        dropped.push(nextRequest);
+      },
+      (nextRequest) => {
+        duplicates.push(nextRequest);
+      },
+    );
+    const duplicateDisposition = enqueueTerminalOrderedRequest(
+      state,
+      {
+        inputEpoch: 'epoch-1',
+        inputSeq: 0,
+      },
+      'first-duplicate',
+      (nextRequest) => {
+        applied.push(nextRequest);
+      },
+      (nextRequest) => {
+        dropped.push(nextRequest);
+      },
+      (nextRequest) => {
+        duplicates.push(nextRequest);
+      },
+    );
+
+    expect(duplicateDisposition).toBe('applied');
+    expect(applied).toEqual(['first']);
+    expect(dropped).toEqual([]);
+    expect(duplicates).toEqual(['first-duplicate']);
+  });
 });

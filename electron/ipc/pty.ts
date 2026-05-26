@@ -487,6 +487,12 @@ function clearPendingInput(session: PtySession): void {
   if (session.pendingInputChars > 0) {
     recordPtyInputQueueCleared();
   }
+  for (const request of session.pendingInputQueue) {
+    request.onDropped?.();
+  }
+  for (const request of session.orderedInputState.pending.values()) {
+    request.onDropped?.();
+  }
   session.pendingInputQueue = [];
   session.pendingInputChars = 0;
   session.orderedInputState.pending.clear();
@@ -522,8 +528,13 @@ function stopAcceptingInput(session: PtySession): void {
 }
 
 function enqueueTerminalInputRequest(session: PtySession, request: QueuedPtyInputBatch): void {
-  enqueuePendingInput(session, request.data, request.traceRequest);
-  request.onApplied?.();
+  enqueuePendingInput(
+    session,
+    request.data,
+    request.traceRequest,
+    request.onApplied,
+    request.onDropped,
+  );
 }
 
 function flushPendingInput(session: PtySession): void {
@@ -537,8 +548,8 @@ function flushPendingInput(session: PtySession): void {
       return;
     }
 
-    const traceEntries = session.pendingInputQueue
-      .slice(0, nextBatch.count)
+    const queuedBatches = session.pendingInputQueue.slice(0, nextBatch.count);
+    const traceEntries = queuedBatches
       .map((entry) => entry.traceRequest)
       .filter((entry): entry is TerminalInputTraceRequest => entry !== undefined);
     for (const traceEntry of traceEntries) {
@@ -554,6 +565,14 @@ function flushPendingInput(session: PtySession): void {
       for (const traceEntry of traceEntries) {
         recordTerminalInputTraceFailure(session.agentId, traceEntry.requestId, 'pty-write-failed');
       }
+      for (const batch of queuedBatches) {
+        batch.onDropped?.();
+      }
+      session.pendingInputQueue.splice(0, nextBatch.count);
+      session.pendingInputChars = Math.max(0, session.pendingInputChars - nextBatch.batch.length);
+      if (session.pendingInputChars === 0) {
+        recordPtyInputQueueCleared();
+      }
       stopAcceptingInput(session);
       return;
     }
@@ -562,6 +581,9 @@ function flushPendingInput(session: PtySession): void {
     }
     for (const traceEntry of traceEntries) {
       recordTerminalInputTracePtyWritten(session.agentId, traceEntry.requestId);
+    }
+    for (const batch of queuedBatches) {
+      batch.onApplied?.();
     }
     recordPtyInputFlush(nextBatch.count);
     session.pendingInputQueue.splice(0, nextBatch.count);
@@ -615,8 +637,11 @@ function enqueuePendingInput(
   session: PtySession,
   data: string,
   traceRequest?: TerminalInputTraceRequest,
+  onApplied?: () => void,
+  onDropped?: () => void,
 ): void {
   if (data.length === 0) {
+    onApplied?.();
     return;
   }
   if (!session.acceptsInput) {
@@ -628,6 +653,8 @@ function enqueuePendingInput(
 
   session.pendingInputQueue.push({
     data,
+    ...(onApplied ? { onApplied } : {}),
+    ...(onDropped ? { onDropped } : {}),
     ...(traceRequest ? { traceRequest } : {}),
   });
   session.pendingInputChars += data.length;
@@ -901,8 +928,7 @@ export function writeToAgent(
 ): void {
   const session = getSessionOrThrow(agentId);
   if (!hasTerminalInputOrder(order)) {
-    enqueuePendingInput(session, data, traceRequest);
-    callbacks?.onApplied?.();
+    enqueuePendingInput(session, data, traceRequest, callbacks?.onApplied, callbacks?.onDropped);
     return;
   }
 
@@ -917,6 +943,7 @@ export function writeToAgent(
     },
     (request) => enqueueTerminalInputRequest(session, request),
     (request) => request.onDropped?.(),
+    (request) => request.onApplied?.(),
   );
 }
 
@@ -958,6 +985,7 @@ export function resizeAgent(
     },
     (request) => applyTerminalResizeRequest(session, request),
     (request) => request.onDropped?.(),
+    (request) => request.onApplied?.(),
   );
 }
 
