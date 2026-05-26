@@ -62,6 +62,50 @@ describe('session stress profiles', () => {
     expect(summarizeWatcherResults([])).toEqual(createEmptyPhaseMetrics());
   });
 
+  it('fails stress budgets when marker completion depends on recovery-required resets', () => {
+    const metrics = summarizeWatcherResults([
+      {
+        bytes: 1,
+        durationMs: 10,
+        messageCount: 1,
+        resetChannelCount: 1,
+        resetMarkerCount: 1,
+        timings: new Map([['marker-1', Number.POSITIVE_INFINITY]]),
+      },
+      {
+        bytes: 1,
+        durationMs: 10,
+        messageCount: 1,
+        resetChannelCount: 0,
+        resetMarkerCount: 0,
+        timings: new Map([['marker-1', 10]]),
+      },
+    ]);
+
+    expect(metrics.maxSkewMs).toBe(Number.POSITIVE_INFINITY);
+
+    const evaluation = evaluateSessionStressProfile('pr_smoke', {
+      phases: {
+        mixed: { metrics },
+        output: {
+          diagnostics: { browserControl: { backpressureRejects: 0 } },
+          wallClockMs: 1,
+        },
+      },
+    });
+
+    expect(evaluation.pass).toBe(false);
+    expect(evaluation.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actual: Number.NaN,
+          label: 'mixed max skew',
+          pass: false,
+        }),
+      ]),
+    );
+  });
+
   it('terminates the local server process when startup readiness times out', async () => {
     vi.useFakeTimers();
     const kill = vi.fn();

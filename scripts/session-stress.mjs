@@ -1264,7 +1264,7 @@ function createClientMarkerWatcher(ws, markersByChannel, timeoutMs, liveDataPref
             continue;
           }
 
-          seen.set(marker, performance.now() - startTime);
+          seen.set(marker, Number.POSITIVE_INFINITY);
           resetMarkerCount += 1;
         }
 

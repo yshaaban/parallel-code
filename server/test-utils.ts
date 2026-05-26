@@ -221,7 +221,7 @@ function describeBufferedMessages(ws: WebSocket): string {
     .join(', ');
 }
 
-function clearTaskControlRegistrations(): void {
+export function clearTaskControlRegistrations(): void {
   taskControlByAgentId.clear();
   for (const handle of taskControlLeaseHandles.values()) {
     stopTaskControlRenewal(handle);

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -8,6 +8,7 @@ import type { BackendRuntimeDiagnosticsSnapshot } from '../electron/ipc/runtime-
 import { splitTerminalInputChunks } from '../src/lib/terminal-input-batching.js';
 import {
   channelMessageContains,
+  clearTaskControlRegistrations,
   createChannelId,
   expectNoMessage,
   getServerUrl,
@@ -119,6 +120,10 @@ function startOutput(command) {
   setImmediate(emit);
 }
 `;
+
+afterEach(() => {
+  clearTaskControlRegistrations();
+});
 
 interface StressAgent {
   agentId: string;
