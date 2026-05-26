@@ -287,37 +287,51 @@ async function fetchTerminalRecoveryBatch(
 async function fetchTerminalStartupRecoveryBatch(
   requests: TerminalStartupRecoveryRequestEntry[],
 ): Promise<TerminalRecoveryBatchEntry[]> {
-  const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
-  const pausedIds: string[] = [];
   const startedAt = performance.now();
+  const requestsByAgent = new Map<
+    string,
+    Array<{ index: number; request: TerminalStartupRecoveryRequestEntry }>
+  >();
+  const results: TerminalRecoveryBatchEntry[] = new Array(requests.length);
 
-  try {
-    for (const agentId of uniqueAgentIds) {
-      if (!hasAgentSession(agentId) || getAgentPauseState(agentId) !== null) {
-        continue;
-      }
+  for (const [index, request] of requests.entries()) {
+    const entries = requestsByAgent.get(request.agentId) ?? [];
+    entries.push({ index, request });
+    requestsByAgent.set(request.agentId, entries);
+  }
 
+  for (const [agentId, entries] of requestsByAgent) {
+    const shouldPause = hasAgentSession(agentId) && getAgentPauseState(agentId) === null;
+    if (shouldPause) {
       pauseAgent(agentId, 'restore');
-      pausedIds.push(agentId);
     }
 
-    const results: TerminalRecoveryBatchEntry[] = await Promise.all(
-      requests.map(async (request) => {
-        const recovery = await getAgentTerminalStartupRecovery(
-          request.agentId,
-          null,
-          null,
-          request.role,
-          request.visibleTerminalCount,
-        );
-        return serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
-      }),
-    );
-    recordTerminalRecoveryBatch(results, performance.now() - startedAt);
-    return results;
-  } finally {
-    resumeRestorePausedAgents(pausedIds);
+    try {
+      await Promise.all(
+        entries.map(async ({ index, request }) => {
+          const recovery = await getAgentTerminalStartupRecovery(
+            request.agentId,
+            null,
+            null,
+            request.role,
+            request.visibleTerminalCount,
+          );
+          results[index] = serializeTerminalRecoveryEntry(
+            request.agentId,
+            request.requestId,
+            recovery,
+          );
+        }),
+      );
+    } finally {
+      if (shouldPause) {
+        resumeRestorePausedAgents([agentId]);
+      }
+    }
   }
+
+  recordTerminalRecoveryBatch(results, performance.now() - startedAt);
+  return results;
 }
 
 function getSharedScrollbackBatch(

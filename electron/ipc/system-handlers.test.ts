@@ -396,6 +396,26 @@ describe('system handlers', () => {
     });
   });
 
+  it('keeps reconnect snapshot caches scoped to each handler instance', async () => {
+    const context = buildContext();
+    const firstHandlers = createSystemIpcHandlers(context, buildOptions());
+    const secondHandlers = createSystemIpcHandlers(context, buildOptions());
+    loadAppStateForEnvMock
+      .mockReturnValueOnce('{"version":1}')
+      .mockReturnValueOnce('{"version":2}');
+
+    const firstSnapshot = await getBrowserReconnectSnapshot(firstHandlers);
+    const secondSnapshot = await getBrowserReconnectSnapshot(secondHandlers);
+
+    expect(firstSnapshot.appStateJson).toBe('{"version":1}');
+    expect(secondSnapshot.appStateJson).toBe('{"version":2}');
+    expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      cacheHits: 0,
+      cacheMisses: 2,
+    });
+  });
+
   it('keeps live reconnect snapshot fields fresh while saved-state payload is cached', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);

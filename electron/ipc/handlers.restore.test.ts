@@ -50,6 +50,23 @@ function buildContext(): HandlerContext {
   };
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(rounds = 6): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('GetScrollbackBatch', () => {
   beforeEach(() => {
     vi.clearAllTimers();
@@ -630,6 +647,82 @@ describe('GetTerminalRecoveryBatch', () => {
       'visible-sibling',
       4,
     );
+  });
+
+  it('releases each startup recovery pause before fetching the next agent group', async () => {
+    const selectedRecovery = createDeferred<{
+      cols: number;
+      data: Buffer;
+      kind: 'terminal-state';
+      outputCursor: number;
+      rows: number;
+    }>();
+    const visibleRecovery = createDeferred<{
+      cols: number;
+      data: Buffer;
+      kind: 'terminal-state';
+      outputCursor: number;
+      rows: number;
+    }>();
+    getAgentTerminalStartupRecoveryMock.mockImplementation((agentId: string) => {
+      if (agentId === 'agent-selected') {
+        return selectedRecovery.promise;
+      }
+
+      return visibleRecovery.promise;
+    });
+    const handlers = createIpcHandlers(buildContext());
+
+    const batchPromise = handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: 'req-selected',
+          role: 'selected',
+          visibleTerminalCount: 2,
+        },
+        {
+          agentId: 'agent-visible',
+          requestId: 'req-visible',
+          role: 'visible-sibling',
+          visibleTerminalCount: 2,
+        },
+      ],
+    }) as Promise<Array<{ agentId: string; requestId: string }>>;
+
+    await flushMicrotasks();
+    expect(pauseAgentMock).toHaveBeenCalledTimes(1);
+    expect(pauseAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
+
+    selectedRecovery.resolve({
+      cols: 120,
+      data: Buffer.from('selected-startup', 'utf8'),
+      kind: 'terminal-state',
+      outputCursor: 48,
+      rows: 32,
+    });
+    await flushMicrotasks();
+
+    expect(pauseAgentMock).toHaveBeenCalledTimes(2);
+    expect(pauseAgentMock).toHaveBeenNthCalledWith(2, 'agent-visible', 'restore');
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
+    expect(resumeAgentMock.mock.invocationCallOrder[0]).toBeLessThan(
+      pauseAgentMock.mock.invocationCallOrder[1] ?? Number.POSITIVE_INFINITY,
+    );
+
+    visibleRecovery.resolve({
+      cols: 96,
+      data: Buffer.from('visible-startup', 'utf8'),
+      kind: 'terminal-state',
+      outputCursor: 25,
+      rows: 28,
+    });
+
+    await expect(batchPromise).resolves.toEqual([
+      expect.objectContaining({ agentId: 'agent-selected', requestId: 'req-selected' }),
+      expect.objectContaining({ agentId: 'agent-visible', requestId: 'req-visible' }),
+    ]);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-visible', 'restore');
   });
 
   it('does not pause missing agents before returning terminal startup recovery entries', async () => {

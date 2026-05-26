@@ -108,22 +108,26 @@ interface LoadedWorkspaceState {
   revision: number;
 }
 
-const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
-
-function clearReconnectSnapshotCache(userDataPath: string): void {
-  if (reconnectSnapshotCacheByUserDataPath.has(userDataPath)) {
+function clearReconnectSnapshotCache(
+  cache: Map<string, CachedReconnectSnapshot>,
+  userDataPath: string,
+): void {
+  if (cache.has(userDataPath)) {
     recordReconnectSnapshotInvalidation();
   }
-  reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+  cache.delete(userDataPath);
 }
 
-function clearExpiredReconnectSnapshotCacheEntries(now: number): void {
-  for (const [userDataPath, entry] of reconnectSnapshotCacheByUserDataPath) {
+function clearExpiredReconnectSnapshotCacheEntries(
+  cache: Map<string, CachedReconnectSnapshot>,
+  now: number,
+): void {
+  for (const [userDataPath, entry] of cache) {
     if (entry.expiresAt > now) {
       continue;
     }
 
-    reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+    cache.delete(userDataPath);
   }
 }
 
@@ -143,23 +147,25 @@ function assertOptionalChoiceIndex(
 }
 
 function cacheReconnectSnapshot(
+  cache: Map<string, CachedReconnectSnapshot>,
   userDataPath: string,
   promise: Promise<ReconnectSavedStateSnapshot>,
   expiresAt: number,
 ): void {
-  reconnectSnapshotCacheByUserDataPath.set(userDataPath, {
+  cache.set(userDataPath, {
     expiresAt,
     promise,
   });
 }
 
 function clearReconnectSnapshotIfCurrent(
+  cache: Map<string, CachedReconnectSnapshot>,
   userDataPath: string,
   promise: Promise<ReconnectSavedStateSnapshot>,
 ): void {
-  const current = reconnectSnapshotCacheByUserDataPath.get(userDataPath);
+  const current = cache.get(userDataPath);
   if (current?.promise === promise) {
-    reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+    cache.delete(userDataPath);
   }
 }
 
@@ -324,10 +330,11 @@ async function createBrowserColdBootstrapSnapshot(
 function getBrowserReconnectSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
+  cache: Map<string, CachedReconnectSnapshot>,
 ): Promise<BrowserReconnectSnapshot> {
   const now = Date.now();
-  clearExpiredReconnectSnapshotCacheEntries(now);
-  const cached = reconnectSnapshotCacheByUserDataPath.get(context.userDataPath);
+  clearExpiredReconnectSnapshotCacheEntries(cache, now);
+  const cached = cache.get(context.userDataPath);
   if (cached && cached.expiresAt > now) {
     recordReconnectSnapshotCacheHit();
     return cached.promise.then((snapshot) =>
@@ -339,11 +346,16 @@ function getBrowserReconnectSnapshot(
   const promise = Promise.resolve(createBrowserReconnectSavedStateSnapshot(context, options)).then(
     (snapshot) => cloneReconnectSavedStateSnapshot(snapshot),
   );
-  cacheReconnectSnapshot(context.userDataPath, promise, now + RECONNECT_SNAPSHOT_CACHE_TTL_MS);
+  cacheReconnectSnapshot(
+    cache,
+    context.userDataPath,
+    promise,
+    now + RECONNECT_SNAPSHOT_CACHE_TTL_MS,
+  );
 
   return promise
     .catch((error) => {
-      clearReconnectSnapshotIfCurrent(context.userDataPath, promise);
+      clearReconnectSnapshotIfCurrent(cache, context.userDataPath, promise);
       throw error;
     })
     .then((snapshot) => cloneBrowserReconnectSnapshot(createBrowserReconnectSnapshot(snapshot)));
@@ -512,6 +524,8 @@ export function createSystemIpcHandlers(
     getTaskName: (taskId: string) => string;
   },
 ): IpcHandlerMap {
+  const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
+
   return {
     [IPC.WindowFocus]: () => null,
     [IPC.WindowBlur]: () => null,
@@ -542,7 +556,7 @@ export function createSystemIpcHandlers(
       assertString(request.json, 'json');
       assertOptionalString(request.sourceId, 'sourceId');
       syncSavedStateJson(request.json, options);
-      clearReconnectSnapshotCache(context.userDataPath);
+      clearReconnectSnapshotCache(reconnectSnapshotCacheByUserDataPath, context.userDataPath);
       saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
         sourceId: request.sourceId ?? null,
@@ -575,7 +589,7 @@ export function createSystemIpcHandlers(
         syncSavedStateJson(request.json, options);
 
         const nextRevision = currentRevision + 1;
-        clearReconnectSnapshotCache(context.userDataPath);
+        clearReconnectSnapshotCache(reconnectSnapshotCacheByUserDataPath, context.userDataPath);
         saveWorkspaceStateForEnv(context, request.json, nextRevision);
         context.emitIpcEvent?.(IPC.WorkspaceStateChanged, {
           revision: nextRevision,
@@ -591,7 +605,8 @@ export function createSystemIpcHandlers(
     },
 
     [IPC.GetBrowserReconnectStatus]: () => getBrowserReconnectStatus(context),
-    [IPC.GetBrowserReconnectSnapshot]: () => getBrowserReconnectSnapshot(context, options),
+    [IPC.GetBrowserReconnectSnapshot]: () =>
+      getBrowserReconnectSnapshot(context, options, reconnectSnapshotCacheByUserDataPath),
     [IPC.GetBrowserColdBootstrap]: () => createBrowserColdBootstrapSnapshot(context, options),
 
     [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {
