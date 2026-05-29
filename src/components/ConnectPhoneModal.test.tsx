@@ -1,8 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
-import { installManualAnimationFrame } from '../test/manual-animation-frame';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const { isElectronRuntimeMock, startRemoteAccessMock, stopRemoteAccessMock, toDataUrlMock } =
@@ -20,10 +18,6 @@ vi.mock('../lib/ipc', () => ({
 vi.mock('../app/remote-access', () => ({
   startRemoteAccess: startRemoteAccessMock,
   stopRemoteAccess: stopRemoteAccessMock,
-}));
-
-vi.mock('../lib/focus-restore', () => ({
-  createFocusRestore: vi.fn(),
 }));
 
 vi.mock('qrcode', () => ({
@@ -141,7 +135,31 @@ describe('ConnectPhoneModal', () => {
     expect(await screen.findByAltText('Connection QR code', {}, { timeout: 10_000 })).toBeDefined();
     expect(startRemoteAccessMock).not.toHaveBeenCalled();
     expect(screen.getByText(/2 peer clients connected/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'https://wifi' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'Close' })).toBeDefined();
+  });
+
+  it('closes through the shared dialog Escape handling', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('remoteAccess', {
+      enabled: true,
+      connectedClients: 0,
+      peerClients: 0,
+      port: 7777,
+      url: 'https://browser',
+      wifiUrl: 'https://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+    });
+    const onClose = vi.fn();
+
+    render(() => <ConnectPhoneModal open onClose={onClose} />);
+
+    expect(await screen.findByRole('dialog', { name: 'Server Access' })).toBeDefined();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('ignores stale QR generation after switching network modes', async () => {
@@ -217,33 +235,5 @@ describe('ConnectPhoneModal', () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
-  });
-
-  it('cancels stale dialog focus when the modal closes before the scheduled frame', () => {
-    const animationFrame = installManualAnimationFrame();
-    isElectronRuntimeMock.mockReturnValue(true);
-    setStore('remoteAccess', {
-      enabled: true,
-      connectedClients: 1,
-      peerClients: 1,
-      port: 7777,
-      url: 'https://browser',
-      wifiUrl: 'https://wifi',
-      tailscaleUrl: null,
-      token: 'secret',
-    });
-
-    const [open, setOpen] = createSignal(true);
-
-    render(() => <ConnectPhoneModal open={open()} onClose={vi.fn()} />);
-
-    const dialog = screen.getByRole('dialog', { name: 'Connect Phone' }) as HTMLDivElement;
-    const focusSpy = vi.spyOn(dialog, 'focus');
-
-    setOpen(false);
-    animationFrame.flush();
-
-    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalledWith(1);
-    expect(focusSpy).not.toHaveBeenCalled();
   });
 });

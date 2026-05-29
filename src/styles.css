@@ -50,6 +50,11 @@
   --accent: #2ec8ff;
   --accent-hover: #59d7ff;
   --accent-text: #031018;
+
+  /* Readable text on the error/danger fill, and the modal scrim. Theme-agnostic across the dark
+     presets, so defined once here rather than per-preset. */
+  --error-text: #ffffff;
+  --overlay: rgba(0, 0, 0, 0.55);
   --link: #73dfff;
 
   --success: #2fd198;

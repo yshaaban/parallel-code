@@ -1,4 +1,4 @@
-import { Show, createEffect, createUniqueId, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createUniqueId, onCleanup, untrack, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
@@ -24,34 +24,40 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
   let cancelRef: HTMLButtonElement | undefined;
+  let confirmRef: HTMLButtonElement | undefined;
   const generatedTitleId = createUniqueId();
   const focusFrame = createAnimationFrameTask();
 
-  // Auto-focus the cancel button (or let Dialog's panel get focus)
+  function shouldFocusCancelButton(): boolean {
+    if (props.danger || props.confirmDisabled || props.confirmLoading) {
+      return true;
+    }
+
+    return props.autoFocusCancel ?? false;
+  }
+
   createEffect(() => {
     if (!props.open) {
       focusFrame.cancel();
       return;
     }
 
-    const focusCancelBtn = props.autoFocusCancel ?? true;
+    untrack(() => {
+      const focusCancelButton = shouldFocusCancelButton();
 
-    // Blur whatever is focused outside the dialog (e.g. the button that
-    // triggered this dialog) so our programmatic focus call sticks.
-    (document.activeElement as HTMLElement)?.blur?.();
+      // Blur whatever is focused outside the dialog (e.g. the button that
+      // triggered this dialog) so our programmatic focus call sticks.
+      (document.activeElement as HTMLElement)?.blur?.();
 
-    if (!focusCancelBtn) {
-      focusFrame.cancel();
-      return;
-    }
+      // Focus the chosen action after the Dialog panel renders.
+      focusFrame.schedule(() => {
+        const target = focusCancelButton ? cancelRef : confirmRef;
+        if (!target?.isConnected) {
+          return;
+        }
 
-    // Focus the cancel button after the Dialog panel renders.
-    focusFrame.schedule(() => {
-      if (!cancelRef?.isConnected) {
-        return;
-      }
-
-      cancelRef.focus();
+        target.focus();
+      });
     });
   });
 
@@ -95,6 +101,7 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
           {props.cancelLabel ?? 'Cancel'}
         </button>
         <button
+          ref={confirmRef}
           type="button"
           class={props.danger ? 'btn-danger' : 'btn-primary'}
           disabled={props.confirmDisabled}
@@ -104,7 +111,7 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
             background: props.danger ? theme.error : theme.accent,
             border: 'none',
             'border-radius': '8px',
-            color: props.danger ? '#fff' : theme.accentText,
+            color: props.danger ? theme.errorText : theme.accentText,
             cursor: props.confirmDisabled ? 'not-allowed' : 'pointer',
             ...typography.uiStrong,
             opacity: props.confirmDisabled ? '0.5' : '1',

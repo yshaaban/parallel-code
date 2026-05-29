@@ -92,7 +92,7 @@ export function Dialog(props: DialogProps): JSX.Element {
             display: 'flex',
             'align-items': 'center',
             'justify-content': 'center',
-            background: 'rgba(0,0,0,0.55)',
+            background: theme.overlay,
             'z-index': String(props.zIndex ?? 1000),
           }}
           onClick={(e) => {

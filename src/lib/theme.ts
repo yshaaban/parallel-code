@@ -29,7 +29,11 @@ export const theme = {
   // Semantic
   success: 'var(--success)',
   error: 'var(--error)',
+  errorText: 'var(--error-text)',
   warning: 'var(--warning)',
+
+  // Modal scrim
+  overlay: 'var(--overlay)',
 
   // Island containers (task columns, sidebar)
   islandBg: 'var(--island-bg)',
