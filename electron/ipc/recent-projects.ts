@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import type { DiscoveredProject, DiscoveredProjectSource } from '../../src/ipc/types.js';
 import { normalizeProjectPathKey } from '../../src/lib/project-path-key.js';
@@ -9,11 +10,38 @@ export type { DiscoveredProject, DiscoveredProjectSource };
 const MAX_RECENT_PROJECTS = 10;
 const MAX_DISCOVERED_PROJECTS = 30;
 const MAX_CODEX_SESSION_FILES = 200;
+const CLAUDE_PROJECT_JSONL_SCAN_LIMIT = 16;
+const CLAUDE_PROJECT_READ_CONCURRENCY = 16;
 const CODEX_HEAD_READ_CONCURRENCY = 24;
+const CODEX_SESSION_WALK_MAX_DEPTH = 8;
+const CODEX_SESSION_WALK_MAX_DIRS = 600;
 const PROJECT_BASE_GIT_SCAN_MAX_DEPTH = 3;
+const PROJECT_BASE_GIT_SCAN_MAX_VISITED_DIRS = 240;
+const PROJECT_SCAN_MAX_CHILD_DIRS = 240;
 const SHALLOW_GIT_SCAN_DIRS = ['projects', 'code', 'repos', 'src', 'work', 'dev'];
 const DISCOVERED_PROJECTS_CACHE_TTL_MS = 60_000;
 const REPO_ROOT_LOOKUP_MAX_DEPTH = 12;
+const PROJECT_SCAN_SKIP_DIR_NAMES = new Set([
+  'build',
+  'coverage',
+  'dist',
+  'dist-remote',
+  'dist-server',
+  'node_modules',
+  'out',
+  'target',
+  'vendor',
+]);
+const STATIC_VOLATILE_PROJECT_ROOTS = [
+  '/dev/shm',
+  '/private/tmp',
+  '/private/var/folders',
+  '/private/var/tmp',
+  '/run/user',
+  '/tmp',
+  '/var/folders',
+  '/var/tmp',
+];
 
 // Lower number wins when two sources surface the same path with an equal recency: agent activity
 // (Claude/Codex) is a stronger "you work here" signal than a bare git checkout on disk.
@@ -23,8 +51,66 @@ const SOURCE_PRIORITY: Record<DiscoveredProjectSource, number> = {
   git: 2,
 };
 
+interface DiscoveryScope {
+  allowedRootKeys: string[];
+}
+
 function projectName(projectPath: string): string {
   return path.basename(projectPath) || projectPath;
+}
+
+function normalizePathPrefixKey(projectPath: string): string {
+  return normalizeProjectPathKey(projectPath).toLowerCase();
+}
+
+function isSamePathOrDescendant(pathKey: string, rootKey: string): boolean {
+  if (!rootKey || rootKey === '/') {
+    return pathKey === rootKey;
+  }
+
+  return pathKey === rootKey || pathKey.startsWith(`${rootKey}/`);
+}
+
+function getVolatileProjectRootKeys(): string[] {
+  const configuredTempRoots = [os.tmpdir(), process.env.TMPDIR, process.env.TEMP, process.env.TMP];
+  const roots = [...STATIC_VOLATILE_PROJECT_ROOTS, ...configuredTempRoots].filter(
+    (root): root is string => typeof root === 'string' && root.trim().length > 0,
+  );
+  return [...new Set(roots.map((root) => normalizePathPrefixKey(root)))];
+}
+
+function hasWindowsTempSegment(pathKey: string): boolean {
+  const wrappedPath = `/${pathKey.replace(/^\/+/u, '')}/`;
+  return wrappedPath.includes('/appdata/local/temp/') || wrappedPath.includes('/windows/temp/');
+}
+
+export function isVolatileProjectPath(projectPath: string): boolean {
+  const pathKey = normalizePathPrefixKey(projectPath);
+  if (hasWindowsTempSegment(pathKey)) {
+    return true;
+  }
+
+  return getVolatileProjectRootKeys().some((rootKey) => isSamePathOrDescendant(pathKey, rootKey));
+}
+
+function createDiscoveryScope(homeDir: string, projectBaseDir: string): DiscoveryScope {
+  const allowedRoots = [homeDir, projectBaseDir].map((root) => normalizePathPrefixKey(root));
+  return {
+    allowedRootKeys: [...new Set(allowedRoots)],
+  };
+}
+
+function isInsideAllowedDiscoveryRoot(projectPath: string, scope: DiscoveryScope): boolean {
+  const pathKey = normalizePathPrefixKey(projectPath);
+  return scope.allowedRootKeys.some((rootKey) => isSamePathOrDescendant(pathKey, rootKey));
+}
+
+function isDiscoverableProjectPath(projectPath: string, scope: DiscoveryScope): boolean {
+  if (isInsideAllowedDiscoveryRoot(projectPath, scope)) {
+    return true;
+  }
+
+  return !isVolatileProjectPath(projectPath);
 }
 
 function sortDiscoveredProjects(a: DiscoveredProject, b: DiscoveredProject): number {
@@ -94,6 +180,36 @@ async function readDirectoryEntries(dirPath: string): Promise<fs.Dirent[]> {
   } catch {
     return [];
   }
+}
+
+function compareDirectoryEntryNames(a: fs.Dirent, b: fs.Dirent): number {
+  return a.name.localeCompare(b.name, undefined, { numeric: true });
+}
+
+function compareDirectoryEntryNamesDescending(a: fs.Dirent, b: fs.Dirent): number {
+  return b.name.localeCompare(a.name, undefined, { numeric: true });
+}
+
+function isProjectScanDirectory(entry: fs.Dirent): boolean {
+  return (
+    entry.isDirectory() &&
+    !entry.name.startsWith('.') &&
+    !PROJECT_SCAN_SKIP_DIR_NAMES.has(entry.name.toLowerCase())
+  );
+}
+
+function getProjectScanDirectories(entries: fs.Dirent[]): fs.Dirent[] {
+  return entries
+    .filter(isProjectScanDirectory)
+    .sort(compareDirectoryEntryNames)
+    .slice(0, PROJECT_SCAN_MAX_CHILD_DIRS);
+}
+
+function getClaudeProjectSessionFiles(entries: fs.Dirent[]): fs.Dirent[] {
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+    .sort(compareDirectoryEntryNamesDescending)
+    .slice(0, CLAUDE_PROJECT_JSONL_SCAN_LIMIT);
 }
 
 // Walk up from a discovered cwd to its git repository root via cheap `.git` stat checks. Snapping
@@ -222,10 +338,7 @@ async function resolveClaudeProjectDir(
   }
 
   const entries = await readDirectoryEntries(projectDirPath);
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
-      continue;
-    }
+  for (const entry of getClaudeProjectSessionFiles(entries)) {
     const cwd = await extractCwdFromJsonlHead(path.join(projectDirPath, entry.name));
     const resolvedPath = await resolveExistingDirectory(cwd);
     if (resolvedPath) {
@@ -236,7 +349,10 @@ async function resolveClaudeProjectDir(
   return null;
 }
 
-async function collectClaudeRecentProjects(homeDir: string): Promise<DiscoveredProject[]> {
+async function collectClaudeRecentProjects(
+  homeDir: string,
+  scope: DiscoveryScope,
+): Promise<DiscoveredProject[]> {
   const projectsRoot = path.join(homeDir, '.claude', 'projects');
   const projectRootStats = await statIfExists(projectsRoot);
   if (!projectRootStats?.isDirectory()) {
@@ -244,29 +360,36 @@ async function collectClaudeRecentProjects(homeDir: string): Promise<DiscoveredP
   }
 
   const entries = await fs.promises.readdir(projectsRoot, { withFileTypes: true });
-  const candidates = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry): Promise<DiscoveredProject | null> => {
-        const projectDirPath = path.join(projectsRoot, entry.name);
-        const projectDirStats = await statIfExists(projectDirPath);
-        if (!projectDirStats?.isDirectory()) {
-          return null;
-        }
+  const projectEntries = entries
+    .filter((entry) => entry.isDirectory())
+    .sort(compareDirectoryEntryNamesDescending);
+  const candidates = await mapWithConcurrency(
+    projectEntries,
+    CLAUDE_PROJECT_READ_CONCURRENCY,
+    async (entry): Promise<DiscoveredProject | null> => {
+      const projectDirPath = path.join(projectsRoot, entry.name);
+      const projectDirStats = await statIfExists(projectDirPath);
+      if (!projectDirStats?.isDirectory()) {
+        return null;
+      }
 
-        const projectPath = await resolveClaudeProjectDir(projectDirPath, entry.name);
-        if (!projectPath) {
-          return null;
-        }
-        const repoPath = await resolveRepoRootOrSelf(projectPath);
+      const projectPath = await resolveClaudeProjectDir(projectDirPath, entry.name);
+      if (!projectPath || !isDiscoverableProjectPath(projectPath, scope)) {
+        return null;
+      }
 
-        return {
-          path: repoPath,
-          name: projectName(repoPath),
-          source: 'claude',
-          updatedAtMs: projectDirStats.mtimeMs,
-        };
-      }),
+      const repoPath = await resolveRepoRootOrSelf(projectPath);
+      if (!isDiscoverableProjectPath(repoPath, scope)) {
+        return null;
+      }
+
+      return {
+        path: repoPath,
+        name: projectName(repoPath),
+        source: 'claude',
+        updatedAtMs: projectDirStats.mtimeMs,
+      };
+    },
   );
 
   return dedupeDiscoveredProjects(
@@ -279,18 +402,24 @@ async function collectNewestJsonlFiles(
   limit = MAX_CODEX_SESSION_FILES,
 ): Promise<string[]> {
   const files: string[] = [];
+  let visitedDirCount = 0;
 
-  async function walk(dirPath: string): Promise<void> {
-    if (files.length >= limit) {
+  async function walk(dirPath: string, remainingDepth: number): Promise<void> {
+    if (
+      files.length >= limit ||
+      remainingDepth < 0 ||
+      visitedDirCount >= CODEX_SESSION_WALK_MAX_DIRS
+    ) {
       return;
     }
 
+    visitedDirCount += 1;
     const entries = await readDirectoryEntries(dirPath);
     if (entries.length === 0) {
       return;
     }
 
-    entries.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
+    entries.sort(compareDirectoryEntryNamesDescending);
 
     for (const entry of entries) {
       if (files.length >= limit) {
@@ -298,18 +427,21 @@ async function collectNewestJsonlFiles(
       }
       const entryPath = path.join(dirPath, entry.name);
       if (entry.isDirectory()) {
-        await walk(entryPath);
+        await walk(entryPath, remainingDepth - 1);
       } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
         files.push(entryPath);
       }
     }
   }
 
-  await walk(rootDir);
+  await walk(rootDir, CODEX_SESSION_WALK_MAX_DEPTH);
   return files;
 }
 
-async function collectCodexRecentProjects(homeDir: string): Promise<DiscoveredProject[]> {
+async function collectCodexRecentProjects(
+  homeDir: string,
+  scope: DiscoveryScope,
+): Promise<DiscoveredProject[]> {
   const sessionRoots = [
     path.join(homeDir, '.codex', 'sessions'),
     path.join(homeDir, '.local', 'share', 'codex', 'sessions'),
@@ -332,10 +464,14 @@ async function collectCodexRecentProjects(homeDir: string): Promise<DiscoveredPr
         const projectPath = await resolveExistingDirectory(
           await extractCwdFromJsonlHead(sessionFile),
         );
-        if (!projectPath) {
+        if (!projectPath || !isDiscoverableProjectPath(projectPath, scope)) {
           return null;
         }
+
         const repoPath = await resolveRepoRootOrSelf(projectPath);
+        if (!isDiscoverableProjectPath(repoPath, scope)) {
+          return null;
+        }
 
         return {
           path: repoPath,
@@ -356,7 +492,10 @@ async function collectCodexRecentProjects(homeDir: string): Promise<DiscoveredPr
   return dedupeDiscoveredProjects(candidates);
 }
 
-async function collectGitProjectCandidate(repoPath: string): Promise<DiscoveredProject | null> {
+async function collectGitProjectCandidate(
+  repoPath: string,
+  scope: DiscoveryScope,
+): Promise<DiscoveredProject | null> {
   const gitPath = path.join(repoPath, '.git');
   const gitStats = await statIfExists(gitPath);
   if (!gitStats || (!gitStats.isDirectory() && !gitStats.isFile())) {
@@ -365,6 +504,10 @@ async function collectGitProjectCandidate(repoPath: string): Promise<DiscoveredP
 
   const resolvedRepoPath = await resolveExistingDirectory(repoPath);
   if (!resolvedRepoPath) {
+    return null;
+  }
+
+  if (!isDiscoverableProjectPath(resolvedRepoPath, scope)) {
     return null;
   }
 
@@ -378,6 +521,7 @@ async function collectGitProjectCandidate(repoPath: string): Promise<DiscoveredP
 
 async function collectGitRecentProjectsFromImmediateChildren(
   scanRoot: string,
+  scope: DiscoveryScope,
 ): Promise<DiscoveredProject[]> {
   const scanRootStats = await statIfExists(scanRoot);
   if (!scanRootStats?.isDirectory()) {
@@ -387,12 +531,8 @@ async function collectGitRecentProjectsFromImmediateChildren(
   const entries = await readDirectoryEntries(scanRoot);
 
   const candidates: DiscoveredProject[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) {
-      continue;
-    }
-
-    const candidate = await collectGitProjectCandidate(path.join(scanRoot, entry.name));
+  for (const entry of getProjectScanDirectories(entries)) {
+    const candidate = await collectGitProjectCandidate(path.join(scanRoot, entry.name), scope);
     if (candidate) {
       candidates.push(candidate);
     }
@@ -403,22 +543,34 @@ async function collectGitRecentProjectsFromImmediateChildren(
 
 async function collectGitRecentProjectsFromProjectBase(
   projectBaseDir: string,
+  scope: DiscoveryScope,
 ): Promise<DiscoveredProject[]> {
   const candidates: DiscoveredProject[] = [];
   const seenPaths = new Set<string>();
+  let visitedDirCount = 0;
 
   async function appendCandidate(candidatePath: string): Promise<boolean> {
-    const candidate = await collectGitProjectCandidate(candidatePath);
-    if (!candidate || seenPaths.has(candidate.path)) {
+    const candidate = await collectGitProjectCandidate(candidatePath, scope);
+    if (!candidate) {
       return false;
     }
 
-    seenPaths.add(candidate.path);
+    const candidatePathKey = normalizeProjectPathKey(candidate.path);
+    if (seenPaths.has(candidatePathKey)) {
+      return false;
+    }
+
+    seenPaths.add(candidatePathKey);
     candidates.push(candidate);
     return true;
   }
 
   async function walk(dirPath: string, remainingDepth: number): Promise<void> {
+    if (visitedDirCount >= PROJECT_BASE_GIT_SCAN_MAX_VISITED_DIRS) {
+      return;
+    }
+
+    visitedDirCount += 1;
     const dirStats = await statIfExists(dirPath);
     if (!dirStats?.isDirectory()) {
       return;
@@ -437,11 +589,7 @@ async function collectGitRecentProjectsFromProjectBase(
       return;
     }
 
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) {
-        continue;
-      }
-
+    for (const entry of getProjectScanDirectories(entries)) {
       await walk(path.join(dirPath, entry.name), remainingDepth - 1);
     }
   }
@@ -453,6 +601,7 @@ async function collectGitRecentProjectsFromProjectBase(
 async function collectGitRecentProjects(
   homeDir: string,
   projectBaseDir: string,
+  scope: DiscoveryScope,
 ): Promise<DiscoveredProject[]> {
   const scanRoots = [
     homeDir,
@@ -460,13 +609,15 @@ async function collectGitRecentProjects(
   ];
   const uniqueScanRoots = [...new Set(scanRoots.map((dirPath) => path.normalize(dirPath)))];
   const shallowCandidates = await Promise.all(
-    uniqueScanRoots.map((scanRoot) => collectGitRecentProjectsFromImmediateChildren(scanRoot)),
+    uniqueScanRoots.map((scanRoot) =>
+      collectGitRecentProjectsFromImmediateChildren(scanRoot, scope),
+    ),
   );
   const normalizedHomeDir = path.normalize(homeDir);
   const normalizedProjectBaseDir = path.normalize(projectBaseDir);
   let projectBaseCandidates: DiscoveredProject[] = [];
   if (normalizedProjectBaseDir !== normalizedHomeDir) {
-    projectBaseCandidates = await collectGitRecentProjectsFromProjectBase(projectBaseDir);
+    projectBaseCandidates = await collectGitRecentProjectsFromProjectBase(projectBaseDir, scope);
   }
 
   return dedupeDiscoveredProjects([...shallowCandidates.flat(), ...projectBaseCandidates]);
@@ -476,10 +627,11 @@ async function computeDiscoveredProjects(
   homeDir: string,
   projectBaseDir: string,
 ): Promise<DiscoveredProject[]> {
+  const scope = createDiscoveryScope(homeDir, projectBaseDir);
   const [claudeProjects, codexProjects, gitProjects] = await Promise.all([
-    collectClaudeRecentProjects(homeDir).catch(() => []),
-    collectCodexRecentProjects(homeDir).catch(() => []),
-    collectGitRecentProjects(homeDir, projectBaseDir).catch(() => []),
+    collectClaudeRecentProjects(homeDir, scope).catch(() => []),
+    collectCodexRecentProjects(homeDir, scope).catch(() => []),
+    collectGitRecentProjects(homeDir, projectBaseDir, scope).catch(() => []),
   ]);
 
   // Claude + Codex (active agent work) lead, sorted by recency; bare git checkouts fill the rest.

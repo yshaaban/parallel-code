@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   discoverProjects,
   getRecentProjectPaths,
+  isVolatileProjectPath,
   resetDiscoveredProjectsCacheForTests,
 } from './recent-projects.js';
 
@@ -104,9 +105,54 @@ describe('getRecentProjectPaths', () => {
 
     expect(recentProjects).not.toContain(nestedHomeProject);
   });
+
+  it('skips generated folders during project-base discovery', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const workspaceDir = await createTempDir('parallel-workspace-');
+    const dependencyRepo = await createGitProject(path.join(workspaceDir, 'node_modules'), 'pkg');
+    const buildRepo = await createGitProject(path.join(workspaceDir, 'dist'), 'artifact');
+    const realParent = await createPlainDir(workspaceDir, 'src');
+    const realRepo = await createGitProject(realParent, 'real-app');
+
+    const recentProjects = await getRecentProjectPaths(homeDir, workspaceDir);
+
+    expect(recentProjects).toContain(realRepo);
+    expect(recentProjects).not.toContain(dependencyRepo);
+    expect(recentProjects).not.toContain(buildRepo);
+  });
+
+  it('does not descend beyond the bounded project-base scan depth', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const workspaceDir = await createTempDir('parallel-workspace-');
+    const tooDeepParent = path.join(workspaceDir, 'a', 'b', 'c', 'd');
+    const tooDeepRepo = await createGitProject(tooDeepParent, 'repo');
+
+    const recentProjects = await getRecentProjectPaths(homeDir, workspaceDir);
+
+    expect(recentProjects).not.toContain(tooDeepRepo);
+  });
 });
 
 describe('discoverProjects', () => {
+  it('recognizes volatile temp roots across macOS, Linux, and WSL-style paths', () => {
+    expect(
+      isVolatileProjectPath(
+        '/private/var/folders/f8/v07d68352xx9l5qpf973qgp80000gn/T/claude/project',
+      ),
+    ).toBe(true);
+    expect(isVolatileProjectPath('/tmp/claude-consult-real-codex/project')).toBe(true);
+    expect(isVolatileProjectPath('/var/tmp/parallel/project')).toBe(true);
+    expect(isVolatileProjectPath('/dev/shm/parallel/project')).toBe(true);
+    expect(isVolatileProjectPath('/run/user/1000/parallel/project')).toBe(true);
+    expect(isVolatileProjectPath('/mnt/c/Users/me/AppData/Local/Temp/parallel/project')).toBe(true);
+    expect(isVolatileProjectPath('C:\\Users\\me\\AppData\\Local\\Temp\\parallel\\project')).toBe(
+      true,
+    );
+
+    expect(isVolatileProjectPath('/home/me/src/app')).toBe(false);
+    expect(isVolatileProjectPath('/mnt/c/Users/me/src/app')).toBe(false);
+  });
+
   it('tags discovered projects with their source (claude, codex, git)', async () => {
     const homeDir = await createTempDir('parallel-home-');
     const claudeProject = await createPlainDir(homeDir, 'claude-app');
@@ -192,5 +238,21 @@ describe('discoverProjects', () => {
 
     expect(discovered.filter((candidate) => candidate.path === repo)).toHaveLength(1);
     expect(discovered.some((candidate) => candidate.path === nested)).toBe(false);
+  });
+
+  it('filters external temp projects from agent session state', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const realProject = await createPlainDir(homeDir, 'real-app');
+    const scratchRoot = await createTempDir('claude-consult-real-codex-');
+    const scratchProject = await createPlainDir(scratchRoot, 'project');
+    await createClaudeProjectSession(homeDir, realProject);
+    await createCodexSession(homeDir, scratchProject);
+    await createClaudeProjectSession(homeDir, scratchProject);
+
+    const discovered = await discoverProjects(homeDir, homeDir);
+    const discoveredPaths = discovered.map((candidate) => candidate.path);
+
+    expect(discoveredPaths).toContain(realProject);
+    expect(discoveredPaths).not.toContain(scratchProject);
   });
 });
