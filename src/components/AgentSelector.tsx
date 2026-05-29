@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from 'solid-js';
 import { store } from '../store/store';
 import { isHydraAgentDef } from '../lib/hydra';
+import { AgentGlyph } from './AgentGlyph';
 import { SectionLabel } from './SectionLabel';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
@@ -64,7 +65,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                   style={{
                     flex: '0 1 auto',
                     'min-width': '70px',
-                    padding: '10px 8px',
+                    padding: '8px 10px',
                     background: isSelected() ? theme.bgSelected : theme.bgInput,
                     border: isSelected()
                       ? `1px solid ${theme.accent}`
@@ -73,22 +74,29 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                     color: getAgentTextColor(isSelected()),
                     cursor: 'pointer',
                     ...(isSelected() ? typography.metaStrong : typography.meta),
-                    'text-align': 'center',
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    'justify-content': 'center',
+                    gap: '7px',
+                    opacity: agent.available === false ? '0.6' : '1',
                   }}
                   title={agent.availabilityReason}
                 >
-                  {agent.name}
-                  <Show when={getAvailabilityLabel(agent)}>
-                    <span
-                      style={{
-                        ...typography.label,
-                        color: theme.fgMuted,
-                        'margin-left': '4px',
-                      }}
-                    >
-                      ({getAvailabilityLabel(agent)})
-                    </span>
-                  </Show>
+                  <AgentGlyph agentDef={agent} size={16} />
+                  <span>
+                    {agent.name}
+                    <Show when={getAvailabilityLabel(agent)}>
+                      <span
+                        style={{
+                          ...typography.label,
+                          color: theme.fgMuted,
+                          'margin-left': '4px',
+                        }}
+                      >
+                        ({getAvailabilityLabel(agent)})
+                      </span>
+                    </Show>
+                  </span>
                 </button>
               );
             }}
@@ -96,28 +104,19 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
         </div>
         <Show when={props.selectedAgent}>
           {(agent) => (
-            <div
-              style={{
-                padding: '10px 12px',
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-                'border-radius': '8px',
-                color: theme.fgSubtle,
-                ...typography.meta,
-              }}
-            >
-              <div>{agent().description}</div>
+            <div style={{ color: theme.fgSubtle, padding: '0 2px', ...typography.meta }}>
+              {agent().description}
               <Show when={isHydraAgentDef(agent())}>
-                <div style={{ ...typography.meta, 'margin-top': '6px', color: theme.fgMuted }}>
+                <span style={{ display: 'block', 'margin-top': '4px', color: theme.fgMuted }}>
                   {store.hydraForceDispatchFromPromptPanel
                     ? 'Prompt-panel messages are force-dispatched to Hydra. Type directly in the terminal for native Hydra chat and commands.'
                     : 'Prompt-panel messages are sent directly. Type in the terminal for native Hydra chat and commands.'}
-                </div>
+                </span>
                 <Show when={agent().availabilityReason}>
                   {(reason) => (
-                    <div style={{ ...typography.meta, 'margin-top': '6px', color: theme.fgMuted }}>
+                    <span style={{ display: 'block', 'margin-top': '4px', color: theme.fgMuted }}>
                       {reason()}
-                    </div>
+                    </span>
                   )}
                 </Show>
               </Show>

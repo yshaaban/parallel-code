@@ -106,6 +106,13 @@ function createDeferredPromise<T>(): {
   return { promise, resolve };
 }
 
+async function openAdvanced(): Promise<void> {
+  const toggle = await screen.findByRole('button', { name: /^Advanced/i });
+  if (toggle.getAttribute('aria-expanded') !== 'true') {
+    fireEvent.click(toggle);
+  }
+}
+
 describe('NewTaskDialog', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -159,6 +166,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
+    await openAdvanced();
     const checkbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
@@ -176,6 +184,7 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(2);
     });
+    await openAdvanced();
     const reopenedCheckbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
@@ -233,12 +242,11 @@ describe('NewTaskDialog', () => {
     createTaskMock.mockResolvedValue('task-1');
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
-    await screen.findByRole('checkbox', {
-      name: /Dangerously skip all confirms/i,
-    });
+    // Default skip-permissions should apply without ever expanding the Advanced section.
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
+    expect(screen.getByText(/Runs without confirmation/i)).toBeDefined();
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
     fireEvent.input(taskNameInput, {
@@ -266,6 +274,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
+    await openAdvanced();
     const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
       name: /Track task steps/i,
     });
@@ -327,6 +336,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
+    await openAdvanced();
     const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
       name: /Track task steps/i,
     });
@@ -345,6 +355,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(2);
     });
 
+    await openAdvanced();
     const reopenedCheckbox = await screen.findByRole('checkbox', {
       name: /Track task steps/i,
     });
@@ -363,12 +374,9 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    const currentBranchCheckbox = await screen.findByRole('checkbox', {
-      name: /Work on current branch/i,
-    });
-
-    expect((currentBranchCheckbox as HTMLInputElement).checked).toBe(false);
-    expect((currentBranchCheckbox as HTMLInputElement).disabled).toBe(true);
+    const currentBranchButton = await screen.findByRole('button', { name: /^Current branch/i });
+    expect((currentBranchButton as HTMLButtonElement).disabled).toBe(true);
+    expect(currentBranchButton.getAttribute('aria-pressed')).toBe('false');
   });
 
   it('widens the dialog when many agents are available', async () => {
@@ -387,7 +395,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
-    expect(document.querySelector('[data-dialog-width="620px"]')).not.toBeNull();
+    expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
   });
 
   it('widens the dialog and exposes isolation guidance in titles when current-branch mode is active', async () => {
@@ -405,10 +413,11 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
-    expect(document.querySelector('[data-dialog-width="620px"]')).not.toBeNull();
+    expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
     expect(
       screen.getByTitle(/Reuses the project root instead of creating a worktree/i),
     ).toBeTruthy();
+    await openAdvanced();
     expect(
       screen.getByTitle(
         /Runs without asking for confirmation\. The agent can read, write, delete, and execute commands without your approval\./i,
@@ -440,14 +449,12 @@ describe('NewTaskDialog', () => {
     });
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    const currentBranchCheckbox = await screen.findByRole('checkbox', {
-      name: /Work on current branch/i,
-    });
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
+    const currentBranchButton = await screen.findByRole('button', { name: /^Current branch/i });
     await Promise.resolve();
-    await user.click(currentBranchCheckbox);
+    await user.click(currentBranchButton);
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');
     await user.type(taskNameInput, 'Ship it');
@@ -470,7 +477,13 @@ describe('NewTaskDialog', () => {
     createTaskMock.mockResolvedValue('task-1');
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
+    await openAdvanced();
     const branchSelect = (await screen.findByLabelText('Base branch')) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(
+        Array.from(branchSelect.options).some((option) => option.value === 'release/main'),
+      ).toBe(true);
+    });
     await user.selectOptions(branchSelect, 'release/main');
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');
@@ -504,7 +517,7 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
     expect(screen.queryByLabelText('Base branch')).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: /Work on current branch/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Current branch/i })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Use existing worktree/i })).toBeNull();
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');

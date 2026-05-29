@@ -6,6 +6,7 @@ import {
   createSignal,
   createUniqueId,
   onCleanup,
+  untrack,
   type JSX,
 } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
@@ -44,6 +45,7 @@ import { SectionLabel } from './SectionLabel';
 import { SymlinkDirPicker } from './SymlinkDirPicker';
 import { typography } from '../lib/typography';
 import { getProjectDefaultTaskGitIsolation } from '../store/task-git-isolation';
+import type { ProjectMode } from '../store/types';
 import type { AgentDef, GitBranchInfo } from '../ipc/types';
 
 interface NewTaskDialogProps {
@@ -77,6 +79,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [branchQuery, setBranchQuery] = createSignal('');
   const [branchListRefreshId, setBranchListRefreshId] = createSignal(0);
   const [selectedBaseBranch, setSelectedBaseBranch] = createSignal<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = createSignal(false);
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
   let dialogInitializationGeneration = 0;
@@ -164,6 +167,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setBranchQuery('');
     setBranchListRefreshId(0);
     setSelectedBaseBranch(null);
+    setAdvancedOpen(false);
 
     void (async () => {
       const availableAgents = await loadAgents();
@@ -171,29 +175,31 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         return;
       }
 
-      const lastAgent = store.lastAgentId
-        ? (availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
-        : null;
-      setSelectedAgent(lastAgent ?? availableAgents[0] ?? null);
+      untrack(() => {
+        const lastAgent = store.lastAgentId
+          ? (availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
+          : null;
+        setSelectedAgent(lastAgent ?? availableAgents[0] ?? null);
 
-      // Pre-fill from drop data if present
-      const dropUrl = store.newTaskDropUrl;
-      const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
-      const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
+        // Pre-fill from drop data if present
+        const dropUrl = store.newTaskDropUrl;
+        const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
+        const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
 
-      if (dropUrl) setPrompt(`review ${dropUrl}`);
-      if (defaults) setName(defaults.name);
-      setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
+        if (dropUrl) setPrompt(`review ${dropUrl}`);
+        if (defaults) setName(defaults.name);
+        setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
 
-      // Pre-fill from arena comparison prompt
-      const prefill = store.newTaskPrefillPrompt;
-      if (prefill) {
-        setPrompt(prefill.prompt);
-        setName('Compare arena results');
-        if (prefill.projectId) setSelectedProjectId(prefill.projectId);
-      }
+        // Pre-fill from arena comparison prompt
+        const prefill = store.newTaskPrefillPrompt;
+        if (prefill) {
+          setPrompt(prefill.prompt);
+          setName('Compare arena results');
+          if (prefill.projectId) setSelectedProjectId(prefill.projectId);
+        }
 
-      promptRef?.focus();
+        promptRef?.focus();
+      });
     })();
 
     // Capture-phase handler for Alt+Arrow to navigate form sections / within fields
@@ -325,44 +331,64 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setCurrentBranchMode(getProjectDefaultTaskGitIsolation(proj) === 'current-branch');
   });
 
-  const effectiveName = () => {
+  // Reveal the advanced section when the existing-worktree flow is active so its path picker stays
+  // visible instead of hiding behind a collapsed disclosure. This only opens the section; the user
+  // can still collapse essentials-only flows manually.
+  createEffect(() => {
+    if (existingWorktreeMode()) {
+      setAdvancedOpen(true);
+    }
+  });
+
+  function effectiveName(): string {
     const n = name().trim();
-    if (n) return n;
+    if (n) {
+      return n;
+    }
+
     const p = prompt().trim();
-    if (!p) return '';
+    if (!p) {
+      return '';
+    }
+
     // Use first line, clean filler phrases, truncate at ~40 chars on word boundary
     const firstLine = cleanTaskName(p.split('\n')[0]);
-    if (firstLine.length <= 40) return firstLine;
-    return firstLine.slice(0, 40).replace(/\s+\S*$/, '') || firstLine.slice(0, 40);
-  };
+    if (firstLine.length <= 40) {
+      return firstLine;
+    }
 
-  const branchPreview = () => {
+    return firstLine.slice(0, 40).replace(/\s+\S*$/, '') || firstLine.slice(0, 40);
+  }
+
+  function branchPreview(): string {
     const n = effectiveName();
     const prefix = sanitizeBranchPrefix(branchPrefix());
     return n ? `${prefix}/${toBranchName(n)}` : '';
-  };
+  }
 
-  const selectedProjectPath = () => {
+  function selectedProjectPath(): string | undefined {
     const pid = selectedProjectId();
     return pid ? getProjectPath(pid) : undefined;
-  };
+  }
 
-  const selectedProjectMode = () => {
+  function selectedProjectMode(): ProjectMode {
     const pid = selectedProjectId();
     return getProjectMode(pid ? getProject(pid) : null);
-  };
+  }
 
-  const selectedProjectIsNonGit = () => selectedProjectMode() === 'non-git';
+  function selectedProjectIsNonGit(): boolean {
+    return selectedProjectMode() === 'non-git';
+  }
 
-  const selectedProjectBaseBranch = () => {
+  function selectedProjectBaseBranch(): string | undefined {
     const pid = selectedProjectId();
     return pid ? getProjectBaseBranch(pid) : undefined;
-  };
+  }
 
-  const selectedProjectBaseBranchLabel = () => {
+  function selectedProjectBaseBranchLabel(): string {
     const baseBranch = selectedBaseBranch() ?? selectedProjectBaseBranch();
     return baseBranch ? `base branch (${baseBranch})` : 'base branch (detected on create)';
-  };
+  }
 
   const filteredBranchOptions = createMemo(() => {
     const query = branchQuery().trim().toLowerCase();
@@ -384,18 +410,20 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return selectedBranch ? [selectedBranch, ...filtered] : filtered;
   });
 
-  const selectedBaseBranchAvailable = () => {
+  function selectedBaseBranchAvailable(): boolean {
     const selected = selectedBaseBranch();
     if (!selected || branchListStatus() !== 'ready') {
       return true;
     }
 
     return branchOptions().some((branch) => branch.name === selected);
-  };
+  }
 
-  const selectedBaseBranchForSubmit = () => selectedBaseBranch()?.trim() || undefined;
+  function selectedBaseBranchForSubmit(): string | undefined {
+    return selectedBaseBranch()?.trim() || undefined;
+  }
 
-  const branchPickerStatus = () => {
+  function branchPickerStatus(): string {
     switch (branchListStatus()) {
       case 'idle':
         return '';
@@ -408,7 +436,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       case 'error':
         return `Branch list unavailable: ${branchListError() ?? 'Unknown backend error'}`;
     }
-  };
+  }
 
   function formatBranchOption(branch: GitBranchInfo): string {
     const qualifiers: string[] = [];
@@ -425,7 +453,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return qualifiers.length === 0 ? branch.name : `${branch.name} (${qualifiers.join(', ')})`;
   }
 
-  const currentBranchGuidance = () => {
+  function currentBranchGuidance(): string {
     if (currentBranchMode()) {
       return 'Reuses the project root without creating a worktree.';
     }
@@ -439,39 +467,60 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
 
     return 'Creates a git branch and worktree so the agent works in isolation.';
-  };
+  }
 
-  const currentBranchTooltip = () => {
+  function currentBranchTooltip(): string {
     if (currentBranchMode()) {
       return 'Reuses the project root instead of creating a worktree. The backend switches to the selected base branch before starting if needed.';
     }
 
     return 'Creates a git branch and worktree so the agent works in isolation without affecting the base branch.';
-  };
+  }
 
-  const skipPermissionsTooltip = () =>
-    'Runs without asking for confirmation. The agent can read, write, delete, and execute commands without your approval.';
+  function skipPermissionsTooltip(): string {
+    return 'Runs without asking for confirmation. The agent can read, write, delete, and execute commands without your approval.';
+  }
 
-  const stepsTrackingTooltip = () =>
-    'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.';
+  function stepsTrackingTooltip(): string {
+    return 'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.';
+  }
 
-  const existingWorktreeTooltip = () =>
-    'Registers an existing git worktree as a task. Closing the task stops agents but never deletes that worktree or branch.';
+  function existingWorktreeTooltip(): string {
+    return 'Registers an existing git worktree as a task. Closing the task stops agents but never deletes that worktree or branch.';
+  }
 
-  const currentBranchModeDisabled = () => {
+  function currentBranchModeDisabled(): boolean {
     const pid = selectedProjectId();
     return pid ? hasCurrentBranchTask(pid) : false;
-  };
+  }
 
-  const agentSupportsSkipPermissions = () => {
+  // True when the selected project has no tasks yet, so we can nudge toward working on the current
+  // branch directly instead of spinning up an isolated worktree for a first/only task.
+  function isFirstTaskForProject(): boolean {
+    const pid = selectedProjectId();
+    if (!pid) {
+      return false;
+    }
+
+    return ![...store.taskOrder, ...store.collapsedTaskOrder].some(
+      (taskId) => store.tasks[taskId]?.projectId === pid,
+    );
+  }
+
+  function agentSupportsSkipPermissions(): boolean {
     const agent = selectedAgent();
     return !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
-  };
+  }
 
-  const createsNewWorktree = () =>
-    !selectedProjectIsNonGit() && !currentBranchMode() && !existingWorktreeMode();
+  function skipPermissionsActive(): boolean {
+    return agentSupportsSkipPermissions() && skipPermissions();
+  }
 
-  const canSubmit = () => {
+  function createsNewWorktree(): boolean {
+    return !selectedProjectIsNonGit() && !currentBranchMode() && !existingWorktreeMode();
+  }
+
+  function canSubmit(): boolean {
     const hasContent = !!effectiveName();
     const hasRequiredWorktreePath =
       !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
@@ -485,16 +534,39 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       canUseSelectedBranch &&
       !loading()
     );
-  };
+  }
 
-  const dialogWidth = () => {
+  // Count active advanced controls so the collapsed disclosure can hint at important state without
+  // forcing the user to expand it.
+  function activeAdvancedCount(): number {
+    let count = 0;
+    if (existingWorktreeMode()) {
+      count += 1;
+    }
+    if (stepsTracking()) {
+      count += 1;
+    }
+    if (skipPermissionsActive()) {
+      count += 1;
+    }
+    if (
+      !selectedProjectIsNonGit() &&
+      selectedBaseBranch() &&
+      selectedBaseBranch() !== selectedProjectBaseBranch()
+    ) {
+      count += 1;
+    }
+    return count;
+  }
+
+  function dialogWidth(): string {
     const needsWideDialog =
       store.availableAgents.length > 8 ||
       currentBranchMode() ||
       existingWorktreeMode() ||
       agentSupportsSkipPermissions();
-    return needsWideDialog ? '620px' : '520px';
-  };
+    return needsWideDialog ? '560px' : '480px';
+  }
 
   async function browseExistingWorktreePath(): Promise<void> {
     const selectedPath = await openDialog({ directory: true, multiple: false });
@@ -529,10 +601,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setSelectedDirs(next);
   }
 
-  async function handleSubmit(e: Event) {
+  async function handleSubmit(e: Event): Promise<void> {
     e.preventDefault();
     const n = effectiveName();
-    if (!n) return;
+    if (!n) {
+      return;
+    }
 
     const agent = selectedAgent();
     if (!agent) {
@@ -546,9 +620,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
     const projectMode = selectedProjectMode();
-    const configuredBaseBranch = projectMode === 'git' ? selectedBaseBranchForSubmit() : undefined;
+    let configuredBaseBranch: string | undefined;
+    if (projectMode === 'git') {
+      configuredBaseBranch = selectedBaseBranchForSubmit();
+    }
+
     if (projectMode === 'git' && !selectedBaseBranchAvailable()) {
       setError('Selected base branch is no longer available. Refresh the branch list.');
+      setAdvancedOpen(true);
       return;
     }
 
@@ -560,6 +639,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const prefix = sanitizeBranchPrefix(branchPrefix());
     const promptGitHubUrl = p ? extractGitHubUrl(p) : undefined;
     const ghUrl = promptGitHubUrl ?? store.newTaskDropUrl ?? undefined;
+    const shouldSkipPermissions = skipPermissionsActive();
     try {
       // Persist the branch prefix to the project for next time
       if (projectMode === 'git') {
@@ -576,7 +656,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
-          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+          skipPermissions: shouldSkipPermissions,
         });
       } else if (existingWorktreeMode()) {
         taskId = await createExistingWorktreeTask({
@@ -588,7 +668,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
-          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+          skipPermissions: shouldSkipPermissions,
         });
       } else {
         taskId = await createTask({
@@ -602,7 +682,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           branchPrefixOverride: prefix,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
-          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+          skipPermissions: shouldSkipPermissions,
         });
       }
       // Drop flow: prefill prompt without auto-sending
@@ -617,13 +697,86 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
   }
 
+  // Shared visual treatments keep callouts and inputs consistent so the form reads as one
+  // surface instead of a stack of bespoke boxes.
+  function fieldInputStyle(): JSX.CSSProperties {
+    return {
+      background: theme.bgInput,
+      border: `1px solid ${theme.border}`,
+      'border-radius': '8px',
+      padding: '8px 11px',
+      color: theme.fg,
+      outline: 'none',
+    };
+  }
+
+  function getCalloutColor(tone: 'muted' | 'warning' | 'error'): string {
+    switch (tone) {
+      case 'error':
+        return theme.error;
+      case 'warning':
+        return theme.warning;
+      case 'muted':
+        return theme.fgSubtle;
+    }
+  }
+
+  function calloutStyle(tone: 'muted' | 'warning' | 'error'): JSX.CSSProperties {
+    const color = getCalloutColor(tone);
+    let background: string;
+    let border: string;
+    if (tone === 'muted') {
+      background = theme.bgElevated;
+      border = `1px solid ${theme.border}`;
+    } else {
+      background = `color-mix(in srgb, ${color} 8%, transparent)`;
+      border = `1px solid color-mix(in srgb, ${color} 20%, transparent)`;
+    }
+
+    return {
+      color,
+      background,
+      border,
+      'border-radius': '8px',
+      padding: '6px 10px',
+      ...typography.meta,
+    };
+  }
+
+  function checkboxLabelStyle(disabled = false): JSX.CSSProperties {
+    return {
+      display: 'flex',
+      'align-items': 'center',
+      gap: '6px',
+      color: disabled ? theme.fgSubtle : theme.fg,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? '0.5' : '1',
+      ...typography.meta,
+    };
+  }
+
+  function isolationSegmentStyle(active: boolean, disabled = false): JSX.CSSProperties {
+    return {
+      flex: '1',
+      padding: '7px 12px',
+      'border-radius': '8px',
+      background: active ? theme.bgSelected : theme.bgInput,
+      border: active ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`,
+      color: theme.fg,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? '0.5' : '1',
+      'text-align': 'center',
+      ...(active ? typography.uiStrong : typography.ui),
+    };
+  }
+
   return (
     <Dialog
       open={props.open}
       onClose={props.onClose}
       width={dialogWidth()}
       labelledBy={titleId}
-      panelStyle={{ gap: '20px' }}
+      panelStyle={{ gap: '11px', padding: '20px' }}
     >
       <form
         ref={formRef}
@@ -631,35 +784,22 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         style={{
           display: 'flex',
           'flex-direction': 'column',
-          gap: '20px',
+          gap: '11px',
         }}
       >
-        <div>
-          <DialogHeader
-            description={currentBranchGuidance()}
-            descriptionTone="muted"
-            title="New Task"
-            titleId={titleId}
-          />
-        </div>
+        <DialogHeader
+          description={currentBranchGuidance()}
+          descriptionTone="muted"
+          title="New Task"
+          titleId={titleId}
+        />
 
-        {/* Project selector */}
-        <div
-          data-nav-field="project"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <SectionLabel as="label">Project</SectionLabel>
-          <ProjectSelect value={selectedProjectId()} onChange={setSelectedProjectId} />
-        </div>
-
-        {/* Prompt input (optional) */}
+        {/* Prompt - the primary input */}
         <div
           data-nav-field="prompt"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
-          <SectionLabel as="label">
-            Prompt <span style={{ opacity: '0.5', 'text-transform': 'none' }}>(optional)</span>
-          </SectionLabel>
+          <SectionLabel as="label">What should the agent work on?</SectionLabel>
           <textarea
             ref={promptRef}
             class="input-field"
@@ -672,21 +812,33 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 if (canSubmit()) handleSubmit(e);
               }
             }}
-            placeholder="What should the agent work on?"
+            placeholder="Describe the task, e.g. add user authentication."
             rows={3}
             style={{
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '8px',
-              padding: '10px 14px',
-              color: theme.fg,
+              ...fieldInputStyle(),
               ...typography.monoUi,
-              outline: 'none',
               resize: 'vertical',
             }}
           />
         </div>
 
+        {/* Agent - the second primary choice */}
+        <AgentSelector
+          agents={store.availableAgents}
+          selectedAgent={selectedAgent()}
+          onSelect={setSelectedAgent}
+        />
+
+        {/* Project */}
+        <div
+          data-nav-field="project"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
+          <SectionLabel as="label">Project</SectionLabel>
+          <ProjectSelect value={selectedProjectId()} onChange={setSelectedProjectId} />
+        </div>
+
+        {/* Task name (optional, derived) + where-it-lands preview */}
         <div
           data-nav-field="task-name"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
@@ -694,7 +846,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           <SectionLabel as="label">
             Task name{' '}
             <span style={{ opacity: '0.5', 'text-transform': 'none' }}>
-              (optional — derived from prompt)
+              (optional - derived from prompt)
             </span>
           </SectionLabel>
           <input
@@ -704,15 +856,33 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             onInput={(e) => setName(e.currentTarget.value)}
             placeholder={effectiveName() || 'Add user authentication'}
             style={{
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '8px',
-              padding: '10px 14px',
-              color: theme.fg,
+              ...fieldInputStyle(),
               ...typography.ui,
-              outline: 'none',
             }}
           />
+          <Show when={createsNewWorktree() && branchPreview()}>
+            <span
+              style={{
+                ...typography.monoMeta,
+                color: theme.fgSubtle,
+                display: 'flex',
+                'align-items': 'center',
+                gap: '6px',
+                padding: '2px 2px 0',
+              }}
+            >
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                style={{ 'flex-shrink': '0' }}
+              >
+                <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
+              </svg>
+              new branch <code>{branchPreview()}</code>
+            </span>
+          </Show>
           <Show when={currentBranchMode() && selectedProjectPath()}>
             <div
               style={{
@@ -752,164 +922,66 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </Show>
         </div>
 
-        <Show when={selectedProjectPath() && !selectedProjectIsNonGit()}>
-          <div
-            data-nav-field="base-branch"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-          >
-            <SectionLabel as="label">Base branch</SectionLabel>
-            <div
-              style={{
-                display: 'grid',
-                'grid-template-columns': 'minmax(0, 1fr) minmax(180px, 240px)',
-                gap: '8px',
-              }}
-            >
-              <input
-                aria-label="Filter base branches"
-                class="input-field"
-                disabled={branchListStatus() === 'loading'}
-                onInput={(event) => setBranchQuery(event.currentTarget.value)}
-                placeholder="Filter branches"
-                type="text"
-                value={branchQuery()}
-                style={{
-                  background: theme.bgInput,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  color: theme.fg,
-                  outline: 'none',
-                  padding: '8px 10px',
-                  ...typography.monoUi,
-                }}
-              />
-              <select
-                aria-label="Base branch"
-                class="input-field"
-                disabled={branchListStatus() === 'loading' || visibleBranchOptions().length === 0}
-                onChange={(event) => setSelectedBaseBranch(event.currentTarget.value || null)}
-                value={selectedBaseBranch() ?? ''}
-                style={{
-                  background: theme.bgInput,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  color: theme.fg,
-                  outline: 'none',
-                  padding: '8px 10px',
-                  ...typography.monoUi,
-                }}
-              >
-                <For each={visibleBranchOptions()}>
-                  {(branch) => <option value={branch.name}>{formatBranchOption(branch)}</option>}
-                </For>
-              </select>
-            </div>
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                color: branchListStatus() === 'error' ? theme.warning : theme.fgSubtle,
-                display: 'flex',
-                'align-items': 'center',
-                gap: '8px',
-                ...typography.meta,
-              }}
-            >
-              <span>{branchPickerStatus()}</span>
-              <Show when={branchListStatus() === 'error'}>
-                <button
-                  type="button"
-                  class="btn-secondary"
-                  onClick={() => setBranchListRefreshId((id) => id + 1)}
-                  style={{
-                    background: theme.bgInput,
-                    border: `1px solid ${theme.border}`,
-                    'border-radius': '8px',
-                    color: theme.fg,
-                    cursor: 'pointer',
-                    padding: '4px 8px',
-                    ...typography.metaStrong,
-                  }}
-                >
-                  Retry
-                </button>
-              </Show>
-            </div>
-            <Show when={!selectedBaseBranchAvailable()}>
-              <div
-                role="alert"
-                style={{
-                  color: theme.error,
-                  background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-                  border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-                  'border-radius': '8px',
-                  padding: '6px 10px',
-                  ...typography.meta,
-                }}
-              >
-                Selected base branch is no longer available. Refresh or choose another branch.
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        <Show when={createsNewWorktree()}>
-          <BranchPrefixField
-            branchPrefix={branchPrefix()}
-            branchPreview={branchPreview()}
-            projectPath={selectedProjectPath()}
-            onPrefixChange={setBranchPrefix}
-          />
-        </Show>
-
-        <AgentSelector
-          agents={store.availableAgents}
-          selectedAgent={selectedAgent()}
-          onSelect={setSelectedAgent}
-        />
-
+        {/* Isolation - worktree vs current branch (git projects only). */}
         <Show when={!selectedProjectIsNonGit()}>
           <div
-            data-nav-field="current-branch-mode"
+            data-nav-field="isolation"
             style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
           >
-            <label
-              title={currentBranchTooltip()}
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '6px',
-                color: currentBranchModeDisabled() ? theme.fgSubtle : theme.fg,
-                cursor: currentBranchModeDisabled() ? 'not-allowed' : 'pointer',
-                opacity: currentBranchModeDisabled() ? '0.5' : '1',
-                ...typography.meta,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={currentBranchMode()}
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                aria-pressed={createsNewWorktree()}
+                title="Creates a git branch and worktree so the agent works in isolation without affecting the base branch."
+                onClick={() => {
+                  setCurrentBranchMode(false);
+                  setExistingWorktreeMode(false);
+                }}
+                style={isolationSegmentStyle(createsNewWorktree())}
+              >
+                New worktree
+              </button>
+              <button
+                type="button"
+                aria-pressed={currentBranchMode()}
                 disabled={currentBranchModeDisabled()}
-                onChange={(e) => updateCurrentBranchMode(e.currentTarget.checked)}
-                style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-              />
-              Work on current branch
-            </label>
+                title={currentBranchTooltip()}
+                onClick={() => updateCurrentBranchMode(true)}
+                style={isolationSegmentStyle(currentBranchMode(), currentBranchModeDisabled())}
+              >
+                Current branch
+              </button>
+            </div>
             <Show when={currentBranchModeDisabled()}>
               <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-                A current-branch task already exists for this project
+                A current-branch task already exists for this project.
+              </span>
+            </Show>
+            <Show
+              when={!currentBranchModeDisabled() && isFirstTaskForProject() && createsNewWorktree()}
+            >
+              <span style={{ color: theme.fgSubtle, ...typography.meta }}>
+                First task in this project - you can{' '}
+                <button
+                  type="button"
+                  onClick={() => updateCurrentBranchMode(true)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: '0',
+                    color: theme.link,
+                    cursor: 'pointer',
+                    'text-decoration': 'underline',
+                    ...typography.meta,
+                  }}
+                >
+                  work on the current branch
+                </button>{' '}
+                instead of creating a worktree.
               </span>
             </Show>
             <Show when={currentBranchMode()}>
-              <div
-                style={{
-                  color: theme.warning,
-                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                  padding: '6px 10px',
-                  'border-radius': '8px',
-                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                  ...typography.meta,
-                }}
-              >
+              <div style={calloutStyle('warning')}>
                 Reuses the project root. The backend switches to the selected base branch before
                 starting if needed.
               </div>
@@ -917,205 +989,280 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </div>
         </Show>
 
-        <Show when={!selectedProjectIsNonGit()}>
-          <div
-            data-nav-field="existing-worktree-mode"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-          >
-            <label
-              title={existingWorktreeTooltip()}
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '6px',
-                color: theme.fg,
-                cursor: 'pointer',
-                ...typography.meta,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={existingWorktreeMode()}
-                onChange={(e) => updateExistingWorktreeMode(e.currentTarget.checked)}
-                style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-              />
-              Use existing worktree
-            </label>
-            <Show when={existingWorktreeMode()}>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  class="input-field"
-                  type="text"
-                  value={existingWorktreePath()}
-                  onInput={(e) => setExistingWorktreePath(e.currentTarget.value)}
-                  placeholder="/path/to/existing/worktree"
-                  style={{
-                    flex: '1',
-                    background: theme.bgInput,
-                    border: `1px solid ${theme.border}`,
-                    'border-radius': '8px',
-                    padding: '8px 10px',
-                    color: theme.fg,
-                    ...typography.monoUi,
-                    outline: 'none',
-                  }}
-                />
-                <button
-                  type="button"
-                  class="btn-secondary"
-                  onClick={() => {
-                    void browseExistingWorktreePath();
-                  }}
-                  style={{
-                    padding: '8px 12px',
-                    background: theme.bgInput,
-                    border: `1px solid ${theme.border}`,
-                    'border-radius': '8px',
-                    color: theme.fg,
-                    cursor: 'pointer',
-                    ...typography.metaStrong,
-                  }}
-                >
-                  Browse
-                </button>
-              </div>
-              <div
-                style={{
-                  color: theme.fgSubtle,
-                  background: theme.bgElevated,
-                  padding: '6px 10px',
-                  'border-radius': '8px',
-                  border: `1px solid ${theme.border}`,
-                  ...typography.meta,
-                }}
-              >
-                Closing this task will keep the selected worktree and branch.
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        <div
-          data-nav-field="steps-tracking"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-        >
-          <label
-            title={stepsTrackingTooltip()}
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              gap: '6px',
-              color: theme.fg,
-              cursor: 'pointer',
-              ...typography.meta,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={stepsTracking()}
-              onChange={(e) => setStepsTracking(e.currentTarget.checked)}
-              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-            />
-            Track task steps
-          </label>
-          <Show when={stepsTracking()}>
-            <div
-              style={{
-                color: theme.fgSubtle,
-                background: theme.bgElevated,
-                padding: '6px 10px',
-                'border-radius': '8px',
-                border: `1px solid ${theme.border}`,
-                ...typography.meta,
-              }}
-            >
-              The backend watches <code>.claude/steps.json</code> and keeps step history shared
-              across clients.
-            </div>
-          </Show>
-        </div>
-
-        <Show when={agentSupportsSkipPermissions()}>
-          <div
-            data-nav-field="skip-permissions"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-          >
-            <label
-              title={skipPermissionsTooltip()}
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '6px',
-                color: theme.fg,
-                cursor: 'pointer',
-                ...typography.meta,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={skipPermissions()}
-                onChange={(e) => setSkipPermissions(e.currentTarget.checked)}
-                style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-              />
-              Dangerously skip all confirms
-            </label>
-            <Show when={skipPermissions()}>
-              <div
-                style={{
-                  color: theme.warning,
-                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                  padding: '6px 10px',
-                  'border-radius': '8px',
-                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                  ...typography.meta,
-                }}
-              >
-                Runs without confirmation. The agent can read, write, delete, and execute commands.
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        <Show when={ignoredDirs().length > 0 && createsNewWorktree()}>
-          <SymlinkDirPicker
-            dirs={ignoredDirs()}
-            selectedDirs={selectedDirs()}
-            onToggle={toggleSelectedDir}
-          />
-        </Show>
-
+        {/* Ignored-dir suggestion failures stay visible even when Advanced is collapsed. */}
         <Show when={createsNewWorktree() ? ignoredDirsError() : null}>
           {(message) => (
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: '6px 10px',
-                'border-radius': '8px',
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                ...typography.meta,
-              }}
-            >
+            <div role="status" aria-live="polite" style={calloutStyle('warning')}>
               Ignored directory suggestions unavailable: {message()}
             </div>
           )}
         </Show>
 
-        <Show when={error()}>
-          <div
+        <Show when={skipPermissionsActive()}>
+          <div role="status" aria-live="polite" style={calloutStyle('warning')}>
+            Runs without confirmation. The agent can read, write, delete, and execute commands.
+          </div>
+        </Show>
+
+        {/* Advanced - branch, worktree, permissions, files */}
+        <div
+          data-nav-field="advanced"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}
+        >
+          <button
+            type="button"
+            aria-expanded={advancedOpen()}
+            onClick={() => setAdvancedOpen((open) => !open)}
             style={{
-              color: theme.error,
-              background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-              padding: '8px 12px',
-              'border-radius': '8px',
-              border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-              ...typography.meta,
+              display: 'flex',
+              'align-items': 'center',
+              gap: '8px',
+              padding: '8px 4px',
+              background: 'transparent',
+              border: 'none',
+              'border-top': `1px solid ${theme.border}`,
+              color: theme.fgMuted,
+              cursor: 'pointer',
+              ...typography.metaStrong,
             }}
           >
-            {error()}
-          </div>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+              style={{
+                'flex-shrink': '0',
+                transition: 'transform 120ms ease',
+                transform: advancedOpen() ? 'rotate(90deg)' : 'rotate(0deg)',
+              }}
+            >
+              <path d="M6 4l4 4-4 4V4z" />
+            </svg>
+            <span>Advanced</span>
+            <span style={{ color: theme.fgSubtle, ...typography.meta }}>
+              branch, worktree, permissions, files
+            </span>
+            <Show when={!advancedOpen() && activeAdvancedCount() > 0}>
+              <span
+                style={{
+                  'margin-left': 'auto',
+                  padding: '1px 7px',
+                  'border-radius': '999px',
+                  background: `color-mix(in srgb, ${theme.accent} 18%, transparent)`,
+                  color: theme.accent,
+                  ...typography.label,
+                }}
+              >
+                {activeAdvancedCount()} active
+              </span>
+            </Show>
+          </button>
+
+          <Show when={advancedOpen()}>
+            <div
+              style={{
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '16px',
+                'padding-left': '4px',
+              }}
+            >
+              <Show when={selectedProjectPath() && !selectedProjectIsNonGit()}>
+                <div
+                  data-nav-field="base-branch"
+                  style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+                >
+                  <SectionLabel as="label">Base branch</SectionLabel>
+                  <div
+                    style={{
+                      display: 'grid',
+                      'grid-template-columns': 'minmax(0, 1fr) minmax(180px, 240px)',
+                      gap: '8px',
+                    }}
+                  >
+                    <input
+                      aria-label="Filter base branches"
+                      class="input-field"
+                      disabled={branchListStatus() === 'loading'}
+                      onInput={(event) => setBranchQuery(event.currentTarget.value)}
+                      placeholder="Filter branches"
+                      type="text"
+                      value={branchQuery()}
+                      style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
+                    />
+                    <select
+                      aria-label="Base branch"
+                      class="input-field"
+                      disabled={
+                        branchListStatus() === 'loading' || visibleBranchOptions().length === 0
+                      }
+                      onChange={(event) => setSelectedBaseBranch(event.currentTarget.value || null)}
+                      value={selectedBaseBranch() ?? ''}
+                      style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
+                    >
+                      <For each={visibleBranchOptions()}>
+                        {(branch) => (
+                          <option value={branch.name}>{formatBranchOption(branch)}</option>
+                        )}
+                      </For>
+                    </select>
+                  </div>
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    style={{
+                      color: branchListStatus() === 'error' ? theme.warning : theme.fgSubtle,
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '8px',
+                      ...typography.meta,
+                    }}
+                  >
+                    <span>{branchPickerStatus()}</span>
+                    <Show when={branchListStatus() === 'error'}>
+                      <button
+                        type="button"
+                        class="btn-secondary"
+                        onClick={() => setBranchListRefreshId((id) => id + 1)}
+                        style={{
+                          background: theme.bgInput,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '8px',
+                          color: theme.fg,
+                          cursor: 'pointer',
+                          padding: '4px 8px',
+                          ...typography.metaStrong,
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </Show>
+                  </div>
+                  <Show when={!selectedBaseBranchAvailable()}>
+                    <div role="alert" style={calloutStyle('error')}>
+                      Selected base branch is no longer available. Refresh or choose another branch.
+                    </div>
+                  </Show>
+                </div>
+              </Show>
+
+              <Show when={createsNewWorktree()}>
+                <BranchPrefixField
+                  branchPrefix={branchPrefix()}
+                  branchPreview={branchPreview()}
+                  projectPath={selectedProjectPath()}
+                  onPrefixChange={setBranchPrefix}
+                />
+              </Show>
+
+              <Show when={!selectedProjectIsNonGit()}>
+                <div
+                  data-nav-field="existing-worktree-mode"
+                  style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+                >
+                  <label title={existingWorktreeTooltip()} style={checkboxLabelStyle()}>
+                    <input
+                      type="checkbox"
+                      checked={existingWorktreeMode()}
+                      onChange={(e) => updateExistingWorktreeMode(e.currentTarget.checked)}
+                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                    />
+                    Use existing worktree
+                  </label>
+                  <Show when={existingWorktreeMode()}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        class="input-field"
+                        type="text"
+                        value={existingWorktreePath()}
+                        onInput={(e) => setExistingWorktreePath(e.currentTarget.value)}
+                        placeholder="/path/to/existing/worktree"
+                        style={{
+                          ...fieldInputStyle(),
+                          flex: '1',
+                          padding: '8px 10px',
+                          ...typography.monoUi,
+                        }}
+                      />
+                      <button
+                        type="button"
+                        class="btn-secondary"
+                        onClick={() => {
+                          void browseExistingWorktreePath();
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          background: theme.bgInput,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '8px',
+                          color: theme.fg,
+                          cursor: 'pointer',
+                          ...typography.metaStrong,
+                        }}
+                      >
+                        Browse
+                      </button>
+                    </div>
+                    <div style={calloutStyle('muted')}>
+                      Closing this task will keep the selected worktree and branch.
+                    </div>
+                  </Show>
+                </div>
+              </Show>
+
+              <div
+                data-nav-field="steps-tracking"
+                style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+              >
+                <label title={stepsTrackingTooltip()} style={checkboxLabelStyle()}>
+                  <input
+                    type="checkbox"
+                    checked={stepsTracking()}
+                    onChange={(e) => setStepsTracking(e.currentTarget.checked)}
+                    style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                  />
+                  Track task steps
+                </label>
+                <Show when={stepsTracking()}>
+                  <div style={calloutStyle('muted')}>
+                    The backend watches <code>.claude/steps.json</code> and keeps step history
+                    shared across clients.
+                  </div>
+                </Show>
+              </div>
+
+              <Show when={agentSupportsSkipPermissions()}>
+                <div
+                  data-nav-field="skip-permissions"
+                  style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+                >
+                  <label title={skipPermissionsTooltip()} style={checkboxLabelStyle()}>
+                    <input
+                      type="checkbox"
+                      checked={skipPermissions()}
+                      onChange={(e) => setSkipPermissions(e.currentTarget.checked)}
+                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                    />
+                    Dangerously skip all confirms
+                  </label>
+                </div>
+              </Show>
+
+              <Show when={ignoredDirs().length > 0 && createsNewWorktree()}>
+                <SymlinkDirPicker
+                  dirs={ignoredDirs()}
+                  selectedDirs={selectedDirs()}
+                  onToggle={toggleSelectedDir}
+                />
+              </Show>
+            </div>
+          </Show>
+        </div>
+
+        <Show when={error()}>
+          <div style={{ ...calloutStyle('error'), padding: '8px 12px' }}>{error()}</div>
         </Show>
 
         <div
