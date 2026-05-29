@@ -11,7 +11,12 @@ import { buildAgentSpawnArgs, shouldResumeAgentOnSpawn } from '../lib/agent-resu
 import { getAgentSpawnCommand, getAgentSpawnEnvironment } from '../lib/agent-spawn-config';
 import { invoke } from '../lib/ipc';
 import { store } from '../store/state';
+import { getSelectedTaskAgentId } from '../store/task-agent-selection';
 import type { Agent, Project, Task } from '../store/types';
+import {
+  getGlobalTerminalStartupPaintCoordinationSnapshot,
+  subscribeTerminalStartupPaintCoordinationChanges,
+} from './terminal-startup-paint';
 
 type EnsureAgentSessionsBatchRequest = RendererInvokeRequestMap[IPC.EnsureAgentSessionsBatch];
 type EnsureAgentSessionsBatchReason = EnsureAgentSessionsBatchRequest['reason'];
@@ -21,6 +26,11 @@ type EnsureAgentSessionResult =
 
 const DEFAULT_STARTUP_RESTORE_COLS = 80;
 const DEFAULT_STARTUP_RESTORE_ROWS = 24;
+const STARTUP_RESTORE_BACKGROUND_FALLBACK_MS = 1_000;
+
+interface StartupRestoreAgentSessionEnsureOptions {
+  isDisposed?: () => boolean;
+}
 
 function getProjectForTask(task: Pick<Task, 'projectId'>): Project | undefined {
   return store.projects.find((project) => project.id === task.projectId);
@@ -62,12 +72,42 @@ function createEnsureAgentSessionRequest(task: Task, agent: Agent): EnsureAgentS
   };
 }
 
+function createTaskAgentSelectionReference(
+  task: Pick<Task, 'selectedAgentId'>,
+  agentIds: string[],
+): Pick<Task, 'agentIds' | 'selectedAgentId'> {
+  if (task.selectedAgentId === undefined) {
+    return { agentIds };
+  }
+
+  return {
+    agentIds,
+    selectedAgentId: task.selectedAgentId,
+  };
+}
+
+function getTaskPreferredAgentId(
+  task: Pick<Task, 'agentIds' | 'selectedAgentId'>,
+  agentIds: string[],
+  preferredAgentId?: string | null,
+): string | null {
+  return getSelectedTaskAgentId(
+    createTaskAgentSelectionReference(task, agentIds),
+    preferredAgentId,
+  );
+}
+
 function getOrderedTaskAgentIds(task: Task): string[] {
   const agentIds = Array.isArray(task.agentIds) ? task.agentIds : [];
-  const preferredAgentId =
-    store.activeTaskId === task.id
-      ? (store.activeAgentId ?? task.selectedAgentId)
-      : task.selectedAgentId;
+  if (agentIds.length === 0) {
+    return [];
+  }
+
+  const preferredAgentId = getTaskPreferredAgentId(
+    task,
+    agentIds,
+    store.activeTaskId === task.id ? store.activeAgentId : null,
+  );
   if (!preferredAgentId || !agentIds.includes(preferredAgentId)) {
     return agentIds;
   }
@@ -79,6 +119,7 @@ function appendStartupRestoreAgentSessionRequests(
   taskId: string,
   requests: EnsureAgentSessionRequest[],
   seenAgentIds: Set<string>,
+  excludedAgentIds: ReadonlySet<string>,
 ): void {
   const task = store.tasks[taskId];
   if (!task || task.collapsed) {
@@ -86,7 +127,7 @@ function appendStartupRestoreAgentSessionRequests(
   }
 
   for (const agentId of getOrderedTaskAgentIds(task)) {
-    if (seenAgentIds.has(agentId)) {
+    if (seenAgentIds.has(agentId) || excludedAgentIds.has(agentId)) {
       continue;
     }
 
@@ -100,19 +141,54 @@ function appendStartupRestoreAgentSessionRequests(
   }
 }
 
-function collectStartupRestoreAgentSessionRequests(): EnsureAgentSessionRequest[] {
+function getActiveStartupRestoreSelectedAgentId(): string | null {
+  if (!store.activeTaskId) {
+    return null;
+  }
+
+  const task = store.tasks[store.activeTaskId];
+  if (!task || task.collapsed) {
+    return null;
+  }
+
+  const agentIds = Array.isArray(task.agentIds) ? task.agentIds : [];
+  if (agentIds.length === 0) {
+    return null;
+  }
+
+  return getTaskPreferredAgentId(task, agentIds, store.activeAgentId);
+}
+
+function collectStartupRestoreAgentSessionRequests(
+  excludedAgentIds: ReadonlySet<string>,
+): EnsureAgentSessionRequest[] {
   const requests: EnsureAgentSessionRequest[] = [];
   const seenAgentIds = new Set<string>();
 
   if (store.activeTaskId) {
-    appendStartupRestoreAgentSessionRequests(store.activeTaskId, requests, seenAgentIds);
+    appendStartupRestoreAgentSessionRequests(
+      store.activeTaskId,
+      requests,
+      seenAgentIds,
+      excludedAgentIds,
+    );
   }
 
   for (const taskId of store.taskOrder) {
-    appendStartupRestoreAgentSessionRequests(taskId, requests, seenAgentIds);
+    appendStartupRestoreAgentSessionRequests(taskId, requests, seenAgentIds, excludedAgentIds);
   }
 
   return requests;
+}
+
+function collectStartupRestoreBackgroundAgentSessionRequests(): EnsureAgentSessionRequest[] {
+  const excludedAgentIds = new Set<string>();
+  const selectedAgentId = getActiveStartupRestoreSelectedAgentId();
+  if (selectedAgentId) {
+    excludedAgentIds.add(selectedAgentId);
+  }
+
+  return collectStartupRestoreAgentSessionRequests(excludedAgentIds);
 }
 
 function getBatchEnsureFailures(
@@ -125,17 +201,31 @@ function getBatchEnsureFailures(
   return response.results.filter((result) => result.error !== undefined);
 }
 
-async function ensureAgentSessionsForStartupRestore(): Promise<void> {
-  const requests = collectStartupRestoreAgentSessionRequests();
+async function ensureAgentSessionsForStartupRestore(
+  options: StartupRestoreAgentSessionEnsureOptions,
+): Promise<void> {
+  if (options.isDisposed?.() === true) {
+    return;
+  }
+
+  const requests = collectStartupRestoreBackgroundAgentSessionRequests();
   if (requests.length === 0) {
     return;
   }
 
   const reason: EnsureAgentSessionsBatchReason = 'startup-restore';
+  if (options.isDisposed?.() === true) {
+    return;
+  }
+
   const response = await invoke(IPC.EnsureAgentSessionsBatch, {
     reason,
     requests,
   });
+  if (options.isDisposed?.() === true) {
+    return;
+  }
+
   const failures = getBatchEnsureFailures(response);
   if (failures.length === 0) {
     return;
@@ -151,8 +241,73 @@ async function ensureAgentSessionsForStartupRestore(): Promise<void> {
   );
 }
 
-export function startStartupRestoreAgentSessionEnsure(): void {
-  void ensureAgentSessionsForStartupRestore().catch((error) => {
-    console.warn('[terminal] Failed to prewarm restored agent sessions:', error);
-  });
+function shouldWaitForSelectedPaintBeforeStartupRestoreBackgroundEnsure(): boolean {
+  if (!getActiveStartupRestoreSelectedAgentId()) {
+    return false;
+  }
+
+  return !getGlobalTerminalStartupPaintCoordinationSnapshot().selectedPaintReady;
+}
+
+export function startStartupRestoreAgentSessionEnsure(
+  options: StartupRestoreAgentSessionEnsureOptions = {},
+): () => void {
+  let cancelled = false;
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let unsubscribePaintChanges: (() => void) | undefined;
+
+  function isStopped(): boolean {
+    return cancelled || options.isDisposed?.() === true;
+  }
+
+  function cleanupWaiters(): void {
+    if (timeoutId !== undefined) {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    unsubscribePaintChanges?.();
+    unsubscribePaintChanges = undefined;
+  }
+
+  function runEnsure(): void {
+    if (isStopped()) {
+      cleanupWaiters();
+      return;
+    }
+
+    cleanupWaiters();
+    void ensureAgentSessionsForStartupRestore({
+      isDisposed: isStopped,
+    }).catch((error) => {
+      if (!isStopped()) {
+        console.warn('[terminal] Failed to prewarm restored agent sessions:', error);
+      }
+    });
+  }
+
+  function maybeRunAfterSelectedPaint(): void {
+    if (isStopped()) {
+      cleanupWaiters();
+      return;
+    }
+
+    if (!shouldWaitForSelectedPaintBeforeStartupRestoreBackgroundEnsure()) {
+      runEnsure();
+    }
+  }
+
+  if (shouldWaitForSelectedPaintBeforeStartupRestoreBackgroundEnsure()) {
+    timeoutId = globalThis.setTimeout(runEnsure, STARTUP_RESTORE_BACKGROUND_FALLBACK_MS);
+    unsubscribePaintChanges = subscribeTerminalStartupPaintCoordinationChanges(
+      maybeRunAfterSelectedPaint,
+    );
+    maybeRunAfterSelectedPaint();
+  } else {
+    runEnsure();
+  }
+
+  return () => {
+    cancelled = true;
+    cleanupWaiters();
+  };
 }

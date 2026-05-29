@@ -385,12 +385,28 @@ export async function runDesktopSessionStartup(
 ): Promise<void> {
   emitStartupBreadcrumb('desktop-startup:begin');
   const startupTimerController = createDesktopSessionStartupTimerController();
+  const startupCleanupCallbacks = new Set<() => void>();
+  function cleanupStartupScopedResources(): void {
+    startupTimerController.cancelAll();
+    for (const cleanup of startupCleanupCallbacks) {
+      cleanup();
+    }
+    startupCleanupCallbacks.clear();
+  }
+
+  function registerStartupScopedCleanup(cleanup: () => void): void {
+    if (isDisposed()) {
+      cleanup();
+      return;
+    }
+
+    startupCleanupCallbacks.add(cleanup);
+  }
+
   resources.cleanupStartupTimers = replaceDesktopSessionResource(
     isDisposed(),
     resources.cleanupStartupTimers,
-    () => {
-      startupTimerController.cancelAll();
-    },
+    cleanupStartupScopedResources,
     disposeCleanup,
   );
   let browserAgentCatalogRefreshPromise: Promise<void> | null = null;
@@ -430,7 +446,7 @@ export async function runDesktopSessionStartup(
   if (options.electronRuntime) {
     setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadState();
-    startStartupRestoreAgentSessionEnsure();
+    registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
   } else {
     beginBrowserColdBootstrap();
     emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
@@ -515,7 +531,7 @@ export async function runDesktopSessionStartup(
       restoreTerminalPanels: true,
     });
     reconcileClientSessionState();
-    startStartupRestoreAgentSessionEnsure();
+    registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
     setBrowserStartupTier('selected-task');
     emitStartupBreadcrumb('desktop-startup:browser-selected-task');
     if (usedHandoffProjection) {
