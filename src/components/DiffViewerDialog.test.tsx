@@ -110,6 +110,12 @@ vi.mock('./ScrollingDiffView', () => ({
       <div>
         <div>Scrolling diff view</div>
         <button onClick={addReviewComment}>Add review comment</button>
+        <Show when={(props.searchQuery ?? '').trim().length > 0}>
+          <div>
+            <mark>match-a</mark>
+            <mark>match-b</mark>
+          </div>
+        </Show>
       </div>
     );
   },
@@ -125,6 +131,11 @@ describe('DiffViewerDialog', () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: writeTextMock },
+    });
+    // jsdom does not implement scrollIntoView; match navigation calls it.
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
     });
   });
 
@@ -150,6 +161,50 @@ describe('DiffViewerDialog', () => {
       newContent: 'new',
       oldContent: 'old',
     };
+  }
+
+  function createSingleLineSearchDiffResult(): FileDiffResult {
+    return createFileDiffResult(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-old
++new
+`);
+  }
+
+  function createTwoMatchSearchDiffResult(): FileDiffResult {
+    return createFileDiffResult(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,2 +1,2 @@
+-old alpha
+-old beta
++new alpha
++new beta
+`);
+  }
+
+  function renderDefaultDiffViewer(): void {
+    render(() => (
+      <DiffViewerDialog
+        file={createChangedFile({ committed: true, path: 'src/a.ts', status: 'M' })}
+        worktreePath="/tmp/task"
+        onClose={() => {}}
+      />
+    ));
+  }
+
+  function dispatchCancelableKeyDown(element: HTMLElement, key: string): boolean {
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key,
+    });
+
+    return element.dispatchEvent(event);
   }
 
   function createDeferredPromise<T>(): {
@@ -381,5 +436,91 @@ index 1111111..2222222 100644
     await waitFor(() => {
       expect(scrollingDiffViewPropsRef.current?.filePaths).toEqual(['src/second.ts']);
     });
+  });
+
+  it('focuses the search field on Cmd+F from inside the viewer', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue(createSingleLineSearchDiffResult());
+    renderDefaultDiffViewer();
+
+    const zoomRoot = (await screen
+      .findByText('Scrolling diff view')
+      .then((element) => element.closest('[data-diff-viewer-zoom-root]'))) as HTMLElement;
+    const search = screen.getByPlaceholderText('Search...') as HTMLInputElement;
+    await waitFor(() => {
+      expect(document.activeElement).toBe(zoomRoot);
+    });
+    expect(document.activeElement).not.toBe(search);
+
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('clears the search on Escape and stops the viewer from closing', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue(createSingleLineSearchDiffResult());
+    renderDefaultDiffViewer();
+
+    await screen.findByText('Scrolling diff view');
+    const search = screen.getByPlaceholderText('Search...') as HTMLInputElement;
+    const documentKeydown = vi.fn();
+    document.addEventListener('keydown', documentKeydown);
+
+    try {
+      // No active query: Escape is allowed to bubble (the Dialog base would close the viewer).
+      fireEvent.keyDown(search, { key: 'Escape' });
+      expect(documentKeydown).toHaveBeenCalledTimes(1);
+
+      fireEvent.input(search, { target: { value: 'new' } });
+      documentKeydown.mockClear();
+
+      // Active query: Escape clears it and must not reach the document-level close handler.
+      fireEvent.keyDown(search, { key: 'Escape' });
+      expect(search.value).toBe('');
+      expect(documentKeydown).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('keydown', documentKeydown);
+    }
+  });
+
+  it('cycles search matches with Enter/Shift+Enter and shows the position', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue(createTwoMatchSearchDiffResult());
+    renderDefaultDiffViewer();
+
+    await screen.findByText('Scrolling diff view');
+    const search = screen.getByPlaceholderText('Search...') as HTMLInputElement;
+
+    fireEvent.input(search, { target: { value: 'new' } });
+    expect(await screen.findByText('2 matches')).toBeTruthy();
+
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(await screen.findByText('1 of 2')).toBeTruthy();
+
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(await screen.findByText('2 of 2')).toBeTruthy();
+
+    // Wraps back to the first match.
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(await screen.findByText('1 of 2')).toBeTruthy();
+
+    // Shift+Enter steps backwards (and wraps).
+    fireEvent.keyDown(search, { key: 'Enter', shiftKey: true });
+    expect(await screen.findByText('2 of 2')).toBeTruthy();
+  });
+
+  it('does not consume search navigation keys from other controls in the viewer', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue(createTwoMatchSearchDiffResult());
+    renderDefaultDiffViewer();
+
+    await screen.findByText('Scrolling diff view');
+    const search = screen.getByPlaceholderText('Search...') as HTMLInputElement;
+    const reviewButton = screen.getByRole('button', { name: 'Add review comment' });
+
+    fireEvent.input(search, { target: { value: 'new' } });
+    expect(await screen.findByText('2 matches')).toBeTruthy();
+
+    expect(dispatchCancelableKeyDown(reviewButton, 'Enter')).toBe(true);
+    expect(screen.getByText('2 matches')).toBeTruthy();
+
+    expect(dispatchCancelableKeyDown(reviewButton, 'Escape')).toBe(true);
+    expect(search.value).toBe('new');
   });
 });

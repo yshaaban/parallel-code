@@ -1,4 +1,12 @@
-import { Show, createEffect, createSignal, createUniqueId, onCleanup, type JSX } from 'solid-js';
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  onCleanup,
+  type JSX,
+} from 'solid-js';
 
 import { createTaskReviewDiffRequest, fetchTaskFileDiff } from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
@@ -29,6 +37,19 @@ interface DiffViewerDialogProps {
 const MIN_DIALOG_ZOOM = 0.5;
 const MAX_DIALOG_ZOOM = 2.0;
 const DIALOG_ZOOM_STEP = 0.1;
+const SEARCH_SHORTCUT_INTERACTIVE_SELECTOR = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  '[contenteditable="true"]',
+  '[contenteditable="plaintext-only"]',
+  '[role="button"]',
+  '[role="combobox"]',
+  '[role="menuitem"]',
+  '[role="textbox"]',
+].join(',');
 
 function countMatches(files: ReadonlyArray<ParsedFileDiff>, query: string): number {
   if (!query) {
@@ -61,6 +82,18 @@ function countMatches(files: ReadonlyArray<ParsedFileDiff>, query: string): numb
   return count;
 }
 
+function getNextMatchIndex(currentIndex: number, direction: 1 | -1, matchCount: number): number {
+  if (currentIndex < 0) {
+    if (direction === 1) {
+      return 0;
+    }
+
+    return matchCount - 1;
+  }
+
+  return (currentIndex + direction + matchCount) % matchCount;
+}
+
 export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const titleId = createUniqueId();
   const [parsedFiles, setParsedFiles] = createSignal<ParsedFileDiff[]>([]);
@@ -69,6 +102,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [searchQuery, setSearchQuery] = createSignal('');
   const [dialogZoom, setDialogZoom] = createSignal(1);
   const [activeFile, setActiveFile] = createSignal<ChangedFile | null>(null);
+  const [activeMatchIndex, setActiveMatchIndex] = createSignal(-1);
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compileDiffReviewPrompt,
@@ -78,6 +112,8 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     });
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
+  let zoomRootRef: HTMLDivElement | undefined;
+  let activeMatchEl: HTMLElement | null = null;
 
   function closeDialog(): void {
     reviewSession.reset();
@@ -94,6 +130,136 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
         ) / 10,
     );
   }
+
+  function clearActiveMatch(): void {
+    if (activeMatchEl) {
+      activeMatchEl.style.outline = '';
+      activeMatchEl.style.outlineOffset = '';
+      activeMatchEl = null;
+    }
+    setActiveMatchIndex(-1);
+  }
+
+  function getSearchMarks(): HTMLElement[] {
+    if (!zoomRootRef) {
+      return [];
+    }
+
+    return Array.from(zoomRootRef.querySelectorAll<HTMLElement>('mark'));
+  }
+
+  function canHandleSearchShortcutTarget(target: EventTarget | null): boolean {
+    if (target === searchInputRef || target === zoomRootRef) {
+      return true;
+    }
+
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return target.closest(SEARCH_SHORTCUT_INTERACTIVE_SELECTOR) === null;
+  }
+
+  // Search matches are rendered as <mark> nodes by ScrollingDiffView. There is no virtualization,
+  // so match navigation can query the rendered tree without threading match state through the
+  // diff renderer.
+  function goToMatch(direction: 1 | -1): void {
+    const marks = getSearchMarks();
+    if (marks.length === 0) {
+      clearActiveMatch();
+      return;
+    }
+
+    const next = getNextMatchIndex(activeMatchIndex(), direction, marks.length);
+
+    if (activeMatchEl) {
+      activeMatchEl.style.outline = '';
+      activeMatchEl.style.outlineOffset = '';
+    }
+
+    const target = marks[next];
+    if (!target) {
+      return;
+    }
+
+    target.style.outline = `2px solid ${theme.accent}`;
+    target.style.outlineOffset = '1px';
+    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+    activeMatchEl = target;
+    setActiveMatchIndex(next);
+  }
+
+  // Attached to the viewer's own element (see the ref below) rather than the document so it (a)
+  // cannot steal Cmd+F / Escape when another dialog is stacked on top, and (b) runs before the
+  // Dialog base's document-level Escape handler, letting Escape-to-clear win via stopPropagation.
+  function handleViewerKeyDown(event: KeyboardEvent): void {
+    const withModifier = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+
+    if (withModifier && key === 'f') {
+      event.preventDefault();
+      searchInputRef?.focus();
+      searchInputRef?.select();
+      return;
+    }
+
+    const hasQuery = searchQuery().trim().length > 0;
+    const canHandleTarget = canHandleSearchShortcutTarget(event.target);
+
+    if (event.key === 'Escape' && hasQuery && canHandleTarget) {
+      // Clear the search first and keep the viewer open. stopPropagation prevents the Dialog base's
+      // document-level Escape handler (which fires later in the bubble phase) from closing us.
+      event.preventDefault();
+      event.stopPropagation();
+      setSearchQuery('');
+      return;
+    }
+
+    if (!hasQuery) {
+      return;
+    }
+
+    if (!canHandleTarget) {
+      return;
+    }
+
+    if (event.key === 'Enter' || (withModifier && key === 'g')) {
+      event.preventDefault();
+      goToMatch(event.shiftKey ? -1 : 1);
+    }
+  }
+
+  onCleanup(() => {
+    zoomRootRef?.removeEventListener('keydown', handleViewerKeyDown);
+  });
+
+  const matchLabel = createMemo(() => {
+    const query = searchQuery().trim();
+    if (!query) {
+      return '';
+    }
+
+    const active = activeMatchIndex();
+    const parsedMatchCount = countMatches(parsedFiles(), query);
+    const total = active >= 0 ? getSearchMarks().length || parsedMatchCount : parsedMatchCount;
+    if (total === 0) {
+      return 'No matches';
+    }
+
+    if (active >= 0) {
+      return `${Math.min(active + 1, total)} of ${total}`;
+    }
+
+    return `${total} matches`;
+  });
+
+  // Rendered <mark> nodes are recreated whenever the query or selected diff changes.
+  createEffect(() => {
+    searchQuery();
+    activeFile();
+    parsedFiles();
+    clearActiveMatch();
+  });
 
   createEffect(() => {
     const file = props.file;
@@ -152,25 +318,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
           setLoading(false);
         }
       });
-  });
-
-  createEffect(() => {
-    const activeFile = props.file;
-    if (!activeFile) {
-      return;
-    }
-
-    function handleKeyDown(event: KeyboardEvent): void {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
-        event.preventDefault();
-        searchInputRef?.focus();
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown);
-    onCleanup(() => {
-      document.removeEventListener('keydown', handleKeyDown);
-    });
   });
 
   function getTotalAdded(): number {
@@ -247,8 +394,21 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
       <Show when={activeFile()}>
         {(file) => (
           <div
+            ref={(element) => {
+              if (zoomRootRef) {
+                zoomRootRef.removeEventListener('keydown', handleViewerKeyDown);
+              }
+              zoomRootRef = element;
+              element.addEventListener('keydown', handleViewerKeyDown);
+              queueMicrotask(() => {
+                if (element.isConnected) {
+                  element.focus({ preventScroll: true });
+                }
+              });
+            }}
             data-diff-viewer-zoom-root
             onWheel={handleDialogWheel}
+            tabIndex={-1}
             style={{
               display: 'flex',
               'flex-direction': 'column',
@@ -302,14 +462,16 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
 
               <input
                 ref={searchInputRef}
+                class="input-field"
                 type="text"
                 placeholder="Search..."
+                title="Enter / Shift+Enter to cycle matches; Esc to clear"
                 value={searchQuery()}
                 onInput={(event) => setSearchQuery(event.currentTarget.value)}
                 style={{
-                  background: 'rgba(255,255,255,0.06)',
+                  background: theme.bgInput,
                   border: `1px solid ${theme.borderSubtle}`,
-                  'border-radius': '4px',
+                  'border-radius': '8px',
                   color: theme.fg,
                   padding: '2px 6px',
                   width: '180px',
@@ -317,7 +479,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   ...typography.monoUi,
                 }}
               />
-              <Show when={searchQuery().trim().length > 0}>
+              <Show when={matchLabel()}>
                 <span
                   style={{
                     color: theme.fgSubtle,
@@ -325,7 +487,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                     ...typography.meta,
                   }}
                 >
-                  {countMatches(parsedFiles(), searchQuery())} matches
+                  {matchLabel()}
                 </span>
               </Show>
 
@@ -341,7 +503,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   padding: '4px',
                   display: 'flex',
                   'align-items': 'center',
-                  'border-radius': '4px',
+                  'border-radius': '8px',
                 }}
                 title="Close"
               >
