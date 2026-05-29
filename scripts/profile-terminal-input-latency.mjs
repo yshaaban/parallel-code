@@ -14,7 +14,7 @@ import { createBrowserServerClient } from './browser-server-client.mjs';
 const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
 const RESET_BACKEND_RUNTIME_DIAGNOSTICS = 'reset_backend_runtime_diagnostics';
 
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000';
+const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
 const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';

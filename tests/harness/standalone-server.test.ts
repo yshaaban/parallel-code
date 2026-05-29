@@ -344,8 +344,8 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     }
   });
 
-  it('starts on an ephemeral port even when 3000 is already occupied', async () => {
-    const blocker = await occupyPortIfAvailable(3000);
+  it('starts on an ephemeral port even when the default browser port is already occupied', async () => {
+    const blocker = await occupyPortIfAvailable(43_117);
     if (blocker) {
       cleanup.push(() => closeServer(blocker));
     }
@@ -357,7 +357,7 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     });
     cleanup.push(() => server.stop());
 
-    expect(server.port).not.toBe(3000);
+    expect(server.port).not.toBe(43_117);
     expect(server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
   });
 

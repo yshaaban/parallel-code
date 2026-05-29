@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -25,6 +25,13 @@ INVALID
       PARALLEL_CODE_ENV_KEEP: 'quoted value',
       PARALLEL_CODE_ENV_TEST: 'value',
     });
+  });
+
+  it('keeps the checked-in local browser defaults parseable', () => {
+    const parsed = parseEnvFile(readFileSync(new URL('../.env.example', import.meta.url), 'utf8'));
+
+    expect(parsed.PORT).toBe('43117');
+    expect(parsed.AUTH_TOKEN).toBe('parallel-code-local-browser');
   });
 
   it('loads missing keys without overwriting existing environment variables', () => {

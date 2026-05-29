@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { getServerPort } from './server-port.js';
 
 describe('getServerPort', () => {
-  it('defaults to port 3000 when PORT is missing', () => {
-    expect(getServerPort({})).toBe(3000);
+  it('defaults to the Parallel Code browser port when PORT is missing', () => {
+    expect(getServerPort({})).toBe(43_117);
   });
 
   it('accepts port zero for ephemeral browser-lab startup', () => {
@@ -15,9 +15,9 @@ describe('getServerPort', () => {
   });
 
   it.each(['-1', '65536', '3.14', 'abc'])(
-    'falls back to 3000 for invalid port value %s',
+    'falls back to the Parallel Code browser port for invalid port value %s',
     (value) => {
-      expect(getServerPort({ PORT: value })).toBe(3000);
+      expect(getServerPort({ PORT: value })).toBe(43_117);
     },
   );
 });

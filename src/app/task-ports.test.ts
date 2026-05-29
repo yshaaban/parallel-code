@@ -33,7 +33,7 @@ describe('task preview urls', () => {
       configurable: true,
       value: {
         location: {
-          origin: 'http://127.0.0.1:3000',
+          origin: 'http://127.0.0.1:43117',
         },
       },
     });
@@ -105,7 +105,9 @@ describe('task preview urls', () => {
   it('uses the browser preview proxy for browser mode', () => {
     isElectronRuntimeMock.mockReturnValue(false);
 
-    expect(buildTaskPreviewUrl('task-1', 5173)).toBe('http://127.0.0.1:3000/_preview/task-1/5173/');
+    expect(buildTaskPreviewUrl('task-1', 5173)).toBe(
+      'http://127.0.0.1:43117/_preview/task-1/5173/',
+    );
   });
 
   it('falls back to loopback for electron previews when the detected host is not local', () => {

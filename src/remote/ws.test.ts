@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment-options {"url":"http://localhost:43117/remote"}
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AgentsMessage,
@@ -508,7 +509,7 @@ describe('remote ws projections', () => {
       options.getSocketUrl({ clientId: 'remote-mobile-client', lastSeq: 12, token: null }),
     );
 
-    expect(url.origin).toBe('ws://localhost:3000');
+    expect(url.origin).toBe('ws://localhost:43117');
     expect(url.pathname).toBe('/ws');
     expect(url.searchParams.get('clientId')).toBe('remote-mobile-client');
     expect(url.searchParams.get('lastSeq')).toBe('12');

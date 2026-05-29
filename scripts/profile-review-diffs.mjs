@@ -4,7 +4,7 @@ import process from 'node:process';
 import { createBrowserServerClient } from './browser-server-client.mjs';
 
 const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000';
+const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
 const DEFAULT_SAMPLE_FILES = 5;
 const DEFAULT_WARM_RUNS = 3;
 

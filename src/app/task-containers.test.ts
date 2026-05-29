@@ -23,7 +23,7 @@ describe('task container preview urls', () => {
       configurable: true,
       value: {
         location: {
-          origin: 'http://127.0.0.1:3000',
+          origin: 'http://127.0.0.1:43117',
         },
       },
     });
@@ -44,7 +44,7 @@ describe('task container preview urls', () => {
         port: 3000,
         protocol: 'http',
       }),
-    ).toBe('http://127.0.0.1:3000/_container_preview/task-1/3000/');
+    ).toBe('http://127.0.0.1:43117/_container_preview/task-1/3000/');
   });
 
   it('uses the published loopback port directly in Electron', () => {

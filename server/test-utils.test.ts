@@ -117,7 +117,7 @@ describe('waitForTestServerStartup', () => {
     const ready = waitForTestServerStartup(proc as never, 100);
 
     proc.stdout.emit('data', Buffer.from('Parallel Code server list'));
-    proc.stdout.emit('data', Buffer.from('ening on http://127.0.0.1:3000\n'));
+    proc.stdout.emit('data', Buffer.from('ening on http://127.0.0.1:43117\n'));
 
     await expect(ready).resolves.toBeUndefined();
     expect(proc.kill).not.toHaveBeenCalled();

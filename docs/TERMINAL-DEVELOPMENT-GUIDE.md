@@ -117,6 +117,12 @@ Prefer repo entrypoints that launch a fresh standalone server for you:
 Do not make a hand-managed `npm run server` process your primary validation path. The scripted
 paths avoid the stale-server problem that is easy to miss during browser terminal debugging.
 
+For manual browser-mode development, copy `.env.example` to `.env` and run
+`npm run browser:dev`. The local defaults intentionally use port `43117` and token
+`parallel-code-local-browser`, so the development URL is stable across restarts:
+`http://127.0.0.1:43117?token=parallel-code-local-browser`. Change `AUTH_TOKEN` before exposing
+the server outside local development.
+
 Browser Playwright entrypoints now auto-prepare browser artifacts once when they are stale or
 missing. The standalone harness still fails on stale `dist`, `dist-remote`, or `dist-server` if
 someone bypasses the wrapper, so stale browser runs do not silently succeed.

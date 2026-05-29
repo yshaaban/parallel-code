@@ -68,7 +68,7 @@ Scan a QR code and watch all your agent terminals live on your phone — over Wi
 
 ### Browser mode — no Electron required
 
-Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:3000`. The remote mobile app is available at `/remote`.
+Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:43117`. The remote mobile app is available at `/remote`.
 
 ### Task-scoped preview — expose app ports safely
 
@@ -148,14 +148,22 @@ Run without Electron — deploy on any machine with Node.js:
 git clone https://github.com/johannesjo/parallel-code.git
 cd parallel-code
 npm install
-npm run server        # builds everything, starts on port 3000
+npm run server        # builds everything, starts on port 43117
 ```
 
-Open the URL printed in the terminal (includes a one-time auth token). Set `AUTH_TOKEN` for a persistent token, or copy `.env.example` to `.env` to configure all options:
+Open the URL printed in the terminal. For local development, copy `.env.example` to `.env` to keep a stable port and token across server restarts:
 
 ```sh
-AUTH_TOKEN=my-secret-token npm run server
+cp .env.example .env
 ```
+
+With the checked-in local defaults, the browser URL is:
+
+```text
+http://127.0.0.1:43117?token=parallel-code-local-browser
+```
+
+Change `AUTH_TOKEN` before exposing the server beyond local development. If no token is configured, the server generates a random one for that process and prints it at startup.
 
 The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
 
@@ -194,18 +202,18 @@ Useful operational commands:
 <details>
 <summary><strong>All commands</strong></summary>
 
-| Command                | Description                                   |
-| ---------------------- | --------------------------------------------- |
-| `npm run browser:dev`  | Browser-mode dev server with auto rebuild     |
-| `npm run dev`          | Start Electron app in dev mode                |
-| `npm run server`       | Build and start standalone server (port 3000) |
-| `npm run dev:server`   | Server dev mode with hot reload               |
-| `npm run build`        | Build browser/server artifacts and Electron   |
-| `npm run build:remote` | Build remote mobile app to `dist-remote/`     |
-| `npm run typecheck`    | Run app, lifecycle, and server type checking  |
-| `npm test`             | Run the full node + Solid test suites         |
-| `npm run test:node`    | Run node/transport/backend tests              |
-| `npm run test:solid`   | Run Solid/jsdom screen behavior tests         |
+| Command                | Description                                    |
+| ---------------------- | ---------------------------------------------- |
+| `npm run browser:dev`  | Browser-mode dev server with auto rebuild      |
+| `npm run dev`          | Start Electron app in dev mode                 |
+| `npm run server`       | Build and start standalone server (port 43117) |
+| `npm run dev:server`   | Server dev mode with hot reload                |
+| `npm run build`        | Build browser/server artifacts and Electron    |
+| `npm run build:remote` | Build remote mobile app to `dist-remote/`      |
+| `npm run typecheck`    | Run app, lifecycle, and server type checking   |
+| `npm test`             | Run the full node + Solid test suites          |
+| `npm run test:node`    | Run node/transport/backend tests               |
+| `npm run test:solid`   | Run Solid/jsdom screen behavior tests          |
 
 </details>
 
