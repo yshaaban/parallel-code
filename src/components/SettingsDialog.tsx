@@ -217,7 +217,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       width="640px"
       zIndex={1100}
       labelledBy={titleId}
-      panelStyle={{ 'max-width': 'calc(100vw - 32px)', padding: '24px', gap: '18px' }}
+      panelStyle={{ 'max-width': 'calc(100vw - 32px)', padding: '20px', gap: '14px' }}
     >
       <DialogHeader
         description={
@@ -282,6 +282,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           >
             <span style={{ ...typography.ui, color: theme.fg }}>Hydra command override</span>
             <input
+              class="input-field"
               type="text"
               value={store.hydraCommand}
               onInput={(e) => handleHydraCommandInput(e.currentTarget.value)}
@@ -289,8 +290,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               style={{
                 background: theme.taskPanelBg,
                 border: `1px solid ${theme.border}`,
-                'border-radius': '6px',
-                padding: '6px 10px',
+                'border-radius': '8px',
+                padding: '8px 11px',
                 color: theme.fg,
                 ...typography.monoUi,
                 outline: 'none',
@@ -330,6 +331,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           >
             <span style={{ ...typography.ui, color: theme.fg }}>Startup mode</span>
             <select
+              class="project-select"
               value={store.hydraStartupMode}
               onChange={(e) =>
                 setHydraStartupMode(
@@ -339,8 +341,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               style={{
                 background: theme.taskPanelBg,
                 border: `1px solid ${theme.border}`,
-                'border-radius': '6px',
-                padding: '6px 10px',
+                'border-radius': '8px',
+                padding: '8px 11px',
                 color: theme.fg,
                 ...typography.ui,
                 outline: 'none',
@@ -459,6 +461,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
         <Show when={taskNotificationSettingState().showEnableButton}>
           <button
             type="button"
+            class="btn-secondary"
             onClick={() => {
               void handleEnableBrowserNotifications();
             }}
@@ -525,6 +528,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           </div>
           <button
             type="button"
+            class="btn-secondary"
             disabled={updateCheckPending()}
             onClick={() => {
               void handleCheckForUpdates();
@@ -536,7 +540,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               color: theme.fg,
               cursor: updateCheckPending() ? 'not-allowed' : 'pointer',
               opacity: updateCheckPending() ? 0.55 : 1,
-              padding: '6px 10px',
+              padding: '8px 11px',
               ...typography.metaStrong,
             }}
           >
@@ -571,6 +575,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               Editor command
             </span>
             <input
+              class="input-field"
               type="text"
               value={store.editorCommand}
               onInput={(e) => setEditorCommand(e.currentTarget.value)}
@@ -579,8 +584,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 flex: '1',
                 background: theme.taskPanelBg,
                 border: `1px solid ${theme.border}`,
-                'border-radius': '6px',
-                padding: '6px 10px',
+                'border-radius': '8px',
+                padding: '8px 11px',
                 color: theme.fg,
                 ...typography.monoUi,
                 outline: 'none',

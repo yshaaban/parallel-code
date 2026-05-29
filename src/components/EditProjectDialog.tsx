@@ -254,7 +254,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
       onClose={props.onClose}
       width="480px"
       labelledBy={titleId}
-      panelStyle={{ gap: '20px' }}
+      panelStyle={{ padding: '20px', gap: '14px' }}
     >
       <Show when={props.project}>
         {(project) => (
@@ -284,6 +284,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
               </div>
               <button
                 type="button"
+                class="btn-secondary"
                 onClick={() => relinkProject(project().id)}
                 style={{
                   padding: '3px 10px',
@@ -314,6 +315,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                 <span style={{ flex: '1' }}>This folder no longer exists.</span>
                 <button
                   type="button"
+                  class="btn-secondary"
                   onClick={async () => {
                     const ok = await relinkProject(project().id);
                     if (ok) props.onClose();
@@ -333,6 +335,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                 </button>
                 <button
                   type="button"
+                  class="btn-danger"
                   onClick={async () => {
                     await removeProjectWithTasks(project().id);
                     props.onClose();
@@ -367,7 +370,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
                   'border-radius': '8px',
-                  padding: '10px 14px',
+                  padding: '8px 11px',
                   color: theme.fg,
                   ...typography.ui,
                   outline: 'none',
@@ -390,7 +393,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
-                      padding: '10px 14px',
+                      padding: '8px 11px',
                       color: theme.fg,
                       ...typography.monoUi,
                       outline: 'none',
@@ -420,7 +423,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
-                      padding: '10px 14px',
+                      padding: '8px 11px',
                       color: theme.fg,
                       outline: 'none',
                       ...typography.monoUi,
@@ -488,7 +491,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
               <SectionLabel as="label">Agent runner</SectionLabel>
               <select
-                class="input-field"
+                class="project-select"
                 value={agentRunnerProvider()}
                 onChange={(event) =>
                   setAgentRunnerProvider(event.currentTarget.value as AgentRunnerProvider)
@@ -497,7 +500,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
                   'border-radius': '8px',
-                  padding: '10px 14px',
+                  padding: '8px 11px',
                   color: theme.fg,
                   outline: 'none',
                   ...typography.ui,
@@ -520,7 +523,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
-                      padding: '10px 14px',
+                      padding: '8px 11px',
                       color: theme.fg,
                       outline: 'none',
                       ...typography.monoUi,
@@ -537,7 +540,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
-                      padding: '10px 14px',
+                      padding: '8px 11px',
                       color: theme.fg,
                       outline: 'none',
                       ...typography.monoUi,
@@ -671,7 +674,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                     background: theme.bgInput,
                     border: `1px solid ${theme.border}`,
                     'border-radius': '8px',
-                    padding: '8px 12px',
+                    padding: '8px 11px',
                     color: theme.fg,
                     outline: 'none',
                     ...typography.monoUi,
@@ -679,6 +682,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                 />
                 <button
                   type="button"
+                  class="btn-secondary"
                   onClick={addBookmark}
                   disabled={!newCommand().trim()}
                   style={{

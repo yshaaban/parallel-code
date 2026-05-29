@@ -118,7 +118,13 @@ export function PushDialog(props: PushDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog open={props.open} onClose={handleDialogClose} width="480px" labelledBy={titleId}>
+    <Dialog
+      open={props.open}
+      onClose={handleDialogClose}
+      width="480px"
+      labelledBy={titleId}
+      panelStyle={{ padding: '20px', gap: '12px' }}
+    >
       <DialogHeader title="Push to Remote" titleId={titleId} />
       <div style={{ ...typography.ui, color: theme.fgMuted }}>
         <Show
@@ -135,7 +141,7 @@ export function PushDialog(props: PushDialogProps): JSX.Element {
               margin: '0',
               ...typography.monoMeta,
               'white-space': 'pre-wrap',
-              'word-break': 'break-all',
+              'overflow-wrap': 'anywhere',
               padding: '8px 12px',
               'max-height': '220px',
               'overflow-y': 'auto',

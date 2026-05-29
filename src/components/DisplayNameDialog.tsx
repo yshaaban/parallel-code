@@ -76,7 +76,13 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog open={props.open} onClose={close} width="420px" labelledBy={titleId}>
+    <Dialog
+      open={props.open}
+      onClose={close}
+      width="420px"
+      labelledBy={titleId}
+      panelStyle={{ padding: '20px', gap: '12px' }}
+    >
       <DialogHeader
         description={getDescription()}
         descriptionTone="muted"
@@ -96,7 +102,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
               padding: '10px 12px',
               background: theme.bgInput,
               border: `1px solid ${theme.border}`,
-              'border-radius': '10px',
+              'border-radius': '8px',
               color: theme.fg,
             }}
           >
@@ -133,6 +139,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
         <span>Display name</span>
         <input
           ref={inputRef}
+          class="input-field"
           value={value()}
           maxLength={40}
           onInput={(event) => setValue(event.currentTarget.value)}
@@ -145,9 +152,9 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
           style={{
             background: theme.bgInput,
             border: `1px solid ${theme.border}`,
-            'border-radius': '10px',
+            'border-radius': '8px',
             color: theme.fg,
-            padding: '10px 12px',
+            padding: '8px 11px',
             ...typography.ui,
             'font-family': 'inherit',
           }}
@@ -164,6 +171,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
         <Show when={props.allowClose}>
           <button
             type="button"
+            class="btn-secondary"
             onClick={close}
             style={{
               padding: '9px 20px',
@@ -180,6 +188,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
         </Show>
         <button
           type="button"
+          class="btn-primary"
           disabled={value().trim().length === 0}
           onClick={save}
           style={{

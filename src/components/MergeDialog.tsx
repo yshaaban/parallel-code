@@ -422,12 +422,10 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                         {status().conflicting_files.length} file
                         {status().conflicting_files.length > 1 ? 's' : ''}):
                       </div>
-                      <ul
-                        style={{ margin: '4px 0 0', 'padding-left': '20px', 'font-weight': '400' }}
-                      >
+                      <ul style={{ margin: '4px 0 0', 'padding-left': '20px', ...typography.meta }}>
                         <For each={status().conflicting_files}>{(f) => <li>{f}</li>}</For>
                       </ul>
-                      <div style={{ 'margin-top': '4px', 'font-weight': '400' }}>
+                      <div style={{ 'margin-top': '4px', ...typography.meta }}>
                         Rebase onto {mergeTargetLabel()} to resolve conflicts.
                       </div>
                     </Show>
@@ -627,6 +625,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
           </label>
           <Show when={squash()}>
             <textarea
+              class="input-field"
               value={squashMessage()}
               onInput={(e) => handleSquashMessageInput(e.currentTarget.value)}
               placeholder="Commit message..."
@@ -637,7 +636,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                 background: theme.bgInput,
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
-                padding: '8px 10px',
+                padding: '8px 11px',
                 color: theme.fg,
                 resize: 'vertical',
                 outline: 'none',
@@ -647,19 +646,9 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
             />
           </Show>
           <Show when={mergeError()}>
-            <div
-              style={{
-                'margin-top': '12px',
-                color: theme.error,
-                background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-                padding: '8px 12px',
-                'border-radius': '8px',
-                border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-                ...typography.meta,
-              }}
-            >
+            <InlineNotice tone="error" style={{ 'margin-top': '12px' }}>
               {mergeError()}
-            </div>
+            </InlineNotice>
           </Show>
         </div>
       }

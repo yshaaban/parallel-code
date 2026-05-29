@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from 'solid-js';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { IncomingTaskTakeoverRequest } from '../store/types';
 
 interface TaskTakeoverRequestDialogProps {
@@ -91,7 +92,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
             padding: '16px',
             display: 'grid',
             gap: '12px',
-            background: 'color-mix(in srgb, var(--island-bg) 94%, rgba(9, 11, 16, 0.92))',
+            background: `color-mix(in srgb, ${theme.islandBg} 94%, ${theme.bgElevated})`,
             border: `1px solid ${theme.border}`,
             'border-radius': '16px',
             'box-shadow': '0 20px 48px rgba(0, 0, 0, 0.34)',
@@ -104,9 +105,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               id={getRequestElementId(request().requestId, 'title')}
               style={{
                 color: theme.fg,
-                'font-size': '14px',
-                'font-weight': '600',
-                'font-family': 'var(--font-ui)',
+                ...typography.uiStrong,
               }}
             >
               Allow takeover?
@@ -115,9 +114,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               id={getRequestElementId(request().requestId, 'message')}
               style={{
                 color: theme.fgMuted,
-                'font-size': '13px',
-                'line-height': '1.5',
-                'font-family': 'var(--font-ui)',
+                ...typography.ui,
               }}
             >
               {message()}
@@ -134,8 +131,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
             <span
               style={{
                 color: theme.fgMuted,
-                'font-size': '12px',
-                'font-family': 'var(--font-mono)',
+                ...typography.monoMeta,
               }}
             >
               Times out in {secondsRemaining()}s
@@ -143,7 +139,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 type="button"
-                class="btn btn-secondary"
+                class="btn-secondary"
                 disabled={props.busy}
                 onClick={() => {
                   props.onDeny(request().requestId, request().taskId);
@@ -153,7 +149,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               </button>
               <button
                 type="button"
-                class="btn btn-primary"
+                class="btn-primary"
                 disabled={props.busy}
                 onClick={() => {
                   props.onApprove(request().requestId, request().taskId);

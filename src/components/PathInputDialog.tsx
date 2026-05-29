@@ -555,7 +555,13 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   });
 
   return (
-    <Dialog open={props.open} onClose={props.onCancel} width="640px" labelledBy={titleId}>
+    <Dialog
+      open={props.open}
+      onClose={props.onCancel}
+      width="640px"
+      labelledBy={titleId}
+      panelStyle={{ padding: '20px', gap: '14px' }}
+    >
       <DialogHeader
         title={props.directory ? 'Select Project Directory' : 'Select File Path'}
         titleId={titleId}
@@ -575,6 +581,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       <div style={{ display: 'flex', gap: '8px', 'align-items': 'stretch' }}>
         <button
           type="button"
+          class="btn-secondary"
           onClick={goUp}
           title="Go to parent directory"
           style={{
@@ -598,6 +605,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
         <div style={{ flex: '1', display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
           <input
             ref={inputRef}
+            class="input-field"
             type="text"
             value={value()}
             onInput={(event) => handleInputChange(event.currentTarget.value)}
@@ -608,7 +616,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
             spellcheck={false}
             autocomplete="off"
             style={{
-              padding: '10px 14px',
+              padding: '8px 11px',
               background: theme.bgInput,
               border: `1px solid ${inputError() ? theme.error : theme.border}`,
               'border-radius': '8px',
@@ -994,6 +1002,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       >
         <button
           type="button"
+          class="btn-secondary"
           onClick={() => props.onCancel()}
           style={{
             padding: '9px 18px',
@@ -1009,6 +1018,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
         </button>
         <button
           type="button"
+          class="btn-primary"
           onClick={() => {
             void handleSubmit();
           }}

@@ -28,8 +28,12 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
   const generatedTitleId = createUniqueId();
   const focusFrame = createAnimationFrameTask();
 
+  function isConfirmUnavailable(): boolean {
+    return Boolean(props.confirmDisabled || props.confirmLoading);
+  }
+
   function shouldFocusCancelButton(): boolean {
-    if (props.danger || props.confirmDisabled || props.confirmLoading) {
+    if (props.danger || isConfirmUnavailable()) {
       return true;
     }
 
@@ -70,6 +74,7 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
       width={props.width}
       labelledBy={props.labelledBy ?? generatedTitleId}
       describedBy={props.describedBy}
+      panelStyle={{ padding: '20px' }}
     >
       <DialogHeader title={props.title} titleId={props.labelledBy ? undefined : generatedTitleId} />
 
@@ -104,7 +109,7 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
           ref={confirmRef}
           type="button"
           class={props.danger ? 'btn-danger' : 'btn-primary'}
-          disabled={props.confirmDisabled}
+          disabled={isConfirmUnavailable()}
           onClick={() => props.onConfirm()}
           style={{
             padding: '9px 20px',
@@ -112,9 +117,9 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
             border: 'none',
             'border-radius': '8px',
             color: props.danger ? theme.errorText : theme.accentText,
-            cursor: props.confirmDisabled ? 'not-allowed' : 'pointer',
+            cursor: isConfirmUnavailable() ? 'not-allowed' : 'pointer',
             ...typography.uiStrong,
-            opacity: props.confirmDisabled ? '0.5' : '1',
+            opacity: isConfirmUnavailable() ? '0.5' : '1',
             display: 'inline-flex',
             'align-items': 'center',
             gap: '8px',

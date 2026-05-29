@@ -74,13 +74,15 @@ describe('ConfirmDialog', () => {
     ));
 
     const cancelButton = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement;
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement;
 
     animationFrame.flush();
 
     expect(document.activeElement).toBe(cancelButton);
+    expect(confirmButton.disabled).toBe(true);
   });
 
-  it('focuses cancel while confirm is loading', () => {
+  it('focuses cancel and disables confirm while confirm is loading', () => {
     const animationFrame = installManualAnimationFrame();
 
     render(() => (
@@ -95,10 +97,12 @@ describe('ConfirmDialog', () => {
     ));
 
     const cancelButton = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement;
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement;
 
     animationFrame.flush();
 
     expect(document.activeElement).toBe(cancelButton);
+    expect(confirmButton.disabled).toBe(true);
   });
 
   it('does not refocus when confirm availability changes while open', () => {

@@ -52,7 +52,7 @@ export function HelpDialog(props: HelpDialogProps): JSX.Element {
       onClose={props.onClose}
       width="520px"
       labelledBy={titleId}
-      panelStyle={{ gap: '20px' }}
+      panelStyle={{ gap: '20px', padding: '20px' }}
     >
       <DialogHeader onClose={props.onClose} title="Help & Shortcuts" titleId={titleId} />
 

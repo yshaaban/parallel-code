@@ -425,16 +425,16 @@ textarea::placeholder {
   transform: scale(0.98);
 }
 
-.btn-danger:hover {
+.btn-danger:hover:not(:disabled) {
   filter: brightness(1.12);
   box-shadow: 0 0 18px color-mix(in srgb, var(--error) 35%, transparent);
 }
 
-.btn-danger:active {
+.btn-danger:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-hover)) !important;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border)) !important;
 }
@@ -494,7 +494,8 @@ textarea::placeholder {
 .project-select:focus,
 .agent-btn:focus-visible,
 .btn-primary:focus-visible,
-.btn-secondary:focus-visible {
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible {
   border-color: var(--border-focus) !important;
   box-shadow:
     0 0 0 2.5px color-mix(in srgb, var(--border-focus) 38%, transparent),

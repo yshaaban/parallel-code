@@ -1383,7 +1383,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
       style={{
         height: '100%',
         'overflow-y': 'auto',
-        background: '#000',
+        background: theme.taskPanelBg,
         outline: 'none',
       }}
     >
