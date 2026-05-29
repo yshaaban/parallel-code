@@ -208,7 +208,11 @@ const {
   startTaskNotificationRuntimeMock: vi.fn(() => vi.fn()),
   storeState: {
     activeTaskId: null as string | null,
+    activeAgentId: null as string | null,
     projects: [] as Array<{ id: string }>,
+    agents: {} as Record<string, unknown>,
+    hydraCommand: '',
+    hydraStartupMode: 'auto' as const,
     showHelpDialog: false,
     showNewTaskDialog: false,
     showSettingsDialog: false,
@@ -218,9 +222,15 @@ const {
       string,
       {
         agentIds?: string[];
+        baseBranch?: string;
+        collapsed?: boolean;
+        id?: string;
         planFileName?: string;
         planRelativePath?: string;
+        projectId?: string;
+        projectMode?: string;
         shellAgentIds?: string[];
+        skipPermissions?: boolean;
         worktreePath?: string;
       }
     >,
@@ -576,6 +586,11 @@ describe('desktop session startup sequencing', () => {
     validateProjectPathsMock.mockReset();
     validateProjectPathsMock.mockResolvedValue(undefined);
     storeState.projects = [];
+    storeState.activeTaskId = null;
+    storeState.activeAgentId = null;
+    storeState.agents = {};
+    storeState.hydraCommand = '';
+    storeState.hydraStartupMode = 'auto';
     storeState.taskOrder = [];
     storeState.collapsedTaskOrder = [];
     storeState.tasks = {};
@@ -922,6 +937,148 @@ describe('desktop session startup sequencing', () => {
       'current-plan.md',
       'docs/plans/current-plan.md',
     );
+
+    cleanup();
+  });
+
+  it('prewarms restored Electron task agent sessions in one selected-first startup batch', async () => {
+    loadStateMock.mockImplementation(async () => {
+      storeState.projects = [
+        {
+          id: 'project-1',
+        },
+      ];
+      storeState.activeTaskId = 'task-1';
+      storeState.activeAgentId = 'agent-1';
+      storeState.taskOrder = ['task-background', 'task-1'];
+      storeState.tasks = {
+        'task-background': {
+          agentIds: ['agent-background'],
+          id: 'task-background',
+          projectId: 'project-1',
+          shellAgentIds: [],
+          worktreePath: '/tmp/task-background',
+        },
+        'task-1': {
+          agentIds: ['agent-1'],
+          baseBranch: 'release/main',
+          id: 'task-1',
+          projectId: 'project-1',
+          projectMode: 'git',
+          shellAgentIds: ['shell-1'],
+          skipPermissions: true,
+          worktreePath: '/tmp/task-1',
+        },
+      };
+      storeState.agents = {
+        'agent-background': {
+          def: {
+            args: ['watch'],
+            command: 'claude',
+            description: 'Claude',
+            id: 'claude',
+            name: 'Claude',
+            resume_args: [],
+            skip_permissions_args: [],
+          },
+          exitCode: null,
+          generation: 0,
+          id: 'agent-background',
+          lastOutput: [],
+          resumed: false,
+          signal: null,
+          status: 'running',
+          taskId: 'task-background',
+        },
+        'agent-1': {
+          def: {
+            args: ['run'],
+            command: 'codex',
+            description: 'Codex',
+            id: 'codex',
+            name: 'Codex',
+            resume_args: ['resume'],
+            resume_strategy: 'cli-args',
+            skip_permissions_args: ['--skip-permissions'],
+          },
+          exitCode: null,
+          generation: 0,
+          id: 'agent-1',
+          lastOutput: [],
+          resumed: true,
+          signal: null,
+          status: 'running',
+          taskId: 'task-1',
+        },
+      };
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.EnsureAgentSessionsBatch) {
+        return {
+          results: [
+            {
+              agentId: 'agent-1',
+              cols: 80,
+              created: true,
+              existed: false,
+              rows: 24,
+              taskId: 'task-1',
+            },
+            {
+              agentId: 'agent-background',
+              cols: 80,
+              created: true,
+              existed: false,
+              rows: 24,
+              taskId: 'task-background',
+            },
+          ],
+        };
+      }
+
+      return [];
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.EnsureAgentSessionsBatch, {
+      reason: 'startup-restore',
+      requests: [
+        {
+          agentId: 'agent-1',
+          args: ['resume', '--skip-permissions'],
+          baseBranch: 'release/main',
+          cols: 80,
+          command: 'codex',
+          cwd: '/tmp/task-1',
+          env: {},
+          projectMode: 'git',
+          resumeOnStart: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-background',
+          args: ['watch'],
+          cols: 80,
+          command: 'claude',
+          cwd: '/tmp/task-background',
+          env: {},
+          resumeOnStart: false,
+          rows: 24,
+          taskId: 'task-background',
+        },
+      ],
+    });
 
     cleanup();
   });

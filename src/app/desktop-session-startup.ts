@@ -28,6 +28,7 @@ import { validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
 import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
+import { startStartupRestoreAgentSessionEnsure } from './agent-session-ensure';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 
 import {
@@ -429,6 +430,7 @@ export async function runDesktopSessionStartup(
   if (options.electronRuntime) {
     setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadState();
+    startStartupRestoreAgentSessionEnsure();
   } else {
     beginBrowserColdBootstrap();
     emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
@@ -513,6 +515,7 @@ export async function runDesktopSessionStartup(
       restoreTerminalPanels: true,
     });
     reconcileClientSessionState();
+    startStartupRestoreAgentSessionEnsure();
     setBrowserStartupTier('selected-task');
     emitStartupBreadcrumb('desktop-startup:browser-selected-task');
     if (usedHandoffProjection) {

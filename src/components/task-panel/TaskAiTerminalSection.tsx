@@ -14,14 +14,14 @@ import {
   type AgentRunnerProfileConfig,
 } from '../../domain/agent-runners.js';
 import { isExitedRemoteAgentStatus } from '../../domain/server-state';
-import type { AgentDef, PtyExitData } from '../../ipc/types';
+import type { PtyExitData } from '../../ipc/types';
 import {
   buildAgentSpawnArgs,
   getAgentResumeStrategy,
   shouldResumeAgentOnSpawn,
 } from '../../lib/agent-resume';
+import { getAgentSpawnCommand, getAgentSpawnEnvironment } from '../../lib/agent-spawn-config';
 import { sf } from '../../lib/fontScale';
-import { getHydraCommandOverride, isHydraAgentDef } from '../../lib/hydra';
 import { theme } from '../../lib/theme';
 import {
   getFontScale,
@@ -91,22 +91,6 @@ function getRunnerProfileForTask(task: Task): AgentRunnerProfileConfig | undefin
   );
 
   return resolution.configuredProfile ?? undefined;
-}
-
-function getAgentCommand(agentDef: AgentDef): string {
-  if (!isHydraAgentDef(agentDef)) {
-    return agentDef.command;
-  }
-
-  return getHydraCommandOverride(agentDef, store.hydraCommand);
-}
-
-function getAgentEnvironment(agentDef: AgentDef): Record<string, string> | undefined {
-  if (!isHydraAgentDef(agentDef)) {
-    return undefined;
-  }
-
-  return { PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode };
 }
 
 function getAgentExitStatusText(agent: Pick<Agent, 'exitCode' | 'signal'>): string {
@@ -348,13 +332,13 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
                 resumed: currentAgentResumed,
                 skipPermissions: props.task.skipPermissions === true,
               })}
-              command={getAgentCommand(currentAgentDef)}
+              command={getAgentSpawnCommand(currentAgentDef, store.hydraCommand)}
               adapter={currentAgentDef.adapter}
               baseBranch={props.task.baseBranch}
               cwd={props.task.worktreePath}
               projectMode={props.task.projectMode}
               runnerProfile={props.runnerProfile}
-              env={getAgentEnvironment(currentAgentDef)}
+              env={getAgentSpawnEnvironment(currentAgentDef, store.hydraStartupMode)}
               resumeOnStart={shouldResumeAgentOnSpawn(currentAgentDef, currentAgentResumed)}
               onExit={createAgentExitHandler(currentAgentId, currentGeneration)}
               onData={(data) =>
