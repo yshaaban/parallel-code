@@ -95,6 +95,14 @@ describe('PlanViewerDialog', () => {
     expect(screen.getByText('plan.md')).toBeTruthy();
   });
 
+  it('shows an explicit empty state when the plan has no content', () => {
+    render(() => (
+      <PlanViewerDialog open onClose={() => {}} planContent={'   \n  '} planFileName="plan.md" />
+    ));
+
+    expect(screen.getByText('No plan yet')).toBeTruthy();
+  });
+
   it('opens the backing plan file in the editor when available', async () => {
     render(() => (
       <PlanViewerDialog

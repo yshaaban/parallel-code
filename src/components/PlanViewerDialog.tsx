@@ -13,12 +13,12 @@ import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { createDialogScroll } from '../lib/dialog-scroll';
-import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
 import { getPlanSelection } from '../lib/plan-selection';
 import { compilePlanReviewPrompt } from '../lib/review-prompts';
 import { openFileInEditor } from '../lib/shell';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { showNotification } from '../store/notification';
 import { AskCodeCard } from './AskCodeCard';
 import { Dialog } from './Dialog';
@@ -131,6 +131,27 @@ async function loadMermaidRenderer(): Promise<MermaidRenderModule> {
 export function resetPlanViewerDialogMermaidStateForTests(): void {
   mermaidModulePromise = null;
   mermaidModuleInitialized = false;
+}
+
+function EmptyPlanState(): JSX.Element {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        'flex-direction': 'column',
+        'align-items': 'center',
+        'justify-content': 'center',
+        height: '100%',
+        gap: '6px',
+        'text-align': 'center',
+        color: theme.fgMuted,
+        ...typography.ui,
+      }}
+    >
+      <span style={{ ...typography.uiStrong, color: theme.fg }}>No plan yet</span>
+      <span>This plan is empty or hasn't been written to the worktree yet.</span>
+    </div>
+  );
 }
 
 function normalizeMarkdownLinkRelativePath(
@@ -480,10 +501,9 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
           >
             <span
               style={{
-                'font-size': sf(13),
                 color: theme.fg,
-                'font-weight': '600',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoUi,
+                'font-weight': 'var(--font-weight-semibold)',
               }}
             >
               {props.planFileName ?? 'Plan'}
@@ -513,7 +533,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                   padding: '4px',
                   display: 'flex',
                   'align-items': 'center',
-                  'border-radius': '4px',
+                  'border-radius': '8px',
                 }}
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -534,7 +554,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                 padding: '4px',
                 display: 'flex',
                 'align-items': 'center',
-                'border-radius': '4px',
+                'border-radius': '8px',
               }}
               title="Close"
             >
@@ -555,103 +575,105 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                 padding: '28px 40px',
                 color: theme.fg,
                 'font-size': '17px',
-                'font-family': "'JetBrains Mono', monospace",
+                'font-family': 'var(--font-mono)',
                 outline: 'none',
               }}
             >
-              <div style={{ position: 'relative' }}>
-                <div
-                  ref={contentRef}
-                  class="plan-markdown"
-                  style={{
-                    color: theme.fg,
-                  }}
-                  onClick={(event) => {
-                    void handleMarkdownLinkClick(event);
-                  }}
-                  onMouseUp={handleMouseUp}
-                  // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
-                  innerHTML={planHtml()}
-                />
-
-                <For each={highlightRects()}>
-                  {(rect) => (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: `${rect.top}px`,
-                        left: `${rect.left}px`,
-                        width: `${rect.width}px`,
-                        height: `${rect.height}px`,
-                        background: 'rgba(100, 149, 237, 0.3)',
-                        'pointer-events': 'none',
-                        'border-radius': '2px',
-                      }}
-                    />
-                  )}
-                </For>
-
-                <Show when={reviewSession.pendingSelection()}>
+              <Show when={props.planContent.trim()} fallback={<EmptyPlanState />}>
+                <div style={{ position: 'relative' }}>
                   <div
+                    ref={contentRef}
+                    class="plan-markdown"
                     style={{
-                      position: 'absolute',
-                      top: `${selectionY()}px`,
-                      left: '0',
-                      right: '0',
-                      'z-index': '10',
+                      color: theme.fg,
                     }}
-                  >
-                    <InlineInput onDismiss={dismissInlineInput} onSubmit={submitInlineInput} />
-                  </div>
-                </Show>
+                    onClick={(event) => {
+                      void handleMarkdownLinkClick(event);
+                    }}
+                    onMouseUp={handleMouseUp}
+                    // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
+                    innerHTML={planHtml()}
+                  />
 
-                <For each={reviewSession.annotations()}>
-                  {(annotation) => (
+                  <For each={highlightRects()}>
+                    {(rect) => (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: `${rect.top}px`,
+                          left: `${rect.left}px`,
+                          width: `${rect.width}px`,
+                          height: `${rect.height}px`,
+                          background: `color-mix(in srgb, ${theme.accent} 30%, transparent)`,
+                          'pointer-events': 'none',
+                          'border-radius': '2px',
+                        }}
+                      />
+                    )}
+                  </For>
+
+                  <Show when={reviewSession.pendingSelection()}>
                     <div
                       style={{
                         position: 'absolute',
-                        top: `${cardOffsets()[annotation.id] ?? 0}px`,
+                        top: `${selectionY()}px`,
                         left: '0',
                         right: '0',
-                        'z-index': '5',
+                        'z-index': '10',
                       }}
                     >
-                      <ReviewCommentCard
-                        annotation={annotation}
-                        onDismiss={() => reviewSession.dismissAnnotation(annotation.id)}
-                        onUpdate={reviewSession.updateAnnotation}
-                        overlay
-                      />
+                      <InlineInput onDismiss={dismissInlineInput} onSubmit={submitInlineInput} />
                     </div>
-                  )}
-                </For>
+                  </Show>
 
-                <For each={reviewSession.activeQuestions()}>
-                  {(question) => (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: `${cardOffsets()[question.id] ?? 0}px`,
-                        left: '0',
-                        right: '0',
-                        'z-index': '5',
-                      }}
-                    >
-                      <AskCodeCard
-                        endLine={question.endLine}
-                        onDismiss={() => reviewSession.dismissQuestion(question.id)}
-                        question={question.question}
-                        requestId={question.id}
-                        selectedText={question.selectedText}
-                        source={question.source}
-                        startLine={question.startLine}
-                        startSession={startAskAboutCodeSession}
-                        worktreePath={props.worktreePath ?? ''}
-                      />
-                    </div>
-                  )}
-                </For>
-              </div>
+                  <For each={reviewSession.annotations()}>
+                    {(annotation) => (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: `${cardOffsets()[annotation.id] ?? 0}px`,
+                          left: '0',
+                          right: '0',
+                          'z-index': '5',
+                        }}
+                      >
+                        <ReviewCommentCard
+                          annotation={annotation}
+                          onDismiss={() => reviewSession.dismissAnnotation(annotation.id)}
+                          onUpdate={reviewSession.updateAnnotation}
+                          overlay
+                        />
+                      </div>
+                    )}
+                  </For>
+
+                  <For each={reviewSession.activeQuestions()}>
+                    {(question) => (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: `${cardOffsets()[question.id] ?? 0}px`,
+                          left: '0',
+                          right: '0',
+                          'z-index': '5',
+                        }}
+                      >
+                        <AskCodeCard
+                          endLine={question.endLine}
+                          onDismiss={() => reviewSession.dismissQuestion(question.id)}
+                          question={question.question}
+                          requestId={question.id}
+                          selectedText={question.selectedText}
+                          source={question.source}
+                          startLine={question.startLine}
+                          startSession={startAskAboutCodeSession}
+                          worktreePath={props.worktreePath ?? ''}
+                        />
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
             </div>
 
             <Show when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}>
