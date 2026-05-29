@@ -5,9 +5,11 @@ import {
   For,
   onCleanup,
   Show,
+  untrack,
   type JSX,
 } from 'solid-js';
 import { Dialog } from './Dialog';
+import { DialogHeader } from './DialogHeader';
 import { invoke } from '../lib/ipc';
 import { deriveRepoNameFromSshUrl, isGitSshUrl } from '../lib/git-ssh-url';
 import { createAnimationFrameTask } from '../lib/animation-frame-task';
@@ -20,6 +22,7 @@ interface PathInputDialogProps {
   open: boolean;
   directory: boolean;
   allowSshClone?: boolean;
+  suppressRecentProjects?: boolean;
   onSubmit: (path: string) => void;
   onCancel: () => void;
 }
@@ -483,7 +486,9 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       setProjectBasePath(basePaths.projectBasePath);
       setValue(ensureTrailingSlash(basePaths.projectBasePath));
       void loadQuickPickPaths(basePaths.homePath, basePaths.projectBasePath);
-      void loadRecentProjects(basePaths.homePath);
+      if (!props.suppressRecentProjects) {
+        void loadRecentProjects(basePaths.homePath);
+      }
 
       inputFocusFrame.schedule(() => {
         if (!inputRef?.isConnected) {
@@ -531,42 +536,41 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
 
     const suggestions = filteredEntries();
     const prefix = deriveBrowseTarget(value()).prefix;
-    if (suggestions.length === 0) {
-      if (highlightIdx() !== -1) setHighlightIdx(-1);
-      return;
-    }
 
-    if (!prefix) {
-      if (highlightIdx() >= suggestions.length) setHighlightIdx(-1);
-      return;
-    }
+    untrack(() => {
+      if (suggestions.length === 0) {
+        if (highlightIdx() !== -1) setHighlightIdx(-1);
+        return;
+      }
 
-    if (highlightIdx() < 0 || highlightIdx() >= suggestions.length) {
-      setHighlightIdx(0);
-    }
+      if (!prefix) {
+        if (highlightIdx() >= suggestions.length) setHighlightIdx(-1);
+        return;
+      }
+
+      if (highlightIdx() < 0 || highlightIdx() >= suggestions.length) {
+        setHighlightIdx(0);
+      }
+    });
   });
 
   return (
     <Dialog open={props.open} onClose={props.onCancel} width="640px" labelledBy={titleId}>
-      <h2
-        id={titleId}
-        style={{
-          margin: '0',
-          color: theme.fg,
-          ...typography.title,
-        }}
-      >
-        {props.directory ? 'Select Project Directory' : 'Select File Path'}
-      </h2>
-
-      <div style={{ color: theme.fgMuted, ...typography.ui }}>
-        Browse folders, use breadcrumbs, or type a path directly. Press Tab to accept the current
-        folder suggestion.
-        <Show when={props.allowSshClone}>
-          {' '}
-          You can also paste a git SSH URL (e.g. git@github.com:user/repo.git) to clone it.
-        </Show>
-      </div>
+      <DialogHeader
+        title={props.directory ? 'Select Project Directory' : 'Select File Path'}
+        titleId={titleId}
+        description={
+          <>
+            Browse folders, use breadcrumbs, or type a path directly. Press Tab to accept the
+            current folder suggestion.
+            <Show when={props.allowSshClone}>
+              {' '}
+              You can also paste a git SSH URL (e.g. git@github.com:user/repo.git) to clone it.
+            </Show>
+          </>
+        }
+        descriptionTone="muted"
+      />
 
       <div style={{ display: 'flex', gap: '8px', 'align-items': 'stretch' }}>
         <button
@@ -738,132 +742,134 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
           </div>
         </div>
 
-        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
-          <div
-            style={{
-              display: 'flex',
-              'justify-content': 'space-between',
-              'align-items': 'center',
-              gap: '8px',
-            }}
-          >
-            <label
-              style={{
-                color: theme.fgMuted,
-                ...typography.label,
-              }}
-            >
-              Recent Projects
-            </label>
-            <Show when={loadingRecentProjects()}>
-              <span class="inline-spinner" aria-hidden="true" />
-            </Show>
-          </div>
-
-          <Show
-            when={recentProjects().length > 0}
-            fallback={
-              <div
-                style={{
-                  padding: '12px 14px',
-                  color: theme.fgSubtle,
-                  'text-align': 'center',
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  background: theme.bgInput,
-                  ...typography.meta,
-                }}
-              >
-                {loadingRecentProjects()
-                  ? 'Loading recent Claude/Codex projects...'
-                  : 'No recent Claude/Codex projects found.'}
-              </div>
-            }
-          >
+        <Show when={!props.suppressRecentProjects}>
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
             <div
               style={{
                 display: 'flex',
-                'flex-direction': 'column',
-                gap: '6px',
-                'max-height': '220px',
-                'overflow-y': 'auto',
+                'justify-content': 'space-between',
+                'align-items': 'center',
+                gap: '8px',
               }}
             >
-              <For each={recentProjects()}>
-                {(item) => (
-                  <button
-                    type="button"
-                    onClick={() => navigateTo(item.path)}
-                    title={item.subtitle}
-                    style={{
-                      width: '100%',
-                      padding: '9px 12px',
-                      background: theme.bgInput,
-                      border: `1px solid ${theme.border}`,
-                      'border-radius': '8px',
-                      color: theme.fg,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      'align-items': 'flex-start',
-                      gap: '10px',
-                      'text-align': 'left',
-                    }}
-                    onMouseEnter={(event) => {
-                      event.currentTarget.style.borderColor = theme.accent;
-                      event.currentTarget.style.background = `color-mix(in srgb, ${theme.accent} 10%, transparent)`;
-                    }}
-                    onMouseLeave={(event) => {
-                      event.currentTarget.style.borderColor = theme.border;
-                      event.currentTarget.style.background = theme.bgInput;
-                    }}
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill={theme.accent}
-                      style={{ 'flex-shrink': '0', 'margin-top': '2px' }}
-                    >
-                      <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                    </svg>
-                    <div
+              <label
+                style={{
+                  color: theme.fgMuted,
+                  ...typography.label,
+                }}
+              >
+                Recent Projects
+              </label>
+              <Show when={loadingRecentProjects()}>
+                <span class="inline-spinner" aria-hidden="true" />
+              </Show>
+            </div>
+
+            <Show
+              when={recentProjects().length > 0}
+              fallback={
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    color: theme.fgSubtle,
+                    'text-align': 'center',
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '8px',
+                    background: theme.bgInput,
+                    ...typography.meta,
+                  }}
+                >
+                  {loadingRecentProjects()
+                    ? 'Loading recent Claude/Codex projects...'
+                    : 'No recent Claude/Codex projects found.'}
+                </div>
+              }
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  'flex-direction': 'column',
+                  gap: '6px',
+                  'max-height': '220px',
+                  'overflow-y': 'auto',
+                }}
+              >
+                <For each={recentProjects()}>
+                  {(item) => (
+                    <button
+                      type="button"
+                      onClick={() => navigateTo(item.path)}
+                      title={item.subtitle}
                       style={{
+                        width: '100%',
+                        padding: '9px 12px',
+                        background: theme.bgInput,
+                        border: `1px solid ${theme.border}`,
+                        'border-radius': '8px',
+                        color: theme.fg,
+                        cursor: 'pointer',
                         display: 'flex',
-                        'flex-direction': 'column',
-                        gap: '2px',
-                        overflow: 'hidden',
-                        'min-width': '0',
+                        'align-items': 'flex-start',
+                        gap: '10px',
+                        'text-align': 'left',
+                      }}
+                      onMouseEnter={(event) => {
+                        event.currentTarget.style.borderColor = theme.accent;
+                        event.currentTarget.style.background = `color-mix(in srgb, ${theme.accent} 10%, transparent)`;
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.borderColor = theme.border;
+                        event.currentTarget.style.background = theme.bgInput;
                       }}
                     >
-                      <span
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill={theme.accent}
+                        style={{ 'flex-shrink': '0', 'margin-top': '2px' }}
+                      >
+                        <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                      </svg>
+                      <div
                         style={{
-                          color: theme.fg,
+                          display: 'flex',
+                          'flex-direction': 'column',
+                          gap: '2px',
                           overflow: 'hidden',
-                          'text-overflow': 'ellipsis',
-                          'white-space': 'nowrap',
-                          ...typography.uiStrong,
+                          'min-width': '0',
                         }}
                       >
-                        {item.label}
-                      </span>
-                      <span
-                        style={{
-                          color: theme.fgMuted,
-                          overflow: 'hidden',
-                          'text-overflow': 'ellipsis',
-                          'white-space': 'nowrap',
-                          ...typography.monoMeta,
-                        }}
-                      >
-                        {item.subtitle}
-                      </span>
-                    </div>
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-        </div>
+                        <span
+                          style={{
+                            color: theme.fg,
+                            overflow: 'hidden',
+                            'text-overflow': 'ellipsis',
+                            'white-space': 'nowrap',
+                            ...typography.uiStrong,
+                          }}
+                        >
+                          {item.label}
+                        </span>
+                        <span
+                          style={{
+                            color: theme.fgMuted,
+                            overflow: 'hidden',
+                            'text-overflow': 'ellipsis',
+                            'white-space': 'nowrap',
+                            ...typography.monoMeta,
+                          }}
+                        >
+                          {item.subtitle}
+                        </span>
+                      </div>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+        </Show>
 
         <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
           <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>

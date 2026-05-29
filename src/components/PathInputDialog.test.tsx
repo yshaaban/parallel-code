@@ -160,6 +160,26 @@ describe('PathInputDialog', () => {
     });
   });
 
+  it('suppresses recent projects when the caller already shows discovered projects', async () => {
+    render(() => (
+      <PathInputDialog
+        open
+        directory
+        suppressRecentProjects
+        onSubmit={vi.fn()}
+        onCancel={() => {}}
+      />
+    ));
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
+    });
+
+    expect(screen.queryByText('Recent Projects')).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetRecentProjects);
+  });
+
   it('cancels stale input focus when the dialog closes before the scheduled frame', async () => {
     const animationFrame = installManualAnimationFrame();
     const [open, setOpen] = createSignal(true);

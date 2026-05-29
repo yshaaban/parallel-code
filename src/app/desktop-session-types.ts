@@ -27,6 +27,7 @@ export interface StartDesktopAppSessionOptions {
     open: boolean;
     directory: boolean;
     allowSshClone?: boolean;
+    suppressRecentProjects?: boolean;
   }) => void;
   windowFocused?: Accessor<boolean>;
   setWindowFocused: (focused: boolean) => void;

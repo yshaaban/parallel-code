@@ -20,6 +20,9 @@ interface OpenDialogOptions {
   allowSshClone?: boolean;
   directory?: boolean;
   multiple?: boolean;
+  // Hide the path browser's "Recent Projects" list — used when the caller (e.g. AddProjectDialog)
+  // already presents discovered projects, so Browse doesn't show a second project picker.
+  suppressRecentProjects?: boolean;
 }
 
 interface SingleOpenDialogOptions extends OpenDialogOptions {
@@ -28,6 +31,11 @@ interface SingleOpenDialogOptions extends OpenDialogOptions {
 
 interface MultipleOpenDialogOptions extends OpenDialogOptions {
   multiple: true;
+}
+
+interface NativeOpenDialogOptions {
+  directory?: boolean;
+  multiple?: boolean;
 }
 
 export async function confirm(message: string, options?: ConfirmOptions): Promise<boolean> {
@@ -103,6 +111,24 @@ function getOpenDialogPromptMessage(options?: OpenDialogOptions): string {
   return 'Enter an absolute file path on the server host';
 }
 
+function getNativeOpenDialogOptions(
+  options?: OpenDialogOptions,
+): NativeOpenDialogOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+
+  const nativeOptions: NativeOpenDialogOptions = {};
+  if (options.directory !== undefined) {
+    nativeOptions.directory = options.directory;
+  }
+  if (options.multiple !== undefined) {
+    nativeOptions.multiple = options.multiple;
+  }
+
+  return nativeOptions;
+}
+
 export function registerPathInputNotifier(notify: () => void): void {
   pathInputNotify = notify;
 }
@@ -149,7 +175,8 @@ export async function openDialog(options: MultipleOpenDialogOptions): Promise<st
 export async function openDialog(options?: SingleOpenDialogOptions): Promise<string | null>;
 export async function openDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
   if (isElectronRuntime() && !options?.allowSshClone) {
-    return options ? invoke(IPC.DialogOpen, options) : invoke(IPC.DialogOpen);
+    const nativeOptions = getNativeOpenDialogOptions(options);
+    return nativeOptions ? invoke(IPC.DialogOpen, nativeOptions) : invoke(IPC.DialogOpen);
   }
 
   if (!pathInputNotify) {
@@ -157,7 +184,8 @@ export async function openDialog(options?: OpenDialogOptions): Promise<string | 
     if (!entered) return null;
     const trimmed = entered.trim();
     if (!trimmed) return null;
-    return options?.multiple ? splitPathList(trimmed) : trimmed;
+    if (options?.multiple) return splitPathList(trimmed);
+    return trimmed;
   }
 
   const value = await new Promise<string | null>((resolve) => {

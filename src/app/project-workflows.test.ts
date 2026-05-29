@@ -68,6 +68,7 @@ describe('project workflows', () => {
       allowSshClone: true,
       directory: true,
       multiple: false,
+      suppressRecentProjects: true,
     });
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetGitRepoRoot, {
       path: '/repo/project',

@@ -148,7 +148,9 @@ describe('dialog open helpers', () => {
     isElectronRuntimeMock.mockReturnValue(true);
     invokeMock.mockResolvedValue('/repo');
 
-    await expect(openDialog({ directory: true, multiple: false })).resolves.toBe('/repo');
+    await expect(
+      openDialog({ directory: true, multiple: false, suppressRecentProjects: true }),
+    ).resolves.toBe('/repo');
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.DialogOpen, {
       directory: true,

@@ -288,6 +288,7 @@ describe('desktop app intro', () => {
             open: boolean;
             directory: boolean;
             allowSshClone?: boolean;
+            suppressRecentProjects?: boolean;
           }) => void;
         },
       ]
@@ -300,6 +301,7 @@ describe('desktop app intro', () => {
       open: true,
       directory: true,
       allowSshClone: true,
+      suppressRecentProjects: true,
     });
 
     await waitFor(() => {
@@ -307,6 +309,7 @@ describe('desktop app intro', () => {
         open: true,
         directory: true,
         allowSshClone: true,
+        suppressRecentProjects: true,
       });
     });
   });

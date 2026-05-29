@@ -125,6 +125,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       open: true,
       directory: pending.options.directory ?? false,
       allowSshClone: pending.options.allowSshClone ?? false,
+      suppressRecentProjects: pending.options.suppressRecentProjects ?? false,
     });
   });
 

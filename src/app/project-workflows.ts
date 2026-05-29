@@ -261,7 +261,12 @@ async function cloneAndAddProject(url: string): Promise<string | null> {
 }
 
 export async function pickAndAddProject(): Promise<string | null> {
-  const selectedPath = await openDialog({ allowSshClone: true, directory: true, multiple: false });
+  const selectedPath = await openDialog({
+    allowSshClone: true,
+    directory: true,
+    multiple: false,
+    suppressRecentProjects: true,
+  });
   if (!selectedPath) {
     return null;
   }

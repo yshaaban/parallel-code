@@ -773,6 +773,7 @@ describe('desktop session startup sequencing', () => {
       options: {
         allowSshClone: true,
         directory: true,
+        suppressRecentProjects: true,
       },
       resolve: vi.fn(),
     });
@@ -783,6 +784,7 @@ describe('desktop session startup sequencing', () => {
       open: true,
       directory: true,
       allowSshClone: true,
+      suppressRecentProjects: true,
     });
 
     cleanup();
