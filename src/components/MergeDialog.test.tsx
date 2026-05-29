@@ -26,11 +26,13 @@ const {
   sendPromptMock: vi.fn(),
 }));
 
-function createDeferredPromise<T>(): {
+interface DeferredPromise<T> {
   promise: Promise<T>;
   reject: (error: unknown) => void;
   resolve: (value: T) => void;
-} {
+}
+
+function createDeferredPromise<T>(): DeferredPromise<T> {
   let reject!: (error: unknown) => void;
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
@@ -39,6 +41,28 @@ function createDeferredPromise<T>(): {
   });
 
   return { promise, reject, resolve };
+}
+
+function mockDeferredBranchLog(): DeferredPromise<string> {
+  const branchLog = createDeferredPromise<string>();
+  invokeMock.mockImplementation((channel: IPC) => {
+    switch (channel) {
+      case IPC.GetBranchLog:
+        return branchLog.promise;
+      case IPC.CheckMergeStatus:
+        return Promise.resolve({
+          conflicting_files: [],
+          current_branch: 'feature/task-1',
+          main_ahead_count: 0,
+        });
+      case IPC.RebaseTask:
+        return Promise.resolve(undefined);
+      default:
+        throw new Error(`Unexpected channel: ${channel}`);
+    }
+  });
+
+  return branchLog;
 }
 
 vi.mock('../lib/ipc', () => ({
@@ -65,6 +89,8 @@ vi.mock('./ConfirmDialog', () => ({
     onCancel: () => void;
     onConfirm: () => void;
     confirmDisabled?: boolean;
+    confirmLabel?: string;
+    danger?: boolean;
     open: boolean;
     title: string;
   }) => (
@@ -72,8 +98,13 @@ vi.mock('./ConfirmDialog', () => ({
       <div>
         <div>{props.title}</div>
         <div>{props.message}</div>
-        <button disabled={props.confirmDisabled} onClick={() => props.onConfirm()}>
-          Confirm
+        <button
+          data-danger={props.danger ? 'true' : 'false'}
+          data-testid="confirm-action"
+          disabled={props.confirmDisabled}
+          onClick={() => props.onConfirm()}
+        >
+          {props.confirmLabel ?? 'Confirm'}
         </button>
         <button onClick={() => props.onCancel()}>Cancel</button>
       </div>
@@ -222,6 +253,105 @@ describe('MergeDialog', () => {
     expect(sendPromptMock).not.toHaveBeenCalled();
   });
 
+  it('labels cleanup merges as destructive and tracks squash state', async () => {
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    const confirmButton = screen.getByTestId('confirm-action');
+
+    await waitFor(() => {
+      expect(confirmButton.textContent).toBe('Merge & delete branch');
+    });
+    expect(confirmButton.getAttribute('data-danger')).toBe('true');
+
+    fireEvent.click(screen.getByLabelText('Squash commits'));
+    await waitFor(() => {
+      expect(confirmButton.textContent).toBe('Squash & delete branch');
+    });
+
+    fireEvent.click(screen.getByLabelText('Delete branch and worktree after merge'));
+    await waitFor(() => {
+      expect(confirmButton.textContent).toBe('Squash Merge');
+    });
+    expect(confirmButton.getAttribute('data-danger')).toBe('false');
+
+    fireEvent.click(screen.getByLabelText('Squash commits'));
+    await waitFor(() => {
+      expect(confirmButton.textContent).toBe('Merge');
+    });
+  });
+
+  it('fills the squash message when the branch log resolves after squash is enabled', async () => {
+    const branchLog = mockDeferredBranchLog();
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={false}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    fireEvent.click(screen.getByLabelText('Squash commits'));
+
+    const messageInput = screen.getByPlaceholderText('Commit message...') as HTMLTextAreaElement;
+    expect(messageInput.value).toBe('');
+
+    branchLog.resolve('- abc123 First commit\n- def456 Second commit');
+
+    await waitFor(() => {
+      expect(messageInput.value).toBe('- First commit\n- Second commit');
+    });
+  });
+
+  it('does not replace a manual squash message when a late branch log resolves', async () => {
+    const branchLog = mockDeferredBranchLog();
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={false}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    fireEvent.click(screen.getByLabelText('Squash commits'));
+
+    const messageInput = screen.getByPlaceholderText('Commit message...') as HTMLTextAreaElement;
+    fireEvent.input(messageInput, { target: { value: 'Manual message' } });
+
+    branchLog.resolve('- abc123 Generated message');
+
+    await branchLog.promise;
+    await Promise.resolve();
+
+    expect(messageInput.value).toBe('Manual message');
+  });
+
   it('hides stale git status until refresh completes and blocks confirm while loading', async () => {
     const deferredRefresh = createDeferredPromise<boolean>();
     refreshTaskGitStatusForTaskMock.mockImplementationOnce(() => deferredRefresh.promise);
@@ -246,9 +376,7 @@ describe('MergeDialog', () => {
         'Warning: You have uncommitted changes that will NOT be included in this merge.',
       ),
     ).toBeNull();
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
     await waitFor(() => {
       expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
     });
@@ -263,9 +391,7 @@ describe('MergeDialog', () => {
       ).toBeDefined();
     });
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-        false,
-      );
+      expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(false);
     });
   });
 
@@ -328,9 +454,7 @@ describe('MergeDialog', () => {
         'Unable to verify current git status. Reopen this dialog after the worktree is available.',
       ),
     ).toBeNull();
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
 
     secondRefresh.resolve(false);
 
@@ -341,9 +465,7 @@ describe('MergeDialog', () => {
         ),
       ).toBeDefined();
     });
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('shows an explicit warning and keeps merge blocked when git status cannot be verified', async () => {
@@ -366,9 +488,7 @@ describe('MergeDialog', () => {
         ),
       ).toBeDefined();
     });
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('does not treat stale failed git status as authoritative after refresh settles', async () => {
@@ -398,9 +518,7 @@ describe('MergeDialog', () => {
         'Warning: You have uncommitted changes that will NOT be included in this merge.',
       ),
     ).toBeNull();
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('shows a branch mismatch warning and blocks merge when the worktree branch drifted', async () => {
@@ -443,9 +561,7 @@ describe('MergeDialog', () => {
         ),
       ).toBeDefined();
     });
-    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('promotes plain rebase when the base branch is ahead without conflicts', async () => {
@@ -666,12 +782,10 @@ describe('MergeDialog', () => {
     ));
 
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
-        false,
-      );
+      expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(screen.getByTestId('confirm-action'));
     setTask(
       createTestTask({
         branchName: 'feature/task-2',

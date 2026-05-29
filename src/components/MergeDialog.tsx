@@ -65,12 +65,20 @@ function getRebaseButtonStyle(tone: RebaseButtonTone, disabled = false): JSX.CSS
   };
 }
 
+function getSquashMessageTemplate(log: string): string {
+  return log
+    .split('\n')
+    .map((line) => line.replace(/^- [a-f0-9]+ /, '- '))
+    .join('\n');
+}
+
 export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const [mergeError, setMergeError] = createSignal('');
   const [merging, setMerging] = createSignal(false);
   const [squash, setSquash] = createSignal(false);
   const [cleanupAfterMerge, setCleanupAfterMerge] = createSignal(false);
   const [squashMessage, setSquashMessage] = createSignal('');
+  const [shouldPopulateSquashMessage, setShouldPopulateSquashMessage] = createSignal(false);
   const [rebasing, setRebasing] = createSignal(false);
   const [rebaseError, setRebaseError] = createSignal('');
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
@@ -205,6 +213,33 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
     setGitStatusLoading(false);
   }
 
+  function populateSquashMessage(log: string): void {
+    setSquashMessage(getSquashMessageTemplate(log));
+    setShouldPopulateSquashMessage(false);
+  }
+
+  function handleSquashChange(checked: boolean): void {
+    setSquash(checked);
+
+    if (!checked || squashMessage()) {
+      setShouldPopulateSquashMessage(false);
+      return;
+    }
+
+    const log = branchLog();
+    if (log === undefined) {
+      setShouldPopulateSquashMessage(true);
+      return;
+    }
+
+    populateSquashMessage(log);
+  }
+
+  function handleSquashMessageInput(message: string): void {
+    setShouldPopulateSquashMessage(false);
+    setSquashMessage(message);
+  }
+
   function refreshDialogGitStatus(taskId: string): void {
     const generation = nextGitStatusRefreshGeneration();
     setGitStatusReady(false);
@@ -287,6 +322,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
     setCleanupAfterMerge(props.initialCleanup);
     setSquash(false);
     setSquashMessage('');
+    setShouldPopulateSquashMessage(false);
     setMergeError('');
     setRebaseError('');
     setRebaseSuccess(false);
@@ -300,12 +336,40 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
     refreshDialogGitStatus(taskId);
   });
 
+  createEffect(() => {
+    if (!shouldPopulateSquashMessage()) {
+      return;
+    }
+
+    if (!squash() || squashMessage()) {
+      setShouldPopulateSquashMessage(false);
+      return;
+    }
+
+    const log = branchLog();
+    if (log !== undefined) {
+      populateSquashMessage(log);
+    }
+  });
+
+  function mergeConfirmLabel(): string {
+    if (merging()) {
+      return 'Merging...';
+    }
+
+    if (cleanupAfterMerge()) {
+      return squash() ? 'Squash & delete branch' : 'Merge & delete branch';
+    }
+
+    return squash() ? 'Squash Merge' : 'Merge';
+  }
+
   return (
     <ConfirmDialog
       open={props.open}
       title={`Merge into ${mergeTargetLabel()}`}
       width="520px"
-      autoFocusCancel
+      danger={cleanupAfterMerge()}
       message={
         <div>
           <Show when={isGitStatusVerified() && hasUncommittedChanges()}>
@@ -556,18 +620,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
             <input
               type="checkbox"
               checked={squash()}
-              onChange={(e) => {
-                const checked = e.currentTarget.checked;
-                setSquash(checked);
-                if (checked && !squashMessage()) {
-                  const log = branchLog() ?? '';
-                  const msgOnly = log
-                    .split('\n')
-                    .map((l) => l.replace(/^- [a-f0-9]+ /, '- '))
-                    .join('\n');
-                  setSquashMessage(msgOnly);
-                }
-              }}
+              onChange={(e) => handleSquashChange(e.currentTarget.checked)}
               style={{ cursor: 'pointer' }}
             />
             Squash commits
@@ -575,7 +628,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
           <Show when={squash()}>
             <textarea
               value={squashMessage()}
-              onInput={(e) => setSquashMessage(e.currentTarget.value)}
+              onInput={(e) => handleSquashMessageInput(e.currentTarget.value)}
               placeholder="Commit message..."
               rows={6}
               style={{
@@ -612,7 +665,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
       }
       confirmDisabled={mergeConfirmDisabled()}
       confirmLoading={merging()}
-      confirmLabel={merging() ? 'Merging...' : squash() ? 'Squash Merge' : 'Merge'}
+      confirmLabel={mergeConfirmLabel()}
       onConfirm={() => {
         const generation = nextMergeGeneration();
         const taskId = props.task.id;
@@ -652,6 +705,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
         setSquash(false);
         setCleanupAfterMerge(false);
         setSquashMessage('');
+        setShouldPopulateSquashMessage(false);
         setRebaseError('');
         setRebaseSuccess(false);
       }}
