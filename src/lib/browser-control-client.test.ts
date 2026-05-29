@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ClientMessage, ServerMessage } from '../../electron/remote/protocol';
+import type {
+  ClientMessage,
+  ReplayTruncatedMessage,
+  ServerMessage,
+} from '../../electron/remote/protocol';
 import type { BrowserControlClient } from './browser-control-client';
 import type {
   CreateWebSocketClientCoreOptions,
@@ -10,13 +14,19 @@ import type {
 
 const websocketState = vi.hoisted(() => ({
   ensureConnectedMock: vi.fn(async () => ({}) as WebSocket),
-  options: null as CreateWebSocketClientCoreOptions<ServerMessage, ClientMessage> | null,
+  options: null as CreateWebSocketClientCoreOptions<
+    ServerMessage | ReplayTruncatedMessage,
+    ClientMessage
+  > | null,
 }));
 
 vi.mock('./websocket-client', () => ({
   createWebSocketClientCore: vi.fn(
     (
-      options: CreateWebSocketClientCoreOptions<ServerMessage, ClientMessage>,
+      options: CreateWebSocketClientCoreOptions<
+        ServerMessage | ReplayTruncatedMessage,
+        ClientMessage
+      >,
     ): WebSocketClientCore<ClientMessage> => {
       websocketState.options = options;
       return {
@@ -38,7 +48,7 @@ vi.mock('./websocket-client', () => ({
 
 async function loadBrowserControlClient(): Promise<{
   client: BrowserControlClient;
-  options: CreateWebSocketClientCoreOptions<ServerMessage, ClientMessage>;
+  options: CreateWebSocketClientCoreOptions<ServerMessage | ReplayTruncatedMessage, ClientMessage>;
 }> {
   vi.resetModules();
   websocketState.ensureConnectedMock.mockReset();
@@ -177,5 +187,29 @@ describe('browser control client', () => {
     });
 
     expect(client.hasSequencedMessageSinceDisconnect()).toBe(true);
+  });
+
+  it('tracks replay truncation separately from numeric sequence gaps', async () => {
+    const { client, options } = await loadBrowserControlClient();
+
+    options.onDisconnect?.(createDisconnectEvent());
+
+    expect(client.hasReplayTruncatedSinceDisconnect()).toBe(false);
+    expect(client.hasSequenceGapSinceDisconnect()).toBe(false);
+
+    options.onMessage({
+      type: 'replay-truncated',
+      lastSeq: 2,
+      latestSeq: 8,
+      oldestAvailableSeq: 5,
+    });
+
+    expect(client.hasReplayTruncatedSinceDisconnect()).toBe(true);
+    expect(client.hasSequenceGapSinceDisconnect()).toBe(false);
+    expect(client.hasSequencedMessageSinceDisconnect()).toBe(false);
+
+    options.onDisconnect?.(createDisconnectEvent());
+
+    expect(client.hasReplayTruncatedSinceDisconnect()).toBe(false);
   });
 });

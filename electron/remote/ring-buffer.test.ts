@@ -82,4 +82,45 @@ describe('RingBuffer', () => {
     rb.write(Buffer.from('GHIJ')); // 2 at end + 2 at start → wraps
     expect(rb.read().toString()).toBe('CDEFGHIJ');
   });
+
+  it('starts at a smaller allocation and grows on demand', () => {
+    const changes: Array<{ capacity: number; previousCapacity: number; reason: string }> = [];
+    const rb = new RingBuffer(64, {
+      initialCapacity: 8,
+      onCapacityChange: ({ capacity, previousCapacity, reason }) => {
+        changes.push({ capacity, previousCapacity, reason });
+      },
+    });
+
+    expect(rb.allocatedCapacity).toBe(8);
+    rb.write(Buffer.from('ABCDEFGH'));
+    expect(rb.allocatedCapacity).toBe(8);
+
+    rb.write(Buffer.from('I'));
+    expect(rb.allocatedCapacity).toBe(16);
+    expect(rb.read().toString()).toBe('ABCDEFGHI');
+    expect(changes).toEqual([
+      { capacity: 8, previousCapacity: 0, reason: 'initial' },
+      { capacity: 16, previousCapacity: 8, reason: 'grow' },
+    ]);
+  });
+
+  it('grows only up to the maximum capacity and keeps the retained tail', () => {
+    const rb = new RingBuffer(16, { initialCapacity: 4 });
+
+    rb.write(Buffer.from('ABCDEFGH'));
+    expect(rb.allocatedCapacity).toBe(8);
+    rb.write(Buffer.from('IJKLMNOPQRST'));
+
+    expect(rb.allocatedCapacity).toBe(16);
+    expect(rb.length).toBe(16);
+    expect(rb.read().toString()).toBe('EFGHIJKLMNOPQRST');
+  });
+
+  it('validates capacity arguments', () => {
+    expect(() => new RingBuffer(0)).toThrow('capacity must be a positive safe integer');
+    expect(() => new RingBuffer(64, { initialCapacity: 0 })).toThrow(
+      'initialCapacity must be a positive safe integer',
+    );
+  });
 });

@@ -15,6 +15,7 @@ const {
   getAgentTerminalStartupRecoveryMock,
   isTaskCommandLeaseHeldMock,
   onPtyEventMock,
+  recordBrowserControlSimulatedDropMock,
   recordTerminalInputTraceClientDisconnectedMock,
   subscribeToAgentMock,
   writeToAgentMock,
@@ -26,6 +27,7 @@ const {
   getAgentTerminalStartupRecoveryMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(() => true),
   onPtyEventMock: vi.fn(() => () => {}),
+  recordBrowserControlSimulatedDropMock: vi.fn(),
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
   subscribeToAgentMock: vi.fn<(agentId: string, callback: (data: string) => void) => boolean>(
     () => false,
@@ -65,6 +67,7 @@ vi.mock('../electron/ipc/task-command-leases.js', () => ({
 }));
 
 vi.mock('../electron/ipc/runtime-diagnostics.js', () => ({
+  recordBrowserControlSimulatedDrop: recordBrowserControlSimulatedDropMock,
   recordTerminalInputTraceClientDisconnected: recordTerminalInputTraceClientDisconnectedMock,
   recordTerminalInputTraceClientUpdate: vi.fn(),
   recordTerminalInputTraceCommandResultSent: vi.fn(),
@@ -416,6 +419,164 @@ describe('registerBrowserWebSocketServer', () => {
       client,
       expect.objectContaining({ type: 'output' }),
     );
+  });
+
+  it('preserves FIFO browser-to-server websocket messages under jitter simulation', async () => {
+    vi.useFakeTimers();
+    try {
+      const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+      const client = createFakeClient();
+      const wss = createFakeWebSocketServer();
+      wss.clients.add(client);
+
+      registerBrowserWebSocketServer(
+        createRegisterOptions({
+          getClientMessageDelayMs: vi.fn().mockReturnValueOnce(50).mockReturnValueOnce(0),
+          wss,
+        }),
+      );
+
+      wss.emit('connection', client, {
+        headers: { host: 'localhost' },
+        url: '/?token=good',
+      });
+
+      client.emit(
+        'message',
+        JSON.stringify({
+          agentId: 'agent-1',
+          controllerId: 'client-1',
+          data: 'slow\n',
+          requestId: 'request-slow',
+          taskId: 'task-1',
+          type: 'input',
+        }),
+      );
+      client.emit(
+        'message',
+        JSON.stringify({
+          agentId: 'agent-1',
+          controllerId: 'client-1',
+          data: 'fast\n',
+          requestId: 'request-fast',
+          taskId: 'task-1',
+          type: 'input',
+        }),
+      );
+
+      expect(writeToAgentMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(writeToAgentMock).toHaveBeenCalledTimes(2);
+      expect(writeToAgentMock.mock.calls[0]?.[1]).toBe('slow\n');
+      expect(writeToAgentMock.mock.calls[1]?.[1]).toBe('fast\n');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('can drop browser-to-server websocket messages under packet-loss simulation', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        shouldDropClientMessage: vi.fn(() => true),
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit('message', AGENT_INPUT_MESSAGE);
+
+    expect(writeToAgentMock).not.toHaveBeenCalled();
+    expect(recordBrowserControlSimulatedDropMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not drop in-band auth under packet-loss simulation', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const authenticateConnection = vi.fn(() => true);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection,
+        isAuthorizedRequest: vi.fn(() => false),
+        shouldDropClientMessage: vi.fn(() => true),
+        transport: createTestTransport({
+          isAuthenticated: vi.fn(() => false),
+        }),
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/socket',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        clientId: 'client-from-auth',
+        token: 'good',
+        type: 'auth',
+      }),
+    );
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', -1);
+    expect(recordBrowserControlSimulatedDropMock).not.toHaveBeenCalled();
+  });
+
+  it('does not delay in-band auth behind simulated client message latency', async () => {
+    vi.useFakeTimers();
+    try {
+      const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+      const client = createFakeClient();
+      const wss = createFakeWebSocketServer();
+      wss.clients.add(client);
+      const authenticateConnection = vi.fn(() => true);
+
+      registerBrowserWebSocketServer(
+        createRegisterOptions({
+          authenticateConnection,
+          getClientMessageDelayMs: vi.fn(() => 50),
+          isAuthorizedRequest: vi.fn(() => false),
+          transport: createTestTransport({
+            isAuthenticated: vi.fn(() => false),
+          }),
+          wss,
+        }),
+      );
+
+      wss.emit('connection', client, {
+        headers: { host: 'localhost' },
+        url: '/socket',
+      });
+
+      client.emit(
+        'message',
+        JSON.stringify({
+          clientId: 'client-from-auth',
+          token: 'good',
+          type: 'auth',
+        }),
+      );
+
+      expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', -1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ignores malformed websocket URLs before authenticating', async () => {

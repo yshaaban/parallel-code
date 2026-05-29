@@ -65,6 +65,7 @@ declare global {
       ensureConnected: () => Promise<void>;
       getConnectionState: () => BrowserControlConnectionState;
       getLastDisconnectDurationMs: () => number | null;
+      hasReplayTruncatedSinceDisconnect: () => boolean;
       hasSequenceGapSinceDisconnect: () => boolean;
       hasSequencedMessageSinceDisconnect: () => boolean;
     };
@@ -261,6 +262,8 @@ function bindBrowserTransportTestHook(): void {
     },
     getConnectionState: () => browserControlClient.getConnectionState(),
     getLastDisconnectDurationMs: () => browserControlClient.getLastDisconnectDurationMs(),
+    hasReplayTruncatedSinceDisconnect: () =>
+      browserControlClient.hasReplayTruncatedSinceDisconnect(),
     hasSequenceGapSinceDisconnect: () => browserControlClient.hasSequenceGapSinceDisconnect(),
     hasSequencedMessageSinceDisconnect: () =>
       browserControlClient.hasSequencedMessageSinceDisconnect(),
@@ -550,6 +553,7 @@ type InvokeArgs<TChannel extends RendererInvokeChannel> =
     : [args: RendererInvokeRequestMap[TChannel]];
 
 type BrowserControlChannel =
+  | IPC.EnsureAgentSessionsBatch
   | IPC.KillAgent
   | IPC.PauseAgent
   | IPC.ResizeAgent
@@ -578,6 +582,7 @@ type FireAndForgetChannel = {
 }[RendererInvokeChannel];
 
 const BROWSER_CONTROL_CHANNELS = {
+  [IPC.EnsureAgentSessionsBatch]: true,
   [IPC.KillAgent]: true,
   [IPC.PauseAgent]: true,
   [IPC.ResizeAgent]: true,
@@ -1039,6 +1044,10 @@ async function browserInvoke(
       browserControlClient.bindLifecycle();
       await browserControlClient.ensureConnected();
       return browserHttpClient.fetch(IPC.SpawnAgent, args);
+    case IPC.EnsureAgentSessionsBatch:
+      browserControlClient.bindLifecycle();
+      await browserControlClient.ensureConnected();
+      return browserHttpClient.fetch(IPC.EnsureAgentSessionsBatch, args);
   }
 }
 
@@ -1150,12 +1159,14 @@ export function getBrowserLastRttMs(): number | null {
 
 export function getBrowserReconnectContinuity(): {
   disconnectedDurationMs: number | null;
+  hasReplayTruncatedSinceDisconnect: boolean;
   hasSequenceGapSinceDisconnect: boolean;
   hasSequencedMessageSinceDisconnect: boolean;
 } {
   if (isElectronRuntime()) {
     return {
       disconnectedDurationMs: null,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: false,
     };
@@ -1163,6 +1174,7 @@ export function getBrowserReconnectContinuity(): {
 
   return {
     disconnectedDurationMs: browserControlClient.getLastDisconnectDurationMs(),
+    hasReplayTruncatedSinceDisconnect: browserControlClient.hasReplayTruncatedSinceDisconnect(),
     hasSequenceGapSinceDisconnect: browserControlClient.hasSequenceGapSinceDisconnect(),
     hasSequencedMessageSinceDisconnect: browserControlClient.hasSequencedMessageSinceDisconnect(),
   };

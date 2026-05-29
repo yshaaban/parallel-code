@@ -458,6 +458,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       if (
         isWarmReconnectWindow(continuity.disconnectedDurationMs) &&
         continuity.hasSequencedMessageSinceDisconnect &&
+        !continuity.hasReplayTruncatedSinceDisconnect &&
         !continuity.hasSequenceGapSinceDisconnect
       ) {
         try {
@@ -465,9 +466,14 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           if (generation !== restoreGeneration) {
             return;
           }
+          const postStatusContinuity = getBrowserReconnectContinuity();
+          const canStillSkipFullRestore =
+            !postStatusContinuity.hasReplayTruncatedSinceDisconnect &&
+            !postStatusContinuity.hasSequenceGapSinceDisconnect;
 
           const currentWorkspaceRevision = options.getLoadedWorkspaceRevision();
           if (
+            canStillSkipFullRestore &&
             hasReconnectAgentGenerations(reconnectStatus) &&
             isReconnectWorkspaceRevisionStale(reconnectStatus, currentWorkspaceRevision) &&
             isReconnectTaskCommandVersionCurrent(
@@ -487,6 +493,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
           if (
             shouldRunFullRestore &&
+            canStillSkipFullRestore &&
             canSkipFullReconnectRestore(
               reconnectStatus,
               currentWorkspaceRevision,

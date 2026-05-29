@@ -4,6 +4,7 @@ import {
   recordBrowserControlBufferedAmount,
   recordBrowserControlDelayedQueue,
   recordBrowserControlSendResult,
+  recordBrowserControlSimulatedDrop,
 } from '../electron/ipc/runtime-diagnostics.js';
 import type { SendTextResult } from '../electron/remote/ws-transport.js';
 
@@ -32,6 +33,7 @@ export interface PendingChannelSendState {
 
 interface CreateBrowserControlDelayedSendsOptions {
   getChannelDelayMs: () => number;
+  shouldDropSend?: () => boolean;
   onFailedClientSend: (client: WebSocket) => void;
   onInactiveClient: (client: WebSocket) => void;
 }
@@ -63,6 +65,18 @@ function recordClientBufferedAmount(client: WebSocket, generation?: number): voi
     client.bufferedAmount,
     createDiagnosticsGenerationDetails(generation),
   );
+}
+
+function shouldSimulateDroppedSend(
+  options: CreateBrowserControlDelayedSendsOptions,
+  generation?: number,
+): boolean {
+  if (options.shouldDropSend?.() !== true) {
+    return false;
+  }
+
+  recordBrowserControlSimulatedDrop(createDiagnosticsGenerationDetails(generation));
+  return true;
 }
 
 function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
@@ -122,10 +136,11 @@ export function createBrowserControlDelayedSends(
     trackedClients.delete(client);
   }
 
-  function sendSafely(
+  function sendNow(
     client: WebSocket,
     data: string | Buffer,
     diagnosticsGeneration?: number,
+    optionsOverride: { simulateDrop?: boolean } = {},
   ): SendTextResult {
     const diagnosticsDetails = createDiagnosticsGenerationDetails(diagnosticsGeneration);
     recordClientBufferedAmount(client, diagnosticsGeneration);
@@ -137,6 +152,12 @@ export function createBrowserControlDelayedSends(
     if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) {
       recordBrowserControlSendResult('backpressure', diagnosticsDetails);
       return { ok: false, reason: 'backpressure' };
+    }
+    if (
+      optionsOverride.simulateDrop !== false &&
+      shouldSimulateDroppedSend(options, diagnosticsGeneration)
+    ) {
+      return { ok: true };
     }
 
     try {
@@ -207,7 +228,9 @@ export function createBrowserControlDelayedSends(
         return;
       }
 
-      const result = sendSafely(client, nextEntry.data, nextEntry.generation);
+      const result = sendNow(client, nextEntry.data, nextEntry.generation, {
+        simulateDrop: false,
+      });
       if (!result.ok) {
         if (result.reason === 'backpressure') {
           scheduleDelayedClientDrain(client, state, DELAYED_SEND_RETRY_INTERVAL_MS);
@@ -222,46 +245,66 @@ export function createBrowserControlDelayedSends(
     clearClient(client);
   }
 
-  function queueDelayedChannelSend(
+  function queueDelayedSend(
     client: WebSocket,
     data: string | Buffer,
     delayMs: number,
-  ): boolean {
+    diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration(),
+  ): SendTextResult {
     if (client.readyState !== WebSocket.OPEN) {
       recordBrowserControlSendResult('not-open', {
-        generation: getBackendRuntimeDiagnosticsGeneration(),
+        generation: diagnosticsGeneration,
       });
       options.onInactiveClient(client);
-      return false;
+      return { ok: false, reason: 'not-open' };
     }
 
-    const state = getDelayedClientSendState(client);
-    const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
     recordClientBufferedAmount(client, diagnosticsGeneration);
+    if (shouldSimulateDroppedSend(options, diagnosticsGeneration)) {
+      return { ok: true };
+    }
+    const state = getDelayedClientSendState(client);
     const sizeBytes = getDataSizeBytes(data);
     const bufferedBytes = state.totalBytes + client.bufferedAmount + sizeBytes;
     if (bufferedBytes > WS_BACKPRESSURE_MAX_BYTES) {
       recordBrowserControlSendResult('backpressure', { generation: diagnosticsGeneration });
-      return false;
+      return { ok: false, reason: 'backpressure' };
     }
 
-    state.queue.push({
+    const now = Date.now();
+    const previousEntry = state.queue[state.queue.length - 1];
+    const dueAt = Math.max(previousEntry?.dueAt ?? now, now + delayMs);
+    const entry = {
       data,
-      dueAt: Date.now() + delayMs,
-      enqueuedAt: Date.now(),
+      dueAt,
+      enqueuedAt: now,
       generation: diagnosticsGeneration,
       sizeBytes,
-    });
+    };
+    state.queue.push(entry);
     state.totalBytes += sizeBytes;
     recordDelayedClientQueueHighWater(state);
     scheduleDelayedClientDrainForQueueHead(client, state);
-    return true;
+    return { ok: true };
+  }
+
+  function sendSafely(
+    client: WebSocket,
+    data: string | Buffer,
+    diagnosticsGeneration?: number,
+  ): SendTextResult {
+    const delayMs = options.getChannelDelayMs();
+    if (delayMs > 0 || delayedClientSends.has(client)) {
+      return queueDelayedSend(client, data, delayMs, diagnosticsGeneration);
+    }
+
+    return sendNow(client, data, diagnosticsGeneration);
   }
 
   function sendChannelData(client: WebSocket, data: string | Buffer): boolean {
     const delayMs = options.getChannelDelayMs();
-    if (delayMs > 0) {
-      return queueDelayedChannelSend(client, data, delayMs);
+    if (delayMs > 0 || delayedClientSends.has(client)) {
+      return queueDelayedSend(client, data, delayMs).ok;
     }
 
     return sendSafely(client, data).ok;

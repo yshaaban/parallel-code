@@ -1,16 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ServerMessage } from '../../electron/remote/protocol.js';
+import {
+  isReplayTruncatedMessage,
+  type ReplayTruncatedMessage,
+  type ServerMessage,
+} from '../../electron/remote/protocol.js';
 import {
   createBrowserControlPlaneContractHarness,
   createTransportContractHarness,
   getSequencedMessages,
   type WebSocketContractHarness,
+  type WebSocketContractHarnessOptions,
 } from '../harness/websocket-contract-harness';
 
-type HarnessFactory = () => WebSocketContractHarness;
+type HarnessFactory = (options?: WebSocketContractHarnessOptions) => WebSocketContractHarness;
 const replayContractHarnesses = [
-  ['shared transport', () => createTransportContractHarness()],
-  ['browser control plane', () => createBrowserControlPlaneContractHarness()],
+  ['shared transport', (options) => createTransportContractHarness(options)],
+  ['browser control plane', (options) => createBrowserControlPlaneContractHarness(options)],
 ] satisfies Array<[string, HarnessFactory]>;
 
 function getHighestAcknowledgedSeq(
@@ -66,6 +71,13 @@ function broadcastContractEvents(harness: WebSocketContractHarness): void {
   }
 }
 
+function getReplayTruncatedMessages(
+  harness: WebSocketContractHarness,
+  client: ReturnType<WebSocketContractHarness['createClient']>,
+): ReplayTruncatedMessage[] {
+  return harness.getMessages(client).filter(isReplayTruncatedMessage);
+}
+
 describe.each(replayContractHarnesses)('%s replay contract', (_name, createHarness) => {
   let harness: WebSocketContractHarness;
 
@@ -82,6 +94,7 @@ describe.each(replayContractHarnesses)('%s replay contract', (_name, createHarne
   it('replays only control events newer than the last acknowledged sequence', async () => {
     const replayClient = await setupReplayWindow(harness);
     const replayed = getSequencedMessages(harness, replayClient);
+    expect(getReplayTruncatedMessages(harness, replayClient)).toEqual([]);
     expect(replayed.map((message) => message.type)).toEqual(['agent-controller', 'task-event']);
     expect(replayed.every((message) => message.type !== 'remote-status')).toBe(true);
   });
@@ -101,5 +114,37 @@ describe.each(replayContractHarnesses)('%s replay contract', (_name, createHarne
     await harness.flush();
 
     expect(getSequencedMessages(harness, replayClient)).toEqual([]);
+  });
+
+  it('signals replay truncation when retained control events overflow', async () => {
+    harness.dispose();
+    harness = createHarness({ controlEventBufferSize: 2 });
+    const replayClient = harness.createClient();
+    expect(harness.authenticateConnection(replayClient, 'replay-client')).toBe(true);
+    await harness.flush();
+
+    const baselineSeq = getHighestAcknowledgedSeq(harness, replayClient);
+    harness.clearMessages(replayClient);
+    broadcastContractEvents(harness);
+    await harness.flush();
+    harness.clearMessages(replayClient);
+
+    harness.replayControlEvents(replayClient, baselineSeq);
+    await harness.flush();
+
+    const replayTruncatedMessages = getReplayTruncatedMessages(harness, replayClient);
+    const replayed = getSequencedMessages(harness, replayClient);
+
+    expect(replayTruncatedMessages).toEqual([
+      expect.objectContaining({
+        lastSeq: baselineSeq,
+        type: 'replay-truncated',
+      }),
+    ]);
+    expect(replayed.map((message) => message.type)).toEqual(['agent-controller', 'task-event']);
+    expect(replayTruncatedMessages[0]?.oldestAvailableSeq).toBe(replayed[0]?.seq);
+    expect(replayTruncatedMessages[0]?.latestSeq).toBeGreaterThanOrEqual(
+      replayed[replayed.length - 1]?.seq ?? -1,
+    );
   });
 });

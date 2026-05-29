@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_CLIENT_INPUT_DATA_LENGTH,
+  isReplayTruncatedMessage,
   isServerMessage,
   parseClientMessage,
   type ServerMessage,
@@ -785,6 +786,46 @@ describe('isServerMessage', () => {
           requestId: 'recovery-1',
           rows: 24,
         },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isReplayTruncatedMessage', () => {
+  it('accepts replay truncation coverage metadata', () => {
+    expect(
+      isReplayTruncatedMessage({
+        type: 'replay-truncated',
+        lastSeq: 2,
+        latestSeq: 8,
+        oldestAvailableSeq: 5,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects malformed replay truncation metadata', () => {
+    expect(
+      isReplayTruncatedMessage({
+        type: 'replay-truncated',
+        lastSeq: 5,
+        latestSeq: 4,
+        oldestAvailableSeq: 6,
+      }),
+    ).toBe(false);
+    expect(
+      isReplayTruncatedMessage({
+        type: 'replay-truncated',
+        lastSeq: -2,
+        latestSeq: 8,
+        oldestAvailableSeq: 5,
+      }),
+    ).toBe(false);
+    expect(
+      isReplayTruncatedMessage({
+        type: 'replay-truncated',
+        lastSeq: 10,
+        latestSeq: 12,
+        oldestAvailableSeq: 5,
       }),
     ).toBe(false);
   });

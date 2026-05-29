@@ -12,7 +12,11 @@ import {
   releaseTaskCommandLease,
   resetTaskCommandLeasesForTest,
 } from '../electron/ipc/task-command-leases.js';
-import type { UpdatePresenceCommand } from '../electron/remote/protocol.js';
+import {
+  isReplayTruncatedMessage,
+  type ReplayTruncatedMessage,
+  type UpdatePresenceCommand,
+} from '../electron/remote/protocol.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
@@ -1189,6 +1193,123 @@ describe('browser control plane', () => {
     });
   });
 
+  it('signals replay truncation before bootstrap when the auth cursor predates the retained ring', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      controlEventBufferSize: 2,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const firstSession = createFakeClient();
+    expect(controlPlane.authenticateConnection(firstSession.client, 'browser-client')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const firstSessionSequenced = getSequencedMessages(firstSession.sent);
+    expect(firstSessionSequenced.length).toBeGreaterThan(0);
+    const lastSeq = firstSessionSequenced.reduce(
+      (highest, message) => Math.max(highest, message.seq),
+      -1,
+    );
+    firstSession.sent.length = 0;
+
+    controlPlane.broadcastControl({
+      type: 'remote-status',
+      connectedClients: 1,
+      peerClients: 0,
+    });
+    controlPlane.broadcastControl({
+      type: 'agent-controller',
+      agentId: 'agent-1',
+      controllerId: 'browser-client',
+    });
+    controlPlane.broadcastControl({
+      type: 'task-event',
+      event: 'created',
+      taskId: 'task-1',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    const reconnectSession = createFakeClient();
+    expect(
+      controlPlane.authenticateConnection(reconnectSession.client, 'browser-client', lastSeq),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const replayTruncatedIndex = findSentMessageIndex(
+      reconnectSession.sent,
+      isReplayTruncatedMessage,
+      'replay truncation metadata',
+    );
+    const bootstrapIndex = findSentMessageIndex(
+      reconnectSession.sent,
+      isStateBootstrapMessage,
+      'authoritative bootstrap',
+    );
+    const replayTruncated = reconnectSession.sent[replayTruncatedIndex];
+
+    expect(replayTruncated).toEqual(
+      expect.objectContaining({
+        lastSeq,
+        type: 'replay-truncated',
+      }),
+    );
+    expect((replayTruncated as ReplayTruncatedMessage).oldestAvailableSeq).toBeGreaterThan(
+      lastSeq + 1,
+    );
+    expect(replayTruncatedIndex).toBeLessThan(bootstrapIndex);
+  });
+
+  it('does not manufacture replay truncation from the auth client-count broadcast', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      controlEventBufferSize: 3,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const firstSession = createFakeClient();
+    expect(controlPlane.authenticateConnection(firstSession.client, 'browser-client')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const lastSeq = getSequencedMessages(firstSession.sent).reduce(
+      (highest, message) => Math.max(highest, message.seq),
+      -1,
+    );
+
+    controlPlane.broadcastControl({
+      type: 'remote-status',
+      connectedClients: 1,
+      peerClients: 0,
+    });
+    controlPlane.broadcastControl({
+      type: 'agent-controller',
+      agentId: 'agent-1',
+      controllerId: 'browser-client',
+    });
+    controlPlane.broadcastControl({
+      type: 'task-event',
+      event: 'created',
+      taskId: 'task-1',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    const reconnectSession = createFakeClient();
+    expect(
+      controlPlane.authenticateConnection(reconnectSession.client, 'browser-client', lastSeq),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(reconnectSession.sent.filter(isReplayTruncatedMessage)).toEqual([]);
+    expect(getSequencedMessages(reconnectSession.sent).map((message) => message.seq)).toEqual(
+      expect.arrayContaining([lastSeq + 1, lastSeq + 2, lastSeq + 3]),
+    );
+  });
+
   it('does not replay removed agent supervision snapshots', () => {
     vi.spyOn(serverStateBootstrapModule, 'getServerStateBootstrap').mockReturnValue([
       { category: 'git-status', mode: 'replace', payload: [], version: 0 },
@@ -1759,7 +1880,7 @@ describe('browser control plane', () => {
     expect(controlPlane.getPendingChannelSendState(client)).toBeNull();
   });
 
-  it('treats simulated packet loss as extra delay instead of dropping channel data', async () => {
+  it('treats simulated packet loss as true send drops for channel data', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0);
 
@@ -1773,15 +1894,96 @@ describe('browser control plane', () => {
 
     const { client, sent } = createFakeClient();
 
-    expect(controlPlane.sendChannelData(client, Buffer.from('delayed'))).toBe(true);
-    expect(sent).toHaveLength(0);
+    expect(controlPlane.sendChannelData(client, Buffer.from('dropped'))).toBe(true);
 
-    await vi.advanceTimersByTimeAsync(24);
     expect(sent).toHaveLength(0);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      simulatedDroppedSends: 1,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not leave an empty delayed-send queue after a simulated drop', () => {
+    vi.spyOn(Math, 'random').mockReturnValueOnce(0).mockReturnValueOnce(1);
+
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulatePacketLoss: 0.5,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('dropped'))).toBe(true);
+    expect(controlPlane.getPendingChannelSendState(client)).toBeNull();
+    expect(controlPlane.sendChannelData(client, Buffer.from('delivered'))).toBe(true);
+
+    expect(sent).toEqual([Buffer.from('delivered')]);
+  });
+
+  it('preserves FIFO delayed sends when simulated jitter changes delivery due times', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValueOnce(1).mockReturnValueOnce(0);
+
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateJitterMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('slow-first'))).toBe(true);
+    expect(controlPlane.sendChannelData(client, Buffer.from('fast-second'))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(sent).toEqual([Buffer.from('slow-first'), Buffer.from('fast-second')]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('preserves FIFO between delayed channel data and later control JSON', async () => {
+    vi.useFakeTimers();
+
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateLatencyMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('channel-first'))).toBe(true);
+    expect(
+      controlPlane.sendMessage(client, {
+        agentId: 'agent-1',
+        exitCode: null,
+        status: 'running',
+        type: 'status',
+      }),
+    ).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(sent).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(sent).toEqual([Buffer.from('delayed')]);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(sent).toEqual([
+      Buffer.from('channel-first'),
+      {
+        agentId: 'agent-1',
+        exitCode: null,
+        status: 'running',
+        type: 'status',
+      },
+    ]);
   });
 
   it('drops queued control sends for backpressured clients so replay can recover', () => {

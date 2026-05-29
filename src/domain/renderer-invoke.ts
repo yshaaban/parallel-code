@@ -121,6 +121,26 @@ export interface RendererInvokeRequestMap {
     rows?: number;
     taskId: string;
   };
+  [IPC.EnsureAgentSessionsBatch]: {
+    clientId?: string;
+    requests: Array<{
+      adapter?: 'hydra';
+      agentId: string;
+      args: string[];
+      baseBranch?: string;
+      cols?: number;
+      command?: string;
+      cwd?: string;
+      env?: Record<string, string>;
+      isShell?: boolean;
+      projectMode?: ProjectMode;
+      resumeOnStart?: boolean;
+      rows?: number;
+      runnerProfile?: AgentRunnerProfileConfig;
+      taskId: string;
+    }>;
+    reason: 'dispatch-storm' | 'startup-restore' | 'user-action';
+  };
   [IPC.DetachAgentOutput]: {
     agentId: string;
     channelId: string;
@@ -569,6 +589,17 @@ export interface RendererInvokeRequestMap {
 export interface RendererInvokeResponseMap {
   [IPC.SpawnAgent]: {
     attachedExistingSession: boolean;
+  };
+  [IPC.EnsureAgentSessionsBatch]: {
+    results: Array<{
+      agentId: string;
+      cols: number;
+      created: boolean;
+      error?: string;
+      existed: boolean;
+      rows: number;
+      taskId: string;
+    }>;
   };
   [IPC.DetachAgentOutput]: undefined;
   [IPC.WriteToAgent]: undefined;

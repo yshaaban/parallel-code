@@ -19,6 +19,7 @@ type BrowserIpcTaskCommandArgChannel =
   | IPC.ContainersStartTask
   | IPC.ContainersStopTask
   | IPC.DiscardUncommitted
+  | IPC.EnsureAgentSessionsBatch
   | IPC.MergeArenaWorktree
   | IPC.ResizeAgent
   | IPC.SpawnAgent
@@ -56,6 +57,16 @@ function normalizeBrowserOwnedTaskArgs(
   return {
     ...args,
     controllerId: browserClientId,
+  };
+}
+
+function normalizeEnsureAgentSessionsBatchArgs(
+  args: Record<string, unknown>,
+  browserClientId: string,
+): Record<string, unknown> {
+  return {
+    ...args,
+    clientId: browserClientId,
   };
 }
 
@@ -108,6 +119,31 @@ function stripTaskCommandIdentity(args: Record<string, unknown>): Record<string,
   return rest;
 }
 
+function stripEnsureAgentSessionsBatchIdentity(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const rest = stripTaskCommandIdentity(args);
+  delete rest.clientId;
+
+  if (!Array.isArray(rest.requests)) {
+    return rest;
+  }
+
+  return {
+    ...rest,
+    requests: rest.requests.map((request) => {
+      if (!request || typeof request !== 'object' || Array.isArray(request)) {
+        return request;
+      }
+
+      const sanitizedRequest = { ...(request as Record<string, unknown>) };
+      delete sanitizedRequest.taskId;
+      delete sanitizedRequest.controllerId;
+      return sanitizedRequest;
+    }),
+  };
+}
+
 const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
   [IPC.CleanupTaskRuntime]: normalizeBrowserOwnedTaskArgs,
   [IPC.DeleteTask]: normalizeBrowserOwnedTaskArgs,
@@ -123,6 +159,7 @@ const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   [IPC.ContainersStartTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.ContainersStopTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.DiscardUncommitted]: normalizeRegisteredWorktreeMutationArgs,
+  [IPC.EnsureAgentSessionsBatch]: normalizeEnsureAgentSessionsBatchArgs,
   [IPC.MergeArenaWorktree]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.ResizeAgent]: normalizeTerminalCommandArgs,
   [IPC.SpawnAgent]: normalizeBrowserOwnedTaskArgs,
@@ -147,6 +184,10 @@ export function normalizeBrowserIpcTaskCommandArgs(
   }
 
   if (!browserClientId) {
+    if (channel === IPC.EnsureAgentSessionsBatch) {
+      return stripEnsureAgentSessionsBatchIdentity(args);
+    }
+
     if (isBrowserIpcTaskCommandArgChannel(channel)) {
       return stripTaskCommandIdentity(args);
     }

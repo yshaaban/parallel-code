@@ -48,6 +48,7 @@ const {
   browserTransportListeners: new Set<(event: BrowserTransportEventTest) => void>(),
   getBrowserReconnectContinuityMock: vi.fn(() => ({
     disconnectedDurationMs: null as number | null,
+    hasReplayTruncatedSinceDisconnect: false,
     hasSequenceGapSinceDisconnect: false,
     hasSequencedMessageSinceDisconnect: false,
   })),
@@ -208,6 +209,7 @@ describe('browser runtime restore generation', () => {
     taskCommandControllerListeners.clear();
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: null as number | null,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: false,
     });
@@ -274,6 +276,7 @@ describe('browser runtime restore generation', () => {
   it('skips full reconnect snapshot restore for a warm gap-free reconnect with current versions', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
@@ -355,6 +358,7 @@ describe('browser runtime restore generation', () => {
   it('uses a full reconnect snapshot when warm status lacks agent generations', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
@@ -411,6 +415,7 @@ describe('browser runtime restore generation', () => {
   it('hydrates generations before stale-workspace warm reconnect skips the full snapshot', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
@@ -456,6 +461,7 @@ describe('browser runtime restore generation', () => {
   it('uses a full reconnect snapshot when no sequenced replay message has arrived yet', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: false,
     });
@@ -481,7 +487,35 @@ describe('browser runtime restore generation', () => {
   it('uses a full reconnect snapshot when the warm reconnect has a replay gap', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: true,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+
+    cleanup();
+  });
+
+  it('uses a full reconnect snapshot when warm replay was truncated', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: true,
+      hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
     const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
@@ -515,6 +549,7 @@ describe('browser runtime restore generation', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
@@ -566,6 +601,7 @@ describe('browser runtime restore generation', () => {
   it('uses a full reconnect snapshot when warm status has stale workspace but newer task control', async () => {
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: false,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });

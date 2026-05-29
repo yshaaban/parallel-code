@@ -1,6 +1,8 @@
 import {
+  isReplayTruncatedMessage,
   isServerMessage,
   type ClientMessage,
+  type ReplayTruncatedMessage,
   type ServerMessage,
 } from '../../electron/remote/protocol';
 import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
@@ -71,6 +73,7 @@ export type BrowserControlConnectionState = Extract<
   { kind: 'connection' }
 >['state'];
 type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<ServerMessage>;
+type BrowserControlIncomingMessage = ServerMessage | ReplayTruncatedMessage;
 
 export interface BrowserControlClient {
   bindLifecycle: () => void;
@@ -78,6 +81,7 @@ export interface BrowserControlClient {
   expireSession: () => void;
   getBufferedAmount: () => number;
   getConnectionState: () => BrowserControlConnectionState;
+  hasReplayTruncatedSinceDisconnect: () => boolean;
   hasSequenceGapSinceDisconnect: () => boolean;
   hasSequencedMessageSinceDisconnect: () => boolean;
   getLastDisconnectDurationMs: () => number | null;
@@ -156,6 +160,7 @@ export function createBrowserControlClient(
   let lastBrowserErrorAt = 0;
   let activeDisconnectStartedAt: number | null = null;
   let lastDisconnectDurationMs: number | null = null;
+  let replayTruncatedSinceDisconnect = false;
   let sequenceGapSinceDisconnect = false;
   let sequencedMessageSinceDisconnect = false;
   let hasConfirmedAuthenticatedSession = false;
@@ -251,7 +256,13 @@ export function createBrowserControlClient(
     'task-command-takeover-result': emitBrowserMessage,
   } satisfies BrowserServerMessageHandlerMap;
 
-  function handleBrowserServerMessage(message: ServerMessage): void {
+  function handleBrowserServerMessage(message: BrowserControlIncomingMessage): void {
+    if (isReplayTruncatedMessage(message)) {
+      replayTruncatedSinceDisconnect = true;
+      confirmAuthenticatedSession();
+      return;
+    }
+
     if (isSequencedServerMessage(message)) {
       sequencedMessageSinceDisconnect = true;
     }
@@ -262,6 +273,10 @@ export function createBrowserControlClient(
   function isSequencedServerMessage(message: ServerMessage): boolean {
     const seq = (message as { seq?: unknown }).seq;
     return typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0;
+  }
+
+  function isBrowserControlIncomingMessage(value: unknown): value is BrowserControlIncomingMessage {
+    return isServerMessage(value) || isReplayTruncatedMessage(value);
   }
 
   function getDisconnectConnectedDurationMs(event: {
@@ -308,7 +323,10 @@ export function createBrowserControlClient(
     );
   }
 
-  const browserSocketClient = createWebSocketClientCore<ServerMessage, ClientMessage>({
+  const browserSocketClient = createWebSocketClientCore<
+    BrowserControlIncomingMessage,
+    ClientMessage
+  >({
     binaryType: 'arraybuffer',
     createPingMessage: () => ({ type: 'ping' }),
     getClientId: options.getClientId,
@@ -316,7 +334,7 @@ export function createBrowserControlClient(
       return getBrowserSocketUrl({ clientId, lastSeq });
     },
     isPongMessage: (message) => message.type === 'pong',
-    isIncomingMessage: isServerMessage,
+    isIncomingMessage: isBrowserControlIncomingMessage,
     onAuthExpired: options.onAuthExpired,
     onBinaryMessage: (buffer) => {
       channelHandlers?.onBinaryMessage(buffer);
@@ -324,6 +342,7 @@ export function createBrowserControlClient(
     onDisconnect: (event) => {
       activeDisconnectStartedAt = getActiveDisconnectStartedAt(event);
       lastDisconnectDurationMs = null;
+      replayTruncatedSinceDisconnect = false;
       sequenceGapSinceDisconnect = false;
       sequencedMessageSinceDisconnect = false;
       emitTransportEvent({
@@ -519,6 +538,7 @@ export function createBrowserControlClient(
     browserSocketClient.resetForTests();
     activeDisconnectStartedAt = null;
     lastDisconnectDurationMs = null;
+    replayTruncatedSinceDisconnect = false;
     sequenceGapSinceDisconnect = false;
     sequencedMessageSinceDisconnect = false;
   }
@@ -537,6 +557,7 @@ export function createBrowserControlClient(
     expireSession: () => browserSocketClient.disconnect('auth-expired'),
     getBufferedAmount: browserSocketClient.getBufferedAmount,
     getConnectionState: () => browserConnectionState,
+    hasReplayTruncatedSinceDisconnect: () => replayTruncatedSinceDisconnect,
     hasSequenceGapSinceDisconnect: () => sequenceGapSinceDisconnect,
     hasSequencedMessageSinceDisconnect: () => sequencedMessageSinceDisconnect,
     getLastDisconnectDurationMs,

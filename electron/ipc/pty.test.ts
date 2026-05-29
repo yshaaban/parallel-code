@@ -240,6 +240,51 @@ describe('spawnAgent', () => {
     expect(diagnostics.terminalInputTracing.completedTraces).toHaveLength(0);
   });
 
+  it('supports backend-only sessions that collect recovery state before any output channel attaches', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const sendToChannel = vi.fn();
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-backend-only',
+      agentId: 'agent-backend-only',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+
+    proc.emitData('backend output');
+    vi.advanceTimersByTime(4);
+
+    expect(sendToChannel).not.toHaveBeenCalled();
+    expect(getAgentTerminalRecovery('agent-backend-only', null)).toEqual({
+      cols: 80,
+      data: Buffer.from('backend output', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: Buffer.byteLength('backend output', 'utf8'),
+      rows: 24,
+    });
+
+    const attachedExistingSession = spawnAgent(sendToChannel, {
+      taskId: 'task-backend-only',
+      agentId: 'agent-backend-only',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 100,
+      rows: 30,
+      onOutput: { __CHANNEL_ID__: 'attached-channel' },
+    });
+
+    expect(attachedExistingSession).toBe(true);
+    expect(proc.resize).not.toHaveBeenCalled();
+  });
+
   it('reattaches to an existing session without implicitly resizing the shared PTY', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);

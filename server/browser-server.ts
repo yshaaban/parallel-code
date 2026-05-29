@@ -168,6 +168,17 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   let browserSocketInfrastructureCleaned = false;
   let processHandlersRemoved = false;
 
+  function getSimulatedClientMessageDelayMs(): number {
+    const latencyMs = Math.max(0, options.simulateLatencyMs ?? 0);
+    const jitterMs = Math.max(0, options.simulateJitterMs ?? 0);
+    return latencyMs + (jitterMs > 0 ? Math.random() * jitterMs : 0);
+  }
+
+  function shouldDropSimulatedClientMessage(): boolean {
+    const packetLoss = Math.min(1, Math.max(0, options.simulatePacketLoss ?? 0));
+    return packetLoss > 0 && Math.random() < packetLoss;
+  }
+
   function isAuthorizedRequest(req: {
     header?: (name: string) => string | undefined;
     headers: IncomingHttpHeaders;
@@ -413,10 +424,12 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     broadcastRemoteStatus: controlPlane.broadcastRemoteStatus,
     channels: channelManager,
     cleanupClientState,
+    getClientMessageDelayMs: getSimulatedClientMessageDelayMs,
     isAuthorizedRequest: browserAuth.isAuthenticatedRequest,
     isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     sendAgentError: controlPlane.sendAgentError,
     sendMessage: (client, message) => controlPlane.sendMessage(client, message),
+    shouldDropClientMessage: shouldDropSimulatedClientMessage,
     requestTaskCommandTakeover: controlPlane.requestTaskCommandTakeover,
     respondTaskCommandTakeover: controlPlane.respondTaskCommandTakeover,
     safeCompareToken: safeCompare,

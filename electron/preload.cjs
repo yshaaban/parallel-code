@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const ALLOWED_CHANNELS = new Set([
   // Agent/PTY
   'spawn_agent',
+  'ensure_agent_sessions_batch',
   'detach_agent_output',
   'write_to_agent',
   'resize_agent',

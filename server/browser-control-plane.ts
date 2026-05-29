@@ -36,10 +36,7 @@ import {
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
 import { type BrowserRemoteStatus, type BrowserServerInfo } from './browser-server-info.js';
-import {
-  createBrowserControlDelayedSends,
-  DELAYED_SEND_RETRY_INTERVAL_MS,
-} from './browser-control-delayed-sends.js';
+import { createBrowserControlDelayedSends } from './browser-control-delayed-sends.js';
 import { createBrowserControlState } from './browser-control-state.js';
 import { createBrowserPeerPresence } from './browser-peer-presence.js';
 import { createBrowserSendQueue } from './browser-send-queue.js';
@@ -100,6 +97,7 @@ export interface CreateBrowserControlPlaneOptions {
   agentControlLeaseMs?: number;
   buildAgentList: () => RemoteAgent[];
   cleanupSocketClient: (client: WebSocket) => void;
+  controlEventBufferSize?: number;
   heartbeatIntervalMs?: number;
   maxMissedPongs?: number;
   port: number;
@@ -111,7 +109,7 @@ export interface CreateBrowserControlPlaneOptions {
 
 type BrowserTransportTuningOptions = Pick<
   CreateWebSocketTransportOptions<WebSocket>,
-  'agentControlLeaseMs' | 'heartbeatIntervalMs' | 'maxMissedPongs'
+  'agentControlLeaseMs' | 'controlEventBufferSize' | 'heartbeatIntervalMs' | 'maxMissedPongs'
 >;
 type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-changed' }>;
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
@@ -160,6 +158,9 @@ function createTransportTuningOptions(
     ...(options.agentControlLeaseMs !== undefined
       ? { agentControlLeaseMs: options.agentControlLeaseMs }
       : {}),
+    ...(options.controlEventBufferSize !== undefined
+      ? { controlEventBufferSize: options.controlEventBufferSize }
+      : {}),
     ...(options.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: options.heartbeatIntervalMs }
       : {}),
@@ -167,39 +168,30 @@ function createTransportTuningOptions(
   };
 }
 
-function getSimulatedRetransmissionDelayMs(
-  latencyMs: number,
-  jitterMs: number,
-  packetLoss: number,
-): number {
-  if (packetLoss <= 0 || Math.random() >= packetLoss) {
-    return 0;
-  }
-
-  const retransmissionBaseMs = Math.max(DELAYED_SEND_RETRY_INTERVAL_MS, latencyMs);
-  const retransmissionJitterMs = Math.max(jitterMs, Math.floor(retransmissionBaseMs / 2));
-  return retransmissionBaseMs + Math.random() * retransmissionJitterMs;
-}
-
 function getSimulatedChannelDelayMs(options: CreateBrowserControlPlaneOptions): number {
   const latencyMs = Math.max(0, options.simulateLatencyMs ?? 0);
   const jitterMs = Math.max(0, options.simulateJitterMs ?? 0);
+  return latencyMs + (jitterMs > 0 ? Math.random() * jitterMs : 0);
+}
+
+function shouldDropSimulatedSend(options: CreateBrowserControlPlaneOptions): boolean {
   const packetLoss = Math.min(1, Math.max(0, options.simulatePacketLoss ?? 0));
-  const baseDelayMs = latencyMs + Math.random() * jitterMs;
-  const retransmissionDelayMs = getSimulatedRetransmissionDelayMs(latencyMs, jitterMs, packetLoss);
-  return baseDelayMs + retransmissionDelayMs;
+  return packetLoss > 0 && Math.random() < packetLoss;
 }
 
 export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
   let taskCommandLeasePruneTimer: ReturnType<typeof setInterval> | null = null;
+  let deferAuthenticatedClientCountChanged = false;
+  let deferredAuthenticatedClientCountChanged = false;
   const peerPresence = createBrowserPeerPresence({
     broadcastControl,
   });
 
   const delayedSends = createBrowserControlDelayedSends({
     getChannelDelayMs: () => getSimulatedChannelDelayMs(options),
+    shouldDropSend: () => shouldDropSimulatedSend(options),
     onFailedClientSend: cleanupFailedClientSend,
     onInactiveClient: cleanupInactiveClient,
   });
@@ -237,6 +229,11 @@ export function createBrowserControlPlane(
       client.terminate();
     },
     onAuthenticatedClientCountChanged: () => {
+      if (deferAuthenticatedClientCountChanged) {
+        deferredAuthenticatedClientCountChanged = true;
+        return;
+      }
+
       broadcastRemoteStatus();
     },
     ...createTransportTuningOptions(options),
@@ -363,8 +360,20 @@ export function createBrowserControlPlane(
   function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
     const lastReplayableSeq =
       lastSeq === undefined ? undefined : transport.getLatestControlEventSeq();
-    const authResult = transport.authenticateClient(client, clientId);
+    deferAuthenticatedClientCountChanged = lastSeq !== undefined;
+    function authenticateClientWithDeferredStatus(): ReturnType<
+      typeof transport.authenticateClient
+    > {
+      try {
+        return transport.authenticateClient(client, clientId);
+      } finally {
+        deferAuthenticatedClientCountChanged = false;
+      }
+    }
+
+    const authResult = authenticateClientWithDeferredStatus();
     if (!authResult.ok) {
+      deferredAuthenticatedClientCountChanged = false;
       return false;
     }
 
@@ -379,6 +388,10 @@ export function createBrowserControlPlane(
       type: 'peer-presences',
       list: peerPresence.getPeerPresenceSnapshots(),
     });
+    if (deferredAuthenticatedClientCountChanged) {
+      deferredAuthenticatedClientCountChanged = false;
+      broadcastRemoteStatus();
+    }
     return true;
   }
 

@@ -42,6 +42,7 @@ export interface FakeWebSocketClient extends WebSocket {
 
 export interface WebSocketContractHarnessOptions {
   agentControlLeaseMs?: number;
+  controlEventBufferSize?: number;
   heartbeatIntervalMs?: number;
   maxMissedPongs?: number;
 }
@@ -87,7 +88,7 @@ export interface WebSocketContractHarness {
 
 type TransportContractOptions = Pick<
   CreateWebSocketTransportOptions<FakeWebSocketClient>,
-  'agentControlLeaseMs' | 'heartbeatIntervalMs' | 'maxMissedPongs'
+  'agentControlLeaseMs' | 'controlEventBufferSize' | 'heartbeatIntervalMs' | 'maxMissedPongs'
 >;
 
 function getSendTextResult(client: FakeWebSocketClient): SendTextResult {
@@ -143,6 +144,9 @@ function createTransportOptions(
   return {
     ...(options?.agentControlLeaseMs !== undefined
       ? { agentControlLeaseMs: options.agentControlLeaseMs }
+      : {}),
+    ...(options?.controlEventBufferSize !== undefined
+      ? { controlEventBufferSize: options.controlEventBufferSize }
       : {}),
     ...(options?.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: options.heartbeatIntervalMs }
@@ -247,6 +251,7 @@ export function createBrowserControlPlaneContractHarness(
     agentControlLeaseMs: options?.agentControlLeaseMs,
     buildAgentList: () => [],
     cleanupSocketClient: () => {},
+    controlEventBufferSize: options?.controlEventBufferSize,
     heartbeatIntervalMs: options?.heartbeatIntervalMs,
     maxMissedPongs: options?.maxMissedPongs,
     port: 7777,

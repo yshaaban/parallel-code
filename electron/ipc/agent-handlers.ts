@@ -34,6 +34,11 @@ import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
   recordTerminalRecoveryBatch,
+  recordAgentSessionEnsureBatch,
+  recordAgentSessionEnsureResult,
+  recordAgentSessionSpawnAdmissionState,
+  recordAgentSessionSpawnAdmissionWait,
+  recordAgentSessionSpawnDuration,
   recordScrollbackReplay,
   recordScrollbackReplayCacheHit,
   recordScrollbackReplayCacheMiss,
@@ -70,7 +75,65 @@ interface CachedScrollbackBatch {
 
 const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
 const MAX_TERMINAL_ORDER_EPOCH_LENGTH = 100;
+const MAX_CONCURRENT_AGENT_SESSION_SPAWNS = 4;
 const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
+const pendingAgentSessionSpawnAdmissions: Array<() => void> = [];
+let activeAgentSessionSpawns = 0;
+
+async function acquireAgentSessionSpawnAdmission(): Promise<void> {
+  const startedAt = performance.now();
+  if (activeAgentSessionSpawns < MAX_CONCURRENT_AGENT_SESSION_SPAWNS) {
+    activeAgentSessionSpawns += 1;
+    recordAgentSessionSpawnAdmissionState({
+      activeSpawns: activeAgentSessionSpawns,
+      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
+    });
+    recordAgentSessionSpawnAdmissionWait(performance.now() - startedAt);
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    pendingAgentSessionSpawnAdmissions.push(resolve);
+    recordAgentSessionSpawnAdmissionState({
+      activeSpawns: activeAgentSessionSpawns,
+      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
+    });
+  });
+  recordAgentSessionSpawnAdmissionState({
+    activeSpawns: activeAgentSessionSpawns,
+    pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
+  });
+  recordAgentSessionSpawnAdmissionWait(performance.now() - startedAt);
+}
+
+function releaseAgentSessionSpawnAdmission(): void {
+  const nextAdmission = pendingAgentSessionSpawnAdmissions.shift();
+  if (nextAdmission) {
+    recordAgentSessionSpawnAdmissionState({
+      activeSpawns: activeAgentSessionSpawns,
+      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
+    });
+    nextAdmission();
+    return;
+  }
+
+  activeAgentSessionSpawns = Math.max(0, activeAgentSessionSpawns - 1);
+  recordAgentSessionSpawnAdmissionState({
+    activeSpawns: activeAgentSessionSpawns,
+    pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
+  });
+}
+
+async function runNewAgentSessionSpawn<T>(operation: () => Promise<T> | T): Promise<T> {
+  await acquireAgentSessionSpawnAdmission();
+  const startedAt = performance.now();
+  try {
+    return await operation();
+  } finally {
+    recordAgentSessionSpawnDuration(performance.now() - startedAt);
+    releaseAgentSessionSpawnAdmission();
+  }
+}
 
 function clearExpiredScrollbackBatchEntries(now: number): void {
   for (const [cacheKey, entry] of pendingScrollbackBatchByKey) {
@@ -220,6 +283,26 @@ function normalizeStartupVisibleTerminalCount(
   }
 
   return value;
+}
+
+function normalizeTerminalDimension(value: unknown, fallback: number, label: string): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  assertInt(value, label);
+  if (value <= 0) {
+    throw new BadRequestError(`${label} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function assertTerminalDimension(value: unknown, label: string): asserts value is number {
+  assertInt(value, label);
+  if (value <= 0) {
+    throw new BadRequestError(`${label} must be a positive integer`);
+  }
 }
 
 async function fetchScrollbackBatch(
@@ -409,6 +492,16 @@ function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode
   throw new BadRequestError('projectMode must be one of: git, non-git');
 }
 
+function assertEnsureAgentSessionsBatchReason(
+  value: unknown,
+): asserts value is 'dispatch-storm' | 'startup-restore' | 'user-action' {
+  if (value === 'dispatch-storm' || value === 'startup-restore' || value === 'user-action') {
+    return;
+  }
+
+  throw new BadRequestError('reason must be one of: startup-restore, dispatch-storm, user-action');
+}
+
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
@@ -429,8 +522,8 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertOptionalProjectMode(request.projectMode);
       assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
-      const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
-      const requestedRows = typeof request.rows === 'number' ? request.rows : 24;
+      const requestedCols = normalizeTerminalDimension(request.cols, 80, 'cols');
+      const requestedRows = normalizeTerminalDimension(request.rows, 24, 'rows');
       const hasExistingSession = hasAgentSession(request.agentId);
       const runnerProfile = hasExistingSession
         ? undefined
@@ -438,28 +531,177 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const cols = hasExistingSession ? getAgentCols(request.agentId) : requestedCols;
       const rows = hasExistingSession ? getAgentRows(request.agentId) : requestedRows;
 
-      const attachedExistingSession = spawnTaskAgentWorkflow(context, {
-        taskId: request.taskId,
-        ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
-        agentId: request.agentId,
-        command: typeof request.command === 'string' ? request.command : '',
-        args: request.args,
-        cwd: typeof request.cwd === 'string' ? request.cwd : '',
-        env: request.env,
-        cols,
-        rows,
-        isShell: request.isShell === true,
-        resumeOnStart: request.resumeOnStart === true,
-        onOutput: { __CHANNEL_ID__: channelId },
-        ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-        ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
-        ...(!hasExistingSession && runnerProfile !== undefined ? { runnerProfile } : {}),
-      });
+      const spawnWorkflow = () =>
+        spawnTaskAgentWorkflow(context, {
+          taskId: request.taskId,
+          ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+          agentId: request.agentId,
+          command: typeof request.command === 'string' ? request.command : '',
+          args: request.args,
+          cwd: typeof request.cwd === 'string' ? request.cwd : '',
+          env: request.env,
+          cols,
+          rows,
+          isShell: request.isShell === true,
+          resumeOnStart: request.resumeOnStart === true,
+          onOutput: { __CHANNEL_ID__: channelId },
+          ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+          ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
+          ...(!hasExistingSession && runnerProfile !== undefined ? { runnerProfile } : {}),
+        });
+
+      const attachedExistingSession = hasExistingSession
+        ? spawnWorkflow()
+        : await runNewAgentSessionSpawn(spawnWorkflow);
 
       return {
         attachedExistingSession,
       };
     }),
+
+    [IPC.EnsureAgentSessionsBatch]: defineIpcHandler<IPC.EnsureAgentSessionsBatch>(
+      IPC.EnsureAgentSessionsBatch,
+      async (args) => {
+        const request = args;
+        assertEnsureAgentSessionsBatchReason(request.reason);
+        if (!Array.isArray(request.requests)) {
+          throw new BadRequestError('requests must be an array');
+        }
+
+        const normalizedRequests = request.requests.map((candidate, index) => {
+          if (!candidate || typeof candidate !== 'object') {
+            throw new BadRequestError(`requests[${index}] must be an object`);
+          }
+
+          const entry = candidate as Record<string, unknown>;
+          assertString(entry.taskId, `requests[${index}].taskId`);
+          assertString(entry.agentId, `requests[${index}].agentId`);
+          assertStringArray(entry.args, `requests[${index}].args`);
+          if (entry.adapter !== undefined && entry.adapter !== 'hydra') {
+            throw new BadRequestError(`requests[${index}].adapter must be hydra when provided`);
+          }
+          if (entry.cwd !== undefined) {
+            assertString(entry.cwd, `requests[${index}].cwd`);
+          }
+          if (entry.resumeOnStart !== undefined && typeof entry.resumeOnStart !== 'boolean') {
+            throw new BadRequestError(
+              `requests[${index}].resumeOnStart must be a boolean when provided`,
+            );
+          }
+          const baseBranch = entry.baseBranch;
+          const projectMode = entry.projectMode;
+          validateOptionalBranchName(baseBranch, `requests[${index}].baseBranch`);
+          assertOptionalProjectMode(projectMode);
+
+          const taskId = entry.taskId;
+          const agentId = entry.agentId;
+          const spawnArgs = entry.args;
+          const adapter: 'hydra' | undefined = entry.adapter === 'hydra' ? 'hydra' : undefined;
+          const command = typeof entry.command === 'string' ? entry.command : '';
+          const cwd = typeof entry.cwd === 'string' ? entry.cwd : '';
+          const requestedCols = normalizeTerminalDimension(
+            entry.cols,
+            80,
+            `requests[${index}].cols`,
+          );
+          const requestedRows = normalizeTerminalDimension(
+            entry.rows,
+            24,
+            `requests[${index}].rows`,
+          );
+          return {
+            adapter,
+            agentId,
+            baseBranch,
+            command,
+            cwd,
+            env: entry.env,
+            isShell: entry.isShell === true,
+            projectMode,
+            requestedCols,
+            requestedRows,
+            resumeOnStart: entry.resumeOnStart === true,
+            runnerProfile: entry.runnerProfile,
+            spawnArgs,
+            taskId,
+          };
+        });
+
+        recordAgentSessionEnsureBatch(normalizedRequests.length);
+
+        const results = await Promise.all(
+          normalizedRequests.map(async (entry) => {
+            const buildExistingResult = () => ({
+              agentId: entry.agentId,
+              cols: getAgentCols(entry.agentId),
+              created: false,
+              existed: true,
+              rows: getAgentRows(entry.agentId),
+              taskId: getAgentMeta(entry.agentId)?.taskId ?? entry.taskId,
+            });
+
+            if (hasAgentSession(entry.agentId)) {
+              recordAgentSessionEnsureResult('existing');
+              return buildExistingResult();
+            }
+
+            try {
+              const created = await runNewAgentSessionSpawn(() => {
+                if (hasAgentSession(entry.agentId)) {
+                  return false;
+                }
+
+                const runnerProfile = normalizeAgentRunnerProfileConfig(entry.runnerProfile);
+                spawnTaskAgentWorkflow(context, {
+                  taskId: entry.taskId,
+                  ...(entry.baseBranch !== undefined ? { baseBranch: entry.baseBranch } : {}),
+                  agentId: entry.agentId,
+                  command: entry.command,
+                  args: entry.spawnArgs,
+                  cwd: entry.cwd,
+                  env: entry.env,
+                  cols: entry.requestedCols,
+                  rows: entry.requestedRows,
+                  isShell: entry.isShell,
+                  resumeOnStart: entry.resumeOnStart,
+                  ...(entry.projectMode !== undefined ? { projectMode: entry.projectMode } : {}),
+                  ...(entry.adapter !== undefined ? { adapter: entry.adapter } : {}),
+                  ...(runnerProfile !== undefined ? { runnerProfile } : {}),
+                });
+                return true;
+              });
+
+              if (!created) {
+                recordAgentSessionEnsureResult('existing');
+                return buildExistingResult();
+              }
+
+              recordAgentSessionEnsureResult('created');
+              return {
+                agentId: entry.agentId,
+                cols: entry.requestedCols,
+                created: true,
+                existed: false,
+                rows: entry.requestedRows,
+                taskId: entry.taskId,
+              };
+            } catch (error) {
+              return {
+                agentId: entry.agentId,
+                cols: entry.requestedCols,
+                created: false,
+                error: error instanceof Error ? error.message : String(error),
+                existed: false,
+                rows: entry.requestedRows,
+                taskId: entry.taskId,
+              };
+            }
+          }),
+        );
+
+        return { results };
+      },
+    ),
 
     [IPC.WriteToAgent]: defineIpcHandler<IPC.WriteToAgent>(IPC.WriteToAgent, (args) => {
       const request = args;
@@ -604,8 +846,8 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
     [IPC.ResizeAgent]: defineIpcHandler<IPC.ResizeAgent>(IPC.ResizeAgent, (args) => {
       const request = args;
       assertString(request.agentId, 'agentId');
-      assertInt(request.cols, 'cols');
-      assertInt(request.rows, 'rows');
+      assertTerminalDimension(request.cols, 'cols');
+      assertTerminalDimension(request.rows, 'rows');
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.resizeEpoch, 'resizeEpoch');
       assertOptionalInt(request.resizeSeq, 'resizeSeq');

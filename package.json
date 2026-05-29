@@ -105,6 +105,7 @@
     "stress:session:profile:interactive-verbose": "npm run build:server && node scripts/session-stress-matrix.mjs --profile interactive_verbose --out-dir artifacts/session-stress/interactive-verbose --skip-build",
     "stress:session:profile:heavy-tui": "npm run build:server && node scripts/session-stress-matrix.mjs --profile heavy_tui --out-dir artifacts/session-stress/heavy-tui --skip-build",
     "stress:session:profile:reconnect-storm": "npm run build:server && node scripts/session-stress-matrix.mjs --profile reconnect_storm --out-dir artifacts/session-stress/reconnect-storm --skip-build",
+    "scorecard:terminal-startup-tail": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix startup_tail --out-dir artifacts/session-stress/startup-tail --skip-build",
     "stress:session:profile:late-join": "npm run build:server && node scripts/session-stress-matrix.mjs --profile late_join --out-dir artifacts/session-stress/late-join --skip-build",
     "stress:session:profile:slow-link": "npm run build:server && node scripts/session-stress-matrix.mjs --profile slow_link --out-dir artifacts/session-stress/slow-link --skip-build",
     "stress:session:tune:slow-link": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/slow-link-tuning --skip-build",

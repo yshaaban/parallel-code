@@ -71,6 +71,8 @@ function parseArgs(argv) {
     failOnBudget: false,
     outputJsonPath: null,
     quiet: false,
+    startupOnly: false,
+    startupSpawnMode: 'sequential',
     redrawChunkDelayMs: 1,
     redrawFooterTopRow: 20,
     redrawFrameDelayMs: 16,
@@ -271,6 +273,13 @@ function parseArgs(argv) {
       case '--skip-build':
         overrides.skipBuild = true;
         break;
+      case '--startup-only':
+        overrides.startupOnly = true;
+        break;
+      case '--startup-spawn-mode':
+        overrides.startupSpawnMode = requireArgValue(arg, next);
+        index += 1;
+        break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
@@ -278,6 +287,13 @@ function parseArgs(argv) {
 
   const profileArgs = profileName ? getSessionStressProfile(profileName).args : {};
   const runOptions = mergeSessionStressOptions(profileArgs, overrides);
+  if (
+    runOptions.startupSpawnMode !== undefined &&
+    runOptions.startupSpawnMode !== 'sequential' &&
+    runOptions.startupSpawnMode !== 'batch-ensure'
+  ) {
+    throw new Error('--startup-spawn-mode must be one of: sequential, batch-ensure');
+  }
 
   return {
     ...defaults,
@@ -345,6 +361,8 @@ Options:
   --jitter-ms <n>            Simulated control-plane jitter in ms (default: 0)
   --packet-loss <n>          Simulated retransmission-style loss as 0-1 (default: 0)
   --output-json <path>       Write the full JSON summary to a file
+  --startup-only             Stop after the startup/spawn phase and emit diagnostics
+  --startup-spawn-mode <m>   Startup mode: sequential or batch-ensure (default: sequential)
   --fail-on-budget           Exit non-zero when the selected profile exceeds its budgets
   --quiet                    Suppress the pretty JSON stdout dump
   --print-profiles           Print the available named profiles and exit
@@ -1052,6 +1070,39 @@ async function spawnAgent(serverTarget, taskId, agent) {
   });
 }
 
+async function ensureAgentSessionsBatch(serverTarget, taskId, agents, reason = 'startup-restore') {
+  const response = await invokeIpc(serverTarget, 'ensure_agent_sessions_batch', {
+    clientId: 'session-stress-scorecard',
+    reason,
+    requests: agents.map((agent) => ({
+      agentId: agent.agentId,
+      args: [SESSION_STRESS_AGENT_ENTRY],
+      cols: 80,
+      command: SYNTHETIC_TUI_AGENT_COMMAND,
+      cwd: '/tmp',
+      env: {
+        STRESS_READY_MARKER: createReadyMarker(agent.agentId),
+      },
+      isShell: false,
+      rows: 24,
+      taskId,
+    })),
+  });
+  const failures = [];
+  if (Array.isArray(response?.results)) {
+    failures.push(...response.results.filter((result) => result?.error));
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `Batch ensure failed for ${failures
+        .map((result) => `${result.agentId}: ${result.error}`)
+        .join(', ')}`,
+    );
+  }
+
+  return response;
+}
+
 async function killAgent(serverTarget, agentId) {
   await invokeIpc(serverTarget, 'kill_agent', { agentId });
 }
@@ -1098,6 +1149,38 @@ async function getScrollbackBatch(serverTarget, agentIds) {
         scrollback: await invokeIpc(serverTarget, 'get_agent_scrollback', { agentId }),
       })),
     );
+  }
+}
+
+async function waitForScrollbackMarkers(serverTarget, agents, timeoutMs = 15_000) {
+  const startedAt = performance.now();
+  const pendingMarkers = new Map(
+    agents.map((agent) => [agent.agentId, createReadyMarker(agent.agentId)]),
+  );
+
+  while (pendingMarkers.size > 0) {
+    if (performance.now() - startedAt > timeoutMs) {
+      throw new Error(
+        `Timed out waiting for scrollback markers: ${Array.from(pendingMarkers.keys()).join(', ')}`,
+      );
+    }
+
+    const entries = await getScrollbackBatch(serverTarget, Array.from(pendingMarkers.keys()));
+    for (const entry of entries) {
+      const marker = pendingMarkers.get(entry.agentId);
+      if (!marker || !entry.scrollback) {
+        continue;
+      }
+
+      const scrollback = Buffer.from(entry.scrollback, 'base64').toString('utf8');
+      if (scrollback.includes(marker)) {
+        pendingMarkers.delete(entry.agentId);
+      }
+    }
+
+    if (pendingMarkers.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }
 }
 
@@ -2114,6 +2197,7 @@ function getNumericValue(value) {
 
 function getPhaseEntries(summary) {
   const entries = [
+    ['startup', summary.phases.startup],
     ['output', summary.phases.output],
     ['bulkText', summary.phases.bulkText],
     ['redraw', summary.phases.redraw],
@@ -2196,6 +2280,92 @@ function createDiagnosticsRollup(summary) {
       sendErrors: getTotalPhaseMetric(
         summary,
         (phase) => phase.diagnostics?.browserControl?.sendErrors,
+      ),
+    },
+    agentSessionStartup: {
+      batchRequests: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.batchRequests,
+      ),
+      createdSessions: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.createdSessions,
+      ),
+      existingSessions: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.existingSessions,
+      ),
+      maxActiveSpawns: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.maxActiveSpawns,
+      ),
+      maxAdmissionWaitMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.maxAdmissionWaitMs,
+      ),
+      maxPendingSpawns: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.maxPendingSpawns,
+      ),
+      maxSpawnDurationMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.maxSpawnDurationMs,
+      ),
+      requestedSessions: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.agentSessionStartup?.requestedSessions,
+      ),
+    },
+    terminalScrollback: {
+      growAllocatedBytes: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalScrollback?.growAllocatedBytes,
+      ),
+      growAllocations: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalScrollback?.growAllocations,
+      ),
+      initialAllocatedBytes: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalScrollback?.initialAllocatedBytes,
+      ),
+      initialAllocations: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalScrollback?.initialAllocations,
+      ),
+      maxAllocatedCapacityBytes: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalScrollback?.maxAllocatedCapacityBytes,
+      ),
+    },
+    terminalStateMirror: {
+      instances: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.instances,
+      ),
+      maxPendingOperations: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.maxPendingOperations,
+      ),
+      operationDrainMaxDurationMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.operationDrainMaxDurationMs,
+      ),
+      outputBytes: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.outputBytes,
+      ),
+      serializeCacheHits: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.serializeCacheHits,
+      ),
+      serializeMaxDurationMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.serializeMaxDurationMs,
+      ),
+      serializeTotalBytes: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.terminalStateMirror?.serializeTotalBytes,
       ),
     },
     ptyInput: {
@@ -2431,12 +2601,59 @@ async function main() {
     const channelIds = agents.map((agent) => agent.channelId);
     const primaryClient = initialClients[0];
     const spawnStartedAt = performance.now();
-    await bindClientToChannels(primaryClient, channelIds);
-    for (const agent of agents) {
-      await spawnAgent(serverTarget, taskId, agent);
-      await waitForChannelMarker(primaryClient, agent.channelId, createReadyMarker(agent.agentId));
+    if (options.startupSpawnMode === 'batch-ensure') {
+      if (!options.startupOnly) {
+        throw new Error('batch-ensure startup spawn mode is only supported with startupOnly');
+      }
+      await ensureAgentSessionsBatch(serverTarget, taskId, agents, 'dispatch-storm');
+      await waitForScrollbackMarkers(serverTarget, agents);
+    } else {
+      await bindClientToChannels(primaryClient, channelIds);
+      for (const agent of agents) {
+        await spawnAgent(serverTarget, taskId, agent);
+        await waitForChannelMarker(
+          primaryClient,
+          agent.channelId,
+          createReadyMarker(agent.agentId),
+        );
+      }
     }
     summary.phases.spawnMs = performance.now() - spawnStartedAt;
+
+    if (options.startupOnly) {
+      summary.phases.initialBindMs = 0;
+      summary.phases.startup = {
+        diagnostics: await getBackendDiagnostics(serverTarget),
+        wallClockMs: summary.phases.spawnMs,
+      };
+      summary.analysis = {
+        diagnosticsRollup: createDiagnosticsRollup(summary),
+        topSuspects: [],
+      };
+      summary.meta = createRunMetadata(options);
+      summary.evaluation = options.profile
+        ? evaluateSessionStressProfile(options.profile, summary)
+        : null;
+
+      let artifactPath = null;
+      if (options.outputJsonPath) {
+        artifactPath = await writeSummaryArtifact(options.outputJsonPath, summary);
+      }
+
+      if (!options.quiet) {
+        console.log(JSON.stringify(summary, null, 2));
+      }
+
+      const budgetSummary = formatBudgetSummary(summary.evaluation);
+      const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
+      console.log(
+        `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=spawn=${formatPhaseDuration(summary.phases.spawnMs)}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
+      );
+      if (options.failOnBudget && summary.evaluation && !summary.evaluation.pass) {
+        throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
+      }
+      return;
+    }
 
     const bindStartedAt = performance.now();
     await Promise.all(

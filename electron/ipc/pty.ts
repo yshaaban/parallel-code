@@ -41,6 +41,7 @@ import {
   recordTerminalInputTracePtyFlushed,
   recordTerminalInputTracePtyWritten,
   recordTerminalStateRecoveryFallback,
+  recordTerminalScrollbackCapacityChange,
   recordPtyInputWriteFailure,
 } from './runtime-diagnostics.js';
 import { observeTaskPortsFromOutput } from './task-ports.js';
@@ -219,6 +220,12 @@ function flushSessionBatch(session: PtySession): void {
     return;
   }
 
+  if (session.channelIds.size === 0 && session.subscribers.size === 0) {
+    session.batchOffset = 0;
+    clearFlushTimer(session);
+    return;
+  }
+
   const batch = session.batchBuf.subarray(0, session.batchOffset);
   recordTerminalInputTraceBackendOutputFlushed(session.agentId, batch.toString('utf8'));
   const encoded = batch.toString('base64');
@@ -282,6 +289,11 @@ function getSessionOrThrow(agentId: string): PtySession {
 
 function getLongestRecoveryOverlapBytes(renderedTail: Buffer, scrollback: Buffer): number {
   if (renderedTail.length === 0 || scrollback.length === 0) {
+    return 0;
+  }
+
+  const renderedTailLastByte = renderedTail[renderedTail.length - 1];
+  if (renderedTailLastByte === undefined || !scrollback.includes(renderedTailLastByte)) {
     return 0;
   }
 
@@ -717,18 +729,20 @@ export function spawnAgent(
     isInternalNodeProcess?: boolean;
     runnerIdentity?: AgentRuntimeIdentity;
     onExitCleanup?: () => Promise<void> | void;
-    onOutput: { __CHANNEL_ID__: string };
+    onOutput?: { __CHANNEL_ID__: string };
   },
 ): boolean {
-  const channelId = args.onOutput.__CHANNEL_ID__;
+  const channelId = args.onOutput?.__CHANNEL_ID__ ?? null;
   const command = args.command || resolveUserShell();
   const cwd = args.cwd || process.env.HOME || '/';
 
   const existing = sessions.get(args.agentId);
   if (existing) {
-    const isNewChannel = !existing.channelIds.has(channelId);
+    const isNewChannel = channelId !== null && !existing.channelIds.has(channelId);
     flushSessionBatch(existing);
-    existing.channelIds.add(channelId);
+    if (channelId !== null) {
+      existing.channelIds.add(channelId);
+    }
     existing.sendToChannel = sendToChannel;
     existing.taskId = args.taskId;
     existing.isShell = args.isShell ?? false;
@@ -797,7 +811,7 @@ export function spawnAgent(
 
   const session: PtySession = {
     proc,
-    channelIds: new Set([channelId]),
+    channelIds: channelId === null ? new Set() : new Set([channelId]),
     sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
@@ -809,7 +823,9 @@ export function spawnAgent(
     flushTimer: null,
     inputFlushTimer: null,
     subscribers: new Set(),
-    scrollback: new RingBuffer(),
+    scrollback: new RingBuffer(undefined, {
+      onCapacityChange: recordTerminalScrollbackCapacityChange,
+    }),
     terminalStateMirror: new TerminalStateMirror(args.cols, args.rows),
     batchBuf: Buffer.alloc(BATCH_MAX),
     batchOffset: 0,

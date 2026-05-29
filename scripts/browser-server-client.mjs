@@ -15,6 +15,9 @@ function resolveServerUrl(baseUrl, relativePath) {
   return url;
 }
 
+const BROWSER_CLIENT_ID_HEADER = 'x-parallel-client-id';
+const DEFAULT_BROWSER_CLIENT_ID = 'script-client';
+
 function resolveAuthToken(authToken) {
   const resolved = authToken ?? process.env.AUTH_TOKEN;
   if (!resolved) {
@@ -33,9 +36,17 @@ export function normalizeServerBaseUrl(serverUrl) {
   return url.toString();
 }
 
-export function createBrowserServerClient({ authToken, serverUrl }) {
+export function createBrowserServerClient({
+  authToken,
+  browserClientId = DEFAULT_BROWSER_CLIENT_ID,
+  serverUrl,
+}) {
   const baseUrl = normalizeServerBaseUrl(serverUrl);
   const resolvedAuthToken = resolveAuthToken(authToken);
+  const resolvedBrowserClientId =
+    typeof browserClientId === 'string' && browserClientId.trim().length > 0
+      ? browserClientId.trim()
+      : null;
 
   async function invokeIpc(channel, body) {
     const response = await fetch(resolveServerUrl(baseUrl, `/api/ipc/${channel}`), {
@@ -43,6 +54,7 @@ export function createBrowserServerClient({ authToken, serverUrl }) {
       headers: {
         Authorization: `Bearer ${resolvedAuthToken}`,
         'Content-Type': 'application/json',
+        ...(resolvedBrowserClientId ? { [BROWSER_CLIENT_ID_HEADER]: resolvedBrowserClientId } : {}),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -67,6 +79,7 @@ export function createBrowserServerClient({ authToken, serverUrl }) {
   return {
     authToken: resolvedAuthToken,
     baseUrl,
+    browserClientId: resolvedBrowserClientId,
     createWebSocketUrl,
     invokeIpc,
   };

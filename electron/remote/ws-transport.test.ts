@@ -132,8 +132,14 @@ describe('createWebSocketTransport', () => {
       peerClients: 1,
     });
 
-    transport.replayControlEvents(replay, 0);
+    const coverage = transport.replayControlEvents(replay, 0);
 
+    expect(coverage).toEqual({
+      lastSeq: 0,
+      latestSeq: 1,
+      oldestAvailableSeq: 0,
+      replayTruncated: false,
+    });
     expect(replay.sentDirect).toHaveLength(1);
     expect(JSON.parse(replay.sentDirect[0] ?? '{}')).toMatchObject({
       type: 'remote-status',
@@ -169,6 +175,56 @@ describe('createWebSocketTransport', () => {
       }),
     ]);
     expect(transport.getLatestControlEventSeq()).toBe(1);
+  });
+
+  it('signals replay truncation when the cursor predates the retained control ring', () => {
+    const transport = createTransport({
+      controlEventBufferSize: 2,
+    });
+    const replay = createFakeClient();
+
+    expect(transport.authenticateClient(replay, 'replay').ok).toBe(true);
+    transport.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/one',
+    });
+    transport.broadcastControl({
+      type: 'remote-status',
+      connectedClients: 1,
+      peerClients: 0,
+    });
+    transport.broadcastControl({
+      type: 'task-event',
+      event: 'created',
+      taskId: 'task-1',
+    });
+    replay.sentDirect = [];
+
+    const coverage = transport.replayControlEvents(replay, -1);
+    const decodedMessages = replay.sentDirect.map((message) => JSON.parse(message));
+
+    expect(coverage).toEqual({
+      lastSeq: -1,
+      latestSeq: 2,
+      oldestAvailableSeq: 1,
+      replayTruncated: true,
+    });
+    expect(decodedMessages).toEqual([
+      {
+        type: 'replay-truncated',
+        lastSeq: -1,
+        latestSeq: 2,
+        oldestAvailableSeq: 1,
+      },
+      expect.objectContaining({
+        seq: 1,
+        type: 'remote-status',
+      }),
+      expect.objectContaining({
+        seq: 2,
+        type: 'task-event',
+      }),
+    ]);
   });
 
   it('broadcasts controller acquisition and release through shared lease state', () => {

@@ -33,6 +33,7 @@ import {
   type AgentCommandExecutionOptions,
 } from './browser-agent-command-runner.js';
 import { createBrowserAgentOutputSubscriptions } from './browser-agent-output-subscriptions.js';
+import { recordBrowserControlSimulatedDrop } from '../electron/ipc/runtime-diagnostics.js';
 import type { TerminalRecoveryBatchEntry } from '../src/ipc/types.js';
 import {
   createBrowserTerminalInputTraceClockSyncMessage,
@@ -61,6 +62,8 @@ export interface RegisterBrowserWebSocketServerOptions {
     headers: IncomingMessage['headers'];
     url?: string | undefined;
   }) => boolean;
+  getClientMessageDelayMs?: () => number;
+  shouldDropClientMessage?: () => boolean;
   sendAgentError: (
     client: WebSocket,
     agentId: string,
@@ -171,6 +174,8 @@ function createResizeOrderToken(
 export function registerBrowserWebSocketServer(
   options: RegisterBrowserWebSocketServerOptions,
 ): BrowserWebSocketServer {
+  const pendingClientMessageTimers = new WeakMap<WebSocket, Set<ReturnType<typeof setTimeout>>>();
+  const clientMessageDispatchState = new WeakMap<WebSocket, { lastDueAt: number }>();
   const agentCommandResults = createBrowserAgentCommandResultCache<WebSocket>({
     getClientId: (client) => options.transport.getClientId(client),
   });
@@ -199,6 +204,7 @@ export function registerBrowserWebSocketServer(
   });
 
   function cleanupClient(client: WebSocket): void {
+    clearPendingClientMessageTimers(client);
     recordBrowserTerminalInputClientDisconnected(options.transport.getClientId(client));
     options.channels.cleanupClient(client);
     agentOutputSubscriptions.cleanupClient(client);
@@ -209,8 +215,52 @@ export function registerBrowserWebSocketServer(
   }
 
   function cleanup(): void {
+    for (const client of options.wss.clients) {
+      clearPendingClientMessageTimers(client);
+    }
     agentCommandResults.cleanup();
     unsubscribeExit();
+  }
+
+  function clearPendingClientMessageTimers(client: WebSocket): void {
+    const timers = pendingClientMessageTimers.get(client);
+    if (!timers) {
+      return;
+    }
+
+    for (const timer of timers) {
+      clearTimeout(timer);
+    }
+    timers.clear();
+    pendingClientMessageTimers.delete(client);
+    clientMessageDispatchState.delete(client);
+  }
+
+  function trackPendingClientMessageTimer(
+    client: WebSocket,
+    timer: ReturnType<typeof setTimeout>,
+  ): void {
+    let timers = pendingClientMessageTimers.get(client);
+    if (!timers) {
+      timers = new Set();
+      pendingClientMessageTimers.set(client, timers);
+    }
+    timers.add(timer);
+  }
+
+  function forgetPendingClientMessageTimer(
+    client: WebSocket,
+    timer: ReturnType<typeof setTimeout>,
+  ): void {
+    const timers = pendingClientMessageTimers.get(client);
+    if (!timers) {
+      return;
+    }
+
+    timers.delete(timer);
+    if (timers.size === 0) {
+      pendingClientMessageTimers.delete(client);
+    }
   }
 
   function mergeAgentCommandExecutionOptions(
@@ -497,6 +547,62 @@ export function registerBrowserWebSocketServer(
     } satisfies BrowserClientMessageHandlerMap;
   }
 
+  function handleParsedClientMessage(client: WebSocket, message: ClientMessage): void {
+    if (message.type === 'auth') {
+      if (!options.safeCompareToken(message.token)) {
+        client.close(4001, 'Unauthorized');
+        return;
+      }
+      options.authenticateConnection(client, message.clientId, message.lastSeq ?? -1);
+      return;
+    }
+
+    if (!options.transport.isAuthenticated(client)) {
+      client.close(4001, 'Unauthorized');
+      return;
+    }
+
+    dispatchByType(createClientMessageHandlers(client), message);
+  }
+
+  function maybeHandleClientMessage(client: WebSocket, raw: string): void {
+    const message = parseClientMessage(raw);
+    if (!message) {
+      return;
+    }
+
+    if (message.type === 'auth' || !options.transport.isAuthenticated(client)) {
+      handleParsedClientMessage(client, message);
+      return;
+    }
+
+    if (options.shouldDropClientMessage?.() === true) {
+      recordBrowserControlSimulatedDrop();
+      return;
+    }
+
+    const delayMs = Math.max(0, options.getClientMessageDelayMs?.() ?? 0);
+    const dispatchState = clientMessageDispatchState.get(client);
+    const now = Date.now();
+    if (delayMs <= 0 && (!dispatchState || dispatchState.lastDueAt <= now)) {
+      handleParsedClientMessage(client, message);
+      return;
+    }
+
+    const nextDispatchState = dispatchState ?? { lastDueAt: 0 };
+    const dueAt = Math.max(nextDispatchState.lastDueAt, now + delayMs);
+    nextDispatchState.lastDueAt = dueAt;
+    clientMessageDispatchState.set(client, nextDispatchState);
+    const timer = setTimeout(() => {
+      forgetPendingClientMessageTimer(client, timer);
+      if (client.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      handleParsedClientMessage(client, message);
+    }, dueAt - now);
+    trackPendingClientMessageTimer(client, timer);
+  }
+
   options.wss.on('connection', (client, req) => {
     enableSocketNoDelay(client);
     const authContext = parseSocketAuthContext(req);
@@ -515,31 +621,13 @@ export function registerBrowserWebSocketServer(
     }
 
     agentOutputSubscriptions.registerClient(client);
-    const clientMessageHandlers = createClientMessageHandlers(client);
 
     client.on('pong', () => {
       options.transport.notePong(client);
     });
 
     client.on('message', (raw) => {
-      const message = parseClientMessage(String(raw));
-      if (!message) return;
-
-      if (message.type === 'auth') {
-        if (!options.safeCompareToken(message.token)) {
-          client.close(4001, 'Unauthorized');
-          return;
-        }
-        options.authenticateConnection(client, message.clientId, message.lastSeq ?? -1);
-        return;
-      }
-
-      if (!options.transport.isAuthenticated(client)) {
-        client.close(4001, 'Unauthorized');
-        return;
-      }
-
-      dispatchByType(clientMessageHandlers, message);
+      maybeHandleClientMessage(client, String(raw));
     });
 
     client.on('close', () => {

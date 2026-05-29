@@ -232,6 +232,13 @@ export interface TaskCommandTakeoverResultMessage {
   taskId: string;
 }
 
+export interface ReplayTruncatedMessage {
+  type: 'replay-truncated';
+  lastSeq: number;
+  latestSeq: number;
+  oldestAvailableSeq: number;
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -580,6 +587,25 @@ function isTaskCommandTakeoverResultMessage(
     typeof value.requestId === 'string' &&
     typeof value.taskId === 'string'
   );
+}
+
+function isReplaySeqCursor(value: unknown): value is number {
+  return isInteger(value) && value >= -1;
+}
+
+export function isReplayTruncatedMessage(value: unknown): value is ReplayTruncatedMessage {
+  if (
+    !isRecord(value) ||
+    value.type !== 'replay-truncated' ||
+    !isReplaySeqCursor(value.lastSeq) ||
+    !isNonNegativeInteger(value.oldestAvailableSeq) ||
+    !isReplaySeqCursor(value.latestSeq) ||
+    value.oldestAvailableSeq > value.latestSeq
+  ) {
+    return false;
+  }
+
+  return value.lastSeq < value.oldestAvailableSeq - 1;
 }
 
 const SERVER_MESSAGE_GUARDS = {

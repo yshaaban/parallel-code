@@ -1,0 +1,95 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from './runtime-diagnostics.js';
+import { TerminalStateMirror } from './terminal-state-mirror.js';
+
+let mirrors: TerminalStateMirror[] = [];
+
+function createMirror(cols = 80, rows = 24): TerminalStateMirror {
+  const mirror = new TerminalStateMirror(cols, rows);
+  mirrors.push(mirror);
+  return mirror;
+}
+
+beforeEach(() => {
+  resetBackendRuntimeDiagnostics();
+  mirrors = [];
+});
+
+afterEach(() => {
+  for (const mirror of mirrors) {
+    mirror.dispose();
+  }
+  mirrors = [];
+});
+
+describe('TerminalStateMirror', () => {
+  it('records enqueue and serialize diagnostics', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('hello'));
+    const state = await mirror.serialize();
+
+    expect(state?.data.toString('utf8')).toContain('hello');
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalStateMirror).toMatchObject({
+      instances: 1,
+      operationDrainCount: 1,
+      outputBytes: 5,
+      outputEnqueues: 1,
+      serializeCacheHits: 0,
+      serializeRequests: 1,
+    });
+  });
+
+  it('serves repeated serializations from the cached terminal state', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('cached'));
+    const first = await mirror.serialize();
+    const second = await mirror.serialize();
+
+    expect(first?.data.toString('utf8')).toContain('cached');
+    expect(second?.data.toString('utf8')).toBe(first?.data.toString('utf8'));
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalStateMirror).toMatchObject({
+      serializeCacheHits: 1,
+      serializeRequests: 2,
+    });
+  });
+
+  it('serves concurrent serializations from the cached terminal state after shared pending work', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('concurrent'));
+    const [first, second] = await Promise.all([mirror.serialize(), mirror.serialize()]);
+
+    expect(first?.data.toString('utf8')).toContain('concurrent');
+    expect(second?.data.toString('utf8')).toBe(first?.data.toString('utf8'));
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalStateMirror).toMatchObject({
+      serializeCacheHits: 1,
+      serializeRequests: 2,
+    });
+  });
+
+  it('invalidates the cached terminal state after output or resize work is queued', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('first'));
+    await mirror.serialize();
+    await mirror.serialize();
+    mirror.enqueueOutput(Buffer.from(' second'));
+    mirror.enqueueResize(100, 30);
+    const state = await mirror.serialize();
+
+    expect(state?.cols).toBe(100);
+    expect(state?.rows).toBe(30);
+    expect(state?.data.toString('utf8')).toContain('first second');
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalStateMirror).toMatchObject({
+      outputEnqueues: 2,
+      resizeEnqueues: 1,
+      serializeCacheHits: 1,
+      serializeRequests: 3,
+    });
+  });
+});

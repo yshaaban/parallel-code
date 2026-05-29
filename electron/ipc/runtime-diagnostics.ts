@@ -33,6 +33,21 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     maxBufferedAmountBytes: number;
     notOpenRejects: number;
     sendErrors: number;
+    simulatedDroppedSends: number;
+  };
+  agentSessionStartup: {
+    admissionWaits: number;
+    batchRequests: number;
+    createdSessions: number;
+    existingSessions: number;
+    maxActiveSpawns: number;
+    maxAdmissionWaitMs: number;
+    maxPendingSpawns: number;
+    maxSpawnDurationMs: number;
+    requestedSessions: number;
+    spawnDurationCount: number;
+    totalAdmissionWaitMs: number;
+    totalSpawnDurationMs: number;
   };
   ptyInput: {
     clearedQueues: number;
@@ -60,6 +75,13 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     cacheInvalidations: number;
     cacheMisses: number;
   };
+  terminalScrollback: {
+    growAllocatedBytes: number;
+    growAllocations: number;
+    initialAllocatedBytes: number;
+    initialAllocations: number;
+    maxAllocatedCapacityBytes: number;
+  };
   scrollbackReplay: {
     batchRequests: number;
     cacheHits: number;
@@ -84,6 +106,22 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     tailDeltaResponses: number;
     terminalStateFallbacks: number;
     terminalStateResponses: number;
+  };
+  terminalStateMirror: {
+    instances: number;
+    maxPendingOperations: number;
+    outputBytes: number;
+    outputEnqueues: number;
+    operationDrainCount: number;
+    operationDrainMaxDurationMs: number;
+    operationDrainTotalDurationMs: number;
+    resizeEnqueues: number;
+    serializeCacheHits: number;
+    serializeRequests: number;
+    serializeTotalBytes: number;
+    serializeTotalDurationMs: number;
+    serializeLastDurationMs: number | null;
+    serializeMaxDurationMs: number;
   };
   terminalInputTracing: TerminalInputTraceDiagnosticsSnapshot;
 }
@@ -384,6 +422,21 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       maxBufferedAmountBytes: 0,
       notOpenRejects: 0,
       sendErrors: 0,
+      simulatedDroppedSends: 0,
+    },
+    agentSessionStartup: {
+      admissionWaits: 0,
+      batchRequests: 0,
+      createdSessions: 0,
+      existingSessions: 0,
+      maxActiveSpawns: 0,
+      maxAdmissionWaitMs: 0,
+      maxPendingSpawns: 0,
+      maxSpawnDurationMs: 0,
+      requestedSessions: 0,
+      spawnDurationCount: 0,
+      totalAdmissionWaitMs: 0,
+      totalSpawnDurationMs: 0,
     },
     ptyInput: {
       clearedQueues: 0,
@@ -411,6 +464,13 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       cacheInvalidations: 0,
       cacheMisses: 0,
     },
+    terminalScrollback: {
+      growAllocatedBytes: 0,
+      growAllocations: 0,
+      initialAllocatedBytes: 0,
+      initialAllocations: 0,
+      maxAllocatedCapacityBytes: 0,
+    },
     scrollbackReplay: {
       batchRequests: 0,
       cacheHits: 0,
@@ -435,6 +495,22 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       tailDeltaResponses: 0,
       terminalStateFallbacks: 0,
       terminalStateResponses: 0,
+    },
+    terminalStateMirror: {
+      instances: 0,
+      maxPendingOperations: 0,
+      outputBytes: 0,
+      outputEnqueues: 0,
+      operationDrainCount: 0,
+      operationDrainMaxDurationMs: 0,
+      operationDrainTotalDurationMs: 0,
+      resizeEnqueues: 0,
+      serializeCacheHits: 0,
+      serializeRequests: 0,
+      serializeTotalBytes: 0,
+      serializeTotalDurationMs: 0,
+      serializeLastDurationMs: null,
+      serializeMaxDurationMs: 0,
     },
     terminalInputTracing: {
       activeTraceCount: 0,
@@ -468,11 +544,14 @@ export function getBackendRuntimeDiagnosticsSnapshot(): BackendRuntimeDiagnostic
   return {
     browserChannels: { ...backendRuntimeDiagnostics.browserChannels },
     browserControl: { ...backendRuntimeDiagnostics.browserControl },
+    agentSessionStartup: { ...backendRuntimeDiagnostics.agentSessionStartup },
     ptyInput: { ...backendRuntimeDiagnostics.ptyInput },
     previewValidation: { ...backendRuntimeDiagnostics.previewValidation },
     reconnectSnapshots: { ...backendRuntimeDiagnostics.reconnectSnapshots },
+    terminalScrollback: { ...backendRuntimeDiagnostics.terminalScrollback },
     scrollbackReplay: { ...backendRuntimeDiagnostics.scrollbackReplay },
     terminalRecovery: { ...backendRuntimeDiagnostics.terminalRecovery },
+    terminalStateMirror: { ...backendRuntimeDiagnostics.terminalStateMirror },
     terminalInputTracing: {
       activeTraceCount: activeTerminalInputTraces.size,
       completedTraces,
@@ -720,6 +799,48 @@ export function recordBrowserChannelTransportBusyDeferral(): void {
   backendRuntimeDiagnostics.browserChannels.transportBusyDeferrals += 1;
 }
 
+export function recordAgentSessionEnsureBatch(requestedSessions: number): void {
+  backendRuntimeDiagnostics.agentSessionStartup.batchRequests += 1;
+  backendRuntimeDiagnostics.agentSessionStartup.requestedSessions += requestedSessions;
+}
+
+export function recordAgentSessionEnsureResult(kind: 'created' | 'existing'): void {
+  if (kind === 'created') {
+    backendRuntimeDiagnostics.agentSessionStartup.createdSessions += 1;
+    return;
+  }
+
+  backendRuntimeDiagnostics.agentSessionStartup.existingSessions += 1;
+}
+
+export function recordAgentSessionSpawnAdmissionState(details: {
+  activeSpawns: number;
+  pendingSpawns: number;
+}): void {
+  if (details.activeSpawns > backendRuntimeDiagnostics.agentSessionStartup.maxActiveSpawns) {
+    backendRuntimeDiagnostics.agentSessionStartup.maxActiveSpawns = details.activeSpawns;
+  }
+  if (details.pendingSpawns > backendRuntimeDiagnostics.agentSessionStartup.maxPendingSpawns) {
+    backendRuntimeDiagnostics.agentSessionStartup.maxPendingSpawns = details.pendingSpawns;
+  }
+}
+
+export function recordAgentSessionSpawnAdmissionWait(durationMs: number): void {
+  backendRuntimeDiagnostics.agentSessionStartup.admissionWaits += 1;
+  backendRuntimeDiagnostics.agentSessionStartup.totalAdmissionWaitMs += durationMs;
+  if (durationMs > backendRuntimeDiagnostics.agentSessionStartup.maxAdmissionWaitMs) {
+    backendRuntimeDiagnostics.agentSessionStartup.maxAdmissionWaitMs = durationMs;
+  }
+}
+
+export function recordAgentSessionSpawnDuration(durationMs: number): void {
+  backendRuntimeDiagnostics.agentSessionStartup.spawnDurationCount += 1;
+  backendRuntimeDiagnostics.agentSessionStartup.totalSpawnDurationMs += durationMs;
+  if (durationMs > backendRuntimeDiagnostics.agentSessionStartup.maxSpawnDurationMs) {
+    backendRuntimeDiagnostics.agentSessionStartup.maxSpawnDurationMs = durationMs;
+  }
+}
+
 export function recordReconnectSnapshotCacheHit(): void {
   backendRuntimeDiagnostics.reconnectSnapshots.cacheHits += 1;
 }
@@ -802,6 +923,74 @@ export function recordTerminalRecoveryBatch(
 
 export function recordTerminalStateRecoveryFallback(): void {
   backendRuntimeDiagnostics.terminalRecovery.terminalStateFallbacks += 1;
+}
+
+export function recordTerminalScrollbackCapacityChange(details: {
+  capacity: number;
+  previousCapacity: number;
+  reason: 'grow' | 'initial';
+}): void {
+  if (details.reason === 'initial') {
+    backendRuntimeDiagnostics.terminalScrollback.initialAllocations += 1;
+    backendRuntimeDiagnostics.terminalScrollback.initialAllocatedBytes += details.capacity;
+  } else {
+    backendRuntimeDiagnostics.terminalScrollback.growAllocations += 1;
+    backendRuntimeDiagnostics.terminalScrollback.growAllocatedBytes += Math.max(
+      0,
+      details.capacity - details.previousCapacity,
+    );
+  }
+
+  if (details.capacity > backendRuntimeDiagnostics.terminalScrollback.maxAllocatedCapacityBytes) {
+    backendRuntimeDiagnostics.terminalScrollback.maxAllocatedCapacityBytes = details.capacity;
+  }
+}
+
+export function recordTerminalStateMirrorInstance(): void {
+  backendRuntimeDiagnostics.terminalStateMirror.instances += 1;
+}
+
+export function recordTerminalStateMirrorOutputEnqueue(
+  bytes: number,
+  pendingOperations: number,
+): void {
+  backendRuntimeDiagnostics.terminalStateMirror.outputEnqueues += 1;
+  backendRuntimeDiagnostics.terminalStateMirror.outputBytes += bytes;
+  if (pendingOperations > backendRuntimeDiagnostics.terminalStateMirror.maxPendingOperations) {
+    backendRuntimeDiagnostics.terminalStateMirror.maxPendingOperations = pendingOperations;
+  }
+}
+
+export function recordTerminalStateMirrorResizeEnqueue(pendingOperations: number): void {
+  backendRuntimeDiagnostics.terminalStateMirror.resizeEnqueues += 1;
+  if (pendingOperations > backendRuntimeDiagnostics.terminalStateMirror.maxPendingOperations) {
+    backendRuntimeDiagnostics.terminalStateMirror.maxPendingOperations = pendingOperations;
+  }
+}
+
+export function recordTerminalStateMirrorOperationDrain(durationMs: number): void {
+  backendRuntimeDiagnostics.terminalStateMirror.operationDrainCount += 1;
+  backendRuntimeDiagnostics.terminalStateMirror.operationDrainTotalDurationMs += durationMs;
+  if (durationMs > backendRuntimeDiagnostics.terminalStateMirror.operationDrainMaxDurationMs) {
+    backendRuntimeDiagnostics.terminalStateMirror.operationDrainMaxDurationMs = durationMs;
+  }
+}
+
+export function recordTerminalStateMirrorSerialize(details: {
+  bytes: number;
+  cacheHit: boolean;
+  durationMs: number;
+}): void {
+  backendRuntimeDiagnostics.terminalStateMirror.serializeRequests += 1;
+  if (details.cacheHit) {
+    backendRuntimeDiagnostics.terminalStateMirror.serializeCacheHits += 1;
+  }
+  backendRuntimeDiagnostics.terminalStateMirror.serializeTotalBytes += details.bytes;
+  backendRuntimeDiagnostics.terminalStateMirror.serializeTotalDurationMs += details.durationMs;
+  backendRuntimeDiagnostics.terminalStateMirror.serializeLastDurationMs = details.durationMs;
+  if (details.durationMs > backendRuntimeDiagnostics.terminalStateMirror.serializeMaxDurationMs) {
+    backendRuntimeDiagnostics.terminalStateMirror.serializeMaxDurationMs = details.durationMs;
+  }
 }
 
 export function recordPtyInputEnqueue(chars: number, queuedChars: number): void {
@@ -902,6 +1091,17 @@ export function recordBrowserControlSendResult(
       backendRuntimeDiagnostics.browserControl.sendErrors += 1;
       return;
   }
+}
+
+export function recordBrowserControlSimulatedDrop(details?: { generation?: number }): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
+  backendRuntimeDiagnostics.browserControl.simulatedDroppedSends += 1;
 }
 
 export function recordBrowserControlDelayedQueue(

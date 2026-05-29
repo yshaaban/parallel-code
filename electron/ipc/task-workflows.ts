@@ -62,7 +62,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   cwd: string;
   env: unknown;
   isShell?: boolean;
-  onOutput: { __CHANNEL_ID__: string };
+  onOutput?: { __CHANNEL_ID__: string };
   projectMode?: ProjectMode;
   resumeOnStart?: boolean;
   rows: number;
@@ -501,7 +501,7 @@ export function spawnTaskAgentWorkflow(
       rows: request.rows,
       isShell: request.isShell === true,
       isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
-      onOutput: request.onOutput,
+      ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
       ...(resolvedLaunch.runnerIdentity !== undefined
         ? { runnerIdentity: resolvedLaunch.runnerIdentity }
         : {}),

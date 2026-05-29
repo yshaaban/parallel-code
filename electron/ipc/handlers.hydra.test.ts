@@ -91,11 +91,11 @@ beforeEach(() => {
 });
 
 describe('Hydra spawn handling', () => {
-  it('routes Hydra spawns through the internal adapter bootstrap', () => {
+  it('routes Hydra spawns through the internal adapter bootstrap', async () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);
 
-    handlers[IPC.SpawnAgent]?.({
+    await handlers[IPC.SpawnAgent]?.({
       taskId: 'task-1',
       agentId: 'agent-1',
       adapter: 'hydra',
@@ -136,6 +136,209 @@ describe('Hydra spawn handling', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/parallel-code/worktree-one',
     });
+  });
+
+  it('ensures agent sessions in batch without attaching output channels', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'startup-restore',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 100,
+            rows: 30,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-1',
+          cols: 100,
+          created: true,
+          existed: false,
+          rows: 30,
+          taskId: 'task-1',
+        },
+      ],
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.not.objectContaining({
+        onOutput: expect.anything(),
+      }),
+    );
+  });
+
+  it('does not require renderer-owned client identity for local batch ensure', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        reason: 'startup-restore',
+        requests: [],
+      }),
+    ).resolves.toEqual({ results: [] });
+  });
+
+  it('batch ensure preserves existing PTY geometry instead of implicitly resizing', async () => {
+    hasAgentSessionMock.mockReturnValue(true);
+    getAgentColsMock.mockReturnValue(80);
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-from-session' });
+    getAgentRowsMock.mockReturnValue(24);
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'startup-restore',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 120,
+            rows: 40,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-1',
+          cols: 80,
+          created: false,
+          existed: true,
+          rows: 24,
+          taskId: 'task-from-session',
+        },
+      ],
+    });
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+    expect(resizeAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('returns per-agent failures from batch ensure without hiding partial successes', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    spawnAgentMock.mockImplementation((_sendToChannel, request: { agentId: string }) => {
+      if (request.agentId === 'agent-fail') {
+        throw new Error('spawn failed');
+      }
+
+      return false;
+    });
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'dispatch-storm',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-ok',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+          },
+          {
+            taskId: 'task-1',
+            agentId: 'agent-fail',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-ok',
+          cols: 80,
+          created: true,
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-fail',
+          cols: 80,
+          created: false,
+          error: 'spawn failed',
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
+  });
+
+  it('rejects invalid terminal geometry before spawning or resizing', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.SpawnAgent]?.({
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: '/bin/sh',
+        args: [],
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 0,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+      }),
+    ).rejects.toThrow('cols must be a positive integer');
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'startup-restore',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: Number.NaN,
+          },
+        ],
+      }),
+    ).rejects.toThrow('requests[0].rows must be an integer');
+
+    expect(() =>
+      handlers[IPC.ResizeAgent]?.({
+        agentId: 'agent-1',
+        cols: 120,
+        rows: -1,
+      }),
+    ).toThrow('rows must be a positive integer');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+    expect(resizeAgentMock).not.toHaveBeenCalled();
   });
 
   it('rejects invalid Hydra startup recovery flags', async () => {
@@ -182,11 +385,11 @@ describe('Hydra spawn handling', () => {
     expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
-  it('keeps non-Hydra spawns on the generic PTY path', () => {
+  it('keeps non-Hydra spawns on the generic PTY path', async () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);
 
-    handlers[IPC.SpawnAgent]?.({
+    await handlers[IPC.SpawnAgent]?.({
       taskId: 'task-1',
       agentId: 'agent-1',
       command: 'codex',
@@ -208,14 +411,14 @@ describe('Hydra spawn handling', () => {
     );
   });
 
-  it('uses backend geometry for existing-session attach instead of requested local geometry', () => {
+  it('uses backend geometry for existing-session attach instead of requested local geometry', async () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);
     hasAgentSessionMock.mockReturnValue(true);
     getAgentColsMock.mockReturnValue(88);
     getAgentRowsMock.mockReturnValue(26);
 
-    handlers[IPC.SpawnAgent]?.({
+    await handlers[IPC.SpawnAgent]?.({
       taskId: 'task-1',
       agentId: 'agent-1',
       command: 'codex',

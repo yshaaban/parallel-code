@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { WebSocket } from 'ws';
 import { assertNever } from '../../src/lib/assert-never.js';
-import type { ServerMessage } from './protocol.js';
+import type { ReplayTruncatedMessage, ServerMessage } from './protocol.js';
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_AUTHENTICATED_CLIENTS = 100;
@@ -43,6 +43,13 @@ export type AuthenticateClientResult =
   | { ok: true; clientId: string }
   | { ok: false; reason: 'client-cap-reached' };
 
+export interface ControlReplayCoverage {
+  lastSeq: number;
+  latestSeq: number;
+  oldestAvailableSeq: number | null;
+  replayTruncated: boolean;
+}
+
 export type ClaimAgentControlResult =
   | { ok: true; controllerId: string }
   | { ok: false; reason: 'controlled-by-peer'; controllerId: string }
@@ -75,7 +82,7 @@ export interface WebSocketTransport<Client extends WebSocket> {
   isAuthenticated: (client: Client) => boolean;
   notePong: (client: Client) => void;
   releaseAgentControl: (agentId: string, clientId?: string) => void;
-  replayControlEvents: (client: Client, lastSeq?: number, maxSeq?: number) => void;
+  replayControlEvents: (client: Client, lastSeq?: number, maxSeq?: number) => ControlReplayCoverage;
   scheduleAuthTimeout: (client: Client) => void;
   sendToClientId: (clientId: string, message: ServerMessage) => boolean;
   sendAgentControllers: (client: Client) => void;
@@ -182,6 +189,42 @@ export function createWebSocketTransport<Client extends WebSocket>(
     }
   }
 
+  function getOldestAvailableControlEventSeq(): number | null {
+    return controlEventRingBuffer[0]?.seq ?? null;
+  }
+
+  function getReplayCoverage(lastSeq: number, maxSeq: number): ControlReplayCoverage {
+    const latestSeq = getLatestControlEventSeq();
+    const latestReplayableSeq = Math.min(latestSeq, maxSeq);
+    const oldestAvailableSeq = getOldestAvailableControlEventSeq();
+    const replayTruncated =
+      oldestAvailableSeq !== null &&
+      latestReplayableSeq > lastSeq &&
+      lastSeq < oldestAvailableSeq - 1;
+
+    return {
+      lastSeq,
+      latestSeq,
+      oldestAvailableSeq,
+      replayTruncated,
+    };
+  }
+
+  function createReplayTruncatedMessage(
+    coverage: ControlReplayCoverage,
+  ): ReplayTruncatedMessage | null {
+    if (!coverage.replayTruncated || coverage.oldestAvailableSeq === null) {
+      return null;
+    }
+
+    return {
+      type: 'replay-truncated',
+      lastSeq: coverage.lastSeq,
+      latestSeq: coverage.latestSeq,
+      oldestAvailableSeq: coverage.oldestAvailableSeq,
+    };
+  }
+
   function sendMessage(client: Client, message: ServerMessage): SendTextResult {
     return options.sendDirectText(client, serializeJson(message));
   }
@@ -202,16 +245,27 @@ export function createWebSocketTransport<Client extends WebSocket>(
     client: Client,
     lastSeq = -1,
     maxSeq = Number.POSITIVE_INFINITY,
-  ): void {
+  ): ControlReplayCoverage {
+    const coverage = getReplayCoverage(lastSeq, maxSeq);
+    const replayTruncatedMessage = createReplayTruncatedMessage(coverage);
+    if (
+      replayTruncatedMessage &&
+      !sendSerializedDirect(client, serializeJson(replayTruncatedMessage))
+    ) {
+      return coverage;
+    }
+
     for (const event of controlEventRingBuffer) {
       if (event.seq > maxSeq) {
-        return;
+        return coverage;
       }
 
       if (event.seq > lastSeq && !sendSerializedDirect(client, event.json)) {
-        return;
+        return coverage;
       }
     }
+
+    return coverage;
   }
 
   function sendAgentControllers(client: Client): void {

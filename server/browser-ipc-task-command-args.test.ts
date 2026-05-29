@@ -18,12 +18,75 @@ describe('browser IPC task-command args', () => {
     });
   });
 
+  it('strips nested batch ensure identity when the browser client identity is missing', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.EnsureAgentSessionsBatch,
+        {
+          clientId: 'spoofed-client',
+          reason: 'startup-restore',
+          requests: [
+            {
+              agentId: 'agent-1',
+              args: [],
+              controllerId: 'spoofed-client',
+              taskId: 'task-1',
+            },
+          ],
+        },
+        null,
+      ),
+    ).toEqual({
+      reason: 'startup-restore',
+      requests: [
+        {
+          agentId: 'agent-1',
+          args: [],
+        },
+      ],
+    });
+  });
+
   it('injects browser controller identity into spawned agents', () => {
     expect(
       normalizeBrowserIpcTaskCommandArgs(IPC.SpawnAgent, { taskId: 'task-1' }, 'client-1'),
     ).toEqual({
       controllerId: 'client-1',
       taskId: 'task-1',
+    });
+  });
+
+  it('injects browser client identity into batch session ensure requests', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.EnsureAgentSessionsBatch,
+        {
+          clientId: 'spoofed-client',
+          reason: 'startup-restore',
+          requests: [
+            {
+              agentId: 'agent-1',
+              args: [],
+              cols: 120,
+              rows: 40,
+              taskId: 'task-1',
+            },
+          ],
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      clientId: 'browser-client-1',
+      reason: 'startup-restore',
+      requests: [
+        {
+          agentId: 'agent-1',
+          args: [],
+          cols: 120,
+          rows: 40,
+          taskId: 'task-1',
+        },
+      ],
     });
   });
 

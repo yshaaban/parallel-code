@@ -195,6 +195,44 @@ function createWeakConnectivityExperimentProfile(description, overrides) {
   };
 }
 
+const STARTUP_ONLY_BASE_ARGS = {
+  inputChunks: 0,
+  lateJoiners: 0,
+  lines: 0,
+  mixedLines: 0,
+  reconnects: 0,
+  startupOnly: true,
+  users: 1,
+  warmScrollbackLines: 0,
+};
+
+function getStartupSpawnMs(result) {
+  return getRequiredNumber(result.phases.spawnMs);
+}
+
+function createStartupTailProfile(terminals, budgetMs, description) {
+  return {
+    args: {
+      ...STARTUP_ONLY_BASE_ARGS,
+      terminals,
+    },
+    budgets: [createMaxBudget('startup spawn wall clock', budgetMs, getStartupSpawnMs)],
+    description,
+  };
+}
+
+function createStartupSpawnStormProfile(terminals, budgetMs, description) {
+  return {
+    args: {
+      ...STARTUP_ONLY_BASE_ARGS,
+      startupSpawnMode: 'batch-ensure',
+      terminals,
+    },
+    budgets: [createMaxBudget('startup batch ensure wall clock', budgetMs, getStartupSpawnMs)],
+    description,
+  };
+}
+
 export const SESSION_STRESS_PROFILES = {
   pr_smoke: {
     args: {
@@ -247,6 +285,41 @@ export const SESSION_STRESS_PROFILES = {
     ],
     description: 'Steady hot-session fanout without reconnect, replay, or heavy input.',
   },
+  startup_tail_1: createStartupTailProfile(
+    1,
+    2_500,
+    'Browser-free startup-tail baseline with one terminal.',
+  ),
+  startup_tail_4: createStartupTailProfile(
+    4,
+    6_000,
+    'Browser-free startup-tail baseline with four terminals.',
+  ),
+  startup_tail_8: createStartupTailProfile(
+    8,
+    12_000,
+    'Browser-free startup-tail baseline with eight terminals.',
+  ),
+  startup_tail_24: createStartupTailProfile(
+    24,
+    35_000,
+    'Browser-free startup-tail baseline with twenty-four terminals.',
+  ),
+  startup_spawn_storm_4: createStartupSpawnStormProfile(
+    4,
+    6_000,
+    'Browser-free dispatch storm scorecard using backend batch ensure with four agents.',
+  ),
+  startup_spawn_storm_8: createStartupSpawnStormProfile(
+    8,
+    12_000,
+    'Browser-free dispatch storm scorecard using backend batch ensure.',
+  ),
+  startup_spawn_storm_16: createStartupSpawnStormProfile(
+    16,
+    24_000,
+    'Browser-free dispatch storm scorecard using backend batch ensure with sixteen agents.',
+  ),
   heavy_tui: {
     args: {
       inputChunkBytes: 4096,
@@ -666,6 +739,15 @@ export const SESSION_STRESS_MATRICES = {
     'weak_connectivity_high_latency',
     'weak_connectivity_lossy_reconnect',
     'weak_connectivity_late_join',
+  ],
+  startup_tail: [
+    'startup_tail_1',
+    'startup_tail_4',
+    'startup_tail_8',
+    'startup_tail_24',
+    'startup_spawn_storm_4',
+    'startup_spawn_storm_8',
+    'startup_spawn_storm_16',
   ],
   smoke: ['pr_smoke'],
 };
