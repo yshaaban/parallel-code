@@ -288,4 +288,34 @@ describe('webglPool', () => {
     });
     expect(terminals[0].refresh).toHaveBeenCalledTimes(1);
   });
+
+  it('evicts a focused context instead of retaining it over the visible context limit', async () => {
+    const { acquireWebglAddon, getWebglPoolRuntimeSnapshot, setWebglAddonPriority } =
+      await importReadyWebglPool();
+    const terminals = Array.from({ length: 5 }, () => createTerminal());
+
+    for (let index = 0; index < 4; index += 1) {
+      expect(
+        acquireWebglAddon(getAgentId(index), asTerminal(terminals[index]), undefined, 'visible', {
+          visibleContextLimit: 4,
+        }),
+      ).not.toBeNull();
+    }
+    expect(
+      acquireWebglAddon(getAgentId(4), asTerminal(terminals[4]), undefined, 'focused'),
+    ).not.toBeNull();
+
+    expect(getWebglPoolRuntimeSnapshot()).toEqual({
+      activeContextsCurrent: 5,
+      visibleContextsCurrent: 5,
+    });
+
+    expect(setWebglAddonPriority(getAgentId(4), 'visible', { visibleContextLimit: 4 })).toBe(false);
+
+    expect(getWebglPoolRuntimeSnapshot()).toEqual({
+      activeContextsCurrent: 4,
+      visibleContextsCurrent: 4,
+    });
+    expect(terminals[4].refresh).toHaveBeenCalledTimes(1);
+  });
 });

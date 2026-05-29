@@ -1478,8 +1478,8 @@ describe('startTerminalSession render hibernation', () => {
       expect.any(Function),
       'focused',
     );
-    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'focused');
-    expect(touchWebglAddonMock).toHaveBeenCalledWith('agent-1');
+    expect(setWebglAddonPriorityMock).not.toHaveBeenCalled();
+    expect(touchWebglAddonMock).not.toHaveBeenCalled();
 
     outputPriority = 'switch-target-visible';
     session.updateOutputPriority();
@@ -1540,12 +1540,41 @@ describe('startTerminalSession render hibernation', () => {
         'visible',
         { visibleContextLimit: 2 },
       );
-      expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible');
+      expect(setWebglAddonPriorityMock).not.toHaveBeenCalled();
       expect(touchWebglAddonMock).not.toHaveBeenCalled();
       expect(releaseWebglAddonMock).not.toHaveBeenCalled();
 
       session.cleanup();
     }
+  });
+
+  it('applies the visible WebGL context limit when a focused renderer is demoted', async () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      visibleWebglAcquisitionMode: 'visible-set',
+      visibleWebglContextLimit: 2,
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    let outputPriority: 'focused' | 'visible-background' = 'focused';
+    acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => outputPriority,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+
+    outputPriority = 'visible-background';
+    session.updateOutputPriority();
+
+    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible', {
+      visibleContextLimit: 2,
+    });
+
+    session.cleanup();
   });
 
   it('loads the WebGL runtime after focused terminal readiness before acquiring the renderer', async () => {

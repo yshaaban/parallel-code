@@ -373,13 +373,26 @@ export function touchWebglAddon(agentId: string): void {
   promoteEntry(agentId);
 }
 
-export function setWebglAddonPriority(agentId: string, priority: TerminalWebglPriority): void {
+export function setWebglAddonPriority(
+  agentId: string,
+  priority: TerminalWebglPriority,
+  options?: AcquireWebglAddonOptions,
+): boolean {
   const entry = activeContexts.get(agentId);
   if (!entry) {
-    return;
+    return false;
+  }
+
+  if (isVisibleContextLimitReached(agentId, priority, options)) {
+    // Focused terminals may acquire above the visible-set experiment limit.
+    // When they demote back to visible, evict this context instead of retaining
+    // more visible WebGL surfaces than the experiment allows.
+    evictEntry(agentId, false);
+    return false;
   }
 
   updateEntryPriority(agentId, entry, priority);
+  return true;
 }
 
 /** Release a WebGL addon, returning the context to the pool. */

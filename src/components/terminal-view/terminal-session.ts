@@ -915,12 +915,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    setWebglAddonPriority(agentId, getTerminalWebglPriority(outputPriority));
-    if (outputPriority === 'focused') {
-      touchWebglAddon(agentId);
-    }
-
     if (webglRendererActive) {
+      const webglPriority = getTerminalWebglPriority(outputPriority);
+      const visibleContextLimit = getTerminalVisibleWebglAcquisitionLimit(outputPriority);
+      const retained =
+        visibleContextLimit === undefined
+          ? setWebglAddonPriority(agentId, webglPriority)
+          : setWebglAddonPriority(agentId, webglPriority, { visibleContextLimit });
+      if (retained === false) {
+        webglRendererActive = false;
+        return;
+      }
+
+      if (outputPriority === 'focused') {
+        touchWebglAddon(agentId);
+      }
       return;
     }
 
