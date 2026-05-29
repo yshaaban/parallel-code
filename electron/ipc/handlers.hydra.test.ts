@@ -293,6 +293,114 @@ describe('Hydra spawn handling', () => {
     });
   });
 
+  it('releases batch spawn admission slots when one admitted entry throws', async () => {
+    const handlers = createIpcHandlers(buildContext());
+    spawnAgentMock.mockImplementation((_sendToChannel, request: { agentId: string }) => {
+      if (request.agentId === 'agent-2') {
+        throw new Error('spawn failed');
+      }
+
+      return false;
+    });
+
+    const response = (await handlers[IPC.EnsureAgentSessionsBatch]?.({
+      clientId: 'client-1',
+      reason: 'dispatch-storm',
+      requests: Array.from({ length: 6 }, (_, index) => ({
+        taskId: 'task-1',
+        agentId: `agent-${index}`,
+        command: '/bin/sh',
+        args: [],
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 80,
+        rows: 24,
+      })),
+    })) as
+      | {
+          results: Array<{
+            agentId: string;
+            created: boolean;
+            error?: string;
+            existed: boolean;
+          }>;
+        }
+      | undefined;
+
+    expect(response?.results).toHaveLength(6);
+    expect(response?.results.filter((result) => result.created)).toHaveLength(5);
+    expect(response?.results).toContainEqual(
+      expect.objectContaining({
+        agentId: 'agent-2',
+        created: false,
+        error: 'spawn failed',
+        existed: false,
+      }),
+    );
+  });
+
+  it('handles duplicate agent ids within one batch with a single spawn', async () => {
+    const handlers = createIpcHandlers(buildContext());
+    let sessionExists = false;
+    hasAgentSessionMock.mockImplementation((agentId: string) => {
+      return agentId === 'agent-dupe' && sessionExists;
+    });
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
+    spawnAgentMock.mockImplementation(() => {
+      sessionExists = true;
+      return false;
+    });
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'dispatch-storm',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-dupe',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+          },
+          {
+            taskId: 'task-1',
+            agentId: 'agent-dupe',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-dupe',
+          cols: 80,
+          created: true,
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-dupe',
+          cols: 80,
+          created: false,
+          existed: true,
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
+    expect(spawnAgentMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects invalid terminal geometry before spawning or resizing', async () => {
     const handlers = createIpcHandlers(buildContext());
 
@@ -339,6 +447,44 @@ describe('Hydra spawn handling', () => {
 
     expect(spawnAgentMock).not.toHaveBeenCalled();
     expect(resizeAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('re-checks an admitted SpawnAgent before resolving runner profile config', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    hasAgentSessionMock.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    getAgentColsMock.mockReturnValue(100);
+    getAgentRowsMock.mockReturnValue(30);
+
+    await expect(
+      handlers[IPC.SpawnAgent]?.({
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: '/bin/sh',
+        args: [],
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+        runnerProfile: { provider: 'podman' },
+      }),
+    ).resolves.toEqual({ attachedExistingSession: false });
+
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 100,
+        rows: 30,
+      }),
+    );
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.not.objectContaining({
+        runnerProfile: expect.anything(),
+      }),
+    );
   });
 
   it('rejects invalid Hydra startup recovery flags', async () => {

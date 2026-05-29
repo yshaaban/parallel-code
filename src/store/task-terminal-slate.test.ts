@@ -5,6 +5,7 @@ import { createTestAgent, createTestTask, resetStoreForTest } from '../test/stor
 import {
   getTaskTerminalSlateCacheSizeForTests,
   getTaskTerminalSlateSnapshot,
+  hasTaskTerminalSlateCacheForAgentForTests,
   resetTaskTerminalSlateCacheForTests,
 } from './task-terminal-slate';
 
@@ -61,5 +62,28 @@ describe('task-terminal-slate', () => {
 
     resetTaskTerminalSlateCacheForTests();
     expect(getTaskTerminalSlateCacheSizeForTests()).toBe(0);
+  });
+
+  it('promotes updated slate entries before evicting the least recently used entry', () => {
+    for (let index = 0; index < 256; index += 1) {
+      const taskId = `task-${index}`;
+      const agentId = `agent-${index}`;
+      setStore('tasks', taskId, createTestTask({ agentIds: [agentId] }));
+      setStore('agents', agentId, createTestAgent({ id: agentId, taskId }));
+      markAgentOutput(agentId, new TextEncoder().encode(`line ${index}\n`));
+      getTaskTerminalSlateSnapshot(taskId);
+    }
+
+    markAgentOutput('agent-0', new TextEncoder().encode('line 0 updated\n'));
+    getTaskTerminalSlateSnapshot('task-0');
+
+    setStore('tasks', 'task-256', createTestTask({ agentIds: ['agent-256'] }));
+    setStore('agents', 'agent-256', createTestAgent({ id: 'agent-256', taskId: 'task-256' }));
+    markAgentOutput('agent-256', new TextEncoder().encode('line 256\n'));
+    getTaskTerminalSlateSnapshot('task-256');
+
+    expect(getTaskTerminalSlateCacheSizeForTests()).toBe(256);
+    expect(hasTaskTerminalSlateCacheForAgentForTests('agent-0')).toBe(true);
+    expect(hasTaskTerminalSlateCacheForAgentForTests('agent-1')).toBe(false);
   });
 });

@@ -21,7 +21,9 @@ function getOutputTailCacheKey(outputTail: string): string {
 }
 
 function cacheTaskTerminalSlate(agentId: string, lastLine: string, outputTail: string): void {
-  if (!taskTerminalSlateCache.has(agentId)) {
+  if (taskTerminalSlateCache.has(agentId)) {
+    taskTerminalSlateCache.delete(agentId);
+  } else {
     const oldestAgentId = taskTerminalSlateCache.keys().next().value as string | undefined;
     if (
       oldestAgentId !== undefined &&
@@ -43,6 +45,10 @@ export function clearTaskTerminalSlateCacheForAgent(agentId: string): void {
 
 export function getTaskTerminalSlateCacheSizeForTests(): number {
   return taskTerminalSlateCache.size;
+}
+
+export function hasTaskTerminalSlateCacheForAgentForTests(agentId: string): boolean {
+  return taskTerminalSlateCache.has(agentId);
 }
 
 export function resetTaskTerminalSlateCache(): void {

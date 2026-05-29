@@ -525,14 +525,16 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const requestedCols = normalizeTerminalDimension(request.cols, 80, 'cols');
       const requestedRows = normalizeTerminalDimension(request.rows, 24, 'rows');
       const hasExistingSession = hasAgentSession(request.agentId);
-      const runnerProfile = hasExistingSession
-        ? undefined
-        : normalizeAgentRunnerProfileConfig(request.runnerProfile);
-      const cols = hasExistingSession ? getAgentCols(request.agentId) : requestedCols;
-      const rows = hasExistingSession ? getAgentRows(request.agentId) : requestedRows;
 
-      const spawnWorkflow = () =>
-        spawnTaskAgentWorkflow(context, {
+      const spawnWorkflow = () => {
+        const hasSessionAtSpawn = hasAgentSession(request.agentId);
+        const runnerProfile = hasSessionAtSpawn
+          ? undefined
+          : normalizeAgentRunnerProfileConfig(request.runnerProfile);
+        const cols = hasSessionAtSpawn ? getAgentCols(request.agentId) : requestedCols;
+        const rows = hasSessionAtSpawn ? getAgentRows(request.agentId) : requestedRows;
+
+        return spawnTaskAgentWorkflow(context, {
           taskId: request.taskId,
           ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
           agentId: request.agentId,
@@ -547,8 +549,9 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           onOutput: { __CHANNEL_ID__: channelId },
           ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
           ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
-          ...(!hasExistingSession && runnerProfile !== undefined ? { runnerProfile } : {}),
+          ...(runnerProfile !== undefined ? { runnerProfile } : {}),
         });
+      };
 
       const attachedExistingSession = hasExistingSession
         ? spawnWorkflow()
@@ -621,7 +624,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
             requestedCols,
             requestedRows,
             resumeOnStart: entry.resumeOnStart === true,
-            runnerProfile: entry.runnerProfile,
+            runnerProfile: normalizeAgentRunnerProfileConfig(entry.runnerProfile),
             spawnArgs,
             taskId,
           };
