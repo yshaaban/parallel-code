@@ -64,6 +64,12 @@ describe('isGitSshUrl', () => {
       expect(isGitSshUrl('git@github.com:user/repo$(cmd)')).toBe(false);
     });
 
+    it('rejects leading-hyphen SSH authorities', () => {
+      expect(isGitSshUrl('git@-oProxyCommand=evil:user/repo.git')).toBe(false);
+      expect(isGitSshUrl('ssh://-oProxyCommand=evil@github.com/user/repo.git')).toBe(false);
+      expect(isGitSshUrl('ssh://git@-oProxyCommand=evil/user/repo.git')).toBe(false);
+    });
+
     it('rejects ssh:// with no path', () => {
       expect(isGitSshUrl('ssh://git@github.com')).toBe(false);
       expect(isGitSshUrl('ssh://git@github.com:2222')).toBe(false);
@@ -124,6 +130,7 @@ describe('parseGitSshHost', () => {
   it('returns null for invalid input', () => {
     expect(parseGitSshHost('https://github.com/user/repo.git')).toBeNull();
     expect(parseGitSshHost('/home/user/repo')).toBeNull();
+    expect(parseGitSshHost('git@-oProxyCommand=evil:user/repo.git')).toBeNull();
   });
 });
 

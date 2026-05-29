@@ -6,9 +6,13 @@
  *   URI-style:  ssh://git@host:2222/group/repo.git
  */
 
-const SCP_PATTERN = /^git@[a-zA-Z0-9._-]+:[a-zA-Z0-9._/-]+(?:\.git)?$/;
-const SSH_URI_PATTERN =
-  /^ssh:\/\/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+(?::\d+)?\/[a-zA-Z0-9._/-]+(?:\.git)?$/;
+const SSH_USER_PATTERN = '[a-zA-Z0-9][a-zA-Z0-9._-]*';
+const SSH_HOST_PATTERN = '[a-zA-Z0-9][a-zA-Z0-9._-]*';
+const SSH_REPO_PATH_PATTERN = '[a-zA-Z0-9._/-]+(?:\\.git)?';
+const SCP_PATTERN = new RegExp(`^git@${SSH_HOST_PATTERN}:${SSH_REPO_PATH_PATTERN}$`);
+const SSH_URI_PATTERN = new RegExp(
+  `^ssh://${SSH_USER_PATTERN}@${SSH_HOST_PATTERN}(?::\\d+)?/${SSH_REPO_PATH_PATTERN}$`,
+);
 
 export interface GitSshHost {
   hostname: string;
