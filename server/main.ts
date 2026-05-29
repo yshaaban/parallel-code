@@ -11,7 +11,7 @@ import {
   assertBrowserServerBuildArtifactsAreFresh,
   shouldCheckBrowserServerBuildArtifacts,
 } from './build-artifacts.js';
-import { loadEnvFile } from './env.js';
+import { loadLocalEnvWithDefaults } from './env.js';
 import {
   getRuntimeDiagnosticsLoggingConfigFromEnv,
   startRuntimeDiagnosticsLogging,
@@ -20,14 +20,14 @@ import { getServerPort } from './server-port.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..', '..');
 installStdioEpipeGuard();
-loadEnvFile(path.resolve(__dirname, '..', '..', '.env'));
+loadLocalEnvWithDefaults(path.join(projectRoot, '.env'), path.join(projectRoot, '.env.example'));
 const distDir = path.resolve(__dirname, '..', '..', 'dist');
 const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const userDataPath =
   process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');
-const projectRoot = path.resolve(__dirname, '..', '..');
 
 function getOptionalEnvNumber(name: string): number | undefined {
   const value = process.env[name];

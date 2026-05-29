@@ -64,3 +64,8 @@ export function loadEnvFile(path: string): void {
 
   setMissingEnvValues(parseEnvFile(readFileSync(path, 'utf8')));
 }
+
+export function loadLocalEnvWithDefaults(localEnvPath: string, defaultEnvPath: string): void {
+  loadEnvFile(localEnvPath);
+  loadEnvFile(defaultEnvPath);
+}

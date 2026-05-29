@@ -2,9 +2,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadEnvFile, parseEnvFile } from './env.js';
+import { loadEnvFile, loadLocalEnvWithDefaults, parseEnvFile } from './env.js';
 
-const temporaryKeys = ['PARALLEL_CODE_ENV_TEST', 'PARALLEL_CODE_ENV_KEEP'];
+const temporaryKeys = [
+  'PARALLEL_CODE_ENV_FIRST',
+  'PARALLEL_CODE_ENV_SECOND',
+  'PARALLEL_CODE_ENV_TEST',
+  'PARALLEL_CODE_ENV_KEEP',
+];
 
 afterEach(() => {
   for (const key of temporaryKeys) {
@@ -53,5 +58,27 @@ INVALID
 
     expect(process.env.PARALLEL_CODE_ENV_TEST).toBe('from-file');
     expect(process.env.PARALLEL_CODE_ENV_KEEP).toBe('from-process');
+  });
+
+  it('loads local env values before checked-in defaults fill missing keys', () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'parallel-code-env-'));
+    const defaultEnvPath = path.join(tempDir, '.env.example');
+    const localEnvPath = path.join(tempDir, '.env');
+
+    writeFileSync(
+      defaultEnvPath,
+      'PARALLEL_CODE_ENV_FIRST=from-default\nPARALLEL_CODE_ENV_SECOND=from-default\n',
+      'utf8',
+    );
+    writeFileSync(localEnvPath, 'PARALLEL_CODE_ENV_SECOND=from-local\n', 'utf8');
+
+    try {
+      loadLocalEnvWithDefaults(localEnvPath, defaultEnvPath);
+    } finally {
+      rmSync(tempDir, { force: true, recursive: true });
+    }
+
+    expect(process.env.PARALLEL_CODE_ENV_FIRST).toBe('from-default');
+    expect(process.env.PARALLEL_CODE_ENV_SECOND).toBe('from-local');
   });
 });

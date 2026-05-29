@@ -128,6 +128,9 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 
    `docker compose up --build`
 
+   The compose stack publishes the same browser-mode default:
+   `http://127.0.0.1:43117?token=parallel-code-local-browser`
+
 This installs the app dependencies into the image and keeps container-managed `node_modules`
 separate from your host checkout.
 
@@ -151,19 +154,19 @@ npm install
 npm run server        # builds everything, starts on port 43117
 ```
 
-Open the URL printed in the terminal. For local development, copy `.env.example` to `.env` to keep a stable port and token across server restarts:
-
-```sh
-cp .env.example .env
-```
-
-With the checked-in local defaults, the browser URL is:
+Open the URL printed in the terminal. Fresh checkouts load the checked-in local defaults from `.env.example`, so local browser mode uses a stable port and token across server restarts:
 
 ```text
 http://127.0.0.1:43117?token=parallel-code-local-browser
 ```
 
-Change `AUTH_TOKEN` before exposing the server beyond local development. If no token is configured, the server generates a random one for that process and prints it at startup.
+Copy `.env.example` to `.env` only when you want to customize the local values:
+
+```sh
+cp .env.example .env
+```
+
+Change `AUTH_TOKEN` before exposing the server beyond local development.
 
 The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
 

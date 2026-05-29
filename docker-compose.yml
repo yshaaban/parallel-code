@@ -16,7 +16,7 @@ services:
       - .env
     command: npm run server
     ports:
-      - 3000:3000
+      - ${PORT:-43117}:${PORT:-43117}
     working_dir: /parallel
     init: true
 
