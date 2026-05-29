@@ -67,6 +67,10 @@ const INDICATOR: Record<DiffLine['type'], string> = {
 };
 const AUTO_EXPAND_GAP_LINE_COUNT = 5;
 const INLINE_INSERTION_KEY_SEPARATOR = '\u0000';
+const SEARCH_MARK_BACKGROUND = 'rgba(255, 200, 50, 0.35)';
+const SEARCH_MARK_BORDER_RADIUS = '2px';
+const SEARCH_MARK_STYLE = `background:${SEARCH_MARK_BACKGROUND};color:inherit;border-radius:${SEARCH_MARK_BORDER_RADIUS}`;
+const TEXT_NODE_FILTER = 4;
 
 interface InlineReviewInsertions {
   annotations: ReviewAnnotation[];
@@ -197,9 +201,9 @@ function highlightSearchMatches(text: string, query: string | undefined): JSX.El
     parts.push(
       <mark
         style={{
-          background: 'rgba(255, 200, 50, 0.35)',
+          background: SEARCH_MARK_BACKGROUND,
           color: 'inherit',
-          'border-radius': '2px',
+          'border-radius': SEARCH_MARK_BORDER_RADIUS,
         }}
       >
         {text.slice(matchIndex, matchIndex + normalizedQuery.length)}
@@ -212,6 +216,37 @@ function highlightSearchMatches(text: string, query: string | undefined): JSX.El
   return <>{parts}</>;
 }
 
+function createSearchMark(text: string): HTMLElement {
+  const mark = document.createElement('mark');
+  mark.setAttribute('style', SEARCH_MARK_STYLE);
+  mark.textContent = text;
+  return mark;
+}
+
+function replaceTextNodeWithSearchMarks(textNode: Text, normalizedQuery: string): void {
+  const text = textNode.data;
+  const lowerText = text.toLowerCase();
+  let startIndex = 0;
+  const fragment = document.createDocumentFragment();
+
+  while (startIndex < text.length) {
+    const matchIndex = lowerText.indexOf(normalizedQuery, startIndex);
+    if (matchIndex === -1) {
+      fragment.append(text.slice(startIndex));
+      break;
+    }
+
+    if (matchIndex > startIndex) {
+      fragment.append(text.slice(startIndex, matchIndex));
+    }
+
+    fragment.append(createSearchMark(text.slice(matchIndex, matchIndex + normalizedQuery.length)));
+    startIndex = matchIndex + normalizedQuery.length;
+  }
+
+  textNode.parentNode?.replaceChild(fragment, textNode);
+}
+
 function highlightSearchInHtml(html: string, query: string | undefined): string {
   if (!query) {
     return html;
@@ -222,30 +257,26 @@ function highlightSearchInHtml(html: string, query: string | undefined): string 
     return html;
   }
 
-  return html.replace(/([^<>]+)|(<[^>]*>)/g, (_match, text, tag) => {
-    if (tag) {
-      return tag;
+  if (typeof document === 'undefined') {
+    return html;
+  }
+
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, TEXT_NODE_FILTER);
+  const textNodes: Text[] = [];
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    textNodes.push(node as Text);
+  }
+
+  for (const textNode of textNodes) {
+    if (textNode.data.toLowerCase().includes(normalizedQuery)) {
+      replaceTextNodeWithSearchMarks(textNode, normalizedQuery);
     }
+  }
 
-    const stringText = String(text ?? '');
-    const lowerText = stringText.toLowerCase();
-    let startIndex = 0;
-    let result = '';
-
-    while (startIndex < stringText.length) {
-      const matchIndex = lowerText.indexOf(normalizedQuery, startIndex);
-      if (matchIndex === -1) {
-        result += stringText.slice(startIndex);
-        break;
-      }
-
-      result += stringText.slice(startIndex, matchIndex);
-      result += `<mark style="background:rgba(255, 200, 50, 0.35);color:inherit;border-radius:2px">${stringText.slice(matchIndex, matchIndex + normalizedQuery.length)}</mark>`;
-      startIndex = matchIndex + normalizedQuery.length;
-    }
-
-    return result;
-  });
+  return template.innerHTML;
 }
 
 function scrollContainerToElement(
@@ -610,12 +641,14 @@ function LineGroupView(props: {
 
   createEffect(() => {
     const code = props.lines.map((line) => line.content).join('\n');
+    const nextGeneration = ++generation;
+    setHighlightedLines(null);
+
     if (!code) {
       setHighlightedLines([]);
       return;
     }
 
-    const nextGeneration = ++generation;
     highlightLines(code, props.lang)
       .then((lines) => {
         if (nextGeneration === generation) {

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -25,6 +26,18 @@ const {
 }));
 
 const startAskSessionMock = vi.fn();
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return { promise, resolve };
+}
 
 async function waitForVisibleText(text: string): Promise<HTMLElement> {
   let element: HTMLElement | null = null;
@@ -58,6 +71,12 @@ type SingleLineDiffViewRender = ReturnType<typeof render> & {
   scrollContainer: () => HTMLDivElement;
 };
 
+interface SingleLineDiffViewOptions {
+  highlightedHtml?: string;
+  lineContent?: string;
+  searchQuery?: string;
+}
+
 function mockSingleLineDiffSelection(): void {
   getDiffSelectionMock.mockReturnValue({
     filePath: 'src/demo.ts',
@@ -67,7 +86,15 @@ function mockSingleLineDiffSelection(): void {
   });
 }
 
-function renderSingleLineDiffView(reviewSession = createReviewSession()): SingleLineDiffViewRender {
+function renderSingleLineDiffView(
+  reviewSession = createReviewSession(),
+  options: SingleLineDiffViewOptions = {},
+): SingleLineDiffViewRender {
+  const lineContent = options.lineContent ?? 'line 6';
+  if (options.highlightedHtml !== undefined) {
+    highlightLinesMock.mockResolvedValueOnce([options.highlightedHtml]);
+  }
+
   const result = render(() => (
     <ScrollingDiffView
       file={createChangedFile()}
@@ -82,7 +109,7 @@ function renderSingleLineDiffView(reviewSession = createReviewSession()): Single
               oldCount: 1,
               newStart: 6,
               newCount: 1,
-              lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
+              lines: [{ type: 'context', content: lineContent, oldLine: 6, newLine: 6 }],
             },
           ],
         },
@@ -90,16 +117,26 @@ function renderSingleLineDiffView(reviewSession = createReviewSession()): Single
       request={{ worktreePath: '/tmp/task' }}
       reviewSession={reviewSession}
       scrollToPath={null}
+      searchQuery={options.searchQuery}
       startAskSession={startAskSessionMock}
     />
   ));
 
   return {
     ...result,
-    lineText: () => screen.getByText('line 6'),
+    lineText: () => screen.getByText(lineContent),
     reviewSession,
     scrollContainer: () => result.container.querySelector('[tabindex="0"]') as HTMLDivElement,
   };
+}
+
+function getDiffLineText(container: HTMLElement): HTMLElement {
+  const lineText = container.querySelector('[data-diff-line-text="true"]');
+  if (!lineText) {
+    throw new Error('Expected rendered diff line text');
+  }
+
+  return lineText as HTMLElement;
 }
 
 vi.mock('../app/review-diffs', () => ({
@@ -831,5 +868,120 @@ describe('ScrollingDiffView', () => {
     await waitFor(() => {
       expect(container.querySelector('.hl')).not.toBeNull();
     });
+  });
+
+  it('clears stale highlighted HTML while replacement diff lines are waiting for highlighting', async () => {
+    const firstHighlight = createDeferred<string[]>();
+    const secondHighlight = createDeferred<string[]>();
+    highlightLinesMock
+      .mockReturnValueOnce(firstHighlight.promise)
+      .mockReturnValueOnce(secondHighlight.promise);
+    const [files, setFiles] = createSignal([
+      {
+        path: 'src/demo.ts',
+        status: 'M' as const,
+        binary: false,
+        hunks: [
+          {
+            oldStart: 6,
+            oldCount: 1,
+            newStart: 6,
+            newCount: 1,
+            lines: [{ type: 'context' as const, content: 'old line', oldLine: 6, newLine: 6 }],
+          },
+        ],
+      },
+    ]);
+
+    const { container } = render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={files()}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    firstHighlight.resolve(['<span class="old-highlight">old line</span>']);
+    await waitFor(() => {
+      expect(container.querySelector('.old-highlight')).not.toBeNull();
+    });
+
+    setFiles([
+      {
+        path: 'src/demo.ts',
+        status: 'M',
+        binary: false,
+        hunks: [
+          {
+            oldStart: 6,
+            oldCount: 1,
+            newStart: 6,
+            newCount: 1,
+            lines: [{ type: 'context', content: 'new line', oldLine: 6, newLine: 6 }],
+          },
+        ],
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(getDiffLineText(container).textContent).toBe('new line');
+    });
+    expect(container.querySelector('.old-highlight')).toBeNull();
+
+    secondHighlight.resolve(['<span class="new-highlight">new line</span>']);
+    await waitFor(() => {
+      expect(container.querySelector('.new-highlight')).not.toBeNull();
+    });
+  });
+
+  it('does not treat escaped entity source text as searchable highlighted diff text', async () => {
+    const { container } = renderSingleLineDiffView(createReviewSession(), {
+      highlightedHtml: 'x &amp; y',
+      lineContent: 'x & y',
+      searchQuery: 'amp',
+    });
+
+    await waitFor(() => {
+      const lineText = getDiffLineText(container);
+      expect(lineText.innerHTML).toBe('x &amp; y');
+    });
+    const lineText = getDiffLineText(container);
+    expect(lineText.querySelector('mark')).toBeNull();
+    expect(lineText.textContent).toBe('x & y');
+  });
+
+  it('marks visible entity characters without corrupting escaped highlighted diff HTML', async () => {
+    const { container } = renderSingleLineDiffView(createReviewSession(), {
+      highlightedHtml: 'x &amp; y',
+      lineContent: 'x & y',
+      searchQuery: '&',
+    });
+
+    await waitFor(() => {
+      const lineText = getDiffLineText(container);
+      expect(lineText.querySelector('mark')?.textContent).toBe('&');
+    });
+    const lineText = getDiffLineText(container);
+    expect(lineText.textContent).toBe('x & y');
+    expect(lineText.innerHTML).not.toContain('&<mark');
+  });
+
+  it('marks parsed text nodes inside highlighted spans instead of editing raw HTML', async () => {
+    const { container } = renderSingleLineDiffView(createReviewSession(), {
+      highlightedHtml: '<span class="hl">&lt;alpha&gt;</span>',
+      lineContent: '<alpha>',
+      searchQuery: '<al',
+    });
+
+    await waitFor(() => {
+      const lineText = getDiffLineText(container);
+      expect(lineText.querySelector('.hl mark')?.textContent).toBe('<al');
+    });
+    const lineText = getDiffLineText(container);
+    expect(lineText.textContent).toBe('<alpha>');
+    expect(lineText.innerHTML).toContain('&lt;');
   });
 });

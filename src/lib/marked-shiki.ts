@@ -234,12 +234,13 @@ export function createHighlightedMarkdown(
 
   createEffect(() => {
     const content = source();
+    const nextGeneration = ++generation;
+
     if (!content) {
       setHtml('');
       return;
     }
 
-    const nextGeneration = ++generation;
     renderMarkdownWithHighlighting(content, options)
       .then((result) => {
         if (nextGeneration === generation) {
