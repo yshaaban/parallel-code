@@ -26,6 +26,7 @@ import {
 } from './agent-ready-callbacks';
 import { isAgentAskingQuestion, resetAgentQuestionRuntimeState } from './agent-question-state';
 import { store } from './core';
+import { resetTaskTerminalSlateCache } from './task-terminal-slate';
 
 export type { TaskActivityStatus, TaskDotStatus } from '../app/task-presentation-status';
 export {
@@ -63,6 +64,7 @@ export function resetTaskStatusRuntimeState(): void {
   resetAgentOutputActivityRuntimeState();
   resetAgentReadyCallbackRuntimeState();
   resetAgentQuestionRuntimeState();
+  resetTaskTerminalSlateCache();
 }
 
 export function resetTaskStatusStateForTests(): void {

@@ -513,6 +513,40 @@ describe('TerminalView', () => {
     expect(session.term.options.cursorBlink).toBe(false);
   });
 
+  it('suppresses stdin while the focused terminal is attaching or restoring', () => {
+    setStore('activeTaskId', 'task-1');
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const sessionOptions = getLastSessionOptions();
+    const statusHandler = getLastStatusChangeHandler();
+
+    statusHandler?.('ready');
+    expect(session.term.options.disableStdin).toBe(false);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+
+    statusHandler?.('attaching');
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+
+    statusHandler?.('restoring');
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+
+    statusHandler?.('ready');
+    expect(session.term.options.disableStdin).toBe(false);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+  });
+
   it('requires the active command target before blinking the cursor or accepting input', () => {
     const result = render(() => (
       <TerminalView

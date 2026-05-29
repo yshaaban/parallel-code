@@ -73,6 +73,7 @@ import {
   type TerminalAnomalySnapshot,
 } from '../app/terminal-anomaly-monitor';
 import {
+  getTerminalRuntimeSurfaceAllocation,
   getTerminalSurfaceTier,
   registerTerminalSurfaceTier,
   subscribeTerminalSurfaceTierChanges,
@@ -497,24 +498,27 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     return shouldUseInteractiveSurfaceTier() ? 'interactive-live' : 'handoff-live';
   });
+  const surfaceAllocation = createMemo(() => getTerminalRuntimeSurfaceAllocation(surfaceTier()));
   const isCurrentTerminalSwitchTarget = createMemo(() => {
     switchWindowVersion();
     return isTerminalSwitchTarget(taskId, switchWindowOwnerId);
   });
   const attachPriority = createMemo(() => {
-    if (props.isFocused === true) {
-      return 0;
+    if (surfaceTier() === 'cold-hidden') {
+      if (props.isFocused === true) {
+        return 0;
+      }
+
+      if (isActiveCommandTarget()) {
+        return 1;
+      }
+
+      if (isVisible()) {
+        return 2;
+      }
     }
 
-    if (isActiveCommandTarget()) {
-      return 1;
-    }
-
-    if (isVisible()) {
-      return 2;
-    }
-
-    return 3;
+    return surfaceAllocation().attachPriority;
   });
   const outputPriority = createMemo(() =>
     getTerminalOutputPriority({
@@ -731,23 +735,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function shouldKeepTerminalSessionLive(): boolean {
-    return surfaceTier() !== 'cold-hidden';
+    return surfaceAllocation().keepSessionLive;
   }
 
   function shouldKeepTerminalRenderLive(): boolean {
-    switch (surfaceTier()) {
-      case 'cold-hidden':
-      case 'hot-hidden-live':
-        return false;
-      case 'passive-visible':
-      case 'handoff-live':
-      case 'interactive-live':
-        return true;
-    }
+    return surfaceAllocation().keepRenderLive;
   }
 
   function shouldKeepTerminalGeometryLive(): boolean {
     return (
+      surfaceAllocation().keepGeometryLive &&
       (isFocusedNow || isVisibleNow) &&
       sessionStatus() === 'ready' &&
       presentationMode().kind === 'live' &&
@@ -830,12 +827,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     const status = sessionStatus();
     switch (status) {
-      case 'attaching':
       case 'ready':
-      case 'restoring':
-        return true;
+        return (
+          presentationMode().kind === 'live' &&
+          !renderHibernating() &&
+          !restoreBlocked() &&
+          !resizeTransactionActive()
+        );
+      case 'attaching':
       case 'binding':
       case 'error':
+      case 'restoring':
         return false;
       default:
         return assertNever(status, 'Unhandled terminal input acceptance status');

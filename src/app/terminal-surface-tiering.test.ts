@@ -17,6 +17,7 @@ import {
   resetTerminalSwitchWindowForTests,
 } from './terminal-switch-window';
 import {
+  getTerminalRuntimeSurfaceAllocation,
   getTerminalSurfaceTier,
   registerTerminalSurfaceTier,
   resetTerminalSurfaceTieringForTests,
@@ -67,6 +68,29 @@ describe('terminal-surface-tiering', () => {
 
     focused.unregister();
     visible.unregister();
+  });
+
+  it('centralizes runtime allocation for visible and hidden terminal tiers', () => {
+    expect(getTerminalRuntimeSurfaceAllocation('interactive-live')).toMatchObject({
+      attachPriority: 0,
+      keepRenderLive: true,
+      keepSessionLive: true,
+    });
+    expect(getTerminalRuntimeSurfaceAllocation('passive-visible')).toMatchObject({
+      attachPriority: 2,
+      keepRenderLive: true,
+      keepSessionLive: true,
+    });
+    expect(getTerminalRuntimeSurfaceAllocation('hot-hidden-live')).toMatchObject({
+      attachPriority: 3,
+      keepRenderLive: false,
+      keepSessionLive: true,
+    });
+    expect(getTerminalRuntimeSurfaceAllocation('cold-hidden')).toMatchObject({
+      attachPriority: 4,
+      keepRenderLive: false,
+      keepSessionLive: false,
+    });
   });
 
   it('ignores stale unregisters and updates after the same key is re-registered', () => {

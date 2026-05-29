@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../electron/ipc/channels';
 import { resetBrowserPagehideStateForTests } from '../../lib/browser-pagehide';
+import { resetTerminalPerformanceExperimentConfigForTests } from '../../lib/terminal-performance-experiments';
 import {
   noteTerminalFocusedInput,
   settleTerminalFocusedInput,
@@ -565,6 +566,8 @@ describe('startTerminalSession render hibernation', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     resetBrowserPagehideStateForTests();
+    delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
+    resetTerminalPerformanceExperimentConfigForTests();
     vi.mocked(isElectronRuntime).mockReturnValue(true);
     vi.mocked(isBrowserControlAuthenticated).mockReturnValue(false);
     vi.mocked(getBrowserTransportConnectionState).mockReturnValue('disconnected');
@@ -606,14 +609,20 @@ describe('startTerminalSession render hibernation', () => {
 
   afterEach(() => {
     delete getTestElectronWindow().electron;
+    delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
+    resetTerminalPerformanceExperimentConfigForTests();
     resetBrowserPagehideStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
 
-  it('keeps hidden and visible-background terminals on the DOM renderer path', async () => {
+  it('keeps non-focused terminals on the DOM renderer acquisition path by default', async () => {
     const container = createMeasuredContainer();
-    let outputPriority: 'hidden' | 'visible-background' = 'hidden';
+    let outputPriority:
+      | 'active-visible'
+      | 'switch-target-visible'
+      | 'visible-background'
+      | 'hidden' = 'hidden';
 
     const session = startTerminalSession({
       containerRef: container,
@@ -622,7 +631,17 @@ describe('startTerminalSession render hibernation', () => {
     });
 
     await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
 
+    session.updateOutputPriority();
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    outputPriority = 'switch-target-visible';
+    session.updateOutputPriority();
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    outputPriority = 'active-visible';
     session.updateOutputPriority();
     expect(acquireWebglAddonMock).not.toHaveBeenCalled();
 
@@ -1482,6 +1501,51 @@ describe('startTerminalSession render hibernation', () => {
     expect(releaseWebglAddonMock).toHaveBeenCalledWith('agent-1');
 
     session.cleanup();
+  });
+
+  it('acquires WebGL for visible-set priorities when the experiment is enabled', async () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      visibleWebglAcquisitionMode: 'visible-set',
+      visibleWebglContextLimit: 2,
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
+
+    const visiblePriorities = [
+      'switch-target-visible',
+      'active-visible',
+      'visible-background',
+    ] as const;
+
+    for (const outputPriority of visiblePriorities) {
+      acquireWebglAddonMock.mockClear();
+      setWebglAddonPriorityMock.mockClear();
+      touchWebglAddonMock.mockClear();
+      releaseWebglAddonMock.mockClear();
+
+      const session = startTerminalSession({
+        containerRef: createMeasuredContainer(),
+        getOutputPriority: () => outputPriority,
+        props: createProps(),
+      });
+
+      await flushSessionStartup(4);
+      await vi.advanceTimersByTimeAsync(500);
+      await flushSessionStartup(4);
+
+      expect(acquireWebglAddonMock).toHaveBeenCalledWith(
+        'agent-1',
+        expect.any(MockTerminalClass),
+        expect.any(Function),
+        'visible',
+        { visibleContextLimit: 2 },
+      );
+      expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible');
+      expect(touchWebglAddonMock).not.toHaveBeenCalled();
+      expect(releaseWebglAddonMock).not.toHaveBeenCalled();
+
+      session.cleanup();
+    }
   });
 
   it('loads the WebGL runtime after focused terminal readiness before acquiring the renderer', async () => {

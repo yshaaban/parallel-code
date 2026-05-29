@@ -29,6 +29,10 @@ interface PoolEntry {
   onRendererLost?: () => void;
 }
 
+interface AcquireWebglAddonOptions {
+  visibleContextLimit?: number;
+}
+
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
 const fallbackAgents = new Set<string>();
@@ -133,11 +137,17 @@ function shouldEvictEntryForAcquire(
   entryPriority: TerminalWebglPriority,
   requestedPriority: TerminalWebglPriority,
 ): boolean {
-  if (isVisibleWebglPriority(requestedPriority)) {
-    return !isVisibleWebglPriority(entryPriority);
+  const entryOrder = getPriorityOrder(entryPriority);
+  const requestedOrder = getPriorityOrder(requestedPriority);
+  if (entryOrder > requestedOrder) {
+    return true;
   }
 
-  return getPriorityOrder(entryPriority) >= getPriorityOrder(requestedPriority);
+  if (entryOrder === requestedOrder && !isVisibleWebglPriority(requestedPriority)) {
+    return true;
+  }
+
+  return false;
 }
 
 function findEvictionCandidateId(requestedPriority: TerminalWebglPriority): string | null {
@@ -178,6 +188,45 @@ function findEvictionCandidateId(requestedPriority: TerminalWebglPriority): stri
   return candidateId;
 }
 
+function getVisibleContextLimit(options: AcquireWebglAddonOptions | undefined): number | null {
+  const limit = options?.visibleContextLimit;
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0) {
+    return null;
+  }
+
+  return limit;
+}
+
+function isVisibleContextLimitReached(
+  agentId: string,
+  requestedPriority: TerminalWebglPriority,
+  options: AcquireWebglAddonOptions | undefined,
+): boolean {
+  const visibleContextLimit = getVisibleContextLimit(options);
+  if (visibleContextLimit === null || !isVisibleWebglPriority(requestedPriority)) {
+    return false;
+  }
+
+  const existing = activeContexts.get(agentId);
+  const existingVisibleContextCount = existing && isVisibleWebglPriority(existing.priority) ? 1 : 0;
+  return (
+    getWebglPoolSnapshot().visibleContextsCurrent - existingVisibleContextCount >=
+    visibleContextLimit
+  );
+}
+
+function updateEntryPriority(id: string, entry: PoolEntry, priority: TerminalWebglPriority): void {
+  if (entry.priority === priority) {
+    return;
+  }
+
+  entry.priority = priority;
+  if (isVisibleWebglPriority(priority)) {
+    promoteEntry(id);
+  }
+  recordTerminalRendererPoolSnapshot(getWebglPoolSnapshot());
+}
+
 /**
  * Evict a WebGL context from the pool.
  * @param notifyLost If true, fire `onRendererLost` so the terminal restores
@@ -186,7 +235,9 @@ function findEvictionCandidateId(requestedPriority: TerminalWebglPriority): stri
  */
 function evictEntry(id: string, notifyLost: boolean): void {
   const entry = activeContexts.get(id);
-  if (!entry) return;
+  if (!entry) {
+    return;
+  }
 
   const { addon, term, onRendererLost } = entry;
   activeContexts.delete(id);
@@ -228,17 +279,36 @@ export function acquireWebglAddon(
   term: Terminal,
   onRendererLost?: () => void,
   requestedPriority: TerminalWebglPriority = 'background',
+  options?: AcquireWebglAddonOptions,
 ): WebglAddon | null {
   // Already has one — promote in LRU and update callback
   const existing = activeContexts.get(agentId);
   if (existing) {
+    if (isVisibleContextLimitReached(agentId, requestedPriority, options)) {
+      evictEntry(agentId, false);
+      recordTerminalRendererAcquire({
+        hit: false,
+        snapshot: getWebglPoolSnapshot(),
+      });
+      return null;
+    }
+
     setRendererLostCallback(existing, onRendererLost);
+    updateEntryPriority(agentId, existing, requestedPriority);
     promoteEntry(agentId);
     recordTerminalRendererAcquire({
       hit: true,
       snapshot: getWebglPoolSnapshot(),
     });
     return existing.addon;
+  }
+
+  if (isVisibleContextLimitReached(agentId, requestedPriority, options)) {
+    recordTerminalRendererAcquire({
+      hit: false,
+      snapshot: getWebglPoolSnapshot(),
+    });
+    return null;
   }
 
   // Evict oldest if at capacity — DOM fallback renderer takes over without
@@ -271,7 +341,7 @@ export function acquireWebglAddon(
     const entry: PoolEntry = {
       addon,
       lastTouchedAt: 0,
-      priority: 'background',
+      priority: requestedPriority,
       term,
     };
     setRendererLostCallback(entry, onRendererLost);
@@ -296,7 +366,10 @@ export function acquireWebglAddon(
 
 /** Promote an entry when the terminal becomes active again. */
 export function touchWebglAddon(agentId: string): void {
-  if (!activeContexts.has(agentId)) return;
+  if (!activeContexts.has(agentId)) {
+    return;
+  }
+
   promoteEntry(agentId);
 }
 
@@ -306,15 +379,7 @@ export function setWebglAddonPriority(agentId: string, priority: TerminalWebglPr
     return;
   }
 
-  if (entry.priority === priority) {
-    return;
-  }
-
-  entry.priority = priority;
-  if (isVisibleWebglPriority(priority)) {
-    promoteEntry(agentId);
-  }
-  recordTerminalRendererPoolSnapshot(getWebglPoolSnapshot());
+  updateEntryPriority(agentId, entry, priority);
 }
 
 /** Release a WebGL addon, returning the context to the pool. */

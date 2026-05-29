@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 import { setStore, store } from './core';
+import { markAgentOutput, resetAgentOutputActivityRuntimeState } from './agent-output-activity';
+import {
+  getTaskTerminalSlateCacheSizeForTests,
+  getTaskTerminalSlateSnapshot,
+  resetTaskTerminalSlateCacheForTests,
+} from './task-terminal-slate';
 import {
   reconcileTaskScopedStoreStateForExistingTasks,
   removeAgentScopedStoreState,
@@ -12,6 +18,8 @@ import {
 describe('task state cleanup', () => {
   beforeEach(() => {
     resetStoreForTest();
+    resetAgentOutputActivityRuntimeState();
+    resetTaskTerminalSlateCacheForTests();
   });
 
   it('clears task-scoped review, preview, permission, takeover, and layout state', () => {
@@ -203,6 +211,23 @@ describe('task state cleanup', () => {
     expect(store.agentActive['agent-1']).toBeUndefined();
     expect(store.agentSupervision['agent-1']).toBeUndefined();
     expect(store.permissionRequests['agent-1']).toBeUndefined();
+  });
+
+  it('clears terminal slate cache when agent-scoped state is removed', () => {
+    setStore('tasks', 'task-1', createTestTask({ agentIds: ['agent-1'] }));
+    setStore('agents', { 'agent-1': createTestAgent({ id: 'agent-1' }) });
+
+    markAgentOutput('agent-1', new TextEncoder().encode('cached line\n'));
+    expect(getTaskTerminalSlateSnapshot('task-1')?.lastLine).toBe('cached line');
+    expect(getTaskTerminalSlateCacheSizeForTests()).toBe(1);
+
+    setStore(
+      produce((storeState) => {
+        removeAgentScopedStoreState(storeState, ['agent-1']);
+      }),
+    );
+
+    expect(getTaskTerminalSlateCacheSizeForTests()).toBe(0);
   });
 
   it('reconciles stale task-scoped records for tasks that are already gone', () => {

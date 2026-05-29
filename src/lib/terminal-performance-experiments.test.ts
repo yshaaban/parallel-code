@@ -21,6 +21,8 @@ import {
   getTerminalExperimentStartupTaskSchedulingMode,
   getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit,
   getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase,
+  getTerminalExperimentVisibleWebglAcquisitionMode,
+  getTerminalExperimentVisibleWebglContextLimit,
   shouldUseTerminalExperimentStartupTaskSchedulingRole,
   getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes,
   getTerminalExperimentSwitchPostInputReadyEchoGraceMs,
@@ -99,6 +101,42 @@ describe('terminal-performance-experiments', () => {
         focusedPreemptionWindowMs: 150,
       }),
     );
+  });
+
+  it('defaults visible WebGL acquisition to focused-only with a four-context visible limit', () => {
+    window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__ = false;
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalPerformanceExperimentConfig()).toEqual(
+      expect.objectContaining({
+        visibleWebglAcquisitionMode: 'focused-only',
+        visibleWebglContextLimit: 4,
+      }),
+    );
+    expect(getTerminalExperimentVisibleWebglAcquisitionMode()).toBe('focused-only');
+    expect(getTerminalExperimentVisibleWebglContextLimit()).toBe(4);
+  });
+
+  it('normalizes the visible-set WebGL acquisition experiment', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      visibleWebglAcquisitionMode: 'visible-set',
+      visibleWebglContextLimit: 2,
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalExperimentVisibleWebglAcquisitionMode()).toBe('visible-set');
+    expect(getTerminalExperimentVisibleWebglContextLimit()).toBe(2);
+  });
+
+  it('falls back to focused-only WebGL acquisition when visible-set options are invalid', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      visibleWebglAcquisitionMode: 'all-visible',
+      visibleWebglContextLimit: 0,
+    } as unknown as NonNullable<typeof window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__>;
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalExperimentVisibleWebglAcquisitionMode()).toBe('focused-only');
+    expect(getTerminalExperimentVisibleWebglContextLimit()).toBe(4);
   });
 
   it('normalizes startup replay experiment overrides', () => {

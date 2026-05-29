@@ -2,6 +2,7 @@ import {
   getTerminalExperimentDenseOverloadMinimumVisibleCount,
   getTerminalPerformanceExperimentConfig,
 } from '../lib/terminal-performance-experiments';
+import { assertNever } from '../lib/assert-never';
 import { getTerminalRecentHiddenReservedKeys } from './terminal-recent-hidden-reservation';
 import { isTerminalHighLoadModeEnabled } from './terminal-high-load-mode';
 
@@ -25,6 +26,14 @@ export type TerminalSurfaceTier =
   | 'handoff-live'
   | 'interactive-live'
   | 'passive-visible';
+
+export interface TerminalRuntimeSurfaceAllocation {
+  attachPriority: number;
+  keepGeometryLive: boolean;
+  keepRenderLive: boolean;
+  keepSessionLive: boolean;
+  tier: TerminalSurfaceTier;
+}
 
 const terminalSurfaceTierStates = new Map<string, TerminalSurfaceTierState>();
 const terminalSurfaceTierListeners = new Set<() => void>();
@@ -240,6 +249,55 @@ export function getTerminalSurfaceTier(key: string): TerminalSurfaceTier {
   }
 
   return getHotHiddenTerminalKeys().has(key) ? 'hot-hidden-live' : 'cold-hidden';
+}
+
+export function getTerminalRuntimeSurfaceAllocation(
+  tier: TerminalSurfaceTier,
+): TerminalRuntimeSurfaceAllocation {
+  switch (tier) {
+    case 'interactive-live':
+      return {
+        attachPriority: 0,
+        keepGeometryLive: true,
+        keepRenderLive: true,
+        keepSessionLive: true,
+        tier,
+      };
+    case 'handoff-live':
+      return {
+        attachPriority: 1,
+        keepGeometryLive: true,
+        keepRenderLive: true,
+        keepSessionLive: true,
+        tier,
+      };
+    case 'passive-visible':
+      return {
+        attachPriority: 2,
+        keepGeometryLive: true,
+        keepRenderLive: true,
+        keepSessionLive: true,
+        tier,
+      };
+    case 'hot-hidden-live':
+      return {
+        attachPriority: 3,
+        keepGeometryLive: false,
+        keepRenderLive: false,
+        keepSessionLive: true,
+        tier,
+      };
+    case 'cold-hidden':
+      return {
+        attachPriority: 4,
+        keepGeometryLive: false,
+        keepRenderLive: false,
+        keepSessionLive: false,
+        tier,
+      };
+    default:
+      return assertNever(tier, 'Unhandled terminal surface tier');
+  }
 }
 
 export function subscribeTerminalSurfaceTierChanges(callback: () => void): () => void {

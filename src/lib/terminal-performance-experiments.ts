@@ -19,6 +19,7 @@ type TerminalStartupVisibleSiblingReplayUnblockPhase =
   | 'first-paint'
   | 'input-ready'
   | 'paint-settled';
+type TerminalVisibleWebglAcquisitionMode = 'focused-only' | 'visible-set';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
 type TerminalPerformancePriorityBooleanRecord = Partial<
@@ -110,6 +111,8 @@ interface TerminalPerformanceExploratoryConfigInput {
   switchPostInputReadyEchoGraceMs?: number;
   switchWindowSettleDelayMs?: number;
   switchTargetProtectUntilInputReady?: boolean;
+  visibleWebglAcquisitionMode?: TerminalVisibleWebglAcquisitionMode;
+  visibleWebglContextLimit?: number;
   visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes?: TerminalPerformanceVisibleCountNumberRecord;
   visibleCountSwitchPostInputReadyEchoGraceMs?: TerminalPerformanceVisibleCountNumberRecord;
   visibleCountSwitchTargetWindowMs?: TerminalPerformanceVisibleCountNumberRecord;
@@ -182,6 +185,8 @@ interface TerminalPerformanceExploratoryConfig {
   switchPostInputReadyEchoGraceMs: number;
   switchWindowSettleDelayMs: number;
   switchTargetProtectUntilInputReady: boolean;
+  visibleWebglAcquisitionMode: TerminalVisibleWebglAcquisitionMode;
+  visibleWebglContextLimit: number;
   visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes: TerminalPerformanceVisibleCountNumberRecord;
   visibleCountSwitchPostInputReadyEchoGraceMs: TerminalPerformanceVisibleCountNumberRecord;
   visibleCountSwitchTargetWindowMs: TerminalPerformanceVisibleCountNumberRecord;
@@ -258,10 +263,15 @@ const TERMINAL_DENSE_OVERLOAD_PRESSURE_FLOORS = new Set<TerminalDenseOverloadPre
   'critical',
   'elevated',
 ]);
+const TERMINAL_VISIBLE_WEBGL_ACQUISITION_MODES = new Set<TerminalVisibleWebglAcquisitionMode>([
+  'focused-only',
+  'visible-set',
+]);
 
 const DEFAULT_FOCUSED_PREEMPTION_DRAIN_SCOPE = 'focused';
 const DEFAULT_FOCUSED_PREEMPTION_WINDOW_MS = 150;
 const DEFAULT_EXPERIMENT_LABEL = 'default';
+const DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT = 4;
 const FOCUSED_PREEMPTION_DRAIN_SCOPES = new Set<FocusedPreemptionDrainScope>([
   'all',
   'focused',
@@ -325,6 +335,8 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   switchPostInputReadyEchoGraceMs: 0,
   switchWindowSettleDelayMs: 0,
   switchTargetProtectUntilInputReady: false,
+  visibleWebglAcquisitionMode: 'focused-only',
+  visibleWebglContextLimit: DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT,
   visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes: {},
   visibleCountSwitchPostInputReadyEchoGraceMs: {},
   visibleCountSwitchTargetWindowMs: {},
@@ -861,6 +873,16 @@ function normalizeStartupTaskSchedulingMode(
   return 'off';
 }
 
+function normalizeVisibleWebglAcquisitionMode(
+  configuredMode: unknown,
+): TerminalVisibleWebglAcquisitionMode {
+  if (isStringLiteralSetMember(TERMINAL_VISIBLE_WEBGL_ACQUISITION_MODES, configuredMode)) {
+    return configuredMode;
+  }
+
+  return 'focused-only';
+}
+
 function normalizeStartupTaskSchedulingRoles(
   configuredRoles: unknown,
 ): Partial<Record<TerminalStartupTaskSchedulingRole, boolean>> {
@@ -1039,6 +1061,12 @@ function normalizeExploratoryConfig(
       getPositiveFiniteNumberOrNull(input.switchPostInputReadyEchoGraceMs) ?? 0,
     switchWindowSettleDelayMs: getPositiveFiniteNumberOrNull(input.switchWindowSettleDelayMs) ?? 0,
     switchTargetProtectUntilInputReady: input.switchTargetProtectUntilInputReady === true,
+    visibleWebglAcquisitionMode: normalizeVisibleWebglAcquisitionMode(
+      input.visibleWebglAcquisitionMode,
+    ),
+    visibleWebglContextLimit:
+      getPositiveIntegerOrNull(input.visibleWebglContextLimit) ??
+      DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT,
     visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes:
       normalizeVisibleCountNumberRecord(
         input.visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes,
@@ -1420,6 +1448,14 @@ export function getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit(
 
 export function getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase(): TerminalStartupVisibleSiblingReplayUnblockPhase {
   return getTerminalPerformanceExperimentConfig().startupVisibleSiblingReplayUnblockPhase;
+}
+
+export function getTerminalExperimentVisibleWebglAcquisitionMode(): TerminalVisibleWebglAcquisitionMode {
+  return getTerminalPerformanceExperimentConfig().visibleWebglAcquisitionMode;
+}
+
+export function getTerminalExperimentVisibleWebglContextLimit(): number {
+  return getTerminalPerformanceExperimentConfig().visibleWebglContextLimit;
 }
 
 export function getTerminalExperimentLaneFrameBudgetOverride(

@@ -3,6 +3,7 @@ import { deleteRecordEntry } from '../lib/record-utils';
 import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease-runtime';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
 import { clearRecentTaskGitStatusPollAge } from './task-git-status';
+import { clearTaskTerminalSlateCacheForAgent } from './task-terminal-slate';
 import { clearTerminalStartupEntriesForTask } from './terminal-startup';
 import type { AppStore, Task } from './types';
 
@@ -77,6 +78,7 @@ export function removeAgentScopedStoreState(
   agentIds: Iterable<string>,
 ): void {
   for (const agentId of agentIds) {
+    clearTaskTerminalSlateCacheForAgent(agentId);
     deleteRecordEntry(storeState.agents, agentId);
     deleteRecordEntry(storeState.agentActive, agentId);
     deleteRecordEntry(storeState.agentSupervision, agentId);

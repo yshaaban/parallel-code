@@ -22,6 +22,7 @@ import {
 import { getBrowserChannelMessageTiming } from '../../lib/browser-channel-client';
 import { tryDecodeBase64ToUint8Array } from '../../lib/base64';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../../lib/dispatch-by-type';
+import { assertNever } from '../../lib/assert-never';
 import { getTerminalFontFamily } from '../../lib/fonts';
 import {
   detectProbeInOutput,
@@ -62,6 +63,8 @@ import { isMac } from '../../lib/platform';
 import {
   getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit,
   getTerminalExperimentStartupVisibleSiblingSessionFitGateUntilSelectedPaintReady,
+  getTerminalExperimentVisibleWebglAcquisitionMode,
+  getTerminalExperimentVisibleWebglContextLimit,
 } from '../../lib/terminal-performance-experiments';
 import {
   recordTerminalFitExecution,
@@ -179,7 +182,18 @@ function decodeTerminalOutputData(
 }
 
 function shouldAcquireTerminalWebglRenderer(priority: TerminalOutputPriority): boolean {
-  return priority === 'focused';
+  switch (priority) {
+    case 'focused':
+      return true;
+    case 'switch-target-visible':
+    case 'active-visible':
+    case 'visible-background':
+      return getTerminalExperimentVisibleWebglAcquisitionMode() === 'visible-set';
+    case 'hidden':
+      return false;
+    default:
+      return assertNever(priority, 'Unhandled terminal WebGL acquisition priority');
+  }
 }
 
 function shouldRetainTerminalWebglRenderer(priority: TerminalOutputPriority): boolean {
@@ -191,6 +205,26 @@ function shouldRetainTerminalWebglRenderer(priority: TerminalOutputPriority): bo
       return true;
     case 'hidden':
       return false;
+  }
+}
+
+function getTerminalVisibleWebglAcquisitionLimit(
+  priority: TerminalOutputPriority,
+): number | undefined {
+  switch (priority) {
+    case 'switch-target-visible':
+    case 'active-visible':
+    case 'visible-background':
+      if (getTerminalExperimentVisibleWebglAcquisitionMode() !== 'visible-set') {
+        return undefined;
+      }
+
+      return getTerminalExperimentVisibleWebglContextLimit();
+    case 'focused':
+    case 'hidden':
+      return undefined;
+    default:
+      return assertNever(priority, 'Unhandled terminal visible WebGL limit priority');
   }
 }
 
@@ -890,14 +924,17 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    const addon = acquireWebglAddon(
-      agentId,
-      term,
-      () => {
-        void recoveryRuntime?.restoreTerminalOutput('renderer-loss');
-      },
-      getTerminalWebglPriority(outputPriority),
-    );
+    const webglPriority = getTerminalWebglPriority(outputPriority);
+    const visibleContextLimit = getTerminalVisibleWebglAcquisitionLimit(outputPriority);
+    const handleRendererLost = (): void => {
+      void recoveryRuntime?.restoreTerminalOutput('renderer-loss');
+    };
+    const addon =
+      visibleContextLimit === undefined
+        ? acquireWebglAddon(agentId, term, handleRendererLost, webglPriority)
+        : acquireWebglAddon(agentId, term, handleRendererLost, webglPriority, {
+            visibleContextLimit,
+          });
     if (!addon) {
       webglRendererActive = false;
       return;

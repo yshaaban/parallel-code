@@ -198,7 +198,7 @@ describe('webglPool', () => {
     );
   });
 
-  it('refuses to evict visible terminals just to acquire another visible context', async () => {
+  it('allows focused terminals to evict the least-recently-used visible context', async () => {
     const { acquireWebglAddon, getWebglPoolRuntimeSnapshot, setWebglAddonPriority } =
       await importReadyWebglPool();
     const terminals = Array.from({ length: 7 }, () => createTerminal());
@@ -209,21 +209,83 @@ describe('webglPool', () => {
       setWebglAddonPriority(getAgentId(index), 'visible');
     }
 
-    const refusedAddon = acquireWebglAddon(
+    const focusedAddon = acquireWebglAddon(
       getAgentId(6),
       asTerminal(terminals[6]),
       undefined,
       'focused',
     );
 
-    expect(refusedAddon).toBeNull();
+    expect(focusedAddon).not.toBeNull();
     expect(getWebglPoolRuntimeSnapshot()).toEqual({
       activeContextsCurrent: 6,
       visibleContextsCurrent: 6,
     });
-    for (let index = 0; index < 6; index += 1) {
+    expect(terminals[0]?.refresh).toHaveBeenCalledTimes(1);
+    for (let index = 1; index < 6; index += 1) {
       expect(terminals[index]?.refresh).not.toHaveBeenCalled();
     }
     expect(terminals[6]?.refresh).not.toHaveBeenCalled();
+  });
+
+  it('honors a visible context limit by falling back without eviction', async () => {
+    const { acquireWebglAddon, getWebglPoolRuntimeSnapshot, setWebglAddonPriority } =
+      await importReadyWebglPool();
+    const terminals = Array.from({ length: 5 }, () => createTerminal());
+
+    for (let index = 0; index < 4; index += 1) {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminals[index]),
+        undefined,
+        'visible',
+        { visibleContextLimit: 4 },
+      );
+      expect(addon).not.toBeNull();
+      setWebglAddonPriority(getAgentId(index), 'visible');
+    }
+
+    const refusedAddon = acquireWebglAddon(
+      getAgentId(4),
+      asTerminal(terminals[4]),
+      undefined,
+      'visible',
+      { visibleContextLimit: 4 },
+    );
+
+    expect(refusedAddon).toBeNull();
+    expect(getWebglPoolRuntimeSnapshot()).toEqual({
+      activeContextsCurrent: 4,
+      visibleContextsCurrent: 4,
+    });
+    for (const terminal of terminals) {
+      expect(terminal.refresh).not.toHaveBeenCalled();
+    }
+  });
+
+  it('enforces priority and visible limits when reacquiring an existing context', async () => {
+    const { acquireWebglAddon, getWebglPoolRuntimeSnapshot } = await importReadyWebglPool();
+    const terminals = Array.from({ length: 3 }, () => createTerminal());
+
+    expect(
+      acquireWebglAddon(getAgentId(0), asTerminal(terminals[0]), undefined, 'background'),
+    ).not.toBeNull();
+    expect(
+      acquireWebglAddon(getAgentId(1), asTerminal(terminals[1]), undefined, 'visible', {
+        visibleContextLimit: 1,
+      }),
+    ).not.toBeNull();
+
+    expect(
+      acquireWebglAddon(getAgentId(0), asTerminal(terminals[0]), undefined, 'visible', {
+        visibleContextLimit: 1,
+      }),
+    ).toBeNull();
+
+    expect(getWebglPoolRuntimeSnapshot()).toEqual({
+      activeContextsCurrent: 1,
+      visibleContextsCurrent: 1,
+    });
+    expect(terminals[0].refresh).toHaveBeenCalledTimes(1);
   });
 });

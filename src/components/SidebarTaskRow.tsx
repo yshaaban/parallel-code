@@ -1,4 +1,4 @@
-import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createMemo, onCleanup, type JSX } from 'solid-js';
 import { useTaskActivityNow } from '../app/task-activity-clock';
 import { getTaskActivityStatus, getTaskAttentionEntry } from '../app/task-presentation-status';
 import { requestTerminalPrewarm } from '../app/terminal-prewarm';
@@ -7,6 +7,7 @@ import { isTaskRemoving } from '../domain/task-closing';
 import type { AgentDef } from '../ipc/types';
 import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
+import { getTaskTerminalSlateSnapshot } from '../store/task-terminal-slate';
 import {
   focusSidebar,
   getSidebarRestoreTaskActionKey,
@@ -323,6 +324,9 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
   const isActive = () => store.activeTaskId === props.taskId;
+  const terminalSlate = createMemo(() =>
+    isActive() ? null : getTaskTerminalSlateSnapshot(props.taskId, taskActivityNow()),
+  );
   const isFocused = () => store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId;
   const isDragging = () => props.dragState() !== null;
   const isDraggedTask = () => props.dragState()?.taskId === props.taskId;
@@ -449,6 +453,8 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             class={className()}
             data-sidebar-draggable-task="true"
             data-sidebar-group={props.groupId}
+            data-terminal-slate-agent-id={terminalSlate()?.agentId}
+            data-terminal-slate-stale={terminalSlate()?.stale ? 'true' : undefined}
             data-sidebar-task-id={props.taskId}
             onClick={() => {
               clearPrewarmHoverTimer();
@@ -518,6 +524,9 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
   const isActive = () => store.activeTaskId === props.taskId;
+  const terminalSlate = createMemo(() =>
+    isActive() ? null : getTaskTerminalSlateSnapshot(props.taskId, taskActivityNow()),
+  );
 
   createEffect(() => {
     const currentTaskId = props.taskId;
@@ -539,6 +548,8 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           role="button"
           tabIndex={0}
           data-sidebar-task-id={props.taskId}
+          data-terminal-slate-agent-id={terminalSlate()?.agentId}
+          data-terminal-slate-stale={terminalSlate()?.stale ? 'true' : undefined}
           onClick={() => uncollapseTask(props.taskId)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
