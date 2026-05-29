@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getTerminalStartupSummary } from '../store/terminal-startup';
 import {
   beginBrowserColdBootstrap,
@@ -11,6 +11,16 @@ import {
   registerTerminalAttachCandidate,
   resetTerminalAttachSchedulerForTests,
 } from './terminal-attach-scheduler';
+
+async function withMutedAttachWarnings(run: () => Promise<void>): Promise<void> {
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+  try {
+    await run();
+  } finally {
+    warnSpy.mockRestore();
+  }
+}
 
 describe('terminal-attach-scheduler', () => {
   afterEach(() => {
@@ -254,6 +264,105 @@ describe('terminal-attach-scheduler', () => {
 
     dynamic.unregister();
     visible.unregister();
+  });
+
+  it('cancels queued candidates released before attachment', async () => {
+    const attachOrder: string[] = [];
+
+    const active = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('active');
+      },
+      getPriority: () => 0,
+      key: 'active-terminal',
+      taskId: 'task-active',
+    });
+    const queued = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('queued');
+      },
+      getPriority: () => 1,
+      key: 'queued-terminal',
+      taskId: 'task-queued',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['active']);
+
+    queued.release();
+    active.release();
+    await Promise.resolve();
+
+    expect(attachOrder).toEqual(['active']);
+    expect(getTerminalStartupSummary()?.pendingCount).toBe(1);
+
+    active.unregister();
+    queued.unregister();
+  });
+
+  it('releases attach admission when a candidate throws during attachment', async () => {
+    const attachOrder: string[] = [];
+
+    await withMutedAttachWarnings(async () => {
+      registerTerminalAttachCandidate({
+        attach: () => {
+          attachOrder.push('throws');
+          throw new Error('attach failed');
+        },
+        getPriority: () => 0,
+        key: 'a-throwing-terminal',
+        taskId: 'task-throwing',
+      });
+      const next = registerTerminalAttachCandidate({
+        attach: () => {
+          attachOrder.push('next');
+        },
+        getPriority: () => 1,
+        key: 'z-next-terminal',
+        taskId: 'task-next',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(attachOrder).toEqual(['throws', 'next']);
+      expect(getTerminalStartupSummary()?.pendingCount).toBe(1);
+
+      next.unregister();
+    });
+  });
+
+  it('does not clear a same-key replacement when a stale candidate throws during attachment', async () => {
+    const attachOrder: string[] = [];
+
+    await withMutedAttachWarnings(async () => {
+      let replacement: ReturnType<typeof registerTerminalAttachCandidate> | undefined;
+      registerTerminalAttachCandidate({
+        attach: () => {
+          attachOrder.push('stale');
+          replacement = registerTerminalAttachCandidate({
+            attach: () => {
+              attachOrder.push('replacement');
+            },
+            getPriority: () => 0,
+            key: 'same-terminal',
+            taskId: 'task-replacement',
+          });
+          throw new Error('stale attach failed');
+        },
+        getPriority: () => 0,
+        key: 'same-terminal',
+        taskId: 'task-stale',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(attachOrder).toEqual(['stale', 'replacement']);
+      expect(getTerminalStartupSummary()?.pendingCount).toBe(1);
+
+      replacement?.unregister();
+    });
   });
 
   it('publishes queued and binding startup state while terminals wait for attachment', async () => {

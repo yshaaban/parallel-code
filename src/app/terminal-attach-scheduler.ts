@@ -20,6 +20,7 @@ const terminalAttachCandidates = new Map<string, TerminalAttachCandidate>();
 const activeTerminalAttachKeys = new Set<string>();
 const MAX_CONCURRENT_TERMINAL_ATTACHES = 2;
 const MAX_CONCURRENT_FOREGROUND_ATTACHES = 1;
+let terminalAttachDrainQueued = false;
 
 function isForegroundTerminalAttachPriority(priority: number): boolean {
   return priority <= 1;
@@ -39,7 +40,7 @@ function sortTerminalAttachCandidates(
 
 function listPendingTerminalAttachCandidates(): TerminalAttachCandidate[] {
   return [...terminalAttachCandidates.values()]
-    .filter((candidate) => !candidate.attached)
+    .filter((candidate) => !candidate.attached && !candidate.attachedReleased)
     .sort(sortTerminalAttachCandidates);
 }
 
@@ -72,6 +73,18 @@ function canAttachTerminalCandidate(candidate: TerminalAttachCandidate): boolean
   return activeTerminalAttachKeys.size < MAX_CONCURRENT_TERMINAL_ATTACHES;
 }
 
+function handleTerminalAttachError(candidate: TerminalAttachCandidate, error: unknown): void {
+  candidate.attachedReleased = true;
+  if (terminalAttachCandidates.get(candidate.key) === candidate) {
+    terminalAttachCandidates.delete(candidate.key);
+    activeTerminalAttachKeys.delete(candidate.key);
+    clearTerminalStartupEntry(candidate.key, candidate.ownerId);
+  }
+
+  console.warn('Terminal attach failed before the terminal could bind.', error);
+  queueTerminalAttachDrain();
+}
+
 function drainTerminalAttachQueue(): void {
   const pendingCandidates = listPendingTerminalAttachCandidates();
   const highestPendingCandidate = pendingCandidates[0];
@@ -102,7 +115,11 @@ function drainTerminalAttachQueue(): void {
     setTerminalStartupPhase(candidate.key, 'binding', candidate.ownerId);
     candidate.attached = true;
     activeTerminalAttachKeys.add(candidate.key);
-    candidate.attach();
+    try {
+      candidate.attach();
+    } catch (error) {
+      handleTerminalAttachError(candidate, error);
+    }
 
     if (shouldSerializeForeground) {
       break;
@@ -111,7 +128,15 @@ function drainTerminalAttachQueue(): void {
 }
 
 function queueTerminalAttachDrain(): void {
-  queueMicrotask(drainTerminalAttachQueue);
+  if (terminalAttachDrainQueued) {
+    return;
+  }
+
+  terminalAttachDrainQueued = true;
+  queueMicrotask(() => {
+    terminalAttachDrainQueued = false;
+    drainTerminalAttachQueue();
+  });
 }
 
 export interface TerminalAttachRegistration {
@@ -153,6 +178,10 @@ export function registerTerminalAttachCandidate(
     candidate.attachedReleased = true;
     if (terminalAttachCandidates.get(candidate.key) === candidate) {
       activeTerminalAttachKeys.delete(candidate.key);
+      if (!candidate.attached) {
+        terminalAttachCandidates.delete(candidate.key);
+        clearTerminalStartupEntry(candidate.key, candidate.ownerId);
+      }
     }
     queueTerminalAttachDrain();
   }
@@ -189,6 +218,7 @@ export function registerTerminalAttachCandidate(
 export function resetTerminalAttachSchedulerForTests(): void {
   terminalAttachCandidates.clear();
   activeTerminalAttachKeys.clear();
+  terminalAttachDrainQueued = false;
   resetTerminalStartupStateForTests();
 }
 
