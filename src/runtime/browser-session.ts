@@ -368,6 +368,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
   let restoreGeneration = 0;
   let restoreAwaitingAuthentication = false;
+  let reconnectFullRestoreRequired = false;
   const offWorkspaceStateChanged = listenWorkspaceStateChanged(
     (message: WorkspaceStateChangedNotification) => {
       if (message.sourceId === getStateSyncSourceId()) return;
@@ -408,6 +409,12 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.setConnectionBanner(deriveConnectionBanner(lifecycleState));
   }
 
+  function hasReconnectReplayDiscontinuity(
+    continuity: ReturnType<typeof getBrowserReconnectContinuity>,
+  ): boolean {
+    return continuity.hasReplayTruncatedSinceDisconnect || continuity.hasSequenceGapSinceDisconnect;
+  }
+
   function invalidateRestoreGeneration(
     reason: 'auth-expired' | 'cleanup' | 'transport-lost' = 'transport-lost',
   ): void {
@@ -436,6 +443,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   function startRestore(): void {
     if (isBrowserColdBootstrapPending()) {
       restoreAwaitingAuthentication = false;
+      reconnectFullRestoreRequired = false;
       lifecycleState = completeBrowserRestore(lifecycleState);
       updateConnectionBanner();
       options.clearRestoringConnectionBanner();
@@ -454,12 +462,15 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     void (async () => {
       let shouldRunFullRestore = true;
       const continuity = getBrowserReconnectContinuity();
+      if (hasReconnectReplayDiscontinuity(continuity)) {
+        reconnectFullRestoreRequired = true;
+      }
+
       recordBrowserReconnectDisconnectedDuration(continuity.disconnectedDurationMs);
       if (
         isWarmReconnectWindow(continuity.disconnectedDurationMs) &&
         continuity.hasSequencedMessageSinceDisconnect &&
-        !continuity.hasReplayTruncatedSinceDisconnect &&
-        !continuity.hasSequenceGapSinceDisconnect
+        !reconnectFullRestoreRequired
       ) {
         try {
           const reconnectStatus = await invoke(IPC.GetBrowserReconnectStatus);
@@ -467,9 +478,10 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
             return;
           }
           const postStatusContinuity = getBrowserReconnectContinuity();
-          const canStillSkipFullRestore =
-            !postStatusContinuity.hasReplayTruncatedSinceDisconnect &&
-            !postStatusContinuity.hasSequenceGapSinceDisconnect;
+          if (hasReconnectReplayDiscontinuity(postStatusContinuity)) {
+            reconnectFullRestoreRequired = true;
+          }
+          const canStillSkipFullRestore = !reconnectFullRestoreRequired;
 
           const currentWorkspaceRevision = options.getLoadedWorkspaceRevision();
           if (
@@ -520,6 +532,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       try {
         if (shouldRunFullRestore) {
           fullRestoreStarted = true;
+          reconnectFullRestoreRequired = true;
           recordBrowserReconnectFullRestoreDeferred(Date.now() - restoreStartedAt);
           beginBrowserReconnectRestore();
           options.onTaskNotificationRestoreStarted?.();
@@ -549,6 +562,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           }
           restoreCompleted = true;
           restoreOutcome = 'full-restore';
+          reconnectFullRestoreRequired = false;
         }
       } catch (error) {
         if (!fullRestoreStarted) {
@@ -604,6 +618,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           recordBrowserReconnectScheduled(event.payload.delayMs);
           return;
         case 'sequence-gap':
+          reconnectFullRestoreRequired = true;
           recordBrowserReconnectSequenceGap();
           return;
         default:

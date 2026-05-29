@@ -700,6 +700,51 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('keeps full reconnect restore required after a replay gap restore is interrupted', async () => {
+    const firstSyncDeferred = createDeferred<undefined>();
+    const syncBrowserStateFromReconnectSnapshot = vi
+      .fn()
+      .mockImplementationOnce(() => firstSyncDeferred.promise)
+      .mockResolvedValue(undefined);
+    getBrowserReconnectContinuityMock
+      .mockReturnValueOnce({
+        disconnectedDurationMs: 100,
+        hasReplayTruncatedSinceDisconnect: false,
+        hasSequenceGapSinceDisconnect: true,
+        hasSequencedMessageSinceDisconnect: true,
+      })
+      .mockReturnValue({
+        disconnectedDurationMs: 100,
+        hasReplayTruncatedSinceDisconnect: false,
+        hasSequenceGapSinceDisconnect: false,
+        hasSequencedMessageSinceDisconnect: true,
+      });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    firstSyncDeferred.resolve(undefined);
+    await firstSyncDeferred.promise;
+    await flushResolvedPromises();
+
+    emitBrowserReconnectAndAuthenticate();
+    await vi.waitFor(() => {
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(2);
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+
+    cleanup();
+  });
+
   it('invalidates an in-flight restore when auth expires', async () => {
     const syncDeferred = createDeferred<undefined>();
     const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);

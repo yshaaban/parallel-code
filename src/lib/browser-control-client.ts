@@ -2,7 +2,6 @@ import {
   isReplayTruncatedMessage,
   isServerMessage,
   type ClientMessage,
-  type ReplayTruncatedMessage,
   type ServerMessage,
 } from '../../electron/remote/protocol';
 import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
@@ -18,7 +17,7 @@ import {
 
 export type BrowserServerMessage = Exclude<
   ServerMessage,
-  { type: 'channel' } | { type: 'ipc-event' }
+  { type: 'channel' } | { type: 'ipc-event' } | { type: 'replay-truncated' }
 >;
 export type BrowserServerMessageType = BrowserServerMessage['type'];
 export type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
@@ -72,8 +71,9 @@ export type BrowserControlConnectionState = Extract<
   BrowserTransportEvent,
   { kind: 'connection' }
 >['state'];
-type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<ServerMessage>;
-type BrowserControlIncomingMessage = ServerMessage | ReplayTruncatedMessage;
+type BrowserServerDispatchMessage = Exclude<ServerMessage, { type: 'replay-truncated' }>;
+type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<BrowserServerDispatchMessage>;
+type BrowserControlIncomingMessage = ServerMessage;
 
 export interface BrowserControlClient {
   bindLifecycle: () => void;
@@ -276,7 +276,7 @@ export function createBrowserControlClient(
   }
 
   function isBrowserControlIncomingMessage(value: unknown): value is BrowserControlIncomingMessage {
-    return isServerMessage(value) || isReplayTruncatedMessage(value);
+    return isServerMessage(value);
   }
 
   function getDisconnectConnectedDurationMs(event: {

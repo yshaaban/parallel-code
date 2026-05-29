@@ -258,6 +258,7 @@ export type ServerMessage =
   | GitStatusChangedMessage
   | TaskPortsChangedMessage
   | StateBootstrapMessage
+  | ReplayTruncatedMessage
   | PermissionRequestMessage
   | AgentErrorMessage
   | AgentCommandResultMessage
@@ -622,6 +623,7 @@ const SERVER_MESSAGE_GUARDS = {
   'peer-presences': isPeerPresencesMessage,
   'permission-request': isPermissionRequestMessage,
   pong: isPongMessage,
+  'replay-truncated': isReplayTruncatedMessage,
   'remote-status': isRemoteStatusMessage,
   scrollback: isScrollbackMessage,
   'state-bootstrap': isStateBootstrapMessage,

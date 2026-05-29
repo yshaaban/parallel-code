@@ -125,6 +125,7 @@ const REMOTE_IGNORED_SERVER_MESSAGE_TYPES = {
   'git-status-changed': true,
   'permission-request': true,
   pong: true,
+  'replay-truncated': true,
   'remote-status': true,
   'task-event': true,
   'terminal-input-trace-clock-sync': true,
