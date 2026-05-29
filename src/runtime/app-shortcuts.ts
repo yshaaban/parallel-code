@@ -11,7 +11,12 @@ import {
   toggleHelpDialog,
   toggleSettingsDialog,
 } from '../store/focus';
-import { jumpToTask, moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
+import {
+  jumpToTask,
+  moveActiveTask,
+  toggleAddProjectDialog,
+  toggleNewTaskDialog,
+} from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
 import { showNotification } from '../store/notification';
@@ -184,6 +189,10 @@ export function registerAppShortcuts(): () => void {
       }
       if (store.showSettingsDialog) {
         toggleSettingsDialog(false);
+        return;
+      }
+      if (store.showAddProjectDialog) {
+        toggleAddProjectDialog(false);
         return;
       }
       if (store.showNewTaskDialog) {

@@ -128,6 +128,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_home_path',
   'get_project_base_path',
   'get_recent_projects',
+  'get_discovered_projects',
   'clone_git_repo',
   // Remote access
   'start_remote_server',

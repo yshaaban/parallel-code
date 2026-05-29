@@ -44,6 +44,7 @@ import {
   registerAction,
   setNewTaskDropUrl,
   store,
+  toggleAddProjectDialog,
   toggleArena,
   toggleHelpDialog,
   toggleNewTaskDialog,
@@ -74,6 +75,10 @@ import { preloadTerminalSessionModule } from './components/terminal-view/termina
 const ArenaOverlay = lazyNamed(() => import('./arena/ArenaOverlay'), 'ArenaOverlay');
 const HelpDialog = lazyNamed(() => import('./components/HelpDialog'), 'HelpDialog');
 const NewTaskDialog = lazyNamed(() => import('./components/NewTaskDialog'), 'NewTaskDialog');
+const AddProjectDialog = lazyNamed(
+  () => import('./components/AddProjectDialog'),
+  'AddProjectDialog',
+);
 const PathInputDialog = lazyNamed(() => import('./components/PathInputDialog'), 'PathInputDialog');
 const PlanViewerDialog = lazyNamed(
   () => import('./components/PlanViewerDialog'),
@@ -376,6 +381,9 @@ function App(): JSX.Element {
           <Suspense>
             <Show when={store.showNewTaskDialog}>
               <NewTaskDialog open onClose={() => toggleNewTaskDialog(false)} />
+            </Show>
+            <Show when={store.showAddProjectDialog}>
+              <AddProjectDialog open onClose={() => toggleAddProjectDialog(false)} />
             </Show>
           </Suspense>
         </main>

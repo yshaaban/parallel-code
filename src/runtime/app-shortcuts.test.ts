@@ -11,6 +11,7 @@ const {
   registerShortcutMock,
   showNotificationMock,
   storeRef,
+  toggleAddProjectDialogMock,
 } = vi.hoisted(() => ({
   closeMarkdownViewerMock: vi.fn(),
   closeShellMock: vi.fn(),
@@ -31,6 +32,7 @@ const {
       activeTaskId: 'task-1',
       markdownViewer: null as { content: string } | null,
       showArena: false,
+      showAddProjectDialog: false,
       showHelpDialog: false,
       showNewTaskDialog: false,
       showSettingsDialog: false,
@@ -41,6 +43,7 @@ const {
       },
     },
   },
+  toggleAddProjectDialogMock: vi.fn(),
 }));
 
 vi.mock('../lib/shortcuts', () => ({
@@ -62,6 +65,7 @@ vi.mock('../store/focus', () => ({
 vi.mock('../store/navigation', () => ({
   jumpToTask: jumpToTaskMock,
   moveActiveTask: vi.fn(),
+  toggleAddProjectDialog: toggleAddProjectDialogMock,
   toggleNewTaskDialog: vi.fn(),
 }));
 
@@ -113,10 +117,12 @@ describe('registerAppShortcuts', () => {
     Object.assign(storeRef.current, {
       markdownViewer: null,
       showArena: false,
+      showAddProjectDialog: false,
       showHelpDialog: false,
       showNewTaskDialog: false,
       showSettingsDialog: false,
     });
+    toggleAddProjectDialogMock.mockReset();
     showNotificationMock.mockClear();
   });
 
@@ -199,6 +205,15 @@ describe('registerAppShortcuts', () => {
     handlers.get('app.close-dialog')?.();
 
     expect(closeMarkdownViewerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the add-project dialog on Escape', () => {
+    storeRef.current.showAddProjectDialog = true;
+
+    registerAppShortcuts();
+    handlers.get('app.close-dialog')?.();
+
+    expect(toggleAddProjectDialogMock).toHaveBeenCalledWith(false);
   });
 
   it('handles shell close shortcut failures explicitly', async () => {

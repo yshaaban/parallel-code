@@ -46,10 +46,13 @@ vi.mock('./task-workflows', () => ({
 }));
 
 import { IPC } from '../../electron/ipc/channels';
-import { pickAndAddProject, relinkProject } from './project-workflows';
+import { setStore } from '../store/core';
+import { createTestProject, resetStoreForTest } from '../test/store-test-helpers';
+import { addDiscoveredProject, pickAndAddProject, relinkProject } from './project-workflows';
 
 describe('project workflows', () => {
   beforeEach(() => {
+    resetStoreForTest();
     vi.clearAllMocks();
     addProjectMock.mockReturnValue('project-1');
     saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
@@ -177,6 +180,42 @@ describe('project workflows', () => {
         title: 'Invalid project folder',
       }),
     );
+  });
+
+  it('adds a discovered git project without opening the picker', async () => {
+    invokeMock.mockResolvedValue('/repo/project');
+
+    await expect(addDiscoveredProject('/repo/project')).resolves.toBe('project-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetGitRepoRoot, {
+      path: '/repo/project',
+    });
+    expect(openDialogMock).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(addProjectMock).toHaveBeenCalledWith('project', '/repo/project');
+  });
+
+  it('dedupes discovered subdirectories against an already-added repo root', async () => {
+    setStore('projects', [createTestProject({ id: 'existing-project', path: '/repo/project' })]);
+    invokeMock.mockResolvedValue('/repo/project');
+
+    await expect(addDiscoveredProject('/repo/project/packages/web')).resolves.toBe(
+      'existing-project',
+    );
+
+    expect(addProjectMock).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('adds an explicit discovered non-git folder without an extra confirmation prompt', async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await expect(addDiscoveredProject('/tmp/notes')).resolves.toBe('project-1');
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(addProjectMock).toHaveBeenCalledWith('notes', '/tmp/notes', {
+      projectMode: 'non-git',
+    });
   });
 
   it('relinks a project only when the new folder is the repo root', async () => {

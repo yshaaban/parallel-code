@@ -275,7 +275,7 @@ describe('focus shell toolbar navigation', () => {
 
     setTaskFocusedPanelState(taskId, 'shell:0');
     triggerFocus(`${taskId}:shell:0`);
-    setStore('showHelpDialog', true);
+    setStore('showAddProjectDialog', true);
     registerFocusFn(`${taskId}:shell:0`, focusMock);
     await Promise.resolve();
 
@@ -377,7 +377,7 @@ describe('focus shell toolbar navigation', () => {
 
   it('does not switch tasks directly while a blocking dialog is open', () => {
     setupTwoTaskNavigationState();
-    setStore('showHelpDialog', true);
+    setStore('showAddProjectDialog', true);
 
     navigateTask('right');
 

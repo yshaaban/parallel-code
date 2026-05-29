@@ -7,8 +7,7 @@ import {
   onMount,
   type JSX,
 } from 'solid-js';
-import { pickAndAddProject } from '../app/project-workflows';
-import { store, closeTerminal } from '../store/store';
+import { store, closeTerminal, toggleAddProjectDialog } from '../store/store';
 import { closeTask } from '../app/task-workflows';
 import { isNonGitProject } from '../store/project-mode';
 import { isCurrentBranchTask } from '../store/task-git-isolation';
@@ -286,7 +285,7 @@ export function TilingLayout(): JSX.Element {
                       </div>
                     </div>
                     <button
-                      onClick={() => pickAndAddProject()}
+                      onClick={() => toggleAddProjectDialog(true)}
                       style={{
                         background: theme.bgElevated,
                         border: `1px solid ${theme.border}`,

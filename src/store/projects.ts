@@ -5,6 +5,7 @@ import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
 import { invoke } from '../lib/ipc';
 import { createRandomId } from '../lib/random-id';
+import type { DiscoveredProject } from '../ipc/types';
 import { store, setStore } from './core';
 import { buildProjectModeFields, getProjectMode } from './project-mode';
 import {
@@ -245,4 +246,8 @@ export function clearMissingProject(projectId: string): void {
     delete next[projectId];
     return next;
   });
+}
+
+export function setDiscoveredProjects(projects: DiscoveredProject[]): void {
+  setStore('discoveredProjects', projects);
 }

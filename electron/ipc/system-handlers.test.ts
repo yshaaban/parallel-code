@@ -19,6 +19,8 @@ const {
   inspectArenaCompetitorMock,
   getActiveAgentIdsMock,
   getAgentMetaMock,
+  getRecentProjectPathsMock,
+  discoverProjectsMock,
   listAgentsMock,
   loadAppStateForEnvMock,
   loadWorkspaceStateForEnvMock,
@@ -26,6 +28,8 @@ const {
   inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
+  getRecentProjectPathsMock: vi.fn(),
+  discoverProjectsMock: vi.fn(),
   listAgentsMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
   loadWorkspaceStateForEnvMock: vi.fn(),
@@ -55,6 +59,11 @@ vi.mock('./arena-competitors.js', () => ({
 
 vi.mock('./agents.js', () => ({
   listAgents: listAgentsMock,
+}));
+
+vi.mock('./recent-projects.js', () => ({
+  discoverProjects: discoverProjectsMock,
+  getRecentProjectPaths: getRecentProjectPathsMock,
 }));
 
 import { createSystemIpcHandlers } from './system-handlers.js';
@@ -121,6 +130,8 @@ describe('system handlers', () => {
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
     listAgentsMock.mockResolvedValue([]);
+    discoverProjectsMock.mockResolvedValue([]);
+    getRecentProjectPathsMock.mockResolvedValue([]);
     resetTaskCommandLeasesForTest();
   });
 
@@ -179,6 +190,46 @@ describe('system handlers', () => {
       path: '/tmp/screenshot.png',
     });
     expect(resolveClipboardPaste).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards discovered-project requests with validated force options', async () => {
+    const discovered = [
+      {
+        name: 'app',
+        path: '/repo/app',
+        source: 'codex' as const,
+        updatedAtMs: 1_000,
+      },
+    ];
+    discoverProjectsMock.mockResolvedValue(discovered);
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+
+    await expect(handlers[IPC.GetDiscoveredProjects]?.()).resolves.toEqual(discovered);
+    expect(discoverProjectsMock).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), {
+      force: false,
+    });
+
+    await expect(handlers[IPC.GetDiscoveredProjects]?.({ force: true })).resolves.toEqual(
+      discovered,
+    );
+    expect(discoverProjectsMock).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), {
+      force: true,
+    });
+  });
+
+  it('rejects malformed discovered-project request payloads', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    const getDiscoveredProjects = handlers[IPC.GetDiscoveredProjects] as (
+      args?: unknown,
+    ) => Promise<unknown>;
+
+    await expect(getDiscoveredProjects('force')).rejects.toThrow(
+      'get_discovered_projects payload must be an object',
+    );
+    await expect(getDiscoveredProjects({ force: 'true' })).rejects.toThrow(
+      'force must be a boolean',
+    );
+    expect(discoverProjectsMock).not.toHaveBeenCalled();
   });
 
   it('forwards validated choice dialogs through dialog runtime support', async () => {

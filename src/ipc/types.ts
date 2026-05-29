@@ -1,6 +1,15 @@
 export type { WorktreeStatus } from '../domain/server-state.js';
 import type { ChangedFileStatus } from '../domain/git-status.js';
 
+export type DiscoveredProjectSource = 'claude' | 'codex' | 'git';
+
+export interface DiscoveredProject {
+  path: string;
+  name: string;
+  source: DiscoveredProjectSource;
+  updatedAtMs: number;
+}
+
 export interface PtyExitData {
   exit_code: number | null;
   signal: string | null;

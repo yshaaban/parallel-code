@@ -15,7 +15,7 @@ import {
   isGitSshUrl,
   parseGitSshHost,
 } from '../../src/lib/git-ssh-url.js';
-import { isFiniteNumber } from '../../src/lib/type-guards.js';
+import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
 import { IPC } from './channels.js';
 import { listAgents } from './agents.js';
 import { BadRequestError } from './errors.js';
@@ -58,7 +58,7 @@ import {
   validatePath,
   validateRelativePath,
 } from './path-utils.js';
-import { getRecentProjectPaths } from './recent-projects.js';
+import { discoverProjects, getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { readMarkdownFileForWorktree } from './markdown-files.js';
 import { inspectArenaCompetitor } from './arena-competitors.js';
@@ -514,6 +514,27 @@ export async function cloneGitRepo(
   return { status: 'cloned', repoRoot: destination };
 }
 
+interface DiscoveredProjectsRequestOptions {
+  force: boolean;
+}
+
+function parseDiscoveredProjectsRequest(args: unknown): DiscoveredProjectsRequestOptions {
+  if (args === undefined) {
+    return { force: false };
+  }
+
+  if (!isRecord(args)) {
+    throw new BadRequestError('get_discovered_projects payload must be an object');
+  }
+
+  if (args.force === undefined) {
+    return { force: false };
+  }
+
+  assertBoolean(args.force, 'force');
+  return { force: args.force };
+}
+
 export function createSystemIpcHandlers(
   context: HandlerContext,
   options: SavedStateSyncOptions & {
@@ -686,6 +707,13 @@ export function createSystemIpcHandlers(
       const homeDir = getHomeDirectory();
       const projectBaseDir = getProjectBaseDirectory();
       return getRecentProjectPaths(homeDir, projectBaseDir);
+    },
+
+    [IPC.GetDiscoveredProjects]: async (args?: unknown) => {
+      const { force } = parseDiscoveredProjectsRequest(args);
+      const homeDir = getHomeDirectory();
+      const projectBaseDir = getProjectBaseDirectory();
+      return discoverProjects(homeDir, projectBaseDir, { force });
     },
 
     [IPC.ResolveClipboardPaste]: async () =>

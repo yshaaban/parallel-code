@@ -56,3 +56,7 @@ export function toggleNewTaskDialog(show?: boolean): void {
   }
   setStore('showNewTaskDialog', shouldShow);
 }
+
+export function toggleAddProjectDialog(show?: boolean): void {
+  setStore('showAddProjectDialog', show ?? !store.showAddProjectDialog);
+}

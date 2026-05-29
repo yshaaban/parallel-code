@@ -129,7 +129,15 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
 
   const handlePaste = (event: ClipboardEvent) => {
-    if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
+    if (
+      store.showNewTaskDialog ||
+      store.showAddProjectDialog ||
+      store.showHelpDialog ||
+      store.showSettingsDialog ||
+      store.markdownViewer !== null
+    ) {
+      return;
+    }
 
     const activeElement = document.activeElement;
     if (

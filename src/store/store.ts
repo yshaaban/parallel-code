@@ -64,6 +64,7 @@ export {
   moveActiveTask,
   jumpToTask,
   toggleNewTaskDialog,
+  toggleAddProjectDialog,
 } from './navigation';
 export {
   registerFocusFn,

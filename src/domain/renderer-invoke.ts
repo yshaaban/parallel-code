@@ -1,6 +1,7 @@
 import { IPC } from '../../electron/ipc/channels.js';
 import type { BackendRuntimeDiagnosticsSnapshot } from '../../electron/ipc/runtime-diagnostics.js';
 import type { AgentDef } from '../ipc/types.js';
+import type { DiscoveredProject } from '../ipc/types.js';
 import type { BrowserColdBootstrapProjection } from './browser-cold-bootstrap.js';
 import type {
   ChangedFile,
@@ -553,6 +554,7 @@ export interface RendererInvokeRequestMap {
   [IPC.GetHomePath]: undefined;
   [IPC.GetProjectBasePath]: undefined;
   [IPC.GetRecentProjects]: undefined;
+  [IPC.GetDiscoveredProjects]: { force?: boolean } | undefined;
   [IPC.CloneGitRepo]: {
     acceptHostKey?: boolean;
     url: string;
@@ -725,6 +727,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetHomePath]: string;
   [IPC.GetProjectBasePath]: string;
   [IPC.GetRecentProjects]: string[];
+  [IPC.GetDiscoveredProjects]: DiscoveredProject[];
   [IPC.CloneGitRepo]:
     | { status: 'cloned'; repoRoot: string }
     | {

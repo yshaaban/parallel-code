@@ -22,6 +22,7 @@ const sidebarSource = readFileSync(
 
 const APP_CLOSED_SURFACE_MODULES = [
   './arena/ArenaOverlay',
+  './components/AddProjectDialog',
   './components/HelpDialog',
   './components/NewTaskDialog',
   './components/PathInputDialog',

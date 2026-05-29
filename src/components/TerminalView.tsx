@@ -160,6 +160,7 @@ function hasDocumentFocus(): boolean {
 function hasBlockingDialogOpen(): boolean {
   return (
     store.showNewTaskDialog ||
+    store.showAddProjectDialog ||
     store.showHelpDialog ||
     store.showSettingsDialog ||
     store.markdownViewer !== null

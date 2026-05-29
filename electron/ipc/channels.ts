@@ -132,6 +132,7 @@ export enum IPC {
   GetHomePath = 'get_home_path',
   GetProjectBasePath = 'get_project_base_path',
   GetRecentProjects = 'get_recent_projects',
+  GetDiscoveredProjects = 'get_discovered_projects',
   CloneGitRepo = 'clone_git_repo',
 
   // Remote access

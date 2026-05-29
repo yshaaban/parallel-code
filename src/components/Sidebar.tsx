@@ -11,7 +11,7 @@ import {
 
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
-import { pickAndAddProject, removeProjectWithTasks } from '../app/project-workflows';
+import { removeProjectWithTasks } from '../app/project-workflows';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconButton } from './IconButton';
 import { SidebarFooter } from './SidebarFooter';
@@ -41,6 +41,7 @@ import {
   setPanelSizes,
   store,
   triggerAction,
+  toggleAddProjectDialog,
   toggleSettingsDialog,
   toggleSidebar,
   unregisterFocusFn,
@@ -206,8 +207,8 @@ export function Sidebar(): JSX.Element {
     });
   });
 
-  async function handleAddProject(): Promise<void> {
-    await pickAndAddProject();
+  function handleAddProject(): void {
+    toggleAddProjectDialog(true);
   }
 
   function handleRemoveProject(projectId: string): void {
@@ -394,7 +395,7 @@ export function Sidebar(): JSX.Element {
             fallback={
               <button
                 class="icon-btn"
-                onClick={() => pickAndAddProject()}
+                onClick={() => toggleAddProjectDialog(true)}
                 style={{
                   background: 'transparent',
                   border: `1px solid ${theme.border}`,

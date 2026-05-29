@@ -1,4 +1,4 @@
-import type { AgentDef } from '../ipc/types.js';
+import type { AgentDef, DiscoveredProject } from '../ipc/types.js';
 import type {
   AgentSupervisionSnapshot,
   PeerPresenceSnapshot,
@@ -382,6 +382,8 @@ export interface AppStore {
   availableAgents: AgentDef[];
   customAgents: AgentDef[];
   showNewTaskDialog: boolean;
+  showAddProjectDialog: boolean;
+  discoveredProjects: DiscoveredProject[];
   sidebarVisible: boolean;
   fontScales: Record<string, number>;
   panelSizes: Record<string, number>;

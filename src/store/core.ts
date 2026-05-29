@@ -37,6 +37,8 @@ export function createInitialAppStore(): AppStore {
     availableAgents: [],
     customAgents: [],
     showNewTaskDialog: false,
+    showAddProjectDialog: false,
+    discoveredProjects: [],
     sidebarVisible: true,
     fontScales: {},
     panelSizes: {},

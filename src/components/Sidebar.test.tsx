@@ -11,7 +11,6 @@ const {
   getPanelSizeMock,
   isElectronRuntimeMock,
   openNewTaskDialogMock,
-  pickAndAddProjectMock,
   removeProjectMock,
   removeProjectWithTasksMock,
   reorderTaskMock,
@@ -21,6 +20,7 @@ const {
   triggerActionMock,
   uncollapseTaskMock,
   unfocusSidebarMock,
+  toggleAddProjectDialogMock,
   toggleSettingsDialogMock,
   toggleSidebarMock,
 } = vi.hoisted(() => ({
@@ -28,7 +28,6 @@ const {
   getPanelSizeMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   openNewTaskDialogMock: vi.fn(),
-  pickAndAddProjectMock: vi.fn(),
   removeProjectMock: vi.fn(),
   removeProjectWithTasksMock: vi.fn(),
   reorderTaskMock: vi.fn(),
@@ -38,6 +37,7 @@ const {
   triggerActionMock: vi.fn(),
   uncollapseTaskMock: vi.fn(),
   unfocusSidebarMock: vi.fn(),
+  toggleAddProjectDialogMock: vi.fn(),
   toggleSettingsDialogMock: vi.fn(),
   toggleSidebarMock: vi.fn(),
 }));
@@ -135,6 +135,7 @@ vi.mock('../store/store', async () => {
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     setPanelSizes: setPanelSizesMock,
     triggerAction: triggerActionMock,
+    toggleAddProjectDialog: toggleAddProjectDialogMock,
     toggleSettingsDialog: toggleSettingsDialogMock,
     toggleSidebar: toggleSidebarMock,
     uncollapseTask: uncollapseTaskMock,
@@ -144,7 +145,6 @@ vi.mock('../store/store', async () => {
 });
 
 vi.mock('../app/project-workflows', () => ({
-  pickAndAddProject: pickAndAddProjectMock,
   removeProjectWithTasks: removeProjectWithTasksMock,
 }));
 
@@ -174,7 +174,7 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Link Project' }));
 
-    expect(pickAndAddProjectMock).toHaveBeenCalledTimes(1);
+    expect(toggleAddProjectDialogMock).toHaveBeenCalledWith(true);
   });
 
   it('opens the new-task flow and remote-access modal when projects exist', async () => {

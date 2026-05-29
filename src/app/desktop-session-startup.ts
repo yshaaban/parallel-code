@@ -29,6 +29,7 @@ import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
 import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
 import { startStartupRestoreAgentSessionEnsure } from './agent-session-ensure';
+import { refreshDiscoveredProjects } from './discovered-projects';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 
 import {
@@ -58,6 +59,7 @@ interface DesktopSessionBootstrapController {
 const BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS = [75, 200];
 const BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS = [150, 300, 600];
 const BROWSER_AGENT_CATALOG_REFRESH_DELAY_MS = 2_000;
+const DISCOVERED_PROJECTS_PREFETCH_DELAY_MS = 1_500;
 
 interface BrowserColdBootstrapFetchResult {
   lastError: unknown | null;
@@ -344,6 +346,20 @@ function scheduleBrowserAgentCatalogRefresh(
   }, BROWSER_AGENT_CATALOG_REFRESH_DELAY_MS);
 }
 
+function scheduleDiscoveredProjectsRefresh(
+  startupTimerController: DesktopSessionStartupTimerController,
+  isDisposed: () => boolean,
+): void {
+  startupTimerController.schedule(() => {
+    if (isDisposed()) {
+      return;
+    }
+
+    emitStartupBreadcrumb('desktop-startup:discovered-projects-refresh-start');
+    void refreshDiscoveredProjects();
+  }, DISCOVERED_PROJECTS_PREFETCH_DELAY_MS);
+}
+
 async function restorePersistedPlanContent(): Promise<void> {
   const taskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
   const restoreRequests = taskIds
@@ -557,6 +573,7 @@ export async function runDesktopSessionStartup(
 
   markAutosaveClean();
   emitStartupBreadcrumb('desktop-startup:after-mark-autosave-clean');
+
   if (options.electronRuntime) {
     await validateProjectPaths();
     emitStartupBreadcrumb('desktop-startup:after-validate-project-paths');
@@ -609,6 +626,8 @@ export async function runDesktopSessionStartup(
   emitStartupBreadcrumb('desktop-startup:after-arm-notifications');
   clearAppStartupStatus();
   emitStartupBreadcrumb('desktop-startup:complete');
+  scheduleDiscoveredProjectsRefresh(startupTimerController, isDisposed);
+  emitStartupBreadcrumb('desktop-startup:after-schedule-discovered-projects');
   if (!options.electronRuntime) {
     scheduleBrowserAgentCatalogRefresh(
       startupTimerController,

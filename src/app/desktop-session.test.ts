@@ -217,6 +217,8 @@ const {
     agents: {} as Record<string, unknown>,
     hydraCommand: '',
     hydraStartupMode: 'auto' as const,
+    markdownViewer: null,
+    showAddProjectDialog: false,
     showHelpDialog: false,
     showNewTaskDialog: false,
     showSettingsDialog: false,

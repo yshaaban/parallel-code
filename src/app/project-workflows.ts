@@ -278,6 +278,26 @@ export async function pickAndAddProject(): Promise<string | null> {
   return addProjectFromPath(projectRoot.path, projectRoot.projectMode);
 }
 
+/**
+ * Add a project the user picked from the discovered-projects proposal. Resolves the git repo root
+ * (snapping a session subdirectory up to its repository), dedupes against already-added projects,
+ * and adds non-git folders without the extra confirm prompt since the choice was explicit.
+ */
+export async function addDiscoveredProject(discoveredPath: string): Promise<string | null> {
+  const repoRoot = await invoke(IPC.GetGitRepoRoot, { path: discoveredPath });
+  const targetPath = repoRoot ?? discoveredPath;
+  const projectMode: ProjectMode = repoRoot ? 'git' : 'non-git';
+
+  const existingProject = store.projects.find((project) =>
+    isSelectedRootMatchingRepoRoot(project.path, targetPath),
+  );
+  if (existingProject) {
+    return existingProject.id;
+  }
+
+  return addProjectFromPath(targetPath, projectMode);
+}
+
 export async function relinkProject(projectId: string): Promise<boolean> {
   const projectRoot = await pickValidatedProjectRoot();
   if (!projectRoot) {
