@@ -232,6 +232,46 @@ describe('Hydra spawn handling', () => {
     expect(resizeAgentMock).not.toHaveBeenCalled();
   });
 
+  it('does not validate runner profile config for existing batch sessions', async () => {
+    hasAgentSessionMock.mockReturnValue(true);
+    getAgentColsMock.mockReturnValue(120);
+    getAgentRowsMock.mockReturnValue(40);
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'startup-restore',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+            runnerProfile: { provider: 'docker-container' },
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-1',
+          cols: 120,
+          created: false,
+          existed: true,
+          rows: 40,
+          taskId: 'task-1',
+        },
+      ],
+    });
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
   it('returns per-agent failures from batch ensure without hiding partial successes', async () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);
@@ -291,6 +331,69 @@ describe('Hydra spawn handling', () => {
         },
       ],
     });
+  });
+
+  it('keeps valid batch entries when one runner profile config is invalid', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+
+    await expect(
+      handlers[IPC.EnsureAgentSessionsBatch]?.({
+        clientId: 'client-1',
+        reason: 'dispatch-storm',
+        requests: [
+          {
+            taskId: 'task-1',
+            agentId: 'agent-ok',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+          },
+          {
+            taskId: 'task-1',
+            agentId: 'agent-bad-profile',
+            command: '/bin/sh',
+            args: [],
+            cwd: '/tmp/parallel-code/worktree-one',
+            env: {},
+            cols: 80,
+            rows: 24,
+            runnerProfile: { provider: 'docker-container' },
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-ok',
+          cols: 80,
+          created: true,
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-bad-profile',
+          cols: 80,
+          created: false,
+          error: 'agentRunnerProfile requires image or dockerfile for Docker container runners',
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledTimes(1);
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        agentId: 'agent-ok',
+      }),
+    );
   });
 
   it('releases batch spawn admission slots when one admitted entry throws', async () => {

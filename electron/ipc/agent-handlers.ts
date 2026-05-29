@@ -526,7 +526,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const requestedRows = normalizeTerminalDimension(request.rows, 24, 'rows');
       const hasExistingSession = hasAgentSession(request.agentId);
 
-      const spawnWorkflow = () => {
+      function spawnWorkflow(): boolean {
         const hasSessionAtSpawn = hasAgentSession(request.agentId);
         const runnerProfile = hasSessionAtSpawn
           ? undefined
@@ -551,7 +551,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
           ...(runnerProfile !== undefined ? { runnerProfile } : {}),
         });
-      };
+      }
 
       const attachedExistingSession = hasExistingSession
         ? spawnWorkflow()
@@ -624,7 +624,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
             requestedCols,
             requestedRows,
             resumeOnStart: entry.resumeOnStart === true,
-            runnerProfile: normalizeAgentRunnerProfileConfig(entry.runnerProfile),
+            runnerProfile: entry.runnerProfile,
             spawnArgs,
             taskId,
           };
@@ -634,14 +634,16 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
 
         const results = await Promise.all(
           normalizedRequests.map(async (entry) => {
-            const buildExistingResult = () => ({
-              agentId: entry.agentId,
-              cols: getAgentCols(entry.agentId),
-              created: false,
-              existed: true,
-              rows: getAgentRows(entry.agentId),
-              taskId: getAgentMeta(entry.agentId)?.taskId ?? entry.taskId,
-            });
+            function buildExistingResult() {
+              return {
+                agentId: entry.agentId,
+                cols: getAgentCols(entry.agentId),
+                created: false,
+                existed: true,
+                rows: getAgentRows(entry.agentId),
+                taskId: getAgentMeta(entry.agentId)?.taskId ?? entry.taskId,
+              };
+            }
 
             if (hasAgentSession(entry.agentId)) {
               recordAgentSessionEnsureResult('existing');
