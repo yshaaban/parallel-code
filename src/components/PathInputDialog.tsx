@@ -48,45 +48,161 @@ interface DialogBasePaths {
   projectBasePath: string;
 }
 
+const PATH_SEGMENT_SEPARATOR_PATTERN = /[\\/]+/u;
+const LEADING_PATH_SEPARATOR_PATTERN = /^[\\/]+/u;
+const TRAILING_PATH_SEPARATOR_PATTERN = /[\\/]+$/u;
+
+function isWindowsDriveAbsolutePath(pathValue: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(pathValue);
+}
+
+function getWindowsUncRoot(pathValue: string): string | null {
+  const match = pathValue.match(/^(\\\\|\/\/)([^\\/]+)[\\/]([^\\/]+)/u);
+  if (!match) {
+    return null;
+  }
+
+  const [, prefix, server, share] = match;
+  let separator = '/';
+  if (prefix === '\\\\') {
+    separator = '\\';
+  }
+
+  return `${prefix}${server}${separator}${share}`;
+}
+
+function isAbsoluteInputPath(pathValue: string): boolean {
+  return (
+    pathValue.startsWith('/') ||
+    pathValue.startsWith('\\') ||
+    isWindowsDriveAbsolutePath(pathValue) ||
+    getWindowsUncRoot(pathValue) !== null
+  );
+}
+
+function getPathSeparator(pathValue: string): string {
+  return pathValue.includes('\\') ? '\\' : '/';
+}
+
+function isRootPath(pathValue: string): boolean {
+  if (pathValue === '/' || pathValue === '\\') {
+    return true;
+  }
+
+  if (/^[A-Za-z]:[\\/]$/u.test(pathValue)) {
+    return true;
+  }
+
+  return getWindowsUncRoot(pathValue) === pathValue;
+}
+
+function getRootPath(pathValue: string): string {
+  if (isWindowsDriveAbsolutePath(pathValue)) {
+    return `${pathValue.slice(0, 2)}${getPathSeparator(pathValue)}`;
+  }
+
+  const uncRoot = getWindowsUncRoot(pathValue);
+  if (uncRoot) {
+    return uncRoot;
+  }
+
+  if (pathValue.startsWith('\\')) {
+    return '\\';
+  }
+
+  return '/';
+}
+
 function normalizeDirectoryPath(pathValue: string): string {
   if (!pathValue || pathValue === '/') return '/';
-  return pathValue.replace(/\/+$/, '') || '/';
+  if (pathValue === '\\') return '\\';
+
+  if (isWindowsDriveAbsolutePath(pathValue)) {
+    const separator = getPathSeparator(pathValue);
+    const drivePrefix = pathValue.slice(0, 2);
+    const withoutTrailingSeparators = pathValue.replace(TRAILING_PATH_SEPARATOR_PATTERN, '');
+    if (withoutTrailingSeparators === drivePrefix) {
+      return `${drivePrefix}${separator}`;
+    }
+
+    return withoutTrailingSeparators;
+  }
+
+  const uncRoot = getWindowsUncRoot(pathValue);
+  if (uncRoot) {
+    const withoutTrailingSeparators = pathValue.replace(TRAILING_PATH_SEPARATOR_PATTERN, '');
+    if (withoutTrailingSeparators.length < uncRoot.length) {
+      return uncRoot;
+    }
+
+    return withoutTrailingSeparators;
+  }
+
+  return pathValue.replace(TRAILING_PATH_SEPARATOR_PATTERN, '') || getRootPath(pathValue);
 }
 
 function ensureTrailingSlash(pathValue: string): string {
   const normalized = normalizeDirectoryPath(pathValue);
-  return normalized === '/' ? '/' : `${normalized}/`;
+  if (isRootPath(normalized)) {
+    return normalized;
+  }
+
+  return `${normalized}${getPathSeparator(normalized)}`;
 }
 
 function joinPath(basePath: string, childName: string): string {
-  if (basePath === '/') return `/${childName}`;
-  return `${normalizeDirectoryPath(basePath)}/${childName}`;
+  const normalized = normalizeDirectoryPath(basePath);
+  const separator = getPathSeparator(normalized);
+  if (normalized === '/') return `/${childName}`;
+  if (normalized.endsWith(separator)) return `${normalized}${childName}`;
+  return `${normalized}${separator}${childName}`;
 }
 
 function getParentPath(pathValue: string): string {
   const normalized = normalizeDirectoryPath(pathValue);
-  if (normalized === '/') return '/';
-  const lastSlash = normalized.lastIndexOf('/');
-  return lastSlash <= 0 ? '/' : normalized.slice(0, lastSlash);
+  if (isRootPath(normalized)) return normalized;
+
+  const lastSlash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  if (lastSlash <= 0) {
+    return getRootPath(normalized);
+  }
+
+  const parent = normalized.slice(0, lastSlash);
+  if (/^[A-Za-z]:$/u.test(parent)) {
+    return `${parent}${getPathSeparator(normalized)}`;
+  }
+
+  const uncRoot = getWindowsUncRoot(normalized);
+  if (uncRoot && parent.length < uncRoot.length) {
+    return uncRoot;
+  }
+
+  return parent;
 }
 
 function collapseHomePath(pathValue: string, homePath: string): string {
-  if (!homePath) return pathValue;
-  if (pathValue === homePath) return '~';
-  if (pathValue.startsWith(`${homePath}/`)) {
-    return `~${pathValue.slice(homePath.length)}`;
+  const normalizedHome = normalizeDirectoryPath(homePath);
+  if (!normalizedHome) return pathValue;
+  if (pathValue === normalizedHome) return '~';
+  if (normalizedHome === '/') return pathValue;
+
+  const separator = getPathSeparator(normalizedHome);
+  if (pathValue.startsWith(`${normalizedHome}${separator}`)) {
+    return `~${pathValue.slice(normalizedHome.length)}`;
   }
   return pathValue;
 }
 
 function hasTraversalSegment(pathValue: string): boolean {
-  return pathValue.split('/').some((segment) => segment === '..');
+  return pathValue.split(PATH_SEGMENT_SEPARATOR_PATTERN).some((segment) => segment === '..');
 }
 
 function getPathLabel(pathValue: string): string {
   const normalized = normalizeDirectoryPath(pathValue);
   if (normalized === '/') return '/';
-  const parts = normalized.split('/').filter((segment) => segment.length > 0);
+  const parts = normalized
+    .split(PATH_SEGMENT_SEPARATOR_PATTERN)
+    .filter((segment) => segment.length > 0);
   return parts[parts.length - 1] ?? normalized;
 }
 
@@ -166,11 +282,24 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
     const trimmed = inputPath.trim();
     const home = homePath();
     if (!home) return trimmed;
-    if (trimmed === '~' || trimmed === '~/') return home;
-    if (trimmed.startsWith('~/')) {
-      return home === '/' ? trimmed.slice(1) : `${home}${trimmed.slice(1)}`;
+    if (trimmed === '~' || trimmed === '~/' || trimmed === '~\\') return home;
+    if (trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+      const suffix = trimmed.slice(1).replace(/[\\/]/gu, getPathSeparator(home));
+      if (home === '/') {
+        return suffix;
+      }
+
+      return `${home}${suffix}`;
     }
     return trimmed;
+  }
+
+  function getPathChildPrefix(parentPath: string, pathValue: string): string {
+    if (parentPath.endsWith('/') || parentPath.endsWith('\\')) {
+      return pathValue.slice(parentPath.length);
+    }
+
+    return pathValue.slice(parentPath.length + 1);
   }
 
   function deriveBrowseTarget(inputPath: string): { browsePath: string | null; prefix: string } {
@@ -180,18 +309,18 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
     }
 
     const resolved = resolveInputPath(trimmed);
-    if (!resolved.startsWith('/')) {
+    if (!isAbsoluteInputPath(resolved)) {
       return { browsePath: null, prefix: '' };
     }
 
     if (resolved === '/') return { browsePath: '/', prefix: '' };
 
-    if (trimmed.endsWith('/') || trimmed === '~' || trimmed === '~/') {
+    if (trimmed.endsWith('/') || trimmed.endsWith('\\') || trimmed === '~') {
       return { browsePath: normalizeDirectoryPath(resolved), prefix: '' };
     }
 
     const parent = getParentPath(resolved);
-    const prefix = resolved.slice(parent === '/' ? 1 : parent.length + 1);
+    const prefix = getPathChildPrefix(parent, resolved);
     return { browsePath: parent, prefix };
   }
 
@@ -205,17 +334,23 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
 
   function breadcrumbs(): BreadcrumbSegment[] {
     const currentPath = browsePath();
-    if (!currentPath || !currentPath.startsWith('/')) return [];
+    if (!currentPath || !isAbsoluteInputPath(currentPath)) return [];
 
     if (currentPath === '/') {
       return [{ name: '/', path: '/' }];
     }
 
-    const parts = currentPath.split('/').filter((segment) => segment.length > 0);
-    const segments: BreadcrumbSegment[] = [{ name: '/', path: '/' }];
-    let nextPath = '';
+    const rootPath = getRootPath(currentPath);
+    const segments: BreadcrumbSegment[] = [{ name: rootPath, path: rootPath }];
+    const relativePath = currentPath
+      .slice(rootPath.length)
+      .replace(LEADING_PATH_SEPARATOR_PATTERN, '');
+    const parts = relativePath
+      .split(PATH_SEGMENT_SEPARATOR_PATTERN)
+      .filter((segment) => segment.length > 0);
+    let nextPath = rootPath;
     for (const part of parts) {
-      nextPath += `/${part}`;
+      nextPath = joinPath(nextPath, part);
       segments.push({ name: part, path: nextPath });
     }
     return segments;
@@ -226,8 +361,8 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
     if (!trimmed) return 'Path cannot be empty';
 
     const resolved = resolveInputPath(trimmed);
-    if (!resolved.startsWith('/')) {
-      return 'Path must be absolute (start with / or ~)';
+    if (!isAbsoluteInputPath(resolved)) {
+      return 'Path must be absolute (start with /, ~, a Windows drive, or a UNC root)';
     }
     if (hasTraversalSegment(resolved)) {
       return 'Path must not contain ".."';
@@ -521,7 +656,7 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       setEntries([]);
       setLoadingDirs(false);
       if (value().trim()) {
-        setListingError('Type an absolute path or use ~ for your home directory.');
+        setListingError('Type an absolute path, Windows path, or use ~ for your home directory.');
       } else {
         setListingError('');
       }
@@ -611,7 +746,9 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
             onInput={(event) => handleInputChange(event.currentTarget.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              props.directory ? '/home/user/my-project or ~/my-project' : '/home/user/file.txt'
+              props.directory
+                ? '/home/user/my-project, C:\\Users\\me\\my-project, or ~/my-project'
+                : '/home/user/file.txt or C:\\Users\\me\\file.txt'
             }
             spellcheck={false}
             autocomplete="off"
@@ -655,7 +792,9 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
             {(segment, index) => (
               <>
                 <Show when={index() > 0}>
-                  <span style={{ color: theme.fgSubtle, padding: '0 1px' }}>/</span>
+                  <span style={{ color: theme.fgSubtle, padding: '0 1px' }}>
+                    {getPathSeparator(segment.path)}
+                  </span>
                 </Show>
                 <button
                   type="button"

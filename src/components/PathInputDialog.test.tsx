@@ -108,6 +108,85 @@ describe('PathInputDialog', () => {
     });
   });
 
+  it('accepts Windows drive-letter absolute paths', async () => {
+    const onSubmit = vi.fn();
+
+    render(() => <PathInputDialog open directory onSubmit={onSubmit} onCancel={() => {}} />);
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
+    });
+    fireEvent.input(input, { target: { value: 'C:\\Users\\tester\\repo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.CheckPathExists, {
+        path: 'C:\\Users\\tester\\repo',
+      });
+      expect(onSubmit).toHaveBeenCalledWith('C:\\Users\\tester\\repo');
+    });
+  });
+
+  it('accepts Windows UNC absolute paths', async () => {
+    const onSubmit = vi.fn();
+
+    render(() => <PathInputDialog open directory onSubmit={onSubmit} onCancel={() => {}} />);
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
+    });
+    fireEvent.input(input, { target: { value: '\\\\server\\share\\repo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.CheckPathExists, {
+        path: '\\\\server\\share\\repo',
+      });
+      expect(onSubmit).toHaveBeenCalledWith('\\\\server\\share\\repo');
+    });
+  });
+
+  it('accepts Windows drive-rooted absolute paths', async () => {
+    const onSubmit = vi.fn();
+    const rootedPath = String.raw`\Users\tester\repo`;
+
+    render(() => <PathInputDialog open directory onSubmit={onSubmit} onCancel={() => {}} />);
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
+    });
+    fireEvent.input(input, { target: { value: rootedPath } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.CheckPathExists, {
+        path: rootedPath,
+      });
+      expect(onSubmit).toHaveBeenCalledWith(rootedPath);
+    });
+  });
+
+  it('rejects Windows paths with traversal segments', async () => {
+    const onSubmit = vi.fn();
+
+    render(() => <PathInputDialog open directory onSubmit={onSubmit} onCancel={() => {}} />);
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
+    });
+    fireEvent.input(input, { target: { value: 'C:\\Users\\tester\\..\\repo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Path must not contain ".."')).toBeTruthy();
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('shows a validation error for non-absolute non-SSH input', async () => {
     const onSubmit = vi.fn();
 
@@ -123,7 +202,9 @@ describe('PathInputDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Path must be absolute (start with / or ~)')).toBeTruthy();
+      expect(
+        screen.getByText('Path must be absolute (start with /, ~, a Windows drive, or a UNC root)'),
+      ).toBeTruthy();
     });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.CheckPathExists, {
