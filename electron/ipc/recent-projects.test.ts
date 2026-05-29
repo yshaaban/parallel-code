@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   discoverProjects,
@@ -51,7 +51,20 @@ async function createCodexSession(homeDir: string, cwdPath: string): Promise<voi
 }
 
 async function createTempDir(prefix: string): Promise<string> {
+  const repoParentDir = path.dirname(process.cwd());
+  const dirPath = await fs.promises.mkdtemp(path.join(repoParentDir, `.parallel-code-${prefix}`));
+  tempDirs.push(dirPath);
+  return dirPath;
+}
+
+async function createVolatileTempDir(prefix: string): Promise<string> {
   const dirPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dirPath);
+  return dirPath;
+}
+
+async function createRepoLocalTempDir(prefix: string): Promise<string> {
+  const dirPath = await fs.promises.mkdtemp(path.join(process.cwd(), prefix));
   tempDirs.push(dirPath);
   return dirPath;
 }
@@ -60,6 +73,21 @@ async function createGitProject(parentDir: string, projectName: string): Promise
   const projectPath = path.join(parentDir, projectName);
   await fs.promises.mkdir(path.join(projectPath, '.git'), { recursive: true });
   return projectPath;
+}
+
+function encodeClaudeProjectPath(projectPath: string): string {
+  const segments = path.resolve(projectPath).split(path.sep).filter(Boolean);
+  return `-${segments.join('-')}`;
+}
+
+async function createEncodedClaudeProject(homeDir: string, projectPath: string): Promise<void> {
+  const projectDir = path.join(
+    homeDir,
+    '.claude',
+    'projects',
+    encodeClaudeProjectPath(projectPath),
+  );
+  await fs.promises.mkdir(projectDir, { recursive: true });
 }
 
 describe('getRecentProjectPaths', () => {
@@ -243,7 +271,7 @@ describe('discoverProjects', () => {
   it('filters external temp projects from agent session state', async () => {
     const homeDir = await createTempDir('parallel-home-');
     const realProject = await createPlainDir(homeDir, 'real-app');
-    const scratchRoot = await createTempDir('claude-consult-real-codex-');
+    const scratchRoot = await createVolatileTempDir('claude-consult-real-codex-');
     const scratchProject = await createPlainDir(scratchRoot, 'project');
     await createClaudeProjectSession(homeDir, realProject);
     await createCodexSession(homeDir, scratchProject);
@@ -254,5 +282,55 @@ describe('discoverProjects', () => {
 
     expect(discoveredPaths).toContain(realProject);
     expect(discoveredPaths).not.toContain(scratchProject);
+  });
+
+  it('filters volatile projects even when they are inside the configured project base', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const volatileWorkspaceDir = await createVolatileTempDir('parallel-workspace-');
+    const scratchProject = await createPlainDir(volatileWorkspaceDir, 'scratch-app');
+    const scratchGitProject = await createGitProject(volatileWorkspaceDir, 'scratch-git-app');
+    await createCodexSession(homeDir, scratchProject);
+
+    const discovered = await discoverProjects(homeDir, volatileWorkspaceDir);
+    const discoveredPaths = discovered.map((candidate) => candidate.path);
+
+    expect(discoveredPaths).not.toContain(scratchProject);
+    expect(discoveredPaths).not.toContain(scratchGitProject);
+  });
+
+  it('filters agent projects outside the home and configured project base roots', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const workspaceDir = await createTempDir('parallel-workspace-');
+    const realProject = await createPlainDir(workspaceDir, 'real-app');
+    const externalRoot = await createRepoLocalTempDir('.parallel-external-projects-');
+    const externalProject = await createPlainDir(externalRoot, 'external-app');
+    await createCodexSession(homeDir, realProject);
+    await createClaudeProjectSession(homeDir, externalProject);
+
+    const discovered = await discoverProjects(homeDir, workspaceDir);
+    const discoveredPaths = discovered.map((candidate) => candidate.path);
+
+    expect(discoveredPaths).toContain(realProject);
+    expect(discoveredPaths).not.toContain(externalProject);
+    expect(discoveredPaths).not.toContain(process.cwd());
+  });
+
+  it('decodes Claude project directories without blocking on sync stats', async () => {
+    const homeDir = await createTempDir('parallel-home-');
+    const project = await createPlainDir(homeDir, 'encoded-app');
+    const statSyncSpy = vi.spyOn(fs, 'statSync').mockImplementation(() => {
+      throw new Error('sync stat should not run during project discovery');
+    });
+
+    try {
+      await createEncodedClaudeProject(homeDir, project);
+
+      const discovered = await discoverProjects(homeDir, homeDir);
+
+      expect(discovered.map((candidate) => candidate.path)).toContain(project);
+      expect(statSyncSpy).not.toHaveBeenCalled();
+    } finally {
+      statSyncSpy.mockRestore();
+    }
   });
 });

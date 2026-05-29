@@ -12,6 +12,7 @@ const MAX_DISCOVERED_PROJECTS = 30;
 const MAX_CODEX_SESSION_FILES = 200;
 const CLAUDE_PROJECT_JSONL_SCAN_LIMIT = 16;
 const CLAUDE_PROJECT_READ_CONCURRENCY = 16;
+const CLAUDE_ENCODED_PATH_LOOKUP_MAX_STATS = 160;
 const CODEX_HEAD_READ_CONCURRENCY = 24;
 const CODEX_SESSION_WALK_MAX_DEPTH = 8;
 const CODEX_SESSION_WALK_MAX_DIRS = 600;
@@ -106,11 +107,7 @@ function isInsideAllowedDiscoveryRoot(projectPath: string, scope: DiscoveryScope
 }
 
 function isDiscoverableProjectPath(projectPath: string, scope: DiscoveryScope): boolean {
-  if (isInsideAllowedDiscoveryRoot(projectPath, scope)) {
-    return true;
-  }
-
-  return !isVolatileProjectPath(projectPath);
+  return isInsideAllowedDiscoveryRoot(projectPath, scope) && !isVolatileProjectPath(projectPath);
 }
 
 function sortDiscoveredProjects(a: DiscoveredProject, b: DiscoveredProject): number {
@@ -231,15 +228,16 @@ async function resolveRepoRootOrSelf(dirPath: string): Promise<string> {
   return dirPath;
 }
 
-function decodeClaudeProjectPath(encodedName: string): string | null {
+async function decodeClaudeProjectPath(encodedName: string): Promise<string | null> {
   if (!encodedName.startsWith('-')) {
     return null;
   }
 
   const tokens = encodedName.slice(1).split('-');
   const memo = new Map<string, string[] | null>();
+  let statLookupCount = 0;
 
-  function walk(basePath: string, index: number): string[] | null {
+  async function walk(basePath: string, index: number): Promise<string[] | null> {
     const cacheKey = JSON.stringify([basePath, index]);
     const cached = memo.get(cacheKey);
     if (cached !== undefined) {
@@ -264,16 +262,18 @@ function decodeClaudeProjectPath(encodedName: string): string | null {
 
       const segment = `${startsWithDot ? '.' : ''}${parts.join('-')}`;
       const candidatePath = path.join(basePath, segment);
+      if (statLookupCount >= CLAUDE_ENCODED_PATH_LOOKUP_MAX_STATS) {
+        memo.set(cacheKey, null);
+        return null;
+      }
 
-      try {
-        if (!fs.statSync(candidatePath).isDirectory()) {
-          continue;
-        }
-      } catch {
+      statLookupCount += 1;
+      const stats = await statIfExists(candidatePath);
+      if (!stats?.isDirectory()) {
         continue;
       }
 
-      const remainder = walk(candidatePath, end);
+      const remainder = await walk(candidatePath, end);
       if (remainder) {
         const resolved = [segment, ...remainder];
         memo.set(cacheKey, resolved);
@@ -285,8 +285,19 @@ function decodeClaudeProjectPath(encodedName: string): string | null {
     return null;
   }
 
-  const segments = walk(path.sep, 0);
-  return segments ? path.join(path.sep, ...segments) : null;
+  const firstToken = tokens[0] ?? '';
+  const windowsDriveRoot =
+    process.platform === 'win32' && /^[A-Za-z]:$/u.test(firstToken)
+      ? `${firstToken}${path.sep}`
+      : null;
+  const basePath = windowsDriveRoot ?? path.sep;
+  const startIndex = windowsDriveRoot ? 1 : 0;
+  const segments = await walk(basePath, startIndex);
+  if (!segments) {
+    return null;
+  }
+
+  return path.join(basePath, ...segments);
 }
 
 async function readFileHead(filePath: string, maxBytes = 32_768): Promise<string> {
@@ -332,11 +343,6 @@ async function resolveClaudeProjectDir(
   projectDirPath: string,
   encodedName: string,
 ): Promise<string | null> {
-  const decodedPath = await resolveExistingDirectory(decodeClaudeProjectPath(encodedName));
-  if (decodedPath) {
-    return decodedPath;
-  }
-
   const entries = await readDirectoryEntries(projectDirPath);
   for (const entry of getClaudeProjectSessionFiles(entries)) {
     const cwd = await extractCwdFromJsonlHead(path.join(projectDirPath, entry.name));
@@ -344,6 +350,11 @@ async function resolveClaudeProjectDir(
     if (resolvedPath) {
       return resolvedPath;
     }
+  }
+
+  const decodedPath = await resolveExistingDirectory(await decodeClaudeProjectPath(encodedName));
+  if (decodedPath) {
+    return decodedPath;
   }
 
   return null;
@@ -523,6 +534,10 @@ async function collectGitRecentProjectsFromImmediateChildren(
   scanRoot: string,
   scope: DiscoveryScope,
 ): Promise<DiscoveredProject[]> {
+  if (!isDiscoverableProjectPath(scanRoot, scope)) {
+    return [];
+  }
+
   const scanRootStats = await statIfExists(scanRoot);
   if (!scanRootStats?.isDirectory()) {
     return [];
@@ -545,6 +560,10 @@ async function collectGitRecentProjectsFromProjectBase(
   projectBaseDir: string,
   scope: DiscoveryScope,
 ): Promise<DiscoveredProject[]> {
+  if (!isDiscoverableProjectPath(projectBaseDir, scope)) {
+    return [];
+  }
+
   const candidates: DiscoveredProject[] = [];
   const seenPaths = new Set<string>();
   let visitedDirCount = 0;
