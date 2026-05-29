@@ -185,6 +185,12 @@ Useful operational commands:
 - `codex-auth config auto enable` — enable background account switching.
 - `codex-auth config api enable` — enable usage and account metadata refresh for switching decisions.
 
+### Troubleshooting & local setup notes
+
+- **macOS native dependencies.** A `postinstall` step (`scripts/postinstall-native-fixups.mjs`) runs automatically after `npm install`/`npm ci` to repair two things that the install path can leave broken on macOS: the `node-pty` `spawn-helper` execute bit (a missing `+x` causes every terminal to fail with `posix_spawnp failed`) and a half-extracted Electron binary. If you ever hit `posix_spawnp failed` or `Electron failed to install correctly`, re-run `node scripts/postinstall-native-fixups.mjs`. The Electron repair re-extracts from the local download cache; if the cache is absent, run `node node_modules/electron/install.js` with network access first.
+- **Tests build their own artifacts.** `npm run test:node` builds the full browser artifacts (frontend, remote, server) before running, because some browser-free integration tests boot the standalone server and assert on `dist/`. You do not need to build anything by hand first.
+- **Docker test lanes are opt-in.** The `test:node:docker:*` lanes are skipped unless Docker is available; the default `npm test` / `npm run test:node` runs do not require Docker.
+
 <details>
 <summary><strong>All commands</strong></summary>
 

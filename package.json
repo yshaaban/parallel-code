@@ -33,7 +33,7 @@
     "test:validation-guards": "vitest run --config vitest.config.ts tests/harness/pr-description-validation.test.ts tests/harness/product-validation-objectives.test.ts tests/harness/build-release.test.ts tests/harness/verify-electron-package.test.ts tests/harness/smoke-remote-bootstrap.test.ts",
     "test:architecture-guards": "vitest run --config vitest.config.ts server/browser-control-plane.architecture.test.ts src/app/browser-shell-performance.architecture.test.ts src/app/desktop-session.architecture.test.ts src/app/store-boundary.architecture.test.ts src/components/SidebarTaskRow.architecture.test.ts src/components/TaskPanel.architecture.test.ts src/components/review-surfaces.architecture.test.ts src/components/task-dialogs.architecture.test.ts src/components/terminal-view/terminal-session.architecture.test.ts src/remote/remote-state-boundary.architecture.test.ts src/store/git-isolation-compat.architecture.test.ts",
     "test": "npm run test:node && npm run test:solid",
-    "test:node": "npm run build:server && npm run test:node:default && npm run test:node:server-integration",
+    "test:node": "npm run prepare:browser-artifacts && npm run test:node:default && npm run test:node:server-integration",
     "test:node:default": "vitest run --config vitest.config.ts --exclude server/terminal-latency.test.ts --exclude server/session-stress.test.ts",
     "test:node:server-integration": "vitest run --config vitest.config.ts --no-file-parallelism server/terminal-latency.test.ts server/session-stress.test.ts",
     "test:node:file": "node scripts/run-vitest-scoped.mjs --config vitest.config.ts",
@@ -115,6 +115,7 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:architecture-guards",
     "release": "npm run typecheck && npm version patch && git push --follow-tags",
     "prepare": "husky && git config core.hooksPath .husky",
+    "postinstall": "node scripts/postinstall-native-fixups.mjs",
     "test:browser:remote": "npm run test:browser:run -- tests/browser/remote-bootstrap.spec.ts tests/browser/remote-mobile-session.spec.ts --project chromium --workers=1",
     "smoke:remote": "node scripts/smoke-remote-bootstrap.mjs"
   },

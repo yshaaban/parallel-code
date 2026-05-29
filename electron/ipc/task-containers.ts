@@ -1120,7 +1120,11 @@ async function isPortAvailable(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(true));
     });
-    server.listen(port);
+    // Probe the loopback interface explicitly. Compose publishes fixed host ports to
+    // 127.0.0.1, and an unbound listen() binds the IPv6/dual-stack wildcard instead. On
+    // macOS that wildcard does not collide with an existing IPv4 loopback bind, so the
+    // conflict would be missed; binding 127.0.0.1 detects it consistently across platforms.
+    server.listen(port, '127.0.0.1');
   });
 }
 
