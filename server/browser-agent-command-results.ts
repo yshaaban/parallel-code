@@ -56,7 +56,7 @@ export function createAgentCommandResult(
 export function getAgentCommandRequest(message: {
   agentId: string;
   requestId?: string;
-  type?: 'input' | 'resize';
+  type?: AgentCommandResultCommand;
 }): AgentCommandRequest | undefined {
   if (!message.requestId || !message.type) {
     return undefined;

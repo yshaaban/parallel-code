@@ -77,6 +77,7 @@ export interface BrowserChannelManager {
   bindChannel: (client: WebSocket, channelId: string) => void;
   cleanup: () => void;
   cleanupClient: (client: WebSocket) => void;
+  hasActiveSubscriber: (channelId: string) => boolean;
   sendChannelMessage: (channelId: string, payload: unknown) => void;
   unbindChannel: (client: WebSocket, channelId: string) => void;
 }
@@ -713,6 +714,7 @@ export function createBrowserChannelManager(
     bindChannel,
     cleanup,
     cleanupClient,
+    hasActiveSubscriber: (channelId) => (channelSubscribers.get(channelId)?.size ?? 0) > 0,
     sendChannelMessage,
     unbindChannel,
   };

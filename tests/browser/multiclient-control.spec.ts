@@ -32,7 +32,7 @@ test.describe('browser-lab multiclient terminal control', () => {
     await browserLab.waitForTerminalReady(ownerSession.page);
     await browserLab.waitForTerminalReady(observerSession.page);
 
-    await browserLab.invokeIpc(request, IPC.AcquireTaskCommandLease, {
+    await browserLab.invokeSessionIpc(request, ownerSession.page, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'browser-lab-owner',
       ownerId: 'browser-lab-owner-runtime',
@@ -93,8 +93,10 @@ test.describe('browser-lab multiclient terminal control', () => {
         },
       ]);
 
-    await browserLab.typeInTerminal(observerSession.page, 'console.log("TAKEOVER_MARKER")');
-    await observerSession.page.keyboard.press('Enter');
+    await browserLab.invokeSessionIpc(request, observerSession.page, IPC.WriteToAgent, {
+      agentId: browserLab.server.agentId,
+      data: 'console.log("TAKEOVER_MARKER")\r',
+    });
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, 'TAKEOVER_MARKER');
     await assertInteractiveTerminalLifecycleInvariants(
       browserLab,
@@ -137,7 +139,7 @@ test.describe('browser-lab multiclient terminal control', () => {
     await browserLab.waitForTerminalReady(ownerSession.page);
     await browserLab.waitForTerminalReady(observerSession.page);
 
-    await browserLab.invokeIpc(request, IPC.AcquireTaskCommandLease, {
+    await browserLab.invokeSessionIpc(request, ownerSession.page, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'browser-lab-owner-loop',
       ownerId: 'browser-lab-owner-loop-runtime',
@@ -211,7 +213,7 @@ test.describe('browser-lab multiclient terminal control', () => {
     await browserLab.waitForTerminalReady(ownerSession.page);
     await browserLab.waitForTerminalReady(observerSession.page);
 
-    await browserLab.invokeIpc(request, IPC.AcquireTaskCommandLease, {
+    await browserLab.invokeSessionIpc(request, ownerSession.page, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'browser-lab-owner-blocked',
       ownerId: 'browser-lab-owner-blocked-runtime',
@@ -306,7 +308,7 @@ test.describe('browser-lab multiclient terminal control', () => {
     await browserLab.waitForTerminalReady(ownerSession.page);
     await browserLab.waitForTerminalReady(observerSession.page);
 
-    await browserLab.invokeIpc(request, IPC.AcquireTaskCommandLease, {
+    await browserLab.invokeSessionIpc(request, ownerSession.page, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'browser-lab-owner-resize',
       ownerId: 'browser-lab-owner-resize-runtime',

@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { IPC } from '../ipc/channels.js';
 import {
   getAgentCols,
   getAgentMeta,
@@ -18,6 +19,7 @@ import {
   getTaskCommandControllerSnapshot,
   isTaskCommandLeaseHeld,
 } from '../ipc/task-command-leases.js';
+import { handleTaskCommandLeaseControlMessage } from '../ipc/task-command-lease-control.js';
 import {
   decodeTerminalRenderedTail,
   runWithTerminalRestorePause,
@@ -284,6 +286,31 @@ export function registerRemoteWebSocketServer(
     sendStructuredRecoveryRequired(client, agentId);
   }
 
+  function emitTaskCommandControllerChanged(payload: {
+    action: string | null;
+    controllerId: string | null;
+    taskId: string;
+    version: number;
+  }): void {
+    options.transport.broadcastControl({
+      type: 'ipc-event',
+      channel: IPC.TaskCommandControllerChanged,
+      payload,
+    });
+  }
+
+  function handleTaskCommandLease(
+    client: WebSocket,
+    message: Extract<AuthenticatedClientMessage, { type: 'task-command-lease' }>,
+  ): void {
+    const result = handleTaskCommandLeaseControlMessage(
+      message,
+      options.transport.getClientId(client),
+      emitTaskCommandControllerChanged,
+    );
+    options.transport.sendMessage(client, result);
+  }
+
   function createClientMessageHandlers(client: WebSocket): RemoteClientMessageHandlerMap {
     return {
       ping: () => {
@@ -329,7 +356,12 @@ export function registerRemoteWebSocketServer(
           currentMessage.agentId,
           'pause',
           () => {
-            pauseAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+            pauseAgent(
+              currentMessage.agentId,
+              currentMessage.reason,
+              currentMessage.channelId,
+              currentMessage.restoreLeaseId,
+            );
           },
           shouldRequireAgentControl(currentMessage.reason),
         );
@@ -340,7 +372,12 @@ export function registerRemoteWebSocketServer(
           currentMessage.agentId,
           'resume',
           () => {
-            resumeAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+            resumeAgent(
+              currentMessage.agentId,
+              currentMessage.reason,
+              currentMessage.channelId,
+              currentMessage.restoreLeaseId,
+            );
           },
           shouldRequireAgentControl(currentMessage.reason),
         );
@@ -402,6 +439,9 @@ export function registerRemoteWebSocketServer(
       'permission-response': () => {},
       'request-task-command-takeover': () => {},
       'respond-task-command-takeover': () => {},
+      'task-command-lease': (currentMessage) => {
+        handleTaskCommandLease(client, currentMessage);
+      },
       'terminal-input-trace': (currentMessage) => {
         recordTerminalInputTraceClientUpdate(currentMessage);
       },

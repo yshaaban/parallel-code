@@ -72,3 +72,15 @@ export function assertOptionalInt(val: unknown, label: string): asserts val is n
     'an integer or undefined',
   );
 }
+
+export function assertOptionalNonNegativeInt(
+  val: unknown,
+  label: string,
+): asserts val is number | undefined {
+  assertType(
+    val,
+    label,
+    (v): v is number | undefined => v === undefined || (isInteger(v) && v >= 0),
+    'a non-negative integer or undefined',
+  );
+}

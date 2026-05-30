@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
 import type {
+  ClientMessage,
   RemoteAgent,
   RequestTaskCommandTakeoverCommand,
   RespondTaskCommandTakeoverCommand,
@@ -14,6 +15,7 @@ import {
   pruneExpiredTaskCommandLeases,
   releaseTaskCommandLeasesForClient,
 } from '../electron/ipc/task-command-leases.js';
+import { handleTaskCommandLeaseControlMessage } from '../electron/ipc/task-command-lease-control.js';
 import { getBackendRuntimeDiagnosticsGeneration } from '../electron/ipc/runtime-diagnostics.js';
 import type {
   AgentSupervisionEvent,
@@ -89,6 +91,10 @@ export interface BrowserControlPlane {
   respondTaskCommandTakeover: (
     client: WebSocket,
     message: RespondTaskCommandTakeoverCommand,
+  ) => void;
+  handleTaskCommandLease: (
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'task-command-lease' }>,
   ) => void;
   updatePeerPresence: (client: WebSocket, presence: UpdatePresenceCommand) => void;
 }
@@ -507,6 +513,20 @@ export function createBrowserControlPlane(
     taskCommandTakeovers.respondTakeover(responderClientId, message);
   }
 
+  function handleTaskCommandLease(
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'task-command-lease' }>,
+  ): void {
+    const result = handleTaskCommandLeaseControlMessage(
+      message,
+      transport.getClientId(client),
+      (snapshot) => {
+        emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+      },
+    );
+    sendJsonMessage(client, result);
+  }
+
   function updatePeerPresence(client: WebSocket, presence: UpdatePresenceCommand): void {
     const clientId = transport.getClientId(client);
     if (!clientId) {
@@ -590,6 +610,7 @@ export function createBrowserControlPlane(
     sendMessage,
     startHeartbeat,
     transport,
+    handleTaskCommandLease,
     requestTaskCommandTakeover,
     respondTaskCommandTakeover,
     updatePeerPresence,

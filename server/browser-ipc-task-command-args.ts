@@ -14,6 +14,7 @@ type BrowserIpcTaskMutationArgChannel =
   | IPC.RebaseTask;
 type BrowserIpcTaskCommandArgChannel =
   | BrowserIpcTaskMutationArgChannel
+  | IPC.AcquireTaskCommandLease
   | IPC.CommitAll
   | IPC.ContainersDestroyTask
   | IPC.ContainersStartTask
@@ -21,6 +22,8 @@ type BrowserIpcTaskCommandArgChannel =
   | IPC.DiscardUncommitted
   | IPC.EnsureAgentSessionsBatch
   | IPC.MergeArenaWorktree
+  | IPC.ReleaseTaskCommandLease
+  | IPC.RenewTaskCommandLease
   | IPC.ResizeAgent
   | IPC.SpawnAgent
   | IPC.WriteToAgent;
@@ -61,6 +64,16 @@ function normalizeBrowserOwnedTaskArgs(
 }
 
 function normalizeEnsureAgentSessionsBatchArgs(
+  args: Record<string, unknown>,
+  browserClientId: string,
+): Record<string, unknown> {
+  return {
+    ...args,
+    clientId: browserClientId,
+  };
+}
+
+function normalizeTaskCommandLeaseArgs(
   args: Record<string, unknown>,
   browserClientId: string,
 ): Record<string, unknown> {
@@ -144,6 +157,12 @@ function stripEnsureAgentSessionsBatchIdentity(
   };
 }
 
+function stripTaskCommandLeaseIdentity(args: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...args };
+  delete rest.clientId;
+  return rest;
+}
+
 const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
   [IPC.CleanupTaskRuntime]: normalizeBrowserOwnedTaskArgs,
   [IPC.DeleteTask]: normalizeBrowserOwnedTaskArgs,
@@ -154,6 +173,7 @@ const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
 
 const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   ...BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS,
+  [IPC.AcquireTaskCommandLease]: normalizeTaskCommandLeaseArgs,
   [IPC.CommitAll]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.ContainersDestroyTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.ContainersStartTask]: normalizeBrowserOwnedTaskArgs,
@@ -161,6 +181,8 @@ const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   [IPC.DiscardUncommitted]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.EnsureAgentSessionsBatch]: normalizeEnsureAgentSessionsBatchArgs,
   [IPC.MergeArenaWorktree]: normalizeRegisteredWorktreeMutationArgs,
+  [IPC.ReleaseTaskCommandLease]: normalizeTaskCommandLeaseArgs,
+  [IPC.RenewTaskCommandLease]: normalizeTaskCommandLeaseArgs,
   [IPC.ResizeAgent]: normalizeTerminalCommandArgs,
   [IPC.SpawnAgent]: normalizeBrowserOwnedTaskArgs,
   [IPC.WriteToAgent]: normalizeTerminalCommandArgs,
@@ -186,6 +208,14 @@ export function normalizeBrowserIpcTaskCommandArgs(
   if (!browserClientId) {
     if (channel === IPC.EnsureAgentSessionsBatch) {
       return stripEnsureAgentSessionsBatchIdentity(args);
+    }
+
+    if (
+      channel === IPC.AcquireTaskCommandLease ||
+      channel === IPC.RenewTaskCommandLease ||
+      channel === IPC.ReleaseTaskCommandLease
+    ) {
+      return stripTaskCommandLeaseIdentity(args);
     }
 
     if (isBrowserIpcTaskCommandArgChannel(channel)) {

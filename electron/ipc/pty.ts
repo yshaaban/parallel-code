@@ -74,11 +74,17 @@ interface PtySession {
   tailBuf: Buffer;
   tailOffset: number;
   pauseReasons: Map<PauseReason, number>;
+  globalRestorePauseLeases: Map<string, RestorePauseLease>;
   scopedPauseReasons: {
     'flow-control': Set<string>;
-    restore: Set<string>;
+    restore: Map<string, Map<string, RestorePauseLease>>;
   };
   lifecycleGeneration: number;
+}
+
+interface RestorePauseLease {
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface TerminalInputTraceRequest {
@@ -97,6 +103,102 @@ interface QueuedPtyInputBatch extends QueuedTerminalInputBatch {
   onApplied?: () => void;
   onDropped?: () => void;
   traceRequest?: TerminalInputTraceRequest;
+}
+
+const TERMINAL_ENV_BLOCK_LIST = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'SHELL',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'NODE_OPTIONS',
+  'ELECTRON_RUN_AS_NODE',
+]);
+
+const PRESENCE_BASED_COLOR_SUPPRESSION_ENV_KEYS = ['NO_COLOR', 'NODE_DISABLE_COLORS'] as const;
+
+const VALUE_BASED_COLOR_SUPPRESSION_ENV_VALUES = {
+  CLICOLOR: new Set(['0']),
+  FORCE_COLOR: new Set(['0', 'false']),
+  NPM_CONFIG_COLOR: new Set(['0', 'false']),
+} as const;
+
+function normalizeEnvKey(key: string): string {
+  return key.toUpperCase();
+}
+
+function deleteEnvKey(env: Record<string, string>, key: string): void {
+  const normalizedKey = normalizeEnvKey(key);
+  for (const envKey of Object.keys(env)) {
+    if (normalizeEnvKey(envKey) === normalizedKey) {
+      Reflect.deleteProperty(env, envKey);
+    }
+  }
+}
+
+function restoreExplicitEnvKey(
+  spawnEnv: Record<string, string>,
+  explicitEnvOverrides: Record<string, string>,
+  key: string,
+): boolean {
+  const normalizedKey = normalizeEnvKey(key);
+  const explicitMatches = Object.entries(explicitEnvOverrides).filter(([envKey]) => {
+    return normalizeEnvKey(envKey) === normalizedKey;
+  });
+  if (explicitMatches.length === 0) {
+    return false;
+  }
+
+  deleteEnvKey(spawnEnv, key);
+  for (const [envKey, value] of explicitMatches) {
+    spawnEnv[envKey] = value;
+  }
+  return true;
+}
+
+function hasEnvValue(
+  env: Record<string, string>,
+  key: string,
+  matches: (value: string) => boolean,
+): boolean {
+  const normalizedKey = normalizeEnvKey(key);
+  for (const [envKey, value] of Object.entries(env)) {
+    if (normalizeEnvKey(envKey) === normalizedKey && matches(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isTerminalEnvBlocked(key: string): boolean {
+  return TERMINAL_ENV_BLOCK_LIST.has(normalizeEnvKey(key));
+}
+
+function removeInheritedTerminalColorSuppression(
+  spawnEnv: Record<string, string>,
+  explicitEnvOverrides: Record<string, string>,
+): void {
+  for (const key of PRESENCE_BASED_COLOR_SUPPRESSION_ENV_KEYS) {
+    if (!restoreExplicitEnvKey(spawnEnv, explicitEnvOverrides, key)) {
+      deleteEnvKey(spawnEnv, key);
+    }
+  }
+
+  for (const [key, disabledValues] of Object.entries(VALUE_BASED_COLOR_SUPPRESSION_ENV_VALUES)) {
+    if (restoreExplicitEnvKey(spawnEnv, explicitEnvOverrides, key)) {
+      continue;
+    }
+
+    const hasDisabledValue = hasEnvValue(spawnEnv, key, (value) =>
+      disabledValues.has(value.trim().toLowerCase()),
+    );
+    if (hasDisabledValue) {
+      deleteEnvKey(spawnEnv, key);
+    }
+  }
 }
 
 export type AgentTerminalRecovery =
@@ -178,6 +280,7 @@ const INPUT_BATCH_INTERVAL = 1; // ms
 const INPUT_BATCH_MAX_CHARS = 16 * 1024;
 const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 180;
 const INTERACTIVE_OUTPUT_MAX_BYTES = 4 * 1024;
+const RESTORE_PAUSE_LEASE_TTL_MS = 30_000;
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
 const STARTUP_VISIBLE_TERMINAL_DENSE_THRESHOLD = 4;
@@ -189,6 +292,8 @@ const DENSE_STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE = {
   selected: 192 * 1024,
   'visible-sibling': 48 * 1024,
 } satisfies Record<TerminalStartupRecoveryRole, number>;
+const LEGACY_RESTORE_LEASE_ID = '__legacy_restore__';
+let restorePauseLeaseSequence = 0;
 
 export { validateCommand } from './command-resolver.js';
 
@@ -698,8 +803,9 @@ function enqueuePendingInput(
 function syncPauseState(session: PtySession, agentId: string): void {
   const shouldPause =
     Array.from(session.pauseReasons.values()).some((count) => count > 0) ||
+    session.globalRestorePauseLeases.size > 0 ||
     session.scopedPauseReasons['flow-control'].size > 0 ||
-    session.scopedPauseReasons.restore.size > 0;
+    getScopedRestorePauseLeaseCount(session) > 0;
   if (shouldPause === session.isPaused) return;
   if (shouldPause) {
     session.proc.pause();
@@ -712,6 +818,167 @@ function syncPauseState(session: PtySession, agentId: string): void {
   session.isPaused = false;
   recordAgentPauseState(agentId, null);
   emitPtyEvent('resume', agentId, { generation: session.lifecycleGeneration });
+}
+
+function clearRestorePauseLease(lease: RestorePauseLease): void {
+  clearTimeout(lease.timer);
+}
+
+function nextRestorePauseLeaseId(): string {
+  restorePauseLeaseSequence += 1;
+  return `restore-${restorePauseLeaseSequence}`;
+}
+
+function getRestoreLeaseId(restoreLeaseId: string | undefined): string {
+  return restoreLeaseId ?? LEGACY_RESTORE_LEASE_ID;
+}
+
+function getScopedRestorePauseLeaseCount(session: PtySession): number {
+  let count = 0;
+  for (const leasesById of session.scopedPauseReasons.restore.values()) {
+    count += leasesById.size;
+  }
+  return count;
+}
+
+function armRestorePauseLeaseExpiry(onExpire: (expiresAt: number) => void): RestorePauseLease {
+  const expiresAt = Date.now() + RESTORE_PAUSE_LEASE_TTL_MS;
+  const timer = setTimeout(() => {
+    onExpire(expiresAt);
+  }, RESTORE_PAUSE_LEASE_TTL_MS);
+  timer.unref?.();
+  return { expiresAt, timer };
+}
+
+function expireGlobalRestorePauseLease(agentId: string, leaseId: string, expiresAt: number): void {
+  const session = sessions.get(agentId);
+  const lease = session?.globalRestorePauseLeases.get(leaseId);
+  if (!session || !lease || lease.expiresAt !== expiresAt) {
+    return;
+  }
+
+  session.globalRestorePauseLeases.delete(leaseId);
+  syncPauseState(session, agentId);
+}
+
+function expireScopedRestorePauseLease(
+  agentId: string,
+  channelId: string,
+  restoreLeaseId: string,
+  expiresAt: number,
+): void {
+  const session = sessions.get(agentId);
+  const leasesById = session?.scopedPauseReasons.restore.get(channelId);
+  const lease = leasesById?.get(restoreLeaseId);
+  if (!session || !lease || lease.expiresAt !== expiresAt) {
+    return;
+  }
+
+  leasesById?.delete(restoreLeaseId);
+  if (leasesById?.size === 0) {
+    session.scopedPauseReasons.restore.delete(channelId);
+  }
+  syncPauseState(session, agentId);
+}
+
+function addGlobalRestorePauseLease(session: PtySession, agentId: string): void {
+  const leaseId = nextRestorePauseLeaseId();
+  session.globalRestorePauseLeases.set(
+    leaseId,
+    armRestorePauseLeaseExpiry((expiresAt) => {
+      expireGlobalRestorePauseLease(agentId, leaseId, expiresAt);
+    }),
+  );
+}
+
+function addScopedRestorePauseLease(
+  session: PtySession,
+  agentId: string,
+  channelId: string,
+  restoreLeaseId?: string,
+): void {
+  if (!session.channelIds.has(channelId)) {
+    return;
+  }
+
+  const leaseId = getRestoreLeaseId(restoreLeaseId);
+  const leasesById = session.scopedPauseReasons.restore.get(channelId) ?? new Map();
+  const existingLease = leasesById.get(leaseId);
+  if (existingLease) {
+    clearRestorePauseLease(existingLease);
+  }
+
+  leasesById.set(
+    leaseId,
+    armRestorePauseLeaseExpiry((expiresAt) => {
+      expireScopedRestorePauseLease(agentId, channelId, leaseId, expiresAt);
+    }),
+  );
+  session.scopedPauseReasons.restore.set(channelId, leasesById);
+}
+
+function clearOneGlobalRestorePauseLease(session: PtySession): void {
+  const firstLeaseEntry = session.globalRestorePauseLeases.entries().next().value;
+  if (!firstLeaseEntry) {
+    return;
+  }
+
+  const [leaseId, lease] = firstLeaseEntry;
+  clearRestorePauseLease(lease);
+  session.globalRestorePauseLeases.delete(leaseId);
+}
+
+function clearScopedRestorePauseLease(
+  session: PtySession,
+  channelId: string,
+  restoreLeaseId?: string,
+): void {
+  const leasesById = session.scopedPauseReasons.restore.get(channelId);
+  const leaseId = getRestoreLeaseId(restoreLeaseId);
+  const lease = leasesById?.get(leaseId);
+  if (!lease) {
+    return;
+  }
+
+  clearRestorePauseLease(lease);
+  leasesById?.delete(leaseId);
+  if (leasesById?.size === 0) {
+    session.scopedPauseReasons.restore.delete(channelId);
+  }
+}
+
+function clearScopedRestorePauseLeasesForChannel(session: PtySession, channelId: string): void {
+  const leasesById = session.scopedPauseReasons.restore.get(channelId);
+  if (!leasesById) {
+    return;
+  }
+
+  for (const lease of leasesById.values()) {
+    clearRestorePauseLease(lease);
+  }
+  session.scopedPauseReasons.restore.delete(channelId);
+}
+
+function clearGlobalRestorePauseLeases(session: PtySession): void {
+  for (const lease of session.globalRestorePauseLeases.values()) {
+    clearRestorePauseLease(lease);
+  }
+  session.globalRestorePauseLeases.clear();
+}
+
+function clearScopedRestorePauseLeases(session: PtySession): void {
+  for (const leasesById of session.scopedPauseReasons.restore.values()) {
+    for (const lease of leasesById.values()) {
+      clearRestorePauseLease(lease);
+    }
+  }
+  session.scopedPauseReasons.restore.clear();
+}
+
+function clearAllRestorePauseLeases(session: PtySession): void {
+  clearGlobalRestorePauseLeases(session);
+  clearScopedRestorePauseLeases(session);
+  session.pauseReasons.delete('restore');
 }
 
 export function spawnAgent(
@@ -767,22 +1034,9 @@ export function spawnAgent(
     if (v !== undefined) filteredEnv[k] = v;
   }
 
-  // Only allow safe env overrides from renderer. Reject vars that could
-  // alter process loading or execution behavior.
-  const ENV_BLOCK_LIST = new Set([
-    'PATH',
-    'HOME',
-    'USER',
-    'SHELL',
-    'LD_PRELOAD',
-    'LD_LIBRARY_PATH',
-    'DYLD_INSERT_LIBRARIES',
-    'NODE_OPTIONS',
-    'ELECTRON_RUN_AS_NODE',
-  ]);
   const safeEnvOverrides: Record<string, string> = {};
   for (const [k, v] of Object.entries(args.env ?? {})) {
-    if (!ENV_BLOCK_LIST.has(k)) safeEnvOverrides[k] = v;
+    if (!isTerminalEnvBlocked(k)) safeEnvOverrides[k] = v;
   }
 
   const spawnEnv: Record<string, string> = {
@@ -791,6 +1045,7 @@ export function spawnAgent(
     COLORTERM: 'truecolor',
     ...safeEnvOverrides,
   };
+  removeInheritedTerminalColorSuppression(spawnEnv, safeEnvOverrides);
   if (args.isInternalNodeProcess && process.versions.electron) {
     spawnEnv.ELECTRON_RUN_AS_NODE = '1';
   }
@@ -838,9 +1093,10 @@ export function spawnAgent(
     tailBuf: Buffer.alloc(TAIL_CAP),
     tailOffset: 0,
     pauseReasons: new Map(),
+    globalRestorePauseLeases: new Map(),
     scopedPauseReasons: {
       'flow-control': new Set(),
-      restore: new Set(),
+      restore: new Map(),
     },
     lifecycleGeneration,
   };
@@ -889,6 +1145,7 @@ export function spawnAgent(
     // Flush any remaining buffered data
     flushSessionBatch(session);
     stopAcceptingInput(session);
+    clearAllRestorePauseLeases(session);
 
     // Parse tail buffer into last N lines for exit diagnostics
     const lines = getTailLines(session.tailBuf.subarray(0, session.tailOffset));
@@ -1005,15 +1262,48 @@ export function resizeAgent(
   );
 }
 
-function addPauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {
+function addPauseReason(
+  session: PtySession,
+  reason: PauseReason,
+  channelId?: string,
+  restoreLeaseId?: string,
+): void {
+  if (reason === 'restore') {
+    if (channelId) {
+      addScopedRestorePauseLease(session, session.agentId, channelId, restoreLeaseId);
+      return;
+    }
+
+    addGlobalRestorePauseLease(session, session.agentId);
+    return;
+  }
+
   if (channelId && reason !== 'manual') {
+    if (!session.channelIds.has(channelId)) {
+      return;
+    }
     session.scopedPauseReasons[reason].add(channelId);
     return;
   }
   session.pauseReasons.set(reason, (session.pauseReasons.get(reason) ?? 0) + 1);
 }
 
-function removePauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {
+function removePauseReason(
+  session: PtySession,
+  reason: PauseReason,
+  channelId?: string,
+  restoreLeaseId?: string,
+): void {
+  if (reason === 'restore') {
+    if (channelId) {
+      clearScopedRestorePauseLease(session, channelId, restoreLeaseId);
+      return;
+    }
+
+    clearOneGlobalRestorePauseLease(session);
+    return;
+  }
+
   if (channelId && reason !== 'manual') {
     session.scopedPauseReasons[reason].delete(channelId);
     return;
@@ -1023,17 +1313,23 @@ function removePauseReason(session: PtySession, reason: PauseReason, channelId?:
     session.pauseReasons.delete(reason);
     return;
   }
-  if (currentCount === 1) session.pauseReasons.delete(reason);
-  else session.pauseReasons.set(reason, currentCount - 1);
+
+  if (currentCount === 1) {
+    session.pauseReasons.delete(reason);
+    return;
+  }
+
+  session.pauseReasons.set(reason, currentCount - 1);
 }
 
 export function pauseAgent(
   agentId: string,
   reason: PauseReason = 'manual',
   channelId?: string,
+  restoreLeaseId?: string,
 ): void {
   const session = getSessionOrThrow(agentId);
-  addPauseReason(session, reason, channelId);
+  addPauseReason(session, reason, channelId, restoreLeaseId);
   syncPauseState(session, agentId);
 }
 
@@ -1041,9 +1337,10 @@ export function resumeAgent(
   agentId: string,
   reason: PauseReason = 'manual',
   channelId?: string,
+  restoreLeaseId?: string,
 ): void {
   const session = getSessionOrThrow(agentId);
-  removePauseReason(session, reason, channelId);
+  removePauseReason(session, reason, channelId, restoreLeaseId);
   syncPauseState(session, agentId);
 }
 
@@ -1060,7 +1357,8 @@ export function getAgentPauseState(agentId: string): PauseReason | null {
   }
   if (
     (session.pauseReasons.get('restore') ?? 0) > 0 ||
-    session.scopedPauseReasons.restore.size > 0
+    session.globalRestorePauseLeases.size > 0 ||
+    getScopedRestorePauseLeaseCount(session) > 0
   ) {
     return 'restore';
   }
@@ -1072,6 +1370,7 @@ export function killAgent(agentId: string): void {
   if (session) {
     clearFlushTimer(session);
     stopAcceptingInput(session);
+    clearAllRestorePauseLeases(session);
     // Clear subscribers before kill so the onExit flush doesn't
     // notify stale listeners. Let onExit handle sessions.delete
     // and emitPtyEvent to avoid the race condition.
@@ -1088,6 +1387,7 @@ export function killAllAgents(): void {
   for (const [, session] of sessions) {
     clearFlushTimer(session);
     stopAcceptingInput(session);
+    clearAllRestorePauseLeases(session);
     session.subscribers.clear();
     session.proc.kill();
   }
@@ -1111,9 +1411,8 @@ export function unsubscribeFromAgent(agentId: string, cb: (encoded: string) => v
 
 function clearAutoPauseState(session: PtySession, agentId: string): void {
   session.pauseReasons.delete('flow-control');
-  session.pauseReasons.delete('restore');
+  clearAllRestorePauseLeases(session);
   session.scopedPauseReasons['flow-control'].clear();
-  session.scopedPauseReasons.restore.clear();
   syncPauseState(session, agentId);
 }
 
@@ -1127,12 +1426,12 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
   }
 
   const beforeFlowCount = session.scopedPauseReasons['flow-control'].size;
-  const beforeRestoreCount = session.scopedPauseReasons.restore.size;
+  const beforeRestoreCount = getScopedRestorePauseLeaseCount(session);
   session.scopedPauseReasons['flow-control'].delete(channelId);
-  session.scopedPauseReasons.restore.delete(channelId);
+  clearScopedRestorePauseLeasesForChannel(session, channelId);
   if (
     beforeFlowCount !== session.scopedPauseReasons['flow-control'].size ||
-    beforeRestoreCount !== session.scopedPauseReasons.restore.size
+    beforeRestoreCount !== getScopedRestorePauseLeaseCount(session)
   ) {
     syncPauseState(session, agentId);
   }
@@ -1146,16 +1445,16 @@ export function clearAutoPauseReasonsForChannel(channelId: string): void {
     if (!session.channelIds.has(channelId)) continue;
     if (session.channelIds.size === 1) {
       session.pauseReasons.delete('flow-control');
-      session.pauseReasons.delete('restore');
+      clearGlobalRestorePauseLeases(session);
     }
     const beforeFlowCount = session.scopedPauseReasons['flow-control'].size;
-    const beforeRestoreCount = session.scopedPauseReasons.restore.size;
+    const beforeRestoreCount = getScopedRestorePauseLeaseCount(session);
     session.scopedPauseReasons['flow-control'].delete(channelId);
-    session.scopedPauseReasons.restore.delete(channelId);
+    clearScopedRestorePauseLeasesForChannel(session, channelId);
     if (
       session.channelIds.size === 1 ||
       beforeFlowCount !== session.scopedPauseReasons['flow-control'].size ||
-      beforeRestoreCount !== session.scopedPauseReasons.restore.size
+      beforeRestoreCount !== getScopedRestorePauseLeaseCount(session)
     ) {
       syncPauseState(session, agentId);
     }

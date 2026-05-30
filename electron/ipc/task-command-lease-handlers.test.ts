@@ -108,4 +108,26 @@ describe('task-command lease handlers', () => {
       version: 2,
     });
   });
+
+  it('rejects negative lease generations', () => {
+    const context = buildContext();
+    const handlers = createTaskCommandLeaseIpcHandlers(context);
+
+    expect(() =>
+      handlers[IPC.RenewTaskCommandLease]?.({
+        clientId: 'client-a',
+        leaseGeneration: -1,
+        ownerId: 'owner-a',
+        taskId: 'task-1',
+      }),
+    ).toThrow('leaseGeneration must be a non-negative integer or undefined');
+    expect(() =>
+      handlers[IPC.ReleaseTaskCommandLease]?.({
+        clientId: 'client-a',
+        leaseGeneration: -1,
+        ownerId: 'owner-a',
+        taskId: 'task-1',
+      }),
+    ).toThrow('leaseGeneration must be a non-negative integer or undefined');
+  });
 });

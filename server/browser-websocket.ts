@@ -80,6 +80,10 @@ export interface RegisterBrowserWebSocketServerOptions {
     client: WebSocket,
     message: Extract<ClientMessage, { type: 'request-task-command-takeover' }>,
   ) => void;
+  handleTaskCommandLease: (
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'task-command-lease' }>,
+  ) => void;
   transport: WebSocketTransport<WebSocket>;
   updatePeerPresence: (
     client: WebSocket,
@@ -450,13 +454,25 @@ export function registerBrowserWebSocketServer(
           currentMessage.agentId,
           'pause',
           () => {
+            if (
+              currentMessage.reason === 'restore' &&
+              currentMessage.channelId !== undefined &&
+              !options.channels.hasActiveSubscriber(currentMessage.channelId)
+            ) {
+              return;
+            }
             pauseBrowserAgent(
               currentMessage.agentId,
               currentMessage.reason,
               currentMessage.channelId,
+              currentMessage.restoreLeaseId,
             );
           },
           shouldRequireAgentControl(currentMessage.reason),
+          agentCommandRunner.createExecutionOptions(
+            getAgentCommandRequest(currentMessage),
+            undefined,
+          ),
         );
       },
       resume: (currentMessage) => {
@@ -469,9 +485,14 @@ export function registerBrowserWebSocketServer(
               currentMessage.agentId,
               currentMessage.reason,
               currentMessage.channelId,
+              currentMessage.restoreLeaseId,
             );
           },
           shouldRequireAgentControl(currentMessage.reason),
+          agentCommandRunner.createExecutionOptions(
+            getAgentCommandRequest(currentMessage),
+            undefined,
+          ),
         );
       },
       'bind-channel': (currentMessage) => {
@@ -518,6 +539,9 @@ export function registerBrowserWebSocketServer(
       },
       'respond-task-command-takeover': (currentMessage) => {
         options.respondTaskCommandTakeover(client, currentMessage);
+      },
+      'task-command-lease': (currentMessage) => {
+        options.handleTaskCommandLease(client, currentMessage);
       },
       'terminal-input-trace': (currentMessage) => {
         recordBrowserTerminalInputClientUpdate(currentMessage);

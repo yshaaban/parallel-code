@@ -980,6 +980,102 @@ describe('browser control plane', () => {
     expect(controlPlane.getPeerPresenceSnapshots()).toEqual([]);
   });
 
+  it('handles task-command lease acquire, renew, and release on the control websocket', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const socket = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(socket.client, 'client-a')).toBe(true);
+    socket.sent.length = 0;
+
+    controlPlane.handleTaskCommandLease(socket.client, {
+      type: 'task-command-lease',
+      action: 'type in the terminal',
+      operation: 'acquire',
+      ownerId: 'owner-a',
+      requestId: 'lease-1',
+      taskId: 'task-1',
+    });
+
+    expect(socket.sent).toContainEqual(
+      expect.objectContaining({
+        operation: 'acquire',
+        requestId: 'lease-1',
+        result: expect.objectContaining({
+          acquired: true,
+          action: 'type in the terminal',
+          controllerId: 'client-a',
+          leaseGeneration: 1,
+          taskId: 'task-1',
+        }),
+        type: 'task-command-lease-result',
+      }),
+    );
+    expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-a',
+      taskId: 'task-1',
+      version: expect.any(Number),
+    });
+
+    socket.sent.length = 0;
+    controlPlane.handleTaskCommandLease(socket.client, {
+      type: 'task-command-lease',
+      leaseGeneration: 1,
+      operation: 'renew',
+      ownerId: 'owner-a',
+      requestId: 'lease-2',
+      taskId: 'task-1',
+    });
+
+    expect(socket.sent).toContainEqual(
+      expect.objectContaining({
+        operation: 'renew',
+        requestId: 'lease-2',
+        result: expect.objectContaining({
+          controllerId: 'client-a',
+          leaseGeneration: 1,
+          renewed: true,
+          taskId: 'task-1',
+        }),
+        type: 'task-command-lease-result',
+      }),
+    );
+
+    socket.sent.length = 0;
+    controlPlane.handleTaskCommandLease(socket.client, {
+      type: 'task-command-lease',
+      leaseGeneration: 1,
+      operation: 'release',
+      ownerId: 'owner-a',
+      requestId: 'lease-3',
+      taskId: 'task-1',
+    });
+
+    expect(socket.sent).toContainEqual(
+      expect.objectContaining({
+        operation: 'release',
+        requestId: 'lease-3',
+        result: expect.objectContaining({
+          action: null,
+          controllerId: null,
+          taskId: 'task-1',
+        }),
+        type: 'task-command-lease-result',
+      }),
+    );
+    expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: expect.any(Number),
+    });
+  });
+
   it('prunes stale task ownership and presence when transport liveness drops without control-plane cleanup', async () => {
     vi.useFakeTimers();
     const controlPlane = createTrackedControlPlane({

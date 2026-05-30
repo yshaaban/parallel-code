@@ -20,6 +20,7 @@ vi.mock('./task-ports.js', () => ({
 }));
 
 import {
+  clearAutoPauseReasonsForChannel,
   getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
@@ -88,6 +89,34 @@ function createMockProc(): MockProc {
   };
 
   return proc;
+}
+
+function getSpawnEnv(): Record<string, string> {
+  const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+  const spawnOptions = lastCall?.[2] as { env?: Record<string, string> } | undefined;
+  return spawnOptions?.env ?? {};
+}
+
+function withProcessEnv<T>(updates: Record<string, string>, run: () => T): T {
+  const originals = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    originals.set(key, process.env[key]);
+  }
+
+  try {
+    for (const [key, value] of Object.entries(updates)) {
+      process.env[key] = value;
+    }
+    return run();
+  } finally {
+    for (const [key, value] of originals) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 beforeEach(() => {
@@ -168,6 +197,159 @@ describe('spawnAgent', () => {
     } else {
       expect(spawnOptions?.encoding).toBeNull();
     }
+  });
+
+  it('does not leak inherited no-color env into agent terminals', () => {
+    withProcessEnv(
+      {
+        CLICOLOR: '0',
+        FORCE_COLOR: '0',
+        NO_COLOR: '1',
+        npm_config_color: 'false',
+      },
+      () => {
+        const proc = createMockProc();
+        spawnMock.mockReturnValueOnce(proc);
+
+        spawnAgent(vi.fn(), {
+          taskId: 'task-color-env',
+          agentId: 'agent-color-env',
+          command: existingAbsoluteCommand,
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 80,
+          rows: 24,
+        });
+
+        const spawnEnv = getSpawnEnv();
+        expect(spawnEnv.NO_COLOR).toBeUndefined();
+        expect(spawnEnv.FORCE_COLOR).toBeUndefined();
+        expect(spawnEnv.CLICOLOR).toBeUndefined();
+        expect(spawnEnv.npm_config_color).toBeUndefined();
+        expect(spawnEnv.TERM).toBe('xterm-256color');
+        expect(spawnEnv.COLORTERM).toBe('truecolor');
+      },
+    );
+  });
+
+  it('removes inherited mixed-case color suppression env from agent terminals', () => {
+    withProcessEnv(
+      {
+        Force_Color: '0',
+        No_Color: '1',
+        node_disable_colors: '1',
+        Npm_Config_Color: 'false',
+      },
+      () => {
+        const proc = createMockProc();
+        spawnMock.mockReturnValueOnce(proc);
+
+        spawnAgent(vi.fn(), {
+          taskId: 'task-mixed-color-env',
+          agentId: 'agent-mixed-color-env',
+          command: existingAbsoluteCommand,
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 80,
+          rows: 24,
+        });
+
+        const spawnEnv = getSpawnEnv();
+        expect(spawnEnv.Force_Color).toBeUndefined();
+        expect(spawnEnv.No_Color).toBeUndefined();
+        expect(spawnEnv.node_disable_colors).toBeUndefined();
+        expect(spawnEnv.Npm_Config_Color).toBeUndefined();
+      },
+    );
+  });
+
+  it('keeps explicit no-color env overrides for agent terminals', () => {
+    const originalNoColor = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+
+    try {
+      const proc = createMockProc();
+      spawnMock.mockReturnValueOnce(proc);
+
+      spawnAgent(vi.fn(), {
+        taskId: 'task-explicit-color-env',
+        agentId: 'agent-explicit-color-env',
+        command: existingAbsoluteCommand,
+        args: [],
+        cwd: '/',
+        env: {
+          CLICOLOR: '0',
+          FORCE_COLOR: '0',
+          NO_COLOR: '1',
+          npm_config_color: 'false',
+        },
+        cols: 80,
+        rows: 24,
+      });
+
+      const spawnEnv = getSpawnEnv();
+      expect(spawnEnv.NO_COLOR).toBe('1');
+      expect(spawnEnv.FORCE_COLOR).toBe('0');
+      expect(spawnEnv.CLICOLOR).toBe('0');
+      expect(spawnEnv.npm_config_color).toBe('false');
+    } finally {
+      if (originalNoColor === undefined) {
+        delete process.env.NO_COLOR;
+      } else {
+        process.env.NO_COLOR = originalNoColor;
+      }
+    }
+  });
+
+  it('keeps explicit mixed-case color env overrides without retaining inherited duplicates', () => {
+    withProcessEnv({ FORCE_COLOR: '0' }, () => {
+      const proc = createMockProc();
+      spawnMock.mockReturnValueOnce(proc);
+
+      spawnAgent(vi.fn(), {
+        taskId: 'task-explicit-mixed-color-env',
+        agentId: 'agent-explicit-mixed-color-env',
+        command: existingAbsoluteCommand,
+        args: [],
+        cwd: '/',
+        env: {
+          Force_Color: '1',
+        },
+        cols: 80,
+        rows: 24,
+      });
+
+      const spawnEnv = getSpawnEnv();
+      expect(spawnEnv.FORCE_COLOR).toBeUndefined();
+      expect(spawnEnv.Force_Color).toBe('1');
+    });
+  });
+
+  it('filters unsafe env overrides case-insensitively', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-blocked-env',
+      agentId: 'agent-blocked-env',
+      command: existingAbsoluteCommand,
+      args: [],
+      cwd: '/',
+      env: {
+        Node_Options: '--require ./unexpected.js',
+        Path: '/tmp/unexpected',
+        SAFE_FLAG: 'allowed',
+      },
+      cols: 80,
+      rows: 24,
+    });
+
+    const spawnEnv = getSpawnEnv();
+    expect(spawnEnv.Node_Options).toBeUndefined();
+    expect(spawnEnv.Path).toBeUndefined();
+    expect(spawnEnv.SAFE_FLAG).toBe('allowed');
   });
 
   it('keeps raw PTY bytes in output, scrollback, and recovery cursors', () => {
@@ -569,6 +751,348 @@ describe('spawnAgent', () => {
 
     resumeAgent('agent-restore-pause', 'restore', 'restore-channel');
     expect(getAgentPauseState('agent-restore-pause')).toBeNull();
+  });
+
+  it('expires scoped restore pauses when the matching resume never arrives', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-expiry',
+      agentId: 'agent-restore-expiry',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-restore-expiry', 'restore', 'restore-channel');
+    expect(getAgentPauseState('agent-restore-expiry')).toBe('restore');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(getAgentPauseState('agent-restore-expiry')).toBe('restore');
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getAgentPauseState('agent-restore-expiry')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires global restore pauses when recovery cleanup does not run', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-global-restore-expiry',
+      agentId: 'agent-global-restore-expiry',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+
+    pauseAgent('agent-global-restore-expiry', 'restore');
+    expect(getAgentPauseState('agent-global-restore-expiry')).toBe('restore');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-global-restore-expiry')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not expire manual pauses when a restore lease times out', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-manual-restore-expiry',
+      agentId: 'agent-manual-restore-expiry',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-manual-restore-expiry', 'manual');
+    pauseAgent('agent-manual-restore-expiry', 'restore', 'restore-channel');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-manual-restore-expiry')).toBe('manual');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    resumeAgent('agent-manual-restore-expiry', 'manual');
+    expect(getAgentPauseState('agent-manual-restore-expiry')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not expire flow-control pauses when a restore lease times out', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-flow-restore-expiry',
+      agentId: 'agent-flow-restore-expiry',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-flow-restore-expiry', 'flow-control', 'restore-channel');
+    pauseAgent('agent-flow-restore-expiry', 'restore', 'restore-channel');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-flow-restore-expiry')).toBe('flow-control');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    resumeAgent('agent-flow-restore-expiry', 'flow-control', 'restore-channel');
+    expect(getAgentPauseState('agent-flow-restore-expiry')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels scoped restore expiry when the matching resume arrives', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-resume',
+      agentId: 'agent-restore-resume',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-restore-resume', 'restore', 'restore-channel');
+    resumeAgent('agent-restore-resume', 'restore', 'restore-channel');
+
+    expect(getAgentPauseState('agent-restore-resume')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-restore-resume')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews scoped restore pause leases when the same restore id pauses again', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-renew',
+      agentId: 'agent-restore-renew',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-restore-renew', 'restore', 'restore-channel', 'restore-lease-1');
+    await vi.advanceTimersByTimeAsync(20_000);
+    pauseAgent('agent-restore-renew', 'restore', 'restore-channel', 'restore-lease-1');
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(getAgentPauseState('agent-restore-renew')).toBe('restore');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(getAgentPauseState('agent-restore-renew')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps scoped restore pauses when a stale restore id resumes on the same channel', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-stale-restore-resume',
+      agentId: 'agent-stale-restore-resume',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-stale-restore-resume', 'restore', 'restore-channel', 'restore-lease-new');
+    resumeAgent('agent-stale-restore-resume', 'restore', 'restore-channel', 'restore-lease-old');
+
+    expect(getAgentPauseState('agent-stale-restore-resume')).toBe('restore');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    resumeAgent('agent-stale-restore-resume', 'restore', 'restore-channel', 'restore-lease-new');
+
+    expect(getAgentPauseState('agent-stale-restore-resume')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps newer scoped restore leases when an older same-channel restore resumes', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-overlapping-restore-resume',
+      agentId: 'agent-overlapping-restore-resume',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent(
+      'agent-overlapping-restore-resume',
+      'restore',
+      'restore-channel',
+      'restore-lease-old',
+    );
+    pauseAgent(
+      'agent-overlapping-restore-resume',
+      'restore',
+      'restore-channel',
+      'restore-lease-new',
+    );
+    resumeAgent(
+      'agent-overlapping-restore-resume',
+      'restore',
+      'restore-channel',
+      'restore-lease-old',
+    );
+
+    expect(getAgentPauseState('agent-overlapping-restore-resume')).toBe('restore');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    resumeAgent(
+      'agent-overlapping-restore-resume',
+      'restore',
+      'restore-channel',
+      'restore-lease-new',
+    );
+
+    expect(getAgentPauseState('agent-overlapping-restore-resume')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears scoped restore leases when a browser channel disconnects', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-channel-cleanup',
+      agentId: 'agent-restore-channel-cleanup',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-restore-channel-cleanup', 'restore', 'restore-channel');
+    clearAutoPauseReasonsForChannel('restore-channel');
+
+    expect(getAgentPauseState('agent-restore-channel-cleanup')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-restore-channel-cleanup')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears all scoped restore lease ids when a browser channel disconnects', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-channel-multi-cleanup',
+      agentId: 'agent-restore-channel-multi-cleanup',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent(
+      'agent-restore-channel-multi-cleanup',
+      'restore',
+      'restore-channel',
+      'restore-lease-1',
+    );
+    pauseAgent(
+      'agent-restore-channel-multi-cleanup',
+      'restore',
+      'restore-channel',
+      'restore-lease-2',
+    );
+    clearAutoPauseReasonsForChannel('restore-channel');
+
+    expect(getAgentPauseState('agent-restore-channel-multi-cleanup')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getAgentPauseState('agent-restore-channel-multi-cleanup')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores scoped restore pauses for channels not attached to the agent', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-unknown-restore-channel',
+      agentId: 'agent-unknown-restore-channel',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'known-channel' },
+    });
+
+    pauseAgent('agent-unknown-restore-channel', 'restore', 'missing-channel');
+
+    expect(getAgentPauseState('agent-unknown-restore-channel')).toBeNull();
+    expect(proc.pause).not.toHaveBeenCalled();
   });
 
   it('returns noop recovery without snapshot payload when both backend and renderer are empty', () => {

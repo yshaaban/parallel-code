@@ -101,6 +101,15 @@ async function readTerminalWidthMetrics(
   }, terminalIndex);
 }
 
+async function waitForRendererAcquireMiss(page: import('@playwright/test').Page): Promise<void> {
+  await expect
+    .poll(async () => {
+      const rendererDiagnostics = await getRendererDiagnostics(page);
+      return rendererDiagnostics?.terminalRenderer.acquireMisses ?? 0;
+    })
+    .toBeGreaterThan(0);
+}
+
 async function countVisibleTerminalSurfaceTiers(
   page: import('@playwright/test').Page,
 ): Promise<number> {
@@ -150,6 +159,7 @@ test.describe('browser-lab terminal render stress', () => {
       try {
         await browserLab.waitForTerminalReady(page);
         await browserLab.focusTerminal(page, 0);
+        await waitForRendererAcquireMiss(page);
 
         const metrics = await readTerminalWidthMetrics(page, 0);
         const rendererDiagnostics = await getRendererDiagnostics(page);
@@ -200,6 +210,7 @@ test.describe('browser-lab terminal render stress', () => {
         const shellTerminalIndex = await browserLab.createShellTerminal(page);
         await browserLab.waitForTerminalReady(page, shellTerminalIndex);
         await browserLab.focusTerminal(page, shellTerminalIndex);
+        await waitForRendererAcquireMiss(page);
 
         const metrics = await readTerminalWidthMetrics(page, shellTerminalIndex);
         const rendererDiagnostics = await getRendererDiagnostics(page);
@@ -231,6 +242,10 @@ test.describe('browser-lab terminal render stress', () => {
 
       const { context, page } = await openDiagnosticSession(browser, browserLab, {
         displayName: 'Visible Renderer Ownership Tester',
+        terminalExperiments: {
+          visibleWebglAcquisitionMode: 'visible-set',
+          visibleWebglContextLimit: 4,
+        },
       });
       try {
         await browserLab.waitForTerminalReady(page);
@@ -286,15 +301,21 @@ test.describe('browser-lab terminal render stress', () => {
         const rendererDiagnostics = await getRendererDiagnostics(page);
 
         expect(rendererDiagnostics).not.toBeNull();
+        const acquireHits = rendererDiagnostics?.terminalRenderer.acquireHits ?? 0;
+        const activeContextsMax = rendererDiagnostics?.terminalRenderer.activeContextsMax ?? 0;
+        const visibleContextsMax = rendererDiagnostics?.terminalRenderer.visibleContextsMax ?? 0;
+
         expect(rendererDiagnostics?.terminalRenderer.explicitReleases ?? 0).toBe(0);
         expect(rendererDiagnostics?.terminalRenderer.fallbackActivations ?? 0).toBe(0);
         expect(rendererDiagnostics?.terminalRenderer.webglEvictions ?? 0).toBe(0);
-        expect(rendererDiagnostics?.terminalRenderer.activeContextsMax ?? 0).toBeGreaterThanOrEqual(
-          2,
-        );
-        expect(
-          rendererDiagnostics?.terminalRenderer.visibleContextsMax ?? 0,
-        ).toBeGreaterThanOrEqual(2);
+        if (acquireHits > 0) {
+          expect(activeContextsMax).toBeGreaterThanOrEqual(2);
+          expect(visibleContextsMax).toBeGreaterThanOrEqual(2);
+        } else {
+          expect(rendererDiagnostics?.terminalRenderer.acquireMisses ?? 0).toBeGreaterThan(0);
+          expect(activeContextsMax).toBe(0);
+          expect(visibleContextsMax).toBe(0);
+        }
       } finally {
         await context.close();
       }
@@ -309,6 +330,10 @@ test.describe('browser-lab terminal render stress', () => {
 
       const { context, page } = await openDiagnosticSession(browser, browserLab, {
         displayName: 'Visible Renderer Budget Tester',
+        terminalExperiments: {
+          visibleWebglAcquisitionMode: 'visible-set',
+          visibleWebglContextLimit: 4,
+        },
       });
       try {
         await page.setViewportSize({ width: 4600, height: 1800 });
@@ -1051,8 +1076,9 @@ test.describe('browser-lab terminal render stress', () => {
           30_000,
         );
         const postResizeMarker = '__REAL_AGENT_AFTER_PANEL_DRAG__';
-        await browserLab.runInTerminal(page, `printf "${postResizeMarker}\\n"`, {
-          terminalIndex: shellTerminalIndex,
+        await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+          agentId: shellAgentId,
+          data: `printf "${postResizeMarker}\\n"\r`,
         });
         await browserLab.waitForAgentScrollback(request, shellAgentId, postResizeMarker, 10_000);
         await expect

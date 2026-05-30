@@ -78,6 +78,7 @@ export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
   emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;
+  isChannelActive?: (channelId: string) => boolean;
   remoteAccess?: RemoteAccessController;
   window?: WindowController;
   dialog?: DialogController;

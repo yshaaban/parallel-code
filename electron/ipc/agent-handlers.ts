@@ -258,6 +258,18 @@ function getRequiredRequestEntries(args: unknown): unknown[] {
   return request.requests;
 }
 
+function assertRestoreLeaseIdMatchesReason(
+  reason: unknown,
+  restoreLeaseId: string | undefined,
+): void {
+  if (restoreLeaseId === '') {
+    throw new BadRequestError('restoreLeaseId must be non-empty');
+  }
+  if (restoreLeaseId !== undefined && reason !== 'restore') {
+    throw new BadRequestError('restoreLeaseId is only valid for restore pauses');
+  }
+}
+
 function resumeRestorePausedAgents(pausedIds: string[]): void {
   for (const agentId of pausedIds.reverse()) {
     try {
@@ -868,7 +880,16 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertString(request.agentId, 'agentId');
       assertOptionalPauseReason(request.reason);
       assertOptionalString(request.channelId, 'channelId');
-      pauseAgent(request.agentId, request.reason, request.channelId);
+      assertOptionalString(request.restoreLeaseId, 'restoreLeaseId');
+      assertRestoreLeaseIdMatchesReason(request.reason, request.restoreLeaseId);
+      if (
+        request.reason === 'restore' &&
+        request.channelId !== undefined &&
+        context.isChannelActive?.(request.channelId) === false
+      ) {
+        return undefined;
+      }
+      pauseAgent(request.agentId, request.reason, request.channelId, request.restoreLeaseId);
       return undefined;
     }),
 
@@ -877,7 +898,9 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertString(request.agentId, 'agentId');
       assertOptionalPauseReason(request.reason);
       assertOptionalString(request.channelId, 'channelId');
-      resumeAgent(request.agentId, request.reason, request.channelId);
+      assertOptionalString(request.restoreLeaseId, 'restoreLeaseId');
+      assertRestoreLeaseIdMatchesReason(request.reason, request.restoreLeaseId);
+      resumeAgent(request.agentId, request.reason, request.channelId, request.restoreLeaseId);
       return undefined;
     }),
 

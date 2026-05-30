@@ -46,9 +46,32 @@ describe('browser agent command executor', () => {
 
     expect(ptyMocks.writeToAgent).toHaveBeenCalledWith('agent-1', 'pwd\n', traceRequest, undefined);
     expect(ptyMocks.resizeAgent).toHaveBeenCalledWith('agent-1', 120, 32, undefined);
-    expect(ptyMocks.pauseAgent).toHaveBeenCalledWith('agent-1', 'flow-control', 'channel-1');
-    expect(ptyMocks.resumeAgent).toHaveBeenCalledWith('agent-1', 'restore', 'channel-2');
+    expect(ptyMocks.pauseAgent).toHaveBeenCalledWith(
+      'agent-1',
+      'flow-control',
+      'channel-1',
+      undefined,
+    );
+    expect(ptyMocks.resumeAgent).toHaveBeenCalledWith('agent-1', 'restore', 'channel-2', undefined);
     expect(ptyMocks.killAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('forwards restore pause lease ids to the PTY owner', () => {
+    pauseBrowserAgent('agent-1', 'restore', 'channel-1', 'restore-lease-1');
+    resumeBrowserAgent('agent-1', 'restore', 'channel-1', 'restore-lease-1');
+
+    expect(ptyMocks.pauseAgent).toHaveBeenCalledWith(
+      'agent-1',
+      'restore',
+      'channel-1',
+      'restore-lease-1',
+    );
+    expect(ptyMocks.resumeAgent).toHaveBeenCalledWith(
+      'agent-1',
+      'restore',
+      'channel-1',
+      'restore-lease-1',
+    );
   });
 
   it('maps permission responses to the existing PTY input protocol', () => {

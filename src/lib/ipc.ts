@@ -3,6 +3,8 @@ import {
   MAX_CLIENT_INPUT_DATA_LENGTH,
   type ClientMessage,
   type PauseReason,
+  type TaskCommandLeaseOperation,
+  type TaskCommandLeaseResultMessage,
   type TaskControlContext,
 } from '../../electron/remote/protocol';
 import type {
@@ -10,6 +12,7 @@ import type {
   RendererInvokeRequestMap,
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
+import { BROWSER_CLIENT_ID_HEADER } from '../domain/browser-ipc';
 import { isPauseReason } from '../domain/server-state';
 import type {
   TerminalInputTraceClockSyncRequest,
@@ -158,6 +161,7 @@ const browserChannelClient = createBrowserChannelClient({
 });
 
 const BROWSER_AGENT_COMMAND_TIMEOUT_MS = 10_000;
+const BROWSER_TASK_COMMAND_LEASE_TIMEOUT_MS = 10_000;
 export const BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE = 'Browser agent command canceled';
 const BROWSER_SOCKET_UNAVAILABLE_ERROR_MESSAGE = 'Browser socket unavailable';
 const TERMINAL_TRACE_CLOCK_SYNC_INTERVAL_MS = 15_000;
@@ -165,10 +169,20 @@ const TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT = 4;
 
 interface PendingBrowserAgentCommandRequest {
   agentId: string;
-  command: 'input' | 'resize';
+  command: 'input' | 'pause' | 'resize' | 'resume';
   reject: (error: Error) => void;
   resolve: (receivedAtMs: number) => void;
   timeout: ReturnType<typeof globalThis.setTimeout>;
+}
+
+interface PendingBrowserTaskCommandLeaseRequest {
+  operation: TaskCommandLeaseOperation;
+  reject: (error: Error) => void;
+  resolve: (message: TaskCommandLeaseResultMessage) => void;
+  send: () => Promise<void>;
+  sending: boolean;
+  sent: boolean;
+  timeout?: ReturnType<typeof globalThis.setTimeout>;
 }
 
 interface BrowserInputSendOptions {
@@ -191,9 +205,14 @@ type BrowserResizeOrderContext = Partial<
 >;
 
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
+const pendingBrowserTaskCommandLeaseRequests = new Map<
+  string,
+  PendingBrowserTaskCommandLeaseRequest
+>();
 const pendingTerminalTraceClockSyncRequests = new Map<string, number>();
 let browserAgentCommandSendChain: Promise<void> = Promise.resolve();
 let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
+let cleanupBrowserTaskCommandLeaseRequestListeners: (() => void) | null = null;
 let terminalTraceClockSyncBound = false;
 let terminalTraceClockSyncTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 
@@ -203,6 +222,10 @@ function createBrowserAgentCommandCanceledError(): Error {
 
 function createBrowserAgentCommandTimeoutError(): Error {
   return new Error('Timed out waiting for browser agent command result');
+}
+
+function createBrowserTaskCommandLeaseTimeoutError(): Error {
+  return new Error('Timed out waiting for browser task-command lease result');
 }
 
 function createBrowserSocketUnavailableError(): Error {
@@ -242,6 +265,19 @@ function clearPendingBrowserAgentCommandRequest(requestId: string): void {
   clearTimeout(pendingRequest.timeout);
   pendingBrowserAgentCommandRequests.delete(requestId);
   cleanupBrowserAgentCommandRequestListenersIfIdle();
+}
+
+function clearPendingBrowserTaskCommandLeaseRequest(requestId: string): void {
+  const pendingRequest = pendingBrowserTaskCommandLeaseRequests.get(requestId);
+  if (!pendingRequest) {
+    return;
+  }
+
+  if (pendingRequest.timeout !== undefined) {
+    clearTimeout(pendingRequest.timeout);
+  }
+  pendingBrowserTaskCommandLeaseRequests.delete(requestId);
+  cleanupBrowserTaskCommandLeaseRequestListenersIfIdle();
 }
 
 function bindBrowserTransportTestHook(): void {
@@ -308,6 +344,15 @@ function cleanupBrowserAgentCommandRequestListenersIfIdle(): void {
   cleanupBrowserAgentCommandRequestListeners = null;
 }
 
+function cleanupBrowserTaskCommandLeaseRequestListenersIfIdle(): void {
+  if (pendingBrowserTaskCommandLeaseRequests.size !== 0) {
+    return;
+  }
+
+  cleanupBrowserTaskCommandLeaseRequestListeners?.();
+  cleanupBrowserTaskCommandLeaseRequestListeners = null;
+}
+
 function ensureBrowserAgentCommandRequestListeners(): void {
   if (cleanupBrowserAgentCommandRequestListeners) {
     return;
@@ -356,11 +401,128 @@ function ensureBrowserAgentCommandRequestListeners(): void {
   };
 }
 
+function rejectPendingBrowserTaskCommandLeaseRequests(error: Error): void {
+  for (const [requestId, pendingRequest] of pendingBrowserTaskCommandLeaseRequests) {
+    if (pendingRequest.timeout !== undefined) {
+      clearTimeout(pendingRequest.timeout);
+    }
+    pendingBrowserTaskCommandLeaseRequests.delete(requestId);
+    pendingRequest.reject(error);
+  }
+  cleanupBrowserTaskCommandLeaseRequestListenersIfIdle();
+}
+
+function startBrowserTaskCommandLeaseResultTimeout(requestId: string): void {
+  const pendingRequest = pendingBrowserTaskCommandLeaseRequests.get(requestId);
+  if (!pendingRequest || pendingRequest.timeout !== undefined) {
+    return;
+  }
+
+  pendingRequest.timeout = globalThis.setTimeout(() => {
+    pendingBrowserTaskCommandLeaseRequests.delete(requestId);
+    cleanupBrowserTaskCommandLeaseRequestListenersIfIdle();
+    pendingRequest.reject(createBrowserTaskCommandLeaseTimeoutError());
+  }, BROWSER_TASK_COMMAND_LEASE_TIMEOUT_MS);
+}
+
+function isBrowserTaskCommandLeaseRetryableSendError(): boolean {
+  const state = browserControlClient.getConnectionState();
+  return state === 'connecting' || state === 'disconnected' || state === 'reconnecting';
+}
+
+function attemptPendingBrowserTaskCommandLeaseSend(requestId: string): void {
+  const pendingRequest = pendingBrowserTaskCommandLeaseRequests.get(requestId);
+  if (!pendingRequest || pendingRequest.sending || pendingRequest.sent) {
+    return;
+  }
+
+  pendingRequest.sending = true;
+  void pendingRequest
+    .send()
+    .then(() => {
+      const currentRequest = pendingBrowserTaskCommandLeaseRequests.get(requestId);
+      if (!currentRequest) {
+        return;
+      }
+
+      currentRequest.sending = false;
+      currentRequest.sent = true;
+      startBrowserTaskCommandLeaseResultTimeout(requestId);
+    })
+    .catch((error) => {
+      const currentRequest = pendingBrowserTaskCommandLeaseRequests.get(requestId);
+      if (!currentRequest) {
+        return;
+      }
+
+      currentRequest.sending = false;
+      if (isBrowserTaskCommandLeaseRetryableSendError()) {
+        return;
+      }
+
+      clearPendingBrowserTaskCommandLeaseRequest(requestId);
+      currentRequest.reject(error instanceof Error ? error : new Error(String(error)));
+    });
+}
+
+function retryUnsentBrowserTaskCommandLeaseRequests(): void {
+  for (const [requestId, pendingRequest] of pendingBrowserTaskCommandLeaseRequests) {
+    if (!pendingRequest.sent) {
+      attemptPendingBrowserTaskCommandLeaseSend(requestId);
+    }
+  }
+}
+
+function ensureBrowserTaskCommandLeaseRequestListeners(): void {
+  if (cleanupBrowserTaskCommandLeaseRequestListeners) {
+    return;
+  }
+
+  const offResult = browserControlClient.listenMessage('task-command-lease-result', (message) => {
+    const pendingRequest = pendingBrowserTaskCommandLeaseRequests.get(message.requestId);
+    if (!pendingRequest || pendingRequest.operation !== message.operation) {
+      return;
+    }
+
+    clearPendingBrowserTaskCommandLeaseRequest(message.requestId);
+    if ('error' in message) {
+      pendingRequest.reject(new Error(message.error));
+      return;
+    }
+
+    pendingRequest.resolve(message);
+  });
+  const offTransport = browserControlClient.onTransportEvent((event) => {
+    if (event.kind !== 'connection') {
+      return;
+    }
+
+    switch (event.state) {
+      case 'auth-expired':
+        rejectPendingBrowserTaskCommandLeaseRequests(createBrowserSocketUnavailableError());
+        break;
+      case 'disconnected':
+      case 'reconnecting':
+      case 'connecting':
+        break;
+      case 'connected':
+        retryUnsentBrowserTaskCommandLeaseRequests();
+        break;
+      default:
+        throw new Error(`Unhandled browser transport state: ${String(event.state)}`);
+    }
+  });
+  cleanupBrowserTaskCommandLeaseRequestListeners = () => {
+    offResult();
+    offTransport();
+  };
+}
+
 function waitForBrowserAgentCommandResult(
   requestId: string,
   details: {
     agentId: string;
-    command: 'input' | 'resize';
+    command: 'input' | 'pause' | 'resize' | 'resume';
   },
   send: () => Promise<void>,
 ): Promise<number> {
@@ -384,6 +546,26 @@ function waitForBrowserAgentCommandResult(
       clearPendingBrowserAgentCommandRequest(requestId);
       reject(error instanceof Error ? error : new Error(String(error)));
     });
+  });
+}
+
+function waitForBrowserTaskCommandLeaseResult(
+  requestId: string,
+  operation: TaskCommandLeaseOperation,
+  send: () => Promise<void>,
+): Promise<TaskCommandLeaseResultMessage> {
+  ensureBrowserTaskCommandLeaseRequestListeners();
+  return new Promise<TaskCommandLeaseResultMessage>((resolve, reject) => {
+    pendingBrowserTaskCommandLeaseRequests.set(requestId, {
+      operation,
+      reject,
+      resolve,
+      send,
+      sending: false,
+      sent: false,
+    });
+
+    attemptPendingBrowserTaskCommandLeaseSend(requestId);
   });
 }
 
@@ -552,7 +734,21 @@ type InvokeArgs<TChannel extends RendererInvokeChannel> =
     ? [args?: RendererInvokeRequestMap[TChannel]]
     : [args: RendererInvokeRequestMap[TChannel]];
 
+type BrowserTaskCommandLeaseChannel =
+  | IPC.AcquireTaskCommandLease
+  | IPC.RenewTaskCommandLease
+  | IPC.ReleaseTaskCommandLease;
+
+type BrowserTaskCommandLeaseMessage = Extract<ClientMessage, { type: 'task-command-lease' }>;
+
+type BrowserPauseResumeChannel = IPC.PauseAgent | IPC.ResumeAgent;
+
+type BrowserPauseResumeRequest =
+  | Exclude<RendererInvokeRequestMap[IPC.PauseAgent], undefined>
+  | Exclude<RendererInvokeRequestMap[IPC.ResumeAgent], undefined>;
+
 type BrowserControlChannel =
+  | BrowserTaskCommandLeaseChannel
   | IPC.EnsureAgentSessionsBatch
   | IPC.KillAgent
   | IPC.PauseAgent
@@ -582,9 +778,12 @@ type FireAndForgetChannel = {
 }[RendererInvokeChannel];
 
 const BROWSER_CONTROL_CHANNELS = {
+  [IPC.AcquireTaskCommandLease]: true,
   [IPC.EnsureAgentSessionsBatch]: true,
   [IPC.KillAgent]: true,
   [IPC.PauseAgent]: true,
+  [IPC.ReleaseTaskCommandLease]: true,
+  [IPC.RenewTaskCommandLease]: true,
   [IPC.ResizeAgent]: true,
   [IPC.ResumeAgent]: true,
   [IPC.SpawnAgent]: true,
@@ -846,6 +1045,80 @@ function createBrowserResizeMessage(
   };
 }
 
+function getBrowserTaskCommandLeaseOperation(
+  channel: BrowserTaskCommandLeaseChannel,
+): TaskCommandLeaseOperation {
+  switch (channel) {
+    case IPC.AcquireTaskCommandLease:
+      return 'acquire';
+    case IPC.RenewTaskCommandLease:
+      return 'renew';
+    case IPC.ReleaseTaskCommandLease:
+      return 'release';
+  }
+}
+
+function createBrowserTaskCommandLeaseMessage<TChannel extends BrowserTaskCommandLeaseChannel>(
+  channel: TChannel,
+  args: Exclude<RendererInvokeRequestMap[TChannel], undefined>,
+  requestId: string,
+): BrowserTaskCommandLeaseMessage {
+  switch (channel) {
+    case IPC.AcquireTaskCommandLease: {
+      const acquireArgs = args as Exclude<
+        RendererInvokeRequestMap[IPC.AcquireTaskCommandLease],
+        undefined
+      >;
+      const message: Extract<BrowserTaskCommandLeaseMessage, { operation: 'acquire' }> = {
+        type: 'task-command-lease',
+        action: acquireArgs.action,
+        operation: 'acquire',
+        ownerId: acquireArgs.ownerId,
+        requestId,
+        taskId: acquireArgs.taskId,
+      };
+      if (acquireArgs.takeover) {
+        message.takeover = true;
+      }
+      return message;
+    }
+    case IPC.RenewTaskCommandLease: {
+      const renewArgs = args as Exclude<
+        RendererInvokeRequestMap[IPC.RenewTaskCommandLease],
+        undefined
+      >;
+      const message: Extract<BrowserTaskCommandLeaseMessage, { operation: 'renew' }> = {
+        type: 'task-command-lease',
+        operation: 'renew',
+        ownerId: renewArgs.ownerId,
+        requestId,
+        taskId: renewArgs.taskId,
+      };
+      if (renewArgs.leaseGeneration !== undefined) {
+        message.leaseGeneration = renewArgs.leaseGeneration;
+      }
+      return message;
+    }
+    case IPC.ReleaseTaskCommandLease: {
+      const releaseArgs = args as Exclude<
+        RendererInvokeRequestMap[IPC.ReleaseTaskCommandLease],
+        undefined
+      >;
+      const message: Extract<BrowserTaskCommandLeaseMessage, { operation: 'release' }> = {
+        type: 'task-command-lease',
+        operation: 'release',
+        ownerId: releaseArgs.ownerId,
+        requestId,
+        taskId: releaseArgs.taskId,
+      };
+      if (releaseArgs.leaseGeneration !== undefined) {
+        message.leaseGeneration = releaseArgs.leaseGeneration;
+      }
+      return message;
+    }
+  }
+}
+
 function getBrowserAgentCommandRequestId(
   requestId: string | undefined,
   chunkCount: number,
@@ -878,6 +1151,42 @@ async function sendBrowserAgentCommand(
       }),
     ),
   );
+}
+
+async function sendBrowserPauseResumeCommand(
+  requestId: string,
+  details: {
+    agentId: string;
+    command: 'pause' | 'resume';
+  },
+  message: Extract<ClientMessage, { type: 'pause' | 'resume' }>,
+): Promise<void> {
+  await waitForBrowserAgentCommandResult(requestId, details, () =>
+    sendNonQueueableBrowserCommand(message, {
+      canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
+      waitForConnection: message.reason === 'restore',
+    }),
+  );
+}
+
+async function sendBrowserTaskCommandLease<TChannel extends BrowserTaskCommandLeaseChannel>(
+  channel: TChannel,
+  args: Exclude<RendererInvokeRequestMap[TChannel], undefined>,
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  const requestId = createRandomId();
+  const operation = getBrowserTaskCommandLeaseOperation(channel);
+  const resultMessage = await waitForBrowserTaskCommandLeaseResult(requestId, operation, () =>
+    sendNonQueueableBrowserCommand(createBrowserTaskCommandLeaseMessage(channel, args, requestId), {
+      canSend: () => pendingBrowserTaskCommandLeaseRequests.has(requestId),
+      waitForConnection: true,
+    }),
+  );
+
+  if ('error' in resultMessage) {
+    throw new Error(resultMessage.error);
+  }
+
+  return resultMessage.result as RendererInvokeResponseMap[TChannel];
 }
 
 async function sendBrowserInput(
@@ -934,39 +1243,73 @@ function invokeElectronTransport<TChannel extends RendererInvokeChannel>(
   return electron.invoke(cmd, args);
 }
 
-function createFlowControlCommand(
+function createAutomaticPauseResumeCommand(
   type: 'pause' | 'resume',
-  request:
-    | Exclude<RendererInvokeRequestMap[IPC.PauseAgent], undefined>
-    | Exclude<RendererInvokeRequestMap[IPC.ResumeAgent], undefined>,
+  request: BrowserPauseResumeRequest,
+  requestId?: string,
 ): Extract<ClientMessage, { type: 'pause' | 'resume' }> | null {
   const reason = getPauseReason(request.reason);
-  if (reason !== 'flow-control') {
+  if (reason !== 'flow-control' && reason !== 'restore') {
     return null;
   }
 
   const channelId = isNonEmptyString(request.channelId) ? request.channelId : undefined;
+  if (request.restoreLeaseId !== undefined && !isNonEmptyString(request.restoreLeaseId)) {
+    return null;
+  }
+
+  const restoreLeaseId = request.restoreLeaseId;
+  if (restoreLeaseId !== undefined && reason !== 'restore') {
+    return null;
+  }
 
   return {
     type,
     agentId: request.agentId,
     reason,
     ...(channelId ? { channelId } : {}),
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(restoreLeaseId !== undefined ? { restoreLeaseId } : {}),
   };
 }
 
 function createPauseControlRequest(
-  request:
-    | Exclude<RendererInvokeRequestMap[IPC.PauseAgent], undefined>
-    | Exclude<RendererInvokeRequestMap[IPC.ResumeAgent], undefined>,
+  request: BrowserPauseResumeRequest,
 ): RendererInvokeRequestMap[IPC.PauseAgent] {
   const channelId = isNonEmptyString(request.channelId) ? request.channelId : undefined;
   const reason = getPauseReason(request.reason);
+  const restoreLeaseId =
+    typeof request.restoreLeaseId === 'string' ? request.restoreLeaseId : undefined;
   return {
     agentId: request.agentId,
     ...(channelId ? { channelId } : {}),
     ...(reason ? { reason } : {}),
+    ...(restoreLeaseId !== undefined ? { restoreLeaseId } : {}),
   };
+}
+
+async function sendBrowserPauseResumeWithFallback(
+  cmd: BrowserPauseResumeChannel,
+  type: 'pause' | 'resume',
+  args: BrowserPauseResumeRequest,
+): Promise<void> {
+  const shouldTrackResult = args.reason === 'restore';
+  const requestId = shouldTrackResult ? createRandomId() : undefined;
+  const message = createAutomaticPauseResumeCommand(type, args, requestId);
+  if (message) {
+    if (requestId !== undefined) {
+      await sendBrowserPauseResumeCommand(
+        requestId,
+        { agentId: args.agentId, command: type },
+        message,
+      );
+    } else {
+      await sendNonQueueableBrowserCommand(message);
+    }
+    return;
+  }
+
+  await browserHttpClient.fetch(cmd, createPauseControlRequest(args));
 }
 
 async function sendBrowserCommandWithFallback<TChannel extends BrowserUndefinedResponseChannel>(
@@ -996,6 +1339,10 @@ async function browserInvoke(
 ): Promise<RendererInvokeResponseMap[BrowserControlChannel]> {
   const [cmd, args] = call;
   switch (cmd) {
+    case IPC.AcquireTaskCommandLease:
+    case IPC.RenewTaskCommandLease:
+    case IPC.ReleaseTaskCommandLease:
+      return sendBrowserTaskCommandLease(cmd, args);
     case IPC.WriteToAgent: {
       await sendBrowserInput(args.agentId, args.data, {
         ...(args.controllerId ? { controllerId: args.controllerId } : {}),
@@ -1023,22 +1370,12 @@ async function browserInvoke(
       );
     }
     case IPC.PauseAgent: {
-      const message = createFlowControlCommand('pause', args);
-      if (message) {
-        await sendNonQueueableBrowserCommand(message);
-        return undefined;
-      }
-
-      return browserHttpClient.fetch(IPC.PauseAgent, createPauseControlRequest(args));
+      await sendBrowserPauseResumeWithFallback(IPC.PauseAgent, 'pause', args);
+      return undefined;
     }
     case IPC.ResumeAgent: {
-      const message = createFlowControlCommand('resume', args);
-      if (message) {
-        await sendNonQueueableBrowserCommand(message);
-        return undefined;
-      }
-
-      return browserHttpClient.fetch(IPC.ResumeAgent, createPauseControlRequest(args));
+      await sendBrowserPauseResumeWithFallback(IPC.ResumeAgent, 'resume', args);
+      return undefined;
     }
     case IPC.SpawnAgent:
       browserControlClient.bindLifecycle();
@@ -1104,8 +1441,17 @@ export function sendPagehideInvoke<TChannel extends RendererInvokeChannel>(
 
   const url = `/api/ipc/${encodeURIComponent(cmd)}`;
   const body = JSON.stringify(args);
+  const browserClientId = getBrowserClientId();
+  const requiresBrowserClientIdentity =
+    cmd === IPC.AcquireTaskCommandLease ||
+    cmd === IPC.RenewTaskCommandLease ||
+    cmd === IPC.ReleaseTaskCommandLease;
 
-  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+  if (
+    !requiresBrowserClientIdentity &&
+    typeof navigator !== 'undefined' &&
+    typeof navigator.sendBeacon === 'function'
+  ) {
     try {
       const payload = new Blob([body], { type: 'application/json' });
       if (navigator.sendBeacon(url, payload)) {
@@ -1122,6 +1468,7 @@ export function sendPagehideInvoke<TChannel extends RendererInvokeChannel>(
     keepalive: true,
     headers: {
       'Content-Type': 'application/json',
+      ...(browserClientId ? { [BROWSER_CLIENT_ID_HEADER]: browserClientId } : {}),
     },
     body,
   }).catch((err: unknown) => {
@@ -1270,8 +1617,13 @@ export { isElectronRuntime, parseBrowserBinaryChannelFrame };
 
 export function resetBrowserAgentCommandRequestStateForTests(): void {
   rejectPendingBrowserAgentCommandRequests(new Error('Browser agent command test state reset'));
+  rejectPendingBrowserTaskCommandLeaseRequests(
+    new Error('Browser task-command lease test state reset'),
+  );
   cleanupBrowserAgentCommandRequestListeners?.();
   cleanupBrowserAgentCommandRequestListeners = null;
+  cleanupBrowserTaskCommandLeaseRequestListeners?.();
+  cleanupBrowserTaskCommandLeaseRequestListeners = null;
   browserAgentCommandSendChain = Promise.resolve();
   pendingTerminalTraceClockSyncRequests.clear();
   clearTerminalTraceClockSyncTimer();
@@ -1298,6 +1650,18 @@ export function assertBrowserAgentCommandRequestStateCleanForTests(): void {
 
   if (cleanupBrowserAgentCommandRequestListeners !== null) {
     throw new Error('Expected no browser agent command request listeners to remain registered');
+  }
+
+  if (pendingBrowserTaskCommandLeaseRequests.size !== 0) {
+    throw new Error(
+      `Expected no pending browser task-command lease requests, found ${pendingBrowserTaskCommandLeaseRequests.size}`,
+    );
+  }
+
+  if (cleanupBrowserTaskCommandLeaseRequestListeners !== null) {
+    throw new Error(
+      'Expected no browser task-command lease request listeners to remain registered',
+    );
   }
 }
 

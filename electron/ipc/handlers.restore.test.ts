@@ -42,11 +42,12 @@ vi.mock('./pty.js', async () => {
 
 import { createIpcHandlers, type HandlerContext } from './handlers.js';
 
-function buildContext(): HandlerContext {
+function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
   return {
     userDataPath: '/tmp/parallel-code-tests',
     isPackaged: false,
     sendToChannel: vi.fn(),
+    ...overrides,
   };
 }
 
@@ -66,6 +67,113 @@ async function flushMicrotasks(rounds = 6): Promise<void> {
     await Promise.resolve();
   }
 }
+
+describe('PauseAgent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('ignores restore pauses for inactive browser channels', async () => {
+    const handlers = createIpcHandlers(
+      buildContext({
+        isChannelActive: (channelId) => channelId === 'active-channel',
+      }),
+    );
+
+    await handlers[IPC.PauseAgent]?.({
+      agentId: 'agent-inactive-channel',
+      channelId: 'inactive-channel',
+      reason: 'restore',
+    });
+
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps restore pauses for active browser channels', async () => {
+    const handlers = createIpcHandlers(
+      buildContext({
+        isChannelActive: (channelId) => channelId === 'active-channel',
+      }),
+    );
+
+    await handlers[IPC.PauseAgent]?.({
+      agentId: 'agent-active-channel',
+      channelId: 'active-channel',
+      reason: 'restore',
+    });
+
+    expect(pauseAgentMock).toHaveBeenCalledWith(
+      'agent-active-channel',
+      'restore',
+      'active-channel',
+      undefined,
+    );
+  });
+
+  it('passes restore lease ids for active browser channel restores', async () => {
+    const handlers = createIpcHandlers(
+      buildContext({
+        isChannelActive: (channelId) => channelId === 'active-channel',
+      }),
+    );
+
+    await handlers[IPC.PauseAgent]?.({
+      agentId: 'agent-active-channel',
+      channelId: 'active-channel',
+      reason: 'restore',
+      restoreLeaseId: 'restore-lease-1',
+    });
+
+    expect(pauseAgentMock).toHaveBeenCalledWith(
+      'agent-active-channel',
+      'restore',
+      'active-channel',
+      'restore-lease-1',
+    );
+  });
+
+  it('keeps non-channel restore pauses without browser liveness checks', async () => {
+    const handlers = createIpcHandlers(
+      buildContext({
+        isChannelActive: vi.fn(() => false),
+      }),
+    );
+
+    await handlers[IPC.PauseAgent]?.({
+      agentId: 'agent-global-restore',
+      reason: 'restore',
+    });
+
+    expect(pauseAgentMock).toHaveBeenCalledWith(
+      'agent-global-restore',
+      'restore',
+      undefined,
+      undefined,
+    );
+  });
+
+  it('rejects restore lease ids outside restore pauses', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    expect(() =>
+      handlers[IPC.PauseAgent]?.({
+        agentId: 'agent-invalid-restore-lease',
+        reason: 'flow-control',
+        restoreLeaseId: 'restore-lease-1',
+      }),
+    ).toThrow('restoreLeaseId is only valid for restore pauses');
+    expect(() =>
+      handlers[IPC.ResumeAgent]?.({
+        agentId: 'agent-empty-restore-lease',
+        reason: 'restore',
+        restoreLeaseId: '',
+      }),
+    ).toThrow('restoreLeaseId must be non-empty');
+
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('GetScrollbackBatch', () => {
   beforeEach(() => {

@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import { IPC } from '../ipc/channels.js';
 import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport.js';
 
 const writeToAgentMock = vi.fn();
 const resizeAgentMock = vi.fn();
 const recordTerminalInputTraceClientUpdateMock = vi.fn();
+const acquireTaskCommandLeaseMock = vi.fn();
 const getAgentMetaMock = vi.fn<
   () => { agentId: string; generation: number; isShell: boolean; taskId: string } | null
 >(() => null);
@@ -25,6 +27,8 @@ const getTaskCommandControllerSnapshotMock = vi.fn<
   version: 0,
 }));
 const isTaskCommandLeaseHeldMock = vi.fn(() => false);
+const releaseTaskCommandLeaseMock = vi.fn();
+const renewTaskCommandLeaseMock = vi.fn();
 const onPtyEventMock = vi.fn(
   (_event: string, _listener: (agentId: string, data?: unknown) => void) => () => {},
 );
@@ -50,8 +54,11 @@ vi.mock('../ipc/pty.js', () => ({
 }));
 
 vi.mock('../ipc/task-command-leases.js', () => ({
+  acquireTaskCommandLease: acquireTaskCommandLeaseMock,
   getTaskCommandControllerSnapshot: getTaskCommandControllerSnapshotMock,
   isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
+  releaseTaskCommandLease: releaseTaskCommandLeaseMock,
+  renewTaskCommandLease: renewTaskCommandLeaseMock,
 }));
 
 vi.mock('../ipc/runtime-diagnostics.js', () => ({
@@ -146,6 +153,32 @@ describe('registerRemoteWebSocketServer', () => {
       version: 0,
     }));
     isTaskCommandLeaseHeldMock.mockReturnValue(false);
+    acquireTaskCommandLeaseMock.mockReturnValue({
+      acquired: true,
+      action: 'type in the terminal',
+      changed: true,
+      controllerId: 'client-1',
+      leaseGeneration: 1,
+      taskId: 'task-1',
+      version: 1,
+    });
+    renewTaskCommandLeaseMock.mockReturnValue({
+      action: 'type in the terminal',
+      controllerId: 'client-1',
+      leaseGeneration: 1,
+      renewed: true,
+      taskId: 'task-1',
+      version: 1,
+    });
+    releaseTaskCommandLeaseMock.mockReturnValue({
+      changed: true,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
     subscribeToAgentMock.mockReturnValue(false);
   });
 
@@ -883,6 +916,176 @@ describe('registerRemoteWebSocketServer', () => {
     );
 
     expect(writeToAgentMock).toHaveBeenCalledWith('agent-1', 'allowed input', undefined, undefined);
+  });
+
+  it('handles task-command lease acquire, renew, and release over the remote websocket', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = createSendMessageMock();
+    const broadcastControl = vi.fn();
+    wss.clients.add(client);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ broadcastControl, sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        action: 'type in the terminal',
+        clientId: 'spoofed-client',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'lease-acquire',
+        takeover: true,
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(acquireTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'client-1',
+      'owner-1',
+      'type in the terminal',
+      true,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'task-command-lease-result',
+      operation: 'acquire',
+      requestId: 'lease-acquire',
+      result: {
+        acquired: true,
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        leaseGeneration: 1,
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+    expect(broadcastControl).toHaveBeenCalledWith({
+      type: 'ipc-event',
+      channel: IPC.TaskCommandControllerChanged,
+      payload: {
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        leaseGeneration: 1,
+        operation: 'renew',
+        ownerId: 'owner-1',
+        requestId: 'lease-renew',
+        taskId: 'task-1',
+      }),
+    );
+    expect(renewTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'client-1',
+      'owner-1',
+      expect.any(Number),
+      1,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'task-command-lease-result',
+      operation: 'renew',
+      requestId: 'lease-renew',
+      result: {
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        leaseGeneration: 1,
+        renewed: true,
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        leaseGeneration: 1,
+        operation: 'release',
+        ownerId: 'owner-1',
+        requestId: 'lease-release',
+        taskId: 'task-1',
+      }),
+    );
+    expect(releaseTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'client-1',
+      'owner-1',
+      expect.any(Number),
+      1,
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'task-command-lease-result',
+      operation: 'release',
+      requestId: 'lease-release',
+      result: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+  });
+
+  it('rejects remote task-command lease messages without an authenticated client id', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = createSendMessageMock();
+    wss.clients.add(client);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ getClientId: vi.fn(() => null), sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        action: 'type in the terminal',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'lease-acquire',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(acquireTaskCommandLeaseMock).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'task-command-lease-result',
+      error: 'Unauthorized',
+      operation: 'acquire',
+      requestId: 'lease-acquire',
+    });
   });
 
   it('passes resize order tokens to agent resizes', async () => {

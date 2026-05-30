@@ -993,6 +993,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${TEST_TOKEN}`,
+            [BROWSER_CLIENT_ID_HEADER]: TEST_CLIENT_ID,
           },
           body: JSON.stringify({
             action: 'type in the terminal',

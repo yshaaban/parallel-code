@@ -59,16 +59,22 @@ export function killBrowserAgent(agentId: string): void {
   killAgent(agentId);
 }
 
-export function pauseBrowserAgent(agentId: string, reason?: PauseReason, channelId?: string): void {
-  pauseAgent(agentId, reason, channelId);
+export function pauseBrowserAgent(
+  agentId: string,
+  reason?: PauseReason,
+  channelId?: string,
+  restoreLeaseId?: string,
+): void {
+  pauseAgent(agentId, reason, channelId, restoreLeaseId);
 }
 
 export function resumeBrowserAgent(
   agentId: string,
   reason?: PauseReason,
   channelId?: string,
+  restoreLeaseId?: string,
 ): void {
-  resumeAgent(agentId, reason, channelId);
+  resumeAgent(agentId, reason, channelId, restoreLeaseId);
 }
 
 export function writeBrowserAgentPermissionResponse(

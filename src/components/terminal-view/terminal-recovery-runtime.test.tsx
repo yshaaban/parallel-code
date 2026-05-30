@@ -493,11 +493,57 @@ describe('createTerminalRecoveryRuntime', () => {
       agentId: 'agent-1',
       channelId: 'channel-1',
       reason: 'restore',
+      restoreLeaseId: expect.any(String),
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.ResumeAgent, {
       agentId: 'agent-1',
       channelId: 'channel-1',
       reason: 'restore',
+      restoreLeaseId: expect.any(String),
+    });
+  });
+
+  it('renews the backend restore pause with the same restore lease id during slow restores', async () => {
+    vi.useFakeTimers();
+    const recoveryDeferred = createDeferredPromise<TerminalRecoveryBatchEntry>();
+    requestStartupTerminalRecoveryMock.mockImplementationOnce(() => recoveryDeferred.promise);
+    const { runtime } = createRecoveryRuntimeFixture();
+
+    const restorePromise = runtime.restoreTerminalOutput('attach');
+    await flushRecoveryRuntimeMicrotasks();
+
+    const firstPauseCall = invokeMock.mock.calls.find((call) => call[0] === IPC.PauseAgent);
+    if (!firstPauseCall) {
+      throw new Error('Expected initial restore pause');
+    }
+    const firstPauseArgs = firstPauseCall[1] as { restoreLeaseId?: string } | undefined;
+    const firstRestoreLeaseId = firstPauseArgs?.restoreLeaseId;
+    if (!firstRestoreLeaseId) {
+      throw new Error('Expected restore lease id');
+    }
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushRecoveryRuntimeMicrotasks();
+
+    const pauseCalls = invokeMock.mock.calls.filter((call) => call[0] === IPC.PauseAgent);
+    expect(pauseCalls).toHaveLength(2);
+    expect(pauseCalls[1]?.[1]).toEqual({
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'restore',
+      restoreLeaseId: firstRestoreLeaseId,
+    });
+
+    recoveryDeferred.resolve(createRecoveryEntry('agent-1'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await restorePromise;
+
+    const resumeCall = invokeMock.mock.calls.find((call) => call[0] === IPC.ResumeAgent);
+    expect(resumeCall?.[1]).toEqual({
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'restore',
+      restoreLeaseId: firstRestoreLeaseId,
     });
   });
 
@@ -1666,7 +1712,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
   });
 
-  it('applies mismatched reconnect delta without geometry-alignment retries', async () => {
+  it('skips mismatched reconnect delta after exhausting stable geometry-alignment retries', async () => {
     requestReconnectTerminalRecoveryMock.mockResolvedValue({
       ...createDeltaRecoveryEntry('agent-1', 3),
       cols: 80,
@@ -1681,13 +1727,15 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('reconnect');
 
-    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
-    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment).not.toHaveBeenCalled();
-    expect(termWriteMock).toHaveBeenCalledTimes(1);
-    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
+    expect(requestReconnectTerminalRecoveryMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment.mock.calls.length).toBe(
+      requestReconnectTerminalRecoveryMock.mock.calls.length,
+    );
+    expect(termWriteMock).not.toHaveBeenCalled();
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).not.toHaveBeenCalled();
     expect(
       getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.geometryAlignmentFallbacks,
-    ).toBe(0);
+    ).toBe(1);
   });
 
   it('does not consume geometry-alignment retry budget while the live terminal width is still changing', async () => {
@@ -2339,11 +2387,13 @@ describe('createTerminalRecoveryRuntime', () => {
       agentId: 'agent-1',
       channelId: 'channel-1',
       reason: 'restore',
+      restoreLeaseId: expect.any(String),
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.ResumeAgent, {
       agentId: 'agent-1',
       channelId: 'channel-1',
       reason: 'restore',
+      restoreLeaseId: expect.any(String),
     });
     expect(markTerminalReadyMock).not.toHaveBeenCalled();
     expect(onRestoreSettledMock).not.toHaveBeenCalled();
@@ -2452,6 +2502,15 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
+    const pauseRestoreLeaseIds = invokeMock.mock.calls
+      .filter((call) => call[0] === IPC.PauseAgent)
+      .map((call) => (call[1] as { restoreLeaseId?: string }).restoreLeaseId);
+    const resumeRestoreLeaseIds = invokeMock.mock.calls
+      .filter((call) => call[0] === IPC.ResumeAgent)
+      .map((call) => (call[1] as { restoreLeaseId?: string }).restoreLeaseId);
+    expect(pauseRestoreLeaseIds[0]).toEqual(expect.any(String));
+    expect(pauseRestoreLeaseIds).toEqual([pauseRestoreLeaseIds[0], pauseRestoreLeaseIds[0]]);
+    expect(resumeRestoreLeaseIds).toEqual([pauseRestoreLeaseIds[0], pauseRestoreLeaseIds[0]]);
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);

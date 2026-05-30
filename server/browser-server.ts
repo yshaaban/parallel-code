@@ -259,6 +259,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     sendToChannel: (channelId, message) => {
       channelManager.sendChannelMessage(channelId, message);
     },
+    isChannelActive: (channelId) => channelManager.hasActiveSubscriber(channelId),
     emitIpcEvent: controlPlane.emitIpcEvent,
     emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
@@ -430,6 +431,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     sendAgentError: controlPlane.sendAgentError,
     sendMessage: (client, message) => controlPlane.sendMessage(client, message),
     shouldDropClientMessage: shouldDropSimulatedClientMessage,
+    handleTaskCommandLease: controlPlane.handleTaskCommandLease,
     requestTaskCommandTakeover: controlPlane.requestTaskCommandTakeover,
     respondTaskCommandTakeover: controlPlane.respondTaskCommandTakeover,
     safeCompareToken: safeCompare,

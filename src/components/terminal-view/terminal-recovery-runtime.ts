@@ -32,6 +32,7 @@ import {
   requestStartupTerminalRecovery,
   requestTerminalRecovery,
 } from '../../lib/scrollbackRestore';
+import { createRandomId } from '../../lib/random-id';
 import {
   getTerminalExperimentStartupAttachChunkByteOverride,
   getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride,
@@ -49,6 +50,7 @@ import type { TerminalInputPipeline } from './terminal-input-pipeline';
 
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS = 500;
+const RESTORE_PAUSE_RENEW_INTERVAL_MS = 10_000;
 // Larger replay chunks materially reduce startup replay/apply time without changing recovery truth.
 const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'active-visible': 256 * 1024,
@@ -238,6 +240,7 @@ type TerminalRecoveryState =
       generation: number;
       kind: 'resume-failed';
       reason: TerminalRecoveryReason;
+      restoreLeaseId: string;
     }
   | {
       generation: number;
@@ -245,6 +248,7 @@ type TerminalRecoveryState =
       pauseApplied: boolean;
       phase: TerminalRecoveryPhase;
       reason: TerminalRecoveryReason;
+      restoreLeaseId: string;
       selectedRecoveryStarted: boolean;
     };
 
@@ -507,6 +511,14 @@ export function createTerminalRecoveryRuntime(
       ...recoveryState,
       pauseApplied,
     };
+  }
+
+  function getRestoreLeaseIdForNextRestore(generation: number): string {
+    if (recoveryState.kind === 'resume-failed') {
+      return recoveryState.restoreLeaseId;
+    }
+
+    return `restore-${generation}-${createRandomId()}`;
   }
 
   function markSelectedRecoveryStarted(generation: number): void {
@@ -1302,7 +1314,7 @@ export function createTerminalRecoveryRuntime(
   }
 
   function requiresRecoveryGeometryAlignment(entry: TerminalRecoveryBatchEntry): boolean {
-    return entry.recovery.kind === 'terminal-state';
+    return !isRecoveryGeometryAligned(entry);
   }
 
   function adoptAttachRecoveryGeometry(entry: TerminalRecoveryBatchEntry): boolean {
@@ -1507,12 +1519,14 @@ export function createTerminalRecoveryRuntime(
     }
 
     const generation = ++restoreGeneration;
+    const restoreLeaseId = getRestoreLeaseIdForNextRestore(generation);
     recoveryState = {
       generation,
       kind: 'restoring',
       pauseApplied: false,
       phase: reason === 'renderer-loss' ? 'renderer-refresh' : 'ensure-fit-ready',
       reason,
+      restoreLeaseId,
       selectedRecoveryStarted: false,
     };
     const restoreStartedAtMs = performance.now();
@@ -1534,6 +1548,7 @@ export function createTerminalRecoveryRuntime(
     let shouldExitAfterFinally = false;
     let resumeSucceeded = true;
     let blockingRecoveryStarted = false;
+    let restorePauseRenewTimer: ReturnType<typeof setInterval> | undefined;
     const selectedRecoveryProtected = options.isSelectedRecoveryProtected();
     const startupRecoveryRole = getVisibleStartupRecoveryRole(
       reason,
@@ -1556,6 +1571,34 @@ export function createTerminalRecoveryRuntime(
       setRestoreBlocked(true);
       restoreWriteChunkCount = 0;
       restoreWrittenBytes = 0;
+    }
+
+    function clearRestorePauseRenewTimer(): void {
+      if (restorePauseRenewTimer === undefined) {
+        return;
+      }
+
+      clearInterval(restorePauseRenewTimer);
+      restorePauseRenewTimer = undefined;
+    }
+
+    function startRestorePauseRenewal(): void {
+      clearRestorePauseRenewTimer();
+      restorePauseRenewTimer = setInterval(() => {
+        if (!isActiveRestoreGeneration(generation)) {
+          clearRestorePauseRenewTimer();
+          return;
+        }
+
+        void invoke(IPC.PauseAgent, {
+          agentId,
+          channelId: options.channelId,
+          reason: 'restore',
+          restoreLeaseId,
+        }).catch(() => {
+          clearRestorePauseRenewTimer();
+        });
+      }, RESTORE_PAUSE_RENEW_INTERVAL_MS);
     }
 
     try {
@@ -1610,9 +1653,15 @@ export function createTerminalRecoveryRuntime(
 
       setRecoveryPhase(generation, 'pausing-agent');
       const pauseStartedAtMs = performance.now();
-      await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
+      await invoke(IPC.PauseAgent, {
+        agentId,
+        reason: 'restore',
+        channelId: options.channelId,
+        restoreLeaseId,
+      });
       pauseMs = performance.now() - pauseStartedAtMs;
       setRecoveryPauseApplied(generation, true);
+      startRestorePauseRenewal();
       const requestState =
         startupRecoveryRole === null
           ? getTerminalRecoveryRequestState(suppressRenderedTailForAttachRecovery)
@@ -1693,6 +1742,7 @@ export function createTerminalRecoveryRuntime(
         selectedRecoverySettled = true;
         options.onSelectedRecoverySettle?.();
       };
+      clearRestorePauseRenewTimer();
       if (
         recoveryState.kind === 'restoring' &&
         recoveryState.generation === generation &&
@@ -1705,6 +1755,7 @@ export function createTerminalRecoveryRuntime(
             agentId,
             reason: 'restore',
             channelId: options.channelId,
+            restoreLeaseId,
           });
           resumeMs = performance.now() - resumeStartedAtMs;
         } catch (error) {
@@ -1745,6 +1796,7 @@ export function createTerminalRecoveryRuntime(
           generation,
           kind: 'resume-failed',
           reason,
+          restoreLeaseId,
         };
         setRestoreBlocked(false);
         settleSelectedRecoveryIfNeeded(true);
@@ -1781,6 +1833,7 @@ export function createTerminalRecoveryRuntime(
               pauseApplied: false,
               phase: 'waiting-post-drain',
               reason,
+              restoreLeaseId,
               selectedRecoveryStarted,
             };
             await waitForPostRecoveryOutputDrain();

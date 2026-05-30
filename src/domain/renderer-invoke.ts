@@ -170,11 +170,13 @@ export interface RendererInvokeRequestMap {
     agentId: string;
     channelId?: string;
     reason?: PauseReason;
+    restoreLeaseId?: string;
   };
   [IPC.ResumeAgent]: {
     agentId: string;
     channelId?: string;
     reason?: PauseReason;
+    restoreLeaseId?: string;
   };
   [IPC.KillAgent]: {
     agentId: string;

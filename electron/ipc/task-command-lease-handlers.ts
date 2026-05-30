@@ -8,7 +8,7 @@ import {
   renewTaskCommandLease,
 } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
-import { assertOptionalBoolean, assertOptionalInt, assertString } from './validate.js';
+import { assertOptionalBoolean, assertOptionalNonNegativeInt, assertString } from './validate.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 
 function emitTaskCommandControllerChanged(
@@ -32,22 +32,22 @@ export function createTaskCommandLeaseIpcHandlers(
         assertString(request.taskId, 'taskId');
         assertOptionalBoolean(request.takeover, 'takeover');
 
-        const result = acquireTaskCommandLease(
+        const { changed, ...acquireResult } = acquireTaskCommandLease(
           request.taskId,
           request.clientId,
           request.ownerId,
           request.action,
           request.takeover ?? false,
         );
-        if (result.changed) {
+        if (changed) {
           emitTaskCommandControllerChanged(context, {
-            action: result.action,
-            controllerId: result.controllerId,
-            taskId: result.taskId,
-            version: result.version,
+            action: acquireResult.action,
+            controllerId: acquireResult.controllerId,
+            taskId: acquireResult.taskId,
+            version: acquireResult.version,
           });
         }
-        return result;
+        return acquireResult;
       },
     ),
 
@@ -58,7 +58,7 @@ export function createTaskCommandLeaseIpcHandlers(
         assertString(request.clientId, 'clientId');
         assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
-        assertOptionalInt(request.leaseGeneration, 'leaseGeneration');
+        assertOptionalNonNegativeInt(request.leaseGeneration, 'leaseGeneration');
         return renewTaskCommandLease(
           request.taskId,
           request.clientId,
@@ -76,7 +76,7 @@ export function createTaskCommandLeaseIpcHandlers(
         assertString(request.clientId, 'clientId');
         assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
-        assertOptionalInt(request.leaseGeneration, 'leaseGeneration');
+        assertOptionalNonNegativeInt(request.leaseGeneration, 'leaseGeneration');
 
         const result = releaseTaskCommandLease(
           request.taskId,

@@ -92,6 +92,24 @@ describe('browser channel manager', () => {
     manager.cleanup();
   });
 
+  it('reports active channel subscribers for restore-pause liveness checks', () => {
+    const client = createFakeClient();
+    const manager = createBrowserChannelManager({
+      clearAutoPauseReasonsForChannel: vi.fn(),
+      send: () => true,
+    });
+
+    expect(manager.hasActiveSubscriber(CHANNEL_ID)).toBe(false);
+
+    manager.bindChannel(client, CHANNEL_ID);
+    expect(manager.hasActiveSubscriber(CHANNEL_ID)).toBe(true);
+
+    manager.unbindChannel(client, CHANNEL_ID);
+    expect(manager.hasActiveSubscriber(CHANNEL_ID)).toBe(false);
+
+    manager.cleanup();
+  });
+
   it('immediately resets a newly bound client when the pending backlog is already too large', () => {
     const sent: Array<Buffer | string> = [];
     const client = createFakeClient();

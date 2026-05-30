@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import { BROWSER_CLIENT_ID_HEADER } from '../domain/browser-ipc';
 import type { PauseReason } from '../domain/server-state';
 import {
   createBrowserChannelClient,
@@ -89,6 +90,7 @@ describe('Channel', () => {
   const originalSessionStorage = globalThis.sessionStorage;
   const originalWebSocket = globalThis.WebSocket;
   const originalFetch = globalThis.fetch;
+  const originalNavigator = globalThis.navigator;
 
   class FailingWebSocket {
     static readonly CONNECTING = 0;
@@ -230,7 +232,10 @@ describe('Channel', () => {
   ): void {
     const requestId = typeof message?.requestId === 'string' ? message.requestId : null;
     const agentId = typeof message?.agentId === 'string' ? message.agentId : 'agent-1';
-    const command = message?.type === 'resize' ? 'resize' : 'input';
+    const command =
+      message?.type === 'pause' || message?.type === 'resize' || message?.type === 'resume'
+        ? message.type
+        : 'input';
     if (!requestId) {
       throw new Error('Expected agent command requestId');
     }
@@ -342,6 +347,10 @@ describe('Channel', () => {
       Object.defineProperty(globalThis, 'fetch', {
         configurable: true,
         value: originalFetch,
+      });
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: originalNavigator,
       });
     }
   });
@@ -740,6 +749,370 @@ describe('Channel', () => {
     ).rejects.toThrow('Browser socket unavailable');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(getBrowserQueueDepth()).toBe(0);
+  });
+
+  it('keeps flow-control pause and resume fire-and-forget on the websocket control plane', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+
+    await invoke(IPC.PauseAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+    await invoke(IPC.ResumeAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+
+    expect(socket.sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: 'agent-1',
+          channelId: 'channel-1',
+          reason: 'flow-control',
+          type: 'pause',
+        }),
+        expect.objectContaining({
+          agentId: 'agent-1',
+          channelId: 'channel-1',
+          reason: 'flow-control',
+          type: 'resume',
+        }),
+      ]),
+    );
+    expect(
+      socket.sent
+        .filter((message) => message.reason === 'flow-control')
+        .every((message) => !('requestId' in message)),
+    ).toBe(true);
+  });
+
+  it('routes restore pause and resume leases over the websocket control plane', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+
+    const pausePromise = invoke(IPC.PauseAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'restore',
+      restoreLeaseId: 'restore-lease-1',
+    });
+    await flushMicrotasks();
+    receiveAcceptedAgentCommandResult(socket, socket.sent.at(-1));
+    await pausePromise;
+
+    const resumePromise = invoke(IPC.ResumeAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'restore',
+      restoreLeaseId: 'restore-lease-1',
+    });
+    await flushMicrotasks();
+    receiveAcceptedAgentCommandResult(socket, socket.sent.at(-1));
+    await resumePromise;
+
+    expect(socket.sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: 'agent-1',
+          channelId: 'channel-1',
+          reason: 'restore',
+          requestId: expect.any(String),
+          restoreLeaseId: 'restore-lease-1',
+          type: 'pause',
+        }),
+        expect.objectContaining({
+          agentId: 'agent-1',
+          channelId: 'channel-1',
+          reason: 'restore',
+          requestId: expect.any(String),
+          restoreLeaseId: 'restore-lease-1',
+          type: 'resume',
+        }),
+      ]),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('routes browser task-command lease acquire, renew, and release over the websocket control plane', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+
+    const acquireRequest = invoke(IPC.AcquireTaskCommandLease, {
+      action: 'type in the terminal',
+      clientId: 'spoofed-client',
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+    await flushMicrotasks();
+
+    const acquireMessage = socket.sent.find((message) => message.type === 'task-command-lease');
+    if (!acquireMessage || typeof acquireMessage.requestId !== 'string') {
+      throw new Error('Expected task-command lease acquire request');
+    }
+    expect(acquireMessage).toEqual(
+      expect.objectContaining({
+        action: 'type in the terminal',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        taskId: 'task-1',
+      }),
+    );
+    expect(acquireMessage).not.toHaveProperty('clientId');
+
+    socket.receiveText({
+      type: 'task-command-lease-result',
+      operation: 'acquire',
+      requestId: acquireMessage.requestId,
+      result: {
+        acquired: true,
+        action: 'type in the terminal',
+        controllerId: 'server-client',
+        leaseGeneration: 1,
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+
+    await expect(acquireRequest).resolves.toEqual({
+      acquired: true,
+      action: 'type in the terminal',
+      controllerId: 'server-client',
+      leaseGeneration: 1,
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    const renewRequest = invoke(IPC.RenewTaskCommandLease, {
+      clientId: 'spoofed-client',
+      leaseGeneration: 1,
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+    await flushMicrotasks();
+
+    const renewMessage = socket.sent.find((message) => message.operation === 'renew');
+    if (!renewMessage || typeof renewMessage.requestId !== 'string') {
+      throw new Error('Expected task-command lease renew request');
+    }
+    expect(renewMessage).toEqual(
+      expect.objectContaining({
+        leaseGeneration: 1,
+        operation: 'renew',
+        ownerId: 'owner-1',
+        taskId: 'task-1',
+      }),
+    );
+    expect(renewMessage).not.toHaveProperty('clientId');
+
+    socket.receiveText({
+      type: 'task-command-lease-result',
+      operation: 'renew',
+      requestId: renewMessage.requestId,
+      result: {
+        action: 'type in the terminal',
+        controllerId: 'server-client',
+        leaseGeneration: 1,
+        renewed: true,
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+
+    await expect(renewRequest).resolves.toEqual({
+      action: 'type in the terminal',
+      controllerId: 'server-client',
+      leaseGeneration: 1,
+      renewed: true,
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    const releaseRequest = invoke(IPC.ReleaseTaskCommandLease, {
+      clientId: 'spoofed-client',
+      leaseGeneration: 1,
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+    await flushMicrotasks();
+
+    const releaseMessage = socket.sent.find((message) => message.operation === 'release');
+    if (!releaseMessage || typeof releaseMessage.requestId !== 'string') {
+      throw new Error('Expected task-command lease release request');
+    }
+    expect(releaseMessage).toEqual(
+      expect.objectContaining({
+        leaseGeneration: 1,
+        operation: 'release',
+        ownerId: 'owner-1',
+        taskId: 'task-1',
+      }),
+    );
+    expect(releaseMessage).not.toHaveProperty('clientId');
+
+    socket.receiveText({
+      type: 'task-command-lease-result',
+      operation: 'release',
+      requestId: releaseMessage.requestId,
+      result: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+
+    await expect(releaseRequest).resolves.toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 2,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps unsent browser task-command lease requests pending across reconnect', async () => {
+    vi.useFakeTimers();
+    bindFakeWindowTimers();
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+
+    const acquireRequest = invoke(IPC.AcquireTaskCommandLease, {
+      action: 'type in the terminal',
+      clientId: 'client-1',
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+    await flushMicrotasks();
+    expect(socket.sent.filter((message) => message.type === 'task-command-lease')).toEqual([]);
+
+    socket.close(1006);
+    await flushMicrotasks();
+
+    expect(await getPromiseState(acquireRequest)).toBe('pending');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ControllableWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks();
+
+    const acquireMessage = reconnectSocket.sent.find(
+      (message) => message.type === 'task-command-lease',
+    );
+    if (!acquireMessage || typeof acquireMessage.requestId !== 'string') {
+      throw new Error('Expected retried task-command lease request');
+    }
+    expect(acquireMessage).toEqual(
+      expect.objectContaining({
+        action: 'type in the terminal',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        taskId: 'task-1',
+      }),
+    );
+
+    reconnectSocket.receiveText({
+      type: 'task-command-lease-result',
+      operation: 'acquire',
+      requestId: acquireMessage.requestId,
+      result: {
+        acquired: true,
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        leaseGeneration: 1,
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+
+    await expect(acquireRequest).resolves.toEqual({
+      acquired: true,
+      action: 'type in the terminal',
+      controllerId: 'client-1',
+      leaseGeneration: 1,
+      taskId: 'task-1',
+      version: 1,
+    });
+  });
+
+  it('sends pagehide task-command lease release through keepalive fetch with browser identity', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const sendBeaconMock = vi.fn(() => true);
+    sessionStorageData.set('parallel-code-client-id', 'client-1');
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        sendBeacon: sendBeaconMock,
+      },
+    });
+
+    const { sendPagehideInvoke } = await import('./ipc');
+
+    sendPagehideInvoke(IPC.ReleaseTaskCommandLease, {
+      clientId: 'spoofed-client',
+      leaseGeneration: 1,
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+    await flushMicrotasks();
+
+    expect(sendBeaconMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/ipc/release_task_command_lease',
+      expect.objectContaining({
+        keepalive: true,
+        headers: expect.objectContaining({
+          [BROWSER_CLIENT_ID_HEADER]: 'client-1',
+        }),
+      }),
+    );
   });
 
   it('chunks large browser write_to_agent payloads instead of sending oversized input frames', async () => {

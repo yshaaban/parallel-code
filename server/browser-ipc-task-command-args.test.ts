@@ -90,6 +90,45 @@ describe('browser IPC task-command args', () => {
     });
   });
 
+  it('injects browser client identity into task-command lease requests', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.ReleaseTaskCommandLease,
+        {
+          clientId: 'spoofed-client',
+          leaseGeneration: 3,
+          ownerId: 'owner-1',
+          taskId: 'task-1',
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      clientId: 'browser-client-1',
+      leaseGeneration: 3,
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+  });
+
+  it('strips task-command lease client identity when the browser client identity is missing', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.RenewTaskCommandLease,
+        {
+          clientId: 'spoofed-client',
+          leaseGeneration: 3,
+          ownerId: 'owner-1',
+          taskId: 'task-1',
+        },
+        null,
+      ),
+    ).toEqual({
+      leaseGeneration: 3,
+      ownerId: 'owner-1',
+      taskId: 'task-1',
+    });
+  });
+
   it('uses backend-owned agent task ids for browser terminal writes', () => {
     const getAgentTaskId = vi.fn(() => 'task-from-agent');
 

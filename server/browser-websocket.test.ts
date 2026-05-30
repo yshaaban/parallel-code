@@ -15,8 +15,10 @@ const {
   getAgentTerminalStartupRecoveryMock,
   isTaskCommandLeaseHeldMock,
   onPtyEventMock,
+  pauseAgentMock,
   recordBrowserControlSimulatedDropMock,
   recordTerminalInputTraceClientDisconnectedMock,
+  resumeAgentMock,
   subscribeToAgentMock,
   writeToAgentMock,
 } = vi.hoisted(() => ({
@@ -27,8 +29,10 @@ const {
   getAgentTerminalStartupRecoveryMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(() => true),
   onPtyEventMock: vi.fn(() => () => {}),
+  pauseAgentMock: vi.fn(),
   recordBrowserControlSimulatedDropMock: vi.fn(),
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
+  resumeAgentMock: vi.fn(),
   subscribeToAgentMock: vi.fn<(agentId: string, callback: (data: string) => void) => boolean>(
     () => false,
   ),
@@ -54,9 +58,9 @@ vi.mock('../electron/ipc/pty.js', () => ({
   hasAgentSession: vi.fn(() => true),
   killAgent: vi.fn(),
   onPtyEvent: onPtyEventMock,
-  pauseAgent: vi.fn(),
+  pauseAgent: pauseAgentMock,
   resizeAgent: vi.fn(),
-  resumeAgent: vi.fn(),
+  resumeAgent: resumeAgentMock,
   subscribeToAgent: subscribeToAgentMock,
   unsubscribeFromAgent: vi.fn(),
   writeToAgent: writeToAgentMock,
@@ -133,6 +137,7 @@ function createTestChannels(): RegisterBrowserWebSocketServerOptions['channels']
     bindChannel: vi.fn(),
     cleanup: vi.fn(),
     cleanupClient: vi.fn(),
+    hasActiveSubscriber: vi.fn(() => true),
     sendChannelMessage: vi.fn(),
     unbindChannel: vi.fn(),
   };
@@ -149,6 +154,7 @@ function createRegisterOptions(
     cleanupClientState: vi.fn(),
     isAllowedBrowserOrigin: vi.fn(() => true),
     isAuthorizedRequest: vi.fn(() => true),
+    handleTaskCommandLease: vi.fn(),
     requestTaskCommandTakeover: vi.fn(),
     respondTaskCommandTakeover: vi.fn(),
     safeCompareToken: vi.fn(() => true),
@@ -279,6 +285,164 @@ describe('registerBrowserWebSocketServer', () => {
     });
 
     expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
+  });
+
+  it('routes task-command lease messages through the websocket control handler', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const handleTaskCommandLease = vi.fn();
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        handleTaskCommandLease,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        action: 'type in the terminal',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'lease-1',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(handleTaskCommandLease).toHaveBeenCalledTimes(1);
+    expect(handleTaskCommandLease).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'lease-1',
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('acknowledges restore pause and resume after applying them on the websocket path', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        sendMessage,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'pause',
+        agentId: 'agent-1',
+        channelId: 'channel-1',
+        reason: 'restore',
+        requestId: 'pause-1',
+        restoreLeaseId: 'restore-lease-1',
+      }),
+    );
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'resume',
+        agentId: 'agent-1',
+        channelId: 'channel-1',
+        reason: 'restore',
+        requestId: 'resume-1',
+        restoreLeaseId: 'restore-lease-1',
+      }),
+    );
+
+    expect(pauseAgentMock).toHaveBeenCalledWith(
+      'agent-1',
+      'restore',
+      'channel-1',
+      'restore-lease-1',
+    );
+    expect(resumeAgentMock).toHaveBeenCalledWith(
+      'agent-1',
+      'restore',
+      'channel-1',
+      'restore-lease-1',
+    );
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'pause',
+      requestId: 'pause-1',
+      type: 'agent-command-result',
+    });
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'resume',
+      requestId: 'resume-1',
+      type: 'agent-command-result',
+    });
+  });
+
+  it('ignores stale websocket restore pauses for inactive channels', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        channels: {
+          ...createTestChannels(),
+          hasActiveSubscriber: vi.fn(() => false),
+        },
+        sendMessage,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'pause',
+        agentId: 'agent-1',
+        channelId: 'stale-channel',
+        reason: 'restore',
+        requestId: 'pause-stale',
+        restoreLeaseId: 'restore-lease-1',
+      }),
+    );
+
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'pause',
+      requestId: 'pause-stale',
+      type: 'agent-command-result',
+    });
   });
 
   it('ignores invalid websocket URL replay cursors before authenticating', async () => {

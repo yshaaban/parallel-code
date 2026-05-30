@@ -1047,6 +1047,12 @@ async function retainScorecardOwnerTaskCommandLease(
       channel: IPC,
       body?: unknown,
     ) => Promise<TResult>;
+    invokeSessionIpc: <TResult>(
+      request: APIRequestContext,
+      page: Page,
+      channel: IPC,
+      body?: unknown,
+    ) => Promise<TResult>;
     typeInTerminal: (
       page: Page,
       text: string,
@@ -1072,22 +1078,25 @@ async function retainScorecardOwnerTaskCommandLease(
     requireInteractiveReady: true,
   });
   await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, ownerMarker);
-  await refreshScorecardOwnerTaskCommandLease(browserLab, request);
+  await refreshScorecardOwnerTaskCommandLease(browserLab, ownerPage, request);
 }
 
 async function refreshScorecardOwnerTaskCommandLease(
   browserLab: {
-    invokeIpc: <TResult>(
+    invokeSessionIpc: <TResult>(
       request: APIRequestContext,
+      page: Page,
       channel: IPC,
       body?: unknown,
     ) => Promise<TResult>;
     server: { taskId: string };
   },
+  ownerPage: Page,
   request: APIRequestContext,
 ): Promise<void> {
-  const lease = await browserLab.invokeIpc<TaskCommandLeaseAcquireSnapshot>(
+  const lease = await browserLab.invokeSessionIpc<TaskCommandLeaseAcquireSnapshot>(
     request,
+    ownerPage,
     IPC.AcquireTaskCommandLease,
     {
       action: 'type in the terminal',
@@ -1112,6 +1121,12 @@ async function measureRemoteCommandSessionTiming(
       };
       taskId: string;
     };
+    invokeSessionIpc: <TResult>(
+      request: APIRequestContext,
+      page: Page,
+      channel: IPC,
+      body?: unknown,
+    ) => Promise<TResult>;
     typeInTerminal: (
       page: Page,
       text: string,
@@ -1149,7 +1164,7 @@ async function measureRemoteCommandSessionTiming(
     await expect(commandInput).toBeVisible({ timeout: 10_000 });
     const shellToCommandInputMs = getNowMs() - shellStartedAt;
     await expect(commandInput).toBeDisabled({ timeout: 10_000 });
-    await refreshScorecardOwnerTaskCommandLease(browserLab, request);
+    await refreshScorecardOwnerTaskCommandLease(browserLab, ownerPage, request);
 
     const takeOverButton = remotePage.getByRole('button', { name: /^Take Over$/u });
     const takeoverStartedAt = getNowMs();

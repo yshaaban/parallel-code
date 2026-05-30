@@ -99,6 +99,25 @@ describe('parseClientMessage', () => {
       channelId: 'channel-1',
       reason: 'manual',
     });
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'pause',
+          agentId: 'agent-1',
+          channelId: 'channel-1',
+          reason: 'restore',
+          requestId: 'pause-restore-1',
+          restoreLeaseId: 'restore-lease-1',
+        }),
+      ),
+    ).toEqual({
+      type: 'pause',
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'restore',
+      requestId: 'pause-restore-1',
+      restoreLeaseId: 'restore-lease-1',
+    });
   });
 
   it('accepts terminal input trace updates with optional browser transport receive timing', () => {
@@ -175,6 +194,26 @@ describe('parseClientMessage', () => {
           type: 'resume',
           agentId: 'agent-1',
           reason: 'unexpected',
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'pause',
+          agentId: 'agent-1',
+          reason: 'flow-control',
+          restoreLeaseId: 'restore-lease-1',
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'resume',
+          agentId: 'agent-1',
+          reason: 'restore',
+          restoreLeaseId: '',
         }),
       ),
     ).toBeNull();
@@ -335,6 +374,115 @@ describe('parseClientMessage', () => {
         rows: 24,
         resizeEpoch: 'epoch-1',
         resizeSeq: Number.NaN,
+      },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+    }
+  });
+
+  it('parses task-command lease control messages without trusting client ownership identity', () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'task-command-lease',
+          action: 'type in the terminal',
+          operation: 'acquire',
+          ownerId: 'owner-1',
+          requestId: 'request-1',
+          taskId: 'task-1',
+          takeover: true,
+        }),
+      ),
+    ).toEqual({
+      type: 'task-command-lease',
+      action: 'type in the terminal',
+      operation: 'acquire',
+      ownerId: 'owner-1',
+      requestId: 'request-1',
+      taskId: 'task-1',
+      takeover: true,
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'task-command-lease',
+          leaseGeneration: 2,
+          operation: 'renew',
+          ownerId: 'owner-1',
+          requestId: 'request-2',
+          taskId: 'task-1',
+        }),
+      ),
+    ).toEqual({
+      type: 'task-command-lease',
+      leaseGeneration: 2,
+      operation: 'renew',
+      ownerId: 'owner-1',
+      requestId: 'request-2',
+      taskId: 'task-1',
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'task-command-lease',
+          clientId: 'spoofed-client',
+          operation: 'release',
+          ownerId: 'owner-1',
+          requestId: 'request-3',
+          taskId: 'task-1',
+        }),
+      ),
+    ).toEqual({
+      type: 'task-command-lease',
+      operation: 'release',
+      ownerId: 'owner-1',
+      requestId: 'request-3',
+      taskId: 'task-1',
+    });
+  });
+
+  it('rejects malformed task-command lease control messages', () => {
+    for (const message of [
+      {
+        type: 'task-command-lease',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
+      },
+      {
+        type: 'task-command-lease',
+        action: 'type in the terminal',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        takeover: 'yes',
+        taskId: 'task-1',
+      },
+      {
+        type: 'task-command-lease',
+        leaseGeneration: 1.5,
+        operation: 'renew',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
+      },
+      {
+        type: 'task-command-lease',
+        leaseGeneration: -1,
+        operation: 'release',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
+      },
+      {
+        type: 'task-command-lease',
+        operation: 'refresh',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
       },
     ]) {
       expect(parseClientMessage(JSON.stringify(message))).toBeNull();
@@ -559,6 +707,19 @@ describe('isServerMessage', () => {
       taskId: 'task-1',
     },
     {
+      type: 'task-command-lease-result',
+      operation: 'acquire',
+      requestId: 'lease-request-1',
+      result: {
+        acquired: true,
+        action: 'type in the terminal',
+        controllerId: 'client-1',
+        leaseGeneration: 1,
+        taskId: 'task-1',
+        version: 1,
+      },
+    },
+    {
       type: 'task-event',
       event: 'created',
       name: 'Task 1',
@@ -750,6 +911,20 @@ describe('isServerMessage', () => {
         requesterClientId: 'client-2',
         requesterDisplayName: 'Sam',
         taskId: 'task-1',
+      }),
+    ).toBe(false);
+    expect(
+      isServerMessage({
+        type: 'task-command-lease-result',
+        operation: 'acquire',
+        requestId: 'lease-request-1',
+        result: {
+          acquired: true,
+          action: 'type in the terminal',
+          controllerId: 'client-1',
+          taskId: 'task-1',
+          version: 1,
+        },
       }),
     ).toBe(false);
     expect(

@@ -5,6 +5,7 @@ import type { ServerMessage } from '../../electron/remote/protocol.js';
 import type {
   RequestTaskCommandTakeoverCommand,
   RespondTaskCommandTakeoverCommand,
+  TaskCommandLeaseCommand,
   UpdatePresenceCommand,
 } from '../../electron/remote/protocol.js';
 import {
@@ -73,6 +74,7 @@ export interface WebSocketContractHarness {
     client: FakeWebSocketClient,
     message: RespondTaskCommandTakeoverCommand,
   ) => void;
+  handleTaskCommandLease: (client: FakeWebSocketClient, message: TaskCommandLeaseCommand) => void;
   updatePeerPresence: (client: FakeWebSocketClient, presence: UpdatePresenceCommand) => void;
   remoteStatus?: () => {
     connectedClients: number;
@@ -237,6 +239,9 @@ export function createTransportContractHarness(
     respondTaskCommandTakeover: () => {
       throw new Error('Task command takeover is unavailable in the shared transport harness');
     },
+    handleTaskCommandLease: () => {
+      throw new Error('Task command lease is unavailable in the shared transport harness');
+    },
     updatePeerPresence: () => {
       throw new Error('Peer presence is unavailable in the shared transport harness');
     },
@@ -306,6 +311,9 @@ export function createBrowserControlPlaneContractHarness(
     },
     respondTaskCommandTakeover: (client, message) => {
       controlPlane.respondTaskCommandTakeover(client, message);
+    },
+    handleTaskCommandLease: (client, message) => {
+      controlPlane.handleTaskCommandLease(client, message);
     },
     updatePeerPresence: (client, presence) => {
       controlPlane.updatePeerPresence(client, presence);
