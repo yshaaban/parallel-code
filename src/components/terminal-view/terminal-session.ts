@@ -486,6 +486,7 @@ export interface TerminalSession {
   cleanup(): void;
   fitAddon: FitAddon;
   flushPendingResize(): void;
+  handleTerminalData(data: string): void;
   isRestoreBlocked(): boolean;
   prewarmRenderHibernation(): void;
   requestInputTakeover(): Promise<boolean>;
@@ -503,6 +504,7 @@ export type TerminalAttachMilestone =
 
 export interface StartTerminalSessionOptions {
   canAcceptInput?: () => boolean;
+  canBufferInputWhileInteractionPending?: () => boolean;
   containerRef: HTMLDivElement;
   outputChannel?: Channel<PtyOutput>;
   getOutputPriority: () => TerminalOutputPriority;
@@ -520,6 +522,8 @@ export interface StartTerminalSessionOptions {
   onAttachBound?: () => void;
   onAttachMilestone?: (milestone: TerminalAttachMilestone) => void;
   onBlockedInputAttempt?: () => void;
+  onInputAccepted?: () => void;
+  onOutputRendered?: (byteLength: number) => void;
   onPaintReadyChange?: (isPaintReady: boolean) => void;
   onStartupFitExecuted?: (details: {
     geometryChanged: boolean;
@@ -1304,6 +1308,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     markTerminalReady,
     onChunkRendered: (outputRenderedAtMs, _renderedOutputCursor, byteLength) => {
       inputPipeline.finalizePendingInputTraceEchoes(outputRenderedAtMs);
+      options.onOutputRendered?.(byteLength);
       options.onStartupWriteRendered?.(byteLength);
       syncRenderHibernationAfterIdle();
     },
@@ -1345,12 +1350,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     agentId,
     armInteractiveEchoFastPath: outputPipeline.armInteractiveEchoFastPath,
     canAcceptInput: options.canAcceptInput,
+    canBufferInputWhileInteractionPending: options.canBufferInputWhileInteractionPending,
     isDisposed: () => disposed,
     isProcessExited: () => processExited,
     isRestoreBlocked: isRestoreBlockingRenderHibernation,
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     onBlockedInputAttempt: options.onBlockedInputAttempt,
+    onInputAccepted: options.onInputAccepted,
     onInputActivity: markLocalInputObserved,
     onReadOnlyInputAttempt,
     onResizeCommitted: applyCommittedResizeFit,
@@ -1863,6 +1870,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     flushPendingResize(): void {
       void inputPipeline.flushPendingResize();
       runDeferredSessionFitStabilization();
+    },
+    handleTerminalData(data: string): void {
+      inputPipeline.handleTerminalData(data);
     },
     isRestoreBlocked(): boolean {
       return recoveryRuntime?.isRestoreBlocked() ?? false;

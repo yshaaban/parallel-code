@@ -1,4 +1,4 @@
-import { cleanup, render } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -156,11 +156,14 @@ type SessionStatus = 'attaching' | 'error' | 'ready' | 'restoring';
 type MockSessionOptions = Pick<
   StartTerminalSessionOptions,
   | 'canAcceptInput'
+  | 'canBufferInputWhileInteractionPending'
   | 'getRenderHibernationDelayMs'
   | 'isSelectedRecoveryProtected'
   | 'onAttachBound'
   | 'onAttachMilestone'
   | 'onBlockedInputAttempt'
+  | 'onInputAccepted'
+  | 'onOutputRendered'
   | 'onPaintReadyChange'
   | 'onStartupRenderEvent'
   | 'onStartupWriteRendered'
@@ -186,6 +189,7 @@ interface MockTerminalSurface {
 interface MockTerminalSession {
   cleanup: () => void;
   flushPendingResize: () => void;
+  handleTerminalData: (data: string) => void;
   isRestoreBlocked: () => boolean;
   prewarmRenderHibernation: () => void;
   requestInputTakeover: () => Promise<boolean>;
@@ -199,6 +203,7 @@ function createMockTerminalSession(
   return {
     cleanup: sessionCleanupMock,
     flushPendingResize: vi.fn(),
+    handleTerminalData: vi.fn(),
     isRestoreBlocked: vi.fn(() => false),
     prewarmRenderHibernation: vi.fn(),
     requestInputTakeover: requestInputTakeoverMock,
@@ -254,6 +259,14 @@ function getLastRestoreBlockedHandler(): ((isBlocked: boolean) => void) | undefi
 
 function getLastResizeTransactionChangeHandler(): ((isActive: boolean) => void) | undefined {
   return getLastSessionOptions()?.onResizeTransactionChange;
+}
+
+function getLastInputAcceptedHandler(): (() => void) | undefined {
+  return getLastSessionOptions()?.onInputAccepted;
+}
+
+function getLastOutputRenderedHandler(): ((byteLength: number) => void) | undefined {
+  return getLastSessionOptions()?.onOutputRendered;
 }
 
 function createDeferredPromise<T>(): {
@@ -358,6 +371,86 @@ describe('TerminalView', () => {
     result.unmount();
 
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the terminal input acknowledgement overlay disabled by default', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastInputAcceptedHandler()?.();
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+  });
+
+  it('shows the experiment-gated terminal input acknowledgement and clears it after output renders', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      inputAcknowledgementDurationMs: 240,
+      inputAcknowledgementMode: 'pulse',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastInputAcceptedHandler()?.();
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+
+    getLastOutputRenderedHandler()?.(1);
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+  });
+
+  it('expires the terminal input acknowledgement when no output arrives', () => {
+    vi.useFakeTimers();
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      inputAcknowledgementDurationMs: 240,
+      inputAcknowledgementMode: 'pulse',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastInputAcceptedHandler()?.();
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+
+    vi.advanceTimersByTime(239);
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+
+    vi.advanceTimersByTime(1);
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
   });
 
   it('reacts to focus, font size, terminal font, and theme changes', async () => {
@@ -513,7 +606,7 @@ describe('TerminalView', () => {
     expect(session.term.options.cursorBlink).toBe(false);
   });
 
-  it('suppresses stdin while the focused terminal is attaching or restoring', () => {
+  it('suppresses xterm stdin while still allowing buffering while the focused terminal is attaching or restoring', () => {
     setStore('activeTaskId', 'task-1');
     render(() => (
       <TerminalView
@@ -531,20 +624,219 @@ describe('TerminalView', () => {
     const statusHandler = getLastStatusChangeHandler();
 
     statusHandler?.('ready');
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+
+    getLastPaintReadyChangeHandler()?.(true);
     expect(session.term.options.disableStdin).toBe(false);
     expect(sessionOptions?.canAcceptInput?.()).toBe(true);
 
     statusHandler?.('attaching');
     expect(session.term.options.disableStdin).toBe(true);
     expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+    expect(sessionOptions?.canBufferInputWhileInteractionPending?.()).toBe(true);
 
     statusHandler?.('restoring');
     expect(session.term.options.disableStdin).toBe(true);
     expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+    expect(sessionOptions?.canBufferInputWhileInteractionPending?.()).toBe(true);
 
     statusHandler?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
     expect(session.term.options.disableStdin).toBe(false);
     expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+  });
+
+  it('captures printable input for buffering while the focused terminal is restoring', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+
+    getLastStatusChangeHandler()?.('restoring');
+    fireEvent.keyDown(terminalRoot as Element, { key: 'a' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'Enter' });
+
+    expect(session.handleTerminalData).toHaveBeenCalledWith('a');
+    expect(session.handleTerminalData).toHaveBeenCalledWith('\r');
+  });
+
+  it('captures TUI navigation keys for buffering while the focused terminal is restoring', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+
+    getLastStatusChangeHandler()?.('restoring');
+    fireEvent.keyDown(terminalRoot as Element, { key: 'ArrowUp' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'ArrowDown' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'Delete' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'Tab', shiftKey: true });
+
+    expect(session.handleTerminalData).toHaveBeenCalledWith('\x1b[A');
+    expect(session.handleTerminalData).toHaveBeenCalledWith('\x1b[B');
+    expect(session.handleTerminalData).toHaveBeenCalledWith('\x1b[3~');
+    expect(session.handleTerminalData).toHaveBeenCalledWith('\x1b[Z');
+  });
+
+  it('keeps buffering restore input when terminal focus briefly falls back to the document', () => {
+    setStore('activeTaskId', 'task-1');
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+
+    getLastStatusChangeHandler()?.('restoring');
+    fireEvent.keyDown(document.body, { key: 'a' });
+
+    expect(session.handleTerminalData).toHaveBeenCalledWith('a');
+  });
+
+  it('buffers terminal beforeinput text while restore keydown handling is bypassed', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const beforeInputEvent = new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      data: 'a',
+      inputType: 'insertText',
+    });
+
+    getLastStatusChangeHandler()?.('restoring');
+    terminalRoot?.dispatchEvent(beforeInputEvent);
+
+    expect(beforeInputEvent.defaultPrevented).toBe(true);
+    expect(session.handleTerminalData).toHaveBeenCalledWith('a');
+  });
+
+  it('keeps the first post-restore key burst on the ordered input path after paint readiness', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    fireEvent.keyDown(terminalRoot as Element, { key: 'a' });
+
+    expect(session.handleTerminalData).toHaveBeenCalledWith('a');
+  });
+
+  it('releases restore input capture after the ready terminal drains the first burst', () => {
+    vi.useFakeTimers();
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+
+    getLastStatusChangeHandler()?.('restoring');
+    const restoringEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'a',
+    });
+    terminalRoot?.dispatchEvent(restoringEvent);
+    expect(restoringEvent.defaultPrevented).toBe(true);
+    expect(session.handleTerminalData).toHaveBeenCalledWith('a');
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    vi.advanceTimersByTime(251);
+
+    const readyEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'b',
+    });
+    terminalRoot?.dispatchEvent(readyEvent);
+
+    expect(readyEvent.defaultPrevented).toBe(false);
+    expect(session.handleTerminalData).not.toHaveBeenCalledWith('b');
+  });
+
+  it('does not steal restore input from editable controls outside the terminal', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <>
+        <input aria-label="outside input" />
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused
+        />
+      </>
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const outsideInput = result.getByLabelText('outside input');
+
+    getLastStatusChangeHandler()?.('restoring');
+    fireEvent.keyDown(outsideInput, { key: 'a' });
+
+    expect(session.handleTerminalData).not.toHaveBeenCalled();
   });
 
   it('requires the active command target before blinking the cursor or accepting input', () => {
@@ -564,6 +856,7 @@ describe('TerminalView', () => {
     const sessionOptions = getLastSessionOptions();
 
     getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
 
     expect(session.term.options.cursorBlink).toBe(false);
     expect(session.term.options.disableStdin).toBe(true);
@@ -595,6 +888,7 @@ describe('TerminalView', () => {
     const sessionOptions = getLastSessionOptions();
 
     getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
     expect(session.term.options.cursorBlink).toBe(true);
     expect(session.term.options.disableStdin).toBe(false);
     expect(sessionOptions?.canAcceptInput?.()).toBe(true);
@@ -608,6 +902,42 @@ describe('TerminalView', () => {
     expect(session.term.options.cursorBlink).toBe(true);
     expect(session.term.options.disableStdin).toBe(false);
     expect(sessionOptions?.canAcceptInput?.()).toBe(true);
+  });
+
+  it('buffers terminal input while resize temporarily blocks direct stdin', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const sessionOptions = getLastSessionOptions();
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    getLastResizeTransactionChangeHandler()?.(true);
+
+    expect(session.term.options.disableStdin).toBe(true);
+    expect(sessionOptions?.canAcceptInput?.()).toBe(false);
+    expect(sessionOptions?.canBufferInputWhileInteractionPending?.()).toBe(true);
+
+    const keyEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'x',
+    });
+    terminalRoot?.dispatchEvent(keyEvent);
+
+    expect(keyEvent.defaultPrevented).toBe(true);
+    expect(session.handleTerminalData).toHaveBeenCalledWith('x');
   });
 
   it('updates cursor blinking when DOM focus moves into and out of the terminal', async () => {

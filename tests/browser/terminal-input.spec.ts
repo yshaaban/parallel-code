@@ -316,12 +316,8 @@ test.describe('browser-lab shell repeat input', () => {
       IPC.ListRunningAgentIds,
     );
     const shellTerminalIndex = await browserLab.createShellTerminal(page);
-    const shellAgentId = await waitForNewRunningAgentId(
-      browserLab,
-      request,
-      initialRunningAgentIds,
-    );
-    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await waitForNewRunningAgentId(browserLab, request, initialRunningAgentIds);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
     await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
       clearLineAfterWarm: true,
     });
@@ -357,7 +353,7 @@ test.describe('browser-lab shell repeat input', () => {
       request,
       initialRunningAgentIds,
     );
-    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
     await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
       clearLineAfterWarm: true,
     });
@@ -390,12 +386,8 @@ test.describe('browser-lab shell repeat input', () => {
       IPC.ListRunningAgentIds,
     );
     const shellTerminalIndex = await browserLab.createShellTerminal(page);
-    const shellAgentId = await waitForNewRunningAgentId(
-      browserLab,
-      request,
-      initialRunningAgentIds,
-    );
-    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await waitForNewRunningAgentId(browserLab, request, initialRunningAgentIds);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
     await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
       clearLineAfterWarm: true,
     });

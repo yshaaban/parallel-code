@@ -227,6 +227,11 @@ describe('shell prompt detection', () => {
     expect(hasShellPromptReadyInTail('user@host:~$ ')).toBe(true);
     expect(hasShellPromptReadyInTail('build % ')).toBe(true);
     expect(hasShellPromptReadyInTail('root# ')).toBe(true);
+    expect(hasShellPromptReadyInTail('➜ ')).toBe(true);
+    expect(hasShellPromptReadyInTail('➜  ~ ')).toBe(true);
+    expect(hasShellPromptReadyInTail('➜  parallel-code git:(main) ')).toBe(true);
+    expect(hasShellPromptReadyInTail('➜\n~')).toBe(true);
+    expect(hasShellPromptReadyInTail('➜\nparallel-code git:(main)')).toBe(true);
     expect(hasShellPromptReadyInTail('❯ ')).toBe(true);
     expect(hasShellPromptReadyInTail('hydra[gpt-5.4]>')).toBe(true);
   });
@@ -240,6 +245,7 @@ describe('shell prompt detection', () => {
     expect(hasShellPromptReadyInTail('download progress 99%')).toBe(false);
     expect(hasShellPromptReadyInTail('total cost $')).toBe(false);
     expect(hasShellPromptReadyInTail('build #')).toBe(false);
+    expect(hasShellPromptReadyInTail('➜\nnot a prompt?')).toBe(false);
   });
 });
 

@@ -16,6 +16,8 @@ import { markDirty } from '../lib/terminalFitManager';
 import { assertNever } from '../lib/assert-never';
 import { theme } from '../lib/theme';
 import {
+  getTerminalExperimentInputAcknowledgementDurationMs,
+  getTerminalExperimentInputAcknowledgementMode,
   getTerminalExperimentSwitchPostInputReadyEchoGraceMs,
   getTerminalExperimentSwitchTargetWindowMs,
   getTerminalPerformanceExperimentConfig,
@@ -126,6 +128,7 @@ function isElementVisibleInViewport(element: Element): boolean {
 }
 
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
+const POST_RECOVERY_INPUT_CAPTURE_GRACE_MS = 750;
 
 function getTerminalFocusElement(root: HTMLElement | undefined): HTMLElement | null {
   if (!root) {
@@ -439,6 +442,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let denseOverloadCleanup: (() => void) | undefined;
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
+  let inputAcknowledgementTimer: number | undefined;
+  let pendingTerminalKeyCapture = false;
+  let pendingTerminalKeyCaptureReleaseTimer: number | undefined;
+  let terminalInputCaptureGraceUntilMs = 0;
   let takeOverGeneration = 0;
   let sessionStartGeneration = 0;
   let pendingRecoveryFocusRestore = false;
@@ -489,6 +496,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [domFocusWithin, setDomFocusWithin] = createSignal(false);
   const [documentFocusVersion, setDocumentFocusVersion] = createSignal(0);
   const [isVisible, setIsVisible] = createSignal(isInitiallyFocused);
+  const [inputAcknowledgementGeneration, setInputAcknowledgementGeneration] = createSignal(0);
+  const [inputAcknowledgementVisible, setInputAcknowledgementVisible] = createSignal(false);
   const [sessionVersion, setSessionVersion] = createSignal(0);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
@@ -831,6 +840,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       case 'ready':
         return (
           presentationMode().kind === 'live' &&
+          isTerminalPaintReady(status) &&
           !renderHibernating() &&
           !restoreBlocked() &&
           !resizeTransactionActive()
@@ -843,6 +853,63 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       default:
         return assertNever(status, 'Unhandled terminal input acceptance status');
     }
+  }
+
+  function canBufferTerminalInputWhileInteractionPending(): boolean {
+    return (
+      (isActiveCommandTarget() || props.isFocused === true || domFocusWithin()) &&
+      !hasPeerController() &&
+      !renderHibernating() &&
+      sessionStatus() !== 'error'
+    );
+  }
+
+  function isInputAcknowledgementExperimentEnabled(): boolean {
+    return getTerminalExperimentInputAcknowledgementMode() === 'pulse';
+  }
+
+  function clearInputAcknowledgementTimer(): void {
+    if (inputAcknowledgementTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(inputAcknowledgementTimer);
+    inputAcknowledgementTimer = undefined;
+  }
+
+  function clearInputAcknowledgement(): void {
+    clearInputAcknowledgementTimer();
+    setInputAcknowledgementVisible(false);
+  }
+
+  function showInputAcknowledgement(): void {
+    if (!isInputAcknowledgementExperimentEnabled() || presentationMode().kind !== 'live') {
+      return;
+    }
+
+    clearInputAcknowledgementTimer();
+    setInputAcknowledgementGeneration((generation) => generation + 1);
+    setInputAcknowledgementVisible(true);
+    inputAcknowledgementTimer = window.setTimeout(() => {
+      inputAcknowledgementTimer = undefined;
+      setInputAcknowledgementVisible(false);
+    }, getTerminalExperimentInputAcknowledgementDurationMs());
+  }
+
+  function handleSessionInputAccepted(): void {
+    showInputAcknowledgement();
+  }
+
+  function handleSessionOutputRendered(): void {
+    clearInputAcknowledgement();
+  }
+
+  function getInputAcknowledgementRenderKey(): number | false {
+    if (!inputAcknowledgementVisible()) {
+      return false;
+    }
+
+    return inputAcknowledgementGeneration();
   }
 
   function getSwitchWindowOwnerPriority(): number {
@@ -940,6 +1007,246 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     session.term.options.cursorBlink = shouldBlinkTerminalCursor();
     session.updateOutputPriority?.();
   }
+
+  function getBufferedTerminalKeyData(event: KeyboardEvent): string | null {
+    if (event.isComposing || event.altKey || event.metaKey) {
+      return null;
+    }
+
+    if (event.ctrlKey) {
+      switch (event.key.toLowerCase()) {
+        case 'c':
+          return '\x03';
+        case 'd':
+          return '\x04';
+        case 'u':
+          return '\x15';
+        default:
+          return null;
+      }
+    }
+
+    switch (event.key) {
+      case 'ArrowDown':
+        return '\x1b[B';
+      case 'ArrowLeft':
+        return '\x1b[D';
+      case 'ArrowRight':
+        return '\x1b[C';
+      case 'ArrowUp':
+        return '\x1b[A';
+      case 'Backspace':
+        return '\x7f';
+      case 'Delete':
+        return '\x1b[3~';
+      case 'End':
+        return '\x1b[F';
+      case 'Enter':
+        return '\r';
+      case 'Escape':
+        return '\x1b';
+      case 'Home':
+        return '\x1b[H';
+      case 'PageDown':
+        return '\x1b[6~';
+      case 'PageUp':
+        return '\x1b[5~';
+      case 'Tab':
+        if (event.shiftKey) {
+          return '\x1b[Z';
+        }
+        return '\t';
+      default:
+        if (event.key.length === 1) {
+          return event.key;
+        }
+        return null;
+    }
+  }
+
+  function getBufferedTerminalBeforeInputData(event: InputEvent): string | null {
+    if (event.isComposing) {
+      return null;
+    }
+
+    switch (event.inputType) {
+      case 'deleteContentBackward':
+        return '\x7f';
+      case 'insertLineBreak':
+      case 'insertParagraph':
+        return '\r';
+      case 'insertText':
+        if (event.data && event.data.length > 0) {
+          return event.data;
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  function getTerminalInputCaptureNowMs(): number {
+    if (typeof performance === 'undefined') {
+      return Date.now();
+    }
+
+    return performance.now();
+  }
+
+  function isTerminalInputCaptureGraceActive(): boolean {
+    return getTerminalInputCaptureNowMs() < terminalInputCaptureGraceUntilMs;
+  }
+
+  function armTerminalInputCaptureGrace(): void {
+    terminalInputCaptureGraceUntilMs =
+      getTerminalInputCaptureNowMs() + POST_RECOVERY_INPUT_CAPTURE_GRACE_MS;
+  }
+
+  function clearTerminalInputCaptureGrace(): void {
+    terminalInputCaptureGraceUntilMs = 0;
+  }
+
+  function armTerminalInputCaptureGraceIfPaintReady(): void {
+    if (isTerminalPaintReady(sessionStatus()) && canBufferTerminalInputWhileInteractionPending()) {
+      armTerminalInputCaptureGrace();
+    }
+  }
+
+  function shouldBufferPendingTerminalInputEvent(): boolean {
+    return (
+      session !== undefined &&
+      (!canAcceptTerminalInput() ||
+        pendingTerminalKeyCapture ||
+        isTerminalInputCaptureGraceActive()) &&
+      canBufferTerminalInputWhileInteractionPending()
+    );
+  }
+
+  function isEditableElement(element: Element): boolean {
+    return (
+      element.matches('input, textarea, select, [contenteditable="true"], [role="textbox"]') ||
+      element.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]') !==
+        null
+    );
+  }
+
+  function shouldHandleTerminalInputCapture(event: Event): boolean {
+    if (!shouldBufferPendingTerminalInputEvent()) {
+      return false;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return true;
+    }
+
+    if (shellRef?.contains(target)) {
+      return true;
+    }
+
+    if (target instanceof Element && isEditableElement(target)) {
+      return false;
+    }
+
+    return target === document.body || target === document.documentElement;
+  }
+
+  function enqueueCapturedTerminalInput(data: string): void {
+    pendingTerminalKeyCapture = true;
+    clearPendingTerminalKeyCaptureReleaseTimer();
+    if (canAcceptTerminalInput()) {
+      schedulePendingTerminalKeyCaptureRelease();
+    }
+    session?.handleTerminalData(data);
+  }
+
+  function handleTerminalKeyDownCapture(event: KeyboardEvent): void {
+    if (!shouldHandleTerminalInputCapture(event)) {
+      return;
+    }
+
+    const data = getBufferedTerminalKeyData(event);
+    if (data === null) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    enqueueCapturedTerminalInput(data);
+  }
+
+  function handleTerminalBeforeInputCapture(event: InputEvent): void {
+    if (!shouldHandleTerminalInputCapture(event)) {
+      return;
+    }
+
+    const data = getBufferedTerminalBeforeInputData(event);
+    if (data === null) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    enqueueCapturedTerminalInput(data);
+  }
+
+  function clearPendingTerminalKeyCaptureReleaseTimer(): void {
+    if (pendingTerminalKeyCaptureReleaseTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(pendingTerminalKeyCaptureReleaseTimer);
+    pendingTerminalKeyCaptureReleaseTimer = undefined;
+  }
+
+  function schedulePendingTerminalKeyCaptureRelease(): void {
+    clearPendingTerminalKeyCaptureReleaseTimer();
+    pendingTerminalKeyCaptureReleaseTimer = window.setTimeout(() => {
+      pendingTerminalKeyCaptureReleaseTimer = undefined;
+      pendingTerminalKeyCapture = false;
+      clearTerminalInputCaptureGrace();
+    }, 250);
+  }
+
+  function schedulePendingTerminalKeyCaptureReleaseIfReady(): void {
+    if (
+      pendingTerminalKeyCapture &&
+      pendingTerminalKeyCaptureReleaseTimer === undefined &&
+      canAcceptTerminalInput()
+    ) {
+      schedulePendingTerminalKeyCaptureRelease();
+    }
+  }
+
+  function clearPendingTerminalKeyCapture(): void {
+    clearPendingTerminalKeyCaptureReleaseTimer();
+    pendingTerminalKeyCapture = false;
+    clearTerminalInputCaptureGrace();
+  }
+
+  onMount(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    document.addEventListener('keydown', handleTerminalKeyDownCapture, true);
+    document.addEventListener('beforeinput', handleTerminalBeforeInputCapture, true);
+    onCleanup(() => {
+      clearPendingTerminalKeyCapture();
+      document.removeEventListener('keydown', handleTerminalKeyDownCapture, true);
+      document.removeEventListener('beforeinput', handleTerminalBeforeInputCapture, true);
+    });
+  });
+
+  createEffect(() => {
+    if (!canBufferTerminalInputWhileInteractionPending()) {
+      clearPendingTerminalKeyCapture();
+    }
+  });
+
+  createEffect(() => {
+    schedulePendingTerminalKeyCaptureReleaseIfReady();
+  });
 
   function getSwitchPostInputReadyEchoGraceMs(): number {
     return getTerminalExperimentSwitchPostInputReadyEchoGraceMs(getVisibleTerminalCount());
@@ -1149,26 +1456,42 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionStatusChange(status: TerminalViewStatus): void {
+    if (status !== 'ready') {
+      clearInputAcknowledgement();
+    }
     setSessionStatus(status);
+    armTerminalInputCaptureGraceIfPaintReady();
     syncCurrentSessionRuntimeState();
+    schedulePendingTerminalKeyCaptureReleaseIfReady();
   }
 
   function handleSessionPaintReadyChange(nextPaintReady: boolean): void {
     setPaintReady(nextPaintReady);
+    armTerminalInputCaptureGraceIfPaintReady();
     syncCurrentSessionRuntimeState();
+    schedulePendingTerminalKeyCaptureReleaseIfReady();
   }
 
   function handleSessionRenderHibernationChange(isHibernating: boolean): void {
+    if (isHibernating) {
+      clearInputAcknowledgement();
+    }
     setRenderHibernating(isHibernating);
     syncCurrentSessionRuntimeState();
   }
 
   function handleSessionRestoreBlockedChange(isBlocked: boolean): void {
+    if (isBlocked) {
+      clearInputAcknowledgement();
+    }
     setRestoreBlocked(isBlocked);
     syncCurrentSessionRuntimeState();
   }
 
   function handleSessionResizeTransactionChange(isActive: boolean): void {
+    if (isActive) {
+      clearInputAcknowledgement();
+    }
     setResizeTransactionActive(isActive);
     syncCurrentSessionRuntimeState();
   }
@@ -1216,6 +1539,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         try {
           startedSession = startLoadedTerminalSession({
             canAcceptInput: canAcceptTerminalInput,
+            canBufferInputWhileInteractionPending: canBufferTerminalInputWhileInteractionPending,
             containerRef,
             getOutputPriority: outputPriority,
             getStartupPaintRole: getTerminalStartupPaintRole,
@@ -1235,6 +1559,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               recordTerminalPresentationBlockedInput(presentationMode().kind);
               anomalyMonitorRegistration?.recordInteraction('blocked-input');
             },
+            onInputAccepted: handleSessionInputAccepted,
+            onOutputRendered: handleSessionOutputRendered,
             onPaintReadyChange: handleSessionPaintReadyChange,
             onStartupFitExecuted: recordStartupFitExecutionIfPending,
             onStartupFitScheduled: recordStartupFitScheduleIfPending,
@@ -1445,6 +1771,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       observer?.disconnect();
+      clearInputAcknowledgement();
       clearSessionDormancyTimer();
       cleanupTerminalSessionLifetime();
       cancelSwitchWindowState();
@@ -1513,6 +1840,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     restoreBlocked();
     isVisible();
     syncTerminalStartupPaintCoordination();
+  });
+
+  createEffect(() => {
+    if (!isInputAcknowledgementExperimentEnabled()) {
+      clearInputAcknowledgement();
+    }
   });
 
   createEffect(() => {
@@ -1902,6 +2235,21 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               </span>
             </div>
           </div>
+        )}
+      </Show>
+      {/* Keyed on the generation so each accepted input remounts the overlay and restarts the
+          pulse animation; rapid keystrokes re-pulse instead of silently extending the first one. */}
+      <Show when={getInputAcknowledgementRenderKey()} keyed>
+        {(generation) => (
+          <div
+            aria-hidden="true"
+            class="terminal-input-ack-overlay"
+            data-terminal-input-ack="true"
+            data-terminal-input-ack-generation={generation}
+            style={{
+              '--terminal-input-ack-duration': `${getTerminalExperimentInputAcknowledgementDurationMs()}ms`,
+            }}
+          />
         )}
       </Show>
       <Show

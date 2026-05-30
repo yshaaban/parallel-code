@@ -70,15 +70,18 @@ const MAX_PENDING_INPUT_TRACE_ECHOES = 256;
 const KEYBOARD_TRACE_START_MAX_AGE_MS = 250;
 
 interface QueuedInputChunk {
+  bufferedUntilInputAccepted: boolean;
   bufferedAtMs: number;
   data: string;
   inputKind: TerminalInputTraceKind;
   queuedAt: number;
+  requiresInputAcceptance: boolean;
   startedAtMs: number;
 }
 
 interface InFlightInputBatch {
   batch: string;
+  bufferedUntilInputAccepted: boolean;
   bufferedAtMs: number;
   count: number;
   inputEpoch: string;
@@ -86,6 +89,7 @@ interface InFlightInputBatch {
   inputSeq: number;
   queueBacked: boolean;
   queuedAt: number;
+  requiresInputAcceptance: boolean;
   requestId: string;
   startedAtMs: number;
   status: 'accepted' | 'sending';
@@ -107,6 +111,11 @@ interface PendingKeyboardTraceStart {
 
 interface FlushPendingInputOptions {
   traceAsImmediate?: boolean;
+}
+
+interface EnqueueInputOptions {
+  bufferedUntilInputAccepted?: boolean;
+  requiresInputAcceptance?: boolean;
 }
 
 interface TerminalGeometry {
@@ -172,7 +181,9 @@ interface CreateTerminalInputPipelineOptions {
   isSpawnFailed: () => boolean;
   isSpawnReady: () => boolean;
   canAcceptInput?: () => boolean;
+  canBufferInputWhileInteractionPending?: () => boolean;
   onBlockedInputAttempt?: () => void;
+  onInputAccepted?: () => void;
   onInputActivity?: () => void;
   onReadOnlyInputAttempt?: () => void;
   onResizeCommitted?: (geometry: TerminalGeometry) => void;
@@ -322,6 +333,8 @@ export function createTerminalInputPipeline(
   let pendingInputStartedAtMs = -1;
   let pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
   let pendingInputKind: TerminalInputTraceKind = 'interactive';
+  let pendingInputBufferedUntilAccepted = false;
+  let pendingInputRequiresAcceptance = false;
   const pendingKeyboardTraceStarts: PendingKeyboardTraceStart[] = [];
   let nextProgrammaticInputTrace: {
     inputKind: TerminalInputTraceKind;
@@ -417,6 +430,8 @@ export function createTerminalInputPipeline(
     pendingInputStartedAtMs = -1;
     pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
     pendingInputKind = 'interactive';
+    pendingInputBufferedUntilAccepted = false;
+    pendingInputRequiresAcceptance = false;
   }
 
   function getBufferedInputChars(): number {
@@ -715,6 +730,10 @@ export function createTerminalInputPipeline(
       return DEFAULT_MAX_PENDING_CHARS;
     }
 
+    if (firstEntry.bufferedUntilInputAccepted) {
+      return MAX_SEND_BATCH_CHARS;
+    }
+
     switch (firstEntry.inputKind) {
       case 'interactive':
       case 'control':
@@ -736,6 +755,10 @@ export function createTerminalInputPipeline(
     const firstEntry = queueEntries[0];
     if (!firstEntry) {
       return MAX_CONCURRENT_INPUT_BATCHES;
+    }
+
+    if (firstEntry.bufferedUntilInputAccepted) {
+      return 1;
     }
 
     return getInputBatchConcurrencyLimit(firstEntry.inputKind);
@@ -842,8 +865,12 @@ export function createTerminalInputPipeline(
       inputEpoch,
       inputKind: traceSummary.inputKind,
       inputSeq: nextInputSeq,
+      bufferedUntilInputAccepted: queuedBatchEntries.some(
+        (entry) => entry.bufferedUntilInputAccepted,
+      ),
       queueBacked: true,
       queuedAt: queuedBatchEntries[0]?.queuedAt ?? 0,
+      requiresInputAcceptance: queuedBatchEntries.some((entry) => entry.requiresInputAcceptance),
       requestId: createRandomId(),
       startedAtMs: traceSummary.startedAtMs,
       status: 'sending' as const,
@@ -885,6 +912,20 @@ export function createTerminalInputPipeline(
 
   function hasUndispatchedInput(): boolean {
     return pendingRetryInputBatches.length > 0 || inputQueue.length > getDispatchedInputCount();
+  }
+
+  function hasQueuedInputAwaitingAcceptance(): boolean {
+    if (pendingRetryInputBatches.some((batch) => batch.requiresInputAcceptance)) {
+      return true;
+    }
+
+    return inputQueue
+      .slice(getDispatchedInputCount())
+      .some((entry) => entry.requiresInputAcceptance);
+  }
+
+  function isQueuedInputAcceptanceBlocked(): boolean {
+    return options.canAcceptInput?.() === false && hasQueuedInputAwaitingAcceptance();
   }
 
   function getLatestTargetResizeGeometry(): TerminalGeometry | null {
@@ -1015,6 +1056,7 @@ export function createTerminalInputPipeline(
       recordInputSent(batch.queuedAt);
       recordInputAccepted(inputDispatchedAt, commandResultReceivedAtMs);
       recordTerminalInputBatchSent(batch.batch.length);
+      options.onInputAccepted?.();
       return true;
     });
   }
@@ -1092,6 +1134,10 @@ export function createTerminalInputPipeline(
       retryInputDrain();
       return;
     }
+    if (isQueuedInputAcceptanceBlocked()) {
+      retryInputDrain();
+      return;
+    }
     if (!options.isSpawnReady()) {
       retryInputDrain();
       return;
@@ -1119,7 +1165,9 @@ export function createTerminalInputPipeline(
         while (hasUndispatchedInput()) {
           const retryBatch = pendingRetryInputBatches.shift();
           if (retryBatch) {
-            const concurrencyLimit = getInputBatchConcurrencyLimit(retryBatch.inputKind);
+            const concurrencyLimit = retryBatch.bufferedUntilInputAccepted
+              ? 1
+              : getInputBatchConcurrencyLimit(retryBatch.inputKind);
             if (inFlightInputBatches.length >= concurrencyLimit) {
               pendingRetryInputBatches.unshift(retryBatch);
               break;
@@ -1182,9 +1230,11 @@ export function createTerminalInputPipeline(
     inputQueue.push(
       ...splitTerminalInputChunks(pendingInput).map((chunk) => ({
         ...chunk,
+        bufferedUntilInputAccepted: pendingInputBufferedUntilAccepted,
         bufferedAtMs,
         inputKind: pendingInputKind,
         queuedAt,
+        requiresInputAcceptance: pendingInputRequiresAcceptance,
         startedAtMs: traceStartedAtMs >= 0 ? traceStartedAtMs : bufferedAtMs,
       })),
     );
@@ -1192,7 +1242,7 @@ export function createTerminalInputPipeline(
     updateInputQueueDiagnostics();
   }
 
-  function enqueueInput(data: string): void {
+  function enqueueInput(data: string, enqueueOptions: EnqueueInputOptions = {}): void {
     if (options.isProcessExited()) {
       return;
     }
@@ -1221,6 +1271,9 @@ export function createTerminalInputPipeline(
       traceContext.inputKind,
       hadPendingInput,
     );
+    pendingInputBufferedUntilAccepted ||= enqueueOptions.bufferedUntilInputAccepted === true;
+    pendingInputRequiresAcceptance ||=
+      enqueueOptions.requiresInputAcceptance === true && traceContext.inputKind !== 'paste';
     if (
       plan.flushImmediately ||
       pendingInput.length >= pendingInputCharLimit ||
@@ -1236,12 +1289,7 @@ export function createTerminalInputPipeline(
     updateInputQueueDiagnostics();
   }
 
-  function handleTerminalData(data: string): void {
-    if (options.canAcceptInput?.() === false) {
-      options.onBlockedInputAttempt?.();
-      return;
-    }
-
+  function recordPromptInput(data: string): void {
     if (props.onPromptDetected) {
       for (const char of data) {
         if (char === '\r') {
@@ -1261,10 +1309,35 @@ export function createTerminalInputPipeline(
         }
       }
     }
+  }
+
+  function enqueueAcceptedInput(data: string, enqueueOptions: EnqueueInputOptions): void {
+    recordPromptInput(data);
     if (data.length > 0) {
       options.onInputActivity?.();
     }
-    enqueueInput(data);
+    enqueueInput(data, enqueueOptions);
+  }
+
+  function canBufferInteractionPendingInput(): boolean {
+    return options.canBufferInputWhileInteractionPending?.() === true;
+  }
+
+  function handleTerminalData(data: string): void {
+    if (options.canAcceptInput?.() === false) {
+      if (canBufferInteractionPendingInput()) {
+        enqueueAcceptedInput(data, {
+          bufferedUntilInputAccepted: true,
+          requiresInputAcceptance: true,
+        });
+        return;
+      }
+
+      options.onBlockedInputAttempt?.();
+      return;
+    }
+
+    enqueueAcceptedInput(data, { requiresInputAcceptance: true });
   }
 
   function scheduleResizeFlush(delayMs = RESIZE_FLUSH_DELAY_MS): void {

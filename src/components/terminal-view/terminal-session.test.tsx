@@ -67,6 +67,11 @@ const {
           onmessage?: (message: unknown) => void;
         }
       | undefined;
+    onChunkRendered?: (
+      outputRenderedAtMs: number,
+      renderedOutputCursor: number,
+      byteLength: number,
+    ) => void;
     onQueueEmpty?: () => void;
     recoveryVisibilitySnapshots: boolean[];
     webLinkHandler?: ((event: MouseEvent, uri: string) => void) | undefined;
@@ -75,6 +80,7 @@ const {
     fitAddonFits: [],
     lineText: '',
     hasSuppressedOutputSinceHibernation: false,
+    onChunkRendered: undefined,
     writeInFlight: false,
     recoveryVisibilitySnapshots: [],
   };
@@ -110,33 +116,45 @@ const {
       requestInputTakeover: vi.fn(async () => true),
       setNextProgrammaticInputTrace: vi.fn(),
     })),
-    createTerminalOutputPipelineMock: vi.fn((options: { onQueueEmpty: () => void }) => {
-      state.onQueueEmpty = options.onQueueEmpty;
-      return {
-        appendRenderedOutputHistory: vi.fn(),
-        armInteractiveEchoFastPath: vi.fn(),
-        cleanup: vi.fn(),
-        clearOutputWriteWatchdog: vi.fn(),
-        dropQueuedOutputForRecovery: vi.fn(),
-        enqueueOutput: vi.fn(),
-        flushOutputQueue: vi.fn(),
-        flushOutputQueueSlice: vi.fn(() => 0),
-        getRecoveryRequestState: vi.fn(() => ({ outputCursor: 0, renderedTail: null })),
-        getRenderedOutputCursor: vi.fn(() => 0),
-        getRenderedOutputHistory: vi.fn(() => new Uint8Array()),
-        hasPendingFlowTransitions: vi.fn(() => false),
-        hasQueuedOutput: vi.fn(() => false),
-        hasQueuedOutputBytes: vi.fn(() => false),
-        hasSuppressedOutputSinceHibernation: vi.fn(() => state.hasSuppressedOutputSinceHibernation),
-        hasWriteInFlight: vi.fn(() => state.writeInFlight),
-        recoverFlowControlIfIdle: vi.fn(),
-        scheduleOutputFlush: vi.fn(),
-        setRenderHibernating: vi.fn(),
-        setRenderedOutputCursor: vi.fn(),
-        setRenderedOutputHistory: vi.fn(),
-        updateOutputPriority: vi.fn(),
-      };
-    }),
+    createTerminalOutputPipelineMock: vi.fn(
+      (options: {
+        onChunkRendered: (
+          outputRenderedAtMs: number,
+          renderedOutputCursor: number,
+          byteLength: number,
+        ) => void;
+        onQueueEmpty: () => void;
+      }) => {
+        state.onChunkRendered = options.onChunkRendered;
+        state.onQueueEmpty = options.onQueueEmpty;
+        return {
+          appendRenderedOutputHistory: vi.fn(),
+          armInteractiveEchoFastPath: vi.fn(),
+          cleanup: vi.fn(),
+          clearOutputWriteWatchdog: vi.fn(),
+          dropQueuedOutputForRecovery: vi.fn(),
+          enqueueOutput: vi.fn(),
+          flushOutputQueue: vi.fn(),
+          flushOutputQueueSlice: vi.fn(() => 0),
+          getRecoveryRequestState: vi.fn(() => ({ outputCursor: 0, renderedTail: null })),
+          getRenderedOutputCursor: vi.fn(() => 0),
+          getRenderedOutputHistory: vi.fn(() => new Uint8Array()),
+          hasPendingFlowTransitions: vi.fn(() => false),
+          hasQueuedOutput: vi.fn(() => false),
+          hasQueuedOutputBytes: vi.fn(() => false),
+          hasSuppressedOutputSinceHibernation: vi.fn(
+            () => state.hasSuppressedOutputSinceHibernation,
+          ),
+          hasWriteInFlight: vi.fn(() => state.writeInFlight),
+          recoverFlowControlIfIdle: vi.fn(),
+          scheduleOutputFlush: vi.fn(),
+          setRenderHibernating: vi.fn(),
+          setRenderedOutputCursor: vi.fn(),
+          setRenderedOutputHistory: vi.fn(),
+          updateOutputPriority: vi.fn(),
+        };
+      },
+    ),
     createTerminalRecoveryRuntimeMock: vi.fn<
       (options: RecoveryRuntimeTestOptions) => TerminalRecoveryRuntime
     >((options) => ({
@@ -257,6 +275,8 @@ type TerminalFitLifecycleTestOptions = {
 };
 
 type TerminalInputPipelineTestOptions = {
+  onInputAccepted?: () => void;
+  onInputActivity?: () => void;
   onResizeTransactionChange?: (active: boolean) => void;
 };
 
@@ -600,6 +620,7 @@ describe('startTerminalSession render hibernation', () => {
     outputPipelineFactoryState.hasSuppressedOutputSinceHibernation = false;
     outputPipelineFactoryState.lineLinkProvider = undefined;
     outputPipelineFactoryState.lineText = '';
+    outputPipelineFactoryState.onChunkRendered = undefined;
     outputPipelineFactoryState.onQueueEmpty = undefined;
     outputPipelineFactoryState.recoveryVisibilitySnapshots = [];
     outputPipelineFactoryState.lastOutputChannel = undefined;
@@ -614,6 +635,47 @@ describe('startTerminalSession render hibernation', () => {
     resetBrowserPagehideStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it('forwards accepted local input without writing speculative terminal output', async () => {
+    const onInputAccepted = vi.fn();
+    let inputPipelineAcceptedHandler: (() => void) | undefined;
+    createTerminalInputPipelineMock.mockImplementationOnce((options) => {
+      inputPipelineAcceptedHandler = options.onInputAccepted;
+      return createTestTerminalInputPipeline();
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onInputAccepted,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    inputPipelineAcceptedHandler?.();
+
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
+    expect(getMockTerminal(session).write).not.toHaveBeenCalledWith(expect.stringContaining('a'));
+
+    session.cleanup();
+  });
+
+  it('forwards authoritative output-rendered notifications from the output pipeline', async () => {
+    const onOutputRendered = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onOutputRendered,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    outputPipelineFactoryState.onChunkRendered?.(performance.now(), 12, 3);
+
+    expect(onOutputRendered).toHaveBeenCalledWith(3);
+
+    session.cleanup();
   });
 
   it('keeps non-focused terminals on the DOM renderer acquisition path by default', async () => {

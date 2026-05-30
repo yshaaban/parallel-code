@@ -10,6 +10,8 @@ import {
   getTerminalExperimentDenseOverloadSwitchTargetReserveBytes,
   getTerminalExperimentDenseOverloadWriteBatchLimitOverride,
   getTerminalExperimentDrainCandidateLimitOverride,
+  getTerminalExperimentInputAcknowledgementDurationMs,
+  getTerminalExperimentInputAcknowledgementMode,
   getTerminalExperimentLaneFrameBudgetOverride,
   getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale,
   getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale,
@@ -115,6 +117,42 @@ describe('terminal-performance-experiments', () => {
     );
     expect(getTerminalExperimentVisibleWebglAcquisitionMode()).toBe('focused-only');
     expect(getTerminalExperimentVisibleWebglContextLimit()).toBe(4);
+  });
+
+  it('keeps the terminal input acknowledgement experiment disabled by default', () => {
+    window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__ = false;
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalPerformanceExperimentConfig()).toEqual(
+      expect.objectContaining({
+        inputAcknowledgementDurationMs: 180,
+        inputAcknowledgementMode: 'off',
+      }),
+    );
+    expect(getTerminalExperimentInputAcknowledgementMode()).toBe('off');
+    expect(getTerminalExperimentInputAcknowledgementDurationMs()).toBe(180);
+  });
+
+  it('normalizes the terminal input acknowledgement experiment', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      inputAcknowledgementDurationMs: 240,
+      inputAcknowledgementMode: 'pulse',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalExperimentInputAcknowledgementMode()).toBe('pulse');
+    expect(getTerminalExperimentInputAcknowledgementDurationMs()).toBe(240);
+  });
+
+  it('falls back when terminal input acknowledgement options are invalid', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      inputAcknowledgementDurationMs: 0,
+      inputAcknowledgementMode: 'echo',
+    } as unknown as NonNullable<typeof window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__>;
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalExperimentInputAcknowledgementMode()).toBe('off');
+    expect(getTerminalExperimentInputAcknowledgementDurationMs()).toBe(180);
   });
 
   it('normalizes the visible-set WebGL acquisition experiment', () => {

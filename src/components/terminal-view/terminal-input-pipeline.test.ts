@@ -213,6 +213,87 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('reports accepted input only after the backend accepts the sent batch', async () => {
+    const sendDeferred = createDeferred<undefined>();
+    const onInputAccepted = vi.fn();
+    const onInputActivity = vi.fn();
+    vi.mocked(sendTerminalInput).mockImplementationOnce(() => sendDeferred.promise);
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onInputAccepted,
+      onInputActivity,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('a');
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    expect(onInputActivity).toHaveBeenCalledTimes(1);
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(onInputAccepted).not.toHaveBeenCalled();
+
+    sendDeferred.resolve(undefined);
+    await flushMicrotasks();
+
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
+
+    pipeline.cleanup();
+  });
+
+  it('does not report accepted input when the backend rejects the sent batch', async () => {
+    const sendDeferred = createDeferred<undefined>();
+    const onInputAccepted = vi.fn();
+    sendDeferred.promise.catch(() => undefined);
+    vi.mocked(sendTerminalInput).mockImplementationOnce(() => sendDeferred.promise);
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onInputAccepted,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('a');
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    sendDeferred.reject(new Error('backend rejected input'));
+    await flushMicrotasks();
+
+    expect(onInputAccepted).not.toHaveBeenCalled();
+
+    pipeline.cleanup();
+  });
+
   it('marks local input activity for programmatic terminal input', async () => {
     const onInputActivity = vi.fn();
     const pipeline = createTerminalInputPipeline({
@@ -742,15 +823,16 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('buffers terminal input while restore is blocked and flushes it after restore settles', async () => {
-    let restoreBlocked = true;
+  it('buffers terminal input while interaction is pending and flushes it after input is accepted', async () => {
+    let canAcceptInput = false;
     const pipeline = createTerminalInputPipeline({
       agentId: 'agent-1',
       armInteractiveEchoFastPath: vi.fn(),
-      canAcceptInput: () => true,
+      canAcceptInput: () => canAcceptInput,
+      canBufferInputWhileInteractionPending: () => true,
       isDisposed: () => false,
       isProcessExited: () => false,
-      isRestoreBlocked: () => restoreBlocked,
+      isRestoreBlocked: () => false,
       isSpawnFailed: () => false,
       isSpawnReady: () => true,
       props: {
@@ -770,7 +852,7 @@ describe('terminal-input-pipeline', () => {
 
     expect(sendTerminalInput).not.toHaveBeenCalled();
 
-    restoreBlocked = false;
+    canAcceptInput = true;
     await vi.advanceTimersByTimeAsync(50);
     await Promise.resolve();
 
@@ -785,6 +867,86 @@ describe('terminal-input-pipeline', () => {
         onBrowserCommandResultReceived: expect.any(Function),
       }),
     );
+
+    pipeline.cleanup();
+  });
+
+  it('coalesces restore-buffered keystrokes into one ordered batch after input is accepted', async () => {
+    let canAcceptInput = false;
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => canAcceptInput,
+      canBufferInputWhileInteractionPending: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    for (const data of ['R', 'E', 'S', 'T', 'O', 'R', 'E', '\r']) {
+      pipeline.handleTerminalData(data);
+      await vi.advanceTimersByTimeAsync(2);
+    }
+
+    expect(sendTerminalInput).not.toHaveBeenCalled();
+
+    canAcceptInput = true;
+    await vi.advanceTimersByTimeAsync(50);
+    await flushMicrotasks();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendTerminalInput).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        data: 'RESTORE\r',
+        inputSeq: 0,
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('drops terminal input while interaction is pending if the terminal cannot buffer it safely', async () => {
+    const onBlockedInputAttempt = vi.fn();
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => false,
+      canBufferInputWhileInteractionPending: () => false,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => true,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onBlockedInputAttempt,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('blocked restore input');
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(onBlockedInputAttempt).toHaveBeenCalledTimes(1);
+    expect(sendTerminalInput).not.toHaveBeenCalled();
 
     pipeline.cleanup();
   });

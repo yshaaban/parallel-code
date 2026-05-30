@@ -847,6 +847,45 @@ textarea::placeholder {
   contain: content;
 }
 
+@keyframes terminalInputAcknowledgementPulse {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scaleX(0.35);
+  }
+  38% {
+    opacity: 1;
+    transform: translateY(0) scaleX(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(0) scaleX(1.45);
+  }
+}
+
+.terminal-input-ack-overlay {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 10;
+  width: 24px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 0 12px color-mix(in srgb, var(--accent) 58%, transparent);
+  pointer-events: none;
+  transform-origin: right center;
+  animation: terminalInputAcknowledgementPulse var(--terminal-input-ack-duration, 180ms)
+    cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-input-ack-overlay {
+    animation: fadeIn 80ms ease-out both;
+  }
+}
+
 .drop-indicator {
   height: 2px;
   background: var(--accent);

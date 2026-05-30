@@ -19,6 +19,7 @@ type TerminalStartupVisibleSiblingReplayUnblockPhase =
   | 'first-paint'
   | 'input-ready'
   | 'paint-settled';
+type TerminalInputAcknowledgementMode = 'off' | 'pulse';
 type TerminalVisibleWebglAcquisitionMode = 'focused-only' | 'visible-set';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
@@ -94,6 +95,8 @@ interface TerminalPerformanceExploratoryConfigInput {
   hiddenTerminalHibernationDelayMs?: number;
   hiddenTerminalHotCount?: number;
   hiddenTerminalSessionDormancyDelayMs?: number;
+  inputAcknowledgementDurationMs?: number;
+  inputAcknowledgementMode?: TerminalInputAcknowledgementMode;
   laneFrameBudgetOverrides?: Partial<Record<TerminalOutputDrainLaneName, number>>;
   sidebarIntentPrewarmDelayMs?: number;
   statusFlushDelayOverridesMs?: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -168,6 +171,8 @@ interface TerminalPerformanceExploratoryConfig {
   hiddenTerminalHibernationDelayMs: number | null;
   hiddenTerminalHotCount: number | null;
   hiddenTerminalSessionDormancyDelayMs: number | null;
+  inputAcknowledgementDurationMs: number;
+  inputAcknowledgementMode: TerminalInputAcknowledgementMode;
   laneFrameBudgetOverrides: Partial<Record<TerminalOutputDrainLaneName, number>>;
   sidebarIntentPrewarmDelayMs: number | null;
   statusFlushDelayOverridesMs: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -267,10 +272,15 @@ const TERMINAL_VISIBLE_WEBGL_ACQUISITION_MODES = new Set<TerminalVisibleWebglAcq
   'focused-only',
   'visible-set',
 ]);
+const TERMINAL_INPUT_ACKNOWLEDGEMENT_MODES = new Set<TerminalInputAcknowledgementMode>([
+  'off',
+  'pulse',
+]);
 
 const DEFAULT_FOCUSED_PREEMPTION_DRAIN_SCOPE = 'focused';
 const DEFAULT_FOCUSED_PREEMPTION_WINDOW_MS = 150;
 const DEFAULT_EXPERIMENT_LABEL = 'default';
+const DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS = 180;
 const DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT = 4;
 const FOCUSED_PREEMPTION_DRAIN_SCOPES = new Set<FocusedPreemptionDrainScope>([
   'all',
@@ -318,6 +328,8 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   hiddenTerminalHibernationDelayMs: 75,
   hiddenTerminalHotCount: null,
   hiddenTerminalSessionDormancyDelayMs: null,
+  inputAcknowledgementDurationMs: DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS,
+  inputAcknowledgementMode: 'off',
   laneFrameBudgetOverrides: {},
   sidebarIntentPrewarmDelayMs: null,
   statusFlushDelayOverridesMs: {},
@@ -883,6 +895,16 @@ function normalizeVisibleWebglAcquisitionMode(
   return 'focused-only';
 }
 
+function normalizeInputAcknowledgementMode(
+  configuredMode: unknown,
+): TerminalInputAcknowledgementMode {
+  if (isStringLiteralSetMember(TERMINAL_INPUT_ACKNOWLEDGEMENT_MODES, configuredMode)) {
+    return configuredMode;
+  }
+
+  return 'off';
+}
+
 function normalizeStartupTaskSchedulingRoles(
   configuredRoles: unknown,
 ): Partial<Record<TerminalStartupTaskSchedulingRole, boolean>> {
@@ -1027,6 +1049,10 @@ function normalizeExploratoryConfig(
     hiddenTerminalSessionDormancyDelayMs: getPositiveFiniteNumberOrNull(
       input.hiddenTerminalSessionDormancyDelayMs,
     ),
+    inputAcknowledgementDurationMs:
+      getPositiveFiniteNumberOrNull(input.inputAcknowledgementDurationMs) ??
+      DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS,
+    inputAcknowledgementMode: normalizeInputAcknowledgementMode(input.inputAcknowledgementMode),
     laneFrameBudgetOverrides: normalizeLaneNumberRecord(input.laneFrameBudgetOverrides),
     sidebarIntentPrewarmDelayMs: getPositiveFiniteNumberOrNull(input.sidebarIntentPrewarmDelayMs),
     statusFlushDelayOverridesMs: normalizePriorityNumberRecord(input.statusFlushDelayOverridesMs),
@@ -1456,6 +1482,14 @@ export function getTerminalExperimentVisibleWebglAcquisitionMode(): TerminalVisi
 
 export function getTerminalExperimentVisibleWebglContextLimit(): number {
   return getTerminalPerformanceExperimentConfig().visibleWebglContextLimit;
+}
+
+export function getTerminalExperimentInputAcknowledgementMode(): TerminalInputAcknowledgementMode {
+  return getTerminalPerformanceExperimentConfig().inputAcknowledgementMode;
+}
+
+export function getTerminalExperimentInputAcknowledgementDurationMs(): number {
+  return getTerminalPerformanceExperimentConfig().inputAcknowledgementDurationMs;
 }
 
 export function getTerminalExperimentLaneFrameBudgetOverride(

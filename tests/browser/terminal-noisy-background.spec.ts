@@ -1,5 +1,3 @@
-import { IPC } from '../../electron/ipc/channels.js';
-
 import { expect, test } from './harness/fixtures.js';
 import { createPromptReadyScenario } from './harness/scenarios.js';
 import { getRendererDiagnostics } from './harness/terminal-render.js';
@@ -11,46 +9,43 @@ import {
 const NOISY_OUTPUT_COMMAND =
   'i=0; while [ "$i" -lt 180 ]; do printf "\\rNOISE_%04d" "$i"; i=$((i+1)); sleep 0.02; done; printf "\\nNOISE_DONE\\n"';
 
-async function waitForNewRunningAgentId(
-  browserLab: {
-    focusTerminal?: (
-      page: import('@playwright/test').Page,
-      terminalIndex?: number,
-    ) => Promise<void>;
-    invokeIpc: <TResult>(request: unknown, channel: IPC, body?: unknown) => Promise<TResult>;
-  },
-  request: unknown,
-  initialRunningAgentIds: readonly string[],
-  excludedAgentId?: string | null,
+async function waitForTerminalAgentId(
+  page: import('@playwright/test').Page,
+  terminalIndex: number,
 ): Promise<string> {
+  const terminalStatus = page.locator('[data-terminal-status]').nth(terminalIndex);
   await expect
     .poll(
       async () => {
-        const runningAgentIds = await browserLab.invokeIpc<string[]>(
-          request,
-          IPC.ListRunningAgentIds,
-        );
-        return (
-          runningAgentIds.find(
-            (agentId) =>
-              !initialRunningAgentIds.includes(agentId) && agentId !== (excludedAgentId ?? null),
-          ) ?? null
-        );
+        const agentId = await terminalStatus.getAttribute('data-terminal-agent-id');
+        if (agentId && agentId.length > 0) {
+          return agentId;
+        }
+        return null;
       },
       { timeout: 10_000 },
     )
     .not.toBeNull();
 
-  const runningAgentIds = await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds);
-  const agentId =
-    runningAgentIds.find(
-      (currentAgentId) =>
-        !initialRunningAgentIds.includes(currentAgentId) &&
-        currentAgentId !== (excludedAgentId ?? null),
-    ) ?? null;
-
+  const agentId = await terminalStatus.getAttribute('data-terminal-agent-id');
   expect(agentId).toBeTruthy();
   return agentId ?? '';
+}
+
+async function waitForVisibleShellPrompt(
+  page: import('@playwright/test').Page,
+  terminalIndex: number,
+): Promise<void> {
+  const terminalStatus = page.locator('[data-terminal-status]').nth(terminalIndex);
+  await expect
+    .poll(
+      async () => {
+        const text = await terminalStatus.textContent();
+        return /(?:➜|❯)|(?:^|\n)\s*[$#%]\s*$/u.test(text ?? '');
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
 }
 
 test.describe('browser-lab noisy background terminals', () => {
@@ -73,30 +68,21 @@ test.describe('browser-lab noisy background terminals', () => {
     });
 
     await browserLab.waitForTerminalReady(page);
-    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
-      request,
-      IPC.ListRunningAgentIds,
-    );
     const focusedTerminalIndex = await browserLab.createShellTerminal(page);
-    const focusedShellAgentId = await waitForNewRunningAgentId(
-      browserLab,
-      request,
-      initialRunningAgentIds,
-    );
+    const focusedShellAgentId = await waitForTerminalAgentId(page, focusedTerminalIndex);
     await browserLab.beginTerminalStatusHistory(page, focusedTerminalIndex);
+    await waitForVisibleShellPrompt(page, focusedTerminalIndex);
     const backgroundTerminalIndex = await browserLab.createShellTerminal(page);
-    const backgroundAgentId = await waitForNewRunningAgentId(
-      browserLab,
-      request,
-      initialRunningAgentIds,
-      focusedShellAgentId,
-    );
+    const backgroundAgentId = await waitForTerminalAgentId(page, backgroundTerminalIndex);
+    await waitForVisibleShellPrompt(page, backgroundTerminalIndex);
 
     await browserLab.runInTerminal(page, NOISY_OUTPUT_COMMAND, {
       terminalIndex: backgroundTerminalIndex,
     });
     await browserLab.waitForAgentScrollback(request, backgroundAgentId, 'NOISE_');
-    await browserLab.waitForShellPromptReady(request, focusedShellAgentId);
+    await browserLab.focusTerminal(page, focusedTerminalIndex);
+    await browserLab.waitForTerminalInteractiveReady(page, focusedTerminalIndex);
+    await waitForVisibleShellPrompt(page, focusedTerminalIndex);
 
     const focusReadyMarker = `FR${Date.now().toString(36).slice(-4)}`;
     await browserLab.focusTerminal(page, focusedTerminalIndex);

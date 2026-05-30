@@ -4,6 +4,7 @@ const TRUST_EXCLUSION_KEYWORDS =
   /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
 
 const PROMPT_PATTERNS: RegExp[] = [
+  /➜\s*$/,
   /❯\s*$/,
   /hydra(?:\[[^\]\r\n]+\])?>\s*$/i,
   /\[Y\/n\]\s*$/i,
@@ -73,6 +74,10 @@ export function hasReadyPromptInTail(tail: string): boolean {
 export function hasShellPromptReadyInTail(tail: string): boolean {
   if (tail.length === 0) return false;
   const lines = getRecentVisibleLinesFromTail(tail);
+  if (hasSplitArrowPromptInRecentLines(lines)) {
+    return true;
+  }
+
   const lastLine = lines[lines.length - 1]?.trimEnd() ?? '';
   if (lastLine.length === 0) {
     return false;
@@ -121,13 +126,37 @@ function isCommonShellPromptLine(line: string): boolean {
   return (
     /^\s*[$#]\s*$/u.test(trimmed) ||
     /^\s*%\s*$/u.test(trimmed) ||
+    /^\s*➜(?:\s+\S+)+\s*$/u.test(trimmed) ||
     /^\s*[\w.@~:/-]+[$#]\s*$/u.test(trimmed) ||
     /^\s*[\w./~:-]+\s%\s*$/u.test(trimmed)
   );
 }
 
+function hasSplitArrowPromptInRecentLines(lines: readonly string[]): boolean {
+  const lastLine = lines[lines.length - 1]?.trimEnd() ?? '';
+  const previousLine = lines[lines.length - 2]?.trimEnd() ?? '';
+  if (!/^\s*➜\s*$/u.test(previousLine)) {
+    return false;
+  }
+
+  if (lineLooksLikeQuestion(lastLine)) {
+    return false;
+  }
+
+  return looksLikePromptPathSegment(lastLine);
+}
+
+function looksLikePromptPathSegment(line: string): boolean {
+  const trimmed = stripAnsi(line).trimEnd();
+  if (trimmed.length === 0) {
+    return false;
+  }
+
+  return /^(?:~|[\w./:@+-]+)(?:\s+git:\([^)]+\))?(?:\s+[✗*])?$/u.test(trimmed);
+}
+
 function isBarePromptLine(line: string): boolean {
-  return /^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(line.trimEnd());
+  return /^\s*(?:[➜❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(line.trimEnd());
 }
 
 export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
