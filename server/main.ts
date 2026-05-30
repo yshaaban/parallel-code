@@ -23,8 +23,17 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..', '..');
 installStdioEpipeGuard();
 loadLocalEnvWithDefaults(path.join(projectRoot, '.env'), path.join(projectRoot, '.env.example'));
-const distDir = path.resolve(__dirname, '..', '..', 'dist');
-const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
+
+function resolveProjectPath(value: string | undefined, fallbackRelativePath: string): string {
+  const nextPath = value ?? fallbackRelativePath;
+  return path.isAbsolute(nextPath) ? nextPath : path.resolve(projectRoot, nextPath);
+}
+
+const distDir = resolveProjectPath(process.env.PARALLEL_CODE_BROWSER_DIST_DIR, 'dist');
+const distRemoteDir = resolveProjectPath(
+  process.env.PARALLEL_CODE_BROWSER_DIST_REMOTE_DIR,
+  'dist-remote',
+);
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const userDataPath =
   process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');

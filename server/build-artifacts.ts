@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { access, readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 
 import buildArtifactConfig from './build-artifacts-config.json' with { type: 'json' };
 
@@ -300,7 +300,7 @@ async function getBuildArtifactCheckResult(
   check: BuildArtifactCheck,
 ): Promise<BuildArtifactCheckResult> {
   const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
-  if (!buildArtifactStats) {
+  if (!buildArtifactStats || !buildArtifactStats.isFile() || buildArtifactStats.size === 0) {
     return createMissingBuildArtifactCheckResult(check);
   }
 
@@ -428,16 +428,20 @@ export async function assertBrowserServerBuildArtifactsExist(
   options: BrowserServerBuildArtifactOptions,
 ): Promise<void> {
   const checks = createBuildChecks(options);
-  await Promise.all(checks.map((check) => access(check.artifactPath))).catch(() => {
-    throw new Error(
-      formatMissingArtifactsMessage(
-        options,
-        checks.map((check) => ({
-          artifactPath: check.artifactPath,
-          kind: 'missing' as const,
-          label: check.label,
-        })),
-      ),
-    );
-  });
+  const missingChecks = (
+    await Promise.all(
+      checks.map(async (check): Promise<MissingBuildArtifactCheckResult | null> => {
+        const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
+        if (buildArtifactStats?.isFile() && buildArtifactStats.size > 0) {
+          return null;
+        }
+
+        return createMissingBuildArtifactCheckResult(check);
+      }),
+    )
+  ).filter((check): check is MissingBuildArtifactCheckResult => check !== null);
+
+  if (missingChecks.length > 0) {
+    throw new Error(formatMissingArtifactsMessage(options, missingChecks));
+  }
 }

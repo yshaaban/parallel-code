@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,10 +25,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DIST_SERVER_DIR = path.join(PROJECT_ROOT, 'dist-server');
+const DIST_DIR = path.join(PROJECT_ROOT, 'dist');
+const DIST_REMOTE_DIR = path.join(PROJECT_ROOT, 'dist-remote');
 const BROWSER_SERVER_ENTRY = path.join(PROJECT_ROOT, 'dist-server', 'server', 'main.js');
 const STANDALONE_SERVER_START_TIMEOUT_MS = 20_000;
 const STANDALONE_SERVER_STOP_TIMEOUT_MS = 5_000;
 const STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS = 8_192;
+const STATIC_ARTIFACT_COPY_RETRY_DELAY_MS = 50;
+const STATIC_ARTIFACT_COPY_RETRIES = 5;
 
 export interface BrowserLabServer {
   agentId: string;
@@ -74,6 +78,11 @@ export interface SeededBrowserState {
   taskId: string;
   taskIds: string[];
   userDataPath: string;
+}
+
+interface StaticBrowserArtifactSnapshot {
+  distDir: string;
+  distRemoteDir: string;
 }
 
 function createProject(projectId: string, repoDir: string): Project {
@@ -255,6 +264,63 @@ async function ensureStandaloneServerImportsAreRunnable(): Promise<void> {
       ...unresolvedImportLines,
     ].join('\n'),
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function isNonEmptyFile(filePath: string): Promise<boolean> {
+  const fileStats = await stat(filePath).catch(() => null);
+  return Boolean(fileStats?.isFile() && fileStats.size > 0);
+}
+
+async function assertNonEmptyFile(filePath: string): Promise<void> {
+  if (await isNonEmptyFile(filePath)) {
+    return;
+  }
+
+  throw new Error(`Expected a non-empty browser artifact at ${filePath}`);
+}
+
+async function copyStaticArtifactDirectory(
+  sourceDir: string,
+  destinationDir: string,
+): Promise<void> {
+  await rm(destinationDir, { recursive: true, force: true });
+  await mkdir(path.dirname(destinationDir), { recursive: true });
+  await cp(sourceDir, destinationDir, { recursive: true });
+  await assertNonEmptyFile(path.join(destinationDir, 'index.html'));
+}
+
+async function copyStaticBrowserArtifacts(testDir: string): Promise<StaticBrowserArtifactSnapshot> {
+  const artifactRootDir = path.join(testDir, 'static-artifacts');
+  const snapshot = {
+    distDir: path.join(artifactRootDir, 'dist'),
+    distRemoteDir: path.join(artifactRootDir, 'dist-remote'),
+  };
+
+  for (let attempt = 1; attempt <= STATIC_ARTIFACT_COPY_RETRIES; attempt += 1) {
+    try {
+      await assertNonEmptyFile(path.join(DIST_DIR, 'index.html'));
+      await assertNonEmptyFile(path.join(DIST_REMOTE_DIR, 'index.html'));
+      await Promise.all([
+        copyStaticArtifactDirectory(DIST_DIR, snapshot.distDir),
+        copyStaticArtifactDirectory(DIST_REMOTE_DIR, snapshot.distRemoteDir),
+      ]);
+      return snapshot;
+    } catch (error) {
+      if (attempt === STATIC_ARTIFACT_COPY_RETRIES) {
+        throw error;
+      }
+
+      await delay(STATIC_ARTIFACT_COPY_RETRY_DELAY_MS);
+    }
+  }
+
+  return snapshot;
 }
 
 export function getStandaloneStateDir(userDataPath: string): string {
@@ -486,6 +552,7 @@ export async function startStandaloneBrowserServer(
 
   let serverProcess: ChildProcessWithoutNullStreams | null = null;
   try {
+    const staticArtifacts = await copyStaticBrowserArtifacts(testDir);
     const seededState = await seedBrowserState(testDir, options.scenario);
     const authToken = `browser-lab-token-${randomUUID()}`;
     const skipBrowserBuildArtifactCheck = options.validateBrowserBuildArtifacts === false;
@@ -498,6 +565,8 @@ export async function startStandaloneBrowserServer(
         ...(skipBrowserBuildArtifactCheck
           ? { PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK: '1' }
           : {}),
+        PARALLEL_CODE_BROWSER_DIST_DIR: staticArtifacts.distDir,
+        PARALLEL_CODE_BROWSER_DIST_REMOTE_DIR: staticArtifacts.distRemoteDir,
         PORT: '0',
       },
       stdio: ['ignore', 'pipe', 'pipe'],

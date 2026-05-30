@@ -4,7 +4,9 @@
     ".playwright-browser-lab",
     ".sentrux",
     "dist",
+    "dist-browser-dev",
     "dist-remote",
+    "dist-remote-dev",
     "dist-server",
     "node_modules",
     "release",
@@ -21,6 +23,7 @@
       "metadataRelativePath": "dist/build-metadata.json",
       "sourceRelativePaths": [
         "src",
+        "index.html",
         "electron/vite.config.electron.ts",
         "tsconfig.json",
         "package-lock.json"

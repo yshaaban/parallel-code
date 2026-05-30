@@ -208,6 +208,35 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
     expect(status.missingChecks.map((check) => check.label)).toContain('remote');
   });
 
+  it('treats a zero-byte artifact as missing', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
+    tempDirs.push(rootDir);
+
+    const { frontendIndexPath, serverEntryPath } = await writeBuildFixture(rootDir);
+    await writeBuildMetadataSources(rootDir);
+    await writeSourceFile(rootDir, 'src/remote/App.tsx');
+    await writeSourceFile(rootDir, 'src/App.tsx');
+    await writeSourceFile(rootDir, 'server/index.ts');
+    await writeSourceFile(rootDir, 'src/ipc/types.ts');
+    await writeSourceFile(rootDir, 'src/domain/server-state.ts');
+    await writeSourceFile(rootDir, 'electron/ipc/example.ts');
+    await writeFile(frontendIndexPath, '', 'utf8');
+
+    const status = await getBrowserServerBuildArtifactStatus({
+      projectRoot: rootDir,
+      serverEntryPath,
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.missingChecks.map((check) => check.label)).toContain('frontend');
+    await expect(
+      assertBrowserServerBuildArtifactsAreFresh({
+        projectRoot: rootDir,
+        serverEntryPath,
+      }),
+    ).rejects.toThrow('Browser server build artifacts are missing.');
+  });
+
   it('does not mark browser artifacts stale for unrelated package.json edits', async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
     tempDirs.push(rootDir);

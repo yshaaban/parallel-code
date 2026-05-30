@@ -180,7 +180,7 @@ export async function getBrowserBuildArtifactStatus({
   const results = await Promise.all(
     checks.map(async (check) => {
       const artifactStats = await stat(check.artifactPath).catch(() => null);
-      if (!artifactStats) {
+      if (!artifactStats || !artifactStats.isFile() || artifactStats.size === 0) {
         return {
           artifactPath: check.artifactPath,
           kind: 'missing',

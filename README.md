@@ -176,7 +176,7 @@ For active browser UI development, use watch mode instead of `npm run server`:
 npm run browser:dev
 ```
 
-`npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change.
+`npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change. Watch mode writes static assets to `dist-browser-dev/` and `dist-remote-dev/`, leaving the production/test `dist/` artifacts stable for browser-free integration tests and Playwright.
 
 ### Option 3: Codex Account Switching Setup (Optional)
 
@@ -205,18 +205,18 @@ Useful operational commands:
 <details>
 <summary><strong>All commands</strong></summary>
 
-| Command                | Description                                    |
-| ---------------------- | ---------------------------------------------- |
-| `npm run browser:dev`  | Browser-mode dev server with auto rebuild      |
-| `npm run dev`          | Start Electron app in dev mode                 |
-| `npm run server`       | Build and start standalone server (port 43117) |
-| `npm run dev:server`   | Server dev mode with hot reload                |
-| `npm run build`        | Build browser/server artifacts and Electron    |
-| `npm run build:remote` | Build remote mobile app to `dist-remote/`      |
-| `npm run typecheck`    | Run app, lifecycle, and server type checking   |
-| `npm test`             | Run the full node + Solid test suites          |
-| `npm run test:node`    | Run node/transport/backend tests               |
-| `npm run test:solid`   | Run Solid/jsdom screen behavior tests          |
+| Command                | Description                                        |
+| ---------------------- | -------------------------------------------------- |
+| `npm run browser:dev`  | Browser-mode dev server with isolated auto rebuild |
+| `npm run dev`          | Start Electron app in dev mode                     |
+| `npm run server`       | Build and start standalone server (port 43117)     |
+| `npm run dev:server`   | Server dev mode with hot reload                    |
+| `npm run build`        | Build browser/server artifacts and Electron        |
+| `npm run build:remote` | Build remote mobile app to `dist-remote/`          |
+| `npm run typecheck`    | Run app, lifecycle, and server type checking       |
+| `npm test`             | Run the full node + Solid test suites              |
+| `npm run test:node`    | Run node/transport/backend tests                   |
+| `npm run test:solid`   | Run Solid/jsdom screen behavior tests              |
 
 </details>
 

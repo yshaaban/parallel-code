@@ -12,18 +12,29 @@ const buildStamp = new Date()
   .replace('T', ' ')
   .replace(/\.\d+Z$/, 'Z');
 const buildMetadataFileName = 'build-metadata.json';
+const buildOutputDir = path.resolve(
+  __dirname,
+  '..',
+  process.env.PARALLEL_CODE_VITE_FRONTEND_OUT_DIR ?? 'dist',
+);
+let resolvedBuildOutputDir = buildOutputDir;
 
 export default defineConfig({
   base: './',
+  build: {
+    outDir: buildOutputDir,
+  },
   plugins: [
     solid(),
     {
       name: 'parallel-code-build-metadata',
+      configResolved(config) {
+        resolvedBuildOutputDir = path.resolve(config.root, config.build.outDir);
+      },
       async closeBundle() {
-        const outputDir = path.resolve(__dirname, '..', 'dist');
-        await mkdir(outputDir, { recursive: true });
+        await mkdir(resolvedBuildOutputDir, { recursive: true });
         await writeFile(
-          path.join(outputDir, buildMetadataFileName),
+          path.join(resolvedBuildOutputDir, buildMetadataFileName),
           JSON.stringify(
             {
               appVersion,

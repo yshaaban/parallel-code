@@ -226,6 +226,65 @@ describe('runPlaywrightWithBrowserArtifacts', () => {
     expect(status.stale[0]?.label).toBe('frontend');
     expect(status.stale[0]?.staleReason).toBe('version-mismatch');
   });
+
+  it('treats zero-byte artifacts as missing before launching Playwright', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-artifacts-'));
+    tempDirs.push(rootDir);
+
+    const frontendIndexPath = path.join(rootDir, 'dist', 'index.html');
+    const frontendMetadataPath = path.join(rootDir, 'dist', 'build-metadata.json');
+    const remoteIndexPath = path.join(rootDir, 'dist-remote', 'index.html');
+    const serverEntryPath = path.join(rootDir, 'dist-server', 'server', 'main.js');
+    await Promise.all([
+      mkdir(path.dirname(frontendIndexPath), { recursive: true }),
+      mkdir(path.dirname(remoteIndexPath), { recursive: true }),
+      mkdir(path.dirname(serverEntryPath), { recursive: true }),
+      mkdir(path.join(rootDir, 'src', 'remote'), { recursive: true }),
+      mkdir(path.join(rootDir, 'src', 'domain'), { recursive: true }),
+      mkdir(path.join(rootDir, 'src', 'ipc'), { recursive: true }),
+      mkdir(path.join(rootDir, 'src', 'lib'), { recursive: true }),
+      mkdir(path.join(rootDir, 'electron', 'ipc'), { recursive: true }),
+      mkdir(path.join(rootDir, 'electron', 'remote'), { recursive: true }),
+      mkdir(path.join(rootDir, 'server'), { recursive: true }),
+    ]);
+
+    await Promise.all([
+      writeFile(frontendIndexPath, '', 'utf8'),
+      writeFile(frontendMetadataPath, JSON.stringify({ appVersion: '0.7.0' }), 'utf8'),
+      writeFile(remoteIndexPath, '<html>remote</html>', 'utf8'),
+      writeFile(serverEntryPath, 'console.log("server");', 'utf8'),
+      writeFile(path.join(rootDir, 'package.json'), JSON.stringify({ version: '0.7.0' }), 'utf8'),
+      writeFile(path.join(rootDir, 'package-lock.json'), '// lock', 'utf8'),
+      writeFile(path.join(rootDir, 'tsconfig.json'), '{}', 'utf8'),
+      writeFile(path.join(rootDir, 'server', 'tsconfig.json'), '{}', 'utf8'),
+      writeFile(path.join(rootDir, 'electron', 'vite.config.electron.ts'), '// vite', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'remote', 'vite.config.ts'), '// vite', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'App.tsx'), '// app', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'remote', 'App.tsx'), '// remote', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'domain', 'server-state.ts'), '// domain', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'lib', 'assert-never.ts'), '// lib', 'utf8'),
+      writeFile(path.join(rootDir, 'electron', 'ipc', 'channels.ts'), '// ipc', 'utf8'),
+      writeFile(path.join(rootDir, 'electron', 'remote', 'protocol.ts'), '// remote proto', 'utf8'),
+      writeFile(path.join(rootDir, 'server', 'index.ts'), '// server', 'utf8'),
+      writeFile(path.join(rootDir, 'src', 'ipc', 'types.ts'), '// ipc types', 'utf8'),
+    ]);
+
+    const newerTime = new Date(Date.now() + 10_000);
+    await Promise.all([
+      utimes(frontendIndexPath, newerTime, newerTime),
+      utimes(frontendMetadataPath, newerTime, newerTime),
+      utimes(remoteIndexPath, newerTime, newerTime),
+      utimes(serverEntryPath, newerTime, newerTime),
+    ]);
+
+    const status = await getBrowserBuildArtifactStatus({
+      projectRoot: rootDir,
+      serverEntryPath,
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.missing.map((check) => check.label)).toContain('frontend');
+  });
 });
 
 describe('shouldCheckBrowserBuildArtifacts', () => {
