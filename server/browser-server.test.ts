@@ -198,6 +198,65 @@ describe('startBrowserServer', () => {
     }
   });
 
+  it('serves the latency diagnostics lab through token bootstrap before static fallback', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
+    tempDirs.push(rootDir);
+
+    const distDir = path.join(rootDir, 'dist');
+    const distRemoteDir = path.join(rootDir, 'dist-remote');
+    await Promise.all([
+      mkdir(distDir, { recursive: true }),
+      mkdir(distRemoteDir, { recursive: true }),
+    ]);
+
+    const token = 'browser-server-test-token-latency-lab';
+    const port = await getAvailablePort();
+    const controller = startBrowserServer({
+      distDir,
+      distRemoteDir,
+      port,
+      token,
+      userDataPath: path.join(rootDir, 'user-data'),
+    });
+
+    try {
+      const bootstrapResponse = await fetch(
+        `http://127.0.0.1:${port}/latency?token=${token}&autorun=1`,
+        { redirect: 'manual' },
+      );
+
+      expect(bootstrapResponse.status).toBe(302);
+      expect(bootstrapResponse.headers.get('location')).toBe('/latency?autorun=1');
+      const cookie = bootstrapResponse.headers.get('set-cookie');
+      expect(cookie).toContain('parallel_code_session=');
+
+      const labResponse = await fetch(`http://127.0.0.1:${port}/latency?autorun=1`, {
+        headers: cookie ? { cookie } : {},
+      });
+      const labHtml = await labResponse.text();
+
+      expect(labResponse.status).toBe(200);
+      expect(labHtml).toContain('Parallel Code Latency Lab');
+      expect(labHtml).toContain('/api/diagnostics/latency-ping');
+
+      const pingResponse = await fetch(
+        `http://127.0.0.1:${port}/api/diagnostics/latency-ping?nonce=integration`,
+        {
+          headers: cookie ? { cookie } : {},
+        },
+      );
+      const pingPayload = (await pingResponse.json()) as { kind?: string; nonce?: string };
+
+      expect(pingResponse.status).toBe(200);
+      expect(pingPayload).toMatchObject({
+        kind: 'latency-pong',
+        nonce: 'integration',
+      });
+    } finally {
+      controller.cleanup();
+    }
+  });
+
   it('replays restored task-port snapshots with backend ordering versions', async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
     tempDirs.push(rootDir);

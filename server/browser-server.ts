@@ -49,6 +49,7 @@ import { createBrowserAuthController } from './browser-auth.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 import { registerBrowserIpcRoutes } from './browser-ipc.js';
+import { registerBrowserLatencyDiagnosticsRoutes } from './browser-latency-diagnostics.js';
 import { registerBrowserPreviewRoutes } from './browser-preview.js';
 import { registerBrowserStaticRoutes } from './browser-static.js';
 import {
@@ -317,6 +318,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     isAllowedMutationRequest: browserAuth.isAllowedMutationRequest,
     removeGitStatus: controlPlane.removeGitStatus,
     taskNames,
+  });
+  registerBrowserLatencyDiagnosticsRoutes({
+    app,
+    authGatePath: browserAuth.getAuthGatePath(),
+    isAuthorizedRequest,
   });
 
   const cleanupPreviewRoutes = registerBrowserPreviewRoutes({

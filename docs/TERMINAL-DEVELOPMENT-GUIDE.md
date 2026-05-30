@@ -161,6 +161,8 @@ For deployed latency debugging, verify the build before trusting numbers:
   matches the commit under review
 - `npm run profile:terminal:latency -- --server-url <url> --auth-token <token>` prints build
   metadata, API RTT, visual echo timing, and backend trace timing when trace completion is healthy
+- open `<url>/latency?token=<token>&autorun=1` from the client machine to measure same-origin HTTP
+  ping, HTTP IPC, and websocket ping/pong latency without a local checkout
 - visual echo timing is the fallback for TUI-heavy agents and stale/contaminated sessions where
   backend echo traces may stay active because the terminal is emitting control responses instead of
   plain shell echo
