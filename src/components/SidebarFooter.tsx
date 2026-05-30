@@ -1,7 +1,7 @@
 import { For, Show, createMemo, type JSX } from 'solid-js';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
-import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
+import { formatAppBuildLabel } from '../lib/build-info';
 import { alt, mod } from '../lib/platform';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { theme } from '../lib/theme';
@@ -202,7 +202,7 @@ export function SidebarFooter(): JSX.Element {
       return null;
     }
 
-    return `Web build ${APP_VERSION} · ${APP_BUILD_STAMP}`;
+    return `Web build ${formatAppBuildLabel()}`;
   });
 
   return (

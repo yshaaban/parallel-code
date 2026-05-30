@@ -155,6 +155,18 @@ For terminal media and shortcut work, keep two more ownership rules in mind:
   consume that policy for both keydown sends and non-keydown suppression instead of open-coding key
   combinations in the view owner
 
+For deployed latency debugging, verify the build before trusting numbers:
+
+- fetch `/build-metadata.json` with the browser auth bearer token and confirm `buildCommit`
+  matches the commit under review
+- `npm run profile:terminal:latency -- --server-url <url> --auth-token <token>` prints build
+  metadata, API RTT, visual echo timing, and backend trace timing when trace completion is healthy
+- visual echo timing is the fallback for TUI-heavy agents and stale/contaminated sessions where
+  backend echo traces may stay active because the terminal is emitting control responses instead of
+  plain shell echo
+- pass `--skip-trace` when you only want deployed visual echo and API RTT, or
+  `--keep-profile-terminal` when you need to inspect the profiler shell after the script exits
+
 The intended steady-state contract is:
 
 - the typing-critical terminal gets latency priority

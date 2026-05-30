@@ -23,8 +23,11 @@ vi.mock('../lib/runtime-client-id', () => ({
 }));
 
 vi.mock('../lib/build-info', () => ({
+  APP_BUILD_COMMIT: 'abc123def456',
+  APP_BUILD_DIRTY: false,
   APP_BUILD_STAMP: '2026-03-13 15:30Z',
   APP_VERSION: '0.7.0',
+  formatAppBuildLabel: () => '0.7.0 · abc123def456 · 2026-03-13 15:30Z',
 }));
 
 vi.mock('../store/store', async () => {
@@ -57,7 +60,7 @@ describe('SidebarFooter', () => {
     expect(screen.getByText('Progress')).toBeDefined();
     expect(screen.getByText('Tips')).toBeDefined();
     expect(screen.queryByText('Merged to base branch')).toBeNull();
-    expect(screen.queryByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeNull();
+    expect(screen.queryByText('Web build 0.7.0 · abc123def456 · 2026-03-13 15:30Z')).toBeNull();
   });
 
   it('shows the browser build stamp outside Electron after expanding tips', () => {
@@ -67,7 +70,7 @@ describe('SidebarFooter', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Tips' }));
 
-    expect(screen.getByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeDefined();
+    expect(screen.getByText('Web build 0.7.0 · abc123def456 · 2026-03-13 15:30Z')).toBeDefined();
   });
 
   it('hides the browser build stamp in Electron', () => {

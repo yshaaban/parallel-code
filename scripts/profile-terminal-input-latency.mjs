@@ -18,7 +18,8 @@ const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
 const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
-const TERMINAL_SELECTOR = '.xterm';
+const BUILD_METADATA_PATH = '/build-metadata.json';
+const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
 const TERMINAL_READY_SELECTOR = '.xterm-helper-textarea, .xterm textarea';
 const BACKGROUND_NOISE_COMMAND = 'node scripts/fixtures/tui-statusline.mjs 1500 10';
 const APP_SHELL_SELECTOR = '.app-shell';
@@ -29,9 +30,13 @@ const PROFILE_TERMINAL_OPEN_SHORTCUT = 'Control+Shift+D';
 const SERVER_START_TIMEOUT_MS = 20_000;
 const SERVER_STOP_TIMEOUT_MS = 5_000;
 const TERMINAL_ATTACH_TIMEOUT_MS = 10_000;
+const TERMINAL_READY_TIMEOUT_MS = 20_000;
 const TRACE_POLL_INTERVAL_MS = 100;
 const TRACE_READY_TIMEOUT_BUFFER_MS = 3_000;
 const TRACE_RESULT_TIMEOUT_BUFFER_MS = 2_000;
+const API_RTT_SAMPLE_COUNT = 12;
+const API_RTT_SAMPLE_DELAY_MS = 80;
+const VISUAL_ECHO_TIMEOUT_MS = 10_000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const STANDALONE_SERVER_ENTRY = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
@@ -40,9 +45,12 @@ function parseArgs(argv) {
   const options = {
     authToken: process.env.AUTH_TOKEN ?? DEFAULT_AUTH_TOKEN,
     keepServer: false,
+    keepProfileTerminal: false,
     launchServer: false,
     serverUrl: process.env.SERVER_URL ?? DEFAULT_SERVER_URL,
     settleMs: Number.parseInt(process.env.TERMINAL_TRACE_SETTLE_MS ?? '3000', 10),
+    skipTrace: false,
+    skipVisualEcho: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -64,8 +72,23 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === '--keep-profile-terminal') {
+      options.keepProfileTerminal = true;
+      continue;
+    }
+
     if (arg === '--launch-server') {
       options.launchServer = true;
+      continue;
+    }
+
+    if (arg === '--skip-trace') {
+      options.skipTrace = true;
+      continue;
+    }
+
+    if (arg === '--skip-visual-echo') {
+      options.skipVisualEcho = true;
       continue;
     }
 
@@ -84,6 +107,43 @@ function formatMs(value) {
   }
 
   return `${value.toFixed(2)}ms`;
+}
+
+function summarizeSamples(samples) {
+  if (samples.length === 0) {
+    return {
+      count: 0,
+      max: 0,
+      min: 0,
+      p50: 0,
+      p95: 0,
+    };
+  }
+
+  const sorted = [...samples].sort((left, right) => left - right);
+
+  function percentile(fraction) {
+    const index = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction));
+    return sorted[index];
+  }
+
+  return {
+    count: sorted.length,
+    max: sorted[sorted.length - 1],
+    min: sorted[0],
+    p50: percentile(0.5),
+    p95: percentile(0.95),
+  };
+}
+
+function describeRttSummary(summary) {
+  return [
+    `count=${summary.count}`,
+    `p50=${formatMs(summary.p50)}`,
+    `p95=${formatMs(summary.p95)}`,
+    `min=${formatMs(summary.min)}`,
+    `max=${formatMs(summary.max)}`,
+  ].join(' | ');
 }
 
 function describeSummary(summary) {
@@ -114,12 +174,42 @@ function getTraceDuration(sample, startKey, endKey) {
   return Math.max(0, end - start);
 }
 
-function getTerminalLocator(page, terminalIndex) {
-  return page.locator(TERMINAL_SELECTOR).nth(terminalIndex);
+function getTerminalStatusLocator(page, terminalIndex) {
+  return page.locator(TERMINAL_STATUS_SELECTOR).nth(terminalIndex);
 }
 
 function getTerminalReadyLocator(page, terminalIndex) {
-  return page.locator(TERMINAL_READY_SELECTOR).nth(terminalIndex);
+  return getTerminalStatusLocator(page, terminalIndex).locator(TERMINAL_READY_SELECTOR).first();
+}
+
+async function waitForTerminalStatus(page, terminalIndex, expectedStatus, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  const statusRoot = getTerminalStatusLocator(page, terminalIndex);
+  while (Date.now() < deadline) {
+    const status = await statusRoot.getAttribute('data-terminal-status').catch(() => null);
+    if (status === expectedStatus) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, TRACE_POLL_INTERVAL_MS));
+  }
+
+  const status = await statusRoot.getAttribute('data-terminal-status').catch(() => null);
+  throw new Error(
+    `Timed out waiting for terminal ${terminalIndex} to reach ${expectedStatus}; last status=${status ?? 'missing'}`,
+  );
+}
+
+async function readTerminalStatusSnapshot(page) {
+  return page.locator(TERMINAL_STATUS_SELECTOR).evaluateAll((elements) =>
+    elements.map((element, index) => ({
+      agentId: element.getAttribute('data-terminal-agent-id'),
+      index,
+      paintReady: element.getAttribute('data-terminal-paint-ready') === 'true',
+      status: element.getAttribute('data-terminal-status'),
+      textTail: (element.textContent ?? '').replace(/\s+/gu, ' ').slice(-240),
+    })),
+  );
 }
 
 function printSlowSamples(snapshot) {
@@ -190,6 +280,40 @@ async function getTerminalInputTracingSnapshot(client) {
   return diagnostics.terminalInputTracing;
 }
 
+async function fetchBuildMetadata(client) {
+  const url = new URL(client.baseUrl);
+  const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '');
+  url.pathname = `${basePath}${BUILD_METADATA_PATH}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${client.authToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    return {
+      error: `metadata request failed with ${response.status}`,
+    };
+  }
+
+  return response.json().catch(() => ({ error: 'metadata response was not valid JSON' }));
+}
+
+async function measureApiRtt(client) {
+  const samples = [];
+  for (let index = 0; index < API_RTT_SAMPLE_COUNT; index += 1) {
+    const startedAtMs = globalThis.performance.now();
+    await client.invokeIpc(GET_BACKEND_RUNTIME_DIAGNOSTICS);
+    samples.push(globalThis.performance.now() - startedAtMs);
+    await new Promise((resolve) => setTimeout(resolve, API_RTT_SAMPLE_DELAY_MS));
+  }
+
+  return {
+    samples,
+    summary: summarizeSamples(samples),
+  };
+}
+
 function getCompletedTraceCount(snapshot) {
   return snapshot.completedTraces.filter((sample) => sample.completed).length;
 }
@@ -231,25 +355,36 @@ async function waitForTracingReady(page, client, terminalIndex, settleMs) {
 }
 
 async function createProfileTerminal(page) {
-  const terminalCount = await page.locator(TERMINAL_SELECTOR).count();
-  await page.locator(APP_SHELL_SELECTOR).click({
-    force: true,
-    position: { x: 12, y: 12 },
-  });
-  await page.keyboard.press(PROFILE_TERMINAL_OPEN_SHORTCUT);
-  await getTerminalLocator(page, terminalCount).waitFor({
-    state: 'visible',
+  const terminalCount = await page.locator(TERMINAL_STATUS_SELECTOR).count();
+  const openTerminalButton = page.locator('button[title*="Open terminal"]').first();
+  if ((await openTerminalButton.count()) > 0) {
+    await openTerminalButton.scrollIntoViewIfNeeded();
+    await openTerminalButton.click();
+  } else {
+    await page.locator(APP_SHELL_SELECTOR).click({
+      force: true,
+      position: { x: 12, y: 12 },
+    });
+    await page.keyboard.press(PROFILE_TERMINAL_OPEN_SHORTCUT);
+  }
+
+  const statusRoot = getTerminalStatusLocator(page, terminalCount);
+  await statusRoot.waitFor({
+    state: 'attached',
     timeout: TERMINAL_ATTACH_TIMEOUT_MS,
   });
   await getTerminalReadyLocator(page, terminalCount).waitFor({
     state: 'attached',
     timeout: TERMINAL_ATTACH_TIMEOUT_MS,
   });
+  await waitForTerminalStatus(page, terminalCount, 'ready', TERMINAL_READY_TIMEOUT_MS);
   return terminalCount;
 }
 
 async function focusTerminal(page, terminalIndex) {
-  await getTerminalLocator(page, terminalIndex).click({
+  const statusRoot = getTerminalStatusLocator(page, terminalIndex);
+  await statusRoot.scrollIntoViewIfNeeded();
+  await statusRoot.click({
     force: true,
     position: { x: 24, y: 24 },
   });
@@ -288,6 +423,93 @@ async function runPattern(page, client, terminalIndex, pattern, settleMs) {
     pattern.minimumTraces ?? 1,
     settleMs + TRACE_RESULT_TIMEOUT_BUFFER_MS,
   );
+}
+
+function createVisualMarker(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${randomBytes(3).toString('hex')}`;
+}
+
+async function waitForTerminalText(page, terminalIndex, marker) {
+  return page.evaluate(
+    ({ marker: expectedMarker, terminalIndex: index, timeoutMs }) =>
+      new Promise((resolve) => {
+        const statusRoot = globalThis.document.querySelectorAll('[data-terminal-status]')[index];
+        const startedAtMs = globalThis.performance.now();
+        let latestTail = '';
+
+        function readTail() {
+          latestTail = (statusRoot?.textContent ?? '').slice(-600);
+          return latestTail;
+        }
+
+        function cleanup() {
+          observer.disconnect();
+          globalThis.clearTimeout(timeout);
+        }
+
+        function complete(seen, seenAtMs) {
+          cleanup();
+          resolve({
+            elapsedMs: seenAtMs === null ? null : seenAtMs - startedAtMs,
+            seen,
+            seenAtMs,
+            startedAtMs,
+            textTail: latestTail,
+          });
+        }
+
+        function check() {
+          if (readTail().includes(expectedMarker)) {
+            complete(true, globalThis.performance.now());
+            return true;
+          }
+
+          return false;
+        }
+
+        const observer = new globalThis.MutationObserver(() => {
+          check();
+        });
+        const timeout = globalThis.setTimeout(() => {
+          readTail();
+          complete(false, null);
+        }, timeoutMs);
+
+        if (statusRoot) {
+          observer.observe(statusRoot, {
+            characterData: true,
+            childList: true,
+            subtree: true,
+          });
+        }
+        check();
+      }),
+    { marker, terminalIndex, timeoutMs: VISUAL_ECHO_TIMEOUT_MS },
+  );
+}
+
+async function runVisualPattern(page, client, terminalIndex, pattern) {
+  await clearTerminalLine(page, terminalIndex);
+  await client.invokeIpc(RESET_BACKEND_RUNTIME_DIAGNOSTICS);
+  await focusTerminal(page, terminalIndex);
+
+  const marker = pattern.createMarker();
+  const waitForMarker = waitForTerminalText(page, terminalIndex, marker);
+  const inputStartedAtMs = globalThis.performance.now();
+  await pattern.run(page, marker);
+  const inputSubmittedMs = globalThis.performance.now() - inputStartedAtMs;
+  const visualEcho = await waitForMarker;
+  const snapshot = await getTerminalInputTracingSnapshot(client);
+
+  return {
+    inputSubmittedMs,
+    markerLength: marker.length,
+    name: pattern.name,
+    traceActive: snapshot.activeTraceCount,
+    traceCompleted: snapshot.summary.count,
+    traceDropped: snapshot.droppedTraces,
+    visualEcho,
+  };
 }
 
 const PATTERNS = [
@@ -330,6 +552,32 @@ const PATTERNS = [
     minimumTraces: 1,
     async run(page) {
       await page.keyboard.insertText(`PASTE_${'XYZ123'.repeat(32)}`);
+    },
+  },
+];
+
+const VISUAL_PATTERNS = [
+  {
+    createMarker: () => createVisualMarker('single_insert'),
+    name: 'visual-single-insert',
+    async run(page, marker) {
+      await page.keyboard.insertText(marker);
+    },
+  },
+  {
+    createMarker: () => createVisualMarker('rapid_word'),
+    name: 'visual-rapid-word',
+    async run(page, marker) {
+      await page.keyboard.type(marker);
+    },
+  },
+  {
+    createMarker: () => `visual${randomBytes(8).toString('hex')}`,
+    name: 'visual-press-sequence',
+    async run(page, marker) {
+      for (const char of marker) {
+        await page.keyboard.press(char);
+      }
     },
   },
 ];
@@ -484,7 +732,13 @@ async function main() {
   let browser;
   let context;
   let page;
+  let profileTerminalAgentId = null;
   try {
+    const buildMetadata = await fetchBuildMetadata(client);
+    console.log(`[build] ${JSON.stringify(buildMetadata)}`);
+    const apiRtt = await measureApiRtt(client);
+    console.log(`[api-rtt] ${describeRttSummary(apiRtt.summary)}`);
+
     browser = await chromium.launch({ headless: true });
     context = await browser.newContext();
     await context.addInitScript(
@@ -501,35 +755,78 @@ async function main() {
     await page.goto(authedUrl.toString());
     await page.locator(APP_SHELL_SELECTOR).waitFor({ state: 'visible' });
     const profileTerminalIndex = await createProfileTerminal(page);
-    await waitForTracingReady(page, client, profileTerminalIndex, options.settleMs);
+    const terminalStatuses = await readTerminalStatusSnapshot(page);
+    profileTerminalAgentId = terminalStatuses[profileTerminalIndex]?.agentId ?? null;
+    console.log(
+      `[terminal] profile index=${profileTerminalIndex} agent=${profileTerminalAgentId ?? 'unknown'}`,
+    );
 
-    for (const suite of SUITES) {
-      console.log(`\n[suite] ${suite.name}`);
-      let noiseTerminalIndex = null;
-      if (suite.backgroundNoise) {
-        noiseTerminalIndex = await startBackgroundNoise(page);
-      }
-
+    let traceReady = false;
+    if (!options.skipTrace) {
       try {
-        for (const pattern of PATTERNS) {
-          console.log(`\n[pattern] ${pattern.name}`);
-          const snapshot = await runPattern(
-            page,
-            client,
-            profileTerminalIndex,
-            pattern,
-            options.settleMs,
-          );
-          console.log(`  ${describeSummary(snapshot.summary)}`);
-          printSlowSamples(snapshot);
+        await waitForTracingReady(page, client, profileTerminalIndex, options.settleMs);
+        traceReady = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[trace] disabled: ${message}`);
+        await client.invokeIpc(RESET_BACKEND_RUNTIME_DIAGNOSTICS).catch(() => {});
+      }
+    }
+
+    if (!options.skipVisualEcho) {
+      console.log(`\n[suite] visual-echo`);
+      for (const pattern of VISUAL_PATTERNS) {
+        console.log(`\n[pattern] ${pattern.name}`);
+        const result = await runVisualPattern(page, client, profileTerminalIndex, pattern);
+        console.log(
+          `  marker chars=${result.markerLength} submitted=${formatMs(result.inputSubmittedMs)} ` +
+            `visual=${formatMs(result.visualEcho.elapsedMs ?? NaN)} seen=${result.visualEcho.seen} ` +
+            `trace-completed=${result.traceCompleted} trace-active=${result.traceActive} ` +
+            `trace-dropped=${result.traceDropped}`,
+        );
+        if (!result.visualEcho.seen) {
+          console.log(`  tail=${JSON.stringify(result.visualEcho.textTail)}`);
         }
-      } finally {
-        if (noiseTerminalIndex !== null) {
-          await stopBackgroundNoise(page, noiseTerminalIndex);
+      }
+    }
+
+    if (traceReady) {
+      for (const suite of SUITES) {
+        console.log(`\n[suite] ${suite.name}`);
+        let noiseTerminalIndex = null;
+        if (suite.backgroundNoise) {
+          noiseTerminalIndex = await startBackgroundNoise(page);
+        }
+
+        try {
+          for (const pattern of PATTERNS) {
+            console.log(`\n[pattern] ${pattern.name}`);
+            const snapshot = await runPattern(
+              page,
+              client,
+              profileTerminalIndex,
+              pattern,
+              options.settleMs,
+            );
+            console.log(`  ${describeSummary(snapshot.summary)}`);
+            printSlowSamples(snapshot);
+          }
+        } finally {
+          if (noiseTerminalIndex !== null) {
+            await stopBackgroundNoise(page, noiseTerminalIndex);
+          }
         }
       }
     }
   } finally {
+    if (profileTerminalAgentId && !options.keepProfileTerminal) {
+      await client.invokeIpc('kill_agent', { agentId: profileTerminalAgentId }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[cleanup] failed to kill profile terminal ${profileTerminalAgentId}: ${message}`,
+        );
+      });
+    }
     await page?.close().catch(() => {});
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
