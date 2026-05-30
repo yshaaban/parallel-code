@@ -20,18 +20,17 @@ import {
   getTerminalExperimentInputAcknowledgementMode,
   getTerminalExperimentLocalInputFeedbackDurationMs,
   getTerminalExperimentLocalInputFeedbackMode,
-  getTerminalExperimentLocalInputTextOverlayMaxChars,
   getTerminalExperimentSwitchPostInputReadyEchoGraceMs,
   getTerminalExperimentSwitchTargetWindowMs,
   getTerminalPerformanceExperimentConfig,
 } from '../lib/terminal-performance-experiments';
 import {
   isRendererRuntimeDiagnosticsEnabled,
+  recordTerminalLocalInputAckPulse,
   recordTerminalStartupFitExecution,
   recordTerminalStartupFitSchedule,
   recordTerminalPresentationBlockedInput,
   recordTerminalPresentationTransition,
-  recordTerminalLocalInputFeedback,
   recordTerminalStartupLogicalReady,
   recordTerminalStartupLogicalToPaintReadyDelay,
   recordTerminalStartupPaintReady,
@@ -133,18 +132,6 @@ function isElementVisibleInViewport(element: Element): boolean {
 
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const POST_RECOVERY_INPUT_CAPTURE_GRACE_MS = 750;
-const CONTROL_CHARACTER_MAX_CODE_POINT = 31;
-const DELETE_CHARACTER_CODE_POINT = 127;
-const C1_CONTROL_CHARACTER_MAX_CODE_POINT = 159;
-const LOCAL_INPUT_TEXT_OVERLAY_SCREEN_PADDING_PX = 8;
-
-interface LocalInputTextOverlay {
-  generation: number;
-  leftPx: number;
-  maxWidthPx: number;
-  text: string;
-  topPx: number;
-}
 
 function getTerminalFocusElement(root: HTMLElement | undefined): HTMLElement | null {
   if (!root) {
@@ -459,7 +446,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
   let inputAcknowledgementTimer: number | undefined;
-  let localInputTextOverlayTimer: number | undefined;
   let pendingTerminalKeyCapture = false;
   let pendingTerminalKeyCaptureReleaseTimer: number | undefined;
   let terminalInputCaptureGraceUntilMs = 0;
@@ -518,8 +504,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     getTerminalExperimentInputAcknowledgementDurationMs(),
   );
   const [inputAcknowledgementVisible, setInputAcknowledgementVisible] = createSignal(false);
-  const [localInputTextOverlay, setLocalInputTextOverlay] =
-    createSignal<LocalInputTextOverlay | null>(null);
   const [sessionVersion, setSessionVersion] = createSignal(0);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
@@ -931,162 +915,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     showInputAcknowledgement(getTerminalExperimentInputAcknowledgementDurationMs());
   }
 
-  function clearLocalInputTextOverlayTimer(): void {
-    if (localInputTextOverlayTimer === undefined) {
-      return;
-    }
-
-    window.clearTimeout(localInputTextOverlayTimer);
-    localInputTextOverlayTimer = undefined;
-  }
-
-  function clearLocalInputTextOverlay(): void {
-    clearLocalInputTextOverlayTimer();
-    setLocalInputTextOverlay(null);
-  }
-
   function clearLocalInputFeedback(): void {
     clearInputAcknowledgement();
-    clearLocalInputTextOverlay();
   }
 
-  function isBackspaceInput(char: string): boolean {
-    return char === '\b' || char === '\x7f';
-  }
-
-  function isPrintableLocalInputText(char: string): boolean {
-    const codePoint = char.codePointAt(0);
-    if (codePoint === undefined) {
-      return false;
-    }
-
-    if (codePoint <= CONTROL_CHARACTER_MAX_CODE_POINT) {
-      return false;
-    }
-
-    if (codePoint === DELETE_CHARACTER_CODE_POINT) {
-      return false;
-    }
-
-    if (
-      codePoint > DELETE_CHARACTER_CODE_POINT &&
-      codePoint <= C1_CONTROL_CHARACTER_MAX_CODE_POINT
-    ) {
-      return false;
-    }
-
-    return true;
-  }
-
-  function appendSafeLocalInputText(currentText: string, data: string): string | null {
-    let nextText = currentText;
-    for (const char of Array.from(data)) {
-      if (isBackspaceInput(char)) {
-        nextText = nextText.slice(0, -1);
-        continue;
-      }
-
-      if (!isPrintableLocalInputText(char)) {
-        return null;
-      }
-
-      nextText += char;
-    }
-
-    return nextText.slice(-getTerminalExperimentLocalInputTextOverlayMaxChars());
-  }
-
-  function getLocalInputTextOverlayPosition(text: string): Omit<LocalInputTextOverlay, 'text'> {
-    const previousOverlay = localInputTextOverlay();
-    const fallbackPosition = {
-      generation: (previousOverlay?.generation ?? 0) + 1,
-      leftPx: LOCAL_INPUT_TEXT_OVERLAY_SCREEN_PADDING_PX,
-      maxWidthPx: 240,
-      topPx: LOCAL_INPUT_TEXT_OVERLAY_SCREEN_PADDING_PX,
-    };
-
-    const activeBuffer = session?.term.buffer?.active;
-    if (!activeBuffer) {
-      return fallbackPosition;
-    }
-
-    const screenElement = containerRef.querySelector<HTMLElement>('.xterm-screen');
-    if (!screenElement) {
-      return fallbackPosition;
-    }
-
-    const screenRect = screenElement.getBoundingClientRect();
-    const containerRect = containerRef.getBoundingClientRect();
-    const cols = Math.max(1, session?.term.cols ?? 1);
-    const rows = Math.max(1, session?.term.rows ?? 1);
-    const cellWidth = screenRect.width > 0 ? screenRect.width / cols : store.terminalFontSize * 0.6;
-    const cellHeight =
-      screenRect.height > 0 ? screenRect.height / rows : store.terminalFontSize * 1.35;
-    const cursorX = Math.max(0, Math.min(cols - 1, activeBuffer.cursorX));
-    const cursorY = Math.max(0, Math.min(rows - 1, activeBuffer.cursorY));
-    const screenLeft = screenRect.left - containerRect.left;
-    const screenTop = screenRect.top - containerRect.top;
-    const leftPx = screenLeft + cursorX * cellWidth;
-    const topPx = screenTop + cursorY * cellHeight;
-    const screenRightPx = screenLeft + screenRect.width;
-    const remainingWidthPx = Math.max(
-      cellWidth,
-      screenRightPx - leftPx - LOCAL_INPUT_TEXT_OVERLAY_SCREEN_PADDING_PX,
-    );
-    const textWidthPx = Math.max(cellWidth, text.length * cellWidth);
-
-    return {
-      generation: fallbackPosition.generation,
-      leftPx,
-      maxWidthPx: Math.max(cellWidth, Math.min(remainingWidthPx, textWidthPx)),
-      topPx,
-    };
-  }
-
-  function showLocalInputTextOverlay(data: string): void {
-    if (!isLocalInputFeedbackAvailable()) {
-      return;
-    }
-
-    const nextText = appendSafeLocalInputText(localInputTextOverlay()?.text ?? '', data);
-    if (nextText === null) {
-      clearLocalInputTextOverlay();
-      recordTerminalLocalInputFeedback({ kind: 'text-overlay-control-fallback' });
-      showInputAcknowledgement(getTerminalExperimentLocalInputFeedbackDurationMs());
-      return;
-    }
-
-    if (nextText.length === 0) {
-      clearLocalInputTextOverlay();
-      return;
-    }
-
-    clearLocalInputTextOverlayTimer();
-    recordTerminalLocalInputFeedback({
-      chars: nextText.length,
-      kind: 'text-overlay',
-    });
-    setLocalInputTextOverlay({
-      ...getLocalInputTextOverlayPosition(nextText),
-      text: nextText,
-    });
-    localInputTextOverlayTimer = window.setTimeout(() => {
-      localInputTextOverlayTimer = undefined;
-      setLocalInputTextOverlay(null);
-    }, getTerminalExperimentLocalInputFeedbackDurationMs());
-  }
-
-  function handleSessionLocalInputFeedback(data: string): void {
+  function handleSessionLocalInputFeedback(): void {
     const feedbackMode = getTerminalExperimentLocalInputFeedbackMode();
     switch (feedbackMode) {
       case 'ack-pulse':
-        clearLocalInputTextOverlay();
-        recordTerminalLocalInputFeedback({ kind: 'ack-pulse' });
+        recordTerminalLocalInputAckPulse();
         showInputAcknowledgement(getTerminalExperimentLocalInputFeedbackDurationMs());
-        return;
-      case 'text-overlay':
-        clearInputAcknowledgement();
-        showLocalInputTextOverlay(data);
         return;
       case 'off':
         return;
@@ -2054,12 +1892,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       clearLocalInputFeedback();
       return;
     }
-
-    if (localInputFeedbackMode !== 'text-overlay') {
-      clearLocalInputTextOverlay();
-    }
-
-    if (localInputFeedbackMode !== 'ack-pulse' && localInputFeedbackMode !== 'text-overlay') {
+    if (localInputFeedbackMode !== 'ack-pulse') {
       clearInputAcknowledgement();
     }
   });
@@ -2466,25 +2299,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               '--terminal-input-ack-duration': `${inputAcknowledgementDurationMs()}ms`,
             }}
           />
-        )}
-      </Show>
-      <Show when={localInputTextOverlay()} keyed>
-        {(overlay) => (
-          <div
-            aria-hidden="true"
-            class="terminal-local-input-text-overlay"
-            data-terminal-local-input-text-overlay="true"
-            data-terminal-local-input-text-overlay-generation={overlay.generation}
-            style={{
-              'font-family': getTerminalFontFamily(store.terminalFont),
-              'font-size': `${props.fontSize ?? store.terminalFontSize}px`,
-              left: `${overlay.leftPx}px`,
-              'max-width': `${overlay.maxWidthPx}px`,
-              top: `${overlay.topPx}px`,
-            }}
-          >
-            {overlay.text}
-          </div>
         )}
       </Show>
       <Show

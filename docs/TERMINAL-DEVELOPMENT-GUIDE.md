@@ -940,8 +940,8 @@ Reason:
 ### Local input feedback experiments
 
 Local input feedback experiments are gated through
-`window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__` or URL query params. The safest first variant is an
-immediate renderer-only pulse on locally admitted input:
+`window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__` or URL query params. The active variant is an
+immediate renderer-only frame pulse on locally admitted input:
 
 ```js
 window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
@@ -950,31 +950,24 @@ window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
 };
 ```
 
-The more aggressive variant renders provisional printable text near the xterm cursor, still outside
-xterm state:
-
-```js
-window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
-  localInputFeedbackMode: 'text-overlay',
-  localInputFeedbackDurationMs: 180,
-  localInputTextOverlayMaxChars: 48,
-};
-```
-
-For deployed/manual tests, append the equivalent query params:
+For deployed/manual tests, append the equivalent query param:
 
 ```text
 ?terminalLocalInputFeedback=ack-pulse&terminalLocalInputFeedbackDurationMs=180
-?terminalLocalInputFeedback=text-overlay&terminalLocalInputFeedbackDurationMs=180&terminalLocalInputTextOverlayMaxChars=48
 ```
 
-These are not local echo. They must never call `term.write`, mutate xterm state, or enter scrollback
-/ recovery history. Feedback starts when renderer input is locally admitted, then clears on the next
-authoritative output render or timeout. The older `inputAcknowledgementMode: 'pulse'` gate remains
-available for backend-accepted pulse comparisons, but it intentionally starts later.
+This is not local echo. It must never call `term.write`, mutate xterm state, enter scrollback /
+recovery history, or draw inside the terminal buffer. Feedback starts when renderer input is locally
+admitted, then clears on the next authoritative output render or timeout. The older
+`inputAcknowledgementMode: 'pulse'` gate remains available for backend-accepted pulse comparisons,
+but it intentionally starts later.
 
-With renderer runtime diagnostics enabled, `terminalInput.localFeedback*` counters separate pulse,
-text-overlay, and control-key fallback events in the diagnostics snapshot.
+The provisional `text-overlay` variant was rejected after deployed TUI testing because the renderer
+does not know the TUI app's semantic input cursor. Keep local feedback in terminal chrome, not
+terminal content.
+
+With renderer runtime diagnostics enabled, `terminalInput.localFeedbackAckPulses` counts local
+feedback events in the diagnostics snapshot.
 
 Use it to test perceived latency on TUI-heavy agents. Reject the experiment if it creates duplicate
 glyphs, cursor drift, masked-input leakage, terminal history divergence, or worse focused

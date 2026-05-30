@@ -850,48 +850,32 @@ textarea::placeholder {
 @keyframes terminalInputAcknowledgementPulse {
   0% {
     opacity: 0;
-    transform: translateY(4px) scaleX(0.35);
+    box-shadow:
+      inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent),
+      inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
   }
   38% {
     opacity: 1;
-    transform: translateY(0) scaleX(1);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent),
+      inset 0 0 18px color-mix(in srgb, var(--accent) 16%, transparent);
   }
   100% {
     opacity: 0;
-    transform: translateY(0) scaleX(1.45);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent),
+      inset 0 0 18px color-mix(in srgb, var(--accent) 4%, transparent);
   }
 }
 
 .terminal-input-ack-overlay {
   position: absolute;
-  right: 12px;
-  bottom: 10px;
+  inset: 0;
   z-index: 10;
-  width: 24px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 0 12px color-mix(in srgb, var(--accent) 58%, transparent);
+  border-radius: inherit;
   pointer-events: none;
-  transform-origin: right center;
   animation: terminalInputAcknowledgementPulse var(--terminal-input-ack-duration, 180ms)
     cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-
-.terminal-local-input-text-overlay {
-  position: absolute;
-  z-index: 10;
-  box-sizing: border-box;
-  overflow: hidden;
-  color: color-mix(in srgb, var(--accent) 78%, var(--fg));
-  line-height: 1.2;
-  opacity: 0.72;
-  pointer-events: none;
-  text-overflow: clip;
-  text-shadow: 0 0 10px color-mix(in srgb, var(--bg-elevated) 72%, transparent);
-  white-space: pre;
 }
 
 @media (prefers-reduced-motion: reduce) {

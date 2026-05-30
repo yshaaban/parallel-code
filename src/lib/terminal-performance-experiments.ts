@@ -20,7 +20,7 @@ type TerminalStartupVisibleSiblingReplayUnblockPhase =
   | 'input-ready'
   | 'paint-settled';
 type TerminalInputAcknowledgementMode = 'off' | 'pulse';
-type TerminalLocalInputFeedbackMode = 'ack-pulse' | 'off' | 'text-overlay';
+type TerminalLocalInputFeedbackMode = 'ack-pulse' | 'off';
 type TerminalVisibleWebglAcquisitionMode = 'focused-only' | 'visible-set';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
@@ -101,7 +101,6 @@ interface TerminalPerformanceExploratoryConfigInput {
   laneFrameBudgetOverrides?: Partial<Record<TerminalOutputDrainLaneName, number>>;
   localInputFeedbackDurationMs?: number;
   localInputFeedbackMode?: TerminalLocalInputFeedbackMode;
-  localInputTextOverlayMaxChars?: number;
   sidebarIntentPrewarmDelayMs?: number;
   statusFlushDelayOverridesMs?: Partial<Record<TerminalOutputPriorityName, number>>;
   startupAttachChunkByteOverrides?: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -180,7 +179,6 @@ interface TerminalPerformanceExploratoryConfig {
   laneFrameBudgetOverrides: Partial<Record<TerminalOutputDrainLaneName, number>>;
   localInputFeedbackDurationMs: number;
   localInputFeedbackMode: TerminalLocalInputFeedbackMode;
-  localInputTextOverlayMaxChars: number;
   sidebarIntentPrewarmDelayMs: number | null;
   statusFlushDelayOverridesMs: Partial<Record<TerminalOutputPriorityName, number>>;
   startupAttachChunkByteOverrides: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -286,7 +284,6 @@ const TERMINAL_INPUT_ACKNOWLEDGEMENT_MODES = new Set<TerminalInputAcknowledgemen
 const TERMINAL_LOCAL_INPUT_FEEDBACK_MODES = new Set<TerminalLocalInputFeedbackMode>([
   'ack-pulse',
   'off',
-  'text-overlay',
 ]);
 
 const DEFAULT_FOCUSED_PREEMPTION_DRAIN_SCOPE = 'focused';
@@ -294,7 +291,6 @@ const DEFAULT_FOCUSED_PREEMPTION_WINDOW_MS = 150;
 const DEFAULT_EXPERIMENT_LABEL = 'default';
 const DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS = 180;
 const DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS = 180;
-const DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS = 48;
 const DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT = 4;
 const FOCUSED_PREEMPTION_DRAIN_SCOPES = new Set<FocusedPreemptionDrainScope>([
   'all',
@@ -347,7 +343,6 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   laneFrameBudgetOverrides: {},
   localInputFeedbackDurationMs: DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS,
   localInputFeedbackMode: 'off',
-  localInputTextOverlayMaxChars: DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS,
   sidebarIntentPrewarmDelayMs: null,
   statusFlushDelayOverridesMs: {},
   startupAttachChunkByteOverrides: {},
@@ -1085,9 +1080,6 @@ function normalizeExploratoryConfig(
       getPositiveFiniteNumberOrNull(input.localInputFeedbackDurationMs) ??
       DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS,
     localInputFeedbackMode: normalizeLocalInputFeedbackMode(input.localInputFeedbackMode),
-    localInputTextOverlayMaxChars:
-      getPositiveIntegerOrNull(input.localInputTextOverlayMaxChars) ??
-      DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS,
     sidebarIntentPrewarmDelayMs: getPositiveFiniteNumberOrNull(input.sidebarIntentPrewarmDelayMs),
     statusFlushDelayOverridesMs: normalizePriorityNumberRecord(input.statusFlushDelayOverridesMs),
     startupAttachChunkByteOverrides: normalizePriorityNumberRecord(
@@ -1235,15 +1227,6 @@ function readUrlExperimentConfig(): TerminalPerformanceExperimentConfigInput | u
   ]);
   if (localFeedbackDurationMs !== undefined) {
     config.localInputFeedbackDurationMs = localFeedbackDurationMs;
-    hasConfig = true;
-  }
-
-  const localTextOverlayMaxChars = getUrlNumberParam(params, [
-    'localInputTextOverlayMaxChars',
-    'terminalLocalInputTextOverlayMaxChars',
-  ]);
-  if (localTextOverlayMaxChars !== undefined) {
-    config.localInputTextOverlayMaxChars = localTextOverlayMaxChars;
     hasConfig = true;
   }
 
@@ -1609,10 +1592,6 @@ export function getTerminalExperimentLocalInputFeedbackMode(): TerminalLocalInpu
 
 export function getTerminalExperimentLocalInputFeedbackDurationMs(): number {
   return getTerminalPerformanceExperimentConfig().localInputFeedbackDurationMs;
-}
-
-export function getTerminalExperimentLocalInputTextOverlayMaxChars(): number {
-  return getTerminalPerformanceExperimentConfig().localInputTextOverlayMaxChars;
 }
 
 export function getTerminalExperimentLaneFrameBudgetOverride(

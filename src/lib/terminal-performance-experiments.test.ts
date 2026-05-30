@@ -15,7 +15,6 @@ import {
   getTerminalExperimentLaneFrameBudgetOverride,
   getTerminalExperimentLocalInputFeedbackDurationMs,
   getTerminalExperimentLocalInputFeedbackMode,
-  getTerminalExperimentLocalInputTextOverlayMaxChars,
   getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale,
   getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale,
   getTerminalExperimentNonTargetVisibleFrameBudgetOverride,
@@ -132,14 +131,12 @@ describe('terminal-performance-experiments', () => {
         inputAcknowledgementMode: 'off',
         localInputFeedbackDurationMs: 180,
         localInputFeedbackMode: 'off',
-        localInputTextOverlayMaxChars: 48,
       }),
     );
     expect(getTerminalExperimentInputAcknowledgementMode()).toBe('off');
     expect(getTerminalExperimentInputAcknowledgementDurationMs()).toBe(180);
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('off');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(180);
-    expect(getTerminalExperimentLocalInputTextOverlayMaxChars()).toBe(48);
   });
 
   it('normalizes the terminal input acknowledgement experiment', () => {
@@ -167,27 +164,23 @@ describe('terminal-performance-experiments', () => {
   it('normalizes the local input feedback experiment', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       localInputFeedbackDurationMs: 240,
-      localInputFeedbackMode: 'text-overlay',
-      localInputTextOverlayMaxChars: 24,
+      localInputFeedbackMode: 'ack-pulse',
     };
     resetTerminalPerformanceExperimentConfigForTests();
 
-    expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('text-overlay');
+    expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('ack-pulse');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(240);
-    expect(getTerminalExperimentLocalInputTextOverlayMaxChars()).toBe(24);
   });
 
   it('falls back when local input feedback options are invalid', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       localInputFeedbackDurationMs: 0,
-      localInputFeedbackMode: 'write-through',
-      localInputTextOverlayMaxChars: 0,
+      localInputFeedbackMode: 'text-overlay',
     } as unknown as NonNullable<typeof window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__>;
     resetTerminalPerformanceExperimentConfigForTests();
 
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('off');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(180);
-    expect(getTerminalExperimentLocalInputTextOverlayMaxChars()).toBe(48);
   });
 
   it('reads local input feedback experiment options from URL query params', () => {
@@ -196,14 +189,13 @@ describe('terminal-performance-experiments', () => {
       configurable: true,
       value: {
         search:
-          '?token=test&terminalLocalInputFeedback=text-overlay&terminalLocalInputFeedbackDurationMs=260&terminalLocalInputTextOverlayMaxChars=32',
+          '?token=test&terminalLocalInputFeedback=ack-pulse&terminalLocalInputFeedbackDurationMs=260',
       },
     });
     resetTerminalPerformanceExperimentConfigForTests();
 
-    expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('text-overlay');
+    expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('ack-pulse');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(260);
-    expect(getTerminalExperimentLocalInputTextOverlayMaxChars()).toBe(32);
     expect(getTerminalPerformanceExperimentConfig().adaptiveVisibleBackgroundThrottleMode).toBe(
       'moderate',
     );

@@ -480,48 +480,13 @@ describe('TerminalView', () => {
     getLastStatusChangeHandler()?.('ready');
     getLastLocalInputFeedbackHandler()?.('a');
 
-    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+    const pulse = result.container.querySelector('[data-terminal-input-ack="true"]');
+    expect(pulse).not.toBeNull();
+    expect(pulse?.classList.contains('terminal-input-ack-overlay')).toBe(true);
 
     getLastOutputRenderedHandler()?.(1);
 
     expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
-  });
-
-  it('shows local input text overlay without waiting for backend acknowledgement', () => {
-    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
-      localInputFeedbackDurationMs: 240,
-      localInputFeedbackMode: 'text-overlay',
-      localInputTextOverlayMaxChars: 6,
-    };
-    resetTerminalPerformanceExperimentConfigForTests();
-    setStore('activeTaskId', 'task-1');
-
-    const result = render(() => (
-      <TerminalView
-        taskId="task-1"
-        agentId="agent-1"
-        command="claude"
-        args={[]}
-        cwd="/tmp/project"
-        isFocused
-      />
-    ));
-
-    getLastStatusChangeHandler()?.('ready');
-    getLastLocalInputFeedbackHandler()?.('abcdefghi');
-
-    const overlay = result.container.querySelector(
-      '[data-terminal-local-input-text-overlay="true"]',
-    );
-    expect(overlay).not.toBeNull();
-    expect(overlay?.textContent).toBe('defghi');
-    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
-
-    getLastOutputRenderedHandler()?.(1);
-
-    expect(
-      result.container.querySelector('[data-terminal-local-input-text-overlay="true"]'),
-    ).toBeNull();
   });
 
   it('reacts to focus, font size, terminal font, and theme changes', async () => {
