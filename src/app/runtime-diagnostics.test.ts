@@ -11,6 +11,7 @@ import {
   recordTerminalFitExecution,
   recordTerminalFitFlush,
   recordTerminalFitNoopSkip,
+  recordTerminalLocalInputFeedback,
   recordTerminalPresentationBlockedInput,
   recordTerminalPresentationTransition,
   recordTerminalStartupFitExecution,
@@ -91,6 +92,9 @@ describe('runtime-diagnostics', () => {
     });
     recordTerminalStartupWrite('selected', 512);
     recordTerminalFitDirtyMark('resize');
+    recordTerminalLocalInputFeedback({ kind: 'ack-pulse' });
+    recordTerminalLocalInputFeedback({ chars: 3, kind: 'text-overlay' });
+    recordTerminalLocalInputFeedback({ kind: 'text-overlay-control-fallback' });
     recordTerminalFitSchedule('attach');
     recordTerminalFitExecution({
       geometryChanged: true,
@@ -188,6 +192,9 @@ describe('runtime-diagnostics', () => {
     });
     recordTerminalStartupWrite('selected', 512);
     recordTerminalFitDirtyMark('resize');
+    recordTerminalLocalInputFeedback({ kind: 'ack-pulse' });
+    recordTerminalLocalInputFeedback({ chars: 3, kind: 'text-overlay' });
+    recordTerminalLocalInputFeedback({ kind: 'text-overlay-control-fallback' });
     recordTerminalFitSchedule('attach');
     recordTerminalFitExecution({
       geometryChanged: true,
@@ -311,6 +318,14 @@ describe('runtime-diagnostics', () => {
     expect(
       getRendererRuntimeDiagnosticsSnapshot().terminalPresentation.blockedInputAttempts.loading,
     ).toBe(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalInput).toEqual(
+      expect.objectContaining({
+        localFeedbackAckPulses: 1,
+        localFeedbackTextOverlayChars: 3,
+        localFeedbackTextOverlayControlFallbacks: 1,
+        localFeedbackTextOverlayEvents: 1,
+      }),
+    );
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint).toEqual(
       expect.objectContaining({
         logicalReadyCounts: expect.objectContaining({

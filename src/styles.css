@@ -880,6 +880,20 @@ textarea::placeholder {
     cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+.terminal-local-input-text-overlay {
+  position: absolute;
+  z-index: 10;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+  line-height: 1.2;
+  opacity: 0.72;
+  pointer-events: none;
+  text-overflow: clip;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  white-space: pre;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .terminal-input-ack-overlay {
     animation: fadeIn 80ms ease-out both;

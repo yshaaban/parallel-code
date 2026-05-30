@@ -523,6 +523,7 @@ export interface StartTerminalSessionOptions {
   onAttachMilestone?: (milestone: TerminalAttachMilestone) => void;
   onBlockedInputAttempt?: () => void;
   onInputAccepted?: () => void;
+  onLocalInputFeedback?: (data: string) => void;
   onOutputRendered?: (byteLength: number) => void;
   onPaintReadyChange?: (isPaintReady: boolean) => void;
   onStartupFitExecuted?: (details: {
@@ -1359,6 +1360,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     onBlockedInputAttempt: options.onBlockedInputAttempt,
     onInputAccepted: options.onInputAccepted,
     onInputActivity: markLocalInputObserved,
+    onLocalInputFeedback: options.onLocalInputFeedback,
     onReadOnlyInputAttempt,
     onResizeCommitted: applyCommittedResizeFit,
     onResizeTransactionChange: handleResizeTransactionChange,

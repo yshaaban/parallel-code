@@ -163,6 +163,7 @@ type MockSessionOptions = Pick<
   | 'onAttachMilestone'
   | 'onBlockedInputAttempt'
   | 'onInputAccepted'
+  | 'onLocalInputFeedback'
   | 'onOutputRendered'
   | 'onPaintReadyChange'
   | 'onStartupRenderEvent'
@@ -263,6 +264,10 @@ function getLastResizeTransactionChangeHandler(): ((isActive: boolean) => void) 
 
 function getLastInputAcceptedHandler(): (() => void) | undefined {
   return getLastSessionOptions()?.onInputAccepted;
+}
+
+function getLastLocalInputFeedbackHandler(): ((data: string) => void) | undefined {
+  return getLastSessionOptions()?.onLocalInputFeedback;
 }
 
 function getLastOutputRenderedHandler(): ((byteLength: number) => void) | undefined {
@@ -451,6 +456,72 @@ describe('TerminalView', () => {
 
     vi.advanceTimersByTime(1);
     expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+  });
+
+  it('shows local input ack pulse immediately when the local feedback experiment is enabled', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      localInputFeedbackDurationMs: 240,
+      localInputFeedbackMode: 'ack-pulse',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastLocalInputFeedbackHandler()?.('a');
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+
+    getLastOutputRenderedHandler()?.(1);
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+  });
+
+  it('shows local input text overlay without waiting for backend acknowledgement', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      localInputFeedbackDurationMs: 240,
+      localInputFeedbackMode: 'text-overlay',
+      localInputTextOverlayMaxChars: 6,
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastLocalInputFeedbackHandler()?.('abcdefghi');
+
+    const overlay = result.container.querySelector(
+      '[data-terminal-local-input-text-overlay="true"]',
+    );
+    expect(overlay).not.toBeNull();
+    expect(overlay?.textContent).toBe('defghi');
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+
+    getLastOutputRenderedHandler()?.(1);
+
+    expect(
+      result.container.querySelector('[data-terminal-local-input-text-overlay="true"]'),
+    ).toBeNull();
   });
 
   it('reacts to focus, font size, terminal font, and theme changes', async () => {

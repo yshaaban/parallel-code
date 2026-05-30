@@ -2,6 +2,7 @@ import {
   SERVER_STATE_BOOTSTRAP_CATEGORIES,
   type ServerStateBootstrapCategory,
 } from '../domain/server-state-bootstrap';
+import { assertNever } from '../lib/assert-never';
 import type { TerminalPresentationModeKind } from '../lib/terminal-presentation-mode';
 
 interface CategoryCounters {
@@ -211,6 +212,10 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     immediateFlushes: number;
     inFlightBatchesCurrent: number;
     inFlightBatchesMax: number;
+    localFeedbackAckPulses: number;
+    localFeedbackTextOverlayChars: number;
+    localFeedbackTextOverlayControlFallbacks: number;
+    localFeedbackTextOverlayEvents: number;
     queuedChunksCurrent: number;
     queuedChunksMax: number;
     retrySchedules: number;
@@ -469,6 +474,10 @@ function createInitialTerminalInputDiagnostics(): RendererRuntimeDiagnosticsSnap
     immediateFlushes: 0,
     inFlightBatchesCurrent: 0,
     inFlightBatchesMax: 0,
+    localFeedbackAckPulses: 0,
+    localFeedbackTextOverlayChars: 0,
+    localFeedbackTextOverlayControlFallbacks: 0,
+    localFeedbackTextOverlayEvents: 0,
     queuedChunksCurrent: 0,
     queuedChunksMax: 0,
     retrySchedules: 0,
@@ -1089,6 +1098,28 @@ export function recordTerminalInputBatchSent(chars: number): void {
 export function recordTerminalInputDroppedSuffixBatches(count: number): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.terminalInput.droppedSuffixBatches += count;
+  });
+}
+
+export function recordTerminalLocalInputFeedback(details: {
+  chars?: number;
+  kind: 'ack-pulse' | 'text-overlay' | 'text-overlay-control-fallback';
+}): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    switch (details.kind) {
+      case 'ack-pulse':
+        snapshot.terminalInput.localFeedbackAckPulses += 1;
+        return;
+      case 'text-overlay':
+        snapshot.terminalInput.localFeedbackTextOverlayEvents += 1;
+        snapshot.terminalInput.localFeedbackTextOverlayChars += Math.max(0, details.chars ?? 0);
+        return;
+      case 'text-overlay-control-fallback':
+        snapshot.terminalInput.localFeedbackTextOverlayControlFallbacks += 1;
+        return;
+      default:
+        return assertNever(details.kind, 'Unhandled terminal local input feedback kind');
+    }
   });
 }
 

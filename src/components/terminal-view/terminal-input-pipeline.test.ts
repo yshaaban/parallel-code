@@ -213,6 +213,78 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('reports local input feedback when user input is locally admitted', () => {
+    const onLocalInputFeedback = vi.fn();
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onLocalInputFeedback,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('a');
+
+    expect(onLocalInputFeedback).toHaveBeenCalledWith('a');
+    expect(onLocalInputFeedback).toHaveBeenCalledTimes(1);
+
+    pipeline.cleanup();
+  });
+
+  it('does not report local input feedback for restoration-buffered input', async () => {
+    let canAcceptInput = false;
+    const onLocalInputFeedback = vi.fn();
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => canAcceptInput,
+      canBufferInputWhileInteractionPending: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onLocalInputFeedback,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalData('buffered while restoring');
+    await vi.advanceTimersByTimeAsync(2);
+
+    expect(onLocalInputFeedback).not.toHaveBeenCalled();
+
+    canAcceptInput = true;
+    await vi.advanceTimersByTimeAsync(50);
+    await flushMicrotasks();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(onLocalInputFeedback).not.toHaveBeenCalled();
+
+    pipeline.cleanup();
+  });
+
   it('reports accepted input only after the backend accepts the sent batch', async () => {
     const sendDeferred = createDeferred<undefined>();
     const onInputAccepted = vi.fn();

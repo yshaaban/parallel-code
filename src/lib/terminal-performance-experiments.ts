@@ -20,6 +20,7 @@ type TerminalStartupVisibleSiblingReplayUnblockPhase =
   | 'input-ready'
   | 'paint-settled';
 type TerminalInputAcknowledgementMode = 'off' | 'pulse';
+type TerminalLocalInputFeedbackMode = 'ack-pulse' | 'off' | 'text-overlay';
 type TerminalVisibleWebglAcquisitionMode = 'focused-only' | 'visible-set';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
@@ -98,6 +99,9 @@ interface TerminalPerformanceExploratoryConfigInput {
   inputAcknowledgementDurationMs?: number;
   inputAcknowledgementMode?: TerminalInputAcknowledgementMode;
   laneFrameBudgetOverrides?: Partial<Record<TerminalOutputDrainLaneName, number>>;
+  localInputFeedbackDurationMs?: number;
+  localInputFeedbackMode?: TerminalLocalInputFeedbackMode;
+  localInputTextOverlayMaxChars?: number;
   sidebarIntentPrewarmDelayMs?: number;
   statusFlushDelayOverridesMs?: Partial<Record<TerminalOutputPriorityName, number>>;
   startupAttachChunkByteOverrides?: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -174,6 +178,9 @@ interface TerminalPerformanceExploratoryConfig {
   inputAcknowledgementDurationMs: number;
   inputAcknowledgementMode: TerminalInputAcknowledgementMode;
   laneFrameBudgetOverrides: Partial<Record<TerminalOutputDrainLaneName, number>>;
+  localInputFeedbackDurationMs: number;
+  localInputFeedbackMode: TerminalLocalInputFeedbackMode;
+  localInputTextOverlayMaxChars: number;
   sidebarIntentPrewarmDelayMs: number | null;
   statusFlushDelayOverridesMs: Partial<Record<TerminalOutputPriorityName, number>>;
   startupAttachChunkByteOverrides: Partial<Record<TerminalOutputPriorityName, number>>;
@@ -276,11 +283,18 @@ const TERMINAL_INPUT_ACKNOWLEDGEMENT_MODES = new Set<TerminalInputAcknowledgemen
   'off',
   'pulse',
 ]);
+const TERMINAL_LOCAL_INPUT_FEEDBACK_MODES = new Set<TerminalLocalInputFeedbackMode>([
+  'ack-pulse',
+  'off',
+  'text-overlay',
+]);
 
 const DEFAULT_FOCUSED_PREEMPTION_DRAIN_SCOPE = 'focused';
 const DEFAULT_FOCUSED_PREEMPTION_WINDOW_MS = 150;
 const DEFAULT_EXPERIMENT_LABEL = 'default';
 const DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS = 180;
+const DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS = 180;
+const DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS = 48;
 const DEFAULT_VISIBLE_WEBGL_CONTEXT_LIMIT = 4;
 const FOCUSED_PREEMPTION_DRAIN_SCOPES = new Set<FocusedPreemptionDrainScope>([
   'all',
@@ -331,6 +345,9 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   inputAcknowledgementDurationMs: DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS,
   inputAcknowledgementMode: 'off',
   laneFrameBudgetOverrides: {},
+  localInputFeedbackDurationMs: DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS,
+  localInputFeedbackMode: 'off',
+  localInputTextOverlayMaxChars: DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS,
   sidebarIntentPrewarmDelayMs: null,
   statusFlushDelayOverridesMs: {},
   startupAttachChunkByteOverrides: {},
@@ -372,6 +389,8 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG = createTerminalPerformance
 let cachedExperimentConfigInput: unknown = Symbol('unset-terminal-performance-config');
 let cachedExperimentConfig = DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG;
 let cachedHighLoadModeEnabled = false;
+let cachedUrlExperimentSearch: string | null = null;
+let cachedUrlExperimentConfig: TerminalPerformanceExperimentConfigInput | undefined;
 const HIGH_LOAD_MODE_FEW_VISIBLE_COUNT = '2';
 const HIGH_LOAD_MODE_DENSE_VISIBLE_COUNT = '4';
 const HIGH_LOAD_MODE_DENSE_FALLBACK_VISIBLE_LANE_FRAME_BUDGET_BYTES = 40 * 1024;
@@ -905,6 +924,14 @@ function normalizeInputAcknowledgementMode(
   return 'off';
 }
 
+function normalizeLocalInputFeedbackMode(configuredMode: unknown): TerminalLocalInputFeedbackMode {
+  if (isStringLiteralSetMember(TERMINAL_LOCAL_INPUT_FEEDBACK_MODES, configuredMode)) {
+    return configuredMode;
+  }
+
+  return 'off';
+}
+
 function normalizeStartupTaskSchedulingRoles(
   configuredRoles: unknown,
 ): Partial<Record<TerminalStartupTaskSchedulingRole, boolean>> {
@@ -1054,6 +1081,13 @@ function normalizeExploratoryConfig(
       DEFAULT_INPUT_ACKNOWLEDGEMENT_DURATION_MS,
     inputAcknowledgementMode: normalizeInputAcknowledgementMode(input.inputAcknowledgementMode),
     laneFrameBudgetOverrides: normalizeLaneNumberRecord(input.laneFrameBudgetOverrides),
+    localInputFeedbackDurationMs:
+      getPositiveFiniteNumberOrNull(input.localInputFeedbackDurationMs) ??
+      DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS,
+    localInputFeedbackMode: normalizeLocalInputFeedbackMode(input.localInputFeedbackMode),
+    localInputTextOverlayMaxChars:
+      getPositiveIntegerOrNull(input.localInputTextOverlayMaxChars) ??
+      DEFAULT_LOCAL_INPUT_TEXT_OVERLAY_MAX_CHARS,
     sidebarIntentPrewarmDelayMs: getPositiveFiniteNumberOrNull(input.sidebarIntentPrewarmDelayMs),
     statusFlushDelayOverridesMs: normalizePriorityNumberRecord(input.statusFlushDelayOverridesMs),
     startupAttachChunkByteOverrides: normalizePriorityNumberRecord(
@@ -1147,17 +1181,87 @@ function normalizeExperimentConfig(
   return createTerminalPerformanceExperimentConfig(normalizeExperimentConfigSections(input));
 }
 
+function getUrlNumberParam(params: URLSearchParams, names: readonly string[]): number | undefined {
+  for (const name of names) {
+    const value = params.get(name);
+    if (value !== null) {
+      return Number(value);
+    }
+  }
+
+  return undefined;
+}
+
+function getUrlStringParam(params: URLSearchParams, names: readonly string[]): string | undefined {
+  for (const name of names) {
+    const value = params.get(name);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readUrlExperimentConfig(): TerminalPerformanceExperimentConfigInput | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  const search = window.location?.search ?? '';
+  if (search === cachedUrlExperimentSearch) {
+    return cachedUrlExperimentConfig;
+  }
+
+  cachedUrlExperimentSearch = search;
+
+  const params = new URLSearchParams(search);
+  const config: TerminalPerformanceExperimentConfigInput = {};
+  let hasConfig = false;
+
+  const localFeedbackMode = getUrlStringParam(params, [
+    'localInputFeedbackMode',
+    'terminalLocalInputFeedback',
+    'terminalLocalInputFeedbackMode',
+  ]);
+  if (localFeedbackMode !== undefined) {
+    config.localInputFeedbackMode = localFeedbackMode as TerminalLocalInputFeedbackMode;
+    hasConfig = true;
+  }
+
+  const localFeedbackDurationMs = getUrlNumberParam(params, [
+    'localInputFeedbackDurationMs',
+    'terminalLocalInputFeedbackDurationMs',
+  ]);
+  if (localFeedbackDurationMs !== undefined) {
+    config.localInputFeedbackDurationMs = localFeedbackDurationMs;
+    hasConfig = true;
+  }
+
+  const localTextOverlayMaxChars = getUrlNumberParam(params, [
+    'localInputTextOverlayMaxChars',
+    'terminalLocalInputTextOverlayMaxChars',
+  ]);
+  if (localTextOverlayMaxChars !== undefined) {
+    config.localInputTextOverlayMaxChars = localTextOverlayMaxChars;
+    hasConfig = true;
+  }
+
+  cachedUrlExperimentConfig = hasConfig ? config : undefined;
+  return cachedUrlExperimentConfig;
+}
+
 function readWindowExperimentConfig(): TerminalPerformanceExperimentConfigInput | undefined {
   if (typeof window === 'undefined') {
     return undefined;
   }
 
   const rawConfig = window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
-  if (!isRecord(rawConfig)) {
-    return undefined;
+  if (isRecord(rawConfig)) {
+    return rawConfig;
   }
 
-  return rawConfig;
+  return readUrlExperimentConfig();
 }
 
 function isHighLoadModeExperimentConfigEnabled(): boolean {
@@ -1169,6 +1273,13 @@ function getTerminalPerformanceExperimentConfigInput(
   highLoadModeEnabled: boolean,
 ): TerminalPerformanceExperimentConfigInput | undefined {
   if (input) {
+    if (highLoadModeEnabled && input === cachedUrlExperimentConfig) {
+      return {
+        ...HIGH_LOAD_MODE_PRODUCT_CONFIG,
+        ...input,
+      };
+    }
+
     return input;
   }
 
@@ -1492,6 +1603,18 @@ export function getTerminalExperimentInputAcknowledgementDurationMs(): number {
   return getTerminalPerformanceExperimentConfig().inputAcknowledgementDurationMs;
 }
 
+export function getTerminalExperimentLocalInputFeedbackMode(): TerminalLocalInputFeedbackMode {
+  return getTerminalPerformanceExperimentConfig().localInputFeedbackMode;
+}
+
+export function getTerminalExperimentLocalInputFeedbackDurationMs(): number {
+  return getTerminalPerformanceExperimentConfig().localInputFeedbackDurationMs;
+}
+
+export function getTerminalExperimentLocalInputTextOverlayMaxChars(): number {
+  return getTerminalPerformanceExperimentConfig().localInputTextOverlayMaxChars;
+}
+
 export function getTerminalExperimentLaneFrameBudgetOverride(
   lane: TerminalOutputDrainLaneName,
   visibleTerminalCount: number,
@@ -1768,4 +1891,6 @@ export function resetTerminalPerformanceExperimentConfigForTests(): void {
   cachedExperimentConfigInput = Symbol('reset-terminal-performance-config');
   cachedExperimentConfig = DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG;
   cachedHighLoadModeEnabled = false;
+  cachedUrlExperimentSearch = null;
+  cachedUrlExperimentConfig = undefined;
 }

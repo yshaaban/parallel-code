@@ -185,6 +185,7 @@ interface CreateTerminalInputPipelineOptions {
   onBlockedInputAttempt?: () => void;
   onInputAccepted?: () => void;
   onInputActivity?: () => void;
+  onLocalInputFeedback?: (data: string) => void;
   onReadOnlyInputAttempt?: () => void;
   onResizeCommitted?: (geometry: TerminalGeometry) => void;
   onResizeTransactionChange?: (active: boolean) => void;
@@ -1337,6 +1338,7 @@ export function createTerminalInputPipeline(
       return;
     }
 
+    options.onLocalInputFeedback?.(data);
     enqueueAcceptedInput(data, { requiresInputAcceptance: true });
   }
 

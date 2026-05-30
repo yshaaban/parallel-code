@@ -277,6 +277,7 @@ type TerminalFitLifecycleTestOptions = {
 type TerminalInputPipelineTestOptions = {
   onInputAccepted?: () => void;
   onInputActivity?: () => void;
+  onLocalInputFeedback?: (data: string) => void;
   onResizeTransactionChange?: (active: boolean) => void;
 };
 
@@ -656,6 +657,31 @@ describe('startTerminalSession render hibernation', () => {
     inputPipelineAcceptedHandler?.();
 
     expect(onInputAccepted).toHaveBeenCalledTimes(1);
+    expect(getMockTerminal(session).write).not.toHaveBeenCalledWith(expect.stringContaining('a'));
+
+    session.cleanup();
+  });
+
+  it('forwards local input feedback without writing speculative terminal output', async () => {
+    const onLocalInputFeedback = vi.fn();
+    let inputPipelineLocalFeedbackHandler: ((data: string) => void) | undefined;
+    createTerminalInputPipelineMock.mockImplementationOnce((options) => {
+      inputPipelineLocalFeedbackHandler = options.onLocalInputFeedback;
+      return createTestTerminalInputPipeline();
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onLocalInputFeedback,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    inputPipelineLocalFeedbackHandler?.('a');
+
+    expect(onLocalInputFeedback).toHaveBeenCalledWith('a');
+    expect(onLocalInputFeedback).toHaveBeenCalledTimes(1);
     expect(getMockTerminal(session).write).not.toHaveBeenCalledWith(expect.stringContaining('a'));
 
     session.cleanup();
