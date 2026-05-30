@@ -121,11 +121,13 @@ For manual browser-mode development, run `npm run browser:dev`. The checked-in `
 values are loaded as local defaults, so the development URL is stable across restarts:
 `http://127.0.0.1:43117?token=parallel-code-local-browser`. Copy `.env.example` to `.env` only when
 customizing local values, and change `AUTH_TOKEN` before exposing the server outside local
-development.
+development. Browser watch mode writes to `dist-browser-dev/` and `dist-remote-dev/`; it does not
+mutate the production/test `dist/` artifacts that browser-lab validation serves.
 
 Browser Playwright entrypoints now auto-prepare browser artifacts once when they are stale or
-missing. The standalone harness still fails on stale `dist`, `dist-remote`, or `dist-server` if
-someone bypasses the wrapper, so stale browser runs do not silently succeed.
+missing, reject zero-byte artifacts, and snapshot validated static assets into the per-test server
+directory before launch. The standalone harness still fails on stale `dist`, `dist-remote`, or
+`dist-server` if someone bypasses the wrapper, so stale browser runs do not silently succeed.
 
 Generated profiler and stress outputs under `artifacts/` are local scratch data, not product
 surface. Keep them out of review, and move any durable conclusion into docs instead of relying on a
@@ -358,7 +360,7 @@ Practical consequence:
 
 - after changing browser terminal/runtime code, browser-lab results are only meaningful if you rebuilt
 - the standard rebuild entrypoint is `npm run prepare:browser-artifacts`
-- `tests/browser/harness/standalone-server.ts` now enforces freshness, but you should still think this way while debugging
+- `tests/browser/harness/standalone-server.ts` now enforces freshness and snapshots static assets, but you should still think this way while debugging
 
 ### 2. `ready` is stricter than “textarea exists”
 
@@ -369,6 +371,12 @@ For browser terminals, `ready` should mean:
 - restore pause has resumed
 - queued resize work can drain
 - queued input can drain
+
+Restore pauses are transaction-scoped in browser mode. A renderer restore sends a non-empty
+`restoreLeaseId` with its `PauseAgent` / `ResumeAgent` pair and renews that same lease while a slow
+restore is still fetching or replaying state. The PTY owner ignores stale resume ids, so an old
+restore cannot unpause output for a newer restore on the same browser channel. Channel cleanup still
+clears all scoped restore leases for that channel.
 
 That is why browser-lab tests should prefer the harness readiness helpers instead of ad hoc DOM checks.
 When a browser-lab render test also needs diagnostics or lifecycle capture, prefer the shared
@@ -488,10 +496,15 @@ Practical consequence:
 ### 7. The stress harness must stay aligned with the real lease contract
 
 The task-command lease path now requires `ownerId`, not only `clientId`.
+Browser desktop acquire / renew / release requests use the websocket control plane when possible,
+and pagehide release falls back to keepalive HTTP with the browser client-id header because
+`sendBeacon` cannot attach that identity header. The server must derive lease identity from the
+authenticated transport or browser client header, never from JSON supplied by the page.
 
 Practical consequence:
 
 - stress and churn helpers must use the current lease contract or they silently stop exercising the real control model
+- browser, remote, and pagehide lease tests must prove the same authenticated client identity path
 - full `npm test` is important here because targeted terminal tests may miss harness drift
 
 ### 8. Reset diagnostics before profiling or churn debugging
@@ -909,6 +922,27 @@ Reason:
 - the current dense benchmark reference may still be the better comparison for `4 visible` switch
   and bulk behavior
 - comparing against only one of those can hide either a sparse regression or a lost dense win
+
+### Input acknowledgement experiment
+
+The local input acknowledgement experiment is gated through
+`window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__`:
+
+```js
+window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+  inputAcknowledgementMode: 'pulse',
+  inputAcknowledgementDurationMs: 180,
+};
+```
+
+This is not local echo. It must never call `term.write`, mutate xterm state, or enter scrollback /
+recovery history. The pulse is renderer-local presentation only: it starts after the input send path
+has been accepted by the backend command-result path, and clears on the next authoritative output
+render or timeout.
+
+Use it to test perceived latency on TUI-heavy agents. Reject the experiment if it creates duplicate
+glyphs, cursor drift, masked-input leakage, terminal history divergence, or worse focused
+round-trip / long-task metrics.
 
 ### Release and stress workflow
 

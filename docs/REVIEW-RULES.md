@@ -566,6 +566,10 @@ replaced mid-flight, stale restore cleanup must not settle task-scoped recovery 
 to the newer restore. Otherwise switch-window protection can clear early and reopen the same
 continuity/flicker bug the replacement restore was supposed to prevent.
 
+Browser restore pauses must be transaction-safe. Scoped restore pauses should carry a restore lease
+id, renew that id during slow restores, and ignore stale resume ids from older restores on the same
+channel. A fixed timeout alone is not enough proof for slow network or large-history recovery.
+
 Server status snapshots are weaker evidence than lifecycle exits unless the local exit itself is
 explicitly uncertain. Without a backend ordering token, a non-exited snapshot must not blindly
 revive a locally exited agent; only exits caused by temporary server loss, such as
@@ -607,6 +611,10 @@ tab switching.
 Transient task-command lease loss must not discard queued terminal input. When the browser control
 plane is temporarily unavailable, the terminal input path should retry after transport recovery
 instead of clearing buffered input as if a peer takeover had already been confirmed.
+
+Task-command lease identity must come from the authenticated transport or browser client-id header,
+not request JSON. In particular, pagehide releases cannot use `sendBeacon` when the server needs a
+custom identity header.
 
 Terminal input latency review should separate three seams: batching policy, backend acceptance, and
 visible terminal echo. Exact burst-window policy belongs in unit/runtime tests. Browser multi-char

@@ -735,7 +735,8 @@ are no longer desktop-only concerns.
   - `src/remote/remote-task-command-state.ts` for retained-lease, pending-takeover, and queued-write state
   - `src/remote/remote-task-command-subscriptions.ts` for controller/transport subscriptions, transport invalidation, and takeover request lifecycle
   - `src/remote/remote-ipc.ts` for task-command lease HTTP IPC
-  - `src/remote/ws.ts` for sequenced controller, takeover, and presence events
+  - `src/remote/ws.ts` and `electron/remote/ws-server.ts` for sequenced controller, takeover,
+    presence, and shared task-command lease result messages
   - `src/remote/RemoteTaskTakeoverDialog.tsx` for the owner-side approve / deny surface, which
     renders the full pending request queue rather than truncating to the earliest request
 - remote/mobile input and resize now follow the same task-command control lifecycle as desktop
@@ -1202,7 +1203,7 @@ Flow:
    - takeover requests/results
 8. `src/remote/remote-task-command.ts` uses:
    - HTTP IPC lease requests for acquire / renew / release / resize / write
-   - websocket control messages for takeover request / response
+   - websocket control messages for takeover request / response and shared lease result parsing
 9. the remote UI receives both terminal data and collaboration state, then projects them into:
    - agent cards and previews
    - ownership chips and read-only states
@@ -1878,9 +1879,14 @@ That now includes an explicit latency policy for browser typing:
 - large paste or bulk input stays on the bounded batching path
 - the renderer does not own lease truth; it only asks the task-command lease session whether a
   retained lease is still hot
+- browser task-command lease acquire / renew / release requests use authenticated transport identity
+  instead of trusting JSON `clientId`, and pagehide release uses keepalive HTTP with the browser
+  client-id header
 - the PTY service mirrors the same split:
   - interactive input drains on `setImmediate`
   - bulk input keeps the short timed batch
+- browser restore pauses are keyed by a renderer-generated restore lease id and renewed while a slow
+  restore is active; stale resume ids cannot clear a newer scoped restore pause
 - browser output pacing is also explicit:
   - small plain focused output may still use the immediate path
   - redraw-heavy control bursts are coalesced briefly instead of surfacing each intermediate frame
