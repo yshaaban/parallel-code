@@ -957,8 +957,9 @@ For deployed/manual tests, append the equivalent query param:
 ```
 
 This is not local echo. It must never call `term.write`, mutate xterm state, enter scrollback /
-recovery history, or draw inside the terminal buffer. Feedback starts when renderer input is locally
-admitted, then clears on the next authoritative output render or timeout. The older
+recovery history, draw inside the terminal buffer, or mount a visual layer above xterm. Feedback
+starts when renderer input is locally admitted, then clears on the next authoritative output render
+or timeout. The older
 `inputAcknowledgementMode: 'pulse'` gate remains available for backend-accepted pulse comparisons,
 but it intentionally starts later.
 

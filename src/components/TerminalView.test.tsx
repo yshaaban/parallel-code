@@ -378,7 +378,7 @@ describe('TerminalView', () => {
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the terminal input acknowledgement overlay disabled by default', () => {
+  it('keeps the terminal input acknowledgement frame disabled by default', () => {
     setStore('activeTaskId', 'task-1');
     const result = render(() => (
       <TerminalView
@@ -480,9 +480,15 @@ describe('TerminalView', () => {
     getLastStatusChangeHandler()?.('ready');
     getLastLocalInputFeedbackHandler()?.('a');
 
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
     const pulse = result.container.querySelector('[data-terminal-input-ack="true"]');
-    expect(pulse).not.toBeNull();
-    expect(pulse?.classList.contains('terminal-input-ack-overlay')).toBe(true);
+    expect(pulse).toBe(terminalRoot);
+    expect(pulse?.getAttribute('data-terminal-input-ack-phase')).toBe('odd');
+    expect(result.container.querySelector('.terminal-input-ack-overlay')).toBeNull();
+
+    getLastLocalInputFeedbackHandler()?.('b');
+
+    expect(terminalRoot?.getAttribute('data-terminal-input-ack-phase')).toBe('even');
 
     getLastOutputRenderedHandler()?.(1);
 

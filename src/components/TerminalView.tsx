@@ -945,12 +945,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     clearLocalInputFeedback();
   }
 
-  function getInputAcknowledgementRenderKey(): number | false {
+  function getInputAcknowledgementPulsePhase(): 'even' | 'odd' | undefined {
     if (!inputAcknowledgementVisible()) {
-      return false;
+      return undefined;
     }
 
-    return inputAcknowledgementGeneration();
+    return inputAcknowledgementGeneration() % 2 === 0 ? 'even' : 'odd';
   }
 
   function getSwitchWindowOwnerPriority(): number {
@@ -2200,6 +2200,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       data-terminal-command-target={getCommandTargetAttribute()}
       data-terminal-cursor-blink={shouldBlinkTerminalCursor() ? 'true' : undefined}
       data-terminal-dormant={sessionDormant() ? 'true' : undefined}
+      data-terminal-input-ack={inputAcknowledgementVisible() ? 'true' : undefined}
+      data-terminal-input-ack-phase={getInputAcknowledgementPulsePhase()}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
       data-terminal-restore-blocked={restoreBlocked() ? 'true' : undefined}
       data-terminal-live-render-ready={isLiveRenderReady() ? 'true' : undefined}
@@ -2218,6 +2220,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           !loadingLabel() && hasPeerController()
             ? `inset 0 0 0 1px color-mix(in srgb, ${readOnlyBorder()} 60%, ${theme.border})`
             : undefined,
+        '--terminal-input-ack-duration': `${inputAcknowledgementDurationMs()}ms`,
       }}
     >
       <div
@@ -2284,21 +2287,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               </span>
             </div>
           </div>
-        )}
-      </Show>
-      {/* Keyed on the generation so each feedback event remounts the overlay and restarts the
-          pulse animation; rapid keystrokes re-pulse instead of silently extending the first one. */}
-      <Show when={getInputAcknowledgementRenderKey()} keyed>
-        {(generation) => (
-          <div
-            aria-hidden="true"
-            class="terminal-input-ack-overlay"
-            data-terminal-input-ack="true"
-            data-terminal-input-ack-generation={generation}
-            style={{
-              '--terminal-input-ack-duration': `${inputAcknowledgementDurationMs()}ms`,
-            }}
-          />
         )}
       </Show>
       <Show
