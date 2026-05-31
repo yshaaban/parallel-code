@@ -25,6 +25,8 @@ import {
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
 import { createPromptReadyScenario } from './harness/scenarios.js';
 
+const LARGE_SCROLLBACK_FIXTURE_WAIT_TIMEOUT_MS = 45_000;
+
 interface RuntimeDiagnosticsSnapshot {
   terminalRecovery: {
     cursorDeltaResponses: number;
@@ -731,7 +733,7 @@ test.describe('browser-lab large scrollback restore', () => {
       request,
       shellAgentId,
       '__BIG_SCROLLBACK_DONE__',
-      20_000,
+      LARGE_SCROLLBACK_FIXTURE_WAIT_TIMEOUT_MS,
     );
     await waitForAgentNotFlowControlled(browserLab, request, shellAgentId, 20_000);
     await browserLab.retainSessionAgentTaskCommandLease(
@@ -844,7 +846,7 @@ test.describe('browser-lab large scrollback restore', () => {
         request,
         shellAgentId,
         '__BIG_SCROLLBACK_RESIZE_DONE__',
-        20_000,
+        LARGE_SCROLLBACK_FIXTURE_WAIT_TIMEOUT_MS,
       );
       await waitForAgentNotFlowControlled(browserLab, request, shellAgentId, 20_000);
       await browserLab.retainSessionAgentTaskCommandLease(

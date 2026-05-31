@@ -378,6 +378,27 @@ describe('TerminalView', () => {
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
   });
 
+  it('mounts the live xterm surface in an inset fit container', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const liveSurface = result.container.querySelector<HTMLElement>(
+      '[data-terminal-live-surface="true"]',
+    );
+
+    expect(liveSurface?.style.position).toBe('absolute');
+    expect(liveSurface?.style.inset).toBe('4px');
+    expect(liveSurface?.style.padding).toBe('');
+  });
+
   it('keeps the terminal input acknowledgement frame disabled by default', () => {
     setStore('activeTaskId', 'task-1');
     const result = render(() => (
@@ -624,13 +645,17 @@ describe('TerminalView', () => {
     ));
 
     const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const blurMock = session.term.blur as ReturnType<typeof vi.fn>;
     const statusHandler = getLastStatusChangeHandler();
 
     statusHandler?.('ready');
+    blurMock.mockClear();
     expect(session.term.options.cursorBlink).toBe(false);
+    expect(blurMock).not.toHaveBeenCalled();
 
     setFocused(true);
     expect(session.term.options.cursorBlink).toBe(true);
+    expect(blurMock).not.toHaveBeenCalled();
 
     statusHandler?.('attaching');
     expect(session.term.options.cursorBlink).toBe(false);
@@ -643,9 +668,11 @@ describe('TerminalView', () => {
 
     statusHandler?.('ready');
     expect(session.term.options.cursorBlink).toBe(true);
+    blurMock.mockClear();
 
     setFocused(false);
     expect(session.term.options.cursorBlink).toBe(false);
+    expect(blurMock).toHaveBeenCalledTimes(1);
   });
 
   it('suppresses xterm stdin while still allowing buffering while the focused terminal is attaching or restoring', () => {
@@ -996,6 +1023,7 @@ describe('TerminalView', () => {
     ));
 
     const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const blurMock = session.term.blur as ReturnType<typeof vi.fn>;
     const statusHandler = getLastStatusChangeHandler();
     const terminalRoot = result.container.querySelector(
       '[data-terminal-agent-id="agent-1"]',
@@ -1009,8 +1037,10 @@ describe('TerminalView', () => {
     document.body.appendChild(outsideButton);
 
     statusHandler?.('ready');
+    blurMock.mockClear();
     expect(session.term.options.cursorBlink).toBe(false);
     expect(terminalRoot?.hasAttribute('data-terminal-cursor-blink')).toBe(false);
+    expect(blurMock).not.toHaveBeenCalled();
 
     terminalInput.focus();
     terminalInput.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
@@ -1025,6 +1055,7 @@ describe('TerminalView', () => {
 
     expect(session.term.options.cursorBlink).toBe(false);
     expect(terminalRoot?.hasAttribute('data-terminal-cursor-blink')).toBe(false);
+    expect(blurMock).toHaveBeenCalledTimes(1);
 
     outsideButton.remove();
   });
@@ -1092,6 +1123,37 @@ describe('TerminalView', () => {
     expect(session.term.focus).not.toHaveBeenCalled();
 
     getLastPaintReadyChangeHandler()?.(true);
+    await Promise.resolve();
+
+    expect(session.term.focus).toHaveBeenCalledTimes(1);
+    hasFocusSpy.mockRestore();
+  });
+
+  it('focuses a ready live terminal when app focus moves to it', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockImplementation(() => true);
+    const [focused, setFocused] = createSignal(false);
+    setStore('activeTaskId', 'task-1');
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={focused()}
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    await Promise.resolve();
+
+    expect(session.term.focus).not.toHaveBeenCalled();
+
+    setFocused(true);
     await Promise.resolve();
 
     expect(session.term.focus).toHaveBeenCalledTimes(1);
@@ -1543,6 +1605,49 @@ describe('TerminalView', () => {
     endPanelResizeDrag();
     await Promise.resolve();
     expect(flushPendingResizeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('flushes pending resize when a ready hidden terminal becomes visible', async () => {
+    let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+    const flushPendingResizeMock = vi.fn();
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallback = callback;
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+    startTerminalSessionMock.mockReturnValue(
+      createMockTerminalSession({
+        flushPendingResize: flushPendingResizeMock,
+      }),
+    );
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={false}
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    await Promise.resolve();
+    expect(flushPendingResizeMock).toHaveBeenCalledTimes(0);
+
+    intersectionCallback?.([{ isIntersecting: true }]);
+    await Promise.resolve();
+
+    expect(flushPendingResizeMock).toHaveBeenCalledTimes(1);
   });
 
   it('moves hidden terminals into dormancy after their first live session and wakes them on selection', async () => {

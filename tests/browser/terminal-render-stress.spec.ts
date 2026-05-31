@@ -1076,6 +1076,12 @@ test.describe('browser-lab terminal render stress', () => {
           30_000,
         );
         const postResizeMarker = '__REAL_AGENT_AFTER_PANEL_DRAG__';
+        await browserLab.retainSessionAgentTaskCommandLease(
+          request,
+          page,
+          shellAgentId,
+          'write post-resize shell marker',
+        );
         await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
           agentId: shellAgentId,
           data: `printf "${postResizeMarker}\\n"\r`,

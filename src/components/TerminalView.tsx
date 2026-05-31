@@ -452,6 +452,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let takeOverGeneration = 0;
   let sessionStartGeneration = 0;
   let pendingRecoveryFocusRestore = false;
+  let previousFocusRestoreIntent = false;
+  let previousXtermFocusIntent: boolean | undefined;
   let terminalAttachInProgress = false;
   let terminalAttachQueued = false;
   let terminalAttachUnregisterPending = false;
@@ -480,6 +482,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const switchWindowOwnerId = managesTaskSwitchWindowLifecycle ? terminalStartupKey : taskId;
   const isInitiallyFocused = untrack(() => props.isFocused === true);
   const isInitiallyCommandTarget = untrack(() => props.isCommandTarget !== false);
+  previousFocusRestoreIntent = isInitiallyFocused;
   isFocusedNow = isInitiallyFocused;
   isSelectedNow = untrack(() => store.activeTaskId === taskId && isInitiallyCommandTarget);
   isVisibleNow = isInitiallyFocused;
@@ -761,7 +764,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function shouldKeepTerminalGeometryLive(): boolean {
     return (
       surfaceAllocation().keepGeometryLive &&
-      (isFocusedNow || isVisibleNow) &&
+      (props.isFocused === true || isVisible()) &&
       sessionStatus() === 'ready' &&
       presentationMode().kind === 'live' &&
       !renderHibernating() &&
@@ -1044,9 +1047,35 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
-    session.term.options.disableStdin = !canAcceptTerminalInput();
-    session.term.options.cursorBlink = shouldBlinkTerminalCursor();
+    const nextDisableStdin = !canAcceptTerminalInput();
+    if (session.term.options.disableStdin !== nextDisableStdin) {
+      session.term.options.disableStdin = nextDisableStdin;
+    }
+
+    const nextCursorBlink = shouldBlinkTerminalCursor();
+    if (session.term.options.cursorBlink !== nextCursorBlink) {
+      session.term.options.cursorBlink = nextCursorBlink;
+    }
+
     session.updateOutputPriority?.();
+  }
+
+  function syncCurrentSessionFocusIntent(): void {
+    if (!session) {
+      previousXtermFocusIntent = undefined;
+      return;
+    }
+
+    const nextFocusIntent = isTerminalFocused();
+    if (previousXtermFocusIntent === undefined) {
+      previousXtermFocusIntent = nextFocusIntent;
+      return;
+    }
+
+    if (previousXtermFocusIntent && !nextFocusIntent) {
+      session.term.blur?.();
+    }
+    previousXtermFocusIntent = nextFocusIntent;
   }
 
   function getBufferedTerminalKeyData(event: KeyboardEvent): string | null {
@@ -1451,6 +1480,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     setResizeTransactionActive(false);
     session?.cleanup();
     session = undefined;
+    previousXtermFocusIntent = undefined;
     setSessionVersion((version) => version + 1);
     attachRegistration?.unregister();
     attachRegistration = undefined;
@@ -2104,6 +2134,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void status;
     if (!session) return;
     syncCurrentSessionRuntimeState();
+    syncCurrentSessionFocusIntent();
   });
 
   createRenderEffect(() => {
@@ -2120,9 +2151,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void focusVersion;
     void domFocused;
 
+    const gainedFocusIntent = focused && !previousFocusRestoreIntent;
+    previousFocusRestoreIntent = focused;
+
     if (!focused) {
       pendingRecoveryFocusRestore = false;
       return;
+    }
+
+    if (gainedFocusIntent) {
+      pendingRecoveryFocusRestore = true;
     }
 
     if (status === 'attaching' || status === 'restoring' || blocked) {
@@ -2225,11 +2263,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     >
       <div
         ref={containerRef}
+        data-terminal-live-surface="true"
         style={{
-          width: '100%',
-          height: '100%',
+          position: 'absolute',
+          inset: '4px',
           overflow: 'hidden',
-          padding: '4px 0 0 4px',
           contain: 'strict',
           opacity: shouldMaskLiveTerminalSurface() ? '0' : undefined,
           'pointer-events': shouldMaskLiveTerminalSurface() ? 'none' : undefined,
