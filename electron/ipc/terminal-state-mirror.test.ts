@@ -19,6 +19,12 @@ async function serializeMirrorText(mirror: TerminalStateMirror): Promise<string>
   return state?.data.toString('utf8') ?? '';
 }
 
+async function serializeMirrorOutput(output: string): Promise<string> {
+  const mirror = createMirror();
+  mirror.enqueueOutput(Buffer.from(output));
+  return serializeMirrorText(mirror);
+}
+
 beforeEach(() => {
   resetBackendRuntimeDiagnostics();
   mirrors = [];
@@ -100,10 +106,7 @@ describe('TerminalStateMirror', () => {
   });
 
   it('preserves hidden cursor mode in serialized terminal state', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?25lTUI draws its own cursor'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput('\x1b[?25lTUI draws its own cursor');
 
     expect(serialized).toContain('TUI draws its own cursor');
     expect(serialized.endsWith('\x1b[?25l')).toBe(true);
@@ -132,48 +135,37 @@ describe('TerminalStateMirror', () => {
   });
 
   it('preserves bracketed paste mode in serialized terminal state', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?2004hbracketed paste'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput('\x1b[?2004hbracketed paste');
 
     expect(serialized).toContain('bracketed paste');
     expect(serialized.endsWith('\x1b[?2004h')).toBe(true);
   });
 
   it('preserves combined DEC private mode updates', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?25;2004hcombined private modes'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput('\x1b[?25;2004hcombined private modes');
 
     expect(serialized).toContain('combined private modes');
     expect(serialized.endsWith('\x1b[?2004h\x1b[?25h')).toBe(true);
   });
 
   it('restores bracketed paste mode after terminal full reset', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?2004hbracketed paste before reset\x1bc'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput('\x1b[?2004hbracketed paste before reset\x1bc');
 
     expect(serialized.endsWith('\x1b[?2004l')).toBe(true);
   });
 
   it('preserves xterm cursor visibility state after terminal full reset', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?25l\x1b[?2004hprivate modes before reset\x1bc'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput(
+      '\x1b[?25l\x1b[?2004hprivate modes before reset\x1bc',
+    );
 
     expect(serialized.endsWith('\x1b[?2004l\x1b[?25l')).toBe(true);
   });
 
   it('restores private mode defaults after terminal soft reset', async () => {
-    const mirror = createMirror();
-
-    mirror.enqueueOutput(Buffer.from('\x1b[?25l\x1b[?2004hprivate modes before reset\x1b[!p'));
-    const serialized = await serializeMirrorText(mirror);
+    const serialized = await serializeMirrorOutput(
+      '\x1b[?25l\x1b[?2004hprivate modes before reset\x1b[!p',
+    );
 
     expect(serialized.endsWith('\x1b[?2004l\x1b[?25h')).toBe(true);
   });

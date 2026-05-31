@@ -15,6 +15,12 @@ const { SerializeAddon } =
   require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
 
 const TERMINAL_STATE_MIRROR_SCROLLBACK_ROWS = 5_000;
+const DEC_PRIVATE_MODE_CURSOR_VISIBLE = 25;
+const DEC_PRIVATE_MODE_BRACKETED_PASTE = 2004;
+const ENABLE_BRACKETED_PASTE_SEQUENCE = '\x1b[?2004h';
+const DISABLE_BRACKETED_PASTE_SEQUENCE = '\x1b[?2004l';
+const SHOW_CURSOR_SEQUENCE = '\x1b[?25h';
+const HIDE_CURSOR_SEQUENCE = '\x1b[?25l';
 
 type CsiParams = Array<number | number[]>;
 type Disposable = { dispose: () => void };
@@ -42,10 +48,10 @@ function updateDecPrivateModes(
     }
 
     switch (param) {
-      case 25:
+      case DEC_PRIVATE_MODE_CURSOR_VISIBLE:
         modes.cursorVisible = enabled;
         break;
-      case 2004:
+      case DEC_PRIVATE_MODE_BRACKETED_PASTE:
         modes.bracketedPasteTouched = true;
         break;
       default:
@@ -206,10 +212,14 @@ export class TerminalStateMirror {
     // Replay the parsed protocol state so restored TUIs keep native cursor semantics.
     let result = '';
     if (this.decPrivateModeRestoreState.bracketedPasteTouched) {
-      result += this.terminal.modes.bracketedPasteMode ? '\x1b[?2004h' : '\x1b[?2004l';
+      result += this.terminal.modes.bracketedPasteMode
+        ? ENABLE_BRACKETED_PASTE_SEQUENCE
+        : DISABLE_BRACKETED_PASTE_SEQUENCE;
     }
     if (this.decPrivateModeRestoreState.cursorVisible !== null) {
-      result += this.decPrivateModeRestoreState.cursorVisible ? '\x1b[?25h' : '\x1b[?25l';
+      result += this.decPrivateModeRestoreState.cursorVisible
+        ? SHOW_CURSOR_SEQUENCE
+        : HIDE_CURSOR_SEQUENCE;
     }
     return result;
   }
