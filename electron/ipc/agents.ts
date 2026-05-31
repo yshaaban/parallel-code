@@ -57,11 +57,11 @@ const DEFAULT_AGENTS: AgentDef[] = [
   },
 ];
 
-// TTL cache to avoid repeated `which` calls
 let cachedAgents: AgentDef[] | null = null;
 let cacheTime = 0;
 let cacheKey = '';
-const AGENT_CACHE_TTL = 30_000;
+const AVAILABLE_AGENT_CACHE_TTL_MS = 30_000;
+const UNAVAILABLE_AGENT_CACHE_TTL_MS = 5_000;
 
 function cloneAgentDef(agent: AgentDef): AgentDef {
   return {
@@ -72,8 +72,20 @@ function cloneAgentDef(agent: AgentDef): AgentDef {
   };
 }
 
+function getAgentCacheTtlMs(agents: AgentDef[]): number {
+  if (agents.some((agent) => agent.available === false)) {
+    return UNAVAILABLE_AGENT_CACHE_TTL_MS;
+  }
+
+  return AVAILABLE_AGENT_CACHE_TTL_MS;
+}
+
 function hasFreshAgentCache(now: number, nextCacheKey: string): boolean {
-  return cachedAgents !== null && cacheKey === nextCacheKey && now - cacheTime < AGENT_CACHE_TTL;
+  if (cachedAgents === null || cacheKey !== nextCacheKey) {
+    return false;
+  }
+
+  return now - cacheTime < getAgentCacheTtlMs(cachedAgents);
 }
 
 function getPathAvailabilityDetails(agent: AgentDef, available: boolean): Partial<AgentDef> {

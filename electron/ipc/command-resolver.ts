@@ -6,30 +6,11 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 const PATH_LOOKUP_COMMAND = process.platform === 'win32' ? 'where' : 'which';
+const POSIX_WHEREIS_COMMAND = 'whereis';
 const LOGIN_SHELL = process.platform === 'win32' ? null : process.env.SHELL || '/bin/bash';
 const COMMAND_LOOKUP_TIMEOUT_MS = 3000;
-const resolvedCommandCache = new Map<string, string | null>();
-
-// Ensure common user-local directories are in PATH for agent detection.
-// Server processes may not inherit an interactive shell's PATH.
-const HOME = os.homedir() || process.env.HOME || process.env.USERPROFILE || '';
-if (HOME) {
-  const extraDirs = [
-    path.join(HOME, '.local', 'bin'),
-    path.join(HOME, '.local', 'share', 'pnpm'),
-    path.join(HOME, '.npm-global', 'bin'),
-    path.join(HOME, '.yarn', 'bin'),
-    path.join(HOME, '.config', 'yarn', 'global', 'node_modules', '.bin'),
-    path.join(HOME, '.bun', 'bin'),
-    path.join(HOME, '.cargo', 'bin'),
-    path.join(HOME, '.volta', 'bin'),
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-  ];
-  if (process.env.PNPM_HOME) extraDirs.unshift(process.env.PNPM_HOME);
-  if (process.env.VOLTA_HOME) extraDirs.unshift(path.join(process.env.VOLTA_HOME, 'bin'));
-  prependPathEntries(extraDirs);
-}
+const LOGIN_SHELL_RESOLVED_PATH_PREFIX = '__PARALLEL_CODE_RESOLVED_COMMAND__=';
+const resolvedCommandCache = new Map<string, string>();
 
 function getPathEntries(rawPath = process.env.PATH ?? ''): string[] {
   return rawPath
@@ -52,17 +33,120 @@ function prependPathEntries(entries: Array<string | null | undefined>): void {
   process.env.PATH = [...additions, ...currentEntries].join(path.delimiter);
 }
 
+function isNodeVersionDirName(name: string): boolean {
+  return /^v?\d+(?:\.\d+){0,2}$/.test(name);
+}
+
+function getExistingNodeVersionDirs(
+  versionsDir: string,
+  getBinDir: (entryName: string) => string,
+): string[] {
+  try {
+    return fs
+      .readdirSync(versionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && isNodeVersionDirName(entry.name))
+      .map((entry) => getBinDir(entry.name))
+      .filter((entry) => fs.existsSync(entry))
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+}
+
+function getExistingNvmNodeBinDirs(nvmDir: string | undefined): string[] {
+  if (!nvmDir) {
+    return [];
+  }
+
+  return [
+    ...getExistingNodeVersionDirs(path.join(nvmDir, 'versions', 'node'), (entryName) =>
+      path.join(nvmDir, 'versions', 'node', entryName, 'bin'),
+    ),
+    ...getExistingNodeVersionDirs(nvmDir, (entryName) => path.join(nvmDir, entryName)),
+  ];
+}
+
+function getDefaultPathExpansionDirs(): string[] {
+  const home = os.homedir() || process.env.HOME || process.env.USERPROFILE || '';
+  const dirs: string[] = [];
+
+  if (process.env.PNPM_HOME) {
+    dirs.push(process.env.PNPM_HOME);
+  }
+  if (process.env.VOLTA_HOME) {
+    dirs.push(path.join(process.env.VOLTA_HOME, 'bin'));
+  }
+  if (process.env.NVM_DIR) {
+    dirs.push(...getExistingNvmNodeBinDirs(process.env.NVM_DIR));
+  }
+  if (process.env.NVM_HOME) {
+    dirs.push(...getExistingNvmNodeBinDirs(process.env.NVM_HOME));
+  }
+  if (process.env.NVM_SYMLINK) {
+    dirs.push(process.env.NVM_SYMLINK);
+  }
+
+  if (home) {
+    dirs.push(
+      ...getExistingNvmNodeBinDirs(path.join(home, '.nvm')),
+      path.join(home, '.local', 'bin'),
+      path.join(home, '.local', 'share', 'pnpm'),
+      path.join(home, '.npm-global', 'bin'),
+      path.join(home, '.yarn', 'bin'),
+      path.join(home, '.config', 'yarn', 'global', 'node_modules', '.bin'),
+      path.join(home, '.bun', 'bin'),
+      path.join(home, '.cargo', 'bin'),
+      path.join(home, '.volta', 'bin'),
+    );
+  }
+
+  dirs.push('/usr/local/bin', '/opt/homebrew/bin');
+  return dirs;
+}
+
+// Server and Electron processes may not inherit the same PATH as the user's interactive shell.
+prependPathEntries(getDefaultPathExpansionDirs());
+
 function quoteForShell(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function getResolvedPath(output: string): string | null {
-  return (
-    output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? null
-  );
+function getLoginShellCommandLookupScript(command: string): string {
+  return `command -v -- ${quoteForShell(command)} | sed ${quoteForShell(
+    `s/^/${LOGIN_SHELL_RESOLVED_PATH_PREFIX}/`,
+  )}`;
+}
+
+function getLoginShellResolvedPath(output: string): string | null {
+  const resolvedLine = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(LOGIN_SHELL_RESOLVED_PATH_PREFIX));
+  const resolvedPath = resolvedLine?.slice(LOGIN_SHELL_RESOLVED_PATH_PREFIX.length).trim();
+  if (!resolvedPath || !path.isAbsolute(resolvedPath) || !isExecutable(resolvedPath)) {
+    return null;
+  }
+  return resolvedPath;
+}
+
+function getWhereisCommandPath(output: string, command: string): string | null {
+  const [, rest = ''] = output.split(/:(.*)/s);
+  const candidates = rest
+    .split(/\s+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  for (const candidate of candidates) {
+    const basename = path.basename(candidate);
+    if (basename !== command && basename !== `${command}.exe`) {
+      continue;
+    }
+    if (path.isAbsolute(candidate) && isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function isExecutable(command: string): boolean {
@@ -75,15 +159,57 @@ function isExecutable(command: string): boolean {
 }
 
 function cacheResolvedCommand(command: string, resolvedPath: string | null): string | null {
+  if (!resolvedPath) {
+    resolvedCommandCache.delete(command);
+    return null;
+  }
+
   resolvedCommandCache.set(command, resolvedPath);
-  if (resolvedPath && path.isAbsolute(resolvedPath)) {
+  if (path.isAbsolute(resolvedPath)) {
     prependPathEntries([path.dirname(resolvedPath)]);
   }
   return resolvedPath;
 }
 
+function canUsePosixBareCommandLookup(command: string): boolean {
+  return process.platform !== 'win32' && !isAbsoluteCommandPath(command);
+}
+
+async function resolveCommandWithWhereis(command: string): Promise<string | null> {
+  if (!canUsePosixBareCommandLookup(command)) {
+    return null;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(POSIX_WHEREIS_COMMAND, ['-b', command], {
+      encoding: 'utf8',
+      timeout: COMMAND_LOOKUP_TIMEOUT_MS,
+    });
+    return cacheResolvedCommand(command, getWhereisCommandPath(stdout, command));
+  } catch {
+    return null;
+  }
+}
+
+function resolveCommandWithWhereisSync(command: string): string | null {
+  if (!canUsePosixBareCommandLookup(command)) {
+    return null;
+  }
+
+  try {
+    const stdout = execFileSync(POSIX_WHEREIS_COMMAND, ['-b', command], {
+      encoding: 'utf8',
+      timeout: COMMAND_LOOKUP_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return cacheResolvedCommand(command, getWhereisCommandPath(stdout, command));
+  } catch {
+    return null;
+  }
+}
+
 async function resolveCommandWithLoginShell(command: string): Promise<string | null> {
-  if (!LOGIN_SHELL || isAbsoluteCommandPath(command)) return null;
+  if (!LOGIN_SHELL || !canUsePosixBareCommandLookup(command)) return null;
   if (resolvedCommandCache.has(command)) {
     return resolvedCommandCache.get(command) ?? null;
   }
@@ -91,31 +217,31 @@ async function resolveCommandWithLoginShell(command: string): Promise<string | n
   try {
     const { stdout } = await execFileAsync(
       LOGIN_SHELL,
-      ['-lc', `command -v -- ${quoteForShell(command)}`],
+      ['-lc', getLoginShellCommandLookupScript(command)],
       {
         encoding: 'utf8',
         timeout: COMMAND_LOOKUP_TIMEOUT_MS,
       },
     );
-    return cacheResolvedCommand(command, getResolvedPath(stdout));
+    return cacheResolvedCommand(command, getLoginShellResolvedPath(stdout));
   } catch {
     return cacheResolvedCommand(command, null);
   }
 }
 
 function resolveCommandWithLoginShellSync(command: string): string | null {
-  if (!LOGIN_SHELL || isAbsoluteCommandPath(command)) return null;
+  if (!LOGIN_SHELL || !canUsePosixBareCommandLookup(command)) return null;
   if (resolvedCommandCache.has(command)) {
     return resolvedCommandCache.get(command) ?? null;
   }
 
   try {
-    const stdout = execFileSync(LOGIN_SHELL, ['-lc', `command -v -- ${quoteForShell(command)}`], {
+    const stdout = execFileSync(LOGIN_SHELL, ['-lc', getLoginShellCommandLookupScript(command)], {
       encoding: 'utf8',
       timeout: COMMAND_LOOKUP_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return cacheResolvedCommand(command, getResolvedPath(stdout));
+    return cacheResolvedCommand(command, getLoginShellResolvedPath(stdout));
   } catch {
     return cacheResolvedCommand(command, null);
   }
@@ -133,7 +259,9 @@ async function commandExistsOnPath(command: string): Promise<boolean> {
     });
     return true;
   } catch {
-    return Boolean(await resolveCommandWithLoginShell(command));
+    const resolvedPath =
+      (await resolveCommandWithWhereis(command)) ?? (await resolveCommandWithLoginShell(command));
+    return Boolean(resolvedPath);
   }
 }
 
@@ -167,7 +295,7 @@ export function validateCommand(command: string): void {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch {
-    if (resolveCommandWithLoginShellSync(command)) {
+    if (resolveCommandWithWhereisSync(command) ?? resolveCommandWithLoginShellSync(command)) {
       return;
     }
     throw new Error(
