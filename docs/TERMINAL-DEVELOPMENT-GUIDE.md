@@ -475,6 +475,22 @@ Practical consequence:
   gets a head start or the documented startup fallback fires; terminal owners must not silently
   reopen that policy from leaf readiness callbacks
 
+### 3b. Terminal session teardown is identity-sensitive
+
+`TerminalView` can remount for a new agent session while old async callbacks, timers, readiness
+callbacks, or Solid cleanups are still unwinding.
+
+Practical consequence:
+
+- snapshot the session identity and spawn props at the mount/remount boundary
+- clear registered focus callbacks only when the disposing callback still matches the current
+  callback for that agent
+- guard unmounting views before toggling input-feedback or readiness state from late callbacks
+- task-level terminal sections should key remounts by agent id plus terminal session version, not
+  by mutable task props alone
+- do not let a late cleanup from a passive sibling cancel the task-level switch window or steal
+  focus from the currently selected terminal
+
 ### 4. Large-history TUI switching bugs are usually recovery-policy bugs
 
 If a large-history TUI:
@@ -660,6 +676,8 @@ Examples:
 - prove delta/noop recovery never entered blocking `restoring`
 - prove reload/restore only blocks on real snapshot fallback
 - prove a terminal can accept input while recovery is completing
+- prove panel-resize-overlap cases by forcing one resize after interactive readiness before
+  asserting render resize counters
 
 ### Scenario choice
 

@@ -175,6 +175,11 @@ verify:
   serialization/hydration helpers
 - task removal and incremental workspace reconciliation still clear task-scoped derived state
   through the shared cleanup authority
+- task deletion response payloads stay typed across Electron IPC and browser HTTP IPC; cleanup
+  warnings must not be erased by treating a successful delete response as `undefined`
+- task and terminal close workflows remove renderer state promptly after runtime cleanup and persist
+  that removal best-effort, instead of relying on delayed animation timers that can reload stale
+  entries
 - restore paths only tolerate partial persisted fragments where the canonical parser says they
   should
 - shared transport/domain payload types live in DOM-neutral modules, not in browser runtime files
@@ -439,6 +444,24 @@ prefill as shared state, multi-client behavior will drift quietly.
   panels should not recreate those workflows inline
 - add focused tests for explicit `false` persistence, stale step-snapshot cleanup on full-state
   restore, and bootstrap-before-live-event ordering for the `task-steps` replay category
+
+### 26. Destructive cleanup warnings are part of the contract
+
+Deleting a task has two user-visible outcomes: the task should close, and best-effort cleanup may
+still report leftovers such as containers, worktrees, or branches.
+
+- return cleanup warnings through the typed IPC payload instead of throwing after user-facing
+  runtime state has been released
+- surface the warning once in the workflow owner
+- do not keep the task in a transitional close state just because a secondary cleanup step failed
+
+### 27. Terminal cleanup must be identity-aware
+
+Terminal sessions can remount while old callbacks are still unwinding.
+
+- clear focus or ready callbacks only when the cleanup still refers to the registered callback
+- guard late timers and input-feedback callbacks during unmount
+- test stale callback paths directly instead of relying only on broad browser restore coverage
 
 ### Additional terminal and lifecycle lessons
 

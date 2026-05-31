@@ -187,6 +187,13 @@ Two current ownership splits matter in review:
   `src/app/project-workflows.ts` owns project picking/removal sequencing, while
   `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
   `src/store/navigation.ts` focused on pure dialog state toggles
+- task deletion spans backend cleanup and renderer projection, but the ownership remains explicit:
+  `electron/ipc/task-workflows.ts` owns best-effort runtime, worktree, branch, and container cleanup;
+  `src/domain/task-cleanup.ts` owns the typed cleanup-warning result shared across IPC transports;
+  `src/app/task-lifecycle-workflows.ts` owns user-facing close sequencing, notification of partial
+  cleanup warnings, immediate task removal from renderer state, and best-effort persistence after
+  removal. A failed cleanup step may warn the user, but it must not leave the task stuck in a
+  transitional UI state once the backend has released the runtime owner state
 - task container lifecycle is backend-owned. `electron/ipc/task-containers.ts` and
   `electron/ipc/task-container-identity.ts` own Compose support detection, identity, lifecycle, and
   logs; `electron/ipc/task-container-handlers.ts` is the typed IPC seam;
@@ -257,7 +264,9 @@ Two current ownership splits matter in review:
   `src/components/task-panel/TaskAiTerminalSection.tsx` renders selected panes as the only command
   target and visible siblings as passive-visible real terminal surfaces. TaskPanel owns the shared
   switch-window lifecycle; mounted sibling terminals only report readiness and must not cancel the
-  task-level window independently
+  task-level window independently. Terminal session identity is captured at mount/remount
+  boundaries, so stale `onReady` / `onDispose` callbacks from an old agent session must not clear or
+  focus the current session
 - fit/layout correctness is separate from typing priority. `terminal-session` and
   `terminalFitManager` may yield non-critical stabilization while another terminal is typing, but
   they must still allow resize/correctness-critical work through instead of letting latency mode
@@ -522,6 +531,11 @@ Another store-owned cleanup seam worth preserving:
 Task removal and incremental workspace reconciliation now use the same task-scoped cleanup helpers
 for derived state, agent records, and panel-side state instead of maintaining parallel delete
 clusters.
+
+Task and standalone terminal removal should clear renderer state immediately after the owning
+runtime cleanup completes and then persist that removal best-effort. Do not reintroduce delayed
+store deletion for close animations; a delayed delete can reload stale task or terminal state and
+looks like a crash loop when cleanup races with browser persistence.
 
 ### 6. Backend Service Layer
 

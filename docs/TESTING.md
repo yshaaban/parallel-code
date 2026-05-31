@@ -236,6 +236,11 @@ For lifecycle-heavy work, test invariants as well as transitions:
   should fail the relevant stress seam even if the terminal never fully crashes
 - when a render or lifecycle issue needs a smoke artifact, capture the composite terminal
   diagnostics bundle first so anomaly, output, runtime, and lifecycle evidence stay together
+- task and standalone-terminal close flows need proof that renderer state is removed immediately
+  after runtime cleanup, that removal is persisted best-effort, and that partial backend cleanup
+  failures surface as warnings instead of leaving stale `closing`, `removing`, or `restoring` state
+- terminal remount/teardown changes need proof that stale callbacks from the old session cannot
+  clear the current focus callback, readiness state, or input feedback state
 
 When manual testing finds a new stuck state, the fix is not complete until the suite has:
 
@@ -260,6 +265,10 @@ For many-terminal performance work, move from specialized harnesses to browser p
   contract instead of visible loading copy
 - when task-scoped terminal state is owned above `TerminalView`, add one focused task-level test so
   sibling mounts and unmounts cannot silently interfere with shared task protection
+- when a terminal restore test overlaps panel resizing with reload or recovery, prove a real
+  post-restore resize after the terminal is interactive before asserting resize diagnostics; resize
+  attempts while the surface is still masked may be correctness pressure without producing render
+  counters
 - when a browser-lab render test needs diagnostics or lifecycle capture, route it through the
   shared harness `openSession(...)` path instead of raw `browser.newContext()` so teardown and
   artifact capture stay unified
