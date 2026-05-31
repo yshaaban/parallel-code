@@ -22,11 +22,17 @@ interface HydratedTaskBuildOptions {
 interface HydratedTaskBase {
   agentDefs: AgentDef[];
   agentIds: string[];
+  savedSelectedAgentIndex: number | undefined;
   selectedAgentId: string | undefined;
   shellAgentIds: string[];
   taskBase: Omit<
     Task,
-    'agentIds' | 'collapsed' | 'savedAgentDef' | 'savedAgentDefs' | 'shellAgentIds'
+    | 'agentIds'
+    | 'collapsed'
+    | 'savedAgentDef'
+    | 'savedAgentDefs'
+    | 'savedSelectedAgentIndex'
+    | 'shellAgentIds'
   >;
 }
 
@@ -128,6 +134,19 @@ function createAgentSelectionCandidate(
   return { agentIds, selectedAgentId };
 }
 
+function getHydratedSavedSelectedAgentIndex(
+  persistedTask: HydratablePersistedTask,
+  agentCount: number,
+): number | undefined {
+  const savedSelectedAgentIndex = persistedTask.savedSelectedAgentIndex;
+
+  if (savedSelectedAgentIndex === undefined || savedSelectedAgentIndex >= agentCount) {
+    return undefined;
+  }
+
+  return savedSelectedAgentIndex;
+}
+
 function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskBase {
   const agentDefs = getHydratedAgentDefs(
     options.persistedTask,
@@ -152,6 +171,10 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
   return {
     agentDefs,
     agentIds,
+    savedSelectedAgentIndex: getHydratedSavedSelectedAgentIndex(
+      options.persistedTask,
+      agentDefs.length,
+    ),
     selectedAgentId,
     shellAgentIds,
     taskBase: {
@@ -228,6 +251,9 @@ export function buildCollapsedHydratedTask(
       collapsed: true,
       ...(hydratedTask.agentDefs[0] ? { savedAgentDef: hydratedTask.agentDefs[0] } : {}),
       ...(hydratedTask.agentDefs.length > 1 ? { savedAgentDefs: hydratedTask.agentDefs } : {}),
+      ...(hydratedTask.savedSelectedAgentIndex !== undefined
+        ? { savedSelectedAgentIndex: hydratedTask.savedSelectedAgentIndex }
+        : {}),
     },
   };
 }

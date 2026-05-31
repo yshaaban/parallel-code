@@ -213,15 +213,17 @@ describe('persistence integration', () => {
           createTestAgentDef({ id: 'claude', name: 'Claude' }),
           createTestAgentDef({ id: 'codex', name: 'Codex' }),
         ],
+        savedSelectedAgentIndex: 1,
       }),
     });
 
     const workspaceJson = getWorkspaceStateSnapshotJson();
     const persisted = JSON.parse(workspaceJson) as {
-      tasks: Record<string, { agentDefs?: unknown[] }>;
+      tasks: Record<string, { agentDefs?: unknown[]; savedSelectedAgentIndex?: number }>;
     };
 
     expect(persisted.tasks['task-1']?.agentDefs).toHaveLength(2);
+    expect(persisted.tasks['task-1']?.savedSelectedAgentIndex).toBe(1);
 
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(true);
@@ -232,6 +234,7 @@ describe('persistence integration', () => {
       'claude',
       'codex',
     ]);
+    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBe(1);
   });
 
   it('omits git-only project fields for non-git projects during save and hydration', () => {

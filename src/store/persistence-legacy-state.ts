@@ -132,6 +132,8 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     isOptionalBoolean(value.skipPermissions) &&
     isOptionalString(value.githubUrl) &&
     isOptionalString(value.savedInitialPrompt) &&
+    (value.savedSelectedAgentIndex === undefined ||
+      isNonNegativeInteger(value.savedSelectedAgentIndex)) &&
     isOptionalString(value.planFileName) &&
     isOptionalString(value.planRelativePath) &&
     isOptionalBoolean(value.stepsTracking) &&

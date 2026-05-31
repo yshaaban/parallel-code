@@ -91,6 +91,7 @@ export interface Task {
   collapsed?: boolean;
   savedAgentDef?: AgentDef;
   savedAgentDefs?: AgentDef[];
+  savedSelectedAgentIndex?: number;
   planContent?: string;
   planFileName?: string;
   planRelativePath?: string;
@@ -128,6 +129,7 @@ export interface PersistedTask {
   skipPermissions?: boolean;
   githubUrl?: string;
   savedInitialPrompt?: string;
+  savedSelectedAgentIndex?: number;
   planFileName?: string;
   planRelativePath?: string;
   stepsTracking?: boolean;

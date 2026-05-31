@@ -134,6 +134,17 @@ function getCompleteTaskAgentDefs(task: Pick<Task, 'agentIds'>): AgentDef[] | nu
   return agentDefs;
 }
 
+function getSelectedTaskAgentIndex(
+  task: Pick<Task, 'agentIds' | 'selectedAgentId'>,
+): number | null {
+  if (!task.selectedAgentId) {
+    return null;
+  }
+
+  const index = task.agentIds.indexOf(task.selectedAgentId);
+  return index === -1 ? null : index;
+}
+
 function createRestoredAgent(taskId: string, agentDef: AgentDef): Agent {
   return {
     id: createRandomId(),
@@ -146,6 +157,17 @@ function createRestoredAgent(taskId: string, agentDef: AgentDef): Agent {
     lastOutput: [],
     generation: 0,
   };
+}
+
+function getSelectedRestoredAgent(
+  restoredAgents: Agent[],
+  savedSelectedAgentIndex: number | undefined,
+): Agent | undefined {
+  if (savedSelectedAgentIndex === undefined) {
+    return restoredAgents[0];
+  }
+
+  return restoredAgents[savedSelectedAgentIndex] ?? restoredAgents[0];
 }
 
 function getTaskActiveAgentId(
@@ -595,6 +617,7 @@ export async function collapseTask(taskId: string): Promise<void> {
       try {
         const agentDefs = getCompleteTaskAgentDefs(task);
         const agentDef = agentDefs?.[0];
+        const selectedAgentIndex = getSelectedTaskAgentIndex(task);
         const runtimeAgentIds = getRuntimeAgentIds(task);
 
         await killTaskAgentsBestEffort(task);
@@ -610,24 +633,31 @@ export async function collapseTask(taskId: string): Promise<void> {
 
         setStore(
           produce((state) => {
-            if (!state.tasks[taskId]) {
+            const currentTask = state.tasks[taskId];
+            if (!currentTask) {
               return;
             }
 
-            state.tasks[taskId].collapsed = true;
+            currentTask.collapsed = true;
             if (agentDef) {
-              state.tasks[taskId].savedAgentDef = agentDef;
+              currentTask.savedAgentDef = agentDef;
             } else {
-              delete state.tasks[taskId].savedAgentDef;
+              delete currentTask.savedAgentDef;
             }
             if (agentDefs && agentDefs.length > 1) {
-              state.tasks[taskId].savedAgentDefs = agentDefs;
+              currentTask.savedAgentDefs = agentDefs;
+              if (selectedAgentIndex !== null) {
+                currentTask.savedSelectedAgentIndex = selectedAgentIndex;
+              } else {
+                delete currentTask.savedSelectedAgentIndex;
+              }
             } else {
-              delete state.tasks[taskId].savedAgentDefs;
+              delete currentTask.savedAgentDefs;
+              delete currentTask.savedSelectedAgentIndex;
             }
-            state.tasks[taskId].agentIds = [];
-            delete state.tasks[taskId].selectedAgentId;
-            state.tasks[taskId].shellAgentIds = [];
+            currentTask.agentIds = [];
+            delete currentTask.selectedAgentId;
+            currentTask.shellAgentIds = [];
             const index = state.taskOrder.indexOf(taskId);
             if (index !== -1) {
               state.taskOrder.splice(index, 1);
@@ -668,6 +698,10 @@ export async function uncollapseTask(taskId: string): Promise<void> {
   const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
     const savedDefs = task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []);
     const restoredAgents = savedDefs.map((agentDef) => createRestoredAgent(taskId, agentDef));
+    const selectedRestoredAgent = getSelectedRestoredAgent(
+      restoredAgents,
+      task.savedSelectedAgentIndex,
+    );
 
     setStore(
       produce((state) => {
@@ -686,14 +720,15 @@ export async function uncollapseTask(taskId: string): Promise<void> {
             state.agents[agent.id] = agent;
           }
           currentTask.agentIds = restoredAgents.map((agent) => agent.id);
-          const firstRestoredAgentId = restoredAgents[0]?.id;
-          if (firstRestoredAgentId) {
-            currentTask.selectedAgentId = firstRestoredAgentId;
+          const selectedAgentId = selectedRestoredAgent?.id ?? restoredAgents[0]?.id;
+          if (selectedAgentId) {
+            currentTask.selectedAgentId = selectedAgentId;
           } else {
             delete currentTask.selectedAgentId;
           }
           delete currentTask.savedAgentDef;
           delete currentTask.savedAgentDefs;
+          delete currentTask.savedSelectedAgentIndex;
         }
 
         state.activeAgentId = getTaskActiveAgentId(currentTask);

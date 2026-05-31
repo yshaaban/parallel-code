@@ -1050,6 +1050,7 @@ describe('task workflow control leases', () => {
       'claude',
       'codex',
     ]);
+    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBe(1);
   });
 
   it('does not shift saved multi-agent definitions when an agent record is missing during collapse', async () => {
@@ -1064,6 +1065,7 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']?.selectedAgentId).toBeUndefined();
     expect(store.tasks['task-1']?.savedAgentDef).toBeUndefined();
     expect(store.tasks['task-1']?.savedAgentDefs).toBeUndefined();
+    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBeUndefined();
   });
 
   it('stops backend task watchers when collapsing a task', async () => {
@@ -1399,6 +1401,30 @@ describe('task workflow control leases', () => {
       'claude',
       'codex',
     ]);
+  });
+
+  it('restores the selected saved agent when recycling a multi-agent collapsed task', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        savedAgentDefs: [
+          createTestAgentDef({ id: 'claude', name: 'Claude' }),
+          createTestAgentDef({ id: 'codex', name: 'Codex' }),
+        ],
+        savedSelectedAgentIndex: 1,
+        shellAgentIds: [],
+      }),
+    });
+    setStore('agents', {});
+
+    await uncollapseTask('task-1');
+
+    const restoredTask = store.tasks['task-1'];
+    expect(restoredTask?.selectedAgentId).toBe(restoredTask?.agentIds[1]);
+    expect(restoredTask?.savedSelectedAgentIndex).toBeUndefined();
   });
 
   it('no-ops restoring an already-active task', async () => {

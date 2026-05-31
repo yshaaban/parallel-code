@@ -158,6 +158,9 @@ function buildPersistedTask(
     ...(task.savedInitialPrompt !== undefined
       ? { savedInitialPrompt: task.savedInitialPrompt }
       : {}),
+    ...(task.savedSelectedAgentIndex !== undefined
+      ? { savedSelectedAgentIndex: task.savedSelectedAgentIndex }
+      : {}),
     ...(task.planFileName !== undefined ? { planFileName: task.planFileName } : {}),
     ...(task.planRelativePath !== undefined ? { planRelativePath: task.planRelativePath } : {}),
     ...(task.stepsTracking !== undefined ? { stepsTracking: task.stepsTracking } : {}),
