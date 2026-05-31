@@ -383,6 +383,45 @@ async function readTerminalPanelWidth(
   return box?.width ?? 0;
 }
 
+async function getVisibleHardwareCursorCount(
+  page: import('@playwright/test').Page,
+  agentId: string,
+): Promise<number> {
+  return page.evaluate((currentAgentId) => {
+    function isVisibleElement(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity || '1') !== 0
+      );
+    }
+
+    const terminal =
+      Array.from(document.querySelectorAll('[data-terminal-agent-id]')).find(
+        (element) => element.getAttribute('data-terminal-agent-id') === currentAgentId,
+      ) ?? null;
+    if (!terminal) {
+      return -1;
+    }
+
+    return Array.from(
+      terminal.querySelectorAll('.xterm-cursor, .xterm-cursor-block, .xterm-cursor-outline'),
+    ).filter(isVisibleElement).length;
+  }, agentId);
+}
+
+async function waitForVisibleHardwareCursorCount(
+  page: import('@playwright/test').Page,
+  agentId: string,
+  expectedCount: number,
+): Promise<void> {
+  await expect.poll(() => getVisibleHardwareCursorCount(page, agentId)).toBe(expectedCount);
+}
+
 function createCursorAddressedFixtureCommand(options: {
   lineCount: number;
   targetColumn: number;
@@ -397,6 +436,17 @@ function createCursorAddressedFixtureCommand(options: {
     `}`,
     `process.stdout.write("\\x1b[${options.targetRow};${options.targetColumn}H${options.targetLabel}");`,
     `setTimeout(() => {}, 30000);`,
+    `'`,
+  ].join('');
+}
+
+function createHiddenCursorTuiFixtureCommand(): string {
+  return [
+    `node -e '`,
+    `process.stdout.write("\\x1b[?1049h\\x1b[?25l\\x1b[2J\\x1b[H");`,
+    `process.stdout.write("TUI_HIDE_CURSOR_READY\\n");`,
+    `process.stdout.write("\\x1b[10;1Hinput> TUI cursor \\x1b[7m \\x1b[27m");`,
+    `setInterval(() => {}, 1000);`,
     `'`,
   ].join('');
 }
@@ -1589,6 +1639,64 @@ test.describe('browser-lab large scrollback restore', () => {
     expect(afterReload.currentCursorY).toBe(beforeReload.currentCursorY);
     expect(afterReload.currentViewportY).toBe(beforeReload.currentViewportY);
     expect(afterReload.currentVisibleLines).toEqual(beforeReload.currentVisibleLines);
+  });
+
+  test('preserves hidden hardware cursor state across reload restore', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Hidden Cursor Restore Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+    await browserLab.focusTerminal(page, shellTerminalIndex);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+
+    await browserLab.retainSessionAgentTaskCommandLease(
+      request,
+      page,
+      shellAgentId,
+      'write hidden cursor restore fixture',
+    );
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: shellAgentId,
+      data: `${createHiddenCursorTuiFixtureCommand()}\n`,
+    });
+
+    await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      firstVisibleLine: 'TUI_HIDE_CURSOR_READY',
+      targetLineIncludes: 'input> TUI cursor',
+    });
+    await waitForVisibleHardwareCursorCount(page, shellAgentId, 0);
+
+    await page.reload();
+    await waitForAppShellVisible(page);
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+    await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      firstVisibleLine: 'TUI_HIDE_CURSOR_READY',
+      targetLineIncludes: 'input> TUI cursor',
+    });
+    await waitForVisibleHardwareCursorCount(page, shellAgentId, 0);
   });
 
   test('preserves a non-top cursor-addressed viewport across reload restore', async ({

@@ -13,6 +13,12 @@ function createMirror(cols = 80, rows = 24): TerminalStateMirror {
   return mirror;
 }
 
+async function serializeMirrorText(mirror: TerminalStateMirror): Promise<string> {
+  const state = await mirror.serialize();
+  expect(state).not.toBeNull();
+  return state?.data.toString('utf8') ?? '';
+}
+
 beforeEach(() => {
   resetBackendRuntimeDiagnostics();
   mirrors = [];
@@ -91,5 +97,57 @@ describe('TerminalStateMirror', () => {
       serializeCacheHits: 1,
       serializeRequests: 3,
     });
+  });
+
+  it('preserves hidden cursor mode in serialized terminal state', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?25lTUI draws its own cursor'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized).toContain('TUI draws its own cursor');
+    expect(serialized.endsWith('\x1b[?25l')).toBe(true);
+  });
+
+  it('preserves restored visible cursor mode in serialized terminal state', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?25lhidden'));
+    mirror.enqueueOutput(Buffer.from('\x1b[?25hvisible'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized).toContain('hiddenvisible');
+    expect(serialized.endsWith('\x1b[?25h')).toBe(true);
+  });
+
+  it('preserves private mode sequences split across output chunks', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?2'));
+    mirror.enqueueOutput(Buffer.from('5lhidden after split'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized).toContain('hidden after split');
+    expect(serialized.endsWith('\x1b[?25l')).toBe(true);
+  });
+
+  it('preserves bracketed paste mode in serialized terminal state', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?2004hbracketed paste'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized).toContain('bracketed paste');
+    expect(serialized.endsWith('\x1b[?2004h')).toBe(true);
+  });
+
+  it('preserves combined DEC private mode updates', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?25;2004hcombined private modes'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized).toContain('combined private modes');
+    expect(serialized.endsWith('\x1b[?2004h\x1b[?25h')).toBe(true);
   });
 });
