@@ -35,6 +35,8 @@ type TaskStepsListener = (event: TaskStepsEvent) => void;
 
 const watchers = new Map<string, TaskStepsWatcher>();
 const metadataByTaskId = new Map<string, TaskStepsMetadata>();
+const taskIdByStepsIdentity = new Map<string, string>();
+const stepsIdentityByTaskId = new Map<string, string>();
 const snapshotsByTaskId = new Map<string, TaskStepsSnapshot>();
 const summarySnapshotsByTaskId = new Map<string, TaskStepsSummarySnapshot>();
 const taskStepsListeners = new Set<TaskStepsListener>();
@@ -57,6 +59,79 @@ function emitTaskStepsEvent(event: TaskStepsEvent): void {
   for (const listener of taskStepsListeners) {
     listener(versionedEvent);
   }
+}
+
+function getTaskStepsWorktreeIdentity(worktreePath: string): string {
+  try {
+    return fs.realpathSync(worktreePath);
+  } catch {
+    return path.resolve(worktreePath);
+  }
+}
+
+function getTaskStepsIdentity(worktreePath: string): string {
+  return path.join(getTaskStepsWorktreeIdentity(worktreePath), '.claude', 'steps.json');
+}
+
+function getTaskStepsRegistrationError(taskId: string, worktreePath: string): string {
+  return `Task steps are already registered for task ${taskId}: ${worktreePath}`;
+}
+
+export function assertTaskStepsPathAvailable(
+  taskId: string | undefined,
+  worktreePath: string,
+): void {
+  const identity = getTaskStepsIdentity(worktreePath);
+  const existingTaskId = taskIdByStepsIdentity.get(identity);
+  if (existingTaskId !== undefined && existingTaskId !== taskId) {
+    throw new Error(getTaskStepsRegistrationError(existingTaskId, worktreePath));
+  }
+}
+
+function registerTaskStepsIdentity(taskId: string, worktreePath: string): void {
+  const identity = getTaskStepsIdentity(worktreePath);
+  const existingTaskId = taskIdByStepsIdentity.get(identity);
+  if (existingTaskId !== undefined && existingTaskId !== taskId) {
+    throw new Error(getTaskStepsRegistrationError(existingTaskId, worktreePath));
+  }
+
+  const previousIdentity = stepsIdentityByTaskId.get(taskId);
+  if (previousIdentity !== undefined && previousIdentity !== identity) {
+    taskIdByStepsIdentity.delete(previousIdentity);
+  }
+
+  stepsIdentityByTaskId.set(taskId, identity);
+  taskIdByStepsIdentity.set(identity, taskId);
+}
+
+function removeTaskStepsIdentity(taskId: string): void {
+  const identity = stepsIdentityByTaskId.get(taskId);
+  if (identity === undefined) {
+    return;
+  }
+
+  stepsIdentityByTaskId.delete(taskId);
+  taskIdByStepsIdentity.delete(identity);
+}
+
+function collectUniqueTaskStepsMetadata(
+  nextMetadata: ReadonlyArray<TaskStepsMetadata>,
+): TaskStepsMetadata[] {
+  const seenTaskIdByIdentity = new Map<string, string>();
+  const uniqueMetadata: TaskStepsMetadata[] = [];
+
+  for (const metadata of nextMetadata) {
+    const identity = getTaskStepsIdentity(metadata.worktreePath);
+    const existingTaskId = seenTaskIdByIdentity.get(identity);
+    if (existingTaskId !== undefined && existingTaskId !== metadata.taskId) {
+      continue;
+    }
+
+    seenTaskIdByIdentity.set(identity, metadata.taskId);
+    uniqueMetadata.push(metadata);
+  }
+
+  return uniqueMetadata;
 }
 
 function normalizeStepText(value: unknown): string | undefined {
@@ -625,6 +700,7 @@ export function getTaskStepsSnapshot(taskId: string): TaskStepsSnapshot | null {
 
 export function registerTaskStepsTask(metadata: TaskStepsMetadata): void {
   const previous = metadataByTaskId.get(metadata.taskId);
+  registerTaskStepsIdentity(metadata.taskId, metadata.worktreePath);
   metadataByTaskId.set(metadata.taskId, metadata);
 
   if (!previous) {
@@ -640,22 +716,32 @@ export function registerTaskStepsTask(metadata: TaskStepsMetadata): void {
   refreshTaskSteps(metadata.taskId);
 }
 
-function syncTaskStepsMetadata(nextMetadata: ReadonlyArray<TaskStepsMetadata>): void {
-  const nextTaskIds = new Set(nextMetadata.map((metadata) => metadata.taskId));
+function removeTaskStepsRegistration(taskId: string): void {
+  metadataByTaskId.delete(taskId);
+  removeTaskStepsIdentity(taskId);
+  stopTaskStepsWatcher(taskId);
+  removeTaskStepsSnapshot(taskId);
+}
+
+function syncTaskStepsMetadata(
+  nextMetadata: ReadonlyArray<TaskStepsMetadata>,
+): TaskStepsMetadata[] {
+  const uniqueMetadata = collectUniqueTaskStepsMetadata(nextMetadata);
+  const nextTaskIds = new Set(uniqueMetadata.map((metadata) => metadata.taskId));
 
   for (const taskId of metadataByTaskId.keys()) {
     if (nextTaskIds.has(taskId)) {
       continue;
     }
 
-    metadataByTaskId.delete(taskId);
-    stopTaskStepsWatcher(taskId);
-    removeTaskStepsSnapshot(taskId);
+    removeTaskStepsRegistration(taskId);
   }
 
-  for (const metadata of nextMetadata) {
+  for (const metadata of uniqueMetadata) {
     registerTaskStepsTask(metadata);
   }
+
+  return uniqueMetadata;
 }
 
 export function syncTaskStepsFromSavedState(savedJson: string): void {
@@ -673,16 +759,14 @@ export function restoreSavedTaskSteps(savedJson: string): void {
     return;
   }
 
-  syncTaskStepsMetadata(parsed.metadata);
-  for (const metadata of parsed.metadata) {
+  const syncedMetadata = syncTaskStepsMetadata(parsed.metadata);
+  for (const metadata of syncedMetadata) {
     refreshTaskSteps(metadata.taskId);
   }
 }
 
 export function removeTaskSteps(taskId: string): void {
-  metadataByTaskId.delete(taskId);
-  stopTaskStepsWatcher(taskId);
-  removeTaskStepsSnapshot(taskId);
+  removeTaskStepsRegistration(taskId);
 }
 
 export function stopAllTaskStepsWatchers(): void {
@@ -693,6 +777,8 @@ export function stopAllTaskStepsWatchers(): void {
 
 export function clearTaskStepsRegistry(): void {
   metadataByTaskId.clear();
+  taskIdByStepsIdentity.clear();
+  stepsIdentityByTaskId.clear();
   snapshotsByTaskId.clear();
   summarySnapshotsByTaskId.clear();
   taskStepsListeners.clear();

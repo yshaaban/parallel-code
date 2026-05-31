@@ -24,7 +24,11 @@ import {
   removeTaskReviewSignals,
   scheduleTaskReviewSignalsRefresh,
 } from './task-review-signals.js';
-import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
+import {
+  assertTaskStepsPathAvailable,
+  registerTaskStepsTask,
+  removeTaskSteps,
+} from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
 import {
   destroyManagedTaskContainersByLabels,
@@ -181,6 +185,10 @@ export function syncTaskWorkflowWorktreesFromSavedState(savedJson: string): void
 
   const parsed = parsePersistedTaskLookupState(savedJson);
   for (const task of Object.values(parsed.tasks)) {
+    if (task.projectMode === 'non-git') {
+      continue;
+    }
+
     if (!task.id || !task.worktreePath) {
       continue;
     }
@@ -261,6 +269,15 @@ function startTaskWorktreeWatchers(
   ensurePlansDirectorySafely(worktreePath);
   startPlanWatcherSafely(context, taskId, worktreePath);
   startTaskGitWatcherSafely(context, baseBranch, taskId, worktreePath);
+}
+
+function startTaskPlanWatchers(
+  context: TaskWorkflowContext,
+  taskId: string,
+  worktreePath: string,
+): void {
+  ensurePlansDirectorySafely(worktreePath);
+  startPlanWatcherSafely(context, taskId, worktreePath);
 }
 
 function registerTaskGitMetadata(options: {
@@ -346,8 +363,6 @@ function registerCreatedNonGitTaskRuntime(
   request: CreateTaskWorkflowRequest,
   result: CreatedTaskRuntimeMetadata,
 ): void {
-  registerTaskWorktreeIdentity(result.id, result.worktree_path);
-
   registerTaskStepsMetadata({
     taskId: result.id,
     worktreePath: result.worktree_path,
@@ -514,7 +529,12 @@ export function spawnTaskAgentWorkflow(
     throw error;
   }
 
-  if (request.isShell || !request.cwd || request.projectMode === 'non-git') {
+  if (request.isShell || !request.cwd) {
+    return attachedExistingSession;
+  }
+
+  if (request.projectMode === 'non-git') {
+    startTaskPlanWatchers(context, request.taskId, request.cwd);
     return attachedExistingSession;
   }
 
@@ -532,7 +552,9 @@ export async function createTaskWorkflow(
   | Awaited<ReturnType<typeof importExistingWorktreeTask>>
 > {
   if (request.projectMode === 'non-git') {
-    assertWorktreeIdentityAvailable(undefined, request.projectRoot);
+    if (request.stepsTracking === true) {
+      assertTaskStepsPathAvailable(undefined, request.projectRoot);
+    }
     const result = createNonGitTask(request.projectRoot);
     registerCreatedNonGitTaskRuntime(request, result);
     return result;

@@ -143,6 +143,7 @@ import {
   getTaskCommandControllers,
   resetTaskCommandLeasesForTest,
 } from './task-command-leases.js';
+import { clearTaskStepsRegistry, stopAllTaskStepsWatchers } from './task-steps.js';
 
 function createContext(): TaskWorkflowContext {
   return {
@@ -154,6 +155,8 @@ function createContext(): TaskWorkflowContext {
 describe('task workflows', () => {
   beforeEach(() => {
     clearTaskWorkflowWorktreeRegistryForTests();
+    clearTaskStepsRegistry();
+    stopAllTaskStepsWatchers();
     resetTaskCommandLeasesForTest();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -185,6 +188,8 @@ describe('task workflows', () => {
   });
 
   afterEach(() => {
+    stopAllTaskStepsWatchers();
+    clearTaskStepsRegistry();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -406,6 +411,32 @@ describe('task workflows', () => {
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
 
+  it('starts plan watchers but not git watchers for non-git agents', () => {
+    const context = createContext();
+
+    spawnTaskAgentWorkflow(context, {
+      taskId: 'task-non-git',
+      agentId: 'agent-non-git',
+      command: 'codex',
+      args: ['run'],
+      cwd: '/tmp/non-git-task',
+      env: {},
+      cols: 80,
+      rows: 24,
+      projectMode: 'non-git',
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+    expect(ensurePlansDirectoryMock).toHaveBeenCalledWith('/tmp/non-git-task');
+    expect(startPlanWatcherMock).toHaveBeenCalledWith(
+      'task-non-git',
+      '/tmp/non-git-task',
+      expect.any(Function),
+    );
+    expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
+  });
+
   it('creates a task and starts its git watcher', async () => {
     const context = createContext();
     createTaskMock.mockResolvedValue({
@@ -483,7 +514,7 @@ describe('task workflows', () => {
     });
   });
 
-  it('creates non-git task runtime without git metadata or watchers', async () => {
+  it('creates non-git task runtime without git metadata or git watchers', async () => {
     const context = createContext();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-task-'));
     createNonGitTaskMock.mockReturnValue({
@@ -677,7 +708,7 @@ describe('task workflows', () => {
     }
   });
 
-  it('restores non-git task folders into the shared task path identity registry', async () => {
+  it('does not restore non-git task folders into the git worktree identity registry', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-registry-'));
     const folderPath = path.join(tempRoot, 'folder');
     fs.mkdirSync(folderPath, { recursive: true });
@@ -714,21 +745,85 @@ describe('task workflows', () => {
           existingWorktreePath: folderPath,
           baseBranch: 'main',
         }),
-      ).rejects.toThrow('already registered for task task-non-git');
-      expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+      ).resolves.toEqual({
+        id: 'task-imported',
+        branch_name: 'task/imported',
+        worktree_path: folderPath,
+        base_branch: 'main',
+        git_isolation: 'existing-worktree',
+      });
+      expect(importExistingWorktreeTaskMock).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it('rejects duplicate non-git task folders across canonical path aliases', async () => {
+  it('allows multiple non-git tasks in the same folder', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-duplicate-'));
     const folderPath = path.join(tempRoot, 'folder');
     const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
     fs.mkdirSync(folderPath, { recursive: true });
     fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
+    createNonGitTaskMock
+      .mockReturnValueOnce({
+        id: 'task-non-git-1',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: folderPath,
+      })
+      .mockReturnValueOnce({
+        id: 'task-non-git-2',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: aliasedFolderPath,
+      });
+
+    try {
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Folder task',
+          projectId: 'project-1',
+          projectMode: 'non-git',
+          projectRoot: folderPath,
+          symlinkDirs: [],
+        }),
+      ).resolves.toEqual({
+        id: 'task-non-git-1',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: folderPath,
+      });
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Second folder task',
+          projectId: 'project-1',
+          projectMode: 'non-git',
+          projectRoot: aliasedFolderPath,
+          symlinkDirs: [],
+        }),
+      ).resolves.toEqual({
+        id: 'task-non-git-2',
+        branch_name: '',
+        project_mode: 'non-git',
+        worktree_path: aliasedFolderPath,
+      });
+      expect(createNonGitTaskMock).toHaveBeenCalledTimes(2);
+      expect(createNonGitTaskMock).toHaveBeenNthCalledWith(1, folderPath);
+      expect(createNonGitTaskMock).toHaveBeenNthCalledWith(2, aliasedFolderPath);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects duplicate non-git task step tracking across canonical path aliases', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-non-git-steps-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
     createNonGitTaskMock.mockReturnValueOnce({
-      id: 'task-non-git',
+      id: 'task-non-git-steps',
       branch_name: '',
       project_mode: 'non-git',
       worktree_path: folderPath,
@@ -741,18 +836,58 @@ describe('task workflows', () => {
         projectMode: 'non-git',
         projectRoot: folderPath,
         symlinkDirs: [],
+        stepsTracking: true,
+      });
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Second folder task',
+          projectId: 'project-1',
+          projectMode: 'non-git',
+          projectRoot: aliasedFolderPath,
+          symlinkDirs: [],
+          stepsTracking: true,
+        }),
+      ).rejects.toThrow('Task steps are already registered for task task-non-git-steps');
+      expect(createNonGitTaskMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects duplicate current-branch tasks across canonical path aliases', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-duplicate-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
+    createCurrentBranchTaskMock.mockResolvedValueOnce({
+      id: 'task-current',
+      branch_name: 'main',
+      worktree_path: folderPath,
+      base_branch: 'main',
+      git_isolation: 'current-branch',
+    });
+
+    try {
+      await createTaskWorkflow(createContext(), {
+        name: 'Folder task',
+        projectId: 'project-1',
+        projectRoot: folderPath,
+        symlinkDirs: [],
+        gitIsolation: 'current-branch',
       });
 
       await expect(
         createTaskWorkflow(createContext(), {
           name: 'Duplicate folder task',
           projectId: 'project-1',
-          projectMode: 'non-git',
           projectRoot: aliasedFolderPath,
           symlinkDirs: [],
+          gitIsolation: 'current-branch',
         }),
-      ).rejects.toThrow('already registered for task task-non-git');
-      expect(createNonGitTaskMock).toHaveBeenCalledTimes(1);
+      ).rejects.toThrow('already registered for task task-current');
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

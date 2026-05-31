@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  assertTaskStepsPathAvailable,
   clearTaskStepsRegistry,
   getTaskStepsSnapshot,
   listTaskStepsSummarySnapshots,
@@ -134,6 +135,29 @@ describe('task steps backend owner', () => {
     expect(listTaskStepsSummarySnapshots()).toEqual([]);
   });
 
+  it('rejects duplicate trackers for the same canonical steps file', () => {
+    const worktreePath = createWorktreeRoot();
+    const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-task-steps-alias-'));
+    const aliasedWorktreePath = path.join(aliasRoot, 'worktree');
+    fs.symlinkSync(worktreePath, aliasedWorktreePath, 'dir');
+    createdRoots.push(worktreePath, aliasRoot);
+
+    registerTaskStepsTask({
+      taskId: 'task-1',
+      worktreePath,
+    });
+
+    expect(() => assertTaskStepsPathAvailable(undefined, aliasedWorktreePath)).toThrow(
+      'Task steps are already registered for task task-1',
+    );
+    expect(() =>
+      registerTaskStepsTask({
+        taskId: 'task-2',
+        worktreePath: aliasedWorktreePath,
+      }),
+    ).toThrow('Task steps are already registered for task task-1');
+  });
+
   it('keeps existing steps state when saved workspace metadata is malformed', () => {
     const worktreePath = createWorktreeRoot();
     createdRoots.push(worktreePath);
@@ -190,5 +214,37 @@ describe('task steps backend owner', () => {
       taskId: 'task-next',
       trackingEnabled: true,
     });
+  });
+
+  it('skips duplicate canonical steps files while syncing saved metadata', () => {
+    const worktreePath = createWorktreeRoot();
+    const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-task-steps-alias-'));
+    const aliasedWorktreePath = path.join(aliasRoot, 'worktree');
+    fs.symlinkSync(worktreePath, aliasedWorktreePath, 'dir');
+    createdRoots.push(worktreePath, aliasRoot);
+
+    syncTaskStepsFromSavedState(
+      JSON.stringify({
+        tasks: {
+          'task-1': {
+            id: 'task-1',
+            stepsTracking: true,
+            worktreePath,
+          },
+          'task-2': {
+            id: 'task-2',
+            stepsTracking: true,
+            worktreePath: aliasedWorktreePath,
+          },
+        },
+      }),
+    );
+
+    expect(getTaskStepsSnapshot('task-1')).toMatchObject({
+      taskId: 'task-1',
+      trackingEnabled: true,
+    });
+    expect(getTaskStepsSnapshot('task-2')).toBeNull();
+    expect(listTaskStepsSummarySnapshots()).toHaveLength(1);
   });
 });
