@@ -1,4 +1,13 @@
-import { For, Show, Suspense, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import {
+  For,
+  Show,
+  Suspense,
+  createEffect,
+  createSignal,
+  onCleanup,
+  untrack,
+  type JSX,
+} from 'solid-js';
 
 import {
   applyTaskPortsEvent,
@@ -88,6 +97,7 @@ interface TaskPanelProps {
 }
 
 export function TaskPanel(props: TaskPanelProps): JSX.Element {
+  const taskId = untrack(() => props.task.id);
   const electronRuntime = isElectronRuntime();
   const taskActivityNow = useTaskActivityNow();
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
@@ -125,8 +135,8 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   });
 
   function cancelTaskTerminalSwitchState(): void {
-    cancelTerminalSwitchEchoGrace(props.task.id);
-    cancelTerminalSwitchWindow(props.task.id, props.task.id);
+    cancelTerminalSwitchEchoGrace(taskId);
+    cancelTerminalSwitchWindow(taskId, taskId);
   }
 
   function clearTitleDrag(): void {
@@ -143,10 +153,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     }
 
     beginTerminalSwitchWindow(
-      props.task.id,
+      taskId,
       getTerminalExperimentSwitchTargetWindowMs(getVisibleTerminalCount()),
       getTerminalPerformanceExperimentConfig().switchWindowSettleDelayMs,
-      props.task.id,
+      taskId,
       3,
     );
   }
@@ -188,7 +198,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     notesTab,
     registerFocusFn,
     showPlans: () => store.showPlans,
-    taskId: () => props.task.id,
+    taskId: () => taskId,
     triggerFocus,
     unregisterFocusFn,
   });
@@ -379,7 +389,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     bookmarks: projectBookmarks,
     isActive: () => props.isActive,
     shellAgentIds: () => props.task.shellAgentIds,
-    taskId: () => props.task.id,
+    taskId: () => taskId,
     worktreePath: () => props.task.worktreePath,
   });
   const aiTerminalSection = createTaskAiTerminalSection({

@@ -469,6 +469,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let sessionStartupMeasurementStartedAtMs: number | null = null;
   let selectedInteractiveBreadcrumbEmitted = false;
   let terminalSessionLoadFailed = false;
+  let terminalViewUnmounting = false;
   let isFocusedNow = false;
   let isSelectedNow = false;
   let isVisibleNow = false;
@@ -568,7 +569,71 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function isActiveCommandTarget(): boolean {
-    return store.activeTaskId === props.taskId && props.isCommandTarget !== false;
+    return store.activeTaskId === taskId && props.isCommandTarget !== false;
+  }
+
+  function getTerminalSessionPropsSnapshot(): TerminalViewProps {
+    const snapshot: TerminalViewProps = {
+      agentId,
+      args: props.args,
+      command: props.command,
+      cwd: props.cwd,
+      taskId,
+    };
+
+    if (props.adapter !== undefined) {
+      snapshot.adapter = props.adapter;
+    }
+    if (props.baseBranch !== undefined) {
+      snapshot.baseBranch = props.baseBranch;
+    }
+    if (props.env !== undefined) {
+      snapshot.env = props.env;
+    }
+    if (props.fontSize !== undefined) {
+      snapshot.fontSize = props.fontSize;
+    }
+    if (props.initialCommand !== undefined) {
+      snapshot.initialCommand = props.initialCommand;
+    }
+    if (props.isCommandTarget !== undefined) {
+      snapshot.isCommandTarget = props.isCommandTarget;
+    }
+    if (props.isFocused !== undefined) {
+      snapshot.isFocused = props.isFocused;
+    }
+    if (props.isShell !== undefined) {
+      snapshot.isShell = props.isShell;
+    }
+    if (props.manageTaskSwitchWindowLifecycle !== undefined) {
+      snapshot.manageTaskSwitchWindowLifecycle = props.manageTaskSwitchWindowLifecycle;
+    }
+    if (props.onBufferReady !== undefined) {
+      snapshot.onBufferReady = props.onBufferReady;
+    }
+    if (props.onData !== undefined) {
+      snapshot.onData = props.onData;
+    }
+    if (props.onExit !== undefined) {
+      snapshot.onExit = props.onExit;
+    }
+    if (props.onPromptDetected !== undefined) {
+      snapshot.onPromptDetected = props.onPromptDetected;
+    }
+    if (props.onReady !== undefined) {
+      snapshot.onReady = props.onReady;
+    }
+    if (props.projectMode !== undefined) {
+      snapshot.projectMode = props.projectMode;
+    }
+    if (props.resumeOnStart !== undefined) {
+      snapshot.resumeOnStart = props.resumeOnStart;
+    }
+    if (props.runnerProfile !== undefined) {
+      snapshot.runnerProfile = props.runnerProfile;
+    }
+
+    return snapshot;
   }
 
   function getCurrentTerminalAnomalyLifecycleState(): TerminalAnomalyLifecycleState {
@@ -893,10 +958,18 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function clearInputAcknowledgement(): void {
     clearInputAcknowledgementTimer();
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     setInputAcknowledgementVisible(false);
   }
 
   function showInputAcknowledgement(durationMs: number): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (!isLocalInputFeedbackAvailable()) {
       return;
     }
@@ -929,6 +1002,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionLocalInputFeedback(): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     const feedbackMode = getEffectiveLocalInputFeedbackMode();
     switch (feedbackMode) {
       case 'ack-pulse':
@@ -943,6 +1020,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionInputAccepted(): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (getEffectiveLocalInputFeedbackMode() !== 'off') {
       return;
     }
@@ -951,6 +1032,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionOutputRendered(): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     clearInputAcknowledgement();
   }
 
@@ -1049,21 +1134,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function syncCurrentSessionRuntimeState(): void {
-    if (!session) {
+    const currentSession = session;
+    if (!currentSession) {
       return;
     }
 
     const nextDisableStdin = !canAcceptTerminalInput();
-    if (session.term.options.disableStdin !== nextDisableStdin) {
-      session.term.options.disableStdin = nextDisableStdin;
+    if (currentSession.term.options.disableStdin !== nextDisableStdin) {
+      currentSession.term.options.disableStdin = nextDisableStdin;
     }
 
     const nextCursorBlink = shouldBlinkTerminalCursor();
-    if (session.term.options.cursorBlink !== nextCursorBlink) {
-      session.term.options.cursorBlink = nextCursorBlink;
+    if (currentSession.term.options.cursorBlink !== nextCursorBlink) {
+      currentSession.term.options.cursorBlink = nextCursorBlink;
     }
 
-    session.updateOutputPriority?.();
+    currentSession.updateOutputPriority?.();
   }
 
   function syncCurrentSessionFocusIntent(): void {
@@ -1480,14 +1566,19 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     terminalAttachUnregisterPending = false;
     terminalSessionLoadFailed = false;
     selectedInteractiveBreadcrumbEmitted = false;
-    setTakingOver(false);
-    setRenderHibernating(false);
-    setRestoreBlocked(false);
-    setResizeTransactionActive(false);
-    session?.cleanup();
+    if (!terminalViewUnmounting) {
+      setTakingOver(false);
+      setRenderHibernating(false);
+      setRestoreBlocked(false);
+      setResizeTransactionActive(false);
+    }
+    const currentSession = session;
     session = undefined;
+    currentSession?.cleanup();
     previousXtermFocusIntent = undefined;
-    setSessionVersion((version) => version + 1);
+    if (!terminalViewUnmounting) {
+      setSessionVersion((version) => version + 1);
+    }
     attachRegistration?.unregister();
     attachRegistration = undefined;
   }
@@ -1533,6 +1624,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionStatusChange(status: TerminalViewStatus): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (status !== 'ready') {
       clearInputAcknowledgement();
     }
@@ -1543,6 +1638,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionPaintReadyChange(nextPaintReady: boolean): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     setPaintReady(nextPaintReady);
     armTerminalInputCaptureGraceIfPaintReady();
     syncCurrentSessionRuntimeState();
@@ -1550,6 +1649,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionRenderHibernationChange(isHibernating: boolean): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (isHibernating) {
       clearInputAcknowledgement();
     }
@@ -1558,6 +1661,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionRestoreBlockedChange(isBlocked: boolean): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (isBlocked) {
       clearInputAcknowledgement();
     }
@@ -1566,6 +1673,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionResizeTransactionChange(isActive: boolean): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
     if (isActive) {
       clearInputAcknowledgement();
     }
@@ -1660,7 +1771,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             },
             onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
             onStatusChange: handleSessionStatusChange,
-            props,
+            props: getTerminalSessionPropsSnapshot(),
             subscribeStartupPaintCoordinationChanges:
               subscribeTerminalStartupPaintCoordinationChanges,
             shouldCommitResize: shouldKeepTerminalGeometryLive,
@@ -1843,6 +1954,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     syncTerminalSessionLiveness();
 
     onCleanup(() => {
+      terminalViewUnmounting = true;
       document.removeEventListener('focusin', handleDocumentFocusIn, true);
       document.removeEventListener('focusout', handleDocumentFocusOut, true);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -2225,7 +2337,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   return (
     <div
       ref={shellRef}
-      data-terminal-agent-id={props.agentId}
+      data-terminal-agent-id={agentId}
       data-terminal-active-command-target={isActiveCommandTarget() ? 'true' : undefined}
       data-terminal-anomaly-count={
         terminalAnomalyPresentation().count > 0

@@ -568,12 +568,19 @@ export async function readTerminalAttributeHistory(
   );
 }
 
-export async function dragTerminalPanelResizeHandle(
+interface TerminalPanelResizeDragTarget {
+  axis: 'horizontal' | 'vertical';
+  endX: number;
+  endY: number;
+  startX: number;
+  startY: number;
+}
+
+async function readTerminalPanelResizeDragTargets(
   page: Page,
-  terminalIndex = 0,
-  deltaPx = 120,
-): Promise<void> {
-  const dragTargets = await page.evaluate(
+  terminalIndex: number,
+): Promise<TerminalPanelResizeDragTarget[]> {
+  return page.evaluate(
     ({ index }) => {
       const terminal = document.querySelectorAll('[data-terminal-status]')[index] as
         | HTMLElement
@@ -652,8 +659,36 @@ export async function dragTerminalPanelResizeHandle(
     },
     { index: terminalIndex },
   );
+}
 
-  expect(dragTargets.length).toBeGreaterThan(0);
+async function waitForTerminalPanelResizeDragTargets(
+  page: Page,
+  terminalIndex: number,
+): Promise<TerminalPanelResizeDragTarget[]> {
+  let dragTargets: TerminalPanelResizeDragTarget[] = [];
+  await expect
+    .poll(
+      async () => {
+        dragTargets = await readTerminalPanelResizeDragTargets(page, terminalIndex);
+        return dragTargets.length;
+      },
+      {
+        message: `terminal panel ${terminalIndex} should expose a visible resize handle`,
+        timeout: 15_000,
+      },
+    )
+    .toBeGreaterThan(0);
+
+  return dragTargets;
+}
+
+export async function dragTerminalPanelResizeHandle(
+  page: Page,
+  terminalIndex = 0,
+  deltaPx = 120,
+): Promise<void> {
+  const dragTargets = await waitForTerminalPanelResizeDragTargets(page, terminalIndex);
+
   for (const dragTarget of dragTargets) {
     const beforeBox = await page.locator('[data-terminal-status]').nth(terminalIndex).boundingBox();
     if (!beforeBox) {

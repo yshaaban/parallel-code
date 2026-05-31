@@ -942,6 +942,31 @@ test.describe('browser-lab large scrollback restore', () => {
       }
 
       await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+      const postRestoreMarker = '__BIG_SCROLLBACK_RESIZE_POST_RESTORE__';
+      await browserLab.retainSessionAgentTaskCommandLease(
+        request,
+        page,
+        shellAgentId,
+        'write large scrollback post-restore resize marker',
+      );
+      await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+        agentId: shellAgentId,
+        data: `printf "${postRestoreMarker}\\n"\r`,
+      });
+      await browserLab.waitForAgentScrollback(request, shellAgentId, postRestoreMarker, 10_000);
+      await dragTerminalPanelResizeHandle(page, shellTerminalIndex, 80);
+      await expect
+        .poll(
+          async () => {
+            const diagnostics = await getOutputDiagnostics(page);
+            return getTerminalOutputEntry(diagnostics, shellAgentId)?.render.resizeEvents ?? 0;
+          },
+          {
+            message: 'restored terminal should record a resize after it is interactive',
+            timeout: 5_000,
+          },
+        )
+        .toBeGreaterThan(0);
 
       const replayTraceEntries = await readTerminalReplayTrace(page);
       const shellAttachReplay = replayTraceEntries.find(

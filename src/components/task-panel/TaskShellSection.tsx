@@ -4,6 +4,7 @@ import {
   createEffect,
   createSignal,
   onCleanup,
+  untrack,
   type Accessor,
   type JSX,
 } from 'solid-js';
@@ -56,6 +57,9 @@ export function createTaskShellSection(props: TaskShellSectionProps): PanelChild
 }
 
 export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
+  const taskId = untrack(() => props.taskId());
+  const worktreePath = untrack(() => props.worktreePath());
+  const shellPanelId = `${taskId}:shell`;
   const [shellExits, setShellExits] = createStore<
     Record<string, { exitCode: number | null; signal: string | null }>
   >({});
@@ -69,13 +73,13 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
   }
 
   function requestBookmarkRun(command: string): void {
-    void runBookmarkInTask(props.taskId(), command).catch((error) => {
+    void runBookmarkInTask(taskId, command).catch((error) => {
       handleShellActionFailure('run shell command', error);
     });
   }
 
   function requestShellClose(shellId: string): void {
-    void closeShell(props.taskId(), shellId).catch((error) => {
+    void closeShell(taskId, shellId).catch((error) => {
       handleShellActionFailure('close terminal', error);
     });
   }
@@ -92,7 +96,6 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
   }
 
   createEffect(() => {
-    const taskId = props.taskId();
     const toolbarButtonCount = 1 + props.bookmarks().length;
     const maxToolbarIndex = toolbarButtonCount - 1;
     const focusedPanel = getStoredTaskFocusedPanel(taskId) ?? undefined;
@@ -120,7 +123,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
   });
 
   return (
-    <ScalablePanel panelId={`${props.taskId()}:shell`}>
+    <ScalablePanel panelId={shellPanelId}>
       <div
         style={{
           height: '100%',
@@ -134,9 +137,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
           focused={shellToolbarFocused()}
           selectedIndex={shellToolbarIdx()}
           openTerminalTitle={`Open terminal (${mod}+Shift+T)`}
-          onToolbarClick={() =>
-            setTaskFocusedPanel(props.taskId(), `shell-toolbar:${shellToolbarIdx()}`)
-          }
+          onToolbarClick={() => setTaskFocusedPanel(taskId, `shell-toolbar:${shellToolbarIdx()}`)}
           onToolbarFocus={() => setShellToolbarFocused(true)}
           onToolbarBlur={() => setShellToolbarFocused(false)}
           onToolbarKeyDown={(event) => {
@@ -149,14 +150,14 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
               event.preventDefault();
               const nextIndex = Math.min(itemCount - 1, shellToolbarIdx() + 1);
               setShellToolbarIdx(nextIndex);
-              setTaskFocusedPanel(props.taskId(), `shell-toolbar:${nextIndex}`);
+              setTaskFocusedPanel(taskId, `shell-toolbar:${nextIndex}`);
               return;
             }
             if (event.key === 'ArrowLeft') {
               event.preventDefault();
               const nextIndex = Math.max(0, shellToolbarIdx() - 1);
               setShellToolbarIdx(nextIndex);
-              setTaskFocusedPanel(props.taskId(), `shell-toolbar:${nextIndex}`);
+              setTaskFocusedPanel(taskId, `shell-toolbar:${nextIndex}`);
               return;
             }
             if (event.key !== 'Enter') return;
@@ -164,7 +165,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
             event.preventDefault();
             const selectedIndex = shellToolbarIdx();
             if (selectedIndex === 0) {
-              spawnShellForTask(props.taskId());
+              spawnShellForTask(taskId);
               return;
             }
 
@@ -175,7 +176,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
           }}
           onOpenTerminal={(event) => {
             event.stopPropagation();
-            spawnShellForTask(props.taskId());
+            spawnShellForTask(taskId);
           }}
           onRunBookmark={(command, event) => {
             event.stopPropagation();
@@ -204,7 +205,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                 let registeredKey: string | undefined;
 
                 createEffect(() => {
-                  const key = `${props.taskId()}:shell:${index()}`;
+                  const key = `${taskId}:shell:${index()}`;
                   if (registeredKey && registeredKey !== key) {
                     unregisterFocusFn(registeredKey);
                   }
@@ -220,7 +221,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                   }
                 });
 
-                const isShellFocused = () => isTaskPanelFocused(props.taskId(), `shell:${index()}`);
+                const isShellFocused = () => isTaskPanelFocused(taskId, `shell:${index()}`);
 
                 return (
                   <div
@@ -232,7 +233,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       position: 'relative',
                       background: theme.taskPanelBg,
                     }}
-                    onClick={() => setTaskFocusedPanel(props.taskId(), `shell:${index()}`)}
+                    onClick={() => setTaskFocusedPanel(taskId, `shell:${index()}`)}
                   >
                     <button
                       class="shell-terminal-close"
@@ -280,18 +281,18 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       </div>
                     </Show>
                     <TerminalView
-                      taskId={props.taskId()}
+                      taskId={taskId}
                       agentId={shellId}
                       isShell
                       isFocused={props.isActive() && isShellFocused()}
                       manageTaskSwitchWindowLifecycle={false}
                       command={getShellCommand()}
                       args={['-l']}
-                      cwd={props.worktreePath()}
+                      cwd={worktreePath}
                       initialCommand={initialCommand}
                       onData={(data) => {
                         clearShellExit(shellId);
-                        markAgentOutput(shellId, data, props.taskId(), 'shell');
+                        markAgentOutput(shellId, data, taskId, 'shell');
                       }}
                       onExit={(info) => {
                         clearAgentActivity(shellId);
@@ -307,9 +308,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                           registerFocusFn(registeredKey, focusFn);
                         }
                       }}
-                      fontSize={Math.round(
-                        store.terminalFontSize * getFontScale(`${props.taskId()}:shell`),
-                      )}
+                      fontSize={Math.round(store.terminalFontSize * getFontScale(shellPanelId))}
                     />
                   </div>
                 );

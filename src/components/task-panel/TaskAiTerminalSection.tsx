@@ -176,27 +176,29 @@ function getTerminalTileBorder(isSelected: boolean): string {
 }
 
 function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
+  const taskId = untrack(() => props.task.id);
+  const agentId = untrack(() => props.agent.id);
   const canResumeAgent = () => getAgentResumeStrategy(props.agent.def) !== 'none';
   const availableAgents = createMemo(() =>
     store.availableAgents.filter((agentDef) => agentDef.available !== false),
   );
-  const panelId = () => `${props.task.id}:ai-terminal`;
+  const panelId = `${taskId}:ai-terminal`;
   let currentFocusFn: (() => void) | undefined;
 
-  onCleanup(() => props.onDispose(props.agent.id, currentFocusFn));
+  onCleanup(() => props.onDispose(agentId, currentFocusFn));
 
   function selectTile(): void {
     if (!props.isSelected) {
-      setActiveAgent(props.agent.id);
+      setActiveAgent(agentId);
     }
-    setTaskFocusedPanel(props.task.id, 'ai-terminal');
+    setTaskFocusedPanel(taskId, 'ai-terminal');
   }
 
   return (
     <div
       data-ai-terminal-pane="true"
       data-ai-terminal-selected={props.isSelected ? 'true' : 'false'}
-      data-terminal-agent-pane-id={props.agent.id}
+      data-terminal-agent-pane-id={agentId}
       style={{
         position: 'relative',
         display: 'flex',
@@ -302,16 +304,18 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
         </div>
       </Show>
 
-      <Show when={`${props.agent.id}:${getAgentTerminalSessionVersion(props.agent)}`} keyed>
+      <Show when={`${agentId}:${getAgentTerminalSessionVersion(props.agent)}`} keyed>
         {(() => {
-          const currentAgentId = props.agent.id;
-          const currentGeneration = props.agent.generation;
-          const currentAgentDef = props.agent.def;
-          const currentAgentResumed = props.agent.resumed;
+          const sessionAgentId = agentId;
+          const sessionGeneration = props.agent.generation;
+          const sessionAgentDef = props.agent.def;
+          const sessionAgentResumed = props.agent.resumed;
+          const sessionTask = props.task;
+          const sessionPanelId = panelId;
           let mountedFocusFn: (() => void) | undefined;
 
           onCleanup(() => {
-            props.onDispose(currentAgentId, mountedFocusFn);
+            props.onDispose(sessionAgentId, mountedFocusFn);
             if (currentFocusFn === mountedFocusFn) {
               currentFocusFn = undefined;
             }
@@ -319,45 +323,43 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
 
           return (
             <TerminalView
-              taskId={props.task.id}
-              agentId={currentAgentId}
+              taskId={taskId}
+              agentId={sessionAgentId}
               isCommandTarget={props.isSelected}
               isFocused={
-                props.isSelected &&
-                props.isActive() &&
-                isTaskPanelFocused(props.task.id, 'ai-terminal')
+                props.isSelected && props.isActive() && isTaskPanelFocused(taskId, 'ai-terminal')
               }
               manageTaskSwitchWindowLifecycle={false}
-              args={buildAgentSpawnArgs(currentAgentDef, {
-                resumed: currentAgentResumed,
-                skipPermissions: props.task.skipPermissions === true,
+              args={buildAgentSpawnArgs(sessionAgentDef, {
+                resumed: sessionAgentResumed,
+                skipPermissions: sessionTask.skipPermissions === true,
               })}
-              command={getAgentSpawnCommand(currentAgentDef, store.hydraCommand)}
-              adapter={currentAgentDef.adapter}
-              baseBranch={props.task.baseBranch}
-              cwd={props.task.worktreePath}
-              projectMode={props.task.projectMode}
+              command={getAgentSpawnCommand(sessionAgentDef, store.hydraCommand)}
+              adapter={sessionAgentDef.adapter}
+              baseBranch={sessionTask.baseBranch}
+              cwd={sessionTask.worktreePath}
+              projectMode={sessionTask.projectMode}
               runnerProfile={props.runnerProfile}
-              env={getAgentSpawnEnvironment(currentAgentDef, store.hydraStartupMode)}
-              resumeOnStart={shouldResumeAgentOnSpawn(currentAgentDef, currentAgentResumed)}
-              onExit={createAgentExitHandler(currentAgentId, currentGeneration)}
+              env={getAgentSpawnEnvironment(sessionAgentDef, store.hydraStartupMode)}
+              resumeOnStart={shouldResumeAgentOnSpawn(sessionAgentDef, sessionAgentResumed)}
+              onExit={createAgentExitHandler(sessionAgentId, sessionGeneration)}
               onData={(data) =>
-                markAgentOutput(currentAgentId, data, props.task.id, 'full', currentGeneration)
+                markAgentOutput(sessionAgentId, data, taskId, 'full', sessionGeneration)
               }
               onPromptDetected={(text) => {
                 if (props.isSelected) {
-                  setLastPrompt(props.task.id, text);
+                  setLastPrompt(taskId, text);
                 }
               }}
               onReady={(focusFn) => {
                 if (mountedFocusFn !== undefined && mountedFocusFn !== focusFn) {
-                  props.onDispose(currentAgentId, mountedFocusFn);
+                  props.onDispose(sessionAgentId, mountedFocusFn);
                 }
                 mountedFocusFn = focusFn;
                 currentFocusFn = focusFn;
-                props.onReady(currentAgentId, focusFn);
+                props.onReady(sessionAgentId, focusFn);
               }}
-              fontSize={Math.round(store.terminalFontSize * getFontScale(panelId()))}
+              fontSize={Math.round(store.terminalFontSize * getFontScale(sessionPanelId))}
             />
           );
         })()}

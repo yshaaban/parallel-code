@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render } from '@solidjs/testing-library';
-import { createSignal } from 'solid-js';
+import { Show, createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   beginBrowserColdBootstrap,
@@ -376,6 +376,36 @@ describe('TerminalView', () => {
     result.unmount();
 
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read disposed task identity during terminal session cleanup callbacks', () => {
+    const [task, setTask] = createSignal<{ id: string } | null>({ id: 'task-1' });
+    startTerminalSessionMock.mockImplementation((options: StartTerminalSessionOptions) =>
+      createMockTerminalSession({
+        cleanup: () => {
+          options.onPaintReadyChange?.(false);
+          options.onRestoreBlockedChange?.(false);
+        },
+      }),
+    );
+
+    render(() => (
+      <Show when={task()}>
+        {(currentTask) => (
+          <TerminalView
+            taskId={currentTask().id}
+            agentId="agent-1"
+            command="claude"
+            args={[]}
+            cwd="/tmp/project"
+            isFocused
+          />
+        )}
+      </Show>
+    ));
+
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+    expect(() => setTask(null)).not.toThrow();
   });
 
   it('mounts the live xterm surface in an inset fit container', () => {

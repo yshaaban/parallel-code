@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
+import { createEffect, onCleanup, onMount, untrack, type JSX } from 'solid-js';
 import {
   store,
   closeTerminal,
@@ -27,6 +27,8 @@ interface TerminalPanelProps {
 }
 
 export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
+  const terminalId = untrack(() => props.terminal.id);
+  const agentId = untrack(() => props.terminal.agentId);
   let panelRef!: HTMLDivElement;
   let titleEditHandle: EditableTextHandle | undefined;
   let cleanupTitleDrag: DragSessionCleanup | undefined;
@@ -39,12 +41,11 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
 
   // Focus registration
   onMount(() => {
-    const id = props.terminal.id;
-    registerFocusFn(`${id}:title`, () => titleEditHandle?.startEdit());
+    registerFocusFn(`${terminalId}:title`, () => titleEditHandle?.startEdit());
 
     onCleanup(() => {
-      unregisterFocusFn(`${id}:title`);
-      unregisterFocusFn(`${id}:terminal`);
+      unregisterFocusFn(`${terminalId}:title`);
+      unregisterFocusFn(`${terminalId}:terminal`);
     });
   });
 
@@ -53,20 +54,20 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
   // Respond to focus panel changes
   createEffect(() => {
     if (!props.isActive) return;
-    const panel = getTaskFocusedPanel(props.terminal.id);
-    triggerFocus(`${props.terminal.id}:${panel}`);
+    const panel = getTaskFocusedPanel(terminalId);
+    triggerFocus(`${terminalId}:${panel}`);
   });
 
   function handleTitleMouseDown(event: MouseEvent): void {
     clearTitleDrag();
     cleanupTitleDrag = handleDragReorder(event, {
-      itemId: props.terminal.id,
+      itemId: terminalId,
       getTaskOrder: () => store.taskOrder,
       onSessionEnd: () => {
         cleanupTitleDrag = undefined;
       },
       onReorder: reorderTask,
-      onTap: () => setActiveTask(props.terminal.id),
+      onTap: () => setActiveTask(terminalId),
     });
   }
 
@@ -84,7 +85,7 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
         overflow: 'clip',
         position: 'relative',
       }}
-      onClick={() => setActiveTask(props.terminal.id)}
+      onClick={() => setActiveTask(terminalId)}
     >
       {/* Title bar */}
       <div
@@ -126,7 +127,7 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
           </span>
           <EditableText
             value={props.terminal.name}
-            onCommit={(v) => updateTerminalName(props.terminal.id, v)}
+            onCommit={(v) => updateTerminalName(terminalId, v)}
             class="editable-text"
             onHandle={(h) => (titleEditHandle = h)}
           />
@@ -138,34 +139,32 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
                 <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
               </svg>
             }
-            onClick={() => closeTerminal(props.terminal.id)}
+            onClick={() => closeTerminal(terminalId)}
             title="Close terminal"
           />
         </div>
       </div>
 
       {/* Terminal */}
-      <ScalablePanel panelId={`${props.terminal.id}:terminal`}>
+      <ScalablePanel panelId={`${terminalId}:terminal`}>
         <div
           class="focusable-panel"
           style={{
             height: '100%',
             position: 'relative',
           }}
-          onClick={() => setTaskFocusedPanel(props.terminal.id, 'terminal')}
+          onClick={() => setTaskFocusedPanel(terminalId, 'terminal')}
         >
           <TerminalView
-            taskId={props.terminal.id}
-            agentId={props.terminal.agentId}
+            taskId={terminalId}
+            agentId={agentId}
             isShell
-            isFocused={props.isActive && isTaskPanelFocused(props.terminal.id, 'terminal')}
+            isFocused={props.isActive && isTaskPanelFocused(terminalId, 'terminal')}
             command=""
             args={['-l']}
             cwd=""
-            onReady={(focusFn) => registerFocusFn(`${props.terminal.id}:terminal`, focusFn)}
-            fontSize={Math.round(
-              store.terminalFontSize * getFontScale(`${props.terminal.id}:terminal`),
-            )}
+            onReady={(focusFn) => registerFocusFn(`${terminalId}:terminal`, focusFn)}
+            fontSize={Math.round(store.terminalFontSize * getFontScale(`${terminalId}:terminal`))}
           />
         </div>
       </ScalablePanel>
