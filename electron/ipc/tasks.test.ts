@@ -37,7 +37,7 @@ vi.mock('./pty.js', () => ({
   notifyAgentListChanged: notifyAgentListChangedMock,
 }));
 
-import { createNonGitTask, createTask, importExistingWorktreeTask } from './tasks.js';
+import { createNonGitTask, createTask, deleteTask, importExistingWorktreeTask } from './tasks.js';
 
 function createBranchExistsError(
   branchName: string,
@@ -131,6 +131,23 @@ describe('createNonGitTask', () => {
       project_mode: 'non-git',
       worktree_path: '/tmp/folder',
     });
+  });
+});
+
+describe('deleteTask', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('notifies agent-list subscribers even when worktree cleanup fails', async () => {
+    removeWorktreeMock.mockRejectedValue(new Error('remove failed'));
+
+    await expect(deleteTask(['agent-1'], 'task/delete', true, '/tmp/project')).rejects.toThrow(
+      'remove failed',
+    );
+
+    expect(killAgentMock).toHaveBeenCalledWith('agent-1');
+    expect(notifyAgentListChangedMock).toHaveBeenCalledTimes(1);
   });
 });
 

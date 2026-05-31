@@ -6,6 +6,7 @@ import {
   isTaskCloseInProgress,
   isTaskRemoving,
 } from '../domain/task-closing';
+import type { DeleteTaskCleanupWarning, DeleteTaskResult } from '../domain/task-cleanup';
 import type { AgentDef } from '../ipc/types';
 import { invoke } from '../lib/ipc';
 import { createRandomId } from '../lib/random-id';
@@ -18,6 +19,8 @@ import {
   getProjectPath,
   isProjectMissing,
 } from '../store/projects';
+import { showNotification } from '../store/notification';
+import { saveCurrentRuntimeState } from '../store/persistence';
 import { buildTaskProjectModeFields, getProjectMode, isNonGitProject } from '../store/project-mode';
 import { setStore, store, updateWindowTitle } from '../store/state';
 import {
@@ -30,20 +33,14 @@ import { getSelectedTaskAgentId } from '../store/task-agent-selection';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
 import type { Agent, ProjectMode, Task, TaskGitIsolationMode } from '../store/types';
-import { clearTaskConvergence } from './task-convergence';
+import { clearAgentSupervisionSnapshots } from './task-attention';
+import { clearTaskCloseState, markTaskCloseError, markTaskClosing } from './task-close-state';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
-import {
-  clearTaskCloseState,
-  markTaskCloseError,
-  markTaskClosing,
-  markTaskRemoving,
-} from './task-close-state';
+import { clearTaskConvergence } from './task-convergence';
 import { createPushOutputBinding } from './task-output-channels';
 import { clearTaskReview } from './task-review-state';
 import { clearTaskReviewSignals } from './task-review-signals';
-import { clearAgentSupervisionSnapshots } from './task-attention';
 
-const REMOVE_ANIMATION_MS = 300;
 const collapsingTaskIds = new Set<string>();
 
 interface TaskRuntimeCleanupRequest {
@@ -175,33 +172,74 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   clearTaskReview(taskId);
   clearTaskReviewSignals(taskId);
 
-  markTaskRemoving(taskId);
+  setStore(
+    produce((state) => {
+      let neighbor: string | null = null;
+      if (state.activeTaskId === taskId) {
+        const index = state.taskOrder.indexOf(taskId);
+        const filteredOrder = state.taskOrder.filter((id) => id !== taskId);
+        const neighborIndex = index <= 0 ? 0 : index - 1;
+        neighbor = filteredOrder[neighborIndex] ?? null;
+      }
 
-  setTimeout(() => {
-    setStore(
-      produce((state) => {
-        let neighbor: string | null = null;
-        if (state.activeTaskId === taskId) {
-          const index = state.taskOrder.indexOf(taskId);
-          const filteredOrder = state.taskOrder.filter((id) => id !== taskId);
-          const neighborIndex = index <= 0 ? 0 : index - 1;
-          neighbor = filteredOrder[neighborIndex] ?? null;
-        }
+      removeTaskStoreState(state, taskId);
 
-        removeTaskStoreState(state, taskId);
+      if (state.activeTaskId === taskId) {
+        state.activeTaskId = neighbor;
+        const neighborTask = neighbor ? state.tasks[neighbor] : null;
+        state.activeAgentId = getTaskActiveAgentId(neighborTask);
+      }
 
-        if (state.activeTaskId === taskId) {
-          state.activeTaskId = neighbor;
-          const neighborTask = neighbor ? state.tasks[neighbor] : null;
-          state.activeAgentId = getTaskActiveAgentId(neighborTask);
-        }
+      removeAgentScopedStoreState(state, agentIds);
+    }),
+  );
 
-        removeAgentScopedStoreState(state, agentIds);
-      }),
-    );
+  syncWindowTitleToActiveSelection();
+}
 
-    syncWindowTitleToActiveSelection();
-  }, REMOVE_ANIMATION_MS);
+async function persistTaskRemovalBestEffort(taskId: string): Promise<void> {
+  try {
+    await saveCurrentRuntimeState();
+  } catch (error) {
+    console.warn(`Failed to persist removal for task ${taskId}:`, error);
+  }
+}
+
+function getDeleteTaskCleanupWarnings(
+  result: DeleteTaskResult | undefined,
+): DeleteTaskCleanupWarning[] {
+  if (!result || !Array.isArray(result.cleanupWarnings)) {
+    return [];
+  }
+
+  return result.cleanupWarnings;
+}
+
+function getTaskDeletionCleanupWarningMessage(warnings: DeleteTaskCleanupWarning[]): string {
+  const hasWorktreeWarning = warnings.some((warning) => warning.kind === 'worktree');
+  const hasContainerWarning = warnings.some((warning) => warning.kind === 'containers');
+
+  if (hasWorktreeWarning && hasContainerWarning) {
+    return 'Task closed, but worktree and container cleanup did not finish. Check server logs before reusing this task branch.';
+  }
+
+  if (hasWorktreeWarning) {
+    return 'Task closed, but worktree cleanup did not finish. Check server logs before reusing this task branch.';
+  }
+
+  return 'Task closed, but container cleanup did not finish. Check server logs before reusing this task.';
+}
+
+function reportDeleteTaskCleanupWarnings(
+  taskId: string,
+  warnings: DeleteTaskCleanupWarning[],
+): void {
+  if (warnings.length === 0) {
+    return;
+  }
+
+  console.warn(`Task ${taskId} closed with cleanup warnings:`, warnings);
+  showNotification(getTaskDeletionCleanupWarningMessage(warnings));
 }
 
 export interface CreateTaskOptions {
@@ -421,7 +459,7 @@ export async function closeTask(taskId: string): Promise<void> {
 
       const runtimeAgentIds = getRuntimeAgentIds(task);
       if (isManagedWorktreeTask(task)) {
-        await invoke(IPC.DeleteTask, {
+        const deleteResult = await invoke(IPC.DeleteTask, {
           taskId,
           agentIds: runtimeAgentIds,
           branchName,
@@ -430,6 +468,7 @@ export async function closeTask(taskId: string): Promise<void> {
           projectRoot,
           worktreePath: task.worktreePath,
         });
+        reportDeleteTaskCleanupWarnings(taskId, getDeleteTaskCleanupWarnings(deleteResult));
       } else {
         await cleanupTaskRuntimeForTask(task, {
           bestEffort: false,
@@ -439,6 +478,7 @@ export async function closeTask(taskId: string): Promise<void> {
       }
 
       removeTaskFromStore(taskId, runtimeAgentIds);
+      await persistTaskRemovalBestEffort(taskId);
     } catch (error) {
       console.error('Failed to close task:', error);
       markTaskCloseError(taskId, String(error));
@@ -501,6 +541,7 @@ export async function mergeTask(
         removeTaskState: true,
       });
       removeTaskFromStore(taskId, runtimeAgentIds);
+      await persistTaskRemovalBestEffort(taskId);
     }
   });
 

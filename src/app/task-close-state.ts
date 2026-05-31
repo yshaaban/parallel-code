@@ -9,10 +9,6 @@ export function markTaskClosing(taskId: string): void {
   setTaskCloseState(taskId, { kind: 'closing' });
 }
 
-export function markTaskRemoving(taskId: string): void {
-  setTaskCloseState(taskId, { kind: 'removing' });
-}
-
 export function markTaskCloseError(taskId: string, message: string): void {
   setTaskCloseState(taskId, { kind: 'error', message });
 }

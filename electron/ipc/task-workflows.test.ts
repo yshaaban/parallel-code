@@ -917,10 +917,10 @@ describe('task workflows', () => {
     warnSpy.mockRestore();
   });
 
-  it('stops task watchers only after deletion succeeds', async () => {
+  it('stops task watchers after deletion cleanup is attempted', async () => {
     deleteTaskMock.mockResolvedValue(undefined);
 
-    await deleteTaskWorkflow({
+    const result = await deleteTaskWorkflow({
       taskId: 'task-3',
       agentIds: ['agent-1'],
       branchName: 'task/delete',
@@ -929,6 +929,7 @@ describe('task workflows', () => {
       worktreePath: '/tmp/project/.worktrees/task-3',
     });
 
+    expect(result.cleanupWarnings).toEqual([]);
     expect(destroyManagedTaskContainersByLabelsMock).toHaveBeenCalledWith({
       projectPath: '/tmp/project',
       taskId: 'task-3',
@@ -958,22 +959,75 @@ describe('task workflows', () => {
     );
   });
 
-  it('keeps task watchers running when deletion fails', async () => {
+  it('still removes backend task state when task worktree cleanup fails', async () => {
     deleteTaskMock.mockRejectedValue(new Error('delete failed'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(
-      deleteTaskWorkflow({
+    try {
+      const result = await deleteTaskWorkflow({
         taskId: 'task-3',
         agentIds: ['agent-1'],
         branchName: 'task/delete',
         deleteBranch: true,
         projectRoot: '/tmp/project',
         worktreePath: '/tmp/project/.worktrees/task-3',
-      }),
-    ).rejects.toThrow('delete failed');
+      });
 
-    expect(stopPlanWatcherMock).not.toHaveBeenCalled();
-    expect(stopTaskGitStatusWatcherMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to clean task worktree while deleting task:',
+        expect.any(Error),
+      );
+      expect(result.cleanupWarnings).toEqual([
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: delete failed',
+        },
+      ]);
+      expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
+      expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskConvergenceMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskReviewMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskReviewSignalsMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
+      expect(removeTaskContainerPreviewTargetsMock).toHaveBeenCalledWith('task-3');
+      expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still removes backend task state when task container cleanup fails', async () => {
+    destroyManagedTaskContainersByLabelsMock.mockRejectedValue(new Error('container failed'));
+    deleteTaskMock.mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await deleteTaskWorkflow({
+        taskId: 'task-3',
+        agentIds: ['agent-1'],
+        branchName: 'task/delete',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        worktreePath: '/tmp/project/.worktrees/task-3',
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to clean task containers while deleting task:',
+        expect.any(Error),
+      );
+      expect(result.cleanupWarnings).toEqual([
+        {
+          kind: 'containers',
+          message: 'Failed to clean task containers while deleting task: container failed',
+        },
+      ]);
+      expect(deleteTaskMock).toHaveBeenCalledWith(['agent-1'], 'task/delete', true, '/tmp/project');
+      expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
+      expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('stops task watchers without removing task snapshots when runtime state is preserved', () => {

@@ -40,6 +40,7 @@ import type {
   TaskContainerLogsResult,
 } from './task-containers.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
+import type { DeleteTaskResult } from './task-cleanup.js';
 import type { TaskReviewSignalsSnapshot } from './task-review-signals.js';
 import type { TaskStepsSnapshot } from './task-steps.js';
 import type { TaskNotificationRequest } from './task-notification.js';
@@ -627,7 +628,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetBrowserReconnectSnapshot]: BrowserReconnectSnapshot;
 
   [IPC.CreateTask]: CreateTaskResult;
-  [IPC.DeleteTask]: undefined;
+  [IPC.DeleteTask]: DeleteTaskResult;
   [IPC.CleanupTaskRuntime]: undefined;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
     acquired: boolean;

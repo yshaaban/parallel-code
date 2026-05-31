@@ -1,11 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { setStore, store } from './core';
 import { closeTerminal } from './terminals';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
-const { invokeMock } = vi.hoisted(() => ({
+const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
+  saveCurrentRuntimeStateMock: vi.fn(),
 }));
 
 vi.mock('../lib/ipc', async () => {
@@ -16,12 +17,16 @@ vi.mock('../lib/ipc', async () => {
   };
 });
 
+vi.mock('./persistence-save', () => ({
+  saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
+}));
+
 describe('terminal cleanup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
     resetStoreForTest();
     invokeMock.mockResolvedValue(undefined);
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
 
     setStore('taskOrder', ['terminal-1']);
     setStore('activeTaskId', 'terminal-1');
@@ -63,14 +68,8 @@ describe('terminal cleanup', () => {
     setStore('agentSupervision', { 'terminal-agent-1': {} as never });
   });
 
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
   it('removes terminal-side agent state through the shared cleanup helpers', async () => {
     await closeTerminal('terminal-1');
-    await vi.advanceTimersByTimeAsync(300);
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.KillAgent, { agentId: 'terminal-agent-1' });
     expect(store.terminals['terminal-1']).toBeUndefined();
@@ -81,5 +80,6 @@ describe('terminal cleanup', () => {
     expect(store.fontScales['terminal-1']).toBeUndefined();
     expect(store.fontScales['terminal-1:terminal']).toBeUndefined();
     expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
   });
 });

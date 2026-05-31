@@ -19,12 +19,16 @@ const {
   runtimeClientIdMock,
   runtimeLeaseOwnerIdMock,
   saveBrowserWorkspaceStateMock,
+  saveCurrentRuntimeStateMock,
+  showNotificationMock,
 } = vi.hoisted(() => ({
   confirmMock: vi.fn(),
   invokeMock: vi.fn(),
   runtimeClientIdMock: vi.fn(() => 'client-self'),
   runtimeLeaseOwnerIdMock: vi.fn(() => 'runtime-owner-self'),
   saveBrowserWorkspaceStateMock: vi.fn(() => Promise.resolve()),
+  saveCurrentRuntimeStateMock: vi.fn(() => Promise.resolve()),
+  showNotificationMock: vi.fn(),
 }));
 
 vi.mock('../lib/dialog', () => ({
@@ -50,8 +54,13 @@ vi.mock('../store/persistence', async () => {
   return {
     ...actual,
     saveBrowserWorkspaceState: saveBrowserWorkspaceStateMock,
+    saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
   };
 });
+
+vi.mock('../store/notification', () => ({
+  showNotification: showNotificationMock,
+}));
 
 import {
   collapseTask,
@@ -184,6 +193,9 @@ describe('task workflow control leases', () => {
     runtimeLeaseOwnerIdMock.mockReturnValue('runtime-owner-self');
     saveBrowserWorkspaceStateMock.mockReset();
     saveBrowserWorkspaceStateMock.mockResolvedValue(undefined);
+    saveCurrentRuntimeStateMock.mockReset();
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
+    showNotificationMock.mockReset();
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -195,6 +207,7 @@ describe('task workflow control leases', () => {
         case IPC.KillAgent:
           return Promise.resolve(undefined);
         case IPC.DeleteTask:
+          return Promise.resolve({ cleanupWarnings: [] });
         case IPC.CleanupTaskRuntime:
           return Promise.resolve(undefined);
         case IPC.MergeTask:
@@ -361,6 +374,59 @@ describe('task workflow control leases', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
     });
+  });
+
+  it('removes and persists a task immediately after backend close succeeds', async () => {
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']).toBeUndefined();
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces backend cleanup warnings after task deletion completes', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.DeleteTask:
+          return Promise.resolve({
+            cleanupWarnings: [
+              {
+                kind: 'worktree',
+                message: 'Failed to clean task worktree while deleting task: remove failed',
+              },
+            ],
+          });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    try {
+      await closeTask('task-1');
+
+      expect(store.tasks['task-1']).toBeUndefined();
+      expect(showNotificationMock).toHaveBeenCalledWith(
+        'Task closed, but worktree cleanup did not finish. Check server logs before reusing this task branch.',
+      );
+      expect(warnSpy).toHaveBeenCalledWith('Task task-1 closed with cleanup warnings:', [
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('uses runtime cleanup instead of delete-task when closing a direct-mode task', async () => {
@@ -547,7 +613,7 @@ describe('task workflow control leases', () => {
           deleteCalls += 1;
           return deleteCalls === 1
             ? Promise.reject(new Error('missing worktree'))
-            : Promise.resolve(undefined);
+            : Promise.resolve({ cleanupWarnings: [] });
         case IPC.RenewTaskCommandLease:
           return Promise.resolve(createRenewLeaseResult(args));
         default:
@@ -585,7 +651,7 @@ describe('task workflow control leases', () => {
           deleteCalls += 1;
           return deleteCalls === 1
             ? Promise.reject(new Error('Task is controlled by another client'))
-            : Promise.resolve(undefined);
+            : Promise.resolve({ cleanupWarnings: [] });
         case IPC.RenewTaskCommandLease:
           return Promise.resolve(createRenewLeaseResult(args));
         default:
@@ -829,7 +895,7 @@ describe('task workflow control leases', () => {
             ? Promise.reject(new Error('Task is controlled by another client'))
             : Promise.resolve(undefined);
         case IPC.DeleteTask:
-          return Promise.resolve(undefined);
+          return Promise.resolve({ cleanupWarnings: [] });
         case IPC.MergeTask:
           return Promise.resolve({
             lines_added: 12,
@@ -1061,7 +1127,7 @@ describe('task workflow control leases', () => {
   });
 
   it('ignores duplicate close requests while task removal is still in flight', async () => {
-    const deleteDeferred = createDeferredPromise<undefined>();
+    const deleteDeferred = createDeferredPromise<{ cleanupWarnings: [] }>();
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -1092,7 +1158,7 @@ describe('task workflow control leases', () => {
       );
     });
 
-    deleteDeferred.resolve(undefined);
+    deleteDeferred.resolve({ cleanupWarnings: [] });
     await Promise.all([firstClose, secondClose]);
     await vi.advanceTimersByTimeAsync(300);
 

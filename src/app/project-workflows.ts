@@ -1,7 +1,8 @@
 import { IPC } from '../../electron/ipc/channels';
+import { isTaskRemoving } from '../domain/task-closing';
 import { assertNever } from '../lib/assert-never';
-import { isGitSshUrl } from '../lib/git-ssh-url';
 import { confirm, openDialog } from '../lib/dialog';
+import { isGitSshUrl } from '../lib/git-ssh-url';
 import { invoke } from '../lib/ipc';
 import {
   addProject,
@@ -132,6 +133,14 @@ function addProjectFromPath(projectPath: string, projectMode: ProjectMode = 'git
   }
 
   return addProject(projectName, projectPath, { projectMode });
+}
+
+async function persistProjectRemovalBestEffort(projectId: string): Promise<void> {
+  try {
+    await saveCurrentRuntimeState();
+  } catch (error) {
+    console.warn(`Failed to persist project removal for ${projectId}:`, error);
+  }
 }
 
 async function showInvalidProjectRootDialog(
@@ -325,12 +334,14 @@ export async function removeProjectWithTasks(projectId: string): Promise<void> {
     await closeTask(taskId);
   }
 
-  const hasRemainingTasks = projectTaskIds.some(
-    (taskId) => store.tasks[taskId]?.projectId === projectId,
-  );
+  const hasRemainingTasks = projectTaskIds.some((taskId) => {
+    const task = store.tasks[taskId];
+    return task?.projectId === projectId && !isTaskRemoving(task);
+  });
   if (hasRemainingTasks) {
     return;
   }
 
   removeProject(projectId);
+  await persistProjectRemovalBestEffort(projectId);
 }

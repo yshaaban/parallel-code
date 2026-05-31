@@ -49,6 +49,10 @@ import type {
   AgentRunnerProfileConfig,
   AgentRuntimeIdentity,
 } from '../../src/domain/agent-runners.js';
+import type {
+  DeleteTaskCleanupWarning,
+  DeleteTaskCleanupWarningKind,
+} from '../../src/domain/task-cleanup.js';
 import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js';
 
 export interface TaskWorkflowContext {
@@ -107,6 +111,10 @@ export interface CleanupTaskRuntimeWorkflowRequest {
 
 export interface CleanupTaskRuntimeWorkflowResult {
   releasedTaskCommandController: TaskCommandControllerSnapshot | null;
+}
+
+export interface DeleteTaskWorkflowResult extends CleanupTaskRuntimeWorkflowResult {
+  cleanupWarnings: DeleteTaskCleanupWarning[];
 }
 
 interface ResolvedSpawnLaunch {
@@ -219,11 +227,32 @@ function logWorkflowWarning(message: string, error: unknown): void {
   console.warn(message, error);
 }
 
+function getWorkflowErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function runWorkflowStep(step: () => void, warningMessage: string): void {
   try {
     step();
   } catch (error) {
     logWorkflowWarning(warningMessage, error);
+  }
+}
+
+async function runDeleteCleanupStep(
+  kind: DeleteTaskCleanupWarningKind,
+  step: () => Promise<void>,
+  warningMessage: string,
+): Promise<DeleteTaskCleanupWarning | null> {
+  try {
+    await step();
+    return null;
+  } catch (error) {
+    logWorkflowWarning(warningMessage, error);
+    return {
+      kind,
+      message: `${warningMessage} ${getWorkflowErrorMessage(error)}`,
+    };
   }
 }
 
@@ -598,18 +627,40 @@ export async function createTaskWorkflow(
 
 export async function deleteTaskWorkflow(
   request: DeleteTaskWorkflowRequest,
-): Promise<CleanupTaskRuntimeWorkflowResult> {
-  await destroyManagedTaskContainersByLabels({
-    projectPath: request.projectRoot,
-    taskId: request.taskId,
-    worktreePath: request.worktreePath,
-  });
-  await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
+): Promise<DeleteTaskWorkflowResult> {
+  const cleanupWarnings: DeleteTaskCleanupWarning[] = [];
+  const containerCleanupWarning = await runDeleteCleanupStep(
+    'containers',
+    () =>
+      destroyManagedTaskContainersByLabels({
+        projectPath: request.projectRoot,
+        taskId: request.taskId,
+        worktreePath: request.worktreePath,
+      }),
+    'Failed to clean task containers while deleting task:',
+  );
+  if (containerCleanupWarning !== null) {
+    cleanupWarnings.push(containerCleanupWarning);
+  }
 
-  return cleanupTaskRuntimeWorkflow({
+  const worktreeCleanupWarning = await runDeleteCleanupStep(
+    'worktree',
+    () =>
+      deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot),
+    'Failed to clean task worktree while deleting task:',
+  );
+  if (worktreeCleanupWarning !== null) {
+    cleanupWarnings.push(worktreeCleanupWarning);
+  }
+
+  const cleanupResult = cleanupTaskRuntimeWorkflow({
     agentIds: request.agentIds,
     removeTaskState: true,
     taskId: request.taskId,
     worktreePath: request.worktreePath,
   });
+  return {
+    ...cleanupResult,
+    cleanupWarnings,
+  };
 }

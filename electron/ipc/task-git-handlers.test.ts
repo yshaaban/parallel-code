@@ -90,6 +90,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       releasedTaskCommandController: null,
     });
     deleteTaskWorkflowMock.mockResolvedValue({
+      cleanupWarnings: [],
       releasedTaskCommandController: null,
     });
     mergeTaskMock.mockResolvedValue({
@@ -414,6 +415,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       version: 2,
     };
     deleteTaskWorkflowMock.mockResolvedValue({
+      cleanupWarnings: [],
       releasedTaskCommandController: releasedController,
     });
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
@@ -441,6 +443,42 @@ describe('createTaskAndGitIpcHandlers', () => {
       IPC.TaskCommandControllerChanged,
       releasedController,
     );
+  });
+
+  it('returns cleanup warnings from task deletion workflow', async () => {
+    deleteTaskWorkflowMock.mockResolvedValue({
+      cleanupWarnings: [
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+      ],
+      releasedTaskCommandController: null,
+    });
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    const result = await handlers[IPC.DeleteTask]?.({
+      agentIds: [],
+      branchName: 'task/auth',
+      controllerId: 'client-1',
+      deleteBranch: true,
+      projectRoot: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-auth',
+    });
+
+    expect(result).toEqual({
+      cleanupWarnings: [
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+      ],
+    });
   });
 
   it('rejects task deletion when another client keeps the task lease', async () => {

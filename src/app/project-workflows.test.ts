@@ -3,18 +3,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   addProjectMock,
   clearMissingProjectMock,
+  closeTaskMock,
   confirmMock,
   invokeMock,
   openDialogMock,
+  removeProjectMock,
   saveCurrentRuntimeStateMock,
   setProjectPathMock,
   updateProjectMock,
 } = vi.hoisted(() => ({
   addProjectMock: vi.fn(),
   clearMissingProjectMock: vi.fn(),
+  closeTaskMock: vi.fn(),
   confirmMock: vi.fn(),
   invokeMock: vi.fn(),
   openDialogMock: vi.fn(),
+  removeProjectMock: vi.fn(),
   saveCurrentRuntimeStateMock: vi.fn(),
   setProjectPathMock: vi.fn(),
   updateProjectMock: vi.fn(),
@@ -32,7 +36,7 @@ vi.mock('../lib/ipc', () => ({
 vi.mock('../store/projects', () => ({
   addProject: addProjectMock,
   clearMissingProject: clearMissingProjectMock,
-  removeProject: vi.fn(),
+  removeProject: removeProjectMock,
   setProjectPath: setProjectPathMock,
   updateProject: updateProjectMock,
 }));
@@ -42,19 +46,36 @@ vi.mock('../store/persistence-save', () => ({
 }));
 
 vi.mock('./task-workflows', () => ({
-  closeTask: vi.fn(),
+  closeTask: closeTaskMock,
 }));
 
 import { IPC } from '../../electron/ipc/channels';
 import { setStore } from '../store/core';
-import { createTestProject, resetStoreForTest } from '../test/store-test-helpers';
-import { addDiscoveredProject, pickAndAddProject, relinkProject } from './project-workflows';
+import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
+import {
+  addDiscoveredProject,
+  pickAndAddProject,
+  relinkProject,
+  removeProjectWithTasks,
+} from './project-workflows';
+
+function seedProjectWithTask(): void {
+  setStore('projects', [createTestProject({ id: 'project-1' })]);
+  setStore('tasks', {
+    'task-1': createTestTask({
+      id: 'task-1',
+      projectId: 'project-1',
+    }),
+  });
+  setStore('taskOrder', ['task-1']);
+}
 
 describe('project workflows', () => {
   beforeEach(() => {
     resetStoreForTest();
     vi.clearAllMocks();
     addProjectMock.mockReturnValue('project-1');
+    closeTaskMock.mockResolvedValue(undefined);
     saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
   });
 
@@ -270,5 +291,31 @@ describe('project workflows', () => {
         title: 'Add non-git project',
       }),
     );
+  });
+
+  it('removes a project after its tasks have entered the removing state', async () => {
+    seedProjectWithTask();
+    closeTaskMock.mockImplementation(async (taskId: string) => {
+      setStore('tasks', taskId, 'closeState', { kind: 'removing' });
+    });
+
+    await removeProjectWithTasks('project-1');
+
+    expect(closeTaskMock).toHaveBeenCalledWith('task-1');
+    expect(removeProjectMock).toHaveBeenCalledWith('project-1');
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a project when one of its tasks failed to close', async () => {
+    seedProjectWithTask();
+    closeTaskMock.mockImplementation(async (taskId: string) => {
+      setStore('tasks', taskId, 'closeState', { kind: 'error', message: 'Delete failed' });
+    });
+
+    await removeProjectWithTasks('project-1');
+
+    expect(closeTaskMock).toHaveBeenCalledWith('task-1');
+    expect(removeProjectMock).not.toHaveBeenCalled();
+    expect(saveCurrentRuntimeStateMock).not.toHaveBeenCalled();
   });
 });

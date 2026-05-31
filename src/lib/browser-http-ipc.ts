@@ -66,7 +66,6 @@ type BrowserInvokeResponseEnvelope<TChannel extends RendererInvokeChannel> =
 const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
   [IPC.CleanupTaskRuntime]: true,
   [IPC.CommitAll]: true,
-  [IPC.DeleteTask]: true,
   [IPC.DetachAgentOutput]: true,
   [IPC.DiscardUncommitted]: true,
   [IPC.KillAgent]: true,

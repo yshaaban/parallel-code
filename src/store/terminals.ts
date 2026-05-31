@@ -1,20 +1,19 @@
 import { produce } from 'solid-js/store';
-import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { isTerminalCloseInProgress } from '../domain/task-closing';
-import { createRandomId } from '../lib/random-id';
-import { store, setStore, updateWindowTitle } from './core';
-import { clearAgentActivity } from './taskStatus';
-import { triggerFocus, getTaskFocusedPanel } from './focus';
-import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
-import { getSelectedTaskAgentId } from './task-agent-selection';
+import { invoke } from '../lib/ipc';
 import { warn as logWarn } from '../lib/log';
+import { createRandomId } from '../lib/random-id';
+import { setStore, store, updateWindowTitle } from './core';
+import { getTaskFocusedPanel, triggerFocus } from './focus';
+import { saveCurrentRuntimeState } from './persistence-save';
+import { getSelectedTaskAgentId } from './task-agent-selection';
+import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
+import { clearAgentActivity } from './taskStatus';
 import type { Task, Terminal } from './types';
 
 let terminalCounter = 0;
 let lastCreateTime = 0;
-
-const REMOVE_ANIMATION_MS = 300;
 
 function getTaskActiveAgentId(
   task: Pick<Task, 'agentIds' | 'selectedAgentId'> | null | undefined,
@@ -48,6 +47,14 @@ function focusPanel(panelId: string): void {
 
 function getPanelTitle(panelId: string): string | undefined {
   return store.tasks[panelId]?.name ?? store.terminals[panelId]?.name;
+}
+
+async function persistTerminalRemovalBestEffort(terminalId: string): Promise<void> {
+  try {
+    await saveCurrentRuntimeState();
+  } catch (error) {
+    logWarn('terminals.close', 'Failed to persist terminal removal', { terminalId, error });
+  }
 }
 
 export function createTerminal(): void {
@@ -85,44 +92,35 @@ export async function closeTerminal(terminalId: string): Promise<void> {
   });
   clearAgentActivity(terminal.agentId);
 
-  const idx = store.taskOrder.indexOf(terminalId);
+  setStore(
+    produce((state) => {
+      let neighbor: string | null = null;
+      if (state.activeTaskId === terminalId) {
+        const index = state.taskOrder.indexOf(terminalId);
+        const filteredOrder = state.taskOrder.filter((id) => id !== terminalId);
+        const neighborIndex = index <= 0 ? 0 : index - 1;
+        neighbor = filteredOrder[neighborIndex] ?? null;
+      }
 
-  // Switch active panel to neighbor before animation
-  if (store.activeTaskId === terminalId) {
-    const order = store.taskOrder;
-    const neighborIdx = idx > 0 ? idx - 1 : idx + 1;
-    const neighbor = order[neighborIdx] ?? null;
-    setStore('activeTaskId', neighbor);
-    const neighborTask = neighbor ? store.tasks[neighbor] : null;
-    setStore('activeAgentId', getTaskActiveAgentId(neighborTask));
+      removeTerminalStoreState(state, terminalId);
+      removeAgentScopedStoreState(state, [terminal.agentId]);
+
+      if (state.activeTaskId === terminalId) {
+        state.activeTaskId = neighbor;
+        const neighborTask = neighbor ? state.tasks[neighbor] : null;
+        state.activeAgentId = getTaskActiveAgentId(neighborTask);
+      }
+    }),
+  );
+
+  const activeId = store.activeTaskId;
+  if (activeId) {
+    updateWindowTitle(getPanelTitle(activeId));
+    focusPanel(activeId);
+  } else {
+    updateWindowTitle(undefined);
   }
-
-  // Phase 1: mark as removing so UI can animate
-  setStore('terminals', terminalId, 'closingStatus', 'removing');
-
-  // Phase 2: actually delete after animation completes
-  setTimeout(() => {
-    setStore(
-      produce((s) => {
-        removeTerminalStoreState(s, terminalId);
-        removeAgentScopedStoreState(s, [terminal.agentId]);
-
-        if (s.activeTaskId === terminalId) {
-          s.activeTaskId = s.taskOrder[0] ?? null;
-          const firstTask = s.activeTaskId ? s.tasks[s.activeTaskId] : null;
-          s.activeAgentId = getTaskActiveAgentId(firstTask);
-        }
-      }),
-    );
-
-    const activeId = store.activeTaskId;
-    if (activeId) {
-      updateWindowTitle(getPanelTitle(activeId));
-      focusPanel(activeId);
-    } else {
-      updateWindowTitle(undefined);
-    }
-  }, REMOVE_ANIMATION_MS);
+  await persistTerminalRemovalBestEffort(terminalId);
 }
 
 export function updateTerminalName(terminalId: string, name: string): void {

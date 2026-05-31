@@ -318,7 +318,9 @@ export function createTaskAndGitIpcHandlers(
 
       taskNames.deleteTask(request.taskId);
 
-      return undefined;
+      return {
+        cleanupWarnings: cleanupResult.cleanupWarnings,
+      };
     }),
 
     [IPC.CleanupTaskRuntime]: defineIpcHandler<IPC.CleanupTaskRuntime>(

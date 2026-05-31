@@ -255,6 +255,9 @@ export async function deleteTask(
       /* already dead */
     }
   }
-  await removeWorktree(projectRoot, branchName, deleteBranch);
-  notifyAgentListChanged();
+  try {
+    await removeWorktree(projectRoot, branchName, deleteBranch);
+  } finally {
+    notifyAgentListChanged();
+  }
 }
