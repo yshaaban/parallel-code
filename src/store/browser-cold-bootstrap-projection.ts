@@ -116,6 +116,7 @@ function resetStoreForBrowserColdBootstrap(
   storeState.windowState = initialStore.windowState;
   storeState.showPlans = initialStore.showPlans;
   storeState.terminalHighLoadMode = initialStore.terminalHighLoadMode;
+  storeState.terminalLocalInputFeedbackEnabled = initialStore.terminalLocalInputFeedbackEnabled;
   storeState.taskNotificationsEnabled = initialStore.taskNotificationsEnabled;
   storeState.taskNotificationsPreferenceInitialized =
     initialStore.taskNotificationsPreferenceInitialized;

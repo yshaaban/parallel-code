@@ -194,6 +194,7 @@ export interface PersistedState {
   sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
   terminalHighLoadMode?: boolean;
+  terminalLocalInputFeedbackEnabled?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
   desktopNotificationsEnabled?: boolean;
@@ -246,6 +247,7 @@ export interface ClientSessionState {
   sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
   terminalHighLoadMode?: boolean;
+  terminalLocalInputFeedbackEnabled?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
   verboseLogging?: boolean;
@@ -420,6 +422,7 @@ export interface AppStore {
   autoTrustFolders: boolean;
   showPlans: boolean;
   terminalHighLoadMode: boolean;
+  terminalLocalInputFeedbackEnabled: boolean;
   taskNotificationsEnabled: boolean;
   taskNotificationsPreferenceInitialized: boolean;
   verboseLogging: boolean;

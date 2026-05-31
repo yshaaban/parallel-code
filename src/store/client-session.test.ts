@@ -90,6 +90,7 @@ describe('client session state', () => {
     });
     setStore('showPlans', false);
     setStore('terminalHighLoadMode', true);
+    setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('taskNotificationsEnabled', true);
     setStore('sidebarFocused', true);
     setStore('sidebarFocusedProjectId', 'project-1');
@@ -154,6 +155,7 @@ describe('client session state', () => {
     });
     expect(store.showPlans).toBe(false);
     expect(store.terminalHighLoadMode).toBe(true);
+    expect(store.terminalLocalInputFeedbackEnabled).toBe(false);
     expect(store.taskNotificationsEnabled).toBe(true);
     expect(store.sidebarFocused).toBe(true);
     expect(store.sidebarFocusedProjectId).toBe('project-1');

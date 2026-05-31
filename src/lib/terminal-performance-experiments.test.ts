@@ -15,6 +15,7 @@ import {
   getTerminalExperimentLaneFrameBudgetOverride,
   getTerminalExperimentLocalInputFeedbackDurationMs,
   getTerminalExperimentLocalInputFeedbackMode,
+  getTerminalExperimentLocalInputFeedbackModeOverride,
   getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale,
   getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale,
   getTerminalExperimentNonTargetVisibleFrameBudgetOverride,
@@ -136,6 +137,7 @@ describe('terminal-performance-experiments', () => {
     expect(getTerminalExperimentInputAcknowledgementMode()).toBe('off');
     expect(getTerminalExperimentInputAcknowledgementDurationMs()).toBe(180);
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('off');
+    expect(getTerminalExperimentLocalInputFeedbackModeOverride()).toBeNull();
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(180);
   });
 
@@ -169,6 +171,7 @@ describe('terminal-performance-experiments', () => {
     resetTerminalPerformanceExperimentConfigForTests();
 
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('ack-pulse');
+    expect(getTerminalExperimentLocalInputFeedbackModeOverride()).toBe('ack-pulse');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(240);
   });
 
@@ -180,6 +183,7 @@ describe('terminal-performance-experiments', () => {
     resetTerminalPerformanceExperimentConfigForTests();
 
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('off');
+    expect(getTerminalExperimentLocalInputFeedbackModeOverride()).toBeNull();
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(180);
   });
 
@@ -195,6 +199,7 @@ describe('terminal-performance-experiments', () => {
     resetTerminalPerformanceExperimentConfigForTests();
 
     expect(getTerminalExperimentLocalInputFeedbackMode()).toBe('ack-pulse');
+    expect(getTerminalExperimentLocalInputFeedbackModeOverride()).toBe('ack-pulse');
     expect(getTerminalExperimentLocalInputFeedbackDurationMs()).toBe(260);
     expect(getTerminalPerformanceExperimentConfig().adaptiveVisibleBackgroundThrottleMode).toBe(
       'moderate',

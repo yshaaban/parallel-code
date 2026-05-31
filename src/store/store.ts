@@ -151,6 +151,7 @@ export {
   setAutoTrustFolders,
   setShowPlans,
   setTerminalHighLoadMode,
+  setTerminalLocalInputFeedbackEnabled,
   setTaskNotificationsEnabled,
   setVerboseLogging,
   setInactiveColumnOpacity,

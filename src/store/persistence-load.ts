@@ -281,6 +281,10 @@ export function applyLoadedStateJson(json: string): boolean {
             storeState.terminalHighLoadMode,
           )
         : storeState.terminalHighLoadMode;
+      storeState.terminalLocalInputFeedbackEnabled =
+        electronRuntime && typeof raw.terminalLocalInputFeedbackEnabled === 'boolean'
+          ? raw.terminalLocalInputFeedbackEnabled
+          : storeState.terminalLocalInputFeedbackEnabled;
       storeState.taskNotificationsEnabled = electronRuntime
         ? getPersistedTaskNotificationsEnabled(raw)
         : DEFAULT_TASK_NOTIFICATIONS_ENABLED;

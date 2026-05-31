@@ -75,6 +75,7 @@ export function createInitialAppStore(): AppStore {
     autoTrustFolders: false,
     showPlans: true,
     terminalHighLoadMode: getInitialTerminalHighLoadModeEnabled(),
+    terminalLocalInputFeedbackEnabled: true,
     taskNotificationsEnabled: DEFAULT_TASK_NOTIFICATIONS_ENABLED,
     taskNotificationsPreferenceInitialized: true,
     verboseLogging: false,

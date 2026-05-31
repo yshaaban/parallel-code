@@ -106,6 +106,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     sidebarSectionCollapsed: { ...store.sidebarSectionCollapsed },
     showPlans: store.showPlans,
     terminalHighLoadMode: store.terminalHighLoadMode,
+    terminalLocalInputFeedbackEnabled: store.terminalLocalInputFeedbackEnabled,
     sidebarFocused: store.sidebarFocused,
     sidebarFocusedProjectId: store.sidebarFocusedProjectId,
     sidebarFocusedTaskId: store.sidebarFocusedTaskId,
@@ -287,6 +288,12 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
     resolvePersistedTerminalHighLoadMode(raw.terminalHighLoadMode, store.terminalHighLoadMode),
   );
   syncTerminalHighLoadMode(store.terminalHighLoadMode);
+  setStore(
+    'terminalLocalInputFeedbackEnabled',
+    typeof raw.terminalLocalInputFeedbackEnabled === 'boolean'
+      ? raw.terminalLocalInputFeedbackEnabled
+      : store.terminalLocalInputFeedbackEnabled,
+  );
   setStore('taskNotificationsEnabled', getPersistedTaskNotificationsEnabled(raw));
   setStore('taskNotificationsPreferenceInitialized', true);
   setStore('verboseLogging', raw.verboseLogging === true);

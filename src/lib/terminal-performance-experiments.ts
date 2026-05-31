@@ -20,7 +20,7 @@ type TerminalStartupVisibleSiblingReplayUnblockPhase =
   | 'input-ready'
   | 'paint-settled';
 type TerminalInputAcknowledgementMode = 'off' | 'pulse';
-type TerminalLocalInputFeedbackMode = 'ack-pulse' | 'off';
+export type TerminalLocalInputFeedbackMode = 'ack-pulse' | 'off';
 type TerminalVisibleWebglAcquisitionMode = 'focused-only' | 'visible-set';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
@@ -919,9 +919,20 @@ function normalizeInputAcknowledgementMode(
   return 'off';
 }
 
-function normalizeLocalInputFeedbackMode(configuredMode: unknown): TerminalLocalInputFeedbackMode {
+function parseLocalInputFeedbackMode(
+  configuredMode: unknown,
+): TerminalLocalInputFeedbackMode | null {
   if (isStringLiteralSetMember(TERMINAL_LOCAL_INPUT_FEEDBACK_MODES, configuredMode)) {
     return configuredMode;
+  }
+
+  return null;
+}
+
+function normalizeLocalInputFeedbackMode(configuredMode: unknown): TerminalLocalInputFeedbackMode {
+  const mode = parseLocalInputFeedbackMode(configuredMode);
+  if (mode !== null) {
+    return mode;
   }
 
   return 'off';
@@ -1588,6 +1599,15 @@ export function getTerminalExperimentInputAcknowledgementDurationMs(): number {
 
 export function getTerminalExperimentLocalInputFeedbackMode(): TerminalLocalInputFeedbackMode {
   return getTerminalPerformanceExperimentConfig().localInputFeedbackMode;
+}
+
+export function getTerminalExperimentLocalInputFeedbackModeOverride(): TerminalLocalInputFeedbackMode | null {
+  const rawConfig = readWindowExperimentConfig();
+  if (!rawConfig || rawConfig.localInputFeedbackMode === undefined) {
+    return null;
+  }
+
+  return parseLocalInputFeedbackMode(rawConfig.localInputFeedbackMode);
 }
 
 export function getTerminalExperimentLocalInputFeedbackDurationMs(): number {

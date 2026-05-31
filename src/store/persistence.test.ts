@@ -1396,6 +1396,7 @@ describe('persistence integration', () => {
     });
     setStore('showPlans', false);
     setStore('terminalHighLoadMode', true);
+    setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('taskNotificationsEnabled', true);
     setStore('inactiveColumnOpacity', 0.75);
 
@@ -1418,6 +1419,7 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('sidebarSectionCollapsed');
     expect(persisted).not.toHaveProperty('showPlans');
     expect(persisted).not.toHaveProperty('terminalHighLoadMode');
+    expect(persisted).not.toHaveProperty('terminalLocalInputFeedbackEnabled');
     expect(persisted).not.toHaveProperty('taskNotificationsEnabled');
     expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
   });
@@ -2689,6 +2691,7 @@ describe('persistence integration', () => {
             activeTaskId: null,
             sidebarVisible: true,
             terminalHighLoadMode: true,
+            terminalLocalInputFeedbackEnabled: false,
             taskNotificationsEnabled: true,
           }),
         );
@@ -2698,6 +2701,7 @@ describe('persistence integration', () => {
     });
 
     setStore('terminalHighLoadMode', true);
+    setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('taskNotificationsEnabled', true);
     await saveState();
 
@@ -2707,11 +2711,19 @@ describe('persistence integration', () => {
         json: expect.stringContaining('"terminalHighLoadMode":true'),
       }),
     );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SaveAppState,
+      expect.objectContaining({
+        json: expect.stringContaining('"terminalLocalInputFeedbackEnabled":false'),
+      }),
+    );
 
     setStore('terminalHighLoadMode', false);
+    setStore('terminalLocalInputFeedbackEnabled', true);
     setStore('taskNotificationsEnabled', false);
     await loadState();
     expect(store.terminalHighLoadMode).toBe(true);
+    expect(store.terminalLocalInputFeedbackEnabled).toBe(false);
     expect(store.taskNotificationsEnabled).toBe(true);
   });
 

@@ -35,6 +35,7 @@ import {
   setAutoTrustFolders,
   setShowPlans,
   setTerminalHighLoadMode,
+  setTerminalLocalInputFeedbackEnabled,
   setTaskNotificationsEnabled,
   setVerboseLogging,
   setInactiveColumnOpacity,
@@ -421,6 +422,32 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             <span style={{ ...typography.meta, color: theme.fgSubtle }}>
               Enabled by default for dense multi-terminal heavy output. Turn it off for lighter
               layouts if you prefer the older balance.
+            </span>
+          </div>
+        </label>
+        <label
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '10px',
+            cursor: 'pointer',
+            padding: '8px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <input
+            type="checkbox"
+            aria-label="Terminal input feedback"
+            checked={store.terminalLocalInputFeedbackEnabled}
+            onChange={(e) => setTerminalLocalInputFeedbackEnabled(e.currentTarget.checked)}
+            style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+          />
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>Terminal input feedback</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
+              Show immediate local acknowledgement while remote terminal echo is still in flight.
             </span>
           </div>
         </label>

@@ -84,6 +84,7 @@ describe('autosave snapshots', () => {
     setStore('terminalFontSize', 16);
     setStore('terminalFont', 'JetBrains Mono');
     setStore('fontSmoothing', false);
+    setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('themePreset', 'graphite');
     setStore('showPlans', false);
     setStore('inactiveColumnOpacity', 0.75);
@@ -110,6 +111,7 @@ describe('autosave snapshots', () => {
       terminalFontSize?: number;
       terminalFont?: string;
       fontSmoothing?: boolean;
+      terminalLocalInputFeedbackEnabled?: boolean;
       windowState?: { width: number };
       tasks?: unknown;
     };
@@ -129,6 +131,7 @@ describe('autosave snapshots', () => {
       terminalFontSize: 16,
       terminalFont: 'JetBrains Mono',
       fontSmoothing: false,
+      terminalLocalInputFeedbackEnabled: false,
       windowState: { width: 1200 },
     });
     expect(snapshot).not.toHaveProperty('tasks');

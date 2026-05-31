@@ -399,7 +399,7 @@ describe('TerminalView', () => {
     expect(liveSurface?.style.padding).toBe('');
   });
 
-  it('keeps the terminal input acknowledgement frame disabled by default', () => {
+  it('shows local input ack pulse by default from the terminal input feedback setting', () => {
     setStore('activeTaskId', 'task-1');
     const result = render(() => (
       <TerminalView
@@ -413,7 +413,27 @@ describe('TerminalView', () => {
     ));
 
     getLastStatusChangeHandler()?.('ready');
-    getLastInputAcceptedHandler()?.();
+    getLastLocalInputFeedbackHandler()?.('a');
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).not.toBeNull();
+  });
+
+  it('keeps the terminal input acknowledgement frame disabled when the setting is off', () => {
+    setStore('activeTaskId', 'task-1');
+    setStore('terminalLocalInputFeedbackEnabled', false);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastLocalInputFeedbackHandler()?.('a');
 
     expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
   });
@@ -425,6 +445,7 @@ describe('TerminalView', () => {
     };
     resetTerminalPerformanceExperimentConfigForTests();
     setStore('activeTaskId', 'task-1');
+    setStore('terminalLocalInputFeedbackEnabled', false);
 
     const result = render(() => (
       <TerminalView
@@ -455,6 +476,7 @@ describe('TerminalView', () => {
     };
     resetTerminalPerformanceExperimentConfigForTests();
     setStore('activeTaskId', 'task-1');
+    setStore('terminalLocalInputFeedbackEnabled', false);
 
     const result = render(() => (
       <TerminalView
@@ -512,6 +534,31 @@ describe('TerminalView', () => {
     expect(terminalRoot?.getAttribute('data-terminal-input-ack-phase')).toBe('even');
 
     getLastOutputRenderedHandler()?.(1);
+
+    expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
+  });
+
+  it('lets the local input feedback experiment override disable the setting', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      localInputFeedbackMode: 'off',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+    setStore('terminalLocalInputFeedbackEnabled', true);
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastLocalInputFeedbackHandler()?.('a');
 
     expect(result.container.querySelector('[data-terminal-input-ack="true"]')).toBeNull();
   });

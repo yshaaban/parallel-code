@@ -105,6 +105,18 @@ describe('SettingsDialog', () => {
     expect(isTerminalHighLoadModeEnabled()).toBe(false);
   });
 
+  it('toggles terminal input feedback through the shared store', () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    const checkbox = screen.getByLabelText('Terminal input feedback');
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(store.terminalLocalInputFeedbackEnabled).toBe(true);
+
+    fireEvent.click(checkbox);
+
+    expect(store.terminalLocalInputFeedbackEnabled).toBe(false);
+  });
+
   it('updates terminal typography settings through the shared store', () => {
     render(() => <SettingsDialog open onClose={() => {}} />);
 

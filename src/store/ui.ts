@@ -106,6 +106,10 @@ export function setTerminalHighLoadMode(terminalHighLoadMode: boolean): void {
   syncTerminalHighLoadMode(terminalHighLoadMode);
 }
 
+export function setTerminalLocalInputFeedbackEnabled(enabled: boolean): void {
+  setStore('terminalLocalInputFeedbackEnabled', enabled);
+}
+
 export function setTaskNotificationsEnabled(enabled: boolean): void {
   setStore('taskNotificationsEnabled', enabled);
   setStore('taskNotificationsPreferenceInitialized', true);

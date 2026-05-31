@@ -242,6 +242,7 @@ describe('browser-cold-bootstrap-projection', () => {
     setStore('terminalFontSize', 18);
     setStore('terminalFont', 'Fira Code');
     setStore('fontSmoothing', false);
+    setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('taskSteps', {
       stale: {
         errorMessage: null,
@@ -272,6 +273,9 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.terminalFontSize).toBe(initialStore.terminalFontSize);
     expect(store.terminalFont).toBe(initialStore.terminalFont);
     expect(store.fontSmoothing).toBe(initialStore.fontSmoothing);
+    expect(store.terminalLocalInputFeedbackEnabled).toBe(
+      initialStore.terminalLocalInputFeedbackEnabled,
+    );
     expect(store.taskSteps).toEqual({});
     expect(store.taskStepSummaries).toEqual({});
   });

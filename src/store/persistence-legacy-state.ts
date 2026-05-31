@@ -42,6 +42,7 @@ export interface LegacyPersistedState {
   sidebarSectionCollapsed?: unknown;
   showPlans?: unknown;
   terminalHighLoadMode?: unknown;
+  terminalLocalInputFeedbackEnabled?: unknown;
   taskNotificationsEnabled?: unknown;
   taskNotificationsPreferenceInitialized?: unknown;
   desktopNotificationsEnabled?: unknown;

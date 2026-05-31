@@ -335,6 +335,7 @@ export function buildPersistedState(): PersistedState {
   persisted.sidebarSectionCollapsed = { ...store.sidebarSectionCollapsed };
   persisted.showPlans = store.showPlans;
   persisted.terminalHighLoadMode = store.terminalHighLoadMode;
+  persisted.terminalLocalInputFeedbackEnabled = store.terminalLocalInputFeedbackEnabled;
   persisted.taskNotificationsEnabled = store.taskNotificationsEnabled;
   persisted.taskNotificationsPreferenceInitialized = store.taskNotificationsPreferenceInitialized;
   persisted.inactiveColumnOpacity = store.inactiveColumnOpacity;

@@ -19,10 +19,11 @@ import {
   getTerminalExperimentInputAcknowledgementDurationMs,
   getTerminalExperimentInputAcknowledgementMode,
   getTerminalExperimentLocalInputFeedbackDurationMs,
-  getTerminalExperimentLocalInputFeedbackMode,
+  getTerminalExperimentLocalInputFeedbackModeOverride,
   getTerminalExperimentSwitchPostInputReadyEchoGraceMs,
   getTerminalExperimentSwitchTargetWindowMs,
   getTerminalPerformanceExperimentConfig,
+  type TerminalLocalInputFeedbackMode,
 } from '../lib/terminal-performance-experiments';
 import {
   isRendererRuntimeDiagnosticsEnabled,
@@ -918,12 +919,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     showInputAcknowledgement(getTerminalExperimentInputAcknowledgementDurationMs());
   }
 
-  function clearLocalInputFeedback(): void {
-    clearInputAcknowledgement();
+  function getEffectiveLocalInputFeedbackMode(): TerminalLocalInputFeedbackMode {
+    const experimentOverride = getTerminalExperimentLocalInputFeedbackModeOverride();
+    if (experimentOverride !== null) {
+      return experimentOverride;
+    }
+
+    return store.terminalLocalInputFeedbackEnabled ? 'ack-pulse' : 'off';
   }
 
   function handleSessionLocalInputFeedback(): void {
-    const feedbackMode = getTerminalExperimentLocalInputFeedbackMode();
+    const feedbackMode = getEffectiveLocalInputFeedbackMode();
     switch (feedbackMode) {
       case 'ack-pulse':
         recordTerminalLocalInputAckPulse();
@@ -937,7 +943,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionInputAccepted(): void {
-    if (getTerminalExperimentLocalInputFeedbackMode() !== 'off') {
+    if (getEffectiveLocalInputFeedbackMode() !== 'off') {
       return;
     }
 
@@ -945,7 +951,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function handleSessionOutputRendered(): void {
-    clearLocalInputFeedback();
+    clearInputAcknowledgement();
   }
 
   function getInputAcknowledgementPulsePhase(): 'even' | 'odd' | undefined {
@@ -1528,7 +1534,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function handleSessionStatusChange(status: TerminalViewStatus): void {
     if (status !== 'ready') {
-      clearLocalInputFeedback();
+      clearInputAcknowledgement();
     }
     setSessionStatus(status);
     armTerminalInputCaptureGraceIfPaintReady();
@@ -1545,7 +1551,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function handleSessionRenderHibernationChange(isHibernating: boolean): void {
     if (isHibernating) {
-      clearLocalInputFeedback();
+      clearInputAcknowledgement();
     }
     setRenderHibernating(isHibernating);
     syncCurrentSessionRuntimeState();
@@ -1553,7 +1559,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function handleSessionRestoreBlockedChange(isBlocked: boolean): void {
     if (isBlocked) {
-      clearLocalInputFeedback();
+      clearInputAcknowledgement();
     }
     setRestoreBlocked(isBlocked);
     syncCurrentSessionRuntimeState();
@@ -1561,7 +1567,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function handleSessionResizeTransactionChange(isActive: boolean): void {
     if (isActive) {
-      clearLocalInputFeedback();
+      clearInputAcknowledgement();
     }
     setResizeTransactionActive(isActive);
     syncCurrentSessionRuntimeState();
@@ -1631,9 +1637,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               anomalyMonitorRegistration?.recordInteraction('blocked-input');
             },
             onInputAccepted: handleSessionInputAccepted,
-            ...(getTerminalExperimentLocalInputFeedbackMode() === 'off'
-              ? {}
-              : { onLocalInputFeedback: handleSessionLocalInputFeedback }),
+            onLocalInputFeedback: handleSessionLocalInputFeedback,
             onOutputRendered: handleSessionOutputRendered,
             onPaintReadyChange: handleSessionPaintReadyChange,
             onStartupFitExecuted: recordStartupFitExecutionIfPending,
@@ -1845,7 +1849,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       observer?.disconnect();
-      clearLocalInputFeedback();
+      clearInputAcknowledgement();
       clearSessionDormancyTimer();
       cleanupTerminalSessionLifetime();
       cancelSwitchWindowState();
@@ -1917,12 +1921,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    const localInputFeedbackMode = getTerminalExperimentLocalInputFeedbackMode();
-    if (localInputFeedbackMode === 'off' && !isBackendInputAcknowledgementExperimentEnabled()) {
-      clearLocalInputFeedback();
-      return;
-    }
-    if (localInputFeedbackMode !== 'ack-pulse') {
+    if (getEffectiveLocalInputFeedbackMode() !== 'ack-pulse') {
       clearInputAcknowledgement();
     }
   });
