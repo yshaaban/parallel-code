@@ -837,7 +837,7 @@ describe('spawnAgent', () => {
     expect(proc.resume).toHaveBeenCalledTimes(1);
   });
 
-  it('does not expire flow-control pauses when a restore lease times out', async () => {
+  it('keeps renewed flow-control pauses when a restore lease times out', async () => {
     vi.useFakeTimers();
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -857,7 +857,11 @@ describe('spawnAgent', () => {
     pauseAgent('agent-flow-restore-expiry', 'flow-control', 'restore-channel');
     pauseAgent('agent-flow-restore-expiry', 'restore', 'restore-channel');
 
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    pauseAgent('agent-flow-restore-expiry', 'flow-control', 'restore-channel');
+    await vi.advanceTimersByTimeAsync(10_000);
+    pauseAgent('agent-flow-restore-expiry', 'flow-control', 'restore-channel');
+    await vi.advanceTimersByTimeAsync(10_000);
 
     expect(getAgentPauseState('agent-flow-restore-expiry')).toBe('flow-control');
     expect(proc.resume).not.toHaveBeenCalled();

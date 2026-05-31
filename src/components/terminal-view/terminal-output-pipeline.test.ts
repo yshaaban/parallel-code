@@ -116,6 +116,22 @@ describe('terminal-output-pipeline', () => {
     return createPipelineWithOptions(priority);
   }
 
+  function expectFlowControlPauseRequest(): void {
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.PauseAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+  }
+
+  function expectFlowControlResumeRequest(): void {
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResumeAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+  }
+
   function createPipelineWithOptions(
     priority: TestTerminalOutputPriority,
     options: {
@@ -540,13 +556,80 @@ describe('terminal-output-pipeline', () => {
     pipeline.enqueueOutput(encoder.encode('x'.repeat(FLOW_HIGH + 1024)));
     await Promise.resolve();
 
+    expectFlowControlPauseRequest();
+
+    pipeline.setRenderHibernating(false);
+    await Promise.resolve();
+
+    expectFlowControlResumeRequest();
+    pipeline.cleanup();
+  });
+
+  it('renews flow-control pauses while renderer backpressure remains high', async () => {
+    const { pipeline } = createPipeline('hidden');
+
+    pipeline.setRenderHibernating(true);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(FLOW_HIGH + 1024)));
+    await Promise.resolve();
+    vi.mocked(invoke).mockClear();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
     expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.PauseAgent, {
       agentId: 'agent-1',
       channelId: 'channel-1',
       reason: 'flow-control',
     });
 
+    vi.mocked(invoke).mockClear();
     pipeline.setRenderHibernating(false);
+    await Promise.resolve();
+
+    expectFlowControlResumeRequest();
+
+    vi.mocked(invoke).mockClear();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(IPC.PauseAgent, expect.anything());
+    pipeline.cleanup();
+  });
+
+  it('releases an active flow-control pause during cleanup', async () => {
+    const { pipeline } = createPipeline('hidden');
+
+    pipeline.setRenderHibernating(true);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(FLOW_HIGH + 1024)));
+    await Promise.resolve();
+    vi.mocked(invoke).mockClear();
+
+    pipeline.cleanup();
+
+    expectFlowControlResumeRequest();
+  });
+
+  it('releases a flow-control pause that resolves after cleanup', async () => {
+    let resolvePause: () => void = () => undefined;
+    const pauseRequest = new Promise<void>((resolve) => {
+      resolvePause = resolve;
+    });
+    vi.mocked(invoke).mockImplementation((channel) => {
+      if (channel === IPC.PauseAgent) {
+        return pauseRequest as ReturnType<typeof invoke>;
+      }
+
+      return Promise.resolve(undefined) as ReturnType<typeof invoke>;
+    });
+    const { pipeline } = createPipeline('hidden');
+
+    pipeline.setRenderHibernating(true);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(FLOW_HIGH + 1024)));
+    await Promise.resolve();
+    pipeline.cleanup();
+
+    expectFlowControlResumeRequest();
+
+    vi.mocked(invoke).mockClear();
+    resolvePause();
     await Promise.resolve();
 
     expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResumeAgent, {
@@ -554,7 +637,6 @@ describe('terminal-output-pipeline', () => {
       channelId: 'channel-1',
       reason: 'flow-control',
     });
-    pipeline.cleanup();
   });
 
   it('clears the focused-input echo reservation on focused output when no traced echo is pending', () => {

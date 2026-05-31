@@ -149,6 +149,18 @@ function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
 }
 
+function shouldIgnoreInactiveScopedAutomaticControl(
+  channels: BrowserChannelManager,
+  reason: PauseReason | undefined,
+  channelId: string | undefined,
+): boolean {
+  return (
+    isAutomaticPauseReason(reason) &&
+    channelId !== undefined &&
+    !channels.hasActiveSubscriber(channelId)
+  );
+}
+
 function createInputOrderToken(
   message: Extract<AuthenticatedClientMessage, { type: 'input' }>,
 ): Parameters<typeof writeBrowserAgentInput>[3] {
@@ -455,9 +467,11 @@ export function registerBrowserWebSocketServer(
           'pause',
           () => {
             if (
-              currentMessage.reason === 'restore' &&
-              currentMessage.channelId !== undefined &&
-              !options.channels.hasActiveSubscriber(currentMessage.channelId)
+              shouldIgnoreInactiveScopedAutomaticControl(
+                options.channels,
+                currentMessage.reason,
+                currentMessage.channelId,
+              )
             ) {
               return;
             }
@@ -481,6 +495,15 @@ export function registerBrowserWebSocketServer(
           currentMessage.agentId,
           'resume',
           () => {
+            if (
+              shouldIgnoreInactiveScopedAutomaticControl(
+                options.channels,
+                currentMessage.reason,
+                currentMessage.channelId,
+              )
+            ) {
+              return;
+            }
             resumeBrowserAgent(
               currentMessage.agentId,
               currentMessage.reason,

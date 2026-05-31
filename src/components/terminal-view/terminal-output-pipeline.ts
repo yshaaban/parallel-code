@@ -47,6 +47,7 @@ import {
 
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
+const FLOW_CONTROL_RENEW_INTERVAL_MS = 5_000;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
 const FOCUSED_OUTPUT_QUEUE_COALESCE_MAX_BYTES = 64 * 1024;
@@ -155,11 +156,17 @@ export function createTerminalOutputPipeline(
   let suppressedWatermark = 0;
   let flowControlState: TerminalFlowControlState = { kind: 'clear' };
   let flowRetryTimer: number | undefined;
+  let flowRenewTimer: number | undefined;
   let recentInteractiveEchoDeadlineAt = -1;
   let renderedOutputCursor = 0;
   let renderHibernating = false;
   let suppressedOutputSinceHibernation = false;
+  let cleanedUp = false;
   const renderedOutputHistory = createRenderedOutputHistoryBuffer(RESTORE_HISTORY_MAX_BYTES);
+
+  function isPipelineDisposed(): boolean {
+    return cleanedUp || options.isDisposed();
+  }
 
   function getOutputPriority(): TerminalOutputPriority {
     return options.getOutputPriority();
@@ -754,7 +761,7 @@ export function createTerminalOutputPipeline(
   }
 
   function scheduleFlowRetry(): void {
-    if (flowRetryTimer !== undefined || options.isDisposed()) {
+    if (flowRetryTimer !== undefined || isPipelineDisposed()) {
       return;
     }
 
@@ -766,6 +773,41 @@ export function createTerminalOutputPipeline(
         requestPtyResume();
       }
     }, INPUT_RETRY_DELAY_MS);
+  }
+
+  function clearFlowRenewTimer(): void {
+    if (flowRenewTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(flowRenewTimer);
+    flowRenewTimer = undefined;
+  }
+
+  function shouldRenewFlowPause(): boolean {
+    return (
+      !isPipelineDisposed() &&
+      flowControlState.kind === 'paused' &&
+      getFlowControlWatermark() >= FLOW_LOW
+    );
+  }
+
+  function scheduleFlowRenewal(): void {
+    if (flowRenewTimer !== undefined || !shouldRenewFlowPause()) {
+      return;
+    }
+
+    flowRenewTimer = window.setTimeout(() => {
+      flowRenewTimer = undefined;
+      if (!shouldRenewFlowPause()) {
+        if (getFlowControlWatermark() < FLOW_LOW && isFlowPauseApplied()) {
+          requestPtyResume();
+        }
+        return;
+      }
+
+      void invokeFlowControlPause().then(scheduleFlowRenewal, scheduleFlowRenewal);
+    }, FLOW_CONTROL_RENEW_INTERVAL_MS);
   }
 
   function getFlowControlWatermark(): number {
@@ -786,25 +828,59 @@ export function createTerminalOutputPipeline(
 
   function setFlowControlState(nextState: TerminalFlowControlState): void {
     flowControlState = nextState;
+    if (nextState.kind !== 'paused') {
+      clearFlowRenewTimer();
+    }
+  }
+
+  function invokeFlowControlPause(): ReturnType<typeof invoke> {
+    return invoke(IPC.PauseAgent, {
+      agentId,
+      reason: 'flow-control',
+      channelId: options.channelId,
+    });
+  }
+
+  function invokeFlowControlResume(): ReturnType<typeof invoke> {
+    return invoke(IPC.ResumeAgent, {
+      agentId,
+      reason: 'flow-control',
+      channelId: options.channelId,
+    });
+  }
+
+  function sendFlowControlResumeForCleanup(): void {
+    void invokeFlowControlResume().catch(() => undefined);
   }
 
   function requestPtyPause(): void {
-    if (options.isDisposed() || isFlowPauseApplied() || isFlowPauseRequestInFlight()) {
+    if (isPipelineDisposed() || isFlowPauseApplied() || isFlowPauseRequestInFlight()) {
       return;
     }
 
     setFlowControlState({ kind: 'pause-requested' });
     recordFlowRequest('pause');
-    void invoke(IPC.PauseAgent, { agentId, reason: 'flow-control', channelId: options.channelId })
+    void invokeFlowControlPause()
       .then(() => {
+        if (isPipelineDisposed()) {
+          sendFlowControlResumeForCleanup();
+          setFlowControlState({ kind: 'clear' });
+          return;
+        }
+
         setFlowControlState({ kind: 'paused' });
         if (getFlowControlWatermark() < FLOW_LOW) {
           requestPtyResume();
+          return;
         }
+
+        scheduleFlowRenewal();
       })
       .catch(() => {
         setFlowControlState({ kind: 'clear' });
-        scheduleFlowRetry();
+        if (!isPipelineDisposed()) {
+          scheduleFlowRetry();
+        }
       })
       .finally(() => {
         if (flowControlState.kind === 'pause-requested') {
@@ -814,7 +890,7 @@ export function createTerminalOutputPipeline(
   }
 
   function sendFlowControlResumeRequest(allowRecoveryWhenIdle = false): void {
-    if (options.isDisposed() || isFlowResumeRequestInFlight()) {
+    if (isPipelineDisposed() || isFlowResumeRequestInFlight()) {
       return;
     }
     if (!allowRecoveryWhenIdle && !isFlowPauseApplied()) {
@@ -826,7 +902,7 @@ export function createTerminalOutputPipeline(
       kind: 'resume-requested',
     });
     recordFlowRequest('resume');
-    void invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control', channelId: options.channelId })
+    void invokeFlowControlResume()
       .then(() => {
         setFlowControlState({ kind: 'clear' });
         if (getFlowControlWatermark() > FLOW_HIGH) {
@@ -834,6 +910,11 @@ export function createTerminalOutputPipeline(
         }
       })
       .catch(() => {
+        if (isPipelineDisposed()) {
+          setFlowControlState({ kind: 'clear' });
+          return;
+        }
+
         setFlowControlState({ kind: 'paused' });
         scheduleFlowRetry();
       });
@@ -844,7 +925,7 @@ export function createTerminalOutputPipeline(
   }
 
   function recoverFlowControlIfIdle(): void {
-    if (options.isDisposed() || outputQueuedBytes > 0 || getFlowControlWatermark() >= FLOW_LOW) {
+    if (isPipelineDisposed() || outputQueuedBytes > 0 || getFlowControlWatermark() >= FLOW_LOW) {
       return;
     }
 
@@ -898,7 +979,7 @@ export function createTerminalOutputPipeline(
           source,
           taskId,
         });
-        if (options.isDisposed()) {
+        if (isPipelineDisposed()) {
           return;
         }
 
@@ -1209,6 +1290,7 @@ export function createTerminalOutputPipeline(
     armInteractiveEchoFastPath,
     appendRenderedOutputHistory,
     cleanup(): void {
+      cleanedUp = true;
       clearBackgroundStatusDispatch();
       pendingBackgroundStatusPayload = null;
       outputRegistration?.unregister();
@@ -1220,6 +1302,11 @@ export function createTerminalOutputPipeline(
       if (flowRetryTimer !== undefined) {
         clearTimeout(flowRetryTimer);
         flowRetryTimer = undefined;
+      }
+      clearFlowRenewTimer();
+      if (isFlowPauseApplied() || isFlowPauseRequestInFlight()) {
+        sendFlowControlResumeForCleanup();
+        setFlowControlState({ kind: 'clear' });
       }
     },
     clearOutputWriteWatchdog,

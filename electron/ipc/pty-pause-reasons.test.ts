@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnMock = vi.fn();
 const validateCommandMock = vi.fn();
@@ -58,6 +58,11 @@ describe('pty pause reasons', () => {
     vi.resetModules();
     spawnMock.mockReset();
     validateCommandMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('keeps manual pauses across detach', async () => {
@@ -209,6 +214,73 @@ describe('pty pause reasons', () => {
 
     detachAgentOutput('agent-detach', 'channel-a');
     expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires stale scoped flow-control pauses when a client misses resume', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { getAgentPauseState, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-expire', 'channel-a');
+    pauseAgent('agent-expire', 'flow-control', 'channel-a');
+
+    expect(getAgentPauseState('agent-expire')).toBe('flow-control');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(getAgentPauseState('agent-expire')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews scoped flow-control pauses when the same channel pauses again', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { getAgentPauseState, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-renew', 'channel-a');
+    pauseAgent('agent-renew', 'flow-control', 'channel-a');
+    await vi.advanceTimersByTimeAsync(10_000);
+    pauseAgent('agent-renew', 'flow-control', 'channel-a');
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(getAgentPauseState('agent-renew')).toBe('flow-control');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(getAgentPauseState('agent-renew')).toBeNull();
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes a pause lifecycle update when flow-control expiry reveals restore pause', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { getAgentPauseState, onPtyEvent, pauseAgent, spawnAgent } = await import('./pty.js');
+    const onPause = vi.fn();
+    const offPause = onPtyEvent('pause', onPause);
+
+    try {
+      spawnTestAgent(spawnAgent, 'agent-reason-shift', 'channel-a');
+      pauseAgent('agent-reason-shift', 'restore', 'channel-a');
+      pauseAgent('agent-reason-shift', 'flow-control', 'channel-a');
+
+      expect(getAgentPauseState('agent-reason-shift')).toBe('flow-control');
+      expect(proc.pause).toHaveBeenCalledTimes(1);
+      expect(onPause).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(getAgentPauseState('agent-reason-shift')).toBe('restore');
+      expect(proc.pause).toHaveBeenCalledTimes(1);
+      expect(proc.resume).not.toHaveBeenCalled();
+      expect(onPause).toHaveBeenCalledTimes(3);
+    } finally {
+      offPause();
+    }
   });
 
   it('does not leak automatic pause ownership across repeated multi-channel churn', async () => {

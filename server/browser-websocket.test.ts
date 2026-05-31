@@ -445,6 +445,68 @@ describe('registerBrowserWebSocketServer', () => {
     });
   });
 
+  it('ignores stale websocket flow-control pauses and resumes for inactive channels', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendMessage = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        channels: {
+          ...createTestChannels(),
+          hasActiveSubscriber: vi.fn(() => false),
+        },
+        sendMessage,
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'pause',
+        agentId: 'agent-1',
+        channelId: 'stale-channel',
+        reason: 'flow-control',
+        requestId: 'pause-stale',
+      }),
+    );
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'resume',
+        agentId: 'agent-1',
+        channelId: 'stale-channel',
+        reason: 'flow-control',
+        requestId: 'resume-stale',
+      }),
+    );
+
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'pause',
+      requestId: 'pause-stale',
+      type: 'agent-command-result',
+    });
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'resume',
+      requestId: 'resume-stale',
+      type: 'agent-command-result',
+    });
+  });
+
   it('ignores invalid websocket URL replay cursors before authenticating', async () => {
     const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
     const client = createFakeClient();
