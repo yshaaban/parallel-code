@@ -266,7 +266,10 @@ Two current ownership splits matter in review:
   switch-window lifecycle; mounted sibling terminals only report readiness and must not cancel the
   task-level window independently. Terminal session identity is captured at mount/remount
   boundaries, so stale `onReady` / `onDispose` callbacks from an old agent session must not clear or
-  focus the current session
+  focus the current session. Task-agent membership changes are store-level mutations in
+  `src/store/agents.ts`: adding an agent selects it and persists membership best-effort, while
+  closing a sibling kills its PTY, clears agent-scoped state, and falls back to a remaining task
+  agent without allowing the last AI agent to be removed
 - fit/layout correctness is separate from typing priority. `terminal-session` and
   `terminalFitManager` may yield non-critical stabilization while another terminal is typing, but
   they must still allow resize/correctness-critical work through instead of letting latency mode

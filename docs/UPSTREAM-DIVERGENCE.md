@@ -181,7 +181,9 @@ tokens and coordinator/MCP backend orchestration. Both still require separate pr
 replayable backend state machines, and browser/mobile proof before implementation. Real Docker
 agent runner execution and side-by-side multi-agent terminal layout now exist locally as
 browser-first opt-in implementations with backend-owned runner identity and dedicated validation
-lanes; Docker sandbox and Docker-backed Hydra adapter execution remain intentionally unsupported.
+lanes. The local multi-agent terminal surface includes explicit add-agent, select-agent, and
+close-agent controls rather than direct upstream component shape. Docker sandbox and Docker-backed
+Hydra adapter execution remain intentionally unsupported.
 
 Recently landed locally:
 
