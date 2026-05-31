@@ -1,18 +1,23 @@
-import { cleanup, render, screen } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createTestAgentDef,
   createTestProject,
   createTestAgent,
-  createTestAgentDef,
   createTestTask,
   resetStoreForTest,
 } from '../../test/store-test-helpers';
 import { setStore } from '../../store/core';
 import { store, triggerFocus } from '../../store/store';
 import { TaskAiTerminalSection } from './TaskAiTerminalSection';
+import { IPC } from '../../../electron/ipc/channels';
 
 const readyCallbacks = new Map<string, (focusFn: () => void) => void>();
+const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  saveCurrentRuntimeStateMock: vi.fn(),
+}));
 
 vi.mock('../TerminalView', () => ({
   TerminalView: (props: {
@@ -41,10 +46,35 @@ vi.mock('../AgentSwitchMenu', () => ({
   AgentSwitchMenu: () => <button type="button">Switch agent</button>,
 }));
 
+vi.mock('../../lib/ipc', () => ({
+  invoke: invokeMock,
+}));
+
+vi.mock('../../store/persistence-save', () => ({
+  saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
+}));
+
+function getRequiredButton(
+  container: HTMLElement,
+  selector: string,
+  missingMessage: string,
+): HTMLButtonElement {
+  const button = container.querySelector<HTMLButtonElement>(selector);
+  if (!button) {
+    throw new Error(missingMessage);
+  }
+
+  return button;
+}
+
 describe('TaskAiTerminalSection', () => {
   beforeEach(() => {
     resetStoreForTest();
     readyCallbacks.clear();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+    saveCurrentRuntimeStateMock.mockReset();
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -99,6 +129,151 @@ describe('TaskAiTerminalSection', () => {
     ));
 
     expect(screen.getByText('Terminal agent-2')).toBeDefined();
+  });
+
+  it('hides layout controls when there is only one agent terminal to arrange', () => {
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      selectedAgentId: 'agent-1',
+    });
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+    });
+
+    const view = render(() => (
+      <TaskAiTerminalSection isActive={() => true} onReuseLastPrompt={vi.fn()} task={() => task} />
+    ));
+
+    expect(view.container.querySelector('[data-ai-terminal-layout-controls]')).toBeNull();
+    expect(view.container.querySelectorAll('[data-ai-terminal-layout-button]')).toHaveLength(0);
+  });
+
+  it('shows layout controls when multiple agent terminals can be arranged', () => {
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      id: 'task-1',
+      selectedAgentId: 'agent-1',
+    });
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+
+    const view = render(() => (
+      <TaskAiTerminalSection
+        isActive={() => true}
+        onReuseLastPrompt={vi.fn()}
+        task={() => store.tasks['task-1'] ?? task}
+      />
+    ));
+    const layoutButtons = view.container.querySelectorAll('[data-ai-terminal-layout-button]');
+    const gridButton = getRequiredButton(
+      view.container,
+      '[data-ai-terminal-layout-button="grid"]',
+      'Grid layout button was not rendered',
+    );
+
+    expect(view.container.querySelector('[data-ai-terminal-layout-controls]')).toBeDefined();
+    expect(layoutButtons).toHaveLength(4);
+    expect(screen.getByText('Solo')).toBeDefined();
+
+    fireEvent.click(gridButton);
+
+    expect(store.tasks['task-1']?.terminalLayoutMode).toBe('grid');
+  });
+
+  it('adds a sibling agent from the terminal info bar', async () => {
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      selectedAgentId: 'agent-1',
+    });
+    const codexDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('availableAgents', [createTestAgentDef({ id: 'claude', name: 'Claude' }), codexDef]);
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+    });
+
+    const view = render(() => (
+      <TaskAiTerminalSection
+        isActive={() => true}
+        onReuseLastPrompt={vi.fn()}
+        task={() => store.tasks['task-1'] ?? task}
+      />
+    ));
+    const addButton = getRequiredButton(
+      view.container,
+      '[data-ai-terminal-add-agent-button]',
+      'Add agent button was not rendered',
+    );
+
+    fireEvent.click(addButton);
+    const codexOption = getRequiredButton(
+      view.container,
+      '[data-ai-terminal-add-agent-option="codex"]',
+      'Codex add-agent option was not rendered',
+    );
+
+    fireEvent.click(codexOption);
+
+    await waitFor(() => {
+      expect(store.tasks['task-1']?.agentIds).toHaveLength(2);
+    });
+    const addedAgentId = store.tasks['task-1']?.agentIds[1];
+    expect(addedAgentId).toBeDefined();
+    expect(store.tasks['task-1']?.selectedAgentId).toBe(addedAgentId);
+    expect(store.agents[addedAgentId ?? '']?.def).toEqual(codexDef);
+    expect(screen.getByText(`Terminal ${addedAgentId}`)).toBeDefined();
+    expect(view.container.querySelector('[data-ai-terminal-agent-tabs]')).toBeDefined();
+    expect(view.container.querySelector('[data-ai-terminal-layout-controls]')).toBeDefined();
+  });
+
+  it('closes a selected sibling agent from the terminal info bar', async () => {
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      id: 'task-1',
+      selectedAgentId: 'agent-2',
+      terminalLayoutMode: 'split',
+    });
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({
+        def: createTestAgentDef({ id: 'codex', name: 'Codex' }),
+        id: 'agent-2',
+        taskId: 'task-1',
+      }),
+    });
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-2');
+
+    const view = render(() => (
+      <TaskAiTerminalSection
+        isActive={() => true}
+        onReuseLastPrompt={vi.fn()}
+        task={() => store.tasks['task-1'] ?? task}
+      />
+    ));
+    const closeButton = getRequiredButton(
+      view.container,
+      '[data-ai-terminal-agent-close="agent-2"]',
+      'Agent close button was not rendered',
+    );
+
+    fireEvent.click(closeButton);
+
+    await waitFor(() => {
+      expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    });
+    expect(invokeMock).toHaveBeenCalledWith(IPC.KillAgent, { agentId: 'agent-2' });
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-1');
+    expect(store.activeAgentId).toBe('agent-1');
+    expect(store.agents['agent-2']).toBeUndefined();
+    expect(view.container.querySelector('[data-ai-terminal-layout-controls]')).toBeNull();
   });
 
   it('renders passive siblings without granting command authority in split layout', () => {

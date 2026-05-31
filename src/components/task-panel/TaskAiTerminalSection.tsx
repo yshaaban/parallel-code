@@ -3,7 +3,9 @@ import {
   Show,
   createEffect,
   createMemo,
+  createSignal,
   onCleanup,
+  onMount,
   untrack,
   type Accessor,
   type JSX,
@@ -14,7 +16,7 @@ import {
   type AgentRunnerProfileConfig,
 } from '../../domain/agent-runners.js';
 import { isExitedRemoteAgentStatus } from '../../domain/server-state';
-import type { PtyExitData } from '../../ipc/types';
+import type { AgentDef, PtyExitData } from '../../ipc/types';
 import {
   buildAgentSpawnArgs,
   getAgentResumeStrategy,
@@ -22,6 +24,7 @@ import {
 } from '../../lib/agent-resume';
 import { getAgentSpawnCommand, getAgentSpawnEnvironment } from '../../lib/agent-spawn-config';
 import { sf } from '../../lib/fontScale';
+import { warn as logWarn } from '../../lib/log';
 import { theme } from '../../lib/theme';
 import {
   getFontScale,
@@ -31,10 +34,13 @@ import {
   getTaskTerminalLayoutMode,
   getTaskVisibleAiTerminalAgentIds,
   isTaskPanelFocused,
+  addAgentToTask,
+  closeAgentInTask,
   markAgentExited,
   markAgentOutput,
   registerFocusFn,
   restartAgent,
+  setActiveTask,
   setActiveAgent,
   setLastPrompt,
   setTaskFocusedPanel,
@@ -104,13 +110,26 @@ function getAgentExitStatusText(agent: Pick<Agent, 'exitCode' | 'signal'>): stri
 function getLayoutButtonLabel(mode: TaskTerminalLayoutMode): string {
   switch (mode) {
     case 'focused':
-      return 'Focus';
+      return 'Solo';
     case 'split':
       return 'Split';
     case 'grid':
       return 'Grid';
     case 'stacked':
       return 'Stack';
+  }
+}
+
+function getLayoutButtonTitle(mode: TaskTerminalLayoutMode): string {
+  switch (mode) {
+    case 'focused':
+      return 'Show the selected agent only';
+    case 'split':
+      return 'Show the selected agent and one other agent';
+    case 'grid':
+      return 'Show up to four agents in a grid';
+    case 'stacked':
+      return 'Show all agents stacked vertically';
   }
 }
 
@@ -167,12 +186,285 @@ function getLayoutButtonStyle(isSelected: boolean): JSX.CSSProperties {
   };
 }
 
+function getAgentTabBackground(isSelected: boolean): string {
+  return isSelected ? theme.bgSelected : theme.bgInput;
+}
+
+function getAgentTabBorder(isSelected: boolean): string {
+  return isSelected ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`;
+}
+
+function getAgentTabButtonStyle(isSelected: boolean, canClose: boolean): JSX.CSSProperties {
+  const border = getAgentTabBorder(isSelected);
+  return {
+    display: 'inline-flex',
+    'align-items': 'center',
+    gap: '4px',
+    height: '20px',
+    'min-width': '0',
+    'max-width': '132px',
+    padding: '0 7px',
+    background: getAgentTabBackground(isSelected),
+    border,
+    'border-right': canClose ? 'none' : border,
+    color: isSelected ? theme.fg : theme.fgMuted,
+    'border-radius': canClose ? '5px 0 0 5px' : '5px',
+    cursor: 'pointer',
+    'font-family': "'JetBrains Mono', monospace",
+    'font-size': sf(11),
+  };
+}
+
+function getAgentTabLabelStyle(): JSX.CSSProperties {
+  return {
+    overflow: 'hidden',
+    'text-overflow': 'ellipsis',
+    'min-width': '0',
+  };
+}
+
+function getAgentTabCloseButtonStyle(isSelected: boolean): JSX.CSSProperties {
+  return {
+    display: 'inline-flex',
+    'align-items': 'center',
+    'justify-content': 'center',
+    width: '20px',
+    height: '20px',
+    background: getAgentTabBackground(isSelected),
+    border: getAgentTabBorder(isSelected),
+    color: theme.fgMuted,
+    'border-radius': '0 5px 5px 0',
+    cursor: 'pointer',
+    padding: '0',
+  };
+}
+
+function getAddAgentMenuItemStyle(isAdding: boolean): JSX.CSSProperties {
+  return {
+    display: 'block',
+    width: '100%',
+    background: isAdding ? theme.bgSelected : 'transparent',
+    border: 'none',
+    color: theme.fg,
+    padding: '5px 10px',
+    cursor: isAdding ? 'default' : 'pointer',
+    'font-size': sf(11),
+    'text-align': 'left',
+  };
+}
+
 function getTerminalTileBorder(isSelected: boolean): string {
   if (isSelected) {
     return `1px solid color-mix(in srgb, ${theme.accent} 70%, transparent)`;
   }
 
   return `1px solid ${theme.border}`;
+}
+
+function CloseIcon(): JSX.Element {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+    </svg>
+  );
+}
+
+function PlusIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 2.75a.75.75 0 0 1 .75.75v3.75h3.75a.75.75 0 0 1 0 1.5H8.75v3.75a.75.75 0 0 1-1.5 0V8.75H3.5a.75.75 0 0 1 0-1.5h3.75V3.5A.75.75 0 0 1 8 2.75Z" />
+    </svg>
+  );
+}
+
+interface AddAgentMenuProps {
+  onAgentAdded: (agentId: string) => void;
+  taskId: string;
+}
+
+function AddAgentMenu(props: AddAgentMenuProps): JSX.Element {
+  const [open, setOpen] = createSignal(false);
+  const [addingAgentDefId, setAddingAgentDefId] = createSignal<string | null>(null);
+  const availableAgents = createMemo(() =>
+    store.availableAgents.filter((agentDef) => agentDef.available !== false),
+  );
+  let menuRef: HTMLSpanElement | undefined;
+
+  function closeMenuOnOutsideClick(event: MouseEvent): void {
+    if (!menuRef || menuRef.contains(event.target as Node)) {
+      return;
+    }
+
+    setOpen(false);
+  }
+
+  onMount(() => {
+    document.addEventListener('mousedown', closeMenuOnOutsideClick);
+  });
+  onCleanup(() => {
+    document.removeEventListener('mousedown', closeMenuOnOutsideClick);
+  });
+
+  async function handleAddAgent(agentDef: AgentDef): Promise<void> {
+    if (addingAgentDefId() !== null) {
+      return;
+    }
+
+    setAddingAgentDefId(agentDef.id);
+    try {
+      const agentId = await addAgentToTask(props.taskId, agentDef);
+      if (!agentId) {
+        setOpen(false);
+        return;
+      }
+
+      setActiveTask(props.taskId);
+      setActiveAgent(agentId);
+      setTaskFocusedPanel(props.taskId, 'ai-terminal');
+      props.onAgentAdded(agentId);
+      setOpen(false);
+    } catch (error) {
+      logWarn('task-ai-terminal.add-agent', 'Failed to add task agent', {
+        agentDefId: agentDef.id,
+        error,
+        taskId: props.taskId,
+      });
+    } finally {
+      setAddingAgentDefId(null);
+    }
+  }
+
+  return (
+    <Show when={availableAgents().length > 0}>
+      <span
+        data-ai-terminal-add-agent-menu="true"
+        ref={(element) => {
+          menuRef = element;
+        }}
+        style={{ position: 'relative', display: 'inline-flex' }}
+      >
+        <button
+          type="button"
+          aria-expanded={open()}
+          aria-haspopup="menu"
+          aria-label="Add agent"
+          data-ai-terminal-add-agent-button="true"
+          title="Add agent"
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen((current) => !current);
+          }}
+          style={{
+            display: 'inline-flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            width: '22px',
+            height: '20px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+            color: theme.fgMuted,
+            'border-radius': '5px',
+            cursor: 'pointer',
+            padding: '0',
+          }}
+        >
+          <PlusIcon />
+        </button>
+        <Show when={open()}>
+          <div
+            role="menu"
+            aria-label="Add agent"
+            style={{
+              position: 'absolute',
+              top: '100%',
+              right: '0',
+              'margin-top': '4px',
+              background: theme.bgElevated,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '6px',
+              padding: '4px 0',
+              'z-index': '30',
+              'min-width': '180px',
+              'box-shadow': '0 4px 12px rgba(0,0,0,0.3)',
+            }}
+          >
+            <div style={{ padding: '4px 10px', 'font-size': sf(10), color: theme.fgMuted }}>
+              Add agent
+            </div>
+            <For each={availableAgents()}>
+              {(agentDef) => {
+                const isAdding = () => addingAgentDefId() === agentDef.id;
+                return (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-ai-terminal-add-agent-option={agentDef.id}
+                    title={agentDef.description}
+                    disabled={addingAgentDefId() !== null}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void handleAddAgent(agentDef);
+                    }}
+                    style={getAddAgentMenuItemStyle(isAdding())}
+                  >
+                    {agentDef.name}
+                  </button>
+                );
+              }}
+            </For>
+          </div>
+        </Show>
+      </span>
+    </Show>
+  );
+}
+
+interface AgentTabProps {
+  agent: Agent;
+  canClose: boolean;
+  index: number;
+  isSelected: boolean;
+  onClose: (agentId: string) => void;
+  onSelect: (agentId: string) => void;
+}
+
+function AgentTab(props: AgentTabProps): JSX.Element {
+  return (
+    <span style={{ display: 'inline-flex', 'align-items': 'center', height: '20px' }}>
+      <button
+        type="button"
+        aria-pressed={props.isSelected}
+        data-ai-terminal-agent-tab={props.agent.id}
+        aria-label={`Select ${props.agent.def.name} agent`}
+        title={props.agent.def.description || props.agent.def.name}
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onSelect(props.agent.id);
+        }}
+        style={getAgentTabButtonStyle(props.isSelected, props.canClose)}
+      >
+        <span style={getAgentTabLabelStyle()}>{props.agent.def.name}</span>
+        <Show when={props.canClose}>
+          <span style={{ opacity: 0.55, 'flex-shrink': '0' }}>#{props.index + 1}</span>
+        </Show>
+      </button>
+      <Show when={props.canClose}>
+        <button
+          type="button"
+          aria-label={`Close ${props.agent.def.name} agent`}
+          data-ai-terminal-agent-close={props.agent.id}
+          title="Close agent"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onClose(props.agent.id);
+          }}
+          style={getAgentTabCloseButtonStyle(props.isSelected)}
+        >
+          <CloseIcon />
+        </button>
+      </Show>
+    </span>
+  );
 }
 
 function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
@@ -442,10 +734,40 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
     terminalFocusFns.delete(agentId);
   }
 
+  function focusAgentWhenReady(agentId: string): void {
+    const focusFn = terminalFocusFns.get(agentId);
+    if (!focusFn) {
+      pendingFocusAgentId = agentId;
+      return;
+    }
+
+    pendingFocusAgentId = null;
+    focusFn();
+  }
+
+  function selectAgent(agentId: string): void {
+    setActiveTask(task().id);
+    setActiveAgent(agentId);
+    setTaskFocusedPanel(task().id, 'ai-terminal');
+    focusAgentWhenReady(agentId);
+  }
+
+  async function closeAgent(agentId: string): Promise<void> {
+    const wasSelected = selectedAgentId() === agentId;
+
+    await closeAgentInTask(task().id, agentId);
+
+    const nextSelectedAgentId = selectedAgentId();
+    if (wasSelected && nextSelectedAgentId) {
+      selectAgent(nextSelectedAgentId);
+    }
+  }
+
   const currentLayoutMode = createMemo(() => getTaskTerminalLayoutMode(task()));
   const layoutStyle = createMemo(() =>
     getTaskTerminalLayoutStyle(currentLayoutMode(), visibleAgentIds().length),
   );
+  const hasLayoutChoices = createMemo(() => availableTaskAgentIds().length > 1);
 
   return (
     <ScalablePanel panelId={`${task().id}:ai-terminal`}>
@@ -464,34 +786,115 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
         onClick={() => setTaskFocusedPanel(task().id, 'ai-terminal')}
       >
         <InfoBar
+          allowOverflow
           title={
             task().lastPrompt ||
             (task().initialPrompt ? 'Waiting to send prompt...' : 'No prompts sent yet')
           }
           onDblClick={props.onReuseLastPrompt}
         >
-          <span style={{ opacity: task().lastPrompt ? 1 : 0.4 }}>
-            {getPromptStatusText(task())}
-          </span>
-          <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px' }}>
-            <For each={LAYOUT_MODES}>
-              {(mode) => {
-                const isSelectedMode = () => currentLayoutMode() === mode;
-                return (
-                  <button
-                    type="button"
-                    data-ai-terminal-layout-button={mode}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setTaskTerminalLayoutMode(task().id, mode);
-                    }}
-                    style={getLayoutButtonStyle(isSelectedMode())}
-                  >
-                    {getLayoutButtonLabel(mode)}
-                  </button>
-                );
+          <div
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '8px',
+              width: '100%',
+              'min-width': '0',
+            }}
+          >
+            <span
+              style={{
+                opacity: task().lastPrompt ? 1 : 0.4,
+                flex: '1',
+                'min-width': '0',
+                overflow: 'hidden',
+                'text-overflow': 'ellipsis',
               }}
-            </For>
+            >
+              {getPromptStatusText(task())}
+            </span>
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '4px',
+                'min-width': '0',
+                'flex-shrink': '0',
+                'max-width': '72%',
+              }}
+            >
+              <Show when={hasLayoutChoices()}>
+                <div
+                  aria-label="Task agents"
+                  data-ai-terminal-agent-tabs="true"
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '4px',
+                    'min-width': '0',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <For each={availableTaskAgentIds()}>
+                    {(agentId, index) => (
+                      <Show when={store.agents[agentId]}>
+                        {(agent) => (
+                          <AgentTab
+                            agent={agent()}
+                            canClose={hasLayoutChoices()}
+                            index={index()}
+                            isSelected={agentId === selectedAgentId()}
+                            onClose={(nextAgentId) => {
+                              const currentTaskId = task().id;
+                              void closeAgent(nextAgentId).catch((error) => {
+                                logWarn(
+                                  'task-ai-terminal.close-agent',
+                                  'Failed to close task agent',
+                                  {
+                                    agentId: nextAgentId,
+                                    error,
+                                    taskId: currentTaskId,
+                                  },
+                                );
+                              });
+                            }}
+                            onSelect={selectAgent}
+                          />
+                        )}
+                      </Show>
+                    )}
+                  </For>
+                </div>
+                <div
+                  aria-label="AI terminal layout"
+                  data-ai-terminal-layout-controls="true"
+                  style={{ display: 'flex', gap: '4px', 'flex-shrink': '0' }}
+                >
+                  <For each={LAYOUT_MODES}>
+                    {(mode) => {
+                      const isSelectedMode = () => currentLayoutMode() === mode;
+                      return (
+                        <button
+                          type="button"
+                          aria-label={getLayoutButtonTitle(mode)}
+                          aria-pressed={isSelectedMode()}
+                          data-ai-terminal-layout-button={mode}
+                          title={getLayoutButtonTitle(mode)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setTaskTerminalLayoutMode(task().id, mode);
+                          }}
+                          style={getLayoutButtonStyle(isSelectedMode())}
+                        >
+                          {getLayoutButtonLabel(mode)}
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+              <AddAgentMenu onAgentAdded={focusAgentWhenReady} taskId={task().id} />
+            </div>
           </div>
         </InfoBar>
         <div style={{ flex: '1', position: 'relative', overflow: 'hidden', padding: '6px' }}>

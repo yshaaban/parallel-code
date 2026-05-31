@@ -24,6 +24,7 @@ export {
 export { getProjectMode, isGitProject, isNonGitProject } from './project-mode';
 export {
   addAgentToTask,
+  closeAgentInTask,
   getAgentTerminalSessionVersion,
   markAgentExited,
   markAgentRunning,

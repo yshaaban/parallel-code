@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAgentPromptDispatchAt, markTaskPromptDispatch } from '../app/task-prompt-dispatch';
+import { IPC } from '../../electron/ipc/channels';
 import { setStore, store } from './core';
 import {
+  addAgentToTask,
+  closeAgentInTask,
   getAgentTerminalSessionVersion,
   hydrateAgentGeneration,
   markAgentExited,
@@ -11,6 +14,19 @@ import {
 } from './agents';
 import { createTestAgent, resetStoreForTest } from '../test/store-test-helpers';
 import type { Agent } from './types';
+
+const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  saveCurrentRuntimeStateMock: vi.fn(),
+}));
+
+vi.mock('../lib/ipc', () => ({
+  invoke: invokeMock,
+}));
+
+vi.mock('./persistence-save', () => ({
+  saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
+}));
 
 function requireAgent(agentId: string): Agent {
   const agent = store.agents[agentId];
@@ -21,9 +37,24 @@ function requireAgent(agentId: string): Agent {
   return agent;
 }
 
+function createDeferredPromise(): {
+  promise: Promise<undefined>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<undefined>((nextResolve) => {
+    resolve = () => nextResolve(undefined);
+  });
+  return { promise, resolve };
+}
+
 describe('agents store lifecycle guards', () => {
   beforeEach(() => {
     resetStoreForTest();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+    saveCurrentRuntimeStateMock.mockReset();
+    saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
   });
 
   it('ignores stale exit callbacks from an older agent generation', () => {
@@ -176,5 +207,186 @@ describe('agents store lifecycle guards', () => {
     });
 
     expect(getAgentPromptDispatchAt('agent-1', 2, 1_300)).toBeNull();
+  });
+
+  it('adds a task agent as the selected command target', async () => {
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1'],
+        selectedAgentId: 'agent-1',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+    });
+
+    const agentId = await addAgentToTask('task-1', {
+      id: 'codex',
+      name: 'Codex',
+      command: 'codex',
+      args: [],
+      resume_args: [],
+      skip_permissions_args: [],
+      description: 'Codex agent',
+    });
+
+    expect(agentId).toEqual(expect.any(String));
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1', agentId]);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe(agentId);
+    expect(store.activeAgentId).toBe(agentId);
+    expect(store.lastAgentId).toBe('codex');
+    expect(store.agents[agentId ?? '']).toMatchObject({
+      def: expect.objectContaining({ id: 'codex' }),
+      status: 'running',
+      taskId: 'task-1',
+    });
+    expect(store.agentActive[agentId ?? '']).toBe(true);
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes a task agent and selects a remaining sibling when needed', async () => {
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1', 'agent-2'],
+        selectedAgentId: 'agent-2',
+        terminalLayoutMode: 'split',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+    setStore('activeAgentId', 'agent-2');
+    setStore('agentActive', { 'agent-2': true });
+    markTaskPromptDispatch('agent-2', 0, 1_000);
+
+    await closeAgentInTask('task-1', 'agent-2');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.KillAgent, { agentId: 'agent-2' });
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-1');
+    expect(store.tasks['task-1']?.terminalLayoutMode).toBeUndefined();
+    expect(store.activeAgentId).toBe('agent-1');
+    expect(store.agents['agent-2']).toBeUndefined();
+    expect(store.agentActive['agent-2']).toBeUndefined();
+    expect(getAgentPromptDispatchAt('agent-2', 0, 1_100)).toBeNull();
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes a passive task agent without moving the selected command target', async () => {
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1', 'agent-2', 'agent-3'],
+        selectedAgentId: 'agent-1',
+        terminalLayoutMode: 'grid',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+      'agent-3': createTestAgent({ id: 'agent-3', taskId: 'task-1' }),
+    });
+    setStore('activeAgentId', 'agent-1');
+
+    await closeAgentInTask('task-1', 'agent-2');
+
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1', 'agent-3']);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-1');
+    expect(store.tasks['task-1']?.terminalLayoutMode).toBe('grid');
+    expect(store.activeAgentId).toBe('agent-1');
+    expect(store.agents['agent-2']).toBeUndefined();
+  });
+
+  it('does not close the last task agent', async () => {
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1'],
+        selectedAgentId: 'agent-1',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+    });
+
+    await closeAgentInTask('task-1', 'agent-1');
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    expect(store.agents['agent-1']).toBeDefined();
+    expect(saveCurrentRuntimeStateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not kill the last remaining task agent while another sibling close is pending', async () => {
+    const killAgent = createDeferredPromise();
+    invokeMock.mockReturnValueOnce(killAgent.promise);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1', 'agent-2'],
+        selectedAgentId: 'agent-1',
+        terminalLayoutMode: 'split',
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-1' }),
+    });
+    setStore('activeAgentId', 'agent-1');
+
+    const firstClose = closeAgentInTask('task-1', 'agent-1');
+    const secondClose = closeAgentInTask('task-1', 'agent-2');
+    await secondClose;
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.KillAgent, { agentId: 'agent-1' });
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1', 'agent-2']);
+
+    killAgent.resolve();
+    await firstClose;
+
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-2']);
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+    expect(store.activeAgentId).toBe('agent-2');
+    expect(store.agents['agent-1']).toBeUndefined();
+    expect(store.agents['agent-2']).toBeDefined();
   });
 });
