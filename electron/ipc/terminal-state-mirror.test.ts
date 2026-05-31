@@ -150,4 +150,31 @@ describe('TerminalStateMirror', () => {
     expect(serialized).toContain('combined private modes');
     expect(serialized.endsWith('\x1b[?2004h\x1b[?25h')).toBe(true);
   });
+
+  it('restores bracketed paste mode after terminal full reset', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?2004hbracketed paste before reset\x1bc'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized.endsWith('\x1b[?2004l')).toBe(true);
+  });
+
+  it('preserves xterm cursor visibility state after terminal full reset', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?25l\x1b[?2004hprivate modes before reset\x1bc'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized.endsWith('\x1b[?2004l\x1b[?25l')).toBe(true);
+  });
+
+  it('restores private mode defaults after terminal soft reset', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('\x1b[?25l\x1b[?2004hprivate modes before reset\x1b[!p'));
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized.endsWith('\x1b[?2004l\x1b[?25h')).toBe(true);
+  });
 });

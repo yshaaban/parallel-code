@@ -19,8 +19,8 @@ const TERMINAL_STATE_MIRROR_SCROLLBACK_ROWS = 5_000;
 type CsiParams = Array<number | number[]>;
 type Disposable = { dispose: () => void };
 
-interface DecPrivateModes {
-  bracketedPaste: boolean | null;
+interface DecPrivateModeRestoreState {
+  bracketedPasteTouched: boolean;
   cursorVisible: boolean | null;
 }
 
@@ -30,7 +30,11 @@ export interface SerializedTerminalState {
   rows: number;
 }
 
-function updateDecPrivateModes(modes: DecPrivateModes, params: CsiParams, enabled: boolean): void {
+function updateDecPrivateModes(
+  modes: DecPrivateModeRestoreState,
+  params: CsiParams,
+  enabled: boolean,
+): void {
   for (const param of params) {
     if (Array.isArray(param)) {
       updateDecPrivateModes(modes, param, enabled);
@@ -42,7 +46,7 @@ function updateDecPrivateModes(modes: DecPrivateModes, params: CsiParams, enable
         modes.cursorVisible = enabled;
         break;
       case 2004:
-        modes.bracketedPaste = enabled;
+        modes.bracketedPasteTouched = true;
         break;
       default:
         break;
@@ -54,8 +58,8 @@ export class TerminalStateMirror {
   private readonly terminal: import('@xterm/headless').Terminal;
   private readonly serializeAddon: import('@xterm/addon-serialize').SerializeAddon;
   private readonly parserDisposables: Disposable[];
-  private readonly decPrivateModes: DecPrivateModes = {
-    bracketedPaste: null,
+  private readonly decPrivateModeRestoreState: DecPrivateModeRestoreState = {
+    bracketedPasteTouched: false,
     cursorVisible: null,
   };
   private pendingOperation: Promise<void> = Promise.resolve();
@@ -177,11 +181,21 @@ export class TerminalStateMirror {
   private registerDecPrivateModeTracking(): Disposable[] {
     return [
       this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
-        updateDecPrivateModes(this.decPrivateModes, params, true);
+        updateDecPrivateModes(this.decPrivateModeRestoreState, params, true);
         return false;
       }),
       this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
-        updateDecPrivateModes(this.decPrivateModes, params, false);
+        updateDecPrivateModes(this.decPrivateModeRestoreState, params, false);
+        return false;
+      }),
+      this.terminal.parser.registerCsiHandler({ intermediates: '!', final: 'p' }, () => {
+        this.decPrivateModeRestoreState.bracketedPasteTouched = true;
+        this.decPrivateModeRestoreState.cursorVisible = true;
+        return false;
+      }),
+      this.terminal.parser.registerEscHandler({ final: 'c' }, () => {
+        // xterm full reset restores DEC private modes, but cursor visibility is separate state.
+        this.decPrivateModeRestoreState.bracketedPasteTouched = true;
         return false;
       }),
     ];
@@ -191,11 +205,11 @@ export class TerminalStateMirror {
     // SerializeAddon restores the grid but not DEC private modes such as DECTCEM.
     // Replay the parsed protocol state so restored TUIs keep native cursor semantics.
     let result = '';
-    if (this.decPrivateModes.bracketedPaste !== null) {
-      result += this.decPrivateModes.bracketedPaste ? '\x1b[?2004h' : '\x1b[?2004l';
+    if (this.decPrivateModeRestoreState.bracketedPasteTouched) {
+      result += this.terminal.modes.bracketedPasteMode ? '\x1b[?2004h' : '\x1b[?2004l';
     }
-    if (this.decPrivateModes.cursorVisible !== null) {
-      result += this.decPrivateModes.cursorVisible ? '\x1b[?25h' : '\x1b[?25l';
+    if (this.decPrivateModeRestoreState.cursorVisible !== null) {
+      result += this.decPrivateModeRestoreState.cursorVisible ? '\x1b[?25h' : '\x1b[?25l';
     }
     return result;
   }
