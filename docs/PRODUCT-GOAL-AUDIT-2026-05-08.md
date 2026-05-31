@@ -1,14 +1,16 @@
 # Product Goal Audit 2026-05-08
 
-This is the current prompt-to-artifact checklist for the active product objective in
+This is the prompt-to-artifact checklist for the active product objective in
 [PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md).
 
 Status: **not complete as a product goal**. The active goal is now sharpened around the
 browser-first developer cockpit, selected-surface readiness, terminal responsiveness, visible user
 control, browser/server as the baseline, simple ownership, and product-code-first performance
-evidence. The core architecture has strong evidence for browser-first control, startup, restore, and
-server-owned state, but the broader promise of desktop-class responsiveness across every high-value
-surface still needs measured browser/server scorecard proof. The implementation plan for closing
+evidence.
+
+The core architecture has strong evidence for browser-first control, startup, restore, and
+server-owned state. The broader promise of desktop-class responsiveness across the main user
+surfaces still needs measured browser/server scorecard proof. The implementation plan for closing
 that gap lives in [PRODUCT-PERFORMANCE-EXECUTION-PLAN.md](./PRODUCT-PERFORMANCE-EXECUTION-PLAN.md).
 
 ## Checklist
@@ -52,20 +54,25 @@ that gap lives in [PRODUCT-PERFORMANCE-EXECUTION-PLAN.md](./PRODUCT-PERFORMANCE-
 1. The goal is broader than the current changed files. It cannot be marked complete from docs,
    targeted tests, or architecture evidence alone.
 2. Desktop-class responsiveness is now measured by the smoke scorecard. The latest repeat baseline
-   exposed selected-terminal cold launch and renderer-tier misses; a follow-up product-code
+   exposed selected-terminal cold launch and renderer-tier misses. A follow-up product-code
    experiment that prebinds the browser output channel during lazy terminal-session module loading
    passed every smoke budget again after final review fixes, the cleanup scorecard addition, a
    narrow reconnect/replay lane, a narrow remote/mobile command-session lane, and the takeover
-   prompt cleanup fix. The latest three-run artifact
+   prompt cleanup fix.
+
+   The latest three-run artifact
    `artifacts/performance-scorecard/smoke/summary-2026-05-09T20-16-23-478Z.md` passed every smoke
    budget. Treat that as promising selected-terminal startup, current-branch cleanup, reconnect
    selected-surface, remote takeover, and remote command acknowledgement evidence, not full
-   product-goal proof. A loaded no-rebuild rerun also showed unrelated startup and preview spans
-   regressing together, so browser timing must remain load-sensitive evidence rather than the only
-   iteration loop. A separate loaded terminal UI-fluidity run completed, but it exposed multi-visible
-   terminal round-trip and frame-gap misses rather than proving the desktop-class load goal. The
-   current evidence still does not prove reconnect under heavier replay/load, managed-worktree
-   cleanup, long-lived multi-client coordination, or loaded full-scorecard behavior.
+   product-goal proof.
+
+   A loaded no-rebuild rerun also showed unrelated startup and preview spans regressing together,
+   so browser timing must remain load-sensitive evidence rather than the only iteration loop. A
+   separate loaded terminal UI-fluidity run completed, but it exposed multi-visible terminal
+   round-trip and frame-gap misses rather than proving the desktop-class load goal. The current
+   evidence still does not prove reconnect under heavier replay/load, managed-worktree cleanup,
+   long-lived multi-client coordination, or loaded full-scorecard behavior.
+
 3. Review notes now have a pull request template prompt and CI check that rejects missing,
    misplaced, unknown-checkbox, template/validator drift, generic, contradictory,
    fake browser-proof, ambiguous skipped-browser, or owner/state-mismatched entries, but reviewers
@@ -77,8 +84,8 @@ that gap lives in [PRODUCT-PERFORMANCE-EXECUTION-PLAN.md](./PRODUCT-PERFORMANCE-
 
 ## Known Weak Proof Areas
 
-These are not blockers for the current docs and review-guard changes, but they are explicit
-follow-up proof gaps before the broader product objective can be called complete.
+These are not blockers for the current docs and review-guard changes. They are proof gaps that must
+close before the broader product objective can be called complete.
 
 ### Different-width resize authority
 
@@ -160,7 +167,7 @@ Current source of truth:
 - A targeted Chromium trace at
   `artifacts/terminal-ui-fluidity/2026-05-10-interactive-verbose-trace-check/` kept the same exact
   2-visible lane and pointed the long-task tail at browser commit work rather than app scheduler
-  bookkeeping: runtime owner p95 was 0.50ms, scheduler drain p95 was 0.40ms, and the trace summary
+  bookkeeping. Runtime owner p95 was 0.50ms, scheduler drain p95 was 0.40ms, and the trace summary
   was dominated by `Commit` slices.
 - A direct focused-pressure-neutral simplification was rejected:
   `artifacts/terminal-ui-fluidity/2026-05-10-focused-pressure-neutral-check/summary.md` improved
@@ -190,7 +197,7 @@ Current source of truth:
   167.90ms. This is diagnostic validation, not loaded-goal completion.
 - The repeated split run at
   `artifacts/terminal-ui-fluidity/2026-05-10-input-ack-split-repeat3/summary.md` showed the bad
-  tail spans multiple stages: 2-visible `interactive_verbose` still failed frame-gap p95 at
+  tail spans multiple stages. 2-visible `interactive_verbose` still failed frame-gap p95 at
   183.30ms, long tasks at 5924ms, terminal render p95 at 6216.10ms, and focused round trip at
   1065.30ms, with input-dispatch p95 384.10ms, echo-after-dispatch p95 737.80ms, terminal-input
   dispatched p95 361.10ms, and accepted p95 324.50ms.
@@ -277,7 +284,7 @@ Current source of truth:
 - Active terminal writes are now sampled per frame in the UI-fluidity diagnostics. This is retained
   as measurement fidelity: completion-duration summaries can miss writes that start before focused
   input and remain pending during it, so the next loaded artifact can distinguish in-flight terminal
-  write pressure from writes that merely completed during the focused-input window.
+  write pressure from writes that completed during the focused-input window.
 - The active-write smoke at
   `artifacts/terminal-ui-fluidity/2026-05-10-active-write-diagnostic-smoke/summary.md` confirmed
   that distinction in the loaded 2-visible `interactive_verbose` lane: focused-input
@@ -416,7 +423,7 @@ Current source of truth:
   dropped to 5 and nonzero-buffered resume sends dropped to 0, but the lane still failed with long
   tasks at 4287ms and focused round trip at 672.90ms. Resume-chatter reduction alone is not a
   retained product win; the next flow-control attempt should target explicit backend
-  acknowledgement or priority, not only duplicate-resume coalescing.
+  acknowledgement or priority, rather than duplicate-resume coalescing alone.
 - An explicit backend-acknowledged flow-control pause/resume experiment was rejected and backed
   out. It made browser flow-control pause/resume request-tracked and waited for
   `agent-command-result`; the owner-local protocol, IPC, server websocket, and command-result tests
@@ -542,24 +549,27 @@ Current source of truth:
 
 Needed proof direction: treat this as a retained fix for the slowest measured hidden-switch lane,
 not as loaded-goal completion. The next product-code target is cross-layer acknowledgement and
-backpressure under loaded browser commit pressure, using the input-buffer/input-send/flow-control/
+backpressure under loaded browser commit pressure. Use the input-buffer/input-send/flow-control/
 render split and aligned visible-count harness to avoid repeating disproven batching or
-output-scheduling shapes. The evidence now points to keyboard dispatch under load, command
-acknowledgement, input/PTY/write-ack, browser transport delivery, flow-control pause/resume windows,
-focused echo measurement semantics, render-after-receive cost, redraw-control terminal write/commit
-pressure, and sampled in-flight visible-background writes when they actually overlap focused input.
+output-scheduling shapes.
+
+The evidence now points to keyboard dispatch under load, command acknowledgement,
+input/PTY/write-ack, browser transport delivery, flow-control pause/resume windows, focused echo
+measurement semantics, render-after-receive cost, redraw-control terminal write/commit pressure,
+and sampled in-flight visible-background writes when they overlap focused input.
+
 Do not prioritize server-side browser-control bufferedAmount tuning, synchronous renderer send
 duration, terminal channel-dispatch rewrites, backend output buffering, finish-write bookkeeping
 rewrites, generic plain-output writes, PTY queue/write rewrites, or hot-path untracked resume
 suppression for this lane without new contrary evidence, and do not raise the interactive input
 in-flight cap alone. For long-task work, prioritize redraw-control terminal write pressure,
 browser-client command pacing, flow-control priority, browser transport delivery, and browser commit
-cost over store or scheduler-scan refactors; rerun the smoke scorecard after the repeated loaded
+cost over store or scheduler-scan refactors. Rerun the smoke scorecard after the repeated loaded
 matrix stops exposing new loaded regressions.
 
 ### Long-lived browser session reliability
 
-Remote sessions, replay, and multi-client control need confidence over time, not only startup or
+Remote sessions, replay, and multi-client control need confidence over time, beyond startup or
 single reconnect examples.
 
 Current source of truth: `server/browser-control-plane.test.ts` covers repeated same-client
@@ -592,33 +602,41 @@ timing, reconnect restore, selected-terminal readiness, or multi-context coordin
 
 Use the product scorecard and diagnostics in
 [PRODUCT-PERFORMANCE-EXECUTION-PLAN.md](./PRODUCT-PERFORMANCE-EXECUTION-PLAN.md) as the optimization
-loop. The current smoke startup path has now moved from "find the selected-terminal bottleneck" to
-"stabilize and broaden the retained selected-terminal improvement." Terminal-session module loading
-is split out in startup diagnostics, an immediate browser/server preload experiment was rejected, and
-the retained browser output-channel prebind experiment improved selected-terminal startup in the
-post-fix scorecard sample. The smoke scorecard now also covers current-branch cleanup while review
-and preview-manager surfaces are open, a reconnect request-to-selected-terminal-interactive sample,
-and a mobile remote shell takeover plus command acknowledgement sample from `/remote` to backend
-`write_to_agent` response with scrollback confirmation. The loaded 24-terminal UI-fluidity matrix is
-now the clearest next product-code target. The first retained fix improved the worst sparse
-hidden-switch lane by preserving hidden-output suppression in High Load Mode and adding sparse switch
-echo protection. The second retained fix improved the 2-visible `interactive_verbose` frame/render
-shape by applying 2-visible pressure response, but focused round trip and long-task time still miss
-the provisional loaded budget. A sustained input coalescing attempt was rejected because it regressed
-input send acknowledgement and focused round trip. The latest harness correction now verifies the
-actual app-reported visible-terminal count before measuring; with exact 2- and 4-visible layouts,
-High Load Mode passes the narrow frame/render/hidden-queue shape and misses mainly on focused round
-trip plus a small long-task tail. The focused round-trip split and timeout-accounting fix now make
-that miss more legible: repeated loaded evidence must distinguish keyboard dispatch from
-echo-after-dispatch and must fail explicit timeouts. The repeated retained matrix has now failed 21
-checks, so the next step is not another broad output-scheduler constant tweak. The backend input
-trace smoke now makes PTY queue/write policy look weak as the immediate target, and the focused-input
-output split does not show active-visible or direct-write pressure as the main focused-input thief;
-isolate the remaining `interactive_verbose` keyboard-dispatch, command acknowledgement,
-transport-to-render residual, browser transport delivery, flow-control pause/resume, rendered commit
-pressure, browser-client command pacing, and focused echo measurement bottleneck under browser commit
-pressure.
-The browser-control bufferedAmount high-water smoke currently argues against tuning hidden control
+loop. The smoke startup path has moved from "find the selected-terminal bottleneck" to "stabilize
+and broaden the retained selected-terminal improvement." Terminal-session module loading is split
+out in startup diagnostics, an immediate browser/server preload experiment was rejected, and the
+retained browser output-channel prebind experiment improved selected-terminal startup in the
+post-fix scorecard sample.
+
+The smoke scorecard now also covers current-branch cleanup while review and preview-manager
+surfaces are open, a reconnect request-to-selected-terminal-interactive sample, and a mobile remote
+shell takeover plus command acknowledgement sample from `/remote` to backend `write_to_agent`
+response with scrollback confirmation.
+
+The loaded 24-terminal UI-fluidity matrix is the clearest next product-code target. The first
+retained fix improved the worst sparse hidden-switch lane by preserving hidden-output suppression in
+High Load Mode and adding sparse switch echo protection. The second retained fix improved the
+2-visible `interactive_verbose` frame/render shape by applying 2-visible pressure response, but
+focused round trip and long-task time still miss the provisional loaded budget. A sustained input
+coalescing attempt was rejected because it regressed input send acknowledgement and focused round
+trip.
+
+The latest harness correction now verifies the actual app-reported visible-terminal count before
+measuring. With exact 2- and 4-visible layouts, High Load Mode passes the narrow
+frame/render/hidden-queue shape and misses mainly on focused round trip plus a small long-task tail.
+The focused round-trip split and timeout-accounting fix make that miss more legible: repeated loaded
+evidence must distinguish keyboard dispatch from echo-after-dispatch and must fail explicit
+timeouts.
+
+The repeated retained matrix has now failed 21 checks, so the next step is not another broad
+output-scheduler constant tweak. The backend input trace smoke makes PTY queue/write policy look
+weak as the immediate target, and the focused-input output split does not show active-visible or
+direct-write pressure as the main focused-input thief. Isolate the remaining `interactive_verbose`
+keyboard-dispatch, command acknowledgement, transport-to-render residual, browser transport
+delivery, flow-control pause/resume, rendered commit pressure, browser-client command pacing, and
+focused echo measurement bottleneck under browser commit pressure.
+
+The browser-control bufferedAmount high-water smoke argues against tuning hidden control
 websocket buffering as the next pass, the browser-client send-duration smoke argues against chasing
 synchronous renderer send duration, the browser transport receive split argues against
 terminal-session channel dispatch as the next target, and the interactive input in-flight cap smoke
@@ -644,8 +662,8 @@ substitute for them.
 
 These commands were run on 2026-05-08, with the pending transport/release, type-driven guard, broad
 non-browser, startup/runtime bundle-split, and final simplification review evidence refreshed on
-2026-05-09, to validate the cheapest relevant seams for the current audit. Real browser proof is
-still reserved for browser-only risk; the review diff lifecycle, preview proxy, remote shell, task
+2026-05-09. They validate the cheapest relevant seams for the current audit. Real browser proof
+stays reserved for browser-only risk; the review diff lifecycle, preview proxy, remote shell, task
 deletion, and terminal startup canaries were run only where the changed owner crossed browser-only
 rendering, navigation, auth/bootstrap, cookie, or multi-context behavior.
 

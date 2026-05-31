@@ -1,6 +1,6 @@
 # Upstream Port Plan 2026-04-01
 
-This document turns the `2026-04-01` upstream review into an execution plan.
+This plan turns the `2026-04-01` upstream review into an execution plan.
 
 Use it together with:
 
@@ -10,7 +10,7 @@ Use it together with:
 - [REVIEW-RULES.md](./REVIEW-RULES.md)
 - [TESTING.md](./TESTING.md)
 
-The rule for every family is the same:
+Apply the same rule to every family:
 
 1. classify the upstream change
 2. map it to the correct local owner
@@ -41,7 +41,7 @@ The rule for every family is the same:
 
 ## Family Spec Template
 
-Each upstream family should be captured with:
+Record each upstream family with:
 
 1. upstream commits
 2. behavioral intent
@@ -56,7 +56,8 @@ Each upstream family should be captured with:
 
 ## Phase 1: Git Correctness And Changed-Files Footer
 
-Status: completed locally on `2026-04-01` with backend merge-base diff/log/status ports, branch-mismatch merge guards, changed-files footer corrections, and passing backend/UI validation.
+Status: completed locally on `2026-04-01` with backend merge-base diff/log/status ports,
+branch-mismatch merge guards, changed-files footer corrections, and passing backend/UI validation.
 
 ### Upstream commits
 
@@ -90,7 +91,9 @@ Status: completed locally on `2026-04-01` with backend merge-base diff/log/statu
 
 ### Historical current-main gap at planning time
 
-Closed in the Phase 1 port. The local owners now use merge-base-aware git status/log/diff paths, block stale branch merges before side effects, and keep changed-files footer totals committed-only while still surfacing uncommitted counts.
+Closed in the Phase 1 port. The local owners now use merge-base-aware git status/log/diff paths,
+block stale branch merges before side effects, and keep changed-files footer totals committed-only
+while still surfacing uncommitted counts.
 
 ### Acceptance criteria
 
@@ -123,7 +126,10 @@ Closed in the Phase 1 port. The local owners now use merge-base-aware git status
 
 ## Phase 2: Markdown And Terminal-Link Hardening
 
-Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, terminal-session modifier-click link activation, the shared app-level markdown viewer with owned `.md` routing from task-note/file/terminal surfaces, and Mermaid rendering inside the owned plan-viewer pipeline.
+Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan
+panel adoption, terminal-session modifier-click link activation, the shared app-level markdown
+viewer with owned `.md` routing from task-note/file/terminal surfaces, and Mermaid rendering inside
+the owned plan-viewer pipeline.
 
 ### Upstream commits
 
@@ -156,7 +162,9 @@ Status: completed locally on `2026-04-01` through the shared safe markdown rende
 
 ### Historical current-main gap at planning time
 
-Closed in the Phase 2 port. The local markdown owners now render through the shared safe renderer, the inline plan panel no longer parses raw markdown ad hoc, and terminal web links require explicit modifier intent at the terminal-session owner.
+Closed in the Phase 2 port. The local markdown owners now render through the shared safe renderer,
+the inline plan panel no longer parses raw markdown ad hoc, and terminal web links require explicit
+modifier intent at the terminal-session owner.
 
 ### Acceptance criteria
 
@@ -186,7 +194,9 @@ Closed in the Phase 2 port. The local markdown owners now render through the sha
 
 ## Phase 3: Terminal Media And Ergonomics
 
-Status: completed locally on `2026-04-01` through the typed clipboard-image IPC seam, Electron-owned temp-file save path, explicit browser fallback, and terminal-session shortcut-policy integration with targeted backend/helper/session validation.
+Status: completed locally on `2026-04-01` through the typed clipboard-image IPC seam,
+Electron-owned temp-file save path, explicit browser fallback, and terminal-session shortcut-policy
+integration with targeted backend/helper/session validation.
 
 ### Upstream commits
 
@@ -197,7 +207,7 @@ Status: completed locally on `2026-04-01` through the typed clipboard-image IPC 
 ### Behavioral intent
 
 - support terminal-friendly clipboard image paste through a typed backend seam
-- adopt high-value terminal ergonomics that fit current local workflow policy
+- adopt terminal ergonomics that fit current local workflow policy
 
 ### Classification
 
@@ -216,7 +226,10 @@ Status: completed locally on `2026-04-01` through the typed clipboard-image IPC 
 
 ### Historical current-main gap at planning time
 
-Closed in the Phase 3 port. The local handler/transport seam now exposes typed clipboard-image saving for Electron runtimes, browser mode degrades explicitly when only text paste is available, and terminal-session consumes the shared shortcut policy for both keydown sends and keyup suppression.
+Closed in the Phase 3 port. The local handler/transport seam now exposes typed clipboard-image
+saving for Electron runtimes, browser mode degrades explicitly when only text paste is available,
+and terminal-session consumes the shared shortcut policy for both keydown sends and keyup
+suppression.
 
 ### Acceptance criteria
 
@@ -238,7 +251,9 @@ Closed in the Phase 3 port. The local handler/transport seam now exposes typed c
 
 ## Phase 4: UI Ergonomics Improvements
 
-Status: completed locally on `2026-04-01` through the global zoom-reset shortcut owner, wrapped agent-selector layout with wider high-agent dialog sizing, soft-wrapped diff rendering, and a bounded local subset of the later added/deleted diff polish.
+Status: completed locally on `2026-04-01` through the global zoom-reset shortcut owner, wrapped
+agent-selector layout with wider high-agent dialog sizing, soft-wrapped diff rendering, and a
+bounded local subset of the later added/deleted diff polish.
 
 ### Upstream commits
 
@@ -270,7 +285,10 @@ Status: completed locally on `2026-04-01` through the global zoom-reset shortcut
 
 ### Historical current-main gap at planning time
 
-Closed in the Phase 4 port. The local presentation owners now register the zoom reset shortcut globally, wrap long agent rows instead of forcing a clipped single line, widen the new-task dialog only for large agent sets, and keep diff readability improvements bounded to soft wrap plus deleted/additional-file polish that fits current local review semantics.
+Closed in the Phase 4 port. The local presentation owners now register the zoom reset shortcut
+globally, wrap long agent rows instead of forcing a clipped single line, widen the new-task dialog
+only for large agent sets, and keep diff readability improvements bounded to soft wrap plus
+deleted/additional-file polish that fits current local review semantics.
 
 ### Non-goals
 
@@ -279,7 +297,11 @@ Closed in the Phase 4 port. The local presentation owners now register the zoom 
 
 ## Phase 5: Isolation-Model Redesign
 
-Status: core implementation landed locally on `2026-04-01` following [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md). Current main now persists explicit `gitIsolation` and `baseBranch`, creates current-branch tasks through backend/workflow owners, and renders the new terminology across the primary task surfaces. Explicit selector cleanup, legacy compatibility shims, and later branch-selection follow-through remain separate cleanup work.
+Status: core implementation landed locally on `2026-04-01` following
+[GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md). Current main now persists explicit
+`gitIsolation` and `baseBranch`, creates current-branch tasks through backend/workflow owners, and
+renders the new terminology across the primary task surfaces. Explicit selector cleanup, legacy
+compatibility shims, and later branch-selection follow-through remain separate cleanup work.
 
 ### Upstream commits
 
@@ -312,7 +334,9 @@ Status: core implementation landed locally on `2026-04-01` following [GIT-ISOLAT
 
 ### Required precondition
 
-Write the local isolation-model spec first. Do not start by renaming fields or cherry-picking upstream UI. This precondition is now satisfied by [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
+Write the local isolation-model spec first. Do not start by renaming fields or cherry-picking
+upstream UI. This precondition is now satisfied by
+[GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
 
 ### Local spec must define
 
@@ -324,7 +348,9 @@ Write the local isolation-model spec first. Do not start by renaming fields or c
 
 ## Phase 6: Deferred Investigation Tracks
 
-Status: re-checked on `2026-04-01`. The active bounded queue now only retains the optional prompt-panel behavior. The broader deferred families below still have no reproduced local gap or product signal strong enough to justify implementation churn, so they remain deferred.
+Status: re-checked on `2026-04-01`. The active bounded queue now only retains the optional
+prompt-panel behavior. The broader deferred families below still have no reproduced local gap or
+product signal strong enough to justify implementation, so they remain deferred.
 
 These are relevant but not active parity work until their local need is proven:
 

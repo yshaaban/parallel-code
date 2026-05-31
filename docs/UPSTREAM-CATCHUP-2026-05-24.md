@@ -13,8 +13,8 @@ Scope:
 - shared graph ancestor with upstream: `b250446`
 - commits reviewed in range: `54`
 
-Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). This fork is intentionally
-selective: port behavior and tests into the local owner, not upstream file shape.
+Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). This fork is selective: port
+behavior and tests into the local owner, not upstream file shape.
 
 ## Review Method
 
@@ -26,13 +26,13 @@ architecture rules:
 - late slice: `0d6fd38..6097655`
 
 The final disposition below is the reconciled local decision. When an upstream change is marked
-`adopt-rewrite`, that means bring the behavior by remapping it into this fork's current owners. It
-does not mean cherry-pick the upstream files.
+`adopt-rewrite`, bring the behavior by remapping it into this fork's current owners. Do not
+cherry-pick the upstream files.
 
 ## Disposition Key
 
 - `adopt-rewrite`: useful behavior that should be implemented in local architecture owners
-- `adopt-verify`: likely already covered or close to covered, but needs evidence before closing
+- `adopt-verify`: likely covered or close to covered, but needs evidence before closing
 - `redesign`: useful product direction, but the upstream implementation conflicts with local
   browser-first ownership or needs a larger local design
 - `inspire`: presentation or ergonomics signal that can guide future local polish, with no parity
@@ -43,8 +43,8 @@ does not mean cherry-pick the upstream files.
 
 Do not merge or rebase `origin/main` directly. This upstream range contains a large coordinator MCP
 feature, multi-agent task UI work, theme and updater product surfaces, broad settings rewrites, and
-panel/sidebar refactors. Several of those are useful product directions, but direct merge shape
-would bypass local backend/workflow/store/presentation boundaries.
+panel/sidebar refactors. Some may become local product work, but the direct merge shape would
+bypass local backend/workflow/store/presentation boundaries.
 
 The near-term bring/remap queue is smaller and concrete:
 
@@ -62,7 +62,7 @@ The near-term bring/remap queue is smaller and concrete:
 7. Status/attention verification: prove local shell activity, ready/review attention, busy
    precedence, and QR rendering behavior in the current presentation owners.
 
-Large product decisions should be handled as separate local designs:
+Handle large product decisions as separate local designs:
 
 - multi-agent task terminals and task-level lifecycle semantics
 - MCP/coordinator orchestration
@@ -79,7 +79,7 @@ This catch-up range landed without a direct upstream merge in these local commit
 - `7e01cbe` `fix: improve task UI reliability`
 - `c4cbbef` `chore: refresh reviewed dependency pins`
 
-The implementation keeps the original dispositions but closes the bring/remap and verify queue
+The implementation keeps the original dispositions and closes the bring/remap and verify queue
 through local owners:
 
 - backend review truth: merge-base-to-working-tree changed-file counts, unstaged-only count

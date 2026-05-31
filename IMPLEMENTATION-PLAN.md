@@ -229,7 +229,7 @@ Agent PTY output → permission parser → PermissionRequest event
                               Deny    → write "n\n" to PTY
 ```
 
-**Key insight:** Claude Code (and similar agents) output permission prompts to the terminal and wait for `y`/`n` input. We don't need a separate permission server — we parse the terminal output and synthesize input.
+**Design note:** Claude Code and similar agents output permission prompts to the terminal and wait for `y`/`n` input. The MVP does not need a separate permission server; it can parse terminal output and synthesize input.
 
 **Data model (`src/store/types.ts`):**
 
@@ -324,7 +324,7 @@ No new IPC channels needed for MVP — permission detection happens in the outpu
 
 ### Overview
 
-Let users annotate diffs with inline comments that compile into structured prompts sent back to the agent. This turns code review into an iterative feedback loop.
+Let users annotate diffs with inline comments that compile into structured prompts sent back to the agent. Code review becomes a repeatable feedback loop.
 
 ### Architecture
 
@@ -502,7 +502,7 @@ Rules:
 
 ### Build Order Rationale
 
-1. **Permissions first** — smallest scope, highest safety impact, no dependencies
+1. **Permissions first** — smallest scope, high safety impact, no dependencies
 2. **Diff parser** — shared foundation for Features 2 and 4
 3. **Review Panel** — hosts diff comments and provides the multi-file review surface
 4. **Diff Comments** — builds on review panel and diff parser

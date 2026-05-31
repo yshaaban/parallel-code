@@ -1,11 +1,11 @@
 # Architecture Alignment Plan
 
-This document is the completion record for the architecture-quality pass that aligned
-server-owned review, attention, startup, and restore state.
+This document records the architecture-quality pass that aligned server-owned review, attention,
+startup, and restore state.
 
-It focused on closing contradictions between the current design principles and the actual
-implementation. It is intentionally narrower than a general roadmap. The goal was to make the
-existing product loop more coherent, more reliable, and harder to break:
+The pass closed contradictions between the current design principles and the implementation. It is
+narrower than a general roadmap. The goal was to make the existing product loop consistent,
+reliable, and harder to break:
 
 1. server-owned state should be server-authoritative when practical
 2. shared concepts should have one canonical derivation
@@ -33,8 +33,8 @@ This plan originally addressed five specific implementation mismatches:
 5. browser and Electron still restore server-owned state differently
 
 All five items are now addressed in the implementation. Future work should extend the shared
-bootstrap registry and guardrail tests when new server-owned state categories appear, instead of
-adding ad hoc startup listeners or runtime-specific restore policy.
+bootstrap registry and guardrail tests when new server-owned state categories appear, rather than
+add ad hoc startup listeners or runtime-specific restore policy.
 
 ## Desired End State
 
@@ -42,8 +42,8 @@ By the end of this plan:
 
 - review/convergence state is backend-owned, pushed, and replayable
 - task-dot and attention semantics share one canonical supervision model
-- the most important desktop startup and restore flows are driven by explicit
-  bootstrap/replay contracts instead of ad hoc sequencing
+- desktop startup and restore flows are driven by explicit bootstrap/replay contracts instead of
+  ad hoc sequencing
 - browser and Electron consume the same categories of replayable state through
   different transports but equivalent semantics
 - product screens like review, sidebar queue, and attention inbox consume
@@ -73,10 +73,10 @@ The current review/convergence experience is split:
 - `src/components/ChangedFilesList.tsx` and
   `src/components/ReviewPanel.tsx` still own refresh behavior for git-derived
   review state
-- browser and Electron both end up with correct-enough results, but the
-  freshness model is not as canonical as git status, task ports, or supervision
+- browser and Electron both produce usable results, but the freshness model is not as canonical as
+  git status, task ports, or supervision
 
-This is the main remaining contradiction in the architecture.
+That split contradicted the architecture.
 
 ### Target Design
 
@@ -226,8 +226,7 @@ Split the problem into two layers:
      - attention inbox labels
      - prompt-focus suggestions
 
-Renderer prompt-tail analysis should remain only where it is genuinely local UI
-behavior, such as:
+Renderer prompt-tail analysis should remain only where it is local UI behavior, such as:
 
 - one-shot prompt detection for local prompt dispatch
 - terminal-specific affordances that do not claim to be global task status
@@ -287,7 +286,7 @@ Add or update:
 
 - backend supervision transition tests
 - frontend projection tests for task-dot vs inbox alignment
-- screen tests ensuring task row badges and attention inbox stay consistent
+- screen tests proving task row badges and attention inbox stay consistent
 
 Suggested files:
 
@@ -445,8 +444,8 @@ future lifecycle-heavy changes.
 
 ## Rollout Order
 
-The work is structured as logical slices rather than one giant change. Use these boundaries when
-reviewing or splitting follow-up history.
+The work is structured as logical slices. Use these boundaries when reviewing or splitting
+follow-up history.
 
 Completed:
 
@@ -472,10 +471,10 @@ Before each commit, verify:
 
 1. Does this move state ownership toward the server when the server is already
    responsible for it?
-2. Does this reduce, rather than increase, component-owned refresh policy?
+2. Does this reduce component-owned refresh policy?
 3. Does this create a clearer single source of truth for status semantics?
 4. Does this make startup/reconnect behavior easier to explain?
-5. Does this add tests for the new contract rather than only the helper calls?
+5. Does this test the new contract instead of just helper calls?
 
 ## Final Acceptance Criteria
 
@@ -494,9 +493,9 @@ This plan is complete because all of the following are true:
 
 ## Why This Matters
 
-This is not an abstract cleanup pass.
+This was not an abstract cleanup pass.
 
-It directly protects the product goals:
+It protects the product goals:
 
 - users should not have to guess whether review data is fresh
 - users should not see one surface say “waiting” while another says “ready”
@@ -504,5 +503,4 @@ It directly protects the product goals:
 - Electron and browser mode should differ by transport, not by whether state is
   coherent
 
-This is the next architecture-quality phase that makes the existing product more
-trustworthy without restarting the architecture effort from scratch.
+This phase made the existing product more trustworthy without restarting the architecture effort.

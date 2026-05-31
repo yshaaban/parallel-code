@@ -1,14 +1,13 @@
 # Upstream Consolidated Action Plan 2026-04-16
 
-This document is the consolidated action ledger for every upstream-only commit in
-`b250446..91f00f4`.
+This is the consolidated action ledger for every upstream-only commit in `b250446..91f00f4`.
 
 Use it when:
 
 1. deciding whether an upstream commit should be ported at all
 2. deciding whether a behavior should be manually ported, reimplemented, or intentionally skipped
 3. planning the next upstream intake batch without re-reading several older catch-up docs
-4. explaining why a direct cherry-pick is the wrong tool even when the product behavior is still desirable
+4. explaining why a direct cherry-pick is the wrong tool even when the behavior is still wanted
 
 Use it with:
 
@@ -30,29 +29,34 @@ Use it with:
 - upstream-only commits reviewed in this ledger: `125`
 - newer upstream commits beyond `91f00f4`: `none`
 
-This is not a new upstream delta review. It is a full-range consolidation pass over the already
-documented upstream-only window so the fork has one current decision record for every commit in the
-range.
+This is a consolidation pass, not a new upstream delta review. It covers the already documented
+upstream-only window so the fork has one current decision record for every commit in the range.
 
 ## Decision Buckets
 
 - `bring_with_modifications`
-  - The behavior is still worthwhile, but it must land through the current local owners and browser-first runtime model.
+  - The behavior is useful, but it must land through the current local owners and browser-first
+    runtime model.
 - `ignore`
-  - Either the behavior is already landed locally, already covered by newer local owners, or is intentionally not a parity target.
+  - The behavior is already landed locally, already covered by newer local owners, or intentionally
+    not a parity target.
 - `redesign`
-  - The upstream behavior only makes sense in Electron-shaped or otherwise mismatched architecture. If we want it here, we need a local redesign first.
+  - The upstream behavior only makes sense in Electron-shaped or otherwise mismatched architecture.
+    If we want it here, it needs a local redesign first.
 
 ## Evaluation Guidelines
 
 Every commit in this ledger was judged against the same rules:
 
-1. Keep backend-owned truth in the backend. Do not port state ownership back into UI components, broad IPC files, or Electron-local controllers.
+1. Keep backend-owned truth in the backend. Do not port state ownership back into UI components,
+   broad IPC files, or Electron-local controllers.
 2. Preserve browser-first behavior and browser/server parity. Do not assume a single desktop runtime or single attached client.
 3. Port by behavioral intent, not upstream file shape. A valid local implementation can live in different files if the owner is correct.
 4. Prefer `ignore` over churn when the local architecture already covers the behavior.
-5. Prefer `redesign` over direct ports when the upstream change depends on Electron-local Docker, permissions, or other desktop-only assumptions.
-6. Treat merge wrappers, release tags, theme-only tweaks, formatting churn, and dependency-only bumps as non-parity unless they expose a real current-main gap.
+5. Prefer `redesign` over direct ports when the upstream change depends on Electron-local Docker,
+   permissions, or other desktop-only assumptions.
+6. Treat merge wrappers, release tags, theme-only tweaks, formatting churn, and dependency-only
+   bumps as non-parity unless they expose a real current-main gap.
 7. Require an explicit owner and test seam before any `bring_with_modifications` work starts.
 
 ## Outcome Summary
@@ -61,7 +65,7 @@ Every commit in this ledger was judged against the same rules:
 - `0` commits: `bring_with_modifications`
 - `7` commits: `redesign`
 
-The `118` `ignore` entries are not `118` product decisions to throw away. They break down into:
+The `118` `ignore` entries do not all mean "discard the behavior." They break down into:
 
 - `54` already covered locally
 - `20` landed locally
@@ -82,7 +86,7 @@ The `44` intentionally skipped entries are mostly non-product churn or explicitl
 Current upstream status:
 
 - there are no remaining upstream `bring_with_modifications` commits in `b250446..91f00f4`
-- the active engineering blocker has shifted back to current-main runtime work in the browser
+- active engineering work has shifted back to current-main runtime work in the browser
   render-stress lane
 
 Current redesign-only family:
@@ -95,7 +99,7 @@ Current redesign-only family:
 - `0a31fb7`
 - `e96fba1`
 
-Those seven commits all belong to the upstream Docker-isolation family. They should not be ported
+Those seven commits all belong to the upstream Docker-isolation family and should not be ported
 directly into this fork.
 
 The one deferred bug-fix family that required explicit re-verification was the terminal scroll and
@@ -259,7 +263,7 @@ Result:
 | 121 | `e56a9fc` | `feat(markdown): render mermaid diagrams in plan viewer (#44)`                          | landed locally          | `ignore`   | presentation        | Mermaid now renders only inside the owned plan-viewer pipeline with local presentation and markdown owners.                                                |
 | 122 | `7a9565b` | `fix(electron): grant clipboard-write permission for terminal copy`                     | intentionally skipped   | `ignore`   | handler / transport | Electron-specific permission widening is outside the default browser-first path.                                                                           |
 | 123 | `2f1d498` | `1.3.0`                                                                                 | intentionally skipped   | `ignore`   | docs / sanity only  | Release tag only.                                                                                                                                          |
-| 124 | `b944064` | `fix(ui): improve diff preview for added and deleted files (#49)`                       | already covered locally | `ignore`   | presentation        | The worthwhile bounded diff-preview behavior already lives in the current `ScrollingDiffView` owner.                                                       |
+| 124 | `b944064` | `fix(ui): improve diff preview for added and deleted files (#49)`                       | already covered locally | `ignore`   | presentation        | The bounded diff-preview behavior already lives in the current `ScrollingDiffView` owner.                                                                  |
 | 125 | `91f00f4` | `chore(deps-dev): bump the npm_and_yarn group across 1 directory with 3 updates (#50)`  | intentionally skipped   | `ignore`   | docs / sanity only  | Dependency bump only.                                                                                                                                      |
 
 ## Detailed Action Plan Status
@@ -355,4 +359,5 @@ The following categories should remain non-work unless current main exposes a fr
 2. When a formerly covered or intentionally skipped commit changes status on current `main`, update
    both this file and [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md).
 3. When a redesign track becomes active, replace the single redesign family note with a dedicated local spec before implementation.
-4. If current-main behavior changes enough that an `ignore` entry becomes stale, reclassify that one commit explicitly instead of reopening the whole range.
+4. If current-main behavior changes enough that an `ignore` entry becomes stale, reclassify that
+   one commit explicitly instead of reopening the whole range.

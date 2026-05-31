@@ -1,20 +1,22 @@
 # Upstream Divergence Playbook
 
-This document explains how Parallel Code has diverged from the upstream repository and how to port upstream changes without reintroducing architecture churn.
+This playbook records how Parallel Code has diverged from upstream and how to port upstream
+changes without reintroducing architecture churn.
 
 Use it when:
 
 1. reviewing upstream commits
 2. deciding whether to cherry-pick, manually port, or reimplement a change
 3. mapping an upstream file change onto this repo's newer architecture
-4. explaining why a direct cherry-pick is the wrong tool even when the product behavior is still desirable
+4. explaining why a direct cherry-pick is the wrong tool even when the behavior is still wanted
 
-Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first for the ownership rules. Use this document for the practical "how do we migrate upstream work into this fork?" playbook.
-Use [REVIEW-RULES.md](./REVIEW-RULES.md) for the recurring review traps and validation rules we have learned while doing those ports.
+Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first for the ownership rules.
+Use this document for the practical porting workflow. Use [REVIEW-RULES.md](./REVIEW-RULES.md)
+for recurring review traps and validation rules from prior ports.
 
 ## Why This Fork Diverged
 
-This fork did not diverge accidentally. It diverged to support a stricter architecture and runtime model:
+This fork diverged to support a stricter architecture and runtime model:
 
 - backend-owned canonical state for more domains
 - stronger browser/server parity
@@ -24,7 +26,8 @@ This fork did not diverge accidentally. It diverged to support a stricter archit
 - better reliability, scenario coverage, and test hardening
 - clearer boundaries between transport, workflow, store, and UI
 
-That means some upstream changes still map cleanly, but many should now be ported by intent rather than by file shape.
+Some upstream changes still map cleanly, but many now need to be ported by intent instead of file
+shape.
 
 ## The Core Divergence
 
@@ -38,7 +41,7 @@ In this repo, the direction is:
 - store projects canonical state into UI-facing models
 - components present and manage local ephemeral UI state
 
-The same feature may therefore live in different files here even when the user-facing behavior is the same.
+The same feature can live in different files here even when the user-facing behavior is the same.
 
 ## Important Practical Difference
 
@@ -47,7 +50,8 @@ This repo currently uses:
 - `origin` as the upstream read-only repository
 - `fork` as the writable remote
 
-That matters because upstream sync work should be reviewed against our architecture first and then pushed to `fork`, not blindly mirrored onto `origin`.
+Review upstream sync work against the local architecture first, then push to `fork` rather than
+mirroring it onto `origin`.
 
 ## Current Upstream Sync Status
 
@@ -58,11 +62,12 @@ As of `2026-05-24`, this repo has:
 - last shared graph ancestor with upstream: `b250446`
 - latest upstream delta under active catch-up: `7aaf640..6097655` (`54` commits)
 
-Important nuance:
+Important details:
 
 - parity after `b250446` is selective, not contiguous
 - this fork intentionally ports some upstream commits by behavior while deferring or reimplementing others
-- do not assume "we are synced through commit X" unless the commits in that range were either cherry-picked directly or explicitly reimplemented here
+- do not assume "we are synced through commit X" unless the commits in that range were either
+  cherry-picked directly or explicitly reimplemented here
 - the `2026-03-21` review extended coverage through the later refactor/UI tail on `origin/main`;
   only the small prompt-send and channel-lifecycle subset of `2430b97` was worth porting
 - the `2026-04-01` re-review confirmed that `origin/main` advanced from `4792390` to `91f00f4`
@@ -84,7 +89,7 @@ Important nuance:
   [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md)
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
-- the `2026-04-17` catch-up pass is now materially closed:
+- the `2026-04-17` catch-up pass is closed except for redesign-only Docker isolation:
   - the direct-port git / changed-files / terminal / settings subset is landed or explicitly
     closed without direct port
   - the browser-first task-steps redesign is landed locally
@@ -118,7 +123,7 @@ The detailed historical port record lives in:
 - [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md)
 - [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md)
 
-The main question for this file is narrower: what is still open right now?
+This file tracks the narrower question: what is still open right now?
 
 The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue. The
 `2026-04-17` catch-up pass covers `91f00f4..a0f5280`, and its planned implementation work is
@@ -126,15 +131,15 @@ closed. The `2026-05-08` catch-up pass covers `a0f5280..7aaf640`, tracked in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
 selective behavior catch-up work.
 
-The latest catch-up review covers `7aaf640..6097655`, tracked in
+The current catch-up review covers `7aaf640..6097655`, tracked in
 [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md). After fetching on
 `2026-05-24`, `origin/main` was `6097655`, so there were `0` unreviewed upstream commits after the
 documented catch-up head. The local branch still reports graph divergence from `origin/main`; that
 is expected because this fork ports upstream behavior into local architecture owners rather than
 merging upstream history directly.
 
-The bring/remap queue from `7aaf640..6097655` landed locally without merging upstream history
-directly. The local result is recorded by behavior and by local implementation commits:
+The bring/remap queue from `7aaf640..6097655` landed locally without merging upstream history. The
+local result is recorded by behavior and by local implementation commits:
 
 - diff and changed-file correctness: blank-area diff double-click handling, selectable diff text,
   changed-file chrome selection cleanup, and merge-base-to-working-tree counts
@@ -152,8 +157,9 @@ directly. The local result is recorded by behavior and by local implementation c
 - status/attention verification: shell activity, ready/review attention, busy precedence,
   git-status freshness/error handling, and mobile QR stale-result/placeholder behavior
 
-The follow-up upstream-scope pass after the initial `2026-05-24` catch-up implemented the
-architecture-safe subset of the previously deferred queue without merging upstream history:
+The follow-up upstream-scope pass after the initial `2026-05-24` catch-up implemented the subset of
+the previously deferred queue that fit the local architecture, again without merging upstream
+history:
 
 - branch selection now has a backend branch-list contract and New Task dialog selection/retry
   behavior.
@@ -170,8 +176,8 @@ architecture-safe subset of the previously deferred queue without merging upstre
 - coordinator/MCP remains intentionally unsupported/deferred behind an explicit backend-owner
   boundary instead of UI prompt injection.
 
-The remaining design-only scope is narrower: arbitrary/custom theme editing beyond guarded built-in
-tokens and coordinator/MCP backend orchestration still require separate product decisions,
+Remaining design-only work is limited to arbitrary/custom theme editing beyond guarded built-in
+tokens and coordinator/MCP backend orchestration. Both still require separate product decisions,
 replayable backend state machines, and browser/mobile proof before implementation. Real Docker
 agent runner execution and side-by-side multi-agent terminal layout now exist locally as
 browser-first opt-in implementations with backend-owned runner identity and dedicated validation
@@ -185,10 +191,9 @@ Recently landed locally:
   - `7e01cbe`
   - `c4cbbef`
   - status: `landed`
-  - reason: the upstream behaviors that fit current local ownership were remapped into backend
-    git/IPC owners, window/session owners, app workflow owners, store/presentation owners, and
-    focused component owners. Large product directions remain design-only instead of being
-    direct-ported.
+  - reason: upstream behaviors that fit local ownership were remapped into backend git/IPC owners,
+    window/session owners, app workflow owners, store/presentation owners, and focused component
+    owners. Large product directions remain design-only instead of direct ports.
   - validation: targeted node and Solid owner tests, `npm run typecheck`, `git diff --check`,
     `npm ls --package-lock-only ws mermaid qs`, `npm run test:browser:terminal`,
     `npm run check -- --pretty false`, and `npm test` have passed.
@@ -225,7 +230,9 @@ Recently landed locally:
   - `fb86cc5`
   - bounded subset of `b944064`
   - status: `landed`
-  - reason: current main now registers zoom reset globally, wraps large agent rows and widens the dialog for large agent sets, and keeps diff readability improvements bounded to soft wrap plus deleted/additional-file polish that fits local review owners
+  - reason: current main registers zoom reset globally, wraps large agent rows, widens the dialog
+    for large agent sets, and keeps diff readability improvements bounded to soft wrap plus
+    deleted/additional-file polish that fits local review owners
 
 - terminal markdown viewer routing:
   - `9ce6abe`
@@ -321,7 +328,7 @@ Closed on current main:
 - bounded diff-preview polish:
   - `b944064`
   - status: `covered`
-  - reason: the worthwhile bounded preview behavior already lives in the current
+  - reason: the bounded preview behavior already lives in the current
     `ScrollingDiffView` owner
 - `91f00f4..a0f5280` changed-files commit-nav and diff-dialog button cluster:
   - `9f66625`
@@ -390,7 +397,8 @@ Intentional non-ports remain:
 
 ### Upstream commits reviewed and still worth implementing
 
-The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
+The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and
+bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
 
 There are no remaining upstream `bring_with_modifications` commits in `b250446..91f00f4`.
 The consolidated ledger stays useful as the complete decision record, but the active engineering
@@ -398,15 +406,18 @@ queue has shifted back to current-main runtime quality and any future redesign-o
 
 ## Recent Porting Lessons
 
-Recent browser-mode and preview work reinforced a few rules that should be carried into future upstream ports:
+Recent browser-mode and preview work reinforced rules to carry into future upstream ports:
 
 - browser reconnect is not the same thing as authenticated replay readiness
 - no-op persistence fast paths must still preserve validation and reconciliation side effects
 - preview and observed-port parsing needs paired "bad string" and "nearby valid string" regressions
 - shared test harness cleanup must be listener-identity-aware or suite-order flake will leak across runtime tests
-- upstream request-shape changes should flow through the shared invoke request map and explicit optional-channel handling, not through widened per-call convenience types
-- if multiple local restore or watcher paths need the same saved-state fragment, port it once into a shared parser instead of copying local `JSON.parse(...) as ...` shapes
-- do not mark an upstream commit as covered just because a similar commit exists somewhere in repo history; verify coverage on current `main` or point to the exact current owner files
+- upstream request-shape changes should flow through the shared invoke request map and explicit
+  optional-channel handling, not through widened per-call convenience types
+- if multiple local restore or watcher paths need the same saved-state fragment, port it once into a
+  shared parser instead of copying local `JSON.parse(...) as ...` shapes
+- do not mark an upstream commit as covered just because a similar commit exists somewhere in repo
+  history; verify coverage on current `main` or point to the exact current owner files
 
 These are captured in more detail in [REVIEW-RULES.md](./REVIEW-RULES.md). Update that doc when a port or review teaches a reusable lesson.
 
@@ -562,7 +573,7 @@ This repo uses:
 - `origin` for upstream inspection
 - `fork` for pushing local work
 
-That means the final push target should be `fork`, not `origin`.
+Push final local work to `fork`, not `origin`.
 
 ## High-Level Architectural Deltas From Upstream
 
@@ -577,7 +588,8 @@ Compared with upstream, this repo moved more durable truth into backend-owned st
 
 Porting rule:
 
-- if upstream computes durable truth in the renderer, prefer moving that meaning into the backend or into an existing canonical snapshot path here
+- if upstream computes durable truth in the renderer, prefer moving that meaning into the backend or
+  into an existing canonical snapshot path here
 
 ### 2. Browser/server mode is more first-class
 
@@ -590,7 +602,8 @@ Compared with upstream, browser mode here is not an afterthought. It has:
 
 Porting rule:
 
-- any upstream change that touches transport, startup, replay, preview, or auth must be checked against browser mode explicitly, not just Electron
+- any upstream change that touches transport, startup, replay, preview, or auth must be checked
+  against browser mode explicitly, not just Electron
 
 ### 3. Workflow/controller layers are more explicit
 
@@ -598,7 +611,8 @@ Compared with upstream, this repo intentionally pulled multi-step behavior into 
 
 Porting rule:
 
-- if upstream adds multi-step logic in a component, store slice, or IPC handler, port it into an existing workflow/controller first and wire the UI to that
+- if upstream adds multi-step logic in a component, store slice, or IPC handler, port it into an
+  existing workflow/controller first and wire the UI to that
 
 ### 4. Restore and persistence are stricter
 

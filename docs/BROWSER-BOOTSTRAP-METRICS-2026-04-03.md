@@ -4,8 +4,8 @@ This note tracks the browser-startup measurement workflow after the cold-bootstr
 
 ## Goal
 
-Measure cold browser startup separately from reconnect restore and keep the next architecture step
-evidence-driven.
+Measure cold browser startup separately from reconnect restore and base the next architecture step
+on startup data.
 
 ## Manual Benchmark Command
 
@@ -101,8 +101,7 @@ Successful capture summary:
 - browser sync completed successfully during reconnect restore
 - the reconnect case did not re-enter the cold-start shell/summary/selected-task tier sequence
 - the selected visible terminal remained the only place where recovery replay details mattered, and
-  that replay was treated as a reconnect-visible signal rather than evidence of a cold-start
-  regression
+  that replay was treated as a reconnect-visible signal, not as a cold-start regression
 
 Measured cases:
 
@@ -204,15 +203,15 @@ Measured cases:
 - reconnect did not re-enter the cold-start shell/summary/selected-task tier sequence, which is the
   expected contract for the lightweight reconnect path
 - in this transport-churn harness the visible selected terminal recovered through a fresh `attach`
-  replay instead of a `reconnect` replay, which is acceptable when browser sync rebinds the live
+  replay instead of a `reconnect` replay; that is acceptable when browser sync rebinds the live
   session during reconnect
 
 ## Diagnosis
 
 - cold shell and summary work are no longer the dominant cost in the measured browser path
 - the heavier visible-terminal startup-buffer fixture barely moved cold-start completion, which is
-  more evidence against another shell/bootstrap rewrite as the next high-ROI step
-- reconnect control-plane restore is already lightweight; it is not the dominant bottleneck
+  evidence against another shell/bootstrap rewrite as the next bounded step
+- reconnect control-plane restore is already lightweight; it is not the largest measured cost
 - selected-terminal readiness remains the longest visible part of startup, including the visible
   recovery tail after reconnect churn
 - the cold selected-terminal slice improved the selected-first path without disturbing shell
@@ -220,18 +219,18 @@ Measured cases:
   itself
 - attach-trace evidence still suggests queueing and initial bind are relatively small compared with
   the post-bind path to ready/paint, so the next isolated experiment should target selected-terminal
-  post-bind readiness and presentation stabilization rather than another browser bootstrap
-  projection change
+  post-bind readiness and presentation stabilization, not another browser bootstrap projection
+  change
 - reconnect metrics need to be read as "visible selected recovery after transport churn" rather than
   "always a reconnect replay", because the live session may legitimately recover through `attach`
   when browser sync rebinds the visible terminal
 - a follow-up rerun after clearing the replay traces before reconnect produced the same qualitative
   result: the visible selected terminal still recovered through an `attach` snapshot replay, and
-  the dominant remaining cost stayed in the selected-terminal visible tail rather than the control
+  the largest remaining cost stayed in the selected-terminal visible tail rather than the control
   plane restore itself
 - a second rerun after seeding terminal recovery from the actual browser transport state preserved
-  the same conclusion; it changed the absolute cold-start timings somewhat, but the dominant
-  remaining bottleneck was still the visible selected-terminal tail after reconnect churn
+  the same conclusion; it changed the absolute cold-start timings somewhat, but the largest
+  remaining cost was still the visible selected-terminal tail after reconnect churn
 
 ## Next Bounded Experiment
 

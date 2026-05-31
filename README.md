@@ -19,7 +19,7 @@
   <img src="screens/longer-video.gif" alt="Parallel Code demo" width="800">
 </p>
 
-**Parallel Code** gives Claude Code, Codex CLI, and Gemini CLI each their own git branch and worktree — automatically. No agents stepping on each other's code, no juggling terminals, no mental overhead. Just one clean interface where you can see everything, navigate fast, merge results when they're ready — and monitor it all from your phone.
+**Parallel Code** gives Claude Code, Codex CLI, and Gemini CLI each their own git branch and worktree automatically. Agents work in separate checkouts, terminal state stays in one interface, merge results are visible when they are ready, and you can monitor the work from your phone.
 
 ## Screenshots
 
@@ -31,7 +31,7 @@
 
 ## Why Parallel Code?
 
-Running multiple AI coding agents is powerful — but chaotic. On the same branch, agents interfere with each other's code. Across terminals, you lose track of what's happening where. Setting up feature branches and worktrees manually works, but adds cognitive load you shouldn't have to deal with.
+Running multiple AI coding agents can get messy. On the same branch, agents interfere with each other's code. Across terminals, you lose track of what is happening where. Manual feature branches and worktrees work, but they add coordination work before the agent can start.
 
 | Approach                                           | What's missing                                                                          |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -39,7 +39,7 @@ Running multiple AI coding agents is powerful — but chaotic. On the same branc
 | **VS Code extensions** (Kilo Code, Roo Code, etc.) | Tied to VS Code; no true parallel worktree isolation between agents                     |
 | **Running agents sequentially**                    | One task at a time — blocks your workflow while each agent finishes                     |
 
-Parallel Code combines a dedicated GUI, automatic worktree isolation, and multi-agent orchestration into one app — so you can dispatch five tasks and walk away.
+Parallel Code puts the GUI, worktree isolation, and multi-agent orchestration in one app, so you can dispatch several tasks from the same repo and review them when they finish.
 
 ## How Parallel Code Solves It
 
@@ -50,41 +50,41 @@ When you create a task, Parallel Code:
 3. Symlinks `node_modules` and other gitignored directories into the worktree
 4. Spawns the AI agent in that worktree
 
-This means you can have five agents working on five different features at the same time, all from the same repo, with zero conflicts. When you're happy with the result, merge the branch back to main from the sidebar.
+This lets five agents work on five features at the same time from the same repo, each on its own branch and worktree. When you're happy with the result, merge the branch back to main from the sidebar.
 
 ## Features
 
 ### One interface, every AI coding agent
 
-Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) from the same interface. Switch between agents per task, or run all three at once — no juggling terminal windows.
+Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) from the same interface. Switch agents per task, or run all three at once without managing separate terminal windows.
 
 ### 5 agents, 5 features, zero conflicts
 
-Every task gets its own git branch and [worktree](https://git-scm.com/docs/git-worktree) instantly. Agents work in full isolation — no conflicts, no stashing, no waiting. Five agents, five features, one repo. Merge back to main when you're done.
+Every task gets its own git branch and [worktree](https://git-scm.com/docs/git-worktree). Agents work in separate checkouts, so you avoid shared-branch conflicts, stashing, and waiting on one task before starting another. Five agents, five features, one repo. Merge back to main when you're done.
 
 ### Walk away — monitor from your phone
 
-Scan a QR code and watch all your agent terminals live on your phone — over Wi-Fi, Tailscale, or any network. The mobile companion is a full PWA with native terminal interaction, quick-action buttons, swipe gestures, and haptic feedback. Install it to your home screen for instant access.
+Scan a QR code and watch agent terminals live on your phone over Wi-Fi, Tailscale, or any network. The mobile companion is a PWA with native terminal interaction, quick-action buttons, swipe gestures, and haptic feedback. Install it to your home screen for faster access.
 
 ### Browser mode — no Electron required
 
-Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:43117`. The remote mobile app is available at `/remote`.
+Run Parallel Code as a standalone Node.js server from any browser. Deploy it on a remote VM, a headless server, or WSL2, then open the UI at `http://your-server:43117`. The remote mobile app is available at `/remote`.
 
 ### Task-scoped preview — expose app ports safely
 
-If a task starts a dev server, Parallel Code can now track detected localhost ports, let you explicitly expose the ones you trust, and open them in an embedded preview. In browser mode, exposed ports are proxied through authenticated task-scoped preview URLs instead of blindly forwarding arbitrary localhost services.
+If a task starts a dev server, Parallel Code can track detected localhost ports, let you explicitly expose the ones you trust, and open them in an embedded preview. In browser mode, exposed ports are proxied through authenticated task-scoped preview URLs instead of forwarding arbitrary localhost services.
 
 ### Inline task attention — know which task needs you next
 
-Parallel Code now treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or simply gone quiet too long, that state shows up directly on the task rows in the sidebar instead of depending on a mounted terminal.
+Parallel Code treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or quiet too long, that state appears on the task rows in the sidebar without depending on a mounted terminal.
 
 ### Inline review signals — know what is ready to merge next
 
-Parallel Code now derives a convergence model from branch diffs, merge status, and worktree status. The sidebar task rows show compact review signals for tasks that are ready to review, need refresh because main moved ahead, or have blocking uncommitted changes so you can converge parallel work with less guesswork.
+Parallel Code derives a convergence model from branch diffs, merge status, and worktree status. Sidebar task rows show compact review signals for tasks that are ready to review, need refresh because main moved ahead, or have blocking uncommitted changes.
 
 ### Keyboard-first, mouse-optional
 
-Navigate panels, create tasks, send prompts, merge branches, push to remote — all without touching the mouse. Every action has a shortcut, and `Ctrl+/` shows them all.
+Navigate panels, create tasks, send prompts, merge branches, and push to remote without touching the mouse. Every action has a shortcut, and `Ctrl+/` shows them all.
 
 ### And more
 
@@ -180,7 +180,7 @@ npm run browser:dev
 
 ### Option 3: Codex Account Switching Setup (Optional)
 
-If you use Codex heavily and switch between multiple accounts, install `codex-auth` for fast account switching:
+If you use Codex often and switch between multiple accounts, install `codex-auth` for fast account switching:
 
 ```sh
 npm install -g @loongphy/codex-auth
@@ -198,8 +198,8 @@ Useful operational commands:
 
 ### Troubleshooting & local setup notes
 
-- **macOS native dependencies.** A `postinstall` step (`scripts/postinstall-native-fixups.mjs`) runs automatically after `npm install`/`npm ci` to repair two things that the install path can leave broken on macOS: the `node-pty` `spawn-helper` execute bit (a missing `+x` causes every terminal to fail with `posix_spawnp failed`) and a half-extracted Electron binary. If you ever hit `posix_spawnp failed` or `Electron failed to install correctly`, re-run `node scripts/postinstall-native-fixups.mjs`. The Electron repair re-extracts from the local download cache; if the cache is absent, run `node node_modules/electron/install.js` with network access first.
-- **Tests build their own artifacts.** `npm run test:node` builds the full browser artifacts (frontend, remote, server) before running, because some browser-free integration tests boot the standalone server and assert on `dist/`. You do not need to build anything by hand first.
+- **macOS native dependencies.** A `postinstall` step (`scripts/postinstall-native-fixups.mjs`) runs automatically after `npm install`/`npm ci` to repair two macOS install issues: the `node-pty` `spawn-helper` execute bit (a missing `+x` causes every terminal to fail with `posix_spawnp failed`) and a half-extracted Electron binary. If you hit `posix_spawnp failed` or `Electron failed to install correctly`, re-run `node scripts/postinstall-native-fixups.mjs`. The Electron repair re-extracts from the local download cache; if the cache is absent, run `node node_modules/electron/install.js` with network access first.
+- **Tests build their own artifacts.** `npm run test:node` builds the full browser artifacts (frontend, remote, server) before running because some browser-free integration tests boot the standalone server and assert on `dist/`. You do not need to build anything by hand first.
 - **Docker test lanes are opt-in.** The `test:node:docker:*` lanes are skipped unless Docker is available; the default `npm test` / `npm run test:node` runs do not require Docker.
 
 <details>
@@ -260,7 +260,7 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 - **Swipe gestures** — swipe from the left edge to go back to the agent list
 - **Agent management** — kill running agents with confirmation dialog
 - **Terminal controls** — adjustable font size (A+/A-) with toast indicator, scroll-to-bottom FAB
-- **PWA installable** — add to home screen for app-like experience
+- **PWA installable** — add to home screen
 - **Accessibility** — full ARIA labels, reduced-motion support, focus-visible indicators
 - **Resilient connection** — ping/pong heartbeat, auto-reconnect with status banners, loading skeletons
 - **Haptic feedback** — vibration on button presses for tactile response
@@ -274,8 +274,8 @@ Start here if you are changing core behavior or reviewing a refactor:
 - [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
 
 These docs define the repo's architecture rules, layer ownership, upstream-port workflow, and review guardrails.
-If you are syncing work from upstream, use the divergence playbook as the primary porting checklist and current upstream sync-status reference.
-If you are reviewing a non-trivial change, use the review-rules doc as the practical checklist for runtime, preview, and suite-stability pitfalls.
+If you are syncing upstream work, use the divergence playbook as the porting checklist and upstream sync-status reference.
+If you are reviewing a non-trivial change, use the review-rules doc as the checklist for runtime, preview, and suite-stability pitfalls.
 For non-trivial upstream ports, also follow the repo-level [AGENTS.md](AGENTS.md) workflow: classify first, map to the local owner, then validate at the correct seam.
 
 For the current runtime walkthrough and testing strategy, see:
@@ -287,11 +287,11 @@ Parallel Code runs in two modes:
 
 ### Electron Mode (Desktop)
 
-The traditional desktop app with native window management, system tray, and file dialogs. Frontend communicates with the backend via Electron IPC.
+The desktop app uses native window management, system tray, and file dialogs. The frontend communicates with the backend through Electron IPC.
 
 ### Server Mode (Browser)
 
-A standalone Express server bootstrapped from `server/main.ts` and composed in `server/browser-server.ts` serves the desktop frontend at `/` and the remote mobile app at `/remote`. WebSocket handles real-time terminal I/O. The browser frontend uses the same SolidJS codebase with an HTTP/WebSocket IPC transport layer (`src/lib/ipc.ts`) that replaces Electron IPC.
+A standalone Express server bootstrapped from `server/main.ts` and composed in `server/browser-server.ts` serves the desktop frontend at `/` and the remote mobile app at `/remote`. WebSocket handles real-time terminal I/O. The browser frontend uses the same SolidJS codebase with an HTTP/WebSocket IPC transport layer (`src/lib/ipc.ts`) instead of Electron IPC.
 
 ```
 ┌──────────────────────────────────────────┐
@@ -324,7 +324,7 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 - **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
 - **Task-scoped preview proxy** — detected localhost ports can be explicitly exposed and replayed to browser clients, then opened through authenticated preview routes
 - **Review queue and convergence projection** — merge readiness, overlap warnings, and post-merge sibling refreshes are derived from canonical git data instead of being guessed in the UI
-- **Unified bootstrap and replay registry** — Electron startup hydration and browser replay now restore the same server-owned state categories through one shared registry instead of hand-maintained startup wiring
+- **Unified bootstrap and replay registry** — Electron startup hydration and browser replay restore the same server-owned state categories through one shared registry instead of hand-maintained startup wiring
 - **Coordinator guardrails** — startup/session sync, browser replay, review surfaces, and task presentation now have architecture tests that lock in ownership boundaries
 - **Split test architecture**:
   - node suite for transport, workflows, IPC, PTY, latency, browser server, and contract coverage

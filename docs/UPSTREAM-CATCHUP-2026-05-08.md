@@ -12,13 +12,13 @@ Scope:
 - shared graph ancestor with upstream: `b250446`
 - commits reviewed in range: `121`
 
-Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). This fork is intentionally
-selective: port behavior and tests into the local owner, not upstream file shape.
+Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). This fork is selective: port
+behavior and tests into the local owner, not upstream file shape.
 
 ## Disposition Key
 
 - `adopt-rewrite`: useful behavior that should be implemented in local architecture owners
-- `adopt-verify`: likely already covered or close to covered, but needs evidence before closing
+- `adopt-verify`: likely covered or close to covered, but needs evidence before closing
 - `redesign`: useful product direction, but the upstream implementation conflicts with local
   browser-first ownership or needs a larger local design
 - `inspire`: presentation or ergonomics signal that can guide future local polish, with no parity
@@ -33,7 +33,7 @@ large UI components, OpenSpec docs, themes, and release assets in ways that woul
 browser/server ownership, task-container work, preview exposure, remote testing support, and
 high-performance terminal/session architecture.
 
-The useful queue was reviewed as:
+Reviewed implementation queue:
 
 1. Git, diff, merge, and changed-files correctness.
 2. Shell/runtime hardening and swallowed-error visibility.
@@ -187,8 +187,8 @@ The `a0f5280..7aaf640` upstream range is closed as selective catch-up work.
   merging upstream history
 
 The items that remain from this document are future product decisions, not missed upstream ports.
-They should be prioritized through product planning before implementation because each changes the
-local product surface, durable state model, runner boundary, or non-git project assumptions.
+Prioritize them through product planning before implementation because each changes the local
+product surface, durable state model, runner boundary, or non-git project assumptions.
 
 ### Current Local Progress
 
@@ -221,11 +221,11 @@ HEAD...<base>`. Verified with targeted backend, app, and Solid tests for git mut
   `npm run test:node:file -- src/lib/copy-text.test.ts src/lib/terminal-shortcuts.test.ts` and
   `npm run test:solid:file -- src/components/terminal-view/terminal-session.test.tsx`.
 - Browser terminal validation also hardened the shared input path. Keyboard trace starts now match
-  the terminal data they produced and stale unmatched starts are discarded, so non-emitting control
-  shortcuts cannot contaminate the next input-latency sample. Interactive browser input now drains
-  with the same bounded in-flight cap as the general input path, keeping rapid foreground typing
-  responsive without coalescing user-visible characters. The rapid browser-input test now waits for
-  the full 12-character burst before asserting tail latency. Verified with
+  the terminal data they produced, and stale unmatched starts are discarded so non-emitting control
+  shortcuts cannot contaminate the next input-latency sample. Interactive browser input drains with
+  the same bounded in-flight cap as the general input path, keeping rapid foreground typing
+  responsive without coalescing user-visible characters. The rapid browser-input test waits for the
+  full 12-character burst before asserting tail latency. Verified with
   `npm run test:node:file -- src/components/terminal-view/terminal-input-pipeline.test.ts`,
   `npm run test:browser:file -- tests/browser/terminal-input.spec.ts --project chromium --workers=1`,
   and `npm run test:browser:canaries`.
@@ -347,8 +347,8 @@ Validation:
 
 ## Implemented Local Redesigns
 
-These upstream ideas are closed for this catch-up range through local architecture owners rather
-than direct upstream file shape.
+These upstream ideas are closed for this catch-up range through local architecture owners instead of
+direct upstream file shape.
 
 | Item                                    | Local owner shape                                                                                                                                               |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -361,9 +361,9 @@ than direct upstream file shape.
 
 ## Future Product Redesign Queue
 
-These items are intentionally not part of the upstream parity queue. Each should ship only after a
-local design that preserves browser-first runtime behavior, backend authority, preview exposure,
-remote testing, reconnect/replay, and terminal responsiveness.
+These items are outside the upstream parity queue. Each should ship only after a local design that
+preserves browser-first runtime behavior, backend authority, preview exposure, remote testing,
+reconnect/replay, and terminal responsiveness.
 
 | Item                                                   | Product decision               | Required local owner shape                                                                                          |
 | ------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- |

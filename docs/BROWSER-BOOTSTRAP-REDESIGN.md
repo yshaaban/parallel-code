@@ -4,8 +4,8 @@ This document defines the browser-first startup contract for Parallel Code.
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first for ownership rules and
 [ARCHITECTURE.md](./ARCHITECTURE.md) for the current runtime map. Read
-[PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md) for the broader
-browser-first product objective: desktop-like responsiveness without desktop-style startup and
+[PRODUCT-VALIDATION-OBJECTIVES.md](./PRODUCT-VALIDATION-OBJECTIVES.md) for the browser-first
+product objective: desktop-like responsiveness without desktop-style startup and
 restore semantics.
 
 This document owns:
@@ -24,7 +24,7 @@ This document does not own:
 
 ## Problem
 
-Browser mode used to pay too much startup cost on first page load because it mixed together:
+Browser mode paid too much startup cost on first page load because it mixed together:
 
 1. cold browser bootstrap
 2. reconnect/session restore
@@ -36,7 +36,7 @@ That produced a desktop-style startup shape in a browser shell:
 - restore broad renderer state before the shell is ready
 - let background terminal continuity work leak into the default startup path
 
-The browser-first contract is now explicit instead.
+The browser-first contract is now explicit.
 
 ## Target Contract
 
@@ -94,9 +94,9 @@ Browser cold bootstrap now progresses through these tiers:
 5. `background`
    - hidden/background terminal attach may resume
 
-The transition into `background` is intentionally downstream of selected-surface readiness. A
-timeout fallback exists so browser sessions without a selected terminal, or with a missing
-selected-terminal readiness signal, do not block background attach forever.
+The transition into `background` is downstream of selected-surface readiness. A timeout fallback
+exists so browser sessions without a selected terminal, or with a missing selected-terminal
+readiness signal, do not block background attach forever.
 
 ## Ownership
 
@@ -128,9 +128,9 @@ Cold bootstrap currently applies:
 - browser-local client-session preferences after the shared projection
 - browser-local shell panel layout for same-tab reload continuity
 
-Cold bootstrap intentionally does not replay standalone terminal panels from persisted workspace
-state. Same-tab browser continuity may restore those panels from browser-local client session
-storage, but shared workspace truth still excludes them.
+Cold bootstrap does not replay standalone terminal panels from persisted workspace state. Same-tab
+browser continuity may restore those panels from browser-local client session storage, but shared
+workspace truth still excludes them.
 
 ## Metrics
 

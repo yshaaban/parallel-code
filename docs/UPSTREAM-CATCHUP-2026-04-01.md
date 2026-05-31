@@ -19,30 +19,30 @@ parity ledger.
 ## Summary
 
 - Upstream moved from `4792390` to `91f00f4`.
-- The backend git correctness family and changed-files footer corrections are now landed locally:
+- The backend git correctness family and changed-files footer corrections landed locally:
   - `c40d743`
   - `23ae2bb`
   - `246ef40`
   - `777f1d7`
   - `c42b921`
-- The markdown/link hardening slice has now landed locally for the current-scope commits:
+- The markdown/link hardening slice landed locally for the current-scope commits:
   - `0bc4d65` markdown-sanitization subset
   - `933931a`
-- The terminal media/input ergonomics slice has now landed locally:
+- The terminal media/input ergonomics slice landed locally:
   - `cec983b`
   - `774ffe2`
-- The bounded UI ergonomics slice has now landed locally:
+- The bounded UI ergonomics slice landed locally:
   - `7d534ce`
   - `88b5b8f`
   - `fb86cc5`
   - bounded subset of `b944064`
-- The shared app-level markdown viewer and owned `.md` routing from task-note/file surfaces are now
-  landed locally; the remaining worthwhile markdown/viewer queue is:
+- The shared app-level markdown viewer and owned `.md` routing from task-note/file surfaces landed
+  locally; the remaining bounded markdown/viewer queue is:
   - `9ce6abe`
   - `a37b958`
   - `e56a9fc`
   - plus optional `a350209`
-- The `directMode` to `GitIsolationMode` family is now landed locally across store, backend,
+- The `directMode` to `GitIsolationMode` family landed locally across store, backend,
   workflow, and the primary task surfaces, with compatibility cleanup still separate from the parity
   ledger:
   - `8d30d7e`
@@ -52,7 +52,7 @@ parity ledger.
 - The upstream Docker agent-isolation family remains intentionally deferred:
   - `0a31fb7`
   - `e96fba1`
-- The upstream terminal scroll/xterm family should stay deferred unless reproduced on current
+- The upstream terminal scroll/xterm family stays deferred unless reproduced on current
   main:
   - `60857bd`
   - `e07d69d`
@@ -68,7 +68,7 @@ parity ledger.
 | `8d30d7e` | landed  | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Landed locally through the staged git-isolation migration: current-branch task creation is now backend/workflow-owned and follows the local contract in `docs/GIT-ISOLATION-MODEL-SPEC.md`. |
 | `7d534ce` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through the global zoom-reset shortcut owner.                                                                                              |
 | `c40d743` | landed  | `manual port`                     | `backend`            | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                                                             |
-| `60857bd` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Plausible terminal scroll bugfix, but the local terminal/session/fit owners have diverged enough that this should only be revisited with a reproduced bug on current main.                  |
+| `60857bd` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Possible terminal scroll bugfix, but the local terminal/session/fit owners have diverged enough that this should only be revisited with a reproduced bug on current main.                   |
 | `88b5b8f` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through bounded soft-wrap diff rendering in `ScrollingDiffView.tsx`.                                                                       |
 | `0882952` | defer   | `skip/defer`                      | `workflow / app`     | `runtime / integration` | Do not take an upstream xterm beta bump as parity churn without a reproduced current-main bug and full terminal browser-lab validation.                                                     |
 | `cd1ad01` | covered | `reimplement on our architecture` | `workflow / app`     | `Solid / UI`            | Local `TaskPanel` is already decomposed across task-panel controllers and sections.                                                                                                         |
@@ -152,6 +152,7 @@ parity ledger.
    - optional prompt-panel behavior: `a350209`
    - any broader `b944064` preview polish not already covered by the landed bounded subset
 6. Keep the larger redesign/defer families explicit:
-   - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143` now has a landed local implementation plus the contract in `docs/GIT-ISOLATION-MODEL-SPEC.md`
+   - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143` now has a landed local
+     implementation plus the contract in `docs/GIT-ISOLATION-MODEL-SPEC.md`
    - terminal scroll/xterm family: `60857bd`, `e07d69d`, `0882952`
    - upstream Docker family: `0a31fb7`, `e96fba1`

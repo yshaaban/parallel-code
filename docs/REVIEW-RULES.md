@@ -1,13 +1,13 @@
 # Review Rules
 
-Use this document when reviewing non-trivial changes in Parallel Code, especially:
+Use this when reviewing non-trivial Parallel Code changes, especially:
 
 1. upstream ports and parity work
 2. browser-mode transport, auth, reconnect, restore, or persistence changes
 3. preview and exposed-port behavior
 4. shared test harness changes that can affect suite-order stability
 
-This file is intentionally narrow:
+This file stays narrow:
 
 - it is the cross-cutting review checklist and lessons-learned record
 - product pain taxonomy and product-level validation objectives belong in
@@ -57,10 +57,10 @@ For any non-trivial change, review in this order:
 5. run the full gate after targeted green if the change touches runtime, preview, persistence, or
    shared test harnesses
 
-The pull request template and PR-description CI check mirror this order. The check only verifies
-that the required fields are present; reviewers still own whether the product pain, owner,
-validation seam, and browser-lane rationale are correct. If a change is reviewed outside GitHub,
-use the same product frustration / owner / validation / browser-lane fields in the review notes.
+The pull request template and PR-description CI check follow this order. The check only verifies
+that the required fields exist. Reviewers still decide whether the product pain, owner, validation
+seam, and browser-lane rationale are correct. If a change is reviewed outside GitHub, use the same
+product frustration / owner / validation / browser-lane fields in the notes.
 
 Do not review a port only by comparing file shape to upstream. Review whether the behavior landed
 in the correct local owner.
@@ -83,8 +83,7 @@ When a change touches browser mode, explicitly verify:
 - auth-expired, reconnect, and connected states preserve clear ownership between transport and
   workflow layers
 
-If any of those are unclear, add or update runtime tests before treating the change as
-review-ready.
+If any of those are unclear, add or update runtime tests before treating the change as review-ready.
 
 ## Preview And Port Review Checklist
 
@@ -128,8 +127,7 @@ Task container review rule:
 
 ## Test Harness Review Checklist
 
-When a review uncovers suite-order flake, prefer fixing the harness cause instead of raising
-timeouts.
+When a review uncovers suite-order flake, fix the harness cause instead of raising timeouts.
 
 Check for:
 
@@ -148,13 +146,12 @@ Check for:
   `document.activeElement`/`document.hasFocus()` alone; hidden-tab round trips can leave the DOM
   looking focused before the terminal surface has really reacquired keyboard ownership
 
-If the failure only appears in the full suite, rerun the smallest affected file first, then fix
-the harness cause before broadening timeouts.
+If the failure only appears in the full suite, rerun the smallest affected file first. Fix the
+harness cause before broadening timeouts.
 
-For browser performance cases, a proven shared-browser-process contamination issue should be solved
-by isolating that exact case into its own Playwright invocation while keeping the assertion in the
-default scripted gate. Do not weaken the assertion or convert it into a soak-only check just
-because Chromium reuse is noisy.
+For browser performance cases, isolate a proven shared-browser-process contamination issue into its
+own Playwright invocation while keeping the assertion in the default scripted gate. Do not weaken
+the assertion or convert it into a soak-only check because Chromium reuse is noisy.
 
 When browser build freshness is under review, keep the owner split explicit:
 

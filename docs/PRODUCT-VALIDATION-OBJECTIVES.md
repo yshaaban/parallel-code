@@ -1,9 +1,8 @@
 # Product Validation Objectives
 
-This document translates the product promise into default review behavior.
+This document turns the product promise into review behavior.
 
-Read this when deciding what matters to users before choosing architecture, tests, or browser-lab
-coverage.
+Read it before choosing architecture, tests, or browser-lab coverage for a user-facing change.
 
 This document owns:
 
@@ -28,32 +27,33 @@ For the current objective-to-evidence audit, use
 
 ## Active Goal
 
-Make Parallel Code the browser-first developer cockpit for solo developers and small teams
-coordinating many AI coding agents at once. The selected task, terminal, diff, preview, and remote
-session should feel immediately usable and desktop-native even under load, with no ambiguity about
-who controls the task, what is running, what is exposed, what changed, what is stale, what needs
-attention, or why something is blocked. Browser/server mode is the product baseline; Electron is
-only a platform adapter. Preserve and harden advanced browser capabilities, including safe remote
-access, explicit preview and port exposure for remote browser-app testing, multi-client control and
-takeover, and replayable backend state, while keeping ownership simple: backend owns external truth,
-renderer owns presentation and workflow, and transport never owns domain policy. The immediate
-performance objective is product-code first: use the browser/server scorecard and low-overhead
-diagnostics to expose the slowest real user journeys, then experiment on those runtime paths until
-the selected terminal, task switching, review, preview, remote, reconnect, and cleanup flows meet
-explicit product budgets. Validate every change from user frustration first, using the cheapest
-reliable owner-local proof while iterating, and reserve real browser tests for risks that only a
-browser can expose, such as focus, paint, navigation, cookies, websocket auth/bootstrap, and
-multi-context coordination.
+Make Parallel Code the browser-first command center for solo developers and small teams running many
+AI coding agents at once. The selected task, terminal, diff, preview, and remote session should be
+usable immediately, even under load. Users should always know who controls the task, what is running,
+what is exposed, what changed, what is stale, what needs attention, and why something is blocked.
+
+Browser/server mode is the product baseline. Electron is a platform adapter. Preserve the browser
+capabilities that define the product: safe remote access, explicit preview and port exposure for
+remote browser-app testing, multi-client control and takeover, and replayable backend state. Keep
+ownership simple: backend owns external truth, renderer owns presentation and workflow, and
+transport never owns domain policy.
+
+The immediate performance objective starts in product code. Use the browser/server scorecard and
+low-overhead diagnostics to find the slowest real user journeys. Then experiment on those runtime
+paths until selected terminal use, task switching, review, preview, remote, reconnect, and cleanup
+flows meet explicit product budgets. Validate from user frustration first. Use the cheapest reliable
+owner-local proof while iterating, and reserve real browser tests for risks that only a browser can
+show: focus, paint, navigation, cookies, websocket auth/bootstrap, and multi-context coordination.
 
 ## Product Promise
 
-Parallel Code should feel like a developer cockpit for many AI coding workflows:
+Parallel Code should feel like a command center for many AI coding workflows:
 
 - fast enough that typing, task switching, diff selection, and preview opening feel immediate
 - dense enough for power users without hiding ownership, status, or next actions
 - browser-first without forcing desktop-style startup and restore semantics into the browser
 - remote-capable without surprising users by exposing terminals, previews, or project state
-- trustworthy enough that review, git, preview, and recovery state feel authoritative
+- trustworthy enough that review, git, preview, and recovery state are authoritative
 
 The default answer to product tradeoffs is:
 

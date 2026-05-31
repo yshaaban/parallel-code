@@ -2,7 +2,7 @@
 
 Status: proposed and core implementation landed on `2026-04-01`
 
-This document defines the local redesign target for the upstream isolation-model family:
+This document defines the local contract for the upstream isolation-model family:
 
 - `8d30d7e`
 - `95d0f06`
@@ -26,23 +26,23 @@ Validation seams:
 - `runtime / integration`
 - `Solid / UI`
 
-This is not a cherry-pick plan. It is the local contract that the landed implementation follows and
-that any later cleanup or follow-through work must continue to satisfy.
+This is not a cherry-pick plan. It is the contract the landed implementation follows, and later
+cleanup must keep satisfying it.
 
-Core implementation status on current `main`:
+Current `main` status:
 
-- explicit `defaultTaskGitIsolation`, `gitIsolation`, and task-level `baseBranch` are now the
-  primary durable fields
-- current-branch task creation now runs through backend/workflow owners rather than renderer-owned
-  branch preflight
-- primary UI/task surfaces now render `Current Branch` terminology instead of `Direct`
+- explicit `defaultTaskGitIsolation`, `gitIsolation`, and task-level `baseBranch` are the primary
+  durable fields
+- current-branch task creation runs through backend/workflow owners, not renderer-owned branch
+  preflight
+- primary UI/task surfaces render `Current Branch` terminology instead of `Direct`
 - legacy compatibility shims still exist for persisted state, remote payloads, and some helper
   paths; later cleanup should remove those once the new model is the only live truth
 
 ## Historical Starting Point
 
 Before this redesign landed, `main` modeled task git isolation through the legacy boolean
-`directMode` split across too many owners:
+`directMode`, split across too many owners:
 
 - project defaults use `defaultDirectMode`
 - tasks persist `directMode?: true`
@@ -51,9 +51,11 @@ Before this redesign landed, `main` modeled task git isolation through the legac
 - close/delete semantics branched on `task.directMode`
 - task badges and labels still rendered the legacy terminology
 
-That split no longer scaled.
+That split was too hard to reason about.
 
-The upstream family is directionally correct: task git isolation should be explicit, and base-branch semantics should be explicit. But the local implementation must follow this repo's ownership rules rather than port upstream file shape.
+The upstream direction is right: task git isolation and base-branch semantics should be explicit.
+The local implementation still needs to follow this repo's ownership rules instead of copying
+upstream file shape.
 
 ## Goals
 
@@ -115,7 +117,7 @@ User-facing labels should prefer:
 - `Worktree`
 - `Current Branch`
 
-Do not keep exposing `Direct` once the redesign lands.
+Do not keep exposing `Direct` after the redesign lands.
 
 ## Mode Semantics
 
@@ -174,7 +176,7 @@ Task review, merge-base, diff, and reopen semantics should not silently change j
 - a repo default branch changes upstream
 - a persisted legacy task is reopened under a different project configuration
 
-That means task-level `baseBranch` must become durable truth, not just a transient dialog value.
+That means task-level `baseBranch` is durable truth, not just a transient dialog value.
 
 ## Ownership Plan
 

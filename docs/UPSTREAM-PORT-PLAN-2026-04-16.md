@@ -1,7 +1,7 @@
 # Upstream Port Plan 2026-04-16
 
-This document is the active execution tracker for absorbing the reviewed upstream-only range
-`b250446..91f00f4` under this fork's architecture.
+This tracker covers absorption of the reviewed upstream-only range `b250446..91f00f4` under this
+fork's architecture.
 
 Use it with:
 
@@ -15,7 +15,7 @@ Use it with:
 ## Execution Rules
 
 1. Implement by behavioral intent, not upstream file shape.
-2. Keep backend-owned truth in backend, handlers, workflow, and store owners.
+2. Keep backend-owned truth in backend, handler, workflow, and store owners.
 3. Do not close bug-fix families by assumption; reproduce or disprove them on current `main`.
 4. Do not port Electron-local Docker or permission behavior into the browser-first default path.
 5. Update this file whenever a family changes status.
@@ -72,7 +72,7 @@ Current evidence:
   - queued-queue-age p95
   - scheduler-drain p95
   - owner-duration p95
-- the render-stress recipe is now split so `resize flicker`, `additive burst`, and the remaining
+- the render-stress recipe is split so `resize flicker`, `additive burst`, and the remaining
   shared cases run as separate Playwright invocations
 - a page-side startup-window diagnostics reset was rejected during review because it changed the
   measured startup window instead of fixing the runtime; no test-only startup reset is kept
@@ -177,7 +177,7 @@ Validation:
 
 Intent:
 
-- confirm that the worthwhile bounded diff-preview behavior already lives in the current review
+- confirm that the bounded diff-preview behavior already lives in the current review
   presentation owners
 
 Local files:
@@ -221,7 +221,7 @@ Acceptance criteria:
 
 - upstream commits:
   - `2430b97`
-- local owner: mixed; must be decomposed before implementation
+- local owner: mixed; decompose before implementation
 - status: `landed`
 
 Result:
@@ -293,7 +293,7 @@ Acceptance criteria:
 
 ## Current Validation Record
 
-Latest confirmed evidence during this execution pass:
+Confirmed evidence from this execution pass:
 
 - `npm run test:node:file -- src/app/terminal-output-scheduler.test.ts src/components/terminal-view/terminal-output-pipeline.test.ts src/components/terminal-view/terminal-input-pipeline.test.ts`: passed
 - `npm run typecheck`: passed
@@ -304,4 +304,5 @@ Latest confirmed evidence during this execution pass:
 - `npm run test:solid:file -- src/components/PlanViewerDialog.test.tsx`: passed
 - `npm run test:solid:file -- src/components/ScrollingDiffView.test.tsx`: passed
 - `npm run test:node:file -- src/lib/marked-shiki.test.ts src/lib/terminal-output-diagnostics.test.ts`: passed
-- upstream absorption work for the frozen `b250446..91f00f4` range is closed; newer upstream work is tracked in `docs/UPSTREAM-CATCHUP-2026-04-17.md`
+- upstream absorption work for the frozen `b250446..91f00f4` range is closed; newer upstream work
+  is tracked in `docs/UPSTREAM-CATCHUP-2026-04-17.md`

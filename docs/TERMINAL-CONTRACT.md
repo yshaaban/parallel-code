@@ -2,9 +2,8 @@
 
 This document owns the durable terminal behavior contract for Parallel Code.
 
-Use it when deciding whether terminal byte handling, stream messages, recovery, input, resize,
-readiness, presentation, flow control, or platform fallback behavior is still aligned with the
-architecture.
+Use it to decide whether terminal byte handling, stream messages, recovery, input, resize,
+readiness, presentation, flow control, or platform fallback behavior still fits the architecture.
 
 This document does not own browser-lab workflow, profiling recipes, or every current timeout and
 byte constant. Those belong in [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
@@ -78,9 +77,9 @@ The terminal stream uses a small vocabulary:
   recovery state.
 - `channel-bound` only acknowledges channel binding. It is not terminal readiness.
 
-Transport files should validate message shape, reject malformed payloads, route by channel or
-message type, and surface command-result acceptance or rejection. Domain decisions stay with the
-backend PTY, task-command control owner, or terminal lifecycle owners.
+Transport files validate message shape, reject malformed payloads, route by channel or message
+type, and surface command-result acceptance or rejection. Domain decisions stay with the backend
+PTY, task-command control owner, or terminal lifecycle owners.
 
 ## Input And Resize Ordering
 
@@ -97,7 +96,7 @@ Terminal input and resize are PTY mutations and follow task-command control:
   instead of pretending local fit changed backend truth.
 - During recovery, queued resize and queued input drain after fit, recovery, restore pause/resume,
   and presentation readiness gates settle.
-- Request acceptance means the backend accepted the mutation. Visible echo or redraw remains an
+- Request acceptance means the backend accepted the mutation. Visible echo or redraw is still an
   output/recovery readiness concern.
 
 ## Recovery Kinds
@@ -112,7 +111,7 @@ Backend terminal recovery returns exactly these recovery kinds:
 - `terminal-state`: startup recovery can return serialized backend terminal state from the
   terminal-state mirror. The renderer may reset and apply this state after aligning geometry.
 
-Only `snapshot` and `terminal-state` are full-state recoveries. Only full-state recovery may surface
+Only `snapshot` and `terminal-state` are full-state recoveries. Only full-state recovery may show
 blocking `restoring` UI or call `term.reset()`. `noop` and `delta` are non-destructive continuity
 paths and should not show blocking restoring UI.
 
@@ -183,13 +182,13 @@ Current budget owners:
 - `src/components/terminal-view/terminal-recovery-runtime.ts` owns attach/recovery request tail
   limits, snapshot request limits, replay chunk sizes, and startup apply pacing.
 
-Do not create alternate scrollback or recovery caps in desktop shell, remote/mobile shell, transport
-glue, or presentation components. If a budget changes behavior, update the owning implementation,
-owner-local tests, and this contract when the semantic boundary changes.
+Do not create alternate scrollback or recovery caps in desktop shell, remote/mobile shell,
+transport glue, or presentation components. If a budget changes behavior, update the owning
+implementation, owner-local tests, and this contract when the semantic boundary changes.
 
 ## Desktop, Browser, And Mobile Parity
 
-Electron desktop, browser desktop, and remote/mobile may use different transports and different UI
+Electron desktop, browser desktop, and remote/mobile may use different transports and UI
 affordances. They must share terminal truth:
 
 - PTY lifecycle, bytes, cursor, geometry, pause state, recovery payloads, task-command control, and

@@ -9,7 +9,7 @@ use this document for the concrete container-environment contract.
 
 This feature is a `reimplement on our architecture`, not a direct upstream Docker-isolation port.
 
-Upstream's Docker isolation work is desktop-local and agent-execution-oriented. This repo's V1
+Upstream's Docker isolation work is desktop-local and focused on agent execution. This repo's V1
 container feature is:
 
 - backend-owned
@@ -31,7 +31,7 @@ For a task/worktree that contains a supported Compose project, the user can:
 
 ## V1 Scope
 
-V1 supports a useful, explicit subset of Docker projects:
+V1 supports a small explicit subset of Docker projects:
 
 - Docker Compose only
 - one supported Compose file selected from:
@@ -65,7 +65,7 @@ Responsibilities:
 - task-container identity
 - Compose support detection
 - inspect/preflight result computation
-- lifecycle planning and apply
+- lifecycle planning and execution
 - Docker Compose execution
 - owned preview derivation
 - logs retrieval
@@ -117,7 +117,7 @@ Responsibilities:
 
 ## Workflow Contract
 
-The task-panel preview controller owns the async sequencing for task-container workflow calls.
+The task-panel preview controller owns async sequencing for task-container workflow calls.
 
 Rules:
 
@@ -161,25 +161,24 @@ Structured issue codes currently include:
 - `compose_status_failed`
 - `task_worktree_missing`
 
-The preview manager should render inspect results directly. It must not infer support or running
-state from task-port discovery. It must surface inspect/log/action failures explicitly, and a later
-successful inspect should clear stale action-error state instead of leaving the UI in a dead-end
-error mode.
+The preview manager renders inspect results directly. It must not infer support or running state
+from task-port discovery. It must surface inspect/log/action failures explicitly. A later successful
+inspect should clear stale action-error state instead of leaving the UI stuck in an old error mode.
 
-Missing Compose configuration is a normal state for browser-first task previews. When inspect
-returns `not_configured` with only `compose_file_missing`, the preview manager should present that
-as neutral container absence, not as the primary preview failure. Task-port discovery still owns
-host listener suggestions in this state.
+Missing Compose configuration is normal for browser-first task previews. When inspect returns
+`not_configured` with only `compose_file_missing`, the preview manager should show neutral container
+absence, not a primary preview failure. Task-port discovery still owns host listener suggestions in
+this state.
 
 Inspect also reports a backend-owned runner-profile resolution. With no configured runner profile,
 the resolution is `not_configured` and falls back to the current Compose task-container profile.
 An explicit Compose runner profile resolves normally. Docker runner profiles are recorded as
-`unsupported` until a separate backend runner execution policy exists; inspect/start/stop/destroy
+`unsupported` until a separate backend runner execution policy exists. Inspect/start/stop/destroy
 must not fake Docker agent execution through the task-container lifecycle.
 
 Opening the preview manager performs one initial task-port scan to populate available local
-listeners, then leaves later listener refreshes behind the explicit rescan action. This scan must
-not start task containers, infer container support, or mutate container inspect truth.
+listeners. Later listener refreshes stay behind the explicit rescan action. This scan must not
+start task containers, infer container support, or mutate container inspect truth.
 
 Inspect, logs, and action failures are part of the workflow contract:
 
@@ -203,8 +202,8 @@ Rules:
   - `io.parallel-code.task-id`
   - `io.parallel-code.worktree-path-hash`
 
-Compose identity is the primary way to inspect and control the task-scoped project. Labels exist to
-make cleanup and rehydration safer.
+Compose identity is the primary way to inspect and control the task-scoped project. Labels make
+cleanup and rehydration safer.
 
 ## Lifecycle Semantics
 
@@ -301,7 +300,7 @@ That suite currently proves:
 - configured preview derivation from declared `Project.containerConfig.previewPorts`
 - task identity isolation across two worktrees of the same project
 
-Normal PR runs may skip the opt-in lane when Docker integration is not under review. Treat the
+Normal PR runs may skip the opt-in lane when Docker integration is not under review. Use the
 required Docker-capable script as pre-release proof whenever task-container runtime execution,
 identity, cleanup, or preview derivation changes.
 

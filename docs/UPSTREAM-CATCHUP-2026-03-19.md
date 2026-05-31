@@ -10,9 +10,9 @@ Scope:
 - commits reviewed in range: `19`
 - non-merge commits with real behavior or config changes: `13`
 
-Use this together with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). That document keeps the
+Use this with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). That document keeps the
 high-level reviewed-head status. This document captures the detailed per-commit analysis and the
-bring-over spec that guided the later ports from this reviewed range.
+bring-over spec that guided later ports from this reviewed range.
 
 ## Status Update 2026-03-21
 
@@ -23,11 +23,11 @@ Since this review was written, the remaining must-bring items from the `2026-03-
 
 - ported into this fork in the correct local owners
 - confirmed as already covered locally
-- or intentionally left deferred where the behavior is not a parity target
+- intentionally deferred where the behavior is not a parity target
 
 In particular, the `45f4633` stale `origin/HEAD` fix later landed locally in
 [electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts) via `3ee46a0`, so any bring-over
-ordering below should now be read as historical review-time guidance, not as an open queue.
+ordering below is historical review-time guidance, not an open queue.
 
 Use [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) as the current parity ledger. Keep this
 document as the per-commit design record for why those ports were classified the way they were.
@@ -66,12 +66,15 @@ Desired parity spec:
 - emit a desktop notification when a task transitions into a review-ready or waiting state while the desktop window is unfocused
 - debounce/batch notifications so rapid task churn does not spam the user
 - clicking a notification should focus the window and activate the first relevant task
-- browser mode must remain supported, with the same task-status policy delivered through browser notifications when capability and permission allow it
+- browser mode must remain supported, with the same task-status policy delivered through browser
+  notifications when capability and permission allow it
 
 Local integration notes:
 
 - do not recreate the upstream `src/store/desktopNotifications.ts` pattern; that makes a store-owned side-effect runtime the policy owner
-- start the shared watcher from the session/runtime layer, likely near [desktop-session.ts](../src/app/desktop-session.ts) or [desktop-session-startup.ts](../src/app/desktop-session-startup.ts)
+- start the shared watcher from the session/runtime layer, likely near
+  [desktop-session.ts](../src/app/desktop-session.ts) or
+  [desktop-session-startup.ts](../src/app/desktop-session-startup.ts)
 - keep the Electron-native delivery side effect behind a typed IPC seam in the backend
 - model browser capability, permission, and multi-tab suppression explicitly instead of treating browser mode as a no-op
 
@@ -93,7 +96,8 @@ Expected local files:
 Key divergence notes:
 
 - our current app/session startup is no longer [App.tsx](../src/App.tsx)-owned
-- our IPC layer is typed through [renderer-invoke.ts](../src/domain/renderer-invoke.ts), so upstream’s raw preload widening is the wrong port shape
+- our IPC layer is typed through [renderer-invoke.ts](../src/domain/renderer-invoke.ts), so
+  upstream's raw preload widening is the wrong port shape
 - browser-mode support is a hard constraint, so Electron-only behavior must not leak into shared renderer paths
 
 ### `a737bc3` `Addressed PR comments for notifications`
@@ -113,7 +117,8 @@ Bring-over additions beyond `4c0a250`:
 Local integration notes:
 
 - persist the new setting in the same owner family as `showPlans`, `autoTrustFolders`, and the Hydra desktop settings
-- if we need fire-and-forget IPC, add it through the existing typed IPC surface instead of copying upstream’s untyped `window.electron.ipcRenderer.send(...)` use
+- if we need fire-and-forget IPC, add it through the existing typed IPC surface instead of copying
+  upstream's untyped `window.electron.ipcRenderer.send(...)` use
 - keep the click routing in workflow/app or navigation owners, not inside a settings or leaf component
 
 ### `65051a9` `style: fix prettier formatting in 10 files`
@@ -162,8 +167,11 @@ Expected local files:
 
 Key divergence notes:
 
-- our sidebar is already split into [SidebarProjectsSection.tsx](../src/components/sidebar/SidebarProjectsSection.tsx) and [SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx)
-- the right port is one shared projection owner, not another round of inline grouping logic in a large component
+- our sidebar is already split into
+  [SidebarProjectsSection.tsx](../src/components/sidebar/SidebarProjectsSection.tsx) and
+  [SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx)
+- the correct port is one shared projection owner, not another round of inline grouping logic in a
+  large component
 
 ### `cb511e5` `style(themes): lighten non-minimal themes for better outdoor readability`
 
@@ -179,7 +187,9 @@ Reason:
 
 Future port notes:
 
-- if we want the behavior later, port it as a token-level theme refresh through [src/lib/theme.ts](../src/lib/theme.ts), [src/lib/monaco-theme.ts](../src/lib/monaco-theme.ts), and [src/styles.css](../src/styles.css)
+- if we want the behavior later, port it as a token-level theme refresh through
+  [src/lib/theme.ts](../src/lib/theme.ts), [src/lib/monaco-theme.ts](../src/lib/monaco-theme.ts),
+  and [src/styles.css](../src/styles.css)
 - do not copy the exact upstream numbers without a fresh visual pass in both desktop and browser mode
 
 ### `eb8ec58` `feat(sidebar): ask for confirmation before deleting any project`
@@ -197,7 +207,9 @@ Desired parity spec:
 Local integration notes:
 
 - keep project deletion behavior where it already lives; only move the confirmation policy into the sidebar/project presentation flow
-- because [SidebarProjectsSection.tsx](../src/components/sidebar/SidebarProjectsSection.tsx) is already the project-row owner, the dialog state can stay in [Sidebar.tsx](../src/components/Sidebar.tsx) while the button remains in the project section leaf
+- because [SidebarProjectsSection.tsx](../src/components/sidebar/SidebarProjectsSection.tsx) is
+  already the project-row owner, the dialog state can stay in
+  [Sidebar.tsx](../src/components/Sidebar.tsx) while the button remains in the project section leaf
 
 Expected local files:
 
@@ -220,13 +232,21 @@ Desired parity spec:
 
 Local integration notes:
 
-- put annotation mutation in the review-session owner, not inside [ReviewSidebar.tsx](../src/components/ReviewSidebar.tsx) or [ReviewCommentCard.tsx](../src/components/ReviewCommentCard.tsx)
-- extend [createReviewSession](../src/app/review-session.ts) with `updateAnnotation(...)`, then thread that through the shared review-surface session and sidebar props
-- inline and sidebar review editing may keep local draft state, but the final local shape should stay
-  intentionally thin: trim/save validation belongs at the leaf boundary, while actual annotation
-  replacement stays centralized in `updateAnnotation(...)`
-- keep the current shared review-surface bootstrap intact; apply the behavior through [review-surface-session.ts](../src/components/review-surface-session.ts) and [review-sidebar-actions.ts](../src/components/review-sidebar-actions.ts), not by reintroducing per-surface divergence
-- the scroll-preservation fix belongs in [ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx), where the container scroll ownership already lives
+- put annotation mutation in the review-session owner, not inside
+  [ReviewSidebar.tsx](../src/components/ReviewSidebar.tsx) or
+  [ReviewCommentCard.tsx](../src/components/ReviewCommentCard.tsx)
+- extend [createReviewSession](../src/app/review-session.ts) with `updateAnnotation(...)`, then
+  thread that through the shared review-surface session and sidebar props
+- inline and sidebar review editing may keep local draft state, but the final local shape should
+  stay thin: trim/save validation belongs at the leaf boundary, while actual annotation replacement
+  stays centralized in `updateAnnotation(...)`
+- keep the current shared review-surface bootstrap intact; apply the behavior through
+  [review-surface-session.ts](../src/components/review-surface-session.ts) and
+  [review-sidebar-actions.ts](../src/components/review-sidebar-actions.ts), not by reintroducing
+  per-surface divergence
+- the scroll-preservation fix belongs in
+  [ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx), where the container scroll
+  ownership already lives
 
 Expected local files:
 
@@ -244,8 +264,10 @@ Expected local files:
 
 Key divergence notes:
 
-- upstream used [ReviewProvider.tsx](../src/components/ReviewProvider.tsx); we already replaced that ownership with [review-session.ts](../src/app/review-session.ts) and [review-surface-session.ts](../src/components/review-surface-session.ts)
-- the right port is at the review-session owner seam, not a file-shape port
+- upstream used [ReviewProvider.tsx](../src/components/ReviewProvider.tsx); we already replaced
+  that ownership with [review-session.ts](../src/app/review-session.ts) and
+  [review-surface-session.ts](../src/components/review-surface-session.ts)
+- the correct port is at the review-session owner seam, not a file-shape port
 
 ### `e326596` `1.1.1`
 
@@ -256,7 +278,7 @@ Key divergence notes:
 Reason:
 
 - release tag only
-- the meaningful work is already captured by the surrounding commits
+- the behavioral work is already captured by the surrounding commits
 
 ### `b4b87b5` `style(a11y): strengthen keyboard focus outlines for better visibility`
 
@@ -310,9 +332,12 @@ Desired parity spec:
 
 Local integration notes:
 
-- upstream changed [electron/ipc/git.ts](../electron/ipc/git.ts); our branch/main detection now lives in [electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts)
+- upstream changed [electron/ipc/git.ts](../electron/ipc/git.ts); our branch/main detection now
+  lives in [electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts)
 - port the behavior into that narrower owner instead of reviving logic in the broader git module
-- add regression coverage in [electron/ipc/git-branch.test.ts](../electron/ipc/git-branch.test.ts) for stale `origin/HEAD`, refreshed `origin/HEAD`, and no-network fallback cases
+- add regression coverage in
+  [electron/ipc/git-branch.test.ts](../electron/ipc/git-branch.test.ts) for stale `origin/HEAD`,
+  refreshed `origin/HEAD`, and no-network fallback cases
 
 ### `f3abdb5` `style(ui): make prompt placeholder more subtle when unfocused`
 
@@ -323,7 +348,7 @@ Local integration notes:
 
 Reason:
 
-- low-value visual polish only
+- visual polish only
 - the prompt panel has already diverged locally through later focus, Hydra, and terminal-adjacent work
 
 ### `efdd90f` `docs: add new vid`
@@ -361,11 +386,11 @@ Reason:
 
 ## Why This Order
 
-- the git fix is small, high-value, and backend-contained
+- the git fix is small and backend-contained
 - the review change adds real product capability and maps cleanly to our newer review-session architecture
 - the sidebar changes are product-visible but contained to store/presentation seams
-- desktop notifications are desirable, but they are the easiest place to regress browser mode if we port by upstream shape
-- config and visual polish should not block the higher-value behavior ports
+- desktop notifications have browser-mode regression risk if ported by upstream shape
+- config and visual polish should not block functional behavior ports
 
 ## Port Guardrails For This Batch
 

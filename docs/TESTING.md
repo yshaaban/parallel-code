@@ -1,6 +1,6 @@
 # Testing Strategy
 
-This document describes what Parallel Code tests are meant to prove.
+This document explains what Parallel Code tests are meant to prove.
 
 This document owns:
 
@@ -25,7 +25,7 @@ For exact commands, use repo scripts and `package.json`. For terminal/browser wo
 
 ## Focus
 
-This strategy is mainly about:
+This strategy covers:
 
 - reconnect and replay behavior
 - startup, persistence, and reconciliation
@@ -38,14 +38,14 @@ This strategy is mainly about:
 - high-churn product screens
 - shared test harness hygiene
 
-This document answers:
+It answers:
 
 - what kinds of failures need proof
 - which validation seam should catch them
 - which edge cases are easy to miss
 - what counts as sufficient coverage for risky changes
 
-It also records which seams should catch the current architecture splits:
+It also records which seams should catch current architecture splits:
 
 - store boundary drift should be caught by architecture tests before component tests
 - TaskPanel permission-flow regressions should be caught by `TaskPanel.architecture.test.ts` and
@@ -68,14 +68,13 @@ Parallel Code uses four main validation layers:
 4. `docs / sanity only`
    - documentation-only changes with no runtime behavior impact
 
-There is also a small set of architecture/source-level tests that protect design constraints such
-as bootstrap ownership, store-boundary imports, focused-panel reads, and review-surface
-composition. Those tests are not a substitute for behavior proof; they exist to fail early when
-ownership drifts.
+Architecture/source-level tests protect constraints such as bootstrap ownership,
+store-boundary imports, focused-panel reads, and review-surface composition. They are not a
+substitute for behavior proof. They fail early when ownership drifts.
 
 ## Core Principles
 
-The current testing strategy should stay aligned with these rules:
+Keep the testing strategy aligned with these rules:
 
 1. Test architectural contracts and user-visible behavior, not temporary helper structure.
 2. Prefer server-authoritative contracts for server-owned state.
@@ -86,7 +85,7 @@ The current testing strategy should stay aligned with these rules:
 7. When a server-owned category has both bootstrap snapshots and live events, add one projection
    test proving both paths land in the same canonical stored shape.
 
-For task-container work specifically:
+For task-container work:
 
 - keep most proof in `node / backend`
 - treat inspect/start/stop/destroy/logs as a lifecycle/state-machine seam, not as shell-command
@@ -99,7 +98,7 @@ For task-container work specifically:
   auth/transport boundaries or other browser-owned multi-client ownership seams; backend Docker
   execution proof belongs in the dedicated real-Docker node lane
 
-For agent-runner work specifically:
+For agent-runner work:
 
 - keep Docker agent execution proof separate from task-container/Compose preview proof
 - prove profile normalization, Docker argument construction, exact-label cleanup, and runner
@@ -110,7 +109,7 @@ For agent-runner work specifically:
 - keep renderer proof focused on configuration, command-target projection, and visible/passive
   terminal behavior; renderer code must not own Docker lifecycle truth
 
-For terminal clipboard-image and shortcut work specifically:
+For terminal clipboard-image and shortcut work:
 
 - keep native clipboard-image save proof in `node / backend` at the handler/transport seam
 - keep terminal shortcut policy proof in owner-local tests for `src/lib/terminal-shortcuts.ts`
@@ -118,7 +117,7 @@ For terminal clipboard-image and shortcut work specifically:
 - do not rely on broad terminal integration runs alone for terminal-specific shortcut or clipboard
   regressions
 
-For arena competitor preflight specifically:
+For arena competitor preflight:
 
 - keep command availability, auth/env readiness, and quiet-output classification in `node / backend`
   through `electron/ipc/arena-competitors.ts`
@@ -131,7 +130,7 @@ For arena competitor preflight specifically:
 - do not treat a blind arena launch as proof of local CLI availability or authentication; preflight
   must fail the invalid competitor before battle start
 
-For browser startup architecture specifically:
+For browser startup architecture:
 
 - keep cold bootstrap payload shape and bootstrap-category hydration in `node / backend`
 - keep startup-mode and startup-tier policy in owner-local runtime/app tests
@@ -154,7 +153,7 @@ For browser startup architecture specifically:
 
 ## Required Versus Exploratory Validation
 
-Not every terminal-performance tool belongs in the default product review gate.
+Not every terminal-performance tool belongs in the default review gate.
 
 Use this split:
 
@@ -191,16 +190,17 @@ Use this split:
   - manual benchmark/spec entrypoints whose purpose is comparison, not release gating
   - the long additive-output soak in `tests/browser/terminal-render-soak.spec.ts`
 
-Profiler and benchmark scripts are support tooling. They are valuable when diagnosing or comparing
-performance candidates, but they should not expand the default PR gate unless the change is
-explicitly about terminal performance and the chosen script is part of the documented release
-recipe.
-Keep the deterministic terminal lane and the soak lane separate: the deterministic lane should
-cover the user-visible regression contract, while the soak lane should run in its own Playwright
-invocation so long additive-output runs do not contaminate the default review gate.
+Profiler and benchmark scripts are support tooling. They are useful for diagnosing or comparing
+performance candidates, but they should not expand the default PR gate unless the change is about
+terminal performance and the chosen script is part of the documented release recipe.
+
+Keep the deterministic terminal lane and the soak lane separate. The deterministic lane covers the
+user-visible regression contract. The soak lane runs in its own Playwright invocation so long
+additive-output runs do not contaminate the default review gate.
+
 If one deterministic browser case is only stable on a fresh terminal/browser-lab environment after
 the shared lane has already proven the rest of the contract, keep that case in the deterministic
-recipe but run it first as its own Playwright invocation instead of widening timeouts or weakening
+recipe. Run it first in its own Playwright invocation instead of widening timeouts or weakening
 assertions.
 
 ## State-Machine Coverage
@@ -220,7 +220,7 @@ Every risky state machine should have:
   guards are involved
 - one runtime/browser scenario when the lifecycle crosses backend plus UI ownership
 
-For lifecycle-heavy work, add invariant coverage in addition to transition coverage:
+For lifecycle-heavy work, test invariants as well as transitions:
 
 - every transitional state must have one live owner
 - every transitional state must have one deterministic exit
@@ -237,13 +237,13 @@ For lifecycle-heavy work, add invariant coverage in addition to transition cover
 - when a render or lifecycle issue needs a smoke artifact, capture the composite terminal
   diagnostics bundle first so anomaly, output, runtime, and lifecycle evidence stay together
 
-When manual testing finds a new stuck state, the fix is not complete until the suite gains:
+When manual testing finds a new stuck state, the fix is not complete until the suite has:
 
 - one owner-local deterministic churn test
 - one cross-owner runtime or browser scenario if the state is user-visible
 - one reusable invariant assertion or failure artifact when the same class can recur elsewhere
 
-For many-terminal performance work, stage the proof from specialized harness to browser:
+For many-terminal performance work, move from specialized harnesses to browser proof:
 
 - prove the likely hot owner first with a focused runtime or steady-state harness
 - measure backend or session pressure separately instead of assuming the same bottleneck
@@ -485,18 +485,18 @@ Use `runtime / integration` when the risk is:
 - websocket/auth/bootstrap interaction
 - stress, fanout, latency, or replay cost
 
-If the behavior depends on repeated Solid reactive updates, do not validate it only in the plain
-node suite. Use `Solid / UI` so the runtime is exercised with client-side reactivity instead of the
-server-only one-pass behavior.
+If behavior depends on repeated Solid reactive updates, do not validate it only in the plain node
+suite. Use `Solid / UI` so the runtime exercises client-side reactivity instead of server-only
+one-pass behavior.
 
 If the UI state is time-windowed rather than event-complete, add at least one fake-time test that
-advances the clock without changing unrelated store state. This is the only reliable way to prove a
-`Date.now()`-based badge or label actually expires instead of waiting for an accidental rerender.
+advances the clock without changing unrelated store state. That proves a `Date.now()`-based badge or
+label expires because time advanced, not because an unrelated rerender happened.
 
 ## Fast Lifecycle Gate Rules
 
-Do not add a new Playwright spec when the risk can be proved faster in `node / backend` or
-`Solid / UI`.
+Do not add a new Playwright spec when `node / backend` or `Solid / UI` can prove the same risk
+faster.
 
 Prefer browser coverage only when the failure depends on:
 

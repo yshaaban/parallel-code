@@ -1,7 +1,7 @@
 # Terminal Development Guide
 
-This document is the practical contributor guide for terminal, browser-control, browser-lab,
-restore, and terminal-performance work in Parallel Code.
+This is the contributor guide for terminal, browser-control, browser-lab, restore, and
+terminal-performance work in Parallel Code.
 
 Read this after [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md),
 [ARCHITECTURE.md](./ARCHITECTURE.md), [TERMINAL-CONTRACT.md](./TERMINAL-CONTRACT.md), and
@@ -15,7 +15,7 @@ Use this guide when you are:
 - adding or debugging browser-lab coverage
 - debugging large-history TUI switching, reload, or reconnect issues
 
-This document intentionally focuses on what is hard to infer quickly from the code alone.
+It focuses on the parts that are hard to infer quickly from code alone.
 
 This document owns:
 
@@ -31,9 +31,9 @@ This document does not own:
 - generic review heuristics
 
 Artifact directories under `artifacts/` are local browser-lab output, not source-of-truth inputs.
-Keep the durable lessons in this guide or in
-[TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md), but do not treat local artifact
-paths as part of the default validation contract.
+Put durable lessons in this guide or in
+[TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md). Do not treat local artifact paths
+as part of the default validation contract.
 
 ## Quick Start
 
@@ -41,10 +41,10 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
 
 1. run the scripted browser terminal matrix:
    - `npm run test:browser:terminal`
-     This script now runs the `large-history background tab switches` case first in its own
-     Playwright invocation, then runs the shared deterministic Chromium lane. That keeps the
-     background-switch contract in the default gate without inheriting contamination from the
-     heavier render/restore cases that follow.
+     This script runs the `large-history background tab switches` case first in its own Playwright
+     invocation, then runs the shared deterministic Chromium lane. That keeps the background-switch
+     contract in the default gate without inheriting contamination from the heavier render/restore
+     cases that follow.
    - `npm run test:browser:terminal:soak` for the isolated long-additive acceptance soak
 2. run the backend/runtime seams:
    - `npx vitest run --config vitest.config.ts --no-file-parallelism server/terminal-latency.test.ts server/session-stress.test.ts electron/ipc/pty.test.ts electron/ipc/handlers.restore.test.ts src/lib/scrollbackRestore.test.ts src/app/task-command-lease.test.ts`
@@ -60,8 +60,8 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
    - keep exact burst-window assertions in unit/runtime seams; browser multi-char typing tests
      should prove user-visible responsiveness instead of assuming one accepted batch renders as one
      atomic visible chunk
-4. if the issue is about many active terminals or steady-state renderer pressure, run the
-   specialized steady-state benchmarks before leaning on browser repros:
+4. if the issue is about many active terminals or steady-state renderer pressure, run specialized
+   steady-state benchmarks before leaning on browser repros:
    - `npm run benchmark:terminal:renderer`
    - `npm run benchmark:terminal:attach-recovery`
    - `npm run benchmark:terminal:steady-state -- --iterations 12`
@@ -91,9 +91,9 @@ terminal change. The normal product-review minimum is:
 - `npm run test:browser:terminal` when browser terminal behavior changed
 - the specific browser stress/spec gate that matches the regression class under review
 
-For terminal task-control/takeover UI, keep the detailed banner/chip state proof at the local owner
-seam (`task-control-visual-state`) and use `TerminalView` only for thin integration coverage. Do
-not rely on a large terminal integration suite as the only proof of task-control banner behavior.
+For terminal task-control/takeover UI, keep detailed banner/chip state proof at the local owner seam
+(`task-control-visual-state`) and use `TerminalView` only for thin integration coverage. Do not
+rely on a large terminal integration suite as the only proof of task-control banner behavior.
 
 Only escalate into profiler or benchmark scripts when the change is explicitly about performance,
 fluidity, or many-terminal scaling.
@@ -124,20 +124,20 @@ customizing local values, and change `AUTH_TOKEN` before exposing the server out
 development. Browser watch mode writes to `dist-browser-dev/` and `dist-remote-dev/`; it does not
 mutate the production/test `dist/` artifacts that browser-lab validation serves.
 
-Browser Playwright entrypoints now auto-prepare browser artifacts once when they are stale or
-missing, reject zero-byte artifacts, and snapshot validated static assets into the per-test server
-directory before launch. The standalone harness still fails on stale `dist`, `dist-remote`, or
-`dist-server` if someone bypasses the wrapper, so stale browser runs do not silently succeed.
+Browser Playwright entrypoints auto-prepare browser artifacts once when they are stale or missing,
+reject zero-byte artifacts, and snapshot validated static assets into the per-test server directory
+before launch. The standalone harness still fails on stale `dist`, `dist-remote`, or `dist-server`
+if someone bypasses the wrapper, so stale browser runs do not silently succeed.
 
 Generated profiler and stress outputs under `artifacts/` are local scratch data, not product
-surface. Keep them out of review, and move any durable conclusion into docs instead of relying on a
+surface. Keep them out of review. Move durable conclusions into docs instead of relying on a
 checked-in artifact path.
 
 `npm test` is not the browser-terminal full gate by itself. It covers node + Solid suites only, so
 the scripted browser terminal matrix above is part of the gate.
 
 For steady-state scaling work, do not start with repeated browser manual repro loops. Use the
-specialized scheduler/output-pipeline/output-analysis benchmarks to narrow the hot owner first, and
+specialized scheduler/output-pipeline/output-analysis benchmarks to narrow the hot owner first,
 then confirm the winning hypothesis in the browser.
 
 For typing responsiveness work, keep one ownership rule in mind:
@@ -897,7 +897,7 @@ Reason:
 
 ## Remote And Production Validation
 
-Use these workflows when the question is no longer only "does it work on localhost?" but also:
+Use these workflows when the question goes beyond "does it work on localhost?":
 
 - does `/remote` bootstrap correctly on a deployed server?
 - does public-path latency or buffering change terminal/control behavior?
@@ -930,18 +930,18 @@ When a terminal perf candidate needs different behavior for `1`, `2`, and `4 vis
   - `product_default`
   - the current dense benchmark reference
 
-Reason:
+Why:
 
 - `product_default` is still the real shipping baseline for sparse interaction
 - the current dense benchmark reference may still be the better comparison for `4 visible` switch
   and bulk behavior
 - comparing against only one of those can hide either a sparse regression or a lost dense win
 
-### Local input feedback experiments
+### Local input feedback
 
-Local input feedback experiments are gated through
-`window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__` or URL query params. The active variant is an
-immediate renderer-only frame pulse on locally admitted input:
+Local input feedback is enabled by default through the user/device setting in Settings > Behavior.
+It gives the selected terminal immediate renderer-only acknowledgement while remote echo is still in
+flight. The current product variant is an immediate frame pulse on locally admitted input:
 
 ```js
 window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
@@ -950,10 +950,11 @@ window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
 };
 ```
 
-For deployed/manual tests, append the equivalent query param:
+For deployed/manual tests, URL query params still override the persisted setting:
 
 ```text
 ?terminalLocalInputFeedback=ack-pulse&terminalLocalInputFeedbackDurationMs=180
+?terminalLocalInputFeedback=off
 ```
 
 This is not local echo. It must never call `term.write`, mutate xterm state, enter scrollback /
@@ -970,9 +971,9 @@ terminal content.
 With renderer runtime diagnostics enabled, `terminalInput.localFeedbackAckPulses` counts local
 feedback events in the diagnostics snapshot.
 
-Use it to test perceived latency on TUI-heavy agents. Reject the experiment if it creates duplicate
-glyphs, cursor drift, masked-input leakage, terminal history divergence, or worse focused
-round-trip / long-task metrics.
+Use it to test perceived latency on TUI-heavy agents. Reject it if it creates duplicate glyphs,
+cursor drift, masked-input leakage, terminal history divergence, or worse focused round-trip /
+long-task metrics.
 
 ### Release and stress workflow
 

@@ -9,7 +9,7 @@ Repositories reviewed:
 
 ## Executive Summary
 
-Hydra is not "just another coding CLI" in the same category as `claude`, `codex`, or `gemini`.
+Hydra is not in the same category as `claude`, `codex`, or `gemini`.
 It is a coordinator that owns:
 
 - an interactive operator REPL (`hydra`)
@@ -19,16 +19,16 @@ It is a coordinator that owns:
 - an optional concierge layer that may answer prompts instead of dispatching work
 - its own persistent project state under `docs/coordination/`
 
-Because of that, a first-class `parallel-code` integration should not be implemented as "add `hydra` to the default agent list and call it done".
+For that reason, a built-in `parallel-code` integration should not be implemented as "add `hydra` to the default agent list and call it done".
 
-The best first version is:
+The recommended first version is:
 
 1. keep `parallel-code`'s existing PTY-based architecture
-2. add Hydra as a first-class built-in agent
+2. add Hydra as a built-in agent
 3. launch Hydra through a `parallel-code` Hydra adapter/bootstrap process, not by spawning upstream `hydra` directly
 4. make `parallel-code` prompt handling and ready-state heuristics Hydra-aware
 
-This keeps the integration aligned with the current app architecture, avoids binding `parallel-code` to unstable Hydra internals, and fixes the practical problems that a raw `hydra` PTY spawn would introduce:
+This keeps the integration aligned with the current app architecture and avoids binding `parallel-code` to unstable Hydra internals. It also fixes the practical problems that a raw `hydra` PTY spawn would introduce:
 
 - daemon port collisions
 - detached daemon leaks
@@ -40,7 +40,7 @@ This keeps the integration aligned with the current app architecture, avoids bin
 
 ### 1.1 What Hydra Is
 
-Hydra is a multi-agent orchestration system that coordinates Claude Code, Gemini CLI, and Codex CLI, plus an optional local OpenAI-compatible model. Its center of gravity is not one model session but a small orchestration stack:
+Hydra is a multi-agent orchestration system that coordinates Claude Code, Gemini CLI, and Codex CLI, plus an optional local OpenAI-compatible model. It is not one model session; it is a small orchestration stack:
 
 - `bin/hydra-cli.mjs`: top-level CLI (`hydra`)
 - `lib/hydra-operator.mjs`: interactive operator console
@@ -50,7 +50,7 @@ Hydra is a multi-agent orchestration system that coordinates Claude Code, Gemini
 - `lib/hydra-concierge*.mjs`: conversational front-end with provider fallback
 - `lib/hydra-mcp-server.mjs`: MCP server exposing Hydra tools/resources/prompts
 
-Hydra's core value proposition is orchestration:
+Hydra primarily provides orchestration:
 
 - prompt classification
 - route selection (`single`, `tandem`, `council`)
@@ -61,7 +61,7 @@ Hydra's core value proposition is orchestration:
 
 ### 1.2 Primary Invocation Surfaces
 
-Hydra exposes four real integration surfaces.
+Hydra exposes four integration surfaces.
 
 #### A. Interactive CLI
 
@@ -90,7 +90,7 @@ Key commands inside the REPL:
 - `:watch <agent>`
 - `!<prompt>` to bypass concierge and force dispatch
 
-Important detail: Hydra's operator prompt is `hydra>` or `hydra[model]>`, not the `Claude/Codex` prompt characters that `parallel-code` currently keys off of.
+Hydra's operator prompt is `hydra>` or `hydra[model]>`, not the `Claude/Codex` prompt characters that `parallel-code` currently keys off of.
 
 #### B. One-shot CLI mode
 
@@ -108,7 +108,7 @@ This is useful for batch usage, but it is not a simple request/response API:
 - it may start long-lived workers
 - it may publish tasks/handoffs instead of producing one final direct answer
 
-That makes it less suitable as a native drop-in replacement for `parallel-code`'s current "persistent terminal + direct prompt injection" flow.
+That limits it as a native drop-in replacement for `parallel-code`'s current "persistent terminal + direct prompt injection" flow.
 
 #### C. Daemon HTTP API
 
@@ -230,7 +230,7 @@ Hydra supports:
 - dead-letter queues
 - idempotency for mutating daemon requests
 
-This is stronger than the session model of the current built-in CLIs in `parallel-code`, which mostly rely on a single long-lived process plus whatever persistence the upstream CLI already owns.
+Hydra has more built-in coordination state than the current built-in CLIs in `parallel-code`, which mostly rely on a single long-lived process plus whatever persistence the upstream CLI already owns.
 
 ### 1.6 Models, Providers, and Auth
 
@@ -298,7 +298,7 @@ Hydra differs in important ways:
 | Resume story      | CLI-specific `resume_args`                    | state restore comes from daemon files, not a dedicated resume subcommand |
 | Terminal behavior | relatively simple TUI                         | owns readline prompt, scroll region, status bar, spinners                |
 
-Hydra is therefore closer to "an orchestrator running inside a terminal" than "a single model CLI".
+Hydra is closer to "an orchestrator running inside a terminal" than "a single model CLI".
 
 ## 2. Current Agent Architecture in `parallel-code`
 
@@ -443,13 +443,13 @@ Add Hydra as a built-in `AgentDef` with `command: "hydra"` and launch it exactly
 
 #### Disadvantages
 
-This option is acceptable as a manual custom-agent experiment, but not as a polished first-class integration.
+This option is acceptable as a manual custom-agent experiment, but not as a supported built-in integration.
 
 Major problems:
 
 1. Daemon port collision
    - Hydra defaults to a shared daemon URL/port
-   - a Hydra process in one `parallel-code` task will happily connect to an already-running daemon from another task
+   - a Hydra process in one `parallel-code` task can connect to an already-running daemon from another task
    - because `parallel-code` worktrees are different directories, this can connect the wrong task to the wrong coordination state
 
 2. Detached daemon leaks
@@ -476,7 +476,7 @@ Major problems:
 
 #### Conclusion
 
-Not recommended as the first-class implementation.
+Not recommended as the supported built-in implementation.
 
 ### Option B: Native daemon/API integration
 
@@ -498,7 +498,7 @@ Treat Hydra as a service instead of a terminal process:
 
 #### Disadvantages
 
-This is not a good first implementation.
+This is not recommended for the first implementation.
 
 Reasons:
 
@@ -522,7 +522,7 @@ Reasons:
 
 #### Conclusion
 
-Good future direction for deep Hydra-specific UX, not the right first step.
+Possible future direction for deep Hydra-specific UX, but not the right first step.
 
 ### Option C: Custom Hydra adapter launched through the existing PTY model
 
@@ -568,9 +568,9 @@ Implement a hybrid of Option A and Option C:
 
 ### Why this is the best first implementation
 
-It is the smallest approach that is actually correct.
+It is the smallest correct approach.
 
-It solves the hard problems without requiring a new runtime architecture:
+It addresses the required lifecycle and prompt problems without a new runtime architecture:
 
 1. Per-task daemon isolation
    - adapter can derive a deterministic daemon port from the task worktree path
@@ -588,7 +588,7 @@ It solves the hard problems without requiring a new runtime architecture:
    - only targeted heuristic changes are required
    - no UI architecture rewrite is needed
 
-5. Future-proofing
+5. Future extension
    - the adapter boundary becomes the place to add Hydra-specific capabilities later
    - deeper daemon-native integration can be built on top of the same Hydra-specific metadata
 
@@ -607,7 +607,7 @@ For the first release, Hydra in `parallel-code` should behave like this:
 
 ### Explicit non-goals for v1
 
-Do not try to do these in the first pass:
+Leave these out of the first pass:
 
 - map Hydra's internal workers to separate `parallel-code` columns
 - expose full Hydra model management in the `parallel-code` UI
@@ -639,7 +639,7 @@ Do not try to do these in the first pass:
 2. Add a built-in Hydra agent entry.
    - `id: "hydra"`
    - `name: "Hydra"`
-   - availability check should verify the Hydra runtime is actually usable, not just that one top-level command exists
+   - availability check should verify the Hydra runtime surface the adapter needs
    - at minimum, verify `hydra` plus the daemon entrypoint used by the adapter
    - `resume_args: []`
    - `skip_permissions_args: []`
@@ -662,7 +662,7 @@ Do not try to do these in the first pass:
 
 5. Do not rely on Hydra's own detached daemon auto-start.
    - The adapter should own the daemon lifecycle explicitly.
-   - This is required to avoid orphaned daemons and cross-task state bleed.
+   - This avoids orphaned daemons and cross-task state bleed.
 
 ### Phase 2: Make prompt handling Hydra-aware
 
@@ -688,7 +688,7 @@ Do not try to do these in the first pass:
    - Hydra's status bar can keep the PTY "active" even when the operator is ready.
    - The heuristics should check for a Hydra prompt within the tail buffer, not just the final shell-like line.
 
-4. Keep the direct terminal fully native.
+4. Keep the direct terminal native.
    - If the user types into the Hydra terminal directly, do not rewrite what they type.
    - Only the external prompt panel should apply the `!` convention.
 
@@ -705,7 +705,7 @@ Do not try to do these in the first pass:
 
 #### Work
 
-1. Surface Hydra as a first-class agent in the selector.
+1. Surface Hydra as a built-in agent in the selector.
    - Add explanatory copy that this is a coordinator that can internally route Claude/Gemini/Codex.
 
 2. Hide the skip-permissions checkbox for Hydra.
@@ -742,7 +742,7 @@ Recommended MVP handling:
   - `docs/coordination/**`
 - keep a way to reveal them if the user wants to inspect them
 
-This is safer than hard-removing them from backend git queries for all tasks.
+This avoids hiding coordination files from all backend git queries while still reducing default UI noise.
 
 ### Phase 5: Restart/resume behavior
 
@@ -782,7 +782,7 @@ Avoid a design that depends on a repo-relative script path only working in devel
 
 ### 6.1 Agent Definition Changes
 
-Hydra needs more than the current `command + args` shape if the implementation is going to be robust.
+Hydra needs more than the current `command + args` shape if the implementation is going to be safe.
 
 Recommended additions to the agent definition model:
 
@@ -837,7 +837,7 @@ Do not automatically run:
 Reasons:
 
 - both mutate user-level or repo-level state
-- first-class agent support should not silently alter external AI CLI configs or project instruction files
+- built-in agent support should not silently alter external AI CLI configs or project instruction files
 
 ## 7. Testing Strategy
 
@@ -1030,7 +1030,7 @@ Mitigation:
 
 Outcome:
 
-- usable first-class Hydra agent
+- usable built-in Hydra agent
 - safe concurrent tasks
 - no daemon leaks
 
@@ -1042,7 +1042,7 @@ Outcome:
 
 Outcome:
 
-- good day-to-day usability
+- better day-to-day usability
 
 ### Phase 3
 
@@ -1051,21 +1051,21 @@ Outcome:
 
 Outcome:
 
-- deeper native integration without losing the PTY path
+- deeper native integration while keeping the PTY path
 
 ## 10. Final Recommendation
 
-Implement Hydra as a PTY-launched first-class agent through a `parallel-code` Hydra adapter, not as a raw `hydra` executable entry and not as a daemon-native rewrite.
+Implement Hydra as a PTY-launched built-in agent through a `parallel-code` Hydra adapter. Avoid both a raw `hydra` executable entry and a daemon-native rewrite.
 
 This gives `parallel-code`:
 
-- the smallest change set that is operationally safe
+- a small change set with operational isolation
 - compatibility with the current PTY-based architecture
 - correct daemon lifecycle management
 - predictable prompt-panel behavior
-- room to grow into a deeper Hydra-specific integration later
+- room for deeper Hydra-specific integration later
 
-It also respects what Hydra actually is: a coordinator with its own runtime, not a thin single-process coding CLI.
+It also respects what Hydra is: a coordinator with its own runtime, not a thin single-process coding CLI.
 
 ## 11. File-by-file Change Map
 
@@ -1123,7 +1123,7 @@ This is the most direct mapping from the research to the `parallel-code` codebas
   - ensure skip-permissions UX does not appear for Hydra
 
 - `src/components/AgentSelector.tsx`
-  - display Hydra as a built-in first-class option with accurate copy
+  - display Hydra as a built-in option with accurate copy
 
 - `src/components/SettingsDialog.tsx`
   - add any Hydra-specific settings that are accepted for MVP

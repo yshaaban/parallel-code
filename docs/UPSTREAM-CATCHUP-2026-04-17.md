@@ -25,9 +25,9 @@ stays as the historical ledger for the prior frozen range `b250446..91f00f4`.
   - `18` `ignore_or_covered`
   - `27` `redesign`
 - The implemented outcome is narrower:
-  - the direct-port git / changed-files / terminal / settings subset is now landed locally or
+  - the direct-port git / changed-files / terminal / settings subset landed locally or is
     explicitly closed without a direct port
-  - the steps family redesign is now landed locally through backend-owned task-steps owners
+  - the steps family redesign landed locally through backend-owned task-steps owners
   - Docker-mode preference remains redesign-only under this fork's browser-first architecture
   - `aa92062` was confirmed already covered by existing browser-lab coverage
 
@@ -55,8 +55,8 @@ Commit intake:
 
 Rationale:
 
-- this family is now the cleanest parity queue from the new delta
-- the useful behavior belongs in current backend/git owners plus the changed-files projection and
+- this family is the clearest parity queue from the new delta
+- the behavior belongs in current backend/git owners plus the changed-files projection and
   commit-nav presentation owners
 - the changed-files and commit-navigation fixes should be implemented by behavior, not by copying
   upstream file shape
@@ -109,8 +109,8 @@ Commit intake:
 
 Rationale:
 
-- these are the useful runtime and presentation improvements from the new delta that still fit our
-  current browser-first owners
+- these runtime and presentation improvements from the new delta still fit the current
+  browser-first owners
 - the zoom and shell shortcuts should stay centralized in shared shortcut and runtime owners
 - the dialog, overflow, and notification-adjacent polish should be implemented through the current
   presentation / workflow surfaces, not by bringing over upstream component shape directly
@@ -209,9 +209,9 @@ Rationale:
 
 - the steps panel is a new product surface with a backend/workflow shape that does not map cleanly
   to a direct upstream port in this fork
-- the useful concepts to preserve are the task-progress history, next-action guidance, prompt
+- the concepts to preserve are the task-progress history, next-action guidance, prompt
   seeding, host-stamped timestamps, and sub-agent-aware display
-- the implementation target should be a local redesign, not upstream file-shape reuse
+- implement this as a local redesign, not upstream file-shape reuse
 
 Current outcome on this fork:
 
@@ -278,7 +278,7 @@ Current outcome on this fork:
 
 ## Notes
 
-- The catch-up outcome is now narrower than the first-pass intake:
+- The final catch-up outcome is narrower than the first-pass intake:
   - the direct-port git / changed-files / terminal / settings subset is landed locally
   - the remaining changed-files commit-nav and browser-shell utility items are explicitly closed
     without a direct port

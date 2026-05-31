@@ -1,7 +1,7 @@
 # Terminal And Browser-Control Follow-Ups
 
-This document captures follow-up ideas after the recent browser-control, latency, takeover,
-terminal attach, restore, and lifecycle hardening work.
+This document records follow-up ideas from the browser-control, latency, takeover, terminal attach,
+restore, and lifecycle hardening work.
 
 It is not the canonical architecture document. Read these first for current truth and architectural
 rules:
@@ -11,7 +11,7 @@ rules:
 - [TESTING.md](./TESTING.md)
 - [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
 
-Use this note when deciding what to simplify next, what to measure next, and what should stay
+Use this document when deciding what to simplify next, what to measure next, and what should stay
 deferred unless the data justifies it.
 
 Treat any phase names or local `artifacts/terminal-ui-fluidity/...` paths in this file as
@@ -21,7 +21,7 @@ contract on their own.
 
 ## Purpose
 
-The recent work fixed several real failure classes:
+The work fixed several real failure classes:
 
 - stale retained control after takeover or transport loss
 - ghost-send behavior across reconnect
@@ -30,16 +30,16 @@ The recent work fixed several real failure classes:
 - destructive terminal restore behavior and visible TUI instability
 - timer and cleanup inconsistencies that only appeared under full-suite load
 
-Those fixes improved correctness and exposed a clearer long-term direction:
+Those fixes improved correctness and exposed the longer-term direction:
 
 1. the browser control plane should become more explicit, not more clever
 2. terminal transport should distinguish interactive work from bulk work
 3. lifecycle-sensitive code should prefer explicit state machines and generations over ad hoc flags
-4. correctness needs stronger invariant and stress coverage, not only more happy-path tests
+4. correctness needs stronger invariant and stress coverage, not more happy-path tests alone
 
 ## Non-Negotiable Architectural Constraints
 
-Any future work in this area should continue to respect these rules:
+Future work in this area should continue to respect these rules:
 
 1. backend or browser control plane owns canonical multi-client state
 2. transport classes route and validate, but do not own task policy
@@ -59,7 +59,7 @@ If we only take a few follow-up slices soon, take them in this order:
 
 ## Measured Direction For Many-Terminal Performance
 
-The current steady-state evidence changes what should be optimized first.
+Steady-state evidence changes what should be optimized first.
 
 What the browser UI-fluidity profiler is already good at separating:
 
@@ -83,7 +83,7 @@ Practical consequence:
 - keep browser UI-fluidity evidence as the gate before taking larger architectural slices such as
   hidden-terminal hibernation or moving non-authoritative analysis off the main thread
 
-What the current variant experiments suggest:
+What the variant experiments suggest:
 
 1. a short focused-only preemption window is the current product default because it improves task
    selection and interactive responsiveness without introducing new recovery semantics
@@ -132,10 +132,9 @@ What the current variant experiments suggest:
 15. the corrected hard switch-window contract rerun also stays deferred; protecting the switch
     target through input-ready and adding a longer settle window improved some dense visible bulk
     numbers, but the valid rerun still regressed sparse switching or interactive responsiveness
-    enough that it does not clear the product bar. The review also surfaced one non-negotiable
-    lifecycle rule for future work: app-owned input-ready must never be recorded before
-    first-paint, and neither timing should complete before the selected terminal is actually
-    visible
+    enough that it does not clear the product bar. It also surfaced one lifecycle rule for future
+    work: app-owned input-ready must never be recorded before first-paint, and neither timing should
+    complete before the selected terminal is actually visible
 16. the newer reserve-plus-frame-shaped visible-budget hybrid is the best recent narrow follow-up,
     but it still stays experimental. The base hybrid improved sparse switching and the `2 visible`
     interactive case, while the `>=4 visible` aggressive `active-visible` follow-up improved some
@@ -213,8 +212,9 @@ What the current variant experiments suggest:
     `1 visible recent_hidden_switch=433.80ms` and `2 visible recent_hidden_switch=596.30ms`, with
     no timeouts. So this pass is implemented, worth keeping, and browser-cleared for bounded
     sparse/few-visible hidden switching even though it is not yet a broad performance breakthrough
-23. role-based High Load Mode selected handoff is no longer catastrophically broken after moving
-    switch-window arming ahead of selected-session revival. The authoritative dense rerun is now
+23. role-based High Load Mode selected handoff is no longer in the same severe failure mode after
+    moving switch-window arming ahead of selected-session revival. The authoritative dense rerun is
+    now
     `phase-role-based-high-load-mode-fix-2026-03-24-r3`:
     - `high_load_mode_product / 24 / 4 visible / recent_hidden_switch = 212.30ms`
     - matching `product_default / 24 / 4 visible / recent_hidden_switch = 148.50ms`
@@ -293,8 +293,8 @@ What the current variant experiments suggest:
 
 ### 0. Close Visibility-Aware Output Pacing As An Active Track
 
-The bounded A/B/C visibility-aware pacing ladder is now closed. None of the candidates beat the
-shipped default-on High Load profile cleanly enough to justify promotion.
+The bounded A/B/C visibility-aware pacing ladder is closed. None of the candidates beat the shipped
+default-on High Load profile cleanly enough to justify promotion.
 
 Authoritative phase summary:
 
@@ -317,10 +317,9 @@ Hard call:
 
 ### 0a. Close Trace-Driven Recovery-Batch Release Pacing As An Active Track
 
-The trace-driven replay/restore follow-up is also closed with no promotion. The dense traces did
-find a real renderer-side cost center in `scrollbackRestore` attach-batch result release, but the
-browser-gated tuning still did not produce a stable win once we reran the dense gate on rebuilt
-artifacts.
+The trace-driven replay/restore follow-up is also closed with no promotion. The dense traces found a
+real renderer-side cost center in `scrollbackRestore` attach-batch result release, but the
+browser-gated tuning did not produce a stable win once we reran the dense gate on rebuilt artifacts.
 
 Authoritative phase summaries:
 
@@ -349,9 +348,9 @@ Hard call:
 
 ### 0aa. Close Fit/Layout Churn As An Active Track
 
-The fit/layout churn branch is also closed with no promotion. The diagnostics work was worth
-keeping because it made fit attribution explicit in the browser summaries, but none of the bounded
-fit candidates beat the current shipped dense floor.
+The fit/layout churn branch is also closed with no promotion. The diagnostics work remains useful
+because it made fit attribution explicit in the browser summaries, but none of the bounded fit
+candidates beat the current shipped dense floor.
 
 Authoritative phase summaries:
 
@@ -383,8 +382,8 @@ Hard call:
 
 ### 0ab. Close WebGL / Renderer Churn As An Active Track
 
-The WebGL / renderer churn branch is also closed with no promotion. The attribution work was worth
-keeping because browser summaries now expose pool churn and per-frame active/visible WebGL counts,
+The WebGL / renderer churn branch is also closed with no promotion. The attribution work remains
+useful because browser summaries now expose pool churn and per-frame active/visible WebGL counts,
 but the corrected dense shipped-path gate showed no meaningful acquire/evict/fallback churn during
 the measured workload.
 
@@ -415,8 +414,7 @@ Hard call:
 
 ### 0b. Separate Recent Hidden Switch From Cold Hidden Wake
 
-The recent browser work showed that these are different user problems and different lifecycle
-states.
+Browser runs showed that these are different user problems and different lifecycle states.
 
 Future direction:
 
@@ -485,7 +483,7 @@ Recommendation:
 
 ### 1. Make Browser Commands Explicitly Classed
 
-Several recent bugs came from treating all browser commands as if they had the same lifecycle.
+Several bugs came from treating all browser commands as if they had the same lifecycle.
 
 Future direction:
 
@@ -598,8 +596,8 @@ Recommendation:
 
 ### 4. Add Periodic Server-Side Reconciliation For Live Control State
 
-Recent fixes added targeted reconciliation. A periodic audit pass would make the system more
-robust under rare or future failure modes.
+Targeted reconciliation exists now. A periodic audit pass would make the system more robust under
+rare or future failure modes.
 
 Future direction:
 
@@ -634,7 +632,7 @@ Recommendation:
 
 ### 5. Use Generation Tokens And Abortable Operations More Consistently
 
-Some recent bugs were stale-work bugs, not raw logic bugs.
+Some bugs were stale-work bugs, not raw logic bugs.
 
 Future direction:
 
@@ -816,7 +814,7 @@ Recommendation:
 
 ### 10. Add Model-Based Multi-Client State-Machine Tests
 
-The current suite is good, but many of the hardest bugs are still “unexpected sequence” bugs.
+The suite covers a lot, but many of the hardest bugs are still "unexpected sequence" bugs.
 
 Future direction:
 
@@ -862,7 +860,7 @@ Recommendation:
 
 ### 11. Expand Stress Harnesses From Perf-Only To Invariant-Aware
 
-The stress suites should not only measure latency. They should also fail on invalid live states.
+The stress suites should measure invalid live states as well as latency.
 
 Future direction:
 
@@ -930,8 +928,7 @@ Recommendation:
 
 ## Performance Follow-Ups Worth Revisiting Later
 
-These are intentionally deferred until the current latency and restore work has stronger measured
-budgets behind it.
+These are deferred until the latency and restore work has stronger measured budgets behind it.
 
 ### A. Binary Input Fast Path
 
@@ -1089,7 +1086,7 @@ Observed result:
 - clean uncontended `24 terminals / 4 visible` screen runs showed that
   `structural_heavy_load_live_surface_cap` is not a safe direct win:
   - dense `interactive_verbose` round-trip timed out and frame-gap/long-task pressure worsened
-  - dense `bulk_text` regressed catastrophically, including multi-second frame-gap p95
+  - dense `bulk_text` regressed badly, including multi-second frame-gap p95
 - `structural_heavy_load_live_surface_cap_tight` proved a more interesting tradeoff:
   - dense `bulk_text` improved to `frame-gap p95=150.00ms`, `longtasks=127.00ms`,
     `render p95=2325.00ms`
@@ -1158,7 +1155,7 @@ Recommendation:
 
 ## Ideas That Should Stay Deferred Or Avoided
 
-These ideas may look attractive, but they do not currently fit the repo direction well:
+These ideas are deferred because they do not fit the repo direction well right now:
 
 - speculative local echo as the default terminal typing path
 - moving control ownership into renderer heuristics
@@ -1190,5 +1187,5 @@ Future slices in this area should leave the system with:
 - invariant-aware stress coverage for multi-client churn
 - enough diagnostics to explain field failures without guesswork
 
-The next iteration should make the system simpler and more explicit, not merely faster in one
-narrow benchmark.
+The next iteration should make the system simpler and more explicit instead of optimizing one narrow
+benchmark.

@@ -1,7 +1,7 @@
 # Upstream Catch-up Review 2026-03-28
 
-This document records the full per-commit review of the upstream-only range on `origin/main` that
-is not present on local `main`.
+This document records the per-commit review of the upstream-only range on `origin/main` that is not
+present on local `main`.
 
 Scope:
 
@@ -23,11 +23,11 @@ parity ledger.
 - The Docker isolation family is intentionally deferred. Upstream implemented it as a desktop-local
   Electron/container feature; this fork is web-first and still treats task isolation as
   worktree/backend-owned.
-- Two broad cleanup commits remain explicitly partial:
+- Two cleanup commits remain explicitly partial:
   - `fe92c17`: non-Docker parity fixes are already covered locally; Docker-only pieces stay
     deferred
   - `2430b97`: only the already-ported prompt-send/channel-lifecycle/storage subset remains a
-    parity target; the rest is intentionally skipped refactor churn
+    parity target; the rest is skipped refactor-only work
 
 ## Per-Commit Ledger
 

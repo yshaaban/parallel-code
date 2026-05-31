@@ -1,8 +1,8 @@
 # Product Performance Execution Plan
 
-This document owns the implementation plan for turning the browser-first product goal into
-measured product behavior. It is intentionally product-code first. Review gates protect the result,
-but they are not the strategy.
+This document is the implementation plan for turning the browser-first product goal into measured
+product behavior. The work starts in product code. Review gates protect the result, but they are not
+the strategy.
 
 Use this when deciding what to build next to make Parallel Code feel desktop-native in the browser.
 For user-frustration taxonomy, use
@@ -12,14 +12,15 @@ For user-frustration taxonomy, use
 
 ## Recommended Objective
 
-Make the browser/server runtime measurably feel like a desktop coding cockpit under realistic
-multi-agent load: the selected task, terminal input, task switching, review diff, preview, remote
-session, reconnect, and cleanup flows must become useful within explicit product budgets, with
-backend-owned truth and visible user control preserved. Build the product code around a small
-browser/server performance scorecard and low-overhead diagnostics, use owner-local tests only to
-iterate quickly on the responsible layer, experiment aggressively on the slowest measured journey,
-keep only changes that improve real user-perceived metrics without weakening advanced browser
-capabilities, and consolidate winning experiments into simple maintainable runtime paths.
+Make the browser/server runtime feel measurably like a desktop coding cockpit under realistic
+multi-agent load. The selected task, terminal input, task switching, review diff, preview, remote
+session, reconnect, and cleanup flows must become useful within explicit product budgets while
+preserving backend-owned truth and visible user control.
+
+Build the product code around a small browser/server performance scorecard and low-overhead
+diagnostics. Use owner-local tests to iterate quickly on the responsible layer. Experiment on the
+slowest measured journey, keep only changes that improve user-perceived metrics without weakening
+advanced browser capabilities, and fold retained experiments into simple runtime paths.
 
 ## Directions Considered
 
@@ -77,12 +78,14 @@ Current smoke evidence comes from the latest post-change repeat artifact:
 | remote/mobile command session                  | remote send command to backend write acknowledgement | 66.83ms  | 500ms  | pass   |
 | preview through explicit port exposure         | expose request to navigable preview                  | 72.53ms  | 1000ms | pass   |
 
-Keep this as promising browser-scorecard evidence, not product-goal completion proof. It directly
+Treat this as promising browser-scorecard evidence, not product-goal completion proof. It directly
 improves the earlier selected-terminal startup miss by prebinding the browser output channel while
-the lazy terminal-session module loads, and it adds smoke coverage for current-branch cleanup,
+the lazy terminal-session module loads. It also adds smoke coverage for current-branch cleanup,
 selected-surface reconnect, mobile remote-shell takeover, backend write acknowledgement, and
-scrollback confirmation. It still does not prove reconnect under heavier replay/load,
-long-lived multi-client coordination, managed-worktree cleanup, or loaded multi-agent behavior.
+scrollback confirmation.
+
+It still does not prove reconnect under heavier replay/load, long-lived multi-client coordination,
+managed-worktree cleanup, or loaded multi-agent behavior.
 
 Historical scorecard context:
 
@@ -110,8 +113,8 @@ explicit budget observations in the matrix artifact, so its exit code only prove
 completed. It should not be cited as a pass.
 
 Applying the current provisional UI-fluidity observations to that artifact would mark it
-`provisional-fail`: 60 of 90 measured checks exceed their current budget. Those budgets are a
-triage tool for loaded browser product work, not a substitute for improving the runtime path.
+`provisional-fail`: 60 of 90 measured checks exceed their current budget. Those budgets are for
+triage in loaded browser product work; they do not replace runtime improvements.
 
 The loaded matrix did expose the next likely product bottleneck:
 
@@ -127,10 +130,10 @@ The loaded matrix did expose the next likely product bottleneck:
 
 New UI-fluidity matrix artifacts include provisional budget observations and support
 `--fail-on-budget` for branches explicitly trying to satisfy this loaded browser lane. Keep the
-default profiler as an evidence generator, not as a PR-first gate. The next product-code work should
+default profiler as an evidence generator, not a PR-first gate. The next product-code pass should
 target terminal output scheduling under `interactive_verbose` with 2 and 4 visible terminals and
-hidden-switch wake behavior under 1 visible terminal, then confirm the winner with a fresh repeated
-matrix and the smoke scorecard.
+hidden-switch wake behavior under 1 visible terminal, then confirm the retained path with a fresh
+repeated matrix and the smoke scorecard.
 
 The 2026-05-10 first retained loaded-lane change tightens the shipped High Load Mode profile for
 sparse hidden switches:
@@ -189,7 +192,7 @@ p95 7273.90ms, and focused round trip 4291.40ms; the per-run diagnostics showed 
 round trip to 2627.90ms. Do not revive this batching shape without a different design that proves
 input send acknowledgement and visible echo both improve.
 
-The next measurement pass found an important proof-quality issue: the profiler could request a
+The next measurement pass found a proof-quality issue: the profiler could request a
 visible-terminal count but still run against a different app-reported layout after viewport
 settling. That made exact visible-count tuning less reliable than the artifact labels implied. The
 profiler now aligns the viewport to the app-reported visible-terminal count before the workload
@@ -206,10 +209,10 @@ High Load Mode `interactive_verbose` evidence is:
   input sent p95 338.40ms, hidden queue p95 0ms, and hidden suppression 2816388 bytes.
 
 This changes the next optimization target. Exact 2- and 4-visible High Load Mode now pass the frame,
-render, and hidden-queue shape on the narrow `interactive_verbose` check; the remaining misses are
+render, and hidden-queue shape on the narrow `interactive_verbose` check. The remaining misses are
 focused round trip by about 130-150ms and long-task tail by about 16-269ms. The next experiment
-should therefore inspect command acknowledgement, PTY write acknowledgement, websocket/control
-message priority, flow-control windows, and focused echo measurement semantics before making more
+should inspect command acknowledgement, PTY write acknowledgement, websocket/control message
+priority, flow-control windows, and focused echo measurement semantics before making more
 output-scheduling changes.
 
 A focused round-trip split was added after that check to separate long-marker keyboard dispatch from
@@ -225,7 +228,7 @@ browser evidence cannot look better because a repeat timed out.
 A targeted Chromium trace at
 `artifacts/terminal-ui-fluidity/2026-05-10-interactive-verbose-trace-check/` kept the same exact
 2-visible `interactive_verbose` shape and showed the long-task tail is mostly browser commit work,
-not renderer scheduler bookkeeping: runtime owner p95 was 0.50ms, scheduler drain p95 was 0.40ms,
+not renderer scheduler bookkeeping. Runtime owner p95 was 0.50ms, scheduler drain p95 was 0.40ms,
 and trace long tasks were dominated by `Commit` slices. Treat that as a pointer toward rendered
 terminal write pressure, browser commit cost, or trace-amplified rendering work before changing
 store projection or scheduler scan code.
@@ -264,12 +267,12 @@ dispatched-to-accepted timing. The narrow browser smoke at
 `artifacts/terminal-ui-fluidity/2026-05-10-input-ack-split-smoke/summary.md` verified the split in
 real browser output: 2-visible `interactive_verbose` had frame-gap p95 83.40ms, long-task total
 2575ms, focused round trip 524.50ms, input dispatched p95 118.30ms, and input accepted p95
-167.90ms. Treat this as diagnostic validation, not a product pass; it shows the old combined
+167.90ms. Treat this as diagnostic validation, not a product pass. It shows the old combined
 input-sent number needs to be split before the next product-code change.
 
 The repeated split run at
 `artifacts/terminal-ui-fluidity/2026-05-10-input-ack-split-repeat3/summary.md` confirmed that the
-bad tail is not one stage only: 2-visible `interactive_verbose` failed frame-gap p95 at 183.30ms,
+bad tail is spread across stages. 2-visible `interactive_verbose` failed frame-gap p95 at 183.30ms,
 long tasks at 5924ms, terminal render p95 at 6216.10ms, and focused round trip at 1065.30ms, with
 input-dispatch p95 384.10ms, echo-after-dispatch p95 737.80ms, terminal-input dispatched p95
 361.10ms, and accepted p95 324.50ms. A narrower in-flight interactive batching experiment was then
@@ -372,10 +375,10 @@ slice unless a sharper diagnostic proves smaller chunks reduce browser commit pr
 increasing focused-input write churn.
 
 The next retained diagnostic closes that proof gap by sampling active terminal writes per frame.
-Completion-duration summaries only report writes when their callback fires; the active-write gauge
+Completion-duration summaries only report writes when their callback fires. The active-write gauge
 reports count and max age while a write is still pending, including focused-input frames. Use the
-next loaded artifact to decide whether the remaining tail is caused by writes already in flight when
-typing begins, or by later keyboard dispatch/browser commit pressure.
+next loaded artifact to decide whether the remaining tail comes from writes already in flight when
+typing begins or from later keyboard dispatch/browser commit pressure.
 
 The first active-write diagnostic smoke at
 `artifacts/terminal-ui-fluidity/2026-05-10-active-write-diagnostic-smoke/summary.md` still failed
@@ -709,24 +712,27 @@ attribution mismatch under the candidate, so the runtime change was backed out. 
 renderer-side lossy redraw supersession without a lower-level proof that it preserves diagnostic
 attribution and does not create pause-heavy stale-output pressure.
 
-This is meaningful progress for the measured hidden-switch lane and for diagnostics, but it is
-still not full loaded-goal proof. The remaining product-code target is the cross-layer
-acknowledgement and backpressure path under loaded browser commit pressure: browser keyboard
-dispatch, command acknowledgement, input/PTY/write acknowledgement, browser transport delivery,
-flow-control pause/resume windows, redraw-control terminal write/commit cost, and sampled in-flight
-visible-background write pressure when it actually overlaps focused input. The latest splits make
-terminal-session channel dispatch, synchronous websocket send duration, backend command-result
-generation, backend output buffering, terminal callback bookkeeping, generic plain-output writes,
-and PTY queue/write policy weak next targets unless new evidence contradicts them. Avoid repeating
-broad output-scheduler constant changes, trace-only completion, focused-pressure removal, sustained
-input coalescing, in-flight interactive batching, fixed echo-window write caps, broad focused
-preemption-window widening, terminal channel-dispatch rewrites, finish-write bookkeeping rewrites,
-focused-input-only redraw coalescing cuts, renderer-side lossy redraw supersession, or
-browser-control bufferedAmount tuning without a sharper diagnostic that explains why the tail should
-improve. Also avoid increasing the interactive input in-flight cap alone, raising the flow-control
-low watermark broadly, coalescing duplicate resumes, request-tracking flow-control pause/resume,
+This is useful progress for the measured hidden-switch lane and for diagnostics, but it is not full
+loaded-goal proof. The remaining product-code target is the cross-layer acknowledgement and
+backpressure path under loaded browser commit pressure: browser keyboard dispatch, command
+acknowledgement, input/PTY/write acknowledgement, browser transport delivery, flow-control
+pause/resume windows, redraw-control terminal write/commit cost, and sampled in-flight
+visible-background write pressure when it overlaps focused input.
+
+The latest splits make terminal-session channel dispatch, synchronous websocket send duration,
+backend command-result generation, backend output buffering, terminal callback bookkeeping, generic
+plain-output writes, and PTY queue/write policy weak next targets unless new evidence contradicts
+them. Avoid repeating broad output-scheduler constant changes, trace-only completion,
+focused-pressure removal, sustained input coalescing, in-flight interactive batching, fixed
+echo-window write caps, broad focused preemption-window widening, terminal channel-dispatch
+rewrites, finish-write bookkeeping rewrites, focused-input-only redraw coalescing cuts,
+renderer-side lossy redraw supersession, or browser-control bufferedAmount tuning without a sharper
+diagnostic that explains why the tail should improve.
+
+Also avoid increasing the interactive input in-flight cap alone, raising the flow-control low
+watermark broadly, coalescing duplicate resumes, request-tracking flow-control pause/resume,
 input-coupled resume escape hatches, hot-path untracked resume suppression, or browser
-`isInputPending` visible-background admission guards without a user-visible win; rerun the smoke
+`isInputPending` visible-background admission guards without a user-visible win. Rerun the smoke
 scorecard only after the loaded matrix stops exposing a new loaded regression.
 
 ## Instrumentation First
@@ -796,8 +802,8 @@ Artifacts:
 8. Lock budgets after baseline data is credible, then treat budget regressions as product
    regressions.
 
-This path is intentionally short. It avoids a large browser matrix, avoids speculative rewrites, and
-keeps the team optimizing the most frustrating measured product behavior first.
+This path is short by design. It avoids a large browser matrix, avoids speculative rewrites, and
+keeps the team focused on the most frustrating measured product behavior first.
 
 ## Experiment Loop
 
@@ -873,5 +879,5 @@ The performance objective is complete when:
 ## What This Is Not
 
 This is not a plan to make PR validation stricter first. It is a plan to make the runtime faster,
-more predictable, and more visibly authoritative. Review and CI should only preserve those product
-properties after the product code demonstrates them.
+more predictable, and more visibly authoritative. Review and CI should preserve those product
+properties after product code demonstrates them.

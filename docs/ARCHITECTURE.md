@@ -14,17 +14,18 @@ For the current explicit git-isolation model, migration rules, and remaining com
 For the browser-first startup contract and the split between cold bootstrap and reconnect restore,
 read [BROWSER-BOOTSTRAP-REDESIGN.md](./BROWSER-BOOTSTRAP-REDESIGN.md).
 
-This document explains the current architecture of Parallel Code as it exists after the recent
-browser control, multi-client, terminal-attach, and browser-lab work.
+This document explains the current Parallel Code architecture after the recent browser control,
+multi-client, terminal-attach, and browser-lab work.
 
-It is intentionally not a design manifesto. It is a map of:
+It is a runtime map, not a design manifesto. It covers:
 
 1. what the system is
 2. how data actually flows today
 3. which layers are reasonably clean
 4. where the architecture is still mixed or awkward
 
-Use this as the reference point for current runtime structure and data flow. Use the principles document as the normative guide for ownership, layering, and do/don't rules.
+Use this as the reference point for current runtime structure and data flow. Use the principles
+document as the normative guide for ownership, layering, and do/don't rules.
 
 This document owns:
 
@@ -65,13 +66,13 @@ Key files:
 
 ## Mental Model
 
-Parallel Code is best understood as one application with three runtime shells around a shared agent/task core:
+Parallel Code has one shared agent/task core with three runtime shells:
 
 1. Electron desktop shell
 2. Browser desktop shell
 3. Remote/mobile shell
 
-All three shells ultimately operate on the same underlying concepts:
+All three shells operate on the same underlying concepts:
 
 - a `Project` is a repo/worktree root plus defaults; `Project.projectMode` explicitly distinguishes
   git projects from non-git projects when git-owned workflows are unavailable
@@ -87,7 +88,7 @@ All three shells ultimately operate on the same underlying concepts:
 - a task takeover request is a live control-plane workflow, not persisted workspace state
 - a `ServerMessage` / `ClientMessage` pair is the websocket control vocabulary
 
-The architecture is not fully layered in a classic clean-architecture sense. The current direction is more pragmatic:
+The architecture is not a classic clean architecture. The current shape is pragmatic:
 
 - shared protocol and transport primitives
 - explicit runtime adapters for Electron, browser desktop, and remote/mobile
@@ -95,7 +96,7 @@ The architecture is not fully layered in a classic clean-architecture sense. The
 - store and UI layers that are moving toward projection and presentation
 - thin server shells that should compose, not own, the workflow logic
 
-That matters because most of the recent quality work has not been about inventing a new architecture. It has been about making the real seams explicit:
+Recent quality work has made the real seams explicit:
 
 - browser mode now has three explicit transport planes
 - backend multi-step operations now have named workflow modules
@@ -122,7 +123,8 @@ Responsibilities:
 - subscribe to store and runtime state
 - translate user interaction into workflow or store actions
 
-This layer is much thinner than it used to be. The main remaining UI hotspots are large screens like `TaskPanel.tsx` and some transport-aware surfaces like `TerminalView.tsx`.
+This layer is thinner than it used to be. The main remaining UI hotspots are large screens like
+`TaskPanel.tsx` and transport-aware surfaces like `TerminalView.tsx`.
 
 The UI shell now also has a small shared presentation-primitives seam for repeated chrome:
 
@@ -239,7 +241,7 @@ Two current ownership splits matter in review:
   stabilization must consume that governor instead of each inventing separate "focused-input"
   heuristics. The governor owns when a terminal is in typing-critical mode; downstream owners may
   choose how to yield, but they must not redefine who is latency-critical
-- task activity in `src/app/task-presentation-status.ts` is intentionally separate from task
+- task activity in `src/app/task-presentation-status.ts` is separate from task
   attention. Attention answers "what needs action"; activity answers "what is the task doing right
   now". When multiple terminals disagree, current live output should beat unrelated waiting/startup
   cues, while hard failure and recovery states stay explicit. Short-lived activity cues remain
@@ -297,7 +299,7 @@ Responsibilities:
 - manage window lifecycle in Electron mode
 - translate transport events into store updates and workflow refreshes
 
-This is now one of the most important seams in the codebase. Runtime wiring is much easier to find than it was before the refactor passes.
+This seam is now central. Runtime wiring is easier to find than it was before the refactor passes.
 
 Browser startup now has an explicit split:
 
@@ -313,8 +315,7 @@ Browser startup now has an explicit split:
   cancels the reconnect-startup mode instead of leaving stale or falsely completed restore
   diagnostics active
 
-That split is important because browser mode should no longer behave like a restored Electron
-session on first page load.
+This split keeps first browser loads from behaving like restored Electron sessions.
 
 ### 3. Shared Transport Layer
 
@@ -337,7 +338,8 @@ Responsibilities:
 - control-event sequencing
 - controller lease behavior
 
-This is the cleanest part of the current architecture. The transport rules are more centralized, better typed, and better tested than they were before.
+This is the most settled part of the current architecture. The transport rules are more
+centralized, better typed, and better tested than before.
 
 ### 4. Workflow / Use-Case Layer
 
@@ -371,7 +373,9 @@ Responsibilities:
 - derive review-ready, stale, and overlap-aware convergence state from canonical git data
 - keep transport adapters and handlers thin
 
-This layer is newer than the others, but it is now a real part of the architecture. It is the main answer to the earlier problem where end-to-end behavior was scattered across handlers, services, store slices, and runtime shells.
+This layer is newer than the others, but it is now part of the architecture. It addresses the
+earlier problem where end-to-end behavior was scattered across handlers, services, store slices,
+and runtime shells.
 
 One workflow split worth calling out explicitly now:
 
@@ -429,7 +433,8 @@ Responsibilities:
 - project ephemeral browser presence and takeover request state
 - derive task/agent status for presentation
 
-This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
+This layer is cleaner than it was, but it is still not "just state". Some store modules still act
+as workflow facades, especially around task and agent behavior.
 The current direction is to remove workflow entrypoints from store modules where possible, keep
 `src/store/navigation.ts` and similar files as pure local state mutation owners, and move
 multi-step behavior into `src/app/*` workflow modules. The current intentional exceptions are
@@ -486,7 +491,8 @@ into a UI-facing convergence model:
 - dirty-uncommitted
 - overlap-risk
 
-That projection intentionally lives above raw git services and below the UI so the sidebar review queue, review panel summary, and post-merge sibling refreshes all use one model.
+That projection lives above raw git services and below the UI so the sidebar review queue, review
+panel summary, and post-merge sibling refreshes all use one model.
 
 The closed-domain metadata for review state now lives with that domain:
 
@@ -498,7 +504,7 @@ The closed-domain metadata for review state now lives with that domain:
 This keeps queue policy, sidebar badges, and review panel summary color/label behavior aligned when
 new review states are added.
 
-Another small but important shared workflow boundary is task closing:
+Another shared workflow boundary is task closing:
 
 - `src/domain/task-closing.ts`
 
@@ -536,7 +542,8 @@ Responsibilities:
 - persist and reload app state
 - compute backend-owned projections like canonical agent status
 
-These modules are intentionally low-level. They should provide capabilities that workflows and handlers compose rather than quietly becoming use-case layers themselves.
+These modules are low-level. They should provide capabilities that workflows and handlers compose
+rather than quietly becoming use-case layers themselves.
 
 One newer backend service worth calling out is agent supervision:
 
@@ -611,7 +618,7 @@ There are now fewer duplicated transport rules across these shells, but the shel
 
 ## Server-Owned Status Model
 
-The current architecture intentionally treats some state as backend-owned:
+The current architecture treats some state as backend-owned:
 
 - git status
 - remote access status
@@ -626,7 +633,8 @@ The rule is:
 3. clients project it into UI state
 4. targeted refetch is a fallback, not the ownership model
 
-This matters because it keeps reconnect semantics, multi-client behavior, and startup repair logic coherent across Electron and browser mode.
+This keeps reconnect semantics, multi-client behavior, and startup repair logic consistent across
+Electron and browser mode.
 
 ## Shared Workspace State Vs Client Session State
 
@@ -842,7 +850,7 @@ Important property:
   backend agree on the current tail, while reconnect replacement restores deliberately preserve the
   queued tail until the replacement restore wins so reconnect churn cannot reorder or duplicate live
   output
-- global startup visibility is intentionally separate from backend-owned task attention; local
+- global startup visibility stays separate from backend-owned task attention; local
   attach/restore progress belongs to the renderer-side startup owner, not to
   `src/app/task-presentation-status.ts`
 - local terminal fit stays local, but committed PTY resize authority follows backend task-command
@@ -856,7 +864,7 @@ Important property:
 
 ## Task Ports And Preview
 
-Parallel Code now has a task-scoped preview model rather than a generic "proxy any localhost port" model.
+Parallel Code now has a task-scoped preview model, not a generic "proxy any localhost port" model.
 
 The core distinction is:
 
@@ -885,7 +893,8 @@ This follows the same ownership rule as other server-owned state:
 3. clients project those snapshots into UI
 4. browser mode proxies only explicitly exposed ports
 
-That matters because Parallel Code runs tasks on the host, not in a strict sandbox. Detection is advisory, while exposure is explicit and task-scoped.
+Parallel Code runs tasks on the host, not in a strict sandbox. Detection is advisory, while
+exposure is explicit and task-scoped.
 Preview target revalidation also reports backend runtime diagnostics for cache reuse, probe
 success, connection failure, timeout failure, target, and duration. Those diagnostics are
 generation-guarded so cache entries and probes that began before
@@ -893,7 +902,7 @@ generation-guarded so cache entries and probes that began before
 
 ## Supervision And Attention Flow
 
-The newest product-facing reliability feature is the task attention path.
+The task attention path is a product-facing reliability path.
 
 ### Backend
 
@@ -910,7 +919,9 @@ The newest product-facing reliability feature is the task attention path.
 - `src/app/task-presentation-status.ts` combines supervision, lifecycle, and git readiness into a canonical task presentation model
 - `src/components/SidebarTaskRow.tsx` renders the compact sidebar attention and review signals inline with each task row
 
-This is intentionally separate from raw task/agent dot status derivation. Attention and review are richer task supervision concepts, but they now surface through the same compact task-list UI instead of separate top-level queue panels.
+This stays separate from raw task/agent dot status derivation. Attention and review are richer task
+supervision concepts, but they now surface through the same compact task-list UI instead of
+separate top-level queue panels.
 
 ## Bundled Runtime Assets
 
@@ -920,7 +931,8 @@ Agent runtimes that the product claims to bundle need a runtime-asset resolution
 - Electron packaged layout
 - standalone browser/server builds
 
-Hydra now resolves through `electron/ipc/runtime-assets.ts` instead of assuming one compiled directory layout. The design principle is:
+Hydra now resolves through `electron/ipc/runtime-assets.ts` instead of assuming one compiled
+directory layout. The rule is:
 
 - bundled tools should either work everywhere the product claims they work
 - or fail with a concrete reason that the UI can surface
@@ -988,7 +1000,7 @@ An agent is the long-lived execution session. It carries:
 
 Status is partly authoritative from the backend and partly interpreted on the frontend.
 
-One non-obvious ownership rule matters here now:
+One ownership rule matters here now:
 
 - agent definitions declare `resume_strategy`
 - CLI-style agents resume through launch arguments
@@ -1009,7 +1021,8 @@ that projection; they do not decide whether a Docker container is live by readin
 
 Extra standalone terminal panels stored in `src/store/types.ts` and `src/store/terminals.ts`.
 
-These are not the same as task agents. They are UI panels backed by shell agents, but conceptually they are side terminals rather than the primary task execution lane.
+These are not task agents. They are UI panels backed by shell agents, but conceptually they are
+side terminals rather than the primary task execution lane.
 
 ### Channels
 
@@ -1093,7 +1106,8 @@ Preview routing is handled separately in:
 
 - `server/browser-preview.ts`
 
-It is intentionally not part of the websocket transport. Preview is an authenticated HTTP/WebSocket reverse-proxy concern layered on top of task-scoped exposure state.
+Preview is not part of the websocket transport. It is an authenticated HTTP/WebSocket
+reverse-proxy concern layered on top of task-scoped exposure state.
 
 ### Remote/Mobile
 
@@ -1139,8 +1153,8 @@ Shape:
     review, and task-port replay so stale live snapshots or removals cannot erase newer bootstrap
     truth
 
-This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
-shares session naming, presence, ownership, and takeover behavior with desktop while keeping its
+This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell.
+It shares session naming, presence, ownership, and takeover behavior with desktop while keeping its
 own agent-centric UI model.
 
 ## End-to-End Flows
@@ -1184,7 +1198,8 @@ Flow:
 
 Important property:
 
-- browser mode is intentionally shaped to feel like Electron mode to the UI, but the actual transport is explicitly split under the surface.
+- browser mode is shaped to feel like Electron mode to the UI, but the actual transport is
+  explicitly split under the surface.
 
 ### 3. Remote/Mobile Startup
 
@@ -1212,8 +1227,8 @@ Flow:
 Important property:
 
 - remote/mobile is not "the desktop UI in a smaller layout"
-- it is a separate agent-view application sharing backend services, transport rules, and task-command
-  control semantics
+- it is a separate agent-view application that shares backend services, transport rules, and
+  task-command control semantics
 
 ### 4. Spawn Task / Spawn Agent Flow
 
@@ -1239,7 +1254,7 @@ Desktop flow:
 
 Important property:
 
-- there is now a real workflow layer on both the frontend and backend
+- there is now a workflow layer on both the frontend and backend
 - the remaining architectural question is how far to keep moving orchestration out of store slices and large handlers
 
 ### 4b. Task Port Detection / Exposure / Preview Flow
@@ -1346,7 +1361,7 @@ Important property:
 
 - terminal output is the most performance-sensitive path
 - it cuts across PTY, server shell, transport, and UI
-- that is why this area still resists aggressive abstraction
+- this area still resists aggressive abstraction
 - noisy background terminals should not be able to keep themselves hot purely by repaint volume
 - focused user-driven terminal transitions may use short app-owned preemption so task switches and
   typing stay ahead of background drain pressure
@@ -1664,7 +1679,7 @@ Browser mode is now correctly expressed as three planes:
 - websocket control plane
 - websocket channel plane
 
-That is the right model, but it is still inherently the most complex runtime.
+That model is correct, but it is still the most complex runtime.
 
 Why this matters:
 
@@ -1694,7 +1709,8 @@ Why this matters:
 
 ### 4. Backend Workflows Exist, But The Service Surface Is Still Large
 
-The backend now has a real workflow layer, which is a major improvement. The remaining problem is not the lack of workflows. It is that the low-level service and handler surface is still large and uneven.
+The backend now has a workflow layer. The remaining problem is not the lack of workflows; it is
+that the low-level service and handler surface is still large and uneven.
 
 Hotspots:
 
@@ -1711,7 +1727,8 @@ Why this matters:
 
 The desktop UI is task-centric. The remote/mobile UI is agent-centric. Browser mode adds channel framing for terminal output.
 
-That is not a bug. It is an accurate reflection of the product surfaces. The remaining challenge is keeping the shared concepts consistent across those projections.
+That is not a bug. It reflects the product surfaces. The remaining challenge is keeping the shared
+concepts consistent across those projections.
 
 Why this matters:
 
@@ -1868,7 +1885,9 @@ Why this matters:
 
 ### 8. The terminal path is special and should stay explicit
 
-The terminal/output path crosses PTY services, transport, browser channel fanout, and UI rendering. The goal here is not fake uniformity. The goal is clear contracts, explicit backpressure rules, and explicit recovery semantics.
+The terminal/output path crosses PTY services, transport, browser channel fanout, and UI rendering.
+The goal is clear contracts, explicit backpressure rules, and explicit recovery semantics, not fake
+uniformity.
 
 That now includes an explicit latency policy for browser typing:
 
@@ -1941,7 +1960,7 @@ Validation policy, quality gates, and command guidance live in
 
 ## Practical Delta Summary
 
-If we compare the current system to the direction above, the delta is not "we need a new architecture".
+The current system does not need a new architecture.
 
 The delta is narrower:
 
@@ -1950,7 +1969,8 @@ The delta is narrower:
 3. keep tightening canonical derivation and shared type contracts where new features touch them
 4. keep server-owned state push/replay semantics boring and consistent across runtimes
 
-That means the next useful architectural work is not another transport rewrite. It is targeted cleanup around ownership, derivation, and type boundaries.
+The next useful architectural work is targeted cleanup around ownership, derivation, and type
+boundaries, not another transport rewrite.
 
 ## Current Direction
 
@@ -1963,7 +1983,7 @@ The current architectural approach is:
 5. keep composition roots thin and keep business logic out of runtime adapters
 6. use stronger typing to catch lifecycle drift before runtime
 
-This is the path the recent phases have already been moving along.
+Recent phases have already been moving in this direction.
 
 ## Guardrails
 
@@ -2038,7 +2058,7 @@ Some rules are now treated as architectural guardrails rather than informal conv
     should update existing annotations only through `updateAnnotation(...)` instead of inventing
     parallel mutation paths
 
-These rules are backed by architecture tests so future feature work fails early when it starts to drift.
+Architecture tests back these rules so future feature work fails early when it starts to drift.
 
 One current example is review UI: `ReviewPanel.tsx`, `DiffViewerDialog.tsx`, and
 `PlanViewerDialog.tsx` now share `src/components/review-surface-session.ts` for review-session,
@@ -2048,11 +2068,13 @@ panel's remaining loading and selection state belongs in
 
 ## Current Gaps
 
-The architecture is in a better state than the earlier refactor phases assumed. The remaining gaps are narrower and more product-facing.
+The architecture is in better shape than the earlier refactor phases assumed. The remaining gaps
+are narrower and more product-facing.
 
 ### 1. Reliability Proof Is Now The Main Gap
 
-Recent hardening work made bootstrap/replay state ownership, review freshness, supervision presentation, and preview trust much more explicit.
+Recent hardening work made bootstrap/replay state ownership, review freshness, supervision
+presentation, and preview trust more explicit.
 
 What still matters:
 
@@ -2062,7 +2084,7 @@ What still matters:
 
 ### 2. Product-Behavior Coverage Should Keep Growing With The Product
 
-Recent work added direct screen coverage for the highest-churn UI surfaces, which is a major improvement.
+Recent work added direct screen coverage for the highest-churn UI surfaces.
 
 What still matters:
 
@@ -2080,7 +2102,7 @@ Why this matters:
 
 ### 4. A Few Shared Concepts Still Have More Than One Projection
 
-This is much better than before, but still worth watching when future features land:
+This is better than before, but still worth watching when future features land:
 
 - remote presence projections across desktop and mobile shells
 - git refresh behavior in advanced or future UI surfaces
@@ -2097,7 +2119,7 @@ as one reliability-sensitive path, not as isolated modules.
 
 ## Next Phases
 
-The next quality phases should build on the current direction instead of changing it.
+The next quality phases should build on the current direction.
 
 For deeper follow-up design ideas around terminal transport, multi-client control lifecycle,
 restore strategy, and invariant testing, see
@@ -2120,7 +2142,7 @@ Targets:
 
 Goal:
 
-- make the system measurable under load, not just architecturally sound on paper
+- make the system measurable under load as well as architecturally sound
 
 Targets:
 
@@ -2143,7 +2165,7 @@ Targets:
 Why this order:
 
 - the biggest remaining gap is proof and observability, not core architecture shape
-- after that, the product can grow on a much more reliable foundation without relaunching another broad refactor campaign
+- after that, the product can grow on the current foundation without another broad refactor campaign
 
 ## Recommended Questions For Future Refactors
 
