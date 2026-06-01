@@ -11,7 +11,7 @@ import type { AgentDef } from '../ipc/types';
 import { invoke } from '../lib/ipc';
 import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
-import { recordMergedLines, recordTaskCompleted } from '../store/completion';
+import { recordMergedLines, recordMergedTaskToday } from '../store/completion';
 import {
   getProject,
   getProjectBaseBranch,
@@ -184,8 +184,6 @@ function syncWindowTitleToActiveSelection(): void {
 }
 
 function removeTaskFromStore(taskId: string, agentIds: string[]): void {
-  recordTaskCompleted();
-
   for (const agentId of agentIds) {
     clearAgentActivity(agentId);
   }
@@ -562,6 +560,7 @@ export async function mergeTask(
         includeWorktreePath: true,
         removeTaskState: true,
       });
+      recordMergedTaskToday();
       removeTaskFromStore(taskId, runtimeAgentIds);
       await persistTaskRemovalBestEffort(taskId);
     }

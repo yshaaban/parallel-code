@@ -2,10 +2,12 @@ import { produce } from 'solid-js/store';
 import { getLocalDateKey } from '../lib/date';
 import { store, setStore } from './core';
 
-export function recordTaskCompleted(): void {
+export function recordMergedTaskToday(): void {
   const today = getLocalDateKey();
   setStore(
     produce((s) => {
+      // Keep the persisted field names for backward compatibility. The metric now means
+      // "merged task cleanup", not generic task closure.
       if (s.completedTaskDate !== today) {
         s.completedTaskDate = today;
         s.completedTaskCount = 1;
@@ -16,7 +18,7 @@ export function recordTaskCompleted(): void {
   );
 }
 
-export function getCompletedTasksTodayCount(): number {
+export function getMergedTasksTodayCount(): number {
   return store.completedTaskDate === getLocalDateKey() ? store.completedTaskCount : 0;
 }
 

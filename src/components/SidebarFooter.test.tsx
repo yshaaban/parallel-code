@@ -33,8 +33,8 @@ vi.mock('../lib/build-info', () => ({
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
-    getCompletedTasksTodayCount: vi.fn(() => 0),
     getMergedLineTotals: vi.fn(() => ({ added: 0, removed: 0 })),
+    getMergedTasksTodayCount: vi.fn(() => 0),
     listPeerSessions: listPeerSessionsMock,
     store: core.store,
     toggleArena: vi.fn(),
@@ -59,8 +59,19 @@ describe('SidebarFooter', () => {
 
     expect(screen.getByText('Progress')).toBeDefined();
     expect(screen.getByText('Tips')).toBeDefined();
-    expect(screen.queryByText('Merged to base branch')).toBeNull();
+    expect(screen.queryByText('Merged (total)')).toBeNull();
     expect(screen.queryByText('Web build 0.7.0 · abc123def456 · 2026-03-13 15:30Z')).toBeNull();
+  });
+
+  it('labels progress metrics by daily task count and lifetime merged lines', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    render(() => <SidebarFooter />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
+
+    expect(screen.getByText('Merged tasks today')).toBeDefined();
+    expect(screen.getByText('Merged (total)')).toBeDefined();
   });
 
   it('shows the browser build stamp outside Electron after expanding tips', () => {
@@ -249,10 +260,10 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
-    expect(screen.getByText('Merged to base branch')).toBeDefined();
+    expect(screen.getByText('Merged (total)')).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
 
-    expect(screen.queryByText('Merged to base branch')).toBeNull();
+    expect(screen.queryByText('Merged (total)')).toBeNull();
   });
 });

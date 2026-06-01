@@ -7,8 +7,8 @@ import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 import {
-  getCompletedTasksTodayCount,
   getMergedLineTotals,
+  getMergedTasksTodayCount,
   listPeerSessions,
   toggleArena,
   toggleHelpDialog,
@@ -183,7 +183,7 @@ function SessionChip(props: SessionChipProps): JSX.Element {
 export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
   const electronRuntime = isElectronRuntime();
-  const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
+  const mergedTasksToday = createMemo(() => getMergedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
   const peerSessions = createMemo(() => listPeerSessions());
   const hasOtherSessions = createMemo(() =>
@@ -243,7 +243,7 @@ export function SidebarFooter(): JSX.Element {
                 ...typography.meta,
               }}
             >
-              <span>Completed today</span>
+              <span>Merged tasks today</span>
               <span
                 style={{
                   color: theme.fg,
@@ -251,7 +251,7 @@ export function SidebarFooter(): JSX.Element {
                   ...typography.metaStrong,
                 }}
               >
-                {completedTasksToday()}
+                {mergedTasksToday()}
               </span>
             </div>
             <div
@@ -267,7 +267,7 @@ export function SidebarFooter(): JSX.Element {
                 ...typography.meta,
               }}
             >
-              <span>Merged to base branch</span>
+              <span>Merged (total)</span>
               <span
                 style={{
                   color: theme.fg,

@@ -92,6 +92,40 @@ describe('moveActiveTask', () => {
     expect(focusMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps sidebar task focus in sync when jumping while sidebar-focused', () => {
+    const project = createTestProject();
+    const firstTask = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      projectId: project.id,
+    });
+    const secondTask = createTestTask({
+      agentIds: ['agent-2'],
+      id: 'task-2',
+      projectId: project.id,
+    });
+
+    setStore('projects', [project]);
+    setStore('tasks', {
+      'task-1': firstTask,
+      'task-2': secondTask,
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-2' }),
+    });
+    setStore('taskOrder', ['task-1', 'task-2']);
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedProjectId', 'project-1');
+    setStore('sidebarFocusedTaskId', 'task-1');
+
+    jumpToTask(1);
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.sidebarFocusedTaskId).toBe('task-2');
+    expect(store.sidebarFocusedProjectId).toBeNull();
+  });
+
   it('restores the stored selected agent when activating a multi-agent task', () => {
     const project = createTestProject();
     const task = createTestTask({

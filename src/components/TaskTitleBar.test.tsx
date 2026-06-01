@@ -4,15 +4,21 @@ import type { TaskCommandOwnerStatus } from '../domain/task-command-owner-status
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { createTestTask } from '../test/store-test-helpers';
 
-const { getPeerViewerCountForTaskMock, getTaskCommandOwnerStatusMock, listPeerSessionsMock } =
-  vi.hoisted(() => ({
-    getPeerViewerCountForTaskMock: vi.fn(() => 0),
-    getTaskCommandOwnerStatusMock: vi.fn<() => TaskCommandOwnerStatus | null>(() => null),
-    listPeerSessionsMock: vi.fn<() => PeerPresenceSnapshot[]>(() => []),
-  }));
+const {
+  getPeerViewerCountForTaskMock,
+  getProjectMock,
+  getTaskCommandOwnerStatusMock,
+  listPeerSessionsMock,
+} = vi.hoisted(() => ({
+  getPeerViewerCountForTaskMock: vi.fn(() => 0),
+  getProjectMock: vi.fn<() => { baseBranch?: string } | null>(() => null),
+  getTaskCommandOwnerStatusMock: vi.fn<() => TaskCommandOwnerStatus | null>(() => null),
+  listPeerSessionsMock: vi.fn<() => PeerPresenceSnapshot[]>(() => []),
+}));
 
 vi.mock('../store/store', () => ({
   getPeerViewerCountForTask: getPeerViewerCountForTaskMock,
+  getProject: getProjectMock,
   getTaskCommandOwnerStatus: getTaskCommandOwnerStatusMock,
   listPeerSessions: listPeerSessionsMock,
 }));
@@ -23,6 +29,7 @@ describe('TaskTitleBar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getPeerViewerCountForTaskMock.mockReturnValue(0);
+    getProjectMock.mockReturnValue(null);
     getTaskCommandOwnerStatusMock.mockReturnValue(null);
     listPeerSessionsMock.mockReturnValue([]);
   });
@@ -97,6 +104,57 @@ describe('TaskTitleBar', () => {
     ));
 
     expect(screen.getByTitle('Merge into release/main')).toBeDefined();
+  });
+
+  it('falls back to the project base branch in the merge button title', () => {
+    getProjectMock.mockReturnValue({ baseBranch: 'develop' });
+
+    render(() => (
+      <TaskTitleBar
+        task={createTestTask({ baseBranch: undefined })}
+        isActive
+        taskActivityStatus="live"
+        hasPreviewPorts={false}
+        isPreviewVisible={false}
+        pushing={false}
+        pushSuccess={false}
+        onMouseDown={vi.fn()}
+        onPreviewButtonClick={vi.fn()}
+        onUpdateTaskName={vi.fn()}
+        onSetTitleEditHandle={vi.fn()}
+        onOpenMerge={vi.fn()}
+        onOpenPush={vi.fn()}
+        onCollapse={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByTitle('Merge into develop')).toBeDefined();
+  });
+
+  it('uses generic merge copy when the target branch is unknown', () => {
+    render(() => (
+      <TaskTitleBar
+        task={createTestTask({ baseBranch: undefined })}
+        isActive
+        taskActivityStatus="live"
+        hasPreviewPorts={false}
+        isPreviewVisible={false}
+        pushing={false}
+        pushSuccess={false}
+        onMouseDown={vi.fn()}
+        onPreviewButtonClick={vi.fn()}
+        onUpdateTaskName={vi.fn()}
+        onSetTitleEditHandle={vi.fn()}
+        onOpenMerge={vi.fn()}
+        onOpenPush={vi.fn()}
+        onCollapse={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByTitle('Merge')).toBeDefined();
+    expect(screen.queryByTitle('Merge into base branch')).toBeNull();
   });
 
   it('hides the self ownership chip when no peer sessions are connected', () => {

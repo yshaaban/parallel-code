@@ -144,6 +144,9 @@ describe('SidebarTaskRow', () => {
     renderSidebarTaskRow();
 
     expect(screen.getAllByLabelText('Waiting')).toHaveLength(2);
+    expect(
+      screen.getByText('Task').closest('[data-sidebar-task-id="task-1"]')?.getAttribute('title'),
+    ).toBe('Waiting');
     expect(screen.getByText('0s')).toBeDefined();
     expect(screen.queryByText('Proceed? [Y/n]')).toBeNull();
   });

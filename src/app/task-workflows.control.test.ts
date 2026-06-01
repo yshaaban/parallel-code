@@ -549,6 +549,7 @@ describe('task workflow control leases', () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(store.tasks['task-1']).toBeUndefined();
+    expect(store.completedTaskCount).toBe(0);
   });
 
   it('retries a direct-mode close after cleanup fails because control moved to another client', async () => {
@@ -595,6 +596,7 @@ describe('task workflow control leases', () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(store.tasks['task-1']).toBeUndefined();
+    expect(store.completedTaskCount).toBe(0);
   });
 
   it('retries a worktree close after delete-task fails because the worktree is missing', async () => {
@@ -762,6 +764,7 @@ describe('task workflow control leases', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
     });
+    expect(store.completedTaskCount).toBe(0);
   });
 
   it('disables merge cleanup for external worktree tasks', async () => {
@@ -805,6 +808,15 @@ describe('task workflow control leases', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
     });
+    expect(store.completedTaskCount).toBe(1);
+  });
+
+  it('does not count plain task close as merged progress', async () => {
+    await closeTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+    expect(store.completedTaskCount).toBe(0);
   });
 
   it('still removes the task locally when merge cleanup runtime cleanup fails', async () => {
@@ -875,6 +887,7 @@ describe('task workflow control leases', () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(store.tasks['task-1']).toBeDefined();
+    expect(store.completedTaskCount).toBe(0);
   });
 
   it('allows a later close after merge cleanup loses task control mid-flight', async () => {

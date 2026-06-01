@@ -1,6 +1,10 @@
 import { Show, createEffect, createMemo, onCleanup, type JSX } from 'solid-js';
 import { useTaskActivityNow } from '../app/task-activity-clock';
-import { getTaskActivityStatus, getTaskAttentionEntry } from '../app/task-presentation-status';
+import {
+  getTaskActivityStatus,
+  getTaskActivityStatusLabel,
+  getTaskAttentionEntry,
+} from '../app/task-presentation-status';
 import { requestTerminalPrewarm } from '../app/terminal-prewarm';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
@@ -322,6 +326,10 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
   let prewarmHoverTimer: number | undefined;
   const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
+  const taskActivityStatus = createMemo(() =>
+    getTaskActivityStatus(props.taskId, taskActivityNow()),
+  );
+  const taskActivityTitle = createMemo(() => getTaskActivityStatusLabel(taskActivityStatus()));
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
   const isActive = () => store.activeTaskId === props.taskId;
   const terminalSlate = createMemo(() =>
@@ -456,6 +464,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             data-terminal-slate-agent-id={terminalSlate()?.agentId}
             data-terminal-slate-stale={terminalSlate()?.stale ? 'true' : undefined}
             data-sidebar-task-id={props.taskId}
+            title={taskActivityTitle()}
             onClick={() => {
               clearPrewarmHoverTimer();
               setActiveTask(props.taskId);
@@ -490,10 +499,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
                 'min-width': '0',
               }}
             >
-              <TaskActivityIndicator
-                status={getTaskActivityStatus(props.taskId, taskActivityNow())}
-                size="sm"
-              />
+              <TaskActivityIndicator status={taskActivityStatus()} size="sm" />
               <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
               <Show when={isCurrentBranchTask(currentTask())}>
                 <TaskBranchBadge branchName={currentTask().branchName} />

@@ -13,6 +13,7 @@ import { isNonGitProject } from '../store/project-mode';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
 import {
+  getProject,
   getPeerViewerCountForTask,
   getTaskCommandOwnerStatus,
   listPeerSessions,
@@ -49,7 +50,13 @@ function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boole
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
-  const mergeTargetLabel = createMemo(() => normalizeTaskBaseBranch(props.task) ?? 'base branch');
+  const mergeTargetLabel = createMemo(
+    () => normalizeTaskBaseBranch(props.task) ?? getProject(props.task.projectId)?.baseBranch,
+  );
+  const mergeButtonTitle = createMemo(() => {
+    const target = mergeTargetLabel();
+    return target ? `Merge into ${target}` : 'Merge';
+  });
   const ownerStatus = createMemo(() => getTaskCommandOwnerStatus(props.task.id));
   const peerViewerCount = createMemo(() => getPeerViewerCountForTask(props.task.id));
   const hasPeerSessions = createMemo(() => listPeerSessions().length > 0);
@@ -235,7 +242,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
               </svg>
             }
             onClick={() => props.onOpenMerge()}
-            title={`Merge into ${mergeTargetLabel()}`}
+            title={mergeButtonTitle()}
           />
           <div style={{ position: 'relative', display: 'inline-flex' }}>
             <Show

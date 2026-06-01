@@ -183,7 +183,7 @@ export {
 export type { TaskActivityStatus, TaskDotStatus } from './taskStatus';
 export { getRecentTaskGitStatusPollAge } from './task-git-status';
 export { showNotification, clearNotification } from './notification';
-export { getCompletedTasksTodayCount, getMergedLineTotals } from './completion';
+export { getMergedTasksTodayCount, getMergedLineTotals } from './completion';
 export {
   createTerminal,
   closeTerminal,

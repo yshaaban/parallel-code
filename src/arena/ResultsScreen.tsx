@@ -269,7 +269,7 @@ export function ResultsScreen(): JSX.Element {
                   </div>
                 </div>
 
-                {/* Merge into main */}
+                {/* Merge selected arena result */}
                 <Show when={competitor.branchName && merge.hasChanges(competitor.id)}>
                   <div class="arena-result-column-merge">
                     <Show
@@ -296,7 +296,7 @@ export function ResultsScreen(): JSX.Element {
                           <circle cx="8" cy="13" r="2" />
                           <path d="M4 6v1c0 2 4 4 4 4M12 6v1c0 2-4 4-4 4" />
                         </svg>
-                        {merge.merging() ? 'Merging...' : 'Merge into main'}
+                        {merge.merging() ? 'Merging...' : 'Merge'}
                       </button>
                     </Show>
                   </div>
