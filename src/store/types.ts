@@ -57,6 +57,7 @@ export interface Agent {
   signal: string | null;
   lastOutput: string[];
   generation: number;
+  replaceTerminalSessionOnNextAttach?: boolean;
   terminalSessionVersion?: number;
 }
 

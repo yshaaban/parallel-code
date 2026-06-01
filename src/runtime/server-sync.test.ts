@@ -142,6 +142,7 @@ describe('server-sync reliability contracts', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    hydrateAgentGenerationMock.mockReset();
     vi.useFakeTimers();
     resetRendererRuntimeDiagnostics();
     storeState.agents = {};
@@ -220,6 +221,48 @@ describe('server-sync reliability contracts', () => {
     });
 
     expect(markAgentExitedMock).not.toHaveBeenCalled();
+  });
+
+  it('hydrates newer live spawn generations before applying lifecycle status', () => {
+    storeState.agents = {
+      'agent-1': { generation: 1, id: 'agent-1', status: 'running' },
+    };
+    hydrateAgentGenerationMock.mockImplementation((agentId: string, generation: number) => {
+      const agent = storeState.agents[agentId];
+      if (agent) {
+        agent.generation = generation;
+      }
+    });
+
+    handleAgentLifecycleMessage({
+      agentId: 'agent-1',
+      event: 'spawn',
+      generation: 2,
+      isShell: false,
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 2);
+    expect(setAgentStatusMock).toHaveBeenCalledWith('agent-1', 'running');
+  });
+
+  it('ignores stale live spawn generations without hydrating them', () => {
+    storeState.agents = {
+      'agent-1': { generation: 2, id: 'agent-1', status: 'running' },
+    };
+
+    handleAgentLifecycleMessage({
+      agentId: 'agent-1',
+      event: 'spawn',
+      generation: 1,
+      isShell: false,
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    expect(hydrateAgentGenerationMock).not.toHaveBeenCalled();
+    expect(setAgentStatusMock).not.toHaveBeenCalled();
   });
 
   it('updates known agents from live active-agent snapshots and only revives uncertain exited agents', () => {

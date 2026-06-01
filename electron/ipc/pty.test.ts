@@ -507,6 +507,93 @@ describe('spawnAgent', () => {
     });
   });
 
+  it('replaces an existing session when explicitly requested', () => {
+    const firstProc = createMockProc();
+    const secondProc = createMockProc();
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+    const sendToChannel = vi.fn();
+    const firstCleanup = vi.fn();
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      command: '/bin/sh',
+      args: ['first'],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onExitCleanup: firstCleanup,
+      onOutput: { __CHANNEL_ID__: 'one' },
+    });
+
+    const attachedExistingSession = spawnAgent(sendToChannel, {
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      command: '/bin/sh',
+      args: ['second'],
+      cwd: '/',
+      env: {},
+      cols: 100,
+      rows: 30,
+      replaceExistingSession: true,
+      onOutput: { __CHANNEL_ID__: 'two' },
+    });
+
+    expect(attachedExistingSession).toBe(false);
+    expect(firstProc.kill).toHaveBeenCalledTimes(1);
+    expect(firstCleanup).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual(['second']);
+    expect(spawnMock.mock.calls[1]?.[2]).toMatchObject({
+      cols: 100,
+      rows: 30,
+    });
+    expect(getAgentMeta('agent-1')).toMatchObject({
+      taskId: 'task-1',
+    });
+  });
+
+  it('keeps the existing session when replacement command validation fails', () => {
+    const firstProc = createMockProc();
+    spawnMock.mockReturnValueOnce(firstProc);
+    const sendToChannel = vi.fn();
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      command: '/bin/sh',
+      args: ['first'],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'one' },
+    });
+
+    expect(() =>
+      spawnAgent(sendToChannel, {
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: 'bad;cmd',
+        args: ['second'],
+        cwd: '/',
+        env: {},
+        cols: 100,
+        rows: 30,
+        replaceExistingSession: true,
+        onOutput: { __CHANNEL_ID__: 'two' },
+      }),
+    ).toThrow(/Command contains disallowed characters/);
+
+    expect(firstProc.kill).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMeta('agent-1')).toMatchObject({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+    });
+  });
+
   it('keeps explicit resizeAgent as the PTY resize mutation path', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);

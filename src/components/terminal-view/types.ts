@@ -25,7 +25,9 @@ export interface TerminalViewProps {
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
   projectMode?: ProjectMode;
+  replaceExistingSession?: boolean;
   onReady?: (focusFn: () => void) => void;
+  onSpawnResolved?: () => void;
   onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;
   initialCommand?: string;

@@ -118,6 +118,7 @@ export interface RendererInvokeRequestMap {
     isShell?: boolean;
     onOutput: ChannelRefLike<string>;
     projectMode?: ProjectMode;
+    replaceExistingSession?: boolean;
     resumeOnStart?: boolean;
     runnerProfile?: AgentRunnerProfileConfig;
     rows?: number;

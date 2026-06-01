@@ -49,9 +49,14 @@ describe('browser IPC task-command args', () => {
 
   it('injects browser controller identity into spawned agents', () => {
     expect(
-      normalizeBrowserIpcTaskCommandArgs(IPC.SpawnAgent, { taskId: 'task-1' }, 'client-1'),
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.SpawnAgent,
+        { replaceExistingSession: true, taskId: 'task-1' },
+        'client-1',
+      ),
     ).toEqual({
       controllerId: 'client-1',
+      replaceExistingSession: true,
       taskId: 'task-1',
     });
   });

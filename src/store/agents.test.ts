@@ -5,6 +5,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { setStore, store } from './core';
 import {
   addAgentToTask,
+  clearAgentTerminalSessionReplacement,
   closeAgentInTask,
   getAgentTerminalSessionVersion,
   hydrateAgentGeneration,
@@ -132,7 +133,7 @@ describe('agents store lifecycle guards', () => {
     expect(store.agents['agent-1']?.generation).toBe(1);
   });
 
-  it('keeps terminal session remount version separate from hydrated backend generations', () => {
+  it('remounts terminal sessions when hydrating newer backend generations', () => {
     setStore('agents', {
       'agent-1': createTestAgent({
         generation: 0,
@@ -142,11 +143,16 @@ describe('agents store lifecycle guards', () => {
 
     hydrateAgentGeneration('agent-1', 4);
     expect(store.agents['agent-1']?.generation).toBe(4);
-    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(0);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(1);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
 
     restartAgent('agent-1', false);
     expect(store.agents['agent-1']?.generation).toBe(5);
-    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(1);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(2);
+
+    clearAgentTerminalSessionReplacement('agent-1');
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
 
     switchAgent('agent-1', {
       id: 'replacement',
@@ -158,7 +164,38 @@ describe('agents store lifecycle guards', () => {
       description: 'replacement',
     });
     expect(store.agents['agent-1']?.generation).toBe(6);
-    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(2);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(3);
+  });
+
+  it('does not clear a replacement intent from a stale terminal generation', () => {
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        generation: 0,
+        id: 'agent-1',
+      }),
+    });
+
+    restartAgent('agent-1', false);
+    expect(store.agents['agent-1']?.generation).toBe(1);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+
+    switchAgent('agent-1', {
+      id: 'replacement',
+      name: 'Replacement',
+      command: 'replacement',
+      args: [],
+      resume_args: [],
+      skip_permissions_args: [],
+      description: 'replacement',
+    });
+
+    expect(store.agents['agent-1']?.generation).toBe(2);
+    clearAgentTerminalSessionReplacement('agent-1', 1);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+
+    clearAgentTerminalSessionReplacement('agent-1', 2);
+    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
   });
 
   it('clears prompt dispatch state when an agent exits', () => {

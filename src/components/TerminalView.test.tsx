@@ -285,6 +285,25 @@ function createDeferredPromise<T>(): {
   return { promise, resolve };
 }
 
+type IntersectionObserverTestCallback = (entries: Array<{ isIntersecting: boolean }>) => void;
+
+function installIntersectionObserverForTest(
+  onConstruct?: (callback: IntersectionObserverTestCallback) => void,
+): void {
+  Object.defineProperty(globalThis, 'IntersectionObserver', {
+    configurable: true,
+    value: class {
+      constructor(callback: IntersectionObserverTestCallback) {
+        onConstruct?.(callback);
+      }
+
+      disconnect(): void {}
+
+      observe(): void {}
+    },
+  });
+}
+
 describe('TerminalView', () => {
   const originalIntersectionObserver = globalThis.IntersectionObserver;
 
@@ -2043,6 +2062,85 @@ describe('TerminalView', () => {
     intersectionCallbacks[0]?.([{ isIntersecting: true }]);
 
     expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+    expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
+  });
+
+  it('waits for observed visibility before starting a non-focused hot-hidden shell terminal', () => {
+    let intersectionCallback: IntersectionObserverTestCallback | undefined;
+    const visibleRect = {
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 100,
+      top: 0,
+      width: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+    const getBoundingClientRectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(visibleRect);
+
+    installIntersectionObserverForTest((callback) => {
+      intersectionCallback = callback;
+    });
+
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      hiddenTerminalHotCount: 1,
+      label: 'test-hot-hidden-shell',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setStore('activeTaskId', 'task-1');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isShell
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('hot-hidden-live');
+    expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
+
+    intersectionCallback?.([{ isIntersecting: true }]);
+
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('passive-visible');
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+
+    getBoundingClientRectSpy.mockRestore();
+  });
+
+  it('prewarms a non-focused hidden shell terminal without waiting for visibility', () => {
+    installIntersectionObserverForTest();
+
+    setStore('activeTaskId', 'task-2');
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isShell
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('cold-hidden');
+    expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
+
+    requestTerminalPrewarm('task-1', 'pointer-intent');
+
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
   });
 

@@ -285,6 +285,8 @@ Do not collapse the shell attach policy into one broad snapshot-first rule.
 
 - visible non-shell startup attach uses the dedicated startup batch path
 - visible shell attach stays on ordinary attach with rendered-tail suppression
+- hidden shell reload attach is reveal/prewarm-gated; when it does attach, it still uses the
+  ordinary attach path
 - large-history shell browser cases are the maintenance-critical proof for this split
 
 ### 11. Preview-controller failures must surface explicitly

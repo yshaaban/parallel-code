@@ -35,6 +35,7 @@ import {
   getTaskVisibleAiTerminalAgentIds,
   isTaskPanelFocused,
   addAgentToTask,
+  clearAgentTerminalSessionReplacement,
   closeAgentInTask,
   markAgentExited,
   markAgentOutput,
@@ -602,6 +603,8 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
           const sessionGeneration = props.agent.generation;
           const sessionAgentDef = props.agent.def;
           const sessionAgentResumed = props.agent.resumed;
+          const shouldReplaceExistingSession =
+            props.agent.replaceTerminalSessionOnNextAttach === true;
           const sessionTask = props.task;
           const sessionPanelId = panelId;
           let mountedFocusFn: (() => void) | undefined;
@@ -631,6 +634,7 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
               baseBranch={sessionTask.baseBranch}
               cwd={sessionTask.worktreePath}
               projectMode={sessionTask.projectMode}
+              replaceExistingSession={shouldReplaceExistingSession}
               runnerProfile={props.runnerProfile}
               env={getAgentSpawnEnvironment(sessionAgentDef, store.hydraStartupMode)}
               resumeOnStart={shouldResumeAgentOnSpawn(sessionAgentDef, sessionAgentResumed)}
@@ -650,6 +654,11 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
                 mountedFocusFn = focusFn;
                 currentFocusFn = focusFn;
                 props.onReady(sessionAgentId, focusFn);
+              }}
+              onSpawnResolved={() => {
+                if (shouldReplaceExistingSession) {
+                  clearAgentTerminalSessionReplacement(sessionAgentId, sessionGeneration);
+                }
               }}
               fontSize={Math.round(store.terminalFontSize * getFontScale(sessionPanelId))}
             />

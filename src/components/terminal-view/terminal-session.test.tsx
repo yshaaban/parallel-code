@@ -677,7 +677,7 @@ describe('startTerminalSession render hibernation', () => {
       props: createProps(),
     });
 
-    await flushSessionStartup(4);
+    await flushSessionStartup(6);
     inputPipelineLocalFeedbackHandler?.('a');
 
     expect(onLocalInputFeedback).toHaveBeenCalledWith('a');
@@ -774,6 +774,34 @@ describe('startTerminalSession render hibernation', () => {
         taskId: 'task-1',
       }),
     );
+
+    session.cleanup();
+  });
+
+  it('passes one-shot session replacement intent through the spawn request', async () => {
+    const onSpawnResolved = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps({
+        onSpawnResolved,
+        replaceExistingSession: true,
+      }),
+    });
+
+    await flushSessionStartup(4);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SpawnAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        replaceExistingSession: true,
+        taskId: 'task-1',
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(onSpawnResolved).toHaveBeenCalledTimes(1);
+    });
 
     session.cleanup();
   });

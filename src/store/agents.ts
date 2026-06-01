@@ -230,6 +230,8 @@ export function hydrateAgentGeneration(agentId: string, generation: number): voi
       }
 
       agent.generation = generation;
+      agent.terminalSessionVersion = getAgentTerminalSessionVersion(agent) + 1;
+      delete agent.replaceTerminalSessionOnNextAttach;
     }),
   );
 }
@@ -251,6 +253,7 @@ export function restartAgent(agentId: string, resumed: boolean): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = resumed;
         s.agents[agentId].generation += 1;
+        s.agents[agentId].replaceTerminalSessionOnNextAttach = true;
         s.agents[agentId].terminalSessionVersion =
           getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
       }
@@ -271,10 +274,29 @@ export function switchAgent(agentId: string, newDef: AgentDef): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = false;
         s.agents[agentId].generation += 1;
+        s.agents[agentId].replaceTerminalSessionOnNextAttach = true;
         s.agents[agentId].terminalSessionVersion =
           getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
       }
     }),
   );
   markAgentSpawned(agentId);
+}
+
+export function clearAgentTerminalSessionReplacement(
+  agentId: string,
+  expectedGeneration?: number,
+): void {
+  setStore(
+    produce((s) => {
+      const agent = s.agents[agentId];
+      if (!agent) {
+        return;
+      }
+      if (expectedGeneration !== undefined && agent.generation !== expectedGeneration) {
+        return;
+      }
+      delete agent.replaceTerminalSessionOnNextAttach;
+    }),
+  );
 }

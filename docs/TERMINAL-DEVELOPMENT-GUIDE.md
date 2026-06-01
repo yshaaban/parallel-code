@@ -560,7 +560,8 @@ Current model:
    local rendered-tail replay is suppressed so shell continuity does not fall back to renderer-side
    request-state overlap
 5. reconnect and non-startup recovery use `GetTerminalRecoveryBatch`
-6. hidden attach remains on the ordinary attach/recovery path
+6. hidden shell reload attach is gated on reveal/prewarm; when it starts, it remains on the
+   ordinary attach/recovery path
 7. the backend returns one of:
    - `noop`
    - `delta`

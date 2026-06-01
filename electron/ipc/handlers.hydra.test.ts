@@ -690,6 +690,62 @@ describe('Hydra spawn handling', () => {
     );
   });
 
+  it('uses requested geometry and replacement intent when replacing an existing session', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    hasAgentSessionMock.mockReturnValue(true);
+    getAgentColsMock.mockReturnValue(88);
+    getAgentRowsMock.mockReturnValue(26);
+    spawnAgentMock.mockReturnValue(false);
+
+    await expect(
+      handlers[IPC.SpawnAgent]?.({
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: 'codex',
+        args: ['resume'],
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 120,
+        rows: 40,
+        replaceExistingSession: true,
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+      }),
+    ).resolves.toEqual({ attachedExistingSession: false });
+
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        replaceExistingSession: true,
+        rows: 40,
+      }),
+    );
+  });
+
+  it('rejects malformed replaceExistingSession values at the IPC boundary', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+
+    await expect(
+      handlers[IPC.SpawnAgent]?.({
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        command: 'codex',
+        args: ['resume'],
+        cwd: '/tmp/parallel-code/worktree-one',
+        env: {},
+        cols: 80,
+        rows: 24,
+        replaceExistingSession: 'yes',
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+      } as unknown as Parameters<NonNullable<(typeof handlers)[typeof IPC.SpawnAgent]>>[0]),
+    ).rejects.toThrow('replaceExistingSession must be a boolean');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
   it('keeps explicit ResizeAgent as the handler resize path', () => {
     const handlers = createIpcHandlers(buildContext());
     getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });

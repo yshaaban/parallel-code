@@ -530,6 +530,12 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
         throw new BadRequestError('resumeOnStart must be a boolean when provided');
       }
+      if (
+        request.replaceExistingSession !== undefined &&
+        typeof request.replaceExistingSession !== 'boolean'
+      ) {
+        throw new BadRequestError('replaceExistingSession must be a boolean when provided');
+      }
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalProjectMode(request.projectMode);
       assertOptionalString(request.controllerId, 'controllerId');
@@ -537,14 +543,16 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const requestedCols = normalizeTerminalDimension(request.cols, 80, 'cols');
       const requestedRows = normalizeTerminalDimension(request.rows, 24, 'rows');
       const hasExistingSession = hasAgentSession(request.agentId);
+      const replaceExistingSession = request.replaceExistingSession === true;
 
       function spawnWorkflow(): boolean {
         const hasSessionAtSpawn = hasAgentSession(request.agentId);
-        const runnerProfile = hasSessionAtSpawn
+        const shouldAttachExistingSession = hasSessionAtSpawn && !replaceExistingSession;
+        const runnerProfile = shouldAttachExistingSession
           ? undefined
           : normalizeAgentRunnerProfileConfig(request.runnerProfile);
-        const cols = hasSessionAtSpawn ? getAgentCols(request.agentId) : requestedCols;
-        const rows = hasSessionAtSpawn ? getAgentRows(request.agentId) : requestedRows;
+        const cols = shouldAttachExistingSession ? getAgentCols(request.agentId) : requestedCols;
+        const rows = shouldAttachExistingSession ? getAgentRows(request.agentId) : requestedRows;
 
         return spawnTaskAgentWorkflow(context, {
           taskId: request.taskId,
@@ -557,6 +565,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           cols,
           rows,
           isShell: request.isShell === true,
+          replaceExistingSession,
           resumeOnStart: request.resumeOnStart === true,
           onOutput: { __CHANNEL_ID__: channelId },
           ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
@@ -565,9 +574,12 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         });
       }
 
-      const attachedExistingSession = hasExistingSession
-        ? spawnWorkflow()
-        : await runNewAgentSessionSpawn(spawnWorkflow);
+      let attachedExistingSession: boolean;
+      if (hasExistingSession && !replaceExistingSession) {
+        attachedExistingSession = spawnWorkflow();
+      } else {
+        attachedExistingSession = await runNewAgentSessionSpawn(spawnWorkflow);
+      }
 
       return {
         attachedExistingSession,

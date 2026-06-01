@@ -72,6 +72,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   isShell?: boolean;
   onOutput?: { __CHANNEL_ID__: string };
   projectMode?: ProjectMode;
+  replaceExistingSession?: boolean;
   resumeOnStart?: boolean;
   rows: number;
   runnerProfile?: AgentRunnerProfileConfig;
@@ -545,6 +546,7 @@ export function spawnTaskAgentWorkflow(
       rows: request.rows,
       isShell: request.isShell === true,
       isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
+      replaceExistingSession: request.replaceExistingSession === true,
       ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
       ...(resolvedLaunch.runnerIdentity !== undefined
         ? { runnerIdentity: resolvedLaunch.runnerIdentity }

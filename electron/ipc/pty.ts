@@ -54,6 +54,7 @@ interface PtySession {
   taskId: string;
   agentId: string;
   runnerIdentity?: AgentRuntimeIdentity;
+  onExitCleanup?: () => Promise<void> | void;
   isShell: boolean;
   isInternalNodeProcess: boolean;
   acceptsInput: boolean;
@@ -81,6 +82,7 @@ interface PtySession {
     restore: Map<string, Map<string, RestorePauseLease>>;
   };
   lifecycleGeneration: number;
+  disposed: boolean;
 }
 
 interface PauseLease {
@@ -649,6 +651,41 @@ function stopAcceptingInput(session: PtySession): void {
   clearPendingInput(session);
 }
 
+function warnSessionCleanupFailure(session: PtySession, error: unknown): void {
+  console.warn(`Failed to clean up runner for agent ${session.agentId}:`, error);
+}
+
+function cleanupSessionResources(session: PtySession): void {
+  if (session.disposed) {
+    return;
+  }
+
+  session.disposed = true;
+  clearFlushTimer(session);
+  stopAcceptingInput(session);
+  clearAllAutomaticPauseState(session);
+  session.terminalStateMirror.dispose();
+  try {
+    void Promise.resolve(session.onExitCleanup?.()).catch((error: unknown) => {
+      warnSessionCleanupFailure(session, error);
+    });
+  } catch (error) {
+    warnSessionCleanupFailure(session, error);
+  }
+}
+
+function replaceExistingSession(agentId: string, session: PtySession): void {
+  sessions.delete(agentId);
+  session.channelIds.clear();
+  session.subscribers.clear();
+  try {
+    session.proc.kill();
+  } catch {
+    // The replacement has already removed this session from the active map.
+  }
+  cleanupSessionResources(session);
+}
+
 function enqueueTerminalInputRequest(session: PtySession, request: QueuedPtyInputBatch): void {
   enqueuePendingInput(
     session,
@@ -1096,6 +1133,7 @@ export function spawnAgent(
     isShell?: boolean;
     isInternalNodeProcess?: boolean;
     runnerIdentity?: AgentRuntimeIdentity;
+    replaceExistingSession?: boolean;
     onExitCleanup?: () => Promise<void> | void;
     onOutput?: { __CHANNEL_ID__: string };
   },
@@ -1105,7 +1143,7 @@ export function spawnAgent(
   const cwd = args.cwd || process.env.HOME || '/';
 
   const existing = sessions.get(args.agentId);
-  if (existing) {
+  if (existing && args.replaceExistingSession !== true) {
     const isNewChannel = channelId !== null && !existing.channelIds.has(channelId);
     flushSessionBatch(existing);
     if (channelId !== null) {
@@ -1117,9 +1155,6 @@ export function spawnAgent(
     existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
     return isNewChannel;
   }
-
-  const lifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId) ?? 0;
-  nextLifecycleGenerationByAgentId.set(args.agentId, lifecycleGeneration + 1);
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
   // guard against accidental misuse). Allow bare names (resolved via PATH)
@@ -1165,6 +1200,9 @@ export function spawnAgent(
     env: spawnEnv,
   });
 
+  const lifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId) ?? 0;
+  nextLifecycleGenerationByAgentId.set(args.agentId, lifecycleGeneration + 1);
+
   const session: PtySession = {
     proc,
     channelIds: channelId === null ? new Set() : new Set([channelId]),
@@ -1172,6 +1210,7 @@ export function spawnAgent(
     taskId: args.taskId,
     agentId: args.agentId,
     ...(args.runnerIdentity !== undefined ? { runnerIdentity: args.runnerIdentity } : {}),
+    ...(args.onExitCleanup !== undefined ? { onExitCleanup: args.onExitCleanup } : {}),
     isShell: args.isShell ?? false,
     isInternalNodeProcess: args.isInternalNodeProcess ?? false,
     acceptsInput: true,
@@ -1201,10 +1240,20 @@ export function spawnAgent(
       restore: new Map(),
     },
     lifecycleGeneration,
+    disposed: false,
   };
+
+  if (existing) {
+    replaceExistingSession(args.agentId, existing);
+  }
+
   sessions.set(args.agentId, session);
 
   function handlePtyData(data: string | Uint8Array): void {
+    if (sessions.get(args.agentId) !== session) {
+      return;
+    }
+
     const { bytes: chunk, text } = normalizePtyOutputChunk(data);
     session.scrollback.write(chunk);
     session.terminalStateMirror.enqueueOutput(chunk);
@@ -1242,12 +1291,13 @@ export function spawnAgent(
   proc.onExit(({ exitCode, signal }) => {
     // If this session was replaced by a new spawn with the same agentId,
     // skip cleanup — the new session owns the map entry now.
-    if (sessions.get(args.agentId) !== session) return;
+    if (sessions.get(args.agentId) !== session) {
+      cleanupSessionResources(session);
+      return;
+    }
 
     // Flush any remaining buffered data
     flushSessionBatch(session);
-    stopAcceptingInput(session);
-    clearAllAutomaticPauseState(session);
 
     // Parse tail buffer into last N lines for exit diagnostics
     const lines = getTailLines(session.tailBuf.subarray(0, session.tailOffset));
@@ -1272,11 +1322,8 @@ export function spawnAgent(
       lastOutput: lines,
       signal: signal === null || signal === undefined ? null : String(signal),
     });
-    session.terminalStateMirror.dispose();
     sessions.delete(args.agentId);
-    void Promise.resolve(args.onExitCleanup?.()).catch((error: unknown) => {
-      console.warn(`Failed to clean up runner for agent ${args.agentId}:`, error);
-    });
+    cleanupSessionResources(session);
   });
 
   recordAgentSpawn({

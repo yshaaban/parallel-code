@@ -624,8 +624,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     if (props.onReady !== undefined) {
       snapshot.onReady = props.onReady;
     }
+    if (props.onSpawnResolved !== undefined) {
+      snapshot.onSpawnResolved = props.onSpawnResolved;
+    }
     if (props.projectMode !== undefined) {
       snapshot.projectMode = props.projectMode;
+    }
+    if (props.replaceExistingSession !== undefined) {
+      snapshot.replaceExistingSession = props.replaceExistingSession;
     }
     if (props.resumeOnStart !== undefined) {
       snapshot.resumeOnStart = props.resumeOnStart;
@@ -1080,6 +1086,28 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   function shouldUseInteractiveSurfaceTier(): boolean {
     return props.isFocused === true || (props.isCommandTarget === true && isActiveCommandTarget());
+  }
+
+  function shouldWaitForObservedShellVisibility(): boolean {
+    return (
+      props.isShell === true && !isInitiallyFocused && typeof IntersectionObserver === 'function'
+    );
+  }
+
+  function canStartInitialShellSession(): boolean {
+    if (props.isShell !== true || sessionStartedOnce || !shouldWaitForObservedShellVisibility()) {
+      return true;
+    }
+
+    if (attachRegistration || terminalAttachQueued || terminalAttachInProgress) {
+      return true;
+    }
+
+    if (props.isFocused === true || shouldPinSelectedSurfaceTier()) {
+      return true;
+    }
+
+    return isVisible();
   }
 
   function focusLiveCommandTargetFromPointer(): void {
@@ -1826,6 +1854,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
+    if (!canStartInitialShellSession()) {
+      clearSessionDormancyTimer();
+      setSessionDormant(true);
+      setSessionStatus('binding');
+      return;
+    }
+
     if (props.isShell === true && !sessionStartedOnce && !shouldKeepTerminalSessionLive()) {
       clearSessionDormancyTimer();
       setSessionDormant(true);
@@ -1935,7 +1970,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     anomalyMonitorRegistration.updateLifecycle(untrack(getCurrentTerminalAnomalyLifecycleState));
     anomalyMonitorCleanup = subscribeTerminalAnomalyMonitorChanges(bumpAnomalyMonitorVersion);
     const switchWindowCleanup = subscribeTerminalSwitchWindowChanges(bumpSwitchWindowVersion);
-    const initialVisibility = isInitiallyFocused || isElementVisibleInViewport(shellRef);
+    const initialVisibility =
+      isInitiallyFocused ||
+      (!shouldWaitForObservedShellVisibility() && isElementVisibleInViewport(shellRef));
     setIsVisible(initialVisibility);
     syncDomFocusWithin();
     document.addEventListener('focusin', handleDocumentFocusIn, true);

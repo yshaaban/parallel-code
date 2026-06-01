@@ -1773,11 +1773,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         isShell: props.isShell,
         onOutput: outputChannel,
         projectMode: props.projectMode,
+        replaceExistingSession: props.replaceExistingSession === true,
         resumeOnStart: props.resumeOnStart === true,
         rows: term.rows,
         runnerProfile: props.runnerProfile,
         taskId,
       });
+      props.onSpawnResolved?.();
       if (disposed) {
         return;
       }

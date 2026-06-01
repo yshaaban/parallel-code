@@ -1049,6 +1049,7 @@ test.describe('browser-lab large scrollback restore', () => {
     await waitForAppShellVisible(page);
     await browserLab.waitForTerminalReady(page, focusedShellIndex);
     await browserLab.focusTerminal(page, focusedShellIndex);
+    await page.locator('[data-terminal-status]').nth(backgroundShellIndex).scrollIntoViewIfNeeded();
     await browserLab.waitForTerminalReady(page, backgroundShellIndex, {
       requireLiveRenderReady: false,
     });

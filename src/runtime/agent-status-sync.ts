@@ -7,7 +7,12 @@ import {
   type RemoteAgentStatus,
 } from '../domain/server-state';
 import { invoke } from '../lib/ipc';
-import { markAgentExited, markAgentRunning, setAgentStatus } from '../store/agents';
+import {
+  hydrateAgentGeneration,
+  markAgentExited,
+  markAgentRunning,
+  setAgentStatus,
+} from '../store/agents';
 import { showNotification } from '../store/notification';
 import { store } from '../store/state';
 import type { Agent } from '../store/types';
@@ -27,7 +32,17 @@ function getMissingAgentSessionsMessage(missingCount: number): string {
 }
 
 export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void {
-  const current = store.agents[message.agentId];
+  let current = store.agents[message.agentId];
+  if (
+    message.event === 'spawn' &&
+    current &&
+    message.generation !== undefined &&
+    message.generation > current.generation
+  ) {
+    hydrateAgentGeneration(message.agentId, message.generation);
+    current = store.agents[message.agentId];
+  }
+
   if (!shouldApplyLifecycleEventForGeneration(current, message.generation)) {
     return;
   }
