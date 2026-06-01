@@ -1,4 +1,5 @@
 import { IPC } from './channels.js';
+import { createCoordinatorIpcHandlers } from '../coordinator/handlers.js';
 import { createAgentIpcHandlers } from './agent-handlers.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { createServerStateIpcHandlers } from './server-state-handlers.js';
@@ -33,8 +34,10 @@ export type {
 
 export type IpcHandlerMap = Partial<Record<IPC, IpcHandler>>;
 
-export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
-  const taskRegistry = createTaskNameRegistry();
+export function createIpcHandlers(
+  context: HandlerContext,
+  taskRegistry = createTaskNameRegistry(),
+): IpcHandlerMap {
   const savedTaskRegistryState = loadTaskRegistryStateForEnv(context);
 
   if (savedTaskRegistryState) {
@@ -49,6 +52,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
     ...createAgentIpcHandlers(context),
     ...createServerStateIpcHandlers(context),
+    ...createCoordinatorIpcHandlers(context, taskRegistry),
     ...createTaskAiIpcHandlers(context),
     ...createTaskAndGitIpcHandlers(context, taskRegistry),
     ...createTaskCommandLeaseIpcHandlers(context),

@@ -9,6 +9,7 @@ import type {
   TaskCommandControllerSnapshot,
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
+import type { CoordinatorEventEnvelope } from '../../src/domain/coordinator.js';
 import type { PresencePayload } from '../../src/domain/presence.js';
 import type {
   TerminalInputTraceClockSyncRequest,
@@ -32,6 +33,7 @@ import {
   isRemotePresence,
   isTaskPortsEvent,
 } from '../../src/domain/server-state.js';
+import { isCoordinatorEventEnvelope } from '../../src/domain/coordinator.js';
 import {
   isArrayOf,
   isFiniteNumber,
@@ -134,6 +136,11 @@ export interface IpcEventMessage {
   channel: string;
   payload: unknown;
   seq?: number;
+}
+
+export interface CoordinatorEventMessage {
+  type: 'coordinator-event';
+  event: CoordinatorEventEnvelope;
 }
 
 export interface ChannelBoundMessage {
@@ -291,6 +298,7 @@ export type ServerMessage =
   | PongMessage
   | ChannelMessage
   | IpcEventMessage
+  | CoordinatorEventMessage
   | ChannelBoundMessage
   | AgentLifecycleMessage
   | AgentControllerMessage
@@ -497,6 +505,12 @@ function isIpcEventMessage(value: unknown): value is IpcEventMessage {
     hasServerMessageType(value, 'ipc-event') &&
     typeof value.channel === 'string' &&
     hasOptionalSeq(value)
+  );
+}
+
+function isCoordinatorEventMessage(value: unknown): value is CoordinatorEventMessage {
+  return (
+    hasServerMessageType(value, 'coordinator-event') && isCoordinatorEventEnvelope(value.event)
   );
 }
 
@@ -721,6 +735,7 @@ const SERVER_MESSAGE_GUARDS = {
   'agent-lifecycle': isAgentLifecycleMessage,
   channel: isChannelMessage,
   'channel-bound': isChannelBoundMessage,
+  'coordinator-event': isCoordinatorEventMessage,
   'git-status-changed': isGitStatusChangedMessage,
   'ipc-event': isIpcEventMessage,
   output: isOutputMessage,

@@ -266,6 +266,8 @@ vi.mock('../lib/ipc', () => ({
 vi.mock('../lib/ipc-events', () => ({
   listenAgentSupervisionChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.AgentSupervisionChanged, listener),
+  listenCoordinatorChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.CoordinatorChanged, listener),
   listenGitStatusChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.GitStatusChanged, listener),
   listenPlanContent: (listener: (payload: unknown) => void) =>
@@ -397,6 +399,7 @@ vi.mock('../store/persistence-save', () => ({
 }));
 
 vi.mock('../store/projects', () => ({
+  setDiscoveredProjects: vi.fn(),
   validateProjectPaths: validateProjectPathsMock,
 }));
 

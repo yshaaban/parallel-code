@@ -240,6 +240,7 @@ export function createBrowserControlClient(
     pong: emitBrowserMessage,
     'agent-lifecycle': emitBrowserMessage,
     'agent-controller': emitBrowserMessage,
+    'coordinator-event': emitBrowserMessage,
     'remote-status': emitBrowserMessage,
     'peer-presences': emitBrowserMessage,
     'task-event': emitBrowserMessage,

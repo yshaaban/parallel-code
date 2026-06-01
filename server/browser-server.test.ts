@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { WebSocket } from 'ws';
 
 import { startBrowserServer } from './browser-server.js';
@@ -10,6 +10,13 @@ import { IPC } from '../electron/ipc/channels.js';
 import type { TaskPortExposureCandidate } from '../src/domain/server-state.js';
 import { saveAppStateForEnv } from '../electron/ipc/storage.js';
 import { clearTaskPortRegistry } from '../electron/ipc/task-ports.js';
+import { resetCoordinatorRuntimeForTests } from '../electron/coordinator/runtime.js';
+import { resetCoordinatorServiceForTests } from '../electron/coordinator/service.js';
+import { resetCoordinatorToolGatewayForTests } from '../electron/coordinator/tool-gateway.js';
+import type {
+  CoordinatorCreateRunResult,
+  CoordinatorToolCallResult,
+} from '../src/domain/coordinator.js';
 
 async function getAvailablePort(): Promise<number> {
   const server = createServer();
@@ -155,6 +162,9 @@ describe('startBrowserServer', () => {
 
   afterEach(async () => {
     clearTaskPortRegistry();
+    resetCoordinatorToolGatewayForTests();
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
     await Promise.all(
       tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
     );
@@ -251,6 +261,89 @@ describe('startBrowserServer', () => {
       expect(pingPayload).toMatchObject({
         kind: 'latency-pong',
         nonce: 'integration',
+      });
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  it('routes coordinator tool calls through per-run credentials instead of browser auth', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
+    tempDirs.push(rootDir);
+
+    const distDir = path.join(rootDir, 'dist');
+    const distRemoteDir = path.join(rootDir, 'dist-remote');
+    await Promise.all([
+      mkdir(distDir, { recursive: true }),
+      mkdir(distRemoteDir, { recursive: true }),
+    ]);
+
+    const token = 'browser-server-test-token-coordinator';
+    const port = await getAvailablePort();
+    const controller = startBrowserServer({
+      distDir,
+      distRemoteDir,
+      port,
+      token,
+      userDataPath: path.join(rootDir, 'user-data'),
+    });
+
+    try {
+      const createdRun = await waitForBrowserIpcResult<CoordinatorCreateRunResult>({
+        body: {
+          coordinatorAgentId: 'agent-coordinator',
+          coordinatorTaskId: 'task-coordinator',
+          projectId: 'project-1',
+          projectMode: 'git',
+          projectRoot: rootDir,
+        },
+        channel: IPC.CoordinatorCreateRun,
+        port,
+        token,
+      });
+      const credential = JSON.parse(await readFile(createdRun.credentialPath, 'utf8')) as {
+        token: string;
+      };
+
+      const browserTokenResponse = await fetch(
+        `http://127.0.0.1:${port}/api/coordinator/tool-call`,
+        {
+          body: JSON.stringify({
+            callId: 'call-browser-token',
+            runId: createdRun.run.id,
+            taskId: 'task-coordinator',
+            token,
+            toolName: 'get_task_status',
+          }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      const browserTokenBody = (await browserTokenResponse.json()) as { error?: string };
+      expect(browserTokenResponse.status).toBe(400);
+      expect(browserTokenBody.error).toBe('Invalid coordinator tool token');
+
+      const toolResponse = await fetch(`http://127.0.0.1:${port}/api/coordinator/tool-call`, {
+        body: JSON.stringify({
+          callId: 'call-1',
+          runId: createdRun.run.id,
+          taskId: 'task-coordinator',
+          token: credential.token,
+          toolName: 'get_task_status',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      });
+      const toolBody = (await toolResponse.json()) as { result?: CoordinatorToolCallResult };
+
+      expect(toolResponse.status).toBe(200);
+      expect(toolBody.result).toMatchObject({
+        accepted: true,
+        callId: 'call-1',
+        result: {
+          coordinatorTaskId: 'task-coordinator',
+          id: createdRun.run.id,
+        },
       });
     } finally {
       controller.cleanup();

@@ -2,7 +2,15 @@ import express from 'express';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import { WebSocket, WebSocketServer } from 'ws';
+import { subscribeCoordinatorEvents } from '../electron/coordinator/runtime.js';
+import {
+  ensureCoordinatorServiceLoaded,
+  startCoordinatorRuntimePersistence,
+} from '../electron/coordinator/service.js';
+import { startCoordinatorPromptDeliveryRuntime } from '../electron/coordinator/tool-gateway.js';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
+import { IPC } from '../electron/ipc/channels.js';
+import type { HandlerContext } from '../electron/ipc/handler-context.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
 import {
   getTaskConvergenceSnapshots,
@@ -44,6 +52,7 @@ import {
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { createTaskPortsSnapshotEvent } from '../src/domain/server-state.js';
+import { isRecord } from '../src/lib/type-guards.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserAuthController } from './browser-auth.js';
 import { createBrowserChannelManager } from './browser-channels.js';
@@ -64,6 +73,7 @@ type BrowserServerLifecycle =
   | { kind: 'closed' };
 
 const CONTROL_SOCKET_PATH = '/ws';
+const COORDINATOR_TOOL_CALL_PATH = '/api/coordinator/tool-call';
 const PREVIEW_SOCKET_PATH_PREFIXES = ['/_preview/', '/_container_preview/'] as const;
 const REQUEST_URL_BASE = 'http://localhost';
 
@@ -110,6 +120,10 @@ function createBrowserRemoteAccessController(
     status: () => controlPlane.getRemoteStatus(),
     subscribe: () => () => {},
   };
+}
+
+function getCoordinatorToolCallUrl(port: number): string {
+  return `http://127.0.0.1:${port}${COORDINATOR_TOOL_CALL_PATH}`;
 }
 
 // Browser-mode composition root. The browser server wires together:
@@ -254,9 +268,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       stateVersion: taskPortsStateVersion,
     });
   }
-  const handlers = createIpcHandlers({
+  const handlerContext: HandlerContext = {
     userDataPath: options.userDataPath,
     isPackaged: false,
+    coordinatorToolCallUrl: () => getCoordinatorToolCallUrl(controlPlane.getServerInfo().port),
     sendToChannel: (channelId, message) => {
       channelManager.sendChannelMessage(channelId, message);
     },
@@ -264,7 +279,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     emitIpcEvent: controlPlane.emitIpcEvent,
     emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
-  });
+  };
+  ensureCoordinatorServiceLoaded(handlerContext);
+  const cleanupCoordinatorPersistence = startCoordinatorRuntimePersistence(handlerContext);
+  const cleanupCoordinatorPromptDelivery = startCoordinatorPromptDeliveryRuntime(handlerContext);
+  const handlers = createIpcHandlers(handlerContext, taskNames);
 
   if (savedAppState) {
     restoreSavedTaskGitStatusMonitoring(
@@ -308,6 +327,26 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     next();
   });
   browserAuth.registerRoutes(app);
+
+  app.post(COORDINATOR_TOOL_CALL_PATH, express.json({ limit: '1mb' }), async (req, res) => {
+    const handler = handlers[IPC.CoordinatorToolCall];
+    if (!handler) {
+      res.status(404).json({ error: 'coordinator tool call handler unavailable' });
+      return;
+    }
+    if (!isRecord(req.body)) {
+      res.status(400).json({ error: 'coordinator tool call body must be an object' });
+      return;
+    }
+
+    try {
+      const result = await handler(req.body);
+      res.json({ result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'internal error';
+      res.status(400).json({ error: message });
+    }
+  });
 
   registerBrowserIpcRoutes({
     app,
@@ -358,6 +397,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupAgentSupervision = subscribeAgentSupervision((event) => {
     controlPlane.emitAgentSupervisionChanged(event);
+  });
+  const cleanupCoordinatorEvents = subscribeCoordinatorEvents((event) => {
+    controlPlane.emitCoordinatorChanged(event);
   });
   const cleanupTaskConvergence = subscribeTaskConvergence((event) => {
     controlPlane.emitTaskConvergenceChanged(event);
@@ -511,6 +553,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     removeProcessHandlers();
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentSupervision();
+    cleanupCoordinatorEvents();
+    cleanupCoordinatorPersistence();
+    cleanupCoordinatorPromptDelivery();
     cleanupTaskConvergence();
     cleanupTaskReview();
     cleanupTaskReviewSignals();

@@ -137,6 +137,33 @@ describe('browser control client', () => {
     cleanupRecovery();
   });
 
+  it('emits coordinator events to persistent browser message listeners', async () => {
+    const { client, options } = await loadBrowserControlClient();
+    const listener = vi.fn();
+    const cleanup = client.listenMessage('coordinator-event', listener, {
+      preserveOnReset: true,
+    });
+    const message: ServerMessage = {
+      type: 'coordinator-event',
+      event: {
+        categorySeq: 1,
+        createdAt: 1_000,
+        entityKey: 'run:run-1',
+        entityVersion: 1,
+        eventType: 'run-removed',
+        payload: null,
+        runId: 'run-1',
+        tombstone: true,
+      },
+    };
+
+    options.onMessage(message);
+
+    expect(listener).toHaveBeenCalledWith(message);
+
+    cleanup();
+  });
+
   it('freezes the disconnected duration once the reconnect reaches connected state', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);

@@ -29,6 +29,11 @@ const ALLOWED_CHANNELS = new Set([
   'get_browser_cold_bootstrap',
   'get_browser_reconnect_status',
   'get_browser_reconnect_snapshot',
+  'coordinator_activity_hint',
+  'coordinator_changed',
+  'coordinator_create_run',
+  'coordinator_get_diagnostics',
+  'coordinator_tool_call',
   // Task
   'create_task',
   'delete_task',

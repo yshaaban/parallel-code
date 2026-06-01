@@ -42,6 +42,7 @@ import {
 import { cleanTaskName } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';
 import { isHydraAgentDef } from '../lib/hydra';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { theme } from '../lib/theme';
 import { AgentSelector } from './AgentSelector';
 import { BranchPrefixField } from './BranchPrefixField';
@@ -74,6 +75,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
   const [existingWorktreePath, setExistingWorktreePath] = createSignal('');
   const [stepsTracking, setStepsTracking] = createSignal(false);
+  const [coordinatorMode, setCoordinatorMode] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   const [branchOptions, setBranchOptions] = createSignal<GitBranchInfo[]>([]);
@@ -85,6 +87,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [branchListRefreshId, setBranchListRefreshId] = createSignal(0);
   const [selectedBaseBranch, setSelectedBaseBranch] = createSignal<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
+  const coordinatorModeAvailable = !isElectronRuntime();
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
   let dialogInitializationGeneration = 0;
@@ -165,6 +168,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setExistingWorktreeMode(false);
     setExistingWorktreePath('');
     setStepsTracking(false);
+    setCoordinatorMode(false);
     setSkipPermissions(defaultSkipPermissions);
     setBranchOptions([]);
     setBranchListStatus('idle');
@@ -571,6 +575,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     if (stepsTracking()) {
       count += 1;
     }
+    if (coordinatorMode()) {
+      count += 1;
+    }
     if (skipPermissionsActive()) {
       count += 1;
     }
@@ -691,6 +698,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
+          coordinatorMode: coordinatorMode(),
           skipPermissions: shouldSkipPermissions,
         });
       } else if (existingWorktreeMode()) {
@@ -703,6 +711,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
+          coordinatorMode: coordinatorMode(),
           skipPermissions: shouldSkipPermissions,
         });
       } else {
@@ -717,6 +726,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           branchPrefixOverride: prefix,
           githubUrl: ghUrl,
           stepsTracking: stepsTracking(),
+          coordinatorMode: coordinatorMode(),
           skipPermissions: shouldSkipPermissions,
         });
       }
@@ -1266,6 +1276,38 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                   <div style={calloutStyle('muted')}>
                     The backend watches <code>.claude/steps.json</code> and keeps step history
                     shared across clients.
+                  </div>
+                </Show>
+              </div>
+
+              <div
+                data-nav-field="coordinator-mode"
+                style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+              >
+                <label style={checkboxLabelStyle()}>
+                  <input
+                    type="checkbox"
+                    checked={coordinatorMode()}
+                    disabled={!coordinatorModeAvailable}
+                    onChange={(e) =>
+                      setCoordinatorMode(coordinatorModeAvailable && e.currentTarget.checked)
+                    }
+                    style={{
+                      'accent-color': theme.accent,
+                      cursor: coordinatorModeAvailable ? 'inherit' : 'not-allowed',
+                    }}
+                  />
+                  Coordinator mode
+                </label>
+                <Show when={!coordinatorModeAvailable}>
+                  <div style={calloutStyle('muted')}>
+                    Coordinator mode runs through the browser server tool gateway.
+                  </div>
+                </Show>
+                <Show when={coordinatorMode() && coordinatorModeAvailable}>
+                  <div style={calloutStyle('muted')}>
+                    The task gets a backend credential for spawning and coordinating hidden
+                    background subtasks.
                   </div>
                 </Show>
               </div>

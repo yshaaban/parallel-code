@@ -237,6 +237,7 @@ const REMOTE_BOOTSTRAP_SNAPSHOT_HANDLERS = {
     'agent-supervision',
     replaceRemoteAgentSupervisionBootstrap,
   ),
+  coordinator: null,
   'git-status': null,
   'peer-presence': createRemoteBootstrapSnapshotHandler(
     'peer-presence',
@@ -283,6 +284,7 @@ function handleRemoteTaskReviewIpcEvent(payload: unknown): void {
 
 const REMOTE_LIVE_IPC_EVENT_HANDLERS = {
   [IPC.AgentSupervisionChanged]: handleRemoteAgentSupervisionIpcEvent,
+  [IPC.CoordinatorChanged]: null,
   [IPC.GitStatusChanged]: null,
   [IPC.TaskCommandControllerChanged]: handleRemoteTaskCommandControllerIpcEvent,
   [IPC.TaskConvergenceChanged]: null,

@@ -39,6 +39,7 @@ import {
   recordTerminalStartupWrite,
 } from '../app/runtime-diagnostics';
 import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease-session';
+import { nextCoordinatorActivityHintSeq, sendCoordinatorActivityHint } from '../app/coordinator';
 import { isPanelResizeDragging } from '../app/panel-resize-drag';
 import { setTaskFocusedPanelState, store } from '../store/store';
 import { loadTaskCommandControllers } from '../store/task-command-controllers';
@@ -110,6 +111,7 @@ import type {
   TerminalViewStatus,
 } from './terminal-view/types';
 import { getTerminalOutputPriority } from '../lib/terminal-output-priority';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 
 let nextTerminalViewInstanceId = 1;
 
@@ -449,6 +451,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let sessionDormancyTimer: number | undefined;
   let inputAcknowledgementTimer: number | undefined;
   let pendingTerminalKeyCapture = false;
+  let terminalActivityHintTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingTerminalKeyCaptureReleaseTimer: number | undefined;
   let terminalInputCaptureGraceUntilMs = 0;
   let takeOverGeneration = 0;
@@ -1348,8 +1351,31 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     return target === document.body || target === document.documentElement;
   }
 
+  function scheduleTerminalInputActivityHint(): void {
+    if (store.tasks[taskId]?.coordinatorRole !== 'subtask') {
+      return;
+    }
+    if (terminalActivityHintTimer !== undefined) {
+      return;
+    }
+
+    terminalActivityHintTimer = setTimeout(() => {
+      terminalActivityHintTimer = undefined;
+      void sendCoordinatorActivityHint({
+        agentGeneration: store.agents[agentId]?.generation ?? 0,
+        blocked: true,
+        clientId: getRuntimeClientId(),
+        kind: 'terminal-pending-input',
+        seq: nextCoordinatorActivityHintSeq(),
+        taskId,
+        ttlMs: 1_500,
+      }).catch(() => {});
+    }, 100);
+  }
+
   function enqueueCapturedTerminalInput(data: string): void {
     pendingTerminalKeyCapture = true;
+    scheduleTerminalInputActivityHint();
     clearPendingTerminalKeyCaptureReleaseTimer();
     if (canAcceptTerminalInput()) {
       schedulePendingTerminalKeyCaptureRelease();
@@ -1429,6 +1455,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     document.addEventListener('keydown', handleTerminalKeyDownCapture, true);
     document.addEventListener('beforeinput', handleTerminalBeforeInputCapture, true);
     onCleanup(() => {
+      if (terminalActivityHintTimer !== undefined) {
+        clearTimeout(terminalActivityHintTimer);
+        terminalActivityHintTimer = undefined;
+      }
       clearPendingTerminalKeyCapture();
       document.removeEventListener('keydown', handleTerminalKeyDownCapture, true);
       document.removeEventListener('beforeinput', handleTerminalBeforeInputCapture, true);

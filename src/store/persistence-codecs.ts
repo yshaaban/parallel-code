@@ -164,6 +164,17 @@ function buildPersistedTask(
     ...(task.planFileName !== undefined ? { planFileName: task.planFileName } : {}),
     ...(task.planRelativePath !== undefined ? { planRelativePath: task.planRelativePath } : {}),
     ...(task.stepsTracking !== undefined ? { stepsTracking: task.stepsTracking } : {}),
+    ...(task.coordinatorCredentialPath !== undefined
+      ? { coordinatorCredentialPath: task.coordinatorCredentialPath }
+      : {}),
+    ...(task.coordinatorParentTaskId !== undefined
+      ? { coordinatorParentTaskId: task.coordinatorParentTaskId }
+      : {}),
+    ...(task.coordinatorRole !== undefined ? { coordinatorRole: task.coordinatorRole } : {}),
+    ...(task.coordinatorRunId !== undefined ? { coordinatorRunId: task.coordinatorRunId } : {}),
+    ...(task.coordinatorToolCommand !== undefined
+      ? { coordinatorToolCommand: task.coordinatorToolCommand }
+      : {}),
     ...(exposedPorts ? { exposedPorts } : {}),
   };
 

@@ -47,6 +47,9 @@ vi.mock('../lib/ipc-events', () => {
     listenAgentSupervisionChanged: vi.fn((listener: (payload: unknown) => void) =>
       listenIpcEvent('agent-supervision-changed', listener),
     ),
+    listenCoordinatorChanged: vi.fn((listener: (payload: unknown) => void) =>
+      listenIpcEvent('coordinator-changed', listener),
+    ),
     listenGitStatusChanged: vi.fn((listener: (payload: unknown) => void) =>
       listenIpcEvent('git-status-changed', listener),
     ),
@@ -129,6 +132,7 @@ describe('server state bootstrap registry guardrails', () => {
   it('defines explicit listener scopes for browser and electron runtimes', () => {
     const expectedScopes = {
       'agent-supervision': { browser: 'persistent', electron: 'persistent' },
+      coordinator: { browser: 'persistent', electron: 'persistent' },
       'git-status': { browser: 'persistent', electron: 'persistent' },
       'peer-presence': { browser: 'none', electron: 'none' },
       'remote-status': { browser: 'persistent', electron: 'persistent' },
@@ -184,6 +188,29 @@ describe('server state bootstrap registry guardrails', () => {
     expect(startupGate.handle).toHaveBeenCalledWith('remote-status', {
       connectedClients: 2,
       peerClients: 1,
+    });
+
+    emitServerMessage('coordinator-event', {
+      event: {
+        categorySeq: 1,
+        createdAt: 1_000,
+        entityKey: 'run:run-1',
+        entityVersion: 1,
+        eventType: 'run-removed',
+        payload: null,
+        runId: 'run-1',
+        tombstone: true,
+      },
+    });
+    expect(startupGate.handle).toHaveBeenCalledWith('coordinator', {
+      categorySeq: 1,
+      createdAt: 1_000,
+      entityKey: 'run:run-1',
+      entityVersion: 1,
+      eventType: 'run-removed',
+      payload: null,
+      runId: 'run-1',
+      tombstone: true,
     });
 
     emitServerMessage('task-ports-changed', {
@@ -296,6 +323,17 @@ describe('server state bootstrap registry guardrails', () => {
     });
     emitServerMessage('state-bootstrap', {
       snapshots: 'not-an-array',
+    });
+    emitServerMessage('coordinator-event', {
+      event: {
+        categorySeq: 1,
+        createdAt: 1_000,
+        entityKey: 'run:run-1',
+        entityVersion: 1,
+        eventType: 'run-upserted',
+        payload: { id: 'run-1' },
+        runId: 'run-1',
+      },
     });
 
     expect(startupGate.handle).not.toHaveBeenCalled();

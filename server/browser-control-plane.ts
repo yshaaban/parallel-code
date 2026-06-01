@@ -24,6 +24,7 @@ import type {
   RemotePresence,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
+import type { CoordinatorEventEnvelope } from '../src/domain/coordinator.js';
 import { classifyGitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { RemoteLiveIpcEventChannel } from '../src/domain/remote-live-ipc-events.js';
 import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
@@ -58,6 +59,7 @@ export interface BrowserControlPlane {
   cleanupClient: (client: WebSocket) => void;
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
   emitAgentSupervisionChanged: (payload: AgentSupervisionEvent) => void;
+  emitCoordinatorChanged: (payload: CoordinatorEventEnvelope) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   emitTaskConvergenceChanged: (payload: TaskConvergenceEvent) => void;
   emitTaskReviewChanged: (payload: TaskReviewEvent) => void;
@@ -432,6 +434,14 @@ export function createBrowserControlPlane(
     emitRemoteLiveIpcEvent(IPC.AgentSupervisionChanged, payload);
   }
 
+  function emitCoordinatorChanged(payload: CoordinatorEventEnvelope): void {
+    emitRemoteLiveIpcEvent(IPC.CoordinatorChanged, payload);
+    broadcastControl({
+      type: 'coordinator-event',
+      event: payload,
+    });
+  }
+
   function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
     emitRemoteLiveIpcEvent(IPC.GitStatusChanged, payload);
     broadcastControl(createGitStatusControlMessage(payload));
@@ -591,6 +601,7 @@ export function createBrowserControlPlane(
     cleanupClient,
     emitIpcEvent,
     emitAgentSupervisionChanged,
+    emitCoordinatorChanged,
     emitGitStatusChanged,
     emitTaskConvergenceChanged,
     emitTaskReviewChanged,

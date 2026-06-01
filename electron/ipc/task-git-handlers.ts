@@ -36,6 +36,7 @@ import {
   deleteTaskWorkflow,
   findRegisteredTaskIdForWorktreePath,
 } from './task-workflows.js';
+import { cleanupCoordinatorTaskStateAndOwnedSubtasks } from '../coordinator/tool-gateway.js';
 import { scheduleTaskReviewSignalsRefresh } from './task-review-signals.js';
 import {
   assertBoolean,
@@ -317,15 +318,19 @@ export function createTaskAndGitIpcHandlers(
       emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
 
       taskNames.deleteTask(request.taskId);
+      const coordinatorCleanupWarnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
+        { context, taskNames },
+        request.taskId,
+      );
 
       return {
-        cleanupWarnings: cleanupResult.cleanupWarnings,
+        cleanupWarnings: [...cleanupResult.cleanupWarnings, ...coordinatorCleanupWarnings],
       };
     }),
 
     [IPC.CleanupTaskRuntime]: defineIpcHandler<IPC.CleanupTaskRuntime>(
       IPC.CleanupTaskRuntime,
-      (args) => {
+      async (args) => {
         const request = args;
         assertStringArray(request.agentIds, 'agentIds');
         assertString(request.controllerId, 'controllerId');
@@ -351,6 +356,7 @@ export function createTaskAndGitIpcHandlers(
 
         if (request.removeTaskState === true) {
           taskNames.deleteTask(request.taskId);
+          await cleanupCoordinatorTaskStateAndOwnedSubtasks({ context, taskNames }, request.taskId);
         }
 
         return undefined;

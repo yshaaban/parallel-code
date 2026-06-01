@@ -76,6 +76,7 @@ export interface UpdateController {
 
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
+  coordinatorToolCallUrl?: string | (() => string);
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
   emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;
   isChannelActive?: (channelId: string) => boolean;

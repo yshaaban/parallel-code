@@ -18,6 +18,7 @@ import type { TerminalFont } from '../lib/font-types.js';
 import type { HydraStartupMode } from '../lib/hydra.js';
 import type { LookPreset } from '../lib/look.js';
 import type { PersistedKeybindingOverrides } from '../domain/keybindings.js';
+import type { CoordinatorRunSnapshot } from '../domain/coordinator.js';
 
 export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
 export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
@@ -97,6 +98,11 @@ export interface Task {
   planFileName?: string;
   planRelativePath?: string;
   stepsTracking?: boolean;
+  coordinatorCredentialPath?: string;
+  coordinatorParentTaskId?: string;
+  coordinatorRole?: 'coordinator' | 'subtask';
+  coordinatorRunId?: string;
+  coordinatorToolCommand?: string;
 }
 
 export interface Terminal {
@@ -136,6 +142,17 @@ export interface PersistedTask {
   stepsTracking?: boolean;
   collapsed?: boolean;
   exposedPorts?: PersistedTaskExposedPort[];
+  coordinatorCredentialPath?: string;
+  coordinatorParentTaskId?: string;
+  coordinatorRole?: 'coordinator' | 'subtask';
+  coordinatorRunId?: string;
+  coordinatorToolCommand?: string;
+}
+
+export interface CoordinatorClientState {
+  runs: Record<string, CoordinatorRunSnapshot>;
+  stateVersion: number;
+  updatedAt: number | null;
 }
 
 export interface PersistedTaskExposedPort {
@@ -400,6 +417,7 @@ export interface AppStore {
   taskReviewSignals: Record<string, TaskReviewSignalsSnapshot>;
   taskSteps: Record<string, TaskStepsSnapshot>;
   taskStepSummaries: Record<string, TaskStepsSummarySnapshot>;
+  coordinator: CoordinatorClientState;
   focusedPanel: Record<string, PanelId>;
   sidebarFocused: boolean;
   sidebarFocusedProjectId: string | null;

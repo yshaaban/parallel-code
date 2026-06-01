@@ -315,6 +315,194 @@ describe('task workflow control leases', () => {
     );
   });
 
+  it('rolls back a managed worktree when coordinator setup fails after task creation', async () => {
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [
+      createTestProject({
+        id: 'project-1',
+        path: '/repo',
+      }),
+    ]);
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.CreateTask:
+          return Promise.resolve({
+            base_branch: 'main',
+            branch_name: 'feature/task-new',
+            git_isolation: 'worktree',
+            id: 'task-new',
+            worktree_path: '/repo/.worktrees/task-new',
+          });
+        case IPC.CoordinatorCreateRun:
+          return Promise.reject(new Error('coordinator unavailable'));
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.DeleteTask:
+          return Promise.resolve({ cleanupWarnings: [] });
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      createTask({
+        agentDef,
+        coordinatorMode: true,
+        name: 'Coordinator task',
+        projectId: 'project-1',
+      }),
+    ).rejects.toThrow('coordinator unavailable');
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.AcquireTaskCommandLease,
+      expect.objectContaining({
+        action: 'roll back failed coordinator setup',
+        taskId: 'task-new',
+        takeover: true,
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.DeleteTask,
+      expect.objectContaining({
+        agentIds: [],
+        branchName: 'feature/task-new',
+        deleteBranch: true,
+        taskId: 'task-new',
+        worktreePath: '/repo/.worktrees/task-new',
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({
+        taskId: 'task-new',
+      }),
+    );
+    expect(store.tasks['task-new']).toBeUndefined();
+    expect(store.agents).not.toHaveProperty('task-new');
+  });
+
+  it('rolls back non-git coordinator setup failures through runtime cleanup', async () => {
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [
+      createTestProject({
+        id: 'project-1',
+        path: '/tmp/folder',
+        projectMode: 'non-git',
+      }),
+    ]);
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.CreateTask:
+          return Promise.resolve({
+            branch_name: '',
+            id: 'task-non-git',
+            project_mode: 'non-git',
+            worktree_path: '/tmp/folder',
+          });
+        case IPC.CoordinatorCreateRun:
+          return Promise.reject(new Error('coordinator unavailable'));
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.CleanupTaskRuntime:
+          return Promise.resolve(undefined);
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      createTask({
+        agentDef,
+        coordinatorMode: true,
+        name: 'Folder coordinator task',
+        projectId: 'project-1',
+        projectMode: 'non-git',
+      }),
+    ).rejects.toThrow('coordinator unavailable');
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.CleanupTaskRuntime,
+      expect.objectContaining({
+        agentIds: [],
+        projectMode: 'non-git',
+        removeTaskState: true,
+        taskId: 'task-non-git',
+        worktreePath: '/tmp/folder',
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({
+        taskId: 'task-non-git',
+      }),
+    );
+    expect(store.tasks['task-non-git']).toBeUndefined();
+  });
+
+  it('rejects coordinator mode in Electron before creating a task', async () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        electron: {
+          ipcRenderer: {},
+        },
+      },
+    });
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    try {
+      await expect(
+        createTask({
+          agentDef,
+          coordinatorMode: true,
+          name: 'Coordinator task',
+          projectId: 'project-1',
+        }),
+      ).rejects.toThrow('Coordinator mode is available in browser server mode.');
+    } finally {
+      if (previousWindowDescriptor) {
+        Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+      } else {
+        delete (globalThis as { window?: unknown }).window;
+      }
+    }
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.CreateTask, expect.anything());
+  });
+
+  it('rejects coordinator mode for non-host agent runners before creating a task', async () => {
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [
+      createTestProject({
+        agentRunnerConfig: {
+          image: 'node:20',
+          provider: 'docker-container',
+        },
+        id: 'project-1',
+        path: '/repo',
+      }),
+    ]);
+
+    await expect(
+      createTask({
+        agentDef,
+        coordinatorMode: true,
+        name: 'Coordinator task',
+        projectId: 'project-1',
+      }),
+    ).rejects.toThrow('Coordinator mode currently requires host-run agents.');
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.CreateTask, expect.anything());
+  });
+
   it('waits longer before submitting multiline bracketed paste prompts', async () => {
     vi.useFakeTimers();
 

@@ -4,6 +4,7 @@ import type { HandlerContext } from './handler-context.js';
 
 const {
   cleanupTaskRuntimeWorkflowMock,
+  cleanupCoordinatorTaskStateAndOwnedSubtasksMock,
   commitAllWorkflowMock,
   createTaskWorkflowMock,
   deleteTaskWorkflowMock,
@@ -20,6 +21,7 @@ const {
   streamPushTaskMock,
 } = vi.hoisted(() => ({
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
+  cleanupCoordinatorTaskStateAndOwnedSubtasksMock: vi.fn(),
   commitAllWorkflowMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
   deleteTaskWorkflowMock: vi.fn(),
@@ -34,6 +36,10 @@ const {
   rebaseTaskWorkflowMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
   streamPushTaskMock: vi.fn(),
+}));
+
+vi.mock('../coordinator/tool-gateway.js', () => ({
+  cleanupCoordinatorTaskStateAndOwnedSubtasks: cleanupCoordinatorTaskStateAndOwnedSubtasksMock,
 }));
 
 vi.mock('./task-workflows.js', () => ({
@@ -89,6 +95,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     cleanupTaskRuntimeWorkflowMock.mockReturnValue({
       releasedTaskCommandController: null,
     });
+    cleanupCoordinatorTaskStateAndOwnedSubtasksMock.mockResolvedValue([]);
     deleteTaskWorkflowMock.mockResolvedValue({
       cleanupWarnings: [],
       releasedTaskCommandController: null,
@@ -405,6 +412,10 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
 
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
+    expect(cleanupCoordinatorTaskStateAndOwnedSubtasksMock).toHaveBeenCalledWith(
+      { context: expect.anything(), taskNames: taskRegistry },
+      'task-1',
+    );
   });
 
   it('emits released task command ownership when deleting a controlled task', async () => {
@@ -476,6 +487,40 @@ describe('createTaskAndGitIpcHandlers', () => {
         {
           kind: 'worktree',
           message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+      ],
+    });
+  });
+
+  it('returns coordinator-owned subtask cleanup warnings from task deletion', async () => {
+    cleanupCoordinatorTaskStateAndOwnedSubtasksMock.mockResolvedValue([
+      {
+        kind: 'worktree',
+        message: 'Coordinator subtask task-child cleanup did not finish: remove failed',
+      },
+    ]);
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    const result = await handlers[IPC.DeleteTask]?.({
+      agentIds: [],
+      branchName: 'task/auth',
+      controllerId: 'client-1',
+      deleteBranch: true,
+      projectRoot: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-auth',
+    });
+
+    expect(result).toEqual({
+      cleanupWarnings: [
+        {
+          kind: 'worktree',
+          message: 'Coordinator subtask task-child cleanup did not finish: remove failed',
         },
       ],
     });
@@ -683,7 +728,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(mergeTaskMock).not.toHaveBeenCalled();
   });
 
-  it('cleans backend task runtime without deleting registry metadata for collapse-style cleanup', () => {
+  it('cleans backend task runtime without deleting registry metadata for collapse-style cleanup', async () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -691,7 +736,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     };
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
 
-    handlers[IPC.CleanupTaskRuntime]?.({
+    await handlers[IPC.CleanupTaskRuntime]?.({
       agentIds: ['agent-1'],
       controllerId: 'client-1',
       taskId: 'task-1',
@@ -705,7 +750,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
   });
 
-  it('removes registry metadata when runtime cleanup is final', () => {
+  it('removes registry metadata when runtime cleanup is final', async () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -713,7 +758,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     };
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
 
-    handlers[IPC.CleanupTaskRuntime]?.({
+    await handlers[IPC.CleanupTaskRuntime]?.({
       agentIds: ['agent-1'],
       controllerId: 'client-1',
       projectMode: 'non-git',
@@ -732,7 +777,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
-  it('emits released task command ownership when runtime cleanup is final', () => {
+  it('emits released task command ownership when runtime cleanup is final', async () => {
     const releasedController = {
       action: null,
       controllerId: null,
@@ -753,7 +798,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     };
     const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
 
-    handlers[IPC.CleanupTaskRuntime]?.({
+    await handlers[IPC.CleanupTaskRuntime]?.({
       agentIds: ['agent-1'],
       controllerId: 'client-1',
       removeTaskState: true,
@@ -767,7 +812,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     );
   });
 
-  it('rejects runtime cleanup when another client holds the task lease', () => {
+  it('rejects runtime cleanup when another client holds the task lease', async () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(false);
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -775,33 +820,33 @@ describe('createTaskAndGitIpcHandlers', () => {
     };
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
 
-    expect(() =>
+    await expect(
       handlers[IPC.CleanupTaskRuntime]?.({
         agentIds: ['agent-1'],
         controllerId: 'client-2',
         removeTaskState: true,
         taskId: 'task-1',
       }),
-    ).toThrow('Task is controlled by another client');
+    ).rejects.toThrow('Task is controlled by another client');
 
     expect(cleanupTaskRuntimeWorkflowMock).not.toHaveBeenCalled();
     expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
   });
 
-  it('rejects runtime cleanup without lease identity before cleanup', () => {
+  it('rejects runtime cleanup without lease identity before cleanup', async () => {
     const taskRegistry = {
       deleteTask: vi.fn(),
       registerCreatedTask: vi.fn(),
     };
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
 
-    expect(() =>
+    await expect(
       handlers[IPC.CleanupTaskRuntime]?.({
         agentIds: ['agent-1'],
         removeTaskState: true,
         taskId: 'task-1',
       }),
-    ).toThrow('controllerId must be a string');
+    ).rejects.toThrow('controllerId must be a string');
 
     expect(isTaskCommandLeaseHeldMock).not.toHaveBeenCalled();
     expect(cleanupTaskRuntimeWorkflowMock).not.toHaveBeenCalled();

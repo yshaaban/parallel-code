@@ -10,6 +10,7 @@ import type { TaskConvergenceEvent } from './task-convergence.js';
 import type { TaskStepsEvent } from './task-steps.js';
 import type { TaskReviewEvent } from './task-review.js';
 import type { TaskReviewSignalsEvent } from './task-review-signals.js';
+import type { CoordinatorEventEnvelope } from './coordinator.js';
 
 export interface PlanContentUpdate {
   content: string | null;
@@ -35,6 +36,7 @@ export interface NotificationClickedNotification {
 
 export interface RendererIpcEventPayloads {
   [IPC.AgentSupervisionChanged]: AgentSupervisionEvent;
+  [IPC.CoordinatorChanged]: CoordinatorEventEnvelope;
   [IPC.GitStatusChanged]: GitStatusSyncEvent;
   [IPC.PlanContent]: PlanContentUpdate;
   [IPC.NotificationClicked]: NotificationClickedNotification;

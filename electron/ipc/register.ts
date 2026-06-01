@@ -13,6 +13,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
+import { subscribeCoordinatorEvents } from '../coordinator/runtime.js';
 import { subscribeAgentSupervision } from './agent-supervision.js';
 import {
   createIpcHandlers,
@@ -331,6 +332,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
       emitRendererEvent(win.webContents, IPC.AgentSupervisionChanged, event);
     }
   });
+  const stopCoordinatorSubscription = subscribeCoordinatorEvents((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.CoordinatorChanged, event);
+    }
+  });
   const stopRemoteStatusSubscription = remoteAccess.subscribe((status) => {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.RemoteStatusChanged, status);
@@ -405,6 +411,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   win.on('closed', () => {
     clearCloseFallbackTimer();
     stopAgentSupervisionSubscription();
+    stopCoordinatorSubscription();
     stopRemoteStatusSubscription();
     stopTaskConvergenceSubscription();
     stopTaskReviewSubscription();

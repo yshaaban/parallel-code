@@ -9,7 +9,7 @@ export interface StorageEnv {
   isPackaged: boolean;
 }
 
-function getStateDir(env: StorageEnv): string {
+export function getStateDirForEnv(env: StorageEnv): string {
   let dir = env.userDataPath;
   if (!env.isPackaged) {
     const base = path.basename(dir);
@@ -19,11 +19,16 @@ function getStateDir(env: StorageEnv): string {
 }
 
 function getStatePath(env: StorageEnv): string {
-  return path.join(getStateDir(env), 'state.json');
+  return path.join(getStateDirForEnv(env), 'state.json');
 }
 
 function getWorkspaceStatePath(env: StorageEnv): string {
-  return path.join(getStateDir(env), 'workspace-state.json');
+  return path.join(getStateDirForEnv(env), 'workspace-state.json');
+}
+
+export function writeJsonFileAtomically(filePath: string, contents: string): void {
+  parseStateJsonObject(contents);
+  writeFileAtomically(filePath, contents);
 }
 
 function removeFileIfExists(filePath: string): void {

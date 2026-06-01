@@ -10,6 +10,7 @@ import type {
   TaskPortsEvent,
   TaskPortSnapshot,
 } from './server-state.js';
+import type { CoordinatorBootstrapSnapshot, CoordinatorEventEnvelope } from './coordinator.js';
 import {
   isAgentSupervisionEvent,
   isAgentSupervisionSnapshot,
@@ -21,6 +22,7 @@ import {
   isTaskPortSnapshot,
   isTaskPortsEvent,
 } from './server-state.js';
+import { isCoordinatorBootstrapSnapshot, isCoordinatorEventEnvelope } from './coordinator.js';
 import type { TaskConvergenceEvent, TaskConvergenceSnapshot } from './task-convergence.js';
 import { isTaskConvergenceEvent, isTaskConvergenceSnapshot } from './task-convergence.js';
 import type { TaskStepsEvent, TaskStepsSummarySnapshot } from './task-steps.js';
@@ -48,6 +50,7 @@ export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
   'task-review-signals',
   'task-steps',
   'task-ports',
+  'coordinator',
 ] as const;
 
 export type ServerStateBootstrapCategory = (typeof SERVER_STATE_BOOTSTRAP_CATEGORIES)[number];
@@ -72,6 +75,7 @@ export interface ServerStateBootstrapPayloadMap {
   'task-review-signals': TaskReviewSignalsSnapshot[];
   'task-steps': TaskStepsSummarySnapshot[];
   'task-ports': TaskPortSnapshot[];
+  coordinator: CoordinatorBootstrapSnapshot;
 }
 
 export interface ServerStateEventPayloadMap {
@@ -85,6 +89,7 @@ export interface ServerStateEventPayloadMap {
   'task-review-signals': TaskReviewSignalsEvent;
   'task-steps': TaskStepsEvent;
   'task-ports': TaskPortsEvent;
+  coordinator: CoordinatorEventEnvelope;
 }
 
 export interface ServerStateBootstrapSnapshot<
@@ -229,6 +234,12 @@ const SERVER_STATE_BOOTSTRAP_CATEGORY_CONFIG = {
     'task-command-controller',
     isTaskCommandControllerSnapshot,
     isTaskCommandControllerSnapshot,
+  ),
+  coordinator: createServerStateBootstrapCategoryConfig(
+    'coordinator',
+    (payload) => (isCoordinatorBootstrapSnapshot(payload) ? payload : null),
+    isCoordinatorBootstrapSnapshot,
+    isCoordinatorEventEnvelope,
   ),
   'task-convergence': createArrayServerStateBootstrapCategoryConfig(
     'task-convergence',

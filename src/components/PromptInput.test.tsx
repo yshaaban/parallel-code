@@ -115,6 +115,7 @@ vi.mock('../store/store', async () => {
     registerFocusFn: registerFocusFnMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
+    store: core.store,
     stripAnsi: (value: string) => value,
     unregisterAction: unregisterActionMock,
     unregisterFocusFn: unregisterFocusFnMock,

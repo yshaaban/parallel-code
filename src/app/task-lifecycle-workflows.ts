@@ -1,5 +1,6 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
+import { resolveAgentRunnerProfile } from '../domain/agent-runners';
 import {
   hasProjectCurrentBranchTask,
   hasTaskClosingState,
@@ -9,6 +10,7 @@ import {
 import type { DeleteTaskCleanupWarning, DeleteTaskResult } from '../domain/task-cleanup';
 import type { AgentDef } from '../ipc/types';
 import { invoke } from '../lib/ipc';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { recordMergedLines, recordMergedTaskToday } from '../store/completion';
@@ -40,6 +42,7 @@ import { clearTaskConvergence } from './task-convergence';
 import { createPushOutputBinding } from './task-output-channels';
 import { clearTaskReview } from './task-review-state';
 import { clearTaskReviewSignals } from './task-review-signals';
+import type { CoordinatorCreateRunResult } from '../domain/coordinator';
 
 const collapsingTaskIds = new Set<string>();
 
@@ -276,6 +279,61 @@ export interface CreateTaskOptions {
   projectMode?: ProjectMode;
   skipPermissions?: boolean;
   stepsTracking?: boolean;
+  coordinatorMode?: boolean;
+}
+
+async function rollbackCreatedTaskAfterCoordinatorFailure(options: {
+  agentIds: string[];
+  branchName: string;
+  gitIsolation: TaskGitIsolationMode;
+  projectMode: ProjectMode;
+  projectRoot: string;
+  taskId: string;
+  worktreePath: string;
+}): Promise<void> {
+  const controllerId = getRuntimeClientId();
+  try {
+    const lease = await invoke(IPC.AcquireTaskCommandLease, {
+      action: 'roll back failed coordinator setup',
+      clientId: controllerId,
+      ownerId: controllerId,
+      taskId: options.taskId,
+      takeover: true,
+    });
+    if (!lease.acquired) {
+      throw new Error('Failed to acquire rollback control for coordinator setup');
+    }
+
+    if (options.projectMode === 'git' && options.gitIsolation === 'worktree') {
+      await invoke(IPC.DeleteTask, {
+        agentIds: options.agentIds,
+        branchName: options.branchName,
+        controllerId,
+        deleteBranch: true,
+        projectRoot: options.projectRoot,
+        taskId: options.taskId,
+        worktreePath: options.worktreePath,
+      });
+      return;
+    }
+
+    await invoke(IPC.CleanupTaskRuntime, {
+      agentIds: options.agentIds,
+      controllerId,
+      projectMode: options.projectMode,
+      removeTaskState: true,
+      taskId: options.taskId,
+      worktreePath: options.worktreePath,
+    });
+  } catch (error) {
+    console.warn('Failed to roll back task after coordinator setup failure:', error);
+  } finally {
+    await invoke(IPC.ReleaseTaskCommandLease, {
+      clientId: controllerId,
+      ownerId: controllerId,
+      taskId: options.taskId,
+    }).catch(() => undefined);
+  }
 }
 
 export async function createTask(opts: CreateTaskOptions): Promise<string> {
@@ -302,6 +360,18 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
 
   const project = getProject(projectId);
   const projectMode = opts.projectMode ?? getProjectMode(project);
+  if (opts.coordinatorMode === true) {
+    if (isElectronRuntime()) {
+      throw new Error('Coordinator mode is available in browser server mode.');
+    }
+    const runnerResolution = resolveAgentRunnerProfile(
+      project?.agentRunnerConfig,
+      project?.containerConfig,
+    );
+    if (runnerResolution.activeProvider !== 'host') {
+      throw new Error('Coordinator mode currently requires host-run agents.');
+    }
+  }
   const resolvedBaseBranch =
     projectMode === 'git' ? (baseBranch ?? getProjectBaseBranch(projectId)) : undefined;
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
@@ -328,6 +398,29 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   const resultProjectMode = result.project_mode ?? projectMode;
   const taskBaseBranch =
     resultProjectMode === 'git' ? (result.base_branch ?? resolvedBaseBranch) : undefined;
+  let coordinatorRunResult: CoordinatorCreateRunResult | undefined;
+  if (opts.coordinatorMode === true) {
+    try {
+      coordinatorRunResult = await invoke(IPC.CoordinatorCreateRun, {
+        coordinatorAgentId: agentId,
+        coordinatorTaskId: result.id,
+        projectId,
+        projectMode: resultProjectMode,
+        projectRoot,
+      });
+    } catch (error) {
+      await rollbackCreatedTaskAfterCoordinatorFailure({
+        agentIds: [],
+        branchName: result.branch_name,
+        gitIsolation: resolvedGitIsolation,
+        projectMode: resultProjectMode,
+        projectRoot,
+        taskId: result.id,
+        worktreePath: result.worktree_path,
+      });
+      throw error;
+    }
+  }
   const task: Task = {
     id: result.id,
     name,
@@ -349,6 +442,16 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
+    ...(coordinatorRunResult !== undefined
+      ? {
+          coordinatorCredentialPath: coordinatorRunResult.credentialPath,
+          coordinatorRole: 'coordinator' as const,
+          coordinatorRunId: coordinatorRunResult.run.id,
+          ...(coordinatorRunResult.toolCommand !== undefined
+            ? { coordinatorToolCommand: coordinatorRunResult.toolCommand }
+            : {}),
+        }
+      : {}),
   };
 
   const agent: Agent = {
@@ -389,6 +492,7 @@ export interface CreateCurrentBranchTaskOptions {
   githubUrl?: string;
   skipPermissions?: boolean;
   stepsTracking?: boolean;
+  coordinatorMode?: boolean;
 }
 
 export async function createCurrentBranchTask(
@@ -403,6 +507,7 @@ export async function createCurrentBranchTask(
     githubUrl,
     skipPermissions,
     stepsTracking,
+    coordinatorMode,
   } = opts;
   if (
     hasProjectCurrentBranchTask(
@@ -433,6 +538,7 @@ export async function createCurrentBranchTask(
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     ...(skipPermissions !== undefined ? { skipPermissions } : {}),
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
+    ...(coordinatorMode !== undefined ? { coordinatorMode } : {}),
   });
 }
 
@@ -458,6 +564,7 @@ export async function createExistingWorktreeTask(
     ...(opts.githubUrl !== undefined ? { githubUrl: opts.githubUrl } : {}),
     ...(opts.skipPermissions !== undefined ? { skipPermissions: opts.skipPermissions } : {}),
     ...(opts.stepsTracking !== undefined ? { stepsTracking: opts.stepsTracking } : {}),
+    ...(opts.coordinatorMode !== undefined ? { coordinatorMode: opts.coordinatorMode } : {}),
   });
 }
 

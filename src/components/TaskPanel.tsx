@@ -77,6 +77,7 @@ import { ScalablePanel } from './ScalablePanel';
 import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 import { TaskTitleBar } from './TaskTitleBar';
 import { createTaskAiTerminalSection } from './task-panel/TaskAiTerminalSection';
+import { createTaskCoordinatorSection } from './task-panel/TaskCoordinatorSection';
 import { createTaskPanelDialogState } from './task-panel/task-panel-dialog-state';
 import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runtime';
 import { createTaskPanelPermissionController } from './task-panel/task-panel-permission-controller';
@@ -401,6 +402,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     },
     task: () => props.task,
   });
+  const coordinatorSection = createTaskCoordinatorSection({
+    task: () => props.task,
+  });
 
   const panelChildren = () => {
     const children: PanelChild[] = [titleBar(), branchInfoBar()];
@@ -412,6 +416,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     const nextStepsSection = stepsController.stepsSection();
     if (nextStepsSection) {
       children.push(nextStepsSection);
+    }
+    if (props.task.coordinatorRole === 'coordinator') {
+      children.push(coordinatorSection);
     }
     children.push(shellSection, aiTerminalSection, promptInput());
     return children;

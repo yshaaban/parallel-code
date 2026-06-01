@@ -204,6 +204,21 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       ...(options.persistedTask.stepsTracking !== undefined
         ? { stepsTracking: options.persistedTask.stepsTracking }
         : {}),
+      ...(options.persistedTask.coordinatorCredentialPath !== undefined
+        ? { coordinatorCredentialPath: options.persistedTask.coordinatorCredentialPath }
+        : {}),
+      ...(options.persistedTask.coordinatorParentTaskId !== undefined
+        ? { coordinatorParentTaskId: options.persistedTask.coordinatorParentTaskId }
+        : {}),
+      ...(options.persistedTask.coordinatorRole !== undefined
+        ? { coordinatorRole: options.persistedTask.coordinatorRole }
+        : {}),
+      ...(options.persistedTask.coordinatorRunId !== undefined
+        ? { coordinatorRunId: options.persistedTask.coordinatorRunId }
+        : {}),
+      ...(options.persistedTask.coordinatorToolCommand !== undefined
+        ? { coordinatorToolCommand: options.persistedTask.coordinatorToolCommand }
+        : {}),
       ...(options.persistedTask.terminalLayoutMode !== undefined
         ? { terminalLayoutMode: options.persistedTask.terminalLayoutMode }
         : {}),

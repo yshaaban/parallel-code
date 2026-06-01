@@ -70,6 +70,10 @@ function isOptionalProjectMode(value: unknown): value is 'git' | 'non-git' | und
   return value === undefined || value === 'git' || value === 'non-git';
 }
 
+function isOptionalCoordinatorRole(value: unknown): value is 'coordinator' | 'subtask' | undefined {
+  return value === undefined || value === 'coordinator' || value === 'subtask';
+}
+
 function isOptionalTaskTerminalLayoutMode(
   value: unknown,
 ): value is 'focused' | 'split' | 'grid' | 'stacked' | undefined {
@@ -137,6 +141,11 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     isOptionalString(value.planFileName) &&
     isOptionalString(value.planRelativePath) &&
     isOptionalBoolean(value.stepsTracking) &&
+    isOptionalString(value.coordinatorCredentialPath) &&
+    isOptionalString(value.coordinatorParentTaskId) &&
+    isOptionalCoordinatorRole(value.coordinatorRole) &&
+    isOptionalString(value.coordinatorRunId) &&
+    isOptionalString(value.coordinatorToolCommand) &&
     isOptionalBoolean(value.collapsed)
   );
 }

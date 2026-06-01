@@ -50,6 +50,11 @@ export function createInitialAppStore(): AppStore {
     taskReviewSignals: {},
     taskSteps: {},
     taskStepSummaries: {},
+    coordinator: {
+      runs: {},
+      stateVersion: 0,
+      updatedAt: null,
+    },
     focusedPanel: {},
     sidebarFocused: false,
     sidebarFocusedProjectId: null,

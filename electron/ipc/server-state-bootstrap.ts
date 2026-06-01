@@ -1,5 +1,9 @@
 import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
 import { createServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
+import {
+  getCoordinatorBootstrapSnapshot,
+  getCoordinatorStateVersion,
+} from '../coordinator/runtime.js';
 import type { PeerPresenceSnapshot, RemoteAccessStatus } from '../../src/domain/server-state.js';
 import {
   getAgentSupervisionStateVersion,
@@ -60,6 +64,11 @@ export function getServerStateBootstrap(
       'task-command-controller',
       getTaskCommandControllers(),
       getTaskCommandControllerStateVersion(),
+    ),
+    createServerStateBootstrapSnapshot(
+      'coordinator',
+      getCoordinatorBootstrapSnapshot(),
+      getCoordinatorStateVersion(),
     ),
     createServerStateBootstrapSnapshot(
       'agent-supervision',

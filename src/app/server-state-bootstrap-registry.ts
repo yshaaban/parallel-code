@@ -12,6 +12,7 @@ import type { TaskPortsEvent } from '../domain/server-state';
 import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 import {
   listenAgentSupervisionChanged,
+  listenCoordinatorChanged,
   listenGitStatusChanged,
   listenRemoteStatusChanged,
   listenTaskCommandControllerChanged,
@@ -47,6 +48,7 @@ type ServerStateBootstrapGate = {
 };
 
 type BrowserTaskPortsServerMessage = Extract<BrowserServerMessage, { type: 'task-ports-changed' }>;
+type BrowserCoordinatorServerMessage = Extract<BrowserServerMessage, { type: 'coordinator-event' }>;
 type BrowserServerStateMessageTypeByCategory = {
   'git-status': 'git-status-changed';
   'remote-status': 'remote-status';
@@ -193,6 +195,22 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
         listenTaskCommandControllerChanged,
         handle,
       ),
+  },
+  coordinator: {
+    createDescriptor: () => createServerStateCategoryDescriptor('coordinator'),
+    getListenerScope: () => 'persistent',
+    listenEvent: (runtime, handle) => {
+      if (runtime === 'electron') {
+        return listenValidatedServerStateEvent('coordinator', listenCoordinatorChanged, handle);
+      }
+
+      return listenServerMessage(
+        'coordinator-event',
+        (message: BrowserCoordinatorServerMessage) => {
+          handleValidatedServerStateEvent('coordinator', message.event, handle);
+        },
+      );
+    },
   },
   'task-convergence': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-convergence'),

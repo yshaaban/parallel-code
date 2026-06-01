@@ -5,6 +5,29 @@ import {
   isServerStateBootstrapSnapshot,
   isServerStateEventPayload,
 } from './server-state-bootstrap';
+import type { CoordinatorRunSnapshot } from './coordinator';
+
+function createCoordinatorRunSnapshot(): CoordinatorRunSnapshot {
+  return {
+    coordinatorTaskId: 'task-coordinator',
+    createdAt: 1_000,
+    eventVersion: 1,
+    id: 'run-1',
+    landing: [],
+    limits: {
+      maxActiveSubtasks: 5,
+      maxPendingPromptsPerTarget: 3,
+      maxQueuedSubtasks: 20,
+    },
+    projectId: 'project-1',
+    projectMode: 'git',
+    projectRoot: '/repo',
+    promptQueue: [],
+    status: 'running',
+    subtasks: [],
+    updatedAt: 1_000,
+  };
+}
 
 describe('server-state bootstrap domain helpers', () => {
   it('filters bootstrap snapshots by category-owned payload shape', () => {
@@ -76,6 +99,30 @@ describe('server-state bootstrap domain helpers', () => {
   });
 
   it('validates live event payloads through their owning domain guards', () => {
+    const coordinatorRun = createCoordinatorRunSnapshot();
+
+    expect(
+      isServerStateEventPayload('coordinator', {
+        categorySeq: 1,
+        createdAt: 1_000,
+        entityKey: 'run:run-1',
+        entityVersion: 1,
+        eventType: 'run-upserted',
+        payload: coordinatorRun,
+        runId: coordinatorRun.id,
+      }),
+    ).toBe(true);
+    expect(
+      isServerStateEventPayload('coordinator', {
+        categorySeq: 1,
+        createdAt: 1_000,
+        entityKey: 'run:run-1',
+        entityVersion: 1,
+        eventType: 'run-upserted',
+        payload: { id: coordinatorRun.id },
+        runId: coordinatorRun.id,
+      }),
+    ).toBe(false);
     expect(
       isServerStateEventPayload('task-ports', {
         exposed: [],

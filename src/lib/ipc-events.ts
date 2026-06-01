@@ -29,6 +29,12 @@ export function listenAgentSupervisionChanged(
   return listenRendererEvent(IPC.AgentSupervisionChanged, listener);
 }
 
+export function listenCoordinatorChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.CoordinatorChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.CoordinatorChanged, listener);
+}
+
 export function listenGitStatusChanged(
   listener: (payload: RendererIpcEventPayloads[IPC.GitStatusChanged]) => void,
 ): () => void {

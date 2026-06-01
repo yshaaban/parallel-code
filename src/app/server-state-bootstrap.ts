@@ -31,6 +31,7 @@ import {
   applyTaskCommandControllerChanged,
   replaceTaskCommandControllers,
 } from '../store/task-command-controllers';
+import { applyCoordinatorEvent, replaceCoordinatorSnapshot } from '../store/coordinator';
 
 export async function fetchServerStateBootstrap(): Promise<AnyServerStateBootstrapSnapshot[]> {
   return invoke(IPC.GetServerStateBootstrap);
@@ -59,6 +60,7 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'remote-status': applyRemoteStatusEvent,
   'peer-presence': replacePeerSessions,
   'task-command-controller': applyTaskCommandControllerChanged,
+  coordinator: applyCoordinatorEvent,
   'agent-supervision': applyAgentSupervisionEvent,
   'task-convergence': applyTaskConvergenceEvent,
   'task-review': applyTaskReviewEvent,
@@ -96,6 +98,8 @@ const SERVER_STATE_SNAPSHOT_APPLIERS: {
   'peer-presence': (payload) => replacePeerSessions(payload),
   'task-command-controller': (payload, version) =>
     replaceTaskCommandControllers(payload, createReplaceVersionOptions(version)),
+  coordinator: (payload, version) =>
+    replaceCoordinatorSnapshot(payload, createReplaceVersionOptions(version)),
   'agent-supervision': (payload, version) =>
     replaceAgentSupervisionSnapshots(payload, createReplaceVersionOptions(version)),
   'task-convergence': (payload, version) =>
@@ -172,6 +176,7 @@ function createPendingEventQueue(): PendingEventQueue {
     'remote-status': [],
     'peer-presence': [],
     'task-command-controller': [],
+    coordinator: [],
     'agent-supervision': [],
     'task-convergence': [],
     'task-review': [],

@@ -115,6 +115,12 @@ export {
   replaceTaskCommandControllers,
 } from './task-command-controllers';
 export {
+  applyCoordinatorEvent,
+  getCoordinatorRun,
+  getCoordinatorRunForTask,
+  replaceCoordinatorSnapshot,
+} from './coordinator';
+export {
   clearIncomingTaskTakeoverRequest,
   getIncomingTaskTakeoverRequest,
   listIncomingTaskTakeoverRequests,

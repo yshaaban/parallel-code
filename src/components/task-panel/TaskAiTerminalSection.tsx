@@ -100,6 +100,24 @@ function getRunnerProfileForTask(task: Task): AgentRunnerProfileConfig | undefin
   return resolution.configuredProfile ?? undefined;
 }
 
+function getCoordinatorAgentEnvironment(agentDef: AgentDef, task: Task): Record<string, string> {
+  const env = getAgentSpawnEnvironment(agentDef, store.hydraStartupMode) ?? {};
+  if (!task.coordinatorCredentialPath) {
+    return env;
+  }
+
+  return {
+    ...env,
+    PARALLEL_CODE_COORDINATOR_CREDENTIAL: task.coordinatorCredentialPath,
+    ...(task.coordinatorRunId !== undefined
+      ? { PARALLEL_CODE_COORDINATOR_RUN_ID: task.coordinatorRunId }
+      : {}),
+    ...(task.coordinatorToolCommand !== undefined
+      ? { PARALLEL_CODE_COORDINATOR_TOOL: task.coordinatorToolCommand }
+      : {}),
+  };
+}
+
 function getAgentExitStatusText(agent: Pick<Agent, 'exitCode' | 'signal'>): string {
   if (agent.signal === 'spawn_failed') {
     return 'Failed to start';
@@ -636,7 +654,7 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
               projectMode={sessionTask.projectMode}
               replaceExistingSession={shouldReplaceExistingSession}
               runnerProfile={props.runnerProfile}
-              env={getAgentSpawnEnvironment(sessionAgentDef, store.hydraStartupMode)}
+              env={getCoordinatorAgentEnvironment(sessionAgentDef, sessionTask)}
               resumeOnStart={shouldResumeAgentOnSpawn(sessionAgentDef, sessionAgentResumed)}
               onExit={createAgentExitHandler(sessionAgentId, sessionGeneration)}
               onData={(data) =>

@@ -26,6 +26,14 @@ import type { AgentRunnerProfileConfig } from './agent-runners.js';
 import type { BranchCommitHistoryResult } from './review-commit-history.js';
 import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
+  CoordinatorActivityHintRequest,
+  CoordinatorCreateRunRequest,
+  CoordinatorCreateRunResult,
+  CoordinatorDiagnosticsSnapshot,
+  CoordinatorToolCallEnvelope,
+  CoordinatorToolCallResult,
+} from './coordinator.js';
+import type {
   AgentSupervisionSnapshot,
   PauseReason,
   RemoteAccessStatus,
@@ -309,6 +317,10 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetServerStateBootstrap]: undefined;
+  [IPC.CoordinatorActivityHint]: CoordinatorActivityHintRequest;
+  [IPC.CoordinatorCreateRun]: CoordinatorCreateRunRequest;
+  [IPC.CoordinatorGetDiagnostics]: undefined;
+  [IPC.CoordinatorToolCall]: CoordinatorToolCallEnvelope;
   [IPC.ExposePort]: {
     label?: string;
     port: number;
@@ -652,6 +664,10 @@ export interface RendererInvokeResponseMap {
   [IPC.ContainersDestroyTask]: TaskContainerInspectResult;
   [IPC.ContainersGetTaskLogs]: TaskContainerLogsResult;
   [IPC.GetServerStateBootstrap]: AnyServerStateBootstrapSnapshot[];
+  [IPC.CoordinatorActivityHint]: undefined;
+  [IPC.CoordinatorCreateRun]: CoordinatorCreateRunResult;
+  [IPC.CoordinatorGetDiagnostics]: CoordinatorDiagnosticsSnapshot;
+  [IPC.CoordinatorToolCall]: CoordinatorToolCallResult;
   [IPC.ExposePort]: TaskPortSnapshot;
   [IPC.RefreshTaskPortPreview]: TaskPortSnapshot | undefined;
   [IPC.UnexposePort]: TaskPortSnapshot | undefined;

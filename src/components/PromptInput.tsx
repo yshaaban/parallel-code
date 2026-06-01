@@ -26,10 +26,13 @@ import {
   getTaskFocusedPanel,
   setTaskFocusedPanelState,
   setTaskFocusedPanel,
+  store,
 } from '../store/store';
 import { sendAgentEnter, sendPrompt } from '../app/task-workflows';
+import { nextCoordinatorActivityHintSeq, sendCoordinatorActivityHint } from '../app/coordinator';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { createTaskCommandLeaseSession } from '../app/task-command-lease';
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
@@ -94,6 +97,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   const [sendError, setSendError] = createSignal<string | null>(null);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
+  let promptDraftHintTimer: ReturnType<typeof setTimeout> | undefined;
   let takeOverGeneration = 0;
   const promptLeaseSession = createTaskCommandLeaseSession(taskId, 'send a prompt', {
     confirmTakeover: false,
@@ -303,6 +307,10 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
     sendAbortController?.abort();
+    if (promptDraftHintTimer !== undefined) {
+      clearTimeout(promptDraftHintTimer);
+      promptDraftHintTimer = undefined;
+    }
     promptLeaseSession.cleanup();
     props.setTextareaRef?.(undefined);
     props.onHandle?.(undefined);
@@ -316,6 +324,49 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
   function updatePromptText(value: string): void {
     setText(value);
     setSendError(null);
+    schedulePromptDraftHint(value);
+  }
+
+  function sendPromptActivityHint(
+    kind: 'manual-prompt-sent' | 'prompt-draft',
+    ttlMs: number,
+    blocked = true,
+  ): void {
+    if (store.tasks[taskId]?.coordinatorRole !== 'subtask') {
+      return;
+    }
+
+    void sendCoordinatorActivityHint({
+      agentGeneration: store.agents[agentId]?.generation ?? 0,
+      blocked,
+      clientId: getRuntimeClientId(),
+      kind,
+      seq: nextCoordinatorActivityHintSeq(),
+      taskId,
+      ...(ttlMs > 0 ? { ttlMs } : {}),
+    }).catch(() => {});
+  }
+
+  function clearPromptDraftActivityHint(): void {
+    sendPromptActivityHint('prompt-draft', 0, false);
+  }
+
+  function schedulePromptDraftHint(value: string): void {
+    if (promptDraftHintTimer !== undefined) {
+      clearTimeout(promptDraftHintTimer);
+      promptDraftHintTimer = undefined;
+    }
+    if (value.trim().length === 0) {
+      clearPromptDraftActivityHint();
+      return;
+    }
+
+    promptDraftHintTimer = setTimeout(() => {
+      promptDraftHintTimer = undefined;
+      if (text().trim().length > 0) {
+        sendPromptActivityHint('prompt-draft', 5_000);
+      }
+    }, 300);
   }
 
   async function waitForPromptAppearance(
@@ -359,6 +410,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
     }
     if (mode === 'manual') {
       stopAutoSendTracking();
+      sendPromptActivityHint('manual-prompt-sent', 1_500);
     }
 
     const val = text().trim();
@@ -413,6 +465,7 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
       }
       props.onSend?.(val);
       setText('');
+      clearPromptDraftActivityHint();
       setSendError(null);
     } catch (e) {
       console.error('Failed to send prompt:', e);

@@ -4,11 +4,18 @@ import {
   createRemovedAgentSupervisionEvent,
   createTaskPortsSnapshotEvent,
 } from '../domain/server-state';
-import { createServerStateBootstrapGate } from './server-state-bootstrap';
+import {
+  createServerStateBootstrapGate,
+  type ServerStateBootstrapCategoryDescriptors,
+} from './server-state-bootstrap';
 
-function createBootstrapDescriptors() {
+function createBootstrapDescriptors(): ServerStateBootstrapCategoryDescriptors {
   return {
     'agent-supervision': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
+    coordinator: {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),
     },
@@ -54,9 +61,9 @@ function createBootstrapDescriptors() {
 describe('server-state bootstrap gate', () => {
   it('applies hydrated snapshots before buffered events when startup completes', () => {
     const descriptors = createBootstrapDescriptors();
-    const applyRemoteStatus = descriptors['remote-status'].applyEvent;
+    const applyRemoteStatusSnapshot = vi.mocked(descriptors['remote-status'].applySnapshot);
+    const applyRemoteStatusEvent = vi.mocked(descriptors['remote-status'].applyEvent);
     const applyGitStatus = descriptors['git-status'].applyEvent;
-    descriptors['remote-status'].applySnapshot = applyRemoteStatus;
 
     const gate = createServerStateBootstrapGate(descriptors);
 
@@ -84,32 +91,29 @@ describe('server-state bootstrap gate', () => {
 
     gate.complete();
 
-    expect(applyRemoteStatus.mock.calls).toEqual([
-      [
-        {
-          enabled: true,
-          connectedClients: 2,
-          peerClients: 1,
-          port: 7777,
-          tailscaleUrl: null,
-          token: 'token',
-          url: 'http://127.0.0.1:7777',
-          wifiUrl: null,
-        },
-      ],
-      [
-        {
-          enabled: false,
-          connectedClients: 0,
-          peerClients: 0,
-          port: 7777,
-          tailscaleUrl: null,
-          token: null,
-          url: null,
-          wifiUrl: null,
-        },
-      ],
-    ]);
+    expect(applyRemoteStatusSnapshot).toHaveBeenCalledWith({
+      enabled: true,
+      connectedClients: 2,
+      peerClients: 1,
+      port: 7777,
+      tailscaleUrl: null,
+      token: 'token',
+      url: 'http://127.0.0.1:7777',
+      wifiUrl: null,
+    });
+    expect(applyRemoteStatusEvent).toHaveBeenCalledWith({
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+      port: 7777,
+      tailscaleUrl: null,
+      token: null,
+      url: null,
+      wifiUrl: null,
+    });
+    expect(applyRemoteStatusSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+      applyRemoteStatusEvent.mock.invocationCallOrder[0],
+    );
     expect(applyGitStatus).toHaveBeenCalledWith({ worktreePath: '/tmp/task-1' });
   });
 
@@ -144,8 +148,8 @@ describe('server-state bootstrap gate', () => {
 
   it('applies agent supervision snapshots before buffered removal events on startup completion', () => {
     const descriptors = createBootstrapDescriptors();
-    const applyAgentSupervisionSnapshot = descriptors['agent-supervision'].applySnapshot;
-    const applyAgentSupervisionEvent = descriptors['agent-supervision'].applyEvent;
+    const applyAgentSupervisionSnapshot = vi.mocked(descriptors['agent-supervision'].applySnapshot);
+    const applyAgentSupervisionEvent = vi.mocked(descriptors['agent-supervision'].applyEvent);
     const gate = createServerStateBootstrapGate(descriptors);
     const snapshot = [
       {
@@ -174,8 +178,8 @@ describe('server-state bootstrap gate', () => {
 
   it('applies task step summaries before buffered removal events on startup completion', () => {
     const descriptors = createBootstrapDescriptors();
-    const applyTaskStepsSnapshot = descriptors['task-steps'].applySnapshot;
-    const applyTaskStepsEvent = descriptors['task-steps'].applyEvent;
+    const applyTaskStepsSnapshot = vi.mocked(descriptors['task-steps'].applySnapshot);
+    const applyTaskStepsEvent = vi.mocked(descriptors['task-steps'].applyEvent);
     const gate = createServerStateBootstrapGate(descriptors);
     const snapshot = [
       {
@@ -310,8 +314,8 @@ describe('server-state bootstrap gate', () => {
 
   it('ignores hydrate and handle calls after disposal', () => {
     const descriptors = createBootstrapDescriptors();
-    const applyTaskConvergence = descriptors['task-convergence'].applyEvent;
-    descriptors['task-convergence'].applySnapshot = applyTaskConvergence;
+    const applyTaskConvergenceSnapshot = descriptors['task-convergence'].applySnapshot;
+    const applyTaskConvergenceEvent = descriptors['task-convergence'].applyEvent;
 
     const gate = createServerStateBootstrapGate(descriptors);
 
@@ -322,6 +326,7 @@ describe('server-state bootstrap gate', () => {
       taskId: 'task-1',
     });
 
-    expect(applyTaskConvergence).not.toHaveBeenCalled();
+    expect(applyTaskConvergenceSnapshot).not.toHaveBeenCalled();
+    expect(applyTaskConvergenceEvent).not.toHaveBeenCalled();
   });
 });

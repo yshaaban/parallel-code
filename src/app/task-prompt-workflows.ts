@@ -2,16 +2,15 @@ import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from '../store/state';
 import { clearAgentBusyState, markAgentBusy } from '../store/taskStatus';
+import {
+  getPromptSubmitDelayMs,
+  shouldUseBracketedPaste,
+  toBracketedPastePayload,
+} from '../domain/task-prompt-materialization';
 import { prepareTaskPromptText } from './task-steps';
 import { clearTaskPromptDispatch, markTaskPromptDispatch } from './task-prompt-dispatch';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
 import { returnFallbackWhenTaskControlled, writeToAgentWhenReady } from './task-command-dispatch';
-
-const BRACKETED_PASTE_START = '\x1b[200~';
-const BRACKETED_PASTE_END = '\x1b[201~';
-const PROMPT_SUBMIT_DELAY_BASE_MS = 25;
-const PROMPT_SUBMIT_DELAY_PER_EXTRA_LINE_MS = 8;
-const PROMPT_SUBMIT_DELAY_MAX_MS = 400;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,30 +19,6 @@ function sleep(ms: number): Promise<void> {
 function clearPromptDispatchFailureState(agentId: string): void {
   clearTaskPromptDispatch(agentId);
   clearAgentBusyState(agentId);
-}
-
-function getPromptLineCount(text: string): number {
-  if (text.length === 0) {
-    return 1;
-  }
-
-  return text.split('\n').length;
-}
-
-function getPromptSubmitDelayMs(text: string): number {
-  const extraLines = Math.max(0, getPromptLineCount(text) - 1);
-  return Math.min(
-    PROMPT_SUBMIT_DELAY_MAX_MS,
-    PROMPT_SUBMIT_DELAY_BASE_MS + extraLines * PROMPT_SUBMIT_DELAY_PER_EXTRA_LINE_MS,
-  );
-}
-
-function toBracketedPastePayload(text: string): string {
-  return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
-}
-
-function shouldUseBracketedPaste(text: string): boolean {
-  return text.includes('\n');
 }
 
 async function writePromptAndSubmitWhenReady(
