@@ -37,6 +37,25 @@ describe('agent resume helpers', () => {
     ).toEqual(['resume', '--last', '--dangerous']);
   });
 
+  it('builds Antigravity resume and skip-permission args without an adapter', () => {
+    const agent = createTestAgentDef({
+      id: 'antigravity',
+      command: 'agy',
+      args: ['--dangerously-skip-permissions'],
+      resume_args: ['-c'],
+      resume_strategy: 'cli-args',
+      skip_permissions_args: ['--dangerously-skip-permissions'],
+    });
+
+    expect(getAgentResumeStrategy(agent)).toBe('cli-args');
+    expect(
+      buildAgentSpawnArgs(agent, {
+        resumed: true,
+        skipPermissions: true,
+      }),
+    ).toEqual(['-c', '--dangerously-skip-permissions']);
+  });
+
   it('falls back to base args for agents without resume support', () => {
     const agent = createTestAgentDef({
       args: ['run'],

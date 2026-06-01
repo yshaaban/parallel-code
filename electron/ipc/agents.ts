@@ -34,6 +34,16 @@ const DEFAULT_AGENTS: AgentDef[] = [
     description: "Google's Gemini CLI agent",
   },
   {
+    id: 'antigravity',
+    name: 'Antigravity',
+    command: 'agy',
+    args: ['--dangerously-skip-permissions'],
+    resume_args: ['-c'],
+    resume_strategy: 'cli-args',
+    skip_permissions_args: ['--dangerously-skip-permissions'],
+    description: "Google's Antigravity CLI agent",
+  },
+  {
     id: 'opencode',
     name: 'OpenCode',
     command: 'opencode',

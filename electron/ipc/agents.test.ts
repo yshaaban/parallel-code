@@ -43,6 +43,26 @@ describe('listAgents', () => {
     expect(secondAgents[0]?.skip_permissions_args).not.toBe(firstAgents[0]?.skip_permissions_args);
   });
 
+  it('includes Antigravity as a CLI-args built-in agent', async () => {
+    isCommandAvailableMock.mockResolvedValue(true);
+    getHydraRuntimeAvailabilityMock.mockResolvedValue({
+      available: true,
+      detail: 'Using hydra from PATH.',
+      source: 'path',
+    });
+
+    const agents = await listAgents('antigravity-catalog-test');
+
+    expect(agents.find((agent) => agent.id === 'antigravity')).toMatchObject({
+      available: true,
+      command: 'agy',
+      resume_args: ['-c'],
+      resume_strategy: 'cli-args',
+      skip_permissions_args: ['--dangerously-skip-permissions'],
+    });
+    expect(isCommandAvailableMock).toHaveBeenCalledWith('agy');
+  });
+
   it('briefly caches unavailable agents before rechecking newly installed CLIs', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
