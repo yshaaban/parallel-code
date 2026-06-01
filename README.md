@@ -56,7 +56,7 @@ This lets five agents work on five features at the same time from the same repo,
 
 ### One interface, every AI coding agent
 
-Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) from the same interface. Switch agents per task, or run all three at once without managing separate terminal windows.
+Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and Antigravity CLI from the same interface. Switch agents per task, or run several at once without managing separate terminal windows.
 
 ### 5 agents, 5 features, zero conflicts
 
@@ -98,7 +98,7 @@ Navigate panels, create tasks, send prompts, merge branches, and push to remote 
 
 ## Getting Started
 
-**Prerequisites:** [Node.js](https://nodejs.org/) v18+ and at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+**Prerequisites:** [Node.js](https://nodejs.org/) v18+ and at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or Antigravity CLI.
 
 ### Option 0: Docker - comes with prerequisites.
 
@@ -169,6 +169,8 @@ cp .env.example .env
 Change `AUTH_TOKEN` before exposing the server beyond local development.
 
 The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
+Before exposing browser mode outside localhost, read [PRIVACY.md](PRIVACY.md). Authenticated
+browser clients can interact with live terminals, project state, and explicitly exposed previews.
 
 For active browser UI development, use watch mode instead of `npm run server`:
 
@@ -269,11 +271,12 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 
 Start here if you are changing core behavior or reviewing a refactor:
 
+- [PRIVACY.md](PRIVACY.md)
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
 - [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
 
-These docs define the repo's architecture rules, layer ownership, upstream-port workflow, and review guardrails.
+These docs define the repo's privacy expectations, architecture rules, layer ownership, upstream-port workflow, and review guardrails.
 If you are syncing upstream work, use the divergence playbook as the porting checklist and upstream sync-status reference.
 If you are reviewing a non-trivial change, use the review-rules doc as the checklist for runtime, preview, and suite-stability pitfalls.
 For non-trivial upstream ports, also follow the repo-level [AGENTS.md](AGENTS.md) workflow: classify first, map to the local owner, then validate at the correct seam.

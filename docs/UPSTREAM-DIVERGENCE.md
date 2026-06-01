@@ -47,20 +47,21 @@ The same feature can live in different files here even when the user-facing beha
 
 This repo currently uses:
 
-- `origin` as the upstream read-only repository
-- `fork` as the writable remote
+- `origin` as this fork's writable repository
+- `original` or `johannesjo` as read-only upstream aliases when they are configured locally
 
-Review upstream sync work against the local architecture first, then push to `fork` rather than
-mirroring it onto `origin`.
+Review upstream sync work against the local architecture first, then push to the fork remote rather
+than mirroring upstream history directly. Verify local names with `git remote -v` before fetching or
+pushing; older checkouts may still use `fork` for the writable remote.
 
 ## Current Upstream Sync Status
 
-As of `2026-05-24`, this repo has:
+As of `2026-06-01`, this repo has:
 
-- current upstream head: `6097655`
-- last reviewed upstream head before the latest intake: `7aaf640`
+- current upstream head: `09c2507dc21b`
+- last reviewed upstream head before the latest intake: `6097655`
 - last shared graph ancestor with upstream: `b250446`
-- latest upstream delta under active catch-up: `7aaf640..6097655` (`54` commits)
+- latest upstream delta under active catch-up: `6097655..09c2507dc21b` (`28` commits)
 
 Important details:
 
@@ -87,6 +88,10 @@ Important details:
   `7aaf640..6097655`
 - the detailed per-commit ledger for that delta lives in
   [UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md)
+- the `2026-06-01` catch-up intake covers the new upstream-only span
+  `6097655..09c2507dc21b`
+- the implementation plan and working decision ledger for that delta was kept under local `tmp/`
+  during the catch-up pass; this document owns the durable summary
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
 - the `2026-04-17` catch-up pass is closed except for redesign-only Docker isolation:
@@ -131,12 +136,34 @@ closed. The `2026-05-08` catch-up pass covers `a0f5280..7aaf640`, tracked in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
 selective behavior catch-up work.
 
-The current catch-up review covers `7aaf640..6097655`, tracked in
-[UPSTREAM-CATCHUP-2026-05-24.md](./UPSTREAM-CATCHUP-2026-05-24.md). After fetching on
-`2026-05-24`, `origin/main` was `6097655`, so there were `0` unreviewed upstream commits after the
-documented catch-up head. The local branch still reports graph divergence from `origin/main`; that
-is expected because this fork ports upstream behavior into local architecture owners rather than
+The current catch-up review covers `6097655..09c2507dc21b`. After fetching on `2026-06-01`,
+`original/main` was `09c2507dc21b`, so there were `0` unreviewed upstream commits after the
+documented catch-up head. The local branch still reports graph divergence from upstream; that is
+expected because this fork ports upstream behavior into local architecture owners rather than
 merging upstream history directly.
+
+The bring/remap queue from `6097655..09c2507dc21b` is being landed locally without merging upstream
+history. The local implementation ports the behavior that fits this fork's browser-first ownership:
+
+- backend branch-ref prefix conflict checks before managed worktree creation, with New Task dialog
+  advisory validation when branch data is available
+- explicit PTY replacement intent for restart/switch flows while keeping ordinary remount,
+  reconnect, and multi-client attaches non-destructive
+- merged-task progress semantics, leaving plain close/remove flows out of the daily progress count
+- privacy disclosure for browser/server mode, authenticated remote clients, query tokens, preview
+  proxying, project discovery, terminal data, custom commands, and runner/container execution
+- built-in Antigravity CLI launch/resume metadata without importing upstream's coordinator/MCP
+  restore path
+- sidebar focus/status tooltip polish, merge target copy, New Task text-selection restraint, and
+  clearer arena merge copy through local presentation owners
+- dependency refresh through the local lockfile and npm override workflow, including patched
+  `tmp`, `dompurify`, `electron`, `vite`, MCP transport dependencies, and related transitive
+  security updates
+
+Coordinator prompt-delivery, write-lock, task self-landing, and Antigravity MCP restore changes from
+the same upstream span remain design-only. They depend on upstream coordinator architecture that is
+not the local browser-first control-plane owner. Port them only through a future backend-owned,
+replayable, multi-client coordinator design.
 
 The bring/remap queue from `7aaf640..6097655` landed locally without merging upstream history. The
 local result is recorded by behavior and by local implementation commits:
