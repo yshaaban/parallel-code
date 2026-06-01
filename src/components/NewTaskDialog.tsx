@@ -640,9 +640,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     if (stepsTracking()) {
       count += 1;
     }
-    if (coordinatorMode()) {
-      count += 1;
-    }
     if (skipPermissionsActive()) {
       count += 1;
     }
@@ -936,6 +933,47 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               resize: 'vertical',
             }}
           />
+        </div>
+
+        <div
+          data-nav-field="coordinator-mode"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
+          <SectionLabel>Task mode</SectionLabel>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              type="button"
+              aria-pressed={!coordinatorMode()}
+              onClick={() => setCoordinatorMode(false)}
+              style={isolationSegmentStyle(!coordinatorMode())}
+            >
+              Agent
+            </button>
+            <button
+              type="button"
+              aria-pressed={coordinatorMode()}
+              disabled={!coordinatorModeAvailable}
+              onClick={() => setCoordinatorMode(coordinatorModeAvailable)}
+              style={isolationSegmentStyle(coordinatorMode(), !coordinatorModeAvailable)}
+              title={
+                coordinatorModeAvailable
+                  ? 'Give this task a compact coordinator rail for hidden subtasks'
+                  : 'Coordinator mode runs through the browser server tool gateway'
+              }
+            >
+              Coordinator
+            </button>
+          </div>
+          <Show when={coordinatorMode() && coordinatorModeAvailable}>
+            <div style={calloutStyle('muted')}>
+              Spawns and tracks hidden background subtasks from a compact coordinator rail.
+            </div>
+          </Show>
+          <Show when={!coordinatorModeAvailable}>
+            <div style={calloutStyle('muted')}>
+              Coordinator mode runs through the browser server tool gateway.
+            </div>
+          </Show>
         </div>
 
         {/* Agent - the second primary choice */}
@@ -1383,38 +1421,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                   <div style={calloutStyle('muted')}>
                     The backend watches <code>.claude/steps.json</code> and keeps step history
                     shared across clients.
-                  </div>
-                </Show>
-              </div>
-
-              <div
-                data-nav-field="coordinator-mode"
-                style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-              >
-                <label style={checkboxLabelStyle()}>
-                  <input
-                    type="checkbox"
-                    checked={coordinatorMode()}
-                    disabled={!coordinatorModeAvailable}
-                    onChange={(e) =>
-                      setCoordinatorMode(coordinatorModeAvailable && e.currentTarget.checked)
-                    }
-                    style={{
-                      'accent-color': theme.accent,
-                      cursor: coordinatorModeAvailable ? 'inherit' : 'not-allowed',
-                    }}
-                  />
-                  Coordinator mode
-                </label>
-                <Show when={!coordinatorModeAvailable}>
-                  <div style={calloutStyle('muted')}>
-                    Coordinator mode runs through the browser server tool gateway.
-                  </div>
-                </Show>
-                <Show when={coordinatorMode() && coordinatorModeAvailable}>
-                  <div style={calloutStyle('muted')}>
-                    The task gets a backend credential for spawning and coordinating hidden
-                    background subtasks.
                   </div>
                 </Show>
               </div>

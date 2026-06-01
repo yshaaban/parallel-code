@@ -1,0 +1,238 @@
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { type JSX } from 'solid-js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CoordinatorRunSnapshot } from '../../domain/coordinator';
+import type { Task } from '../../store/types';
+
+const { callCoordinatorUiToolMock, coordinatorRunRef } = vi.hoisted(() => ({
+  callCoordinatorUiToolMock: vi.fn(),
+  coordinatorRunRef: {
+    current: null as CoordinatorRunSnapshot | null,
+  },
+}));
+
+vi.mock('../../app/coordinator', () => ({
+  callCoordinatorUiTool: callCoordinatorUiToolMock,
+}));
+
+vi.mock('../../store/coordinator', () => ({
+  getCoordinatorRunForTask: vi.fn(() => coordinatorRunRef.current),
+}));
+
+vi.mock('../ScalablePanel', () => ({
+  ScalablePanel: (props: { children: JSX.Element }) => <div>{props.children}</div>,
+}));
+
+import { TaskCoordinatorSection } from './TaskCoordinatorSection';
+
+function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): CoordinatorRunSnapshot {
+  return {
+    coordinatorTaskId: 'task-coordinator',
+    createdAt: 1_000,
+    eventVersion: 1,
+    id: 'run-1',
+    landing: overrides.landing ?? [],
+    limits: {
+      maxActiveSubtasks: 5,
+      maxPendingPromptsPerTarget: 3,
+      maxQueuedSubtasks: 20,
+      ...overrides.limits,
+    },
+    projectId: 'project-1',
+    projectMode: overrides.projectMode ?? 'git',
+    projectRoot: '/repo',
+    promptQueue: overrides.promptQueue ?? [
+      {
+        attempts: 0,
+        createdAt: 1_100,
+        dedupeKey: 'prompt-1',
+        deliveryJournal: [],
+        earliestDeliveryAt: 1_100,
+        kind: 'follow-up',
+        requestId: 'prompt-1',
+        runId: 'run-1',
+        sourceTaskId: 'task-coordinator',
+        status: 'queued',
+        targetAgentId: 'agent-child',
+        targetTaskId: 'task-child',
+        text: 'Continue',
+      },
+    ],
+    status: overrides.status ?? 'running',
+    subtasks: overrides.subtasks ?? [
+      {
+        agentId: 'agent-child',
+        assignment: 'Fix parser behavior',
+        branchName: 'task/parser',
+        createdAt: 1_000,
+        parentCoordinatorTaskId: 'task-coordinator',
+        status: 'running',
+        taskId: 'task-child',
+        toolTokenId: 'token-child',
+        updatedAt: 1_100,
+        worktreePath: '/repo/.worktrees/task-child',
+      },
+    ],
+    updatedAt: 1_200,
+  };
+}
+
+function createTask(): Task {
+  return {
+    agentIds: ['agent-coordinator'],
+    branchName: 'task/coordinator',
+    coordinatorRole: 'coordinator',
+    coordinatorRunId: 'run-1',
+    coordinatorToolCommand: 'node scripts/coordinator-tool.mjs',
+    id: 'task-coordinator',
+    lastPrompt: '',
+    name: 'Coordinator task',
+    notes: '',
+    projectId: 'project-1',
+    shellAgentIds: [],
+    worktreePath: '/repo/.worktrees/task-coordinator',
+  };
+}
+
+describe('TaskCoordinatorSection', () => {
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    coordinatorRunRef.current = createRun();
+    callCoordinatorUiToolMock.mockReset();
+    callCoordinatorUiToolMock.mockResolvedValue({
+      accepted: true,
+      callId: 'request-1',
+      result: null,
+    });
+  });
+
+  it('renders a compact run summary and subtask chip', () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    expect(screen.getByText('RUN')).toBeDefined();
+    expect(screen.getByText('1/5')).toBeDefined();
+    expect(screen.getByText('Q1')).toBeDefined();
+    expect(screen.getByLabelText('Open Fix parser behavior')).toBeDefined();
+  });
+
+  it('opens the peek lens and fetches output through the coordinator UI action channel', async () => {
+    callCoordinatorUiToolMock.mockResolvedValueOnce({
+      accepted: true,
+      callId: 'request-1',
+      result: {
+        output: 'hello from hidden task',
+        taskId: 'task-child',
+        truncatedBytes: 0,
+      },
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    fireEvent.click(screen.getByText('Refresh output'));
+
+    await screen.findByText('hello from hidden task');
+    expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        controllerId: expect.any(String),
+        coordinatorTaskId: 'task-coordinator',
+        payload: {
+          maxBytes: 12_000,
+          targetTaskId: 'task-child',
+        },
+        runId: 'run-1',
+        toolName: 'get_task_output',
+      }),
+    );
+    expect(callCoordinatorUiToolMock.mock.calls[0]?.[0].requestId).toEqual(expect.any(String));
+  });
+
+  it('queues a follow-up prompt from the peek lens', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    fireEvent.input(screen.getByLabelText('Follow-up prompt'), {
+      target: { value: 'Please add a regression test.' },
+    });
+    fireEvent.click(screen.getByText('Send follow-up'));
+
+    await screen.findByText('Prompt queued.');
+    expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          kind: 'follow-up',
+          targetTaskId: 'task-child',
+          text: 'Please add a regression test.',
+        },
+        toolName: 'send_prompt',
+      }),
+    );
+  });
+
+  it('disables backend-targeted refresh controls for terminal subtasks', () => {
+    coordinatorRunRef.current = createRun({
+      subtasks: [
+        {
+          agentId: 'agent-child',
+          assignment: 'Fix parser behavior',
+          branchName: 'task/parser',
+          createdAt: 1_000,
+          parentCoordinatorTaskId: 'task-coordinator',
+          status: 'failed',
+          taskId: 'task-child',
+          toolTokenId: 'token-child',
+          updatedAt: 1_100,
+          worktreePath: '/repo/.worktrees/task-child',
+        },
+      ],
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+
+    expect(screen.getByText('Refresh output')).toHaveProperty('disabled', true);
+    expect(screen.queryByText('Inspect output')).toBeNull();
+  });
+
+  it('copies the debug helper command from the overflow menu', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Coordinator debug actions'));
+    fireEvent.click(screen.getByText('Copy list_tasks command'));
+
+    await screen.findByText('Copied list_tasks command.');
+    expect(writeText).toHaveBeenCalledWith('node scripts/coordinator-tool.mjs list_tasks');
+  });
+
+  it('spawns a subtask from the compact spawn slit', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Spawn coordinator subtask'));
+    fireEvent.input(screen.getByLabelText('Subtask name'), { target: { value: 'Parser fix' } });
+    fireEvent.input(screen.getByLabelText('Subtask command'), { target: { value: 'codex' } });
+    fireEvent.input(screen.getByLabelText('Subtask assignment'), {
+      target: { value: 'Fix parser edge cases.' },
+    });
+    fireEvent.click(screen.getByText('Spawn'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            agent: { command: 'codex' },
+            assignment: 'Fix parser edge cases.',
+            name: 'Parser fix',
+          },
+          toolName: 'spawn_subtask',
+        }),
+      );
+    });
+  });
+});
