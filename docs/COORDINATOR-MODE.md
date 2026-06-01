@@ -22,11 +22,16 @@ The backend owns coordinator runs in `electron/coordinator/*`.
 
 - `runtime.ts` owns replayable run, subtask, prompt, landing, diagnostics, and idempotency state.
 - `service.ts` owns persistence, credential files, token indexes, activity hints, and cleanup.
-- `tool-gateway.ts` owns authorized tool execution and prompt delivery.
+- `tool-gateway.ts` owns authorized agent tool execution, renderer action execution, and prompt
+  delivery.
 - `handlers.ts` exposes typed IPC handlers.
 
 Browser mode exposes `POST /api/coordinator/tool-call`. The browser token is not the authority for
 that endpoint; each tool call must include the per-task coordinator token from the credential file.
+Renderer UI actions use the typed `coordinator_ui_tool_call` IPC path instead. That path never
+accepts or exposes coordinator bearer tokens; it validates the coordinator run, verifies the
+coordinator task owns the run, and requires the task-command lease for mutating actions such as
+`spawn_subtask`, `send_prompt`, and `close_task`.
 
 The helper command is exported to agents as `PARALLEL_CODE_COORDINATOR_TOOL` when a reachable
 tool-call URL exists. The credential path is exported as `PARALLEL_CODE_COORDINATOR_CREDENTIAL`,
@@ -54,6 +59,18 @@ The current tool surface is intentionally small and explicit:
 
 Subtasks can call only subtask-owned tools. The coordinator task is the only caller allowed to list,
 inspect, spawn, prompt, wait on, or close subtasks.
+
+## Compact UI
+
+The coordinator task panel renders a compact rail instead of asking users to type raw helper
+commands. The rail shows run health, active subtask capacity, pending prompt pressure, attention
+counts, and one chip per hidden subtask. Chips are sorted by attention first, so blocked, failed,
+landing, or ready-for-review subtasks stay visible before healthy running work.
+
+Clicking a chip opens a small anchored inspector with output tail, diff, metadata, follow-up, wait,
+ask-to-land, and close controls. The `+` button opens a compact spawn form for a new hidden subtask.
+The overflow menu keeps debug access, including copying a `list_tasks` helper command, but the raw
+CLI helper is no longer the primary UI.
 
 ## Safety Rules
 
@@ -93,7 +110,11 @@ Coordinator work should prefer browser-free tests first:
 - runtime tests for replayable state and restored stale status
 - service tests for credentials, token lookup, revocation, and persistence
 - tool-gateway tests for hidden spawn, prompt serialization, prompt retry, authorization, tool
-  payload validation, output/diff caps, idle waits, and landing cleanup
+  payload validation, renderer action authorization, output/diff caps, idle waits, and landing
+  cleanup
+- app projection tests for coordinator rail summaries, attention ordering, prompt beads, landing
+  labels, and legal actions
+- Solid tests for the compact coordinator rail, peek inspector, prompt sending, and spawn form
 - server-state bootstrap tests for coordinator snapshots and live events
 - browser-control-client tests for `coordinator-event` dispatch
 

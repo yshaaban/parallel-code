@@ -119,6 +119,9 @@ For coordinator-mode work:
 - prove direct and scheduled prompt delivery cannot interleave writes to the same target task
 - prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
   runs
+- prove renderer coordinator actions do not expose bearer tokens and require task-command leases for
+  mutating actions
+- prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
 - prove spawn rollback, credential revocation, restored stale runs, and landing cleanup before
   relying on browser canaries
 - prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests
