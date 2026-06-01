@@ -6,6 +6,7 @@ import {
   noteTerminalFocusedInput,
   settleTerminalFocusedInput,
 } from '../../app/terminal-focused-input';
+import type { TerminalFitDirtyReason } from '../../app/runtime-diagnostics';
 import {
   fireAndForget,
   getBrowserTransportConnectionState,
@@ -2041,6 +2042,32 @@ describe('startTerminalSession render hibernation', () => {
 
     expect(fitMock).toHaveBeenCalledTimes(1);
     expect(scheduleFitIfDirtyMock).toHaveBeenCalledWith('agent-1');
+
+    session.cleanup();
+  });
+
+  it('allows resize-only fit manager proposals while a previous resize is pending', () => {
+    const container = createMeasuredContainer();
+    createTerminalInputPipelineMock.mockImplementationOnce(() =>
+      createTestTerminalInputPipeline({
+        isResizeTransactionPending: vi.fn(() => true),
+      }),
+    );
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    const canProcessDirtyReasons = registerTerminalMock.mock.calls[0]?.[4] as
+      | ((dirtyReasons: ReadonlySet<TerminalFitDirtyReason>) => boolean)
+      | undefined;
+
+    expect(canProcessDirtyReasons).toBeTypeOf('function');
+    expect(canProcessDirtyReasons?.(new Set(['resize']))).toBe(true);
+    expect(canProcessDirtyReasons?.(new Set(['resize', 'font-size']))).toBe(false);
+    expect(canProcessDirtyReasons?.(new Set(['font-size']))).toBe(false);
 
     session.cleanup();
   });

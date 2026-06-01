@@ -485,7 +485,7 @@ function openTerminalLink(uri: string): void {
 export interface TerminalSession {
   cleanup(): void;
   fitAddon: FitAddon;
-  flushPendingResize(): void;
+  flushPendingResize(): Promise<void>;
   handleTerminalData(data: string): void;
   isRestoreBlocked(): boolean;
   prewarmRenderHibernation(): void;
@@ -1632,12 +1632,18 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     (dirtyReasons) => {
       const canProcessResizeDirty =
         dirtyReasons.size > 0 && [...dirtyReasons].every((reason) => reason === 'resize');
-      return (
-        options.shouldCommitResize?.() !== false &&
-        !inputPipeline.isResizeTransactionPending() &&
-        !shouldDeferVisibleSiblingSessionFitStabilization() &&
-        (canProcessResizeDirty || !shouldYieldSessionFitToInteractivity())
-      );
+      if (
+        options.shouldCommitResize?.() === false ||
+        shouldDeferVisibleSiblingSessionFitStabilization()
+      ) {
+        return false;
+      }
+
+      if (canProcessResizeDirty) {
+        return true;
+      }
+
+      return !inputPipeline.isResizeTransactionPending() && !shouldYieldSessionFitToInteractivity();
     },
     ({ cols, rows }) => {
       inputPipeline.handleTerminalResize(cols, rows);
@@ -1871,9 +1877,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       term.dispose();
     },
     fitAddon,
-    flushPendingResize(): void {
-      void inputPipeline.flushPendingResize();
+    flushPendingResize(): Promise<void> {
+      const pendingFlush = inputPipeline.flushPendingResize();
       runDeferredSessionFitStabilization();
+      return pendingFlush;
     },
     handleTerminalData(data: string): void {
       inputPipeline.handleTerminalData(data);

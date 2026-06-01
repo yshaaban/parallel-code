@@ -40,7 +40,7 @@ import {
 } from '../app/runtime-diagnostics';
 import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease-session';
 import { nextCoordinatorActivityHintSeq, sendCoordinatorActivityHint } from '../app/coordinator';
-import { isPanelResizeDragging } from '../app/panel-resize-drag';
+import { getPanelResizeDragEpoch, isPanelResizeDragging } from '../app/panel-resize-drag';
 import { setTaskFocusedPanelState, store } from '../store/store';
 import { loadTaskCommandControllers } from '../store/task-command-controllers';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
@@ -495,6 +495,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let previouslyFocused = isFocusedNow;
   let previouslySelected = isSelectedNow;
   let previouslyVisible = typeof IntersectionObserver !== 'function';
+  let lastPanelResizeRefreshEpoch = untrack(getPanelResizeDragEpoch);
   const [sessionStatus, setSessionStatus] = createSignal<TerminalViewStatus>('binding');
   const [sessionDormant, setSessionDormant] = createSignal(false);
   const [renderHibernating, setRenderHibernating] = createSignal(false);
@@ -853,6 +854,25 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       !restoreBlocked() &&
       !isPanelResizeDragging()
     );
+  }
+
+  function requestTerminalGeometryRefreshAfterPanelResizeDrag(
+    pendingResizeFlush: Promise<void> | undefined,
+  ): void {
+    function markResizeDirtyIfLive(): void {
+      if (terminalViewUnmounting || !shouldKeepTerminalGeometryLive()) {
+        return;
+      }
+
+      markDirty(agentId, 'resize');
+    }
+
+    if (!pendingResizeFlush) {
+      markResizeDirtyIfLive();
+      return;
+    }
+
+    void pendingResizeFlush.then(markResizeDirtyIfLive, markResizeDirtyIfLive);
   }
 
   function syncDomFocusWithin(): void {
@@ -2160,12 +2180,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   createRenderEffect(() => {
     sessionVersion();
+    const panelResizeDragEpoch = getPanelResizeDragEpoch();
+    const hasUnrefreshedPanelResize =
+      !isPanelResizeDragging() && panelResizeDragEpoch !== lastPanelResizeRefreshEpoch;
     const geometryLive = shouldKeepTerminalGeometryLive();
     if (!geometryLive) {
       return;
     }
 
-    session?.flushPendingResize();
+    const pendingResizeFlush = session?.flushPendingResize();
+
+    if (!hasUnrefreshedPanelResize) {
+      return;
+    }
+
+    lastPanelResizeRefreshEpoch = panelResizeDragEpoch;
+    requestTerminalGeometryRefreshAfterPanelResizeDrag(pendingResizeFlush);
   });
 
   createEffect(() => {

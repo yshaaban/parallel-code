@@ -189,7 +189,7 @@ interface MockTerminalSurface {
 }
 interface MockTerminalSession {
   cleanup: () => void;
-  flushPendingResize: () => void;
+  flushPendingResize: () => Promise<void>;
   handleTerminalData: (data: string) => void;
   isRestoreBlocked: () => boolean;
   prewarmRenderHibernation: () => void;
@@ -203,7 +203,7 @@ function createMockTerminalSession(
 ): MockTerminalSession {
   return {
     cleanup: sessionCleanupMock,
-    flushPendingResize: vi.fn(),
+    flushPendingResize: vi.fn(async () => undefined),
     handleTerminalData: vi.fn(),
     isRestoreBlocked: vi.fn(() => false),
     prewarmRenderHibernation: vi.fn(),
@@ -1669,7 +1669,10 @@ describe('TerminalView', () => {
   });
 
   it('flushes the trailing PTY resize when panel dragging ends', async () => {
-    const flushPendingResizeMock = vi.fn();
+    const dragFlush = createDeferredPromise<undefined>();
+    const flushPendingResizeMock = vi.fn(async () => undefined);
+    flushPendingResizeMock.mockResolvedValueOnce(undefined);
+    flushPendingResizeMock.mockReturnValueOnce(dragFlush.promise);
     startTerminalSessionMock.mockReturnValue(
       createMockTerminalSession({
         flushPendingResize: flushPendingResizeMock,
@@ -1693,19 +1696,29 @@ describe('TerminalView', () => {
     getLastStatusChangeHandler()?.('ready');
     await Promise.resolve();
     expect(flushPendingResizeMock).toHaveBeenCalledTimes(1);
+    markDirtyMock.mockClear();
 
     beginPanelResizeDrag();
     await Promise.resolve();
     expect(flushPendingResizeMock).toHaveBeenCalledTimes(1);
+    expect(markDirtyMock).not.toHaveBeenCalled();
 
     endPanelResizeDrag();
     await Promise.resolve();
     expect(flushPendingResizeMock).toHaveBeenCalledTimes(2);
+    expect(markDirtyMock).not.toHaveBeenCalled();
+
+    dragFlush.resolve(undefined);
+
+    await vi.waitFor(() => {
+      expect(markDirtyMock).toHaveBeenCalledTimes(1);
+      expect(markDirtyMock).toHaveBeenCalledWith('agent-1', 'resize');
+    });
   });
 
   it('flushes pending resize when a ready hidden terminal becomes visible', async () => {
     let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
-    const flushPendingResizeMock = vi.fn();
+    const flushPendingResizeMock = vi.fn(async () => undefined);
 
     Object.defineProperty(globalThis, 'IntersectionObserver', {
       configurable: true,
