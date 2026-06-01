@@ -73,6 +73,7 @@ import {
   addCoordinatorSubtask,
   getCoordinatorRun,
   resetCoordinatorRuntimeForTests,
+  updateCoordinatorRunStatus,
   updateCoordinatorSubtaskStatus,
 } from './runtime.js';
 import {
@@ -84,6 +85,7 @@ import {
 } from './service.js';
 import {
   cleanupCoordinatorTaskStateAndOwnedSubtasks,
+  executeCoordinatorRendererAction,
   executeCoordinatorToolCall,
   resetCoordinatorToolGatewayForTests,
   startCoordinatorPromptDeliveryRuntime,
@@ -2110,5 +2112,290 @@ describe('coordinator tool gateway', () => {
     expect(taskNames.deleteTask).toHaveBeenCalledWith('task-child');
     expect(resolveCoordinatorToken(childCredential.token)).toBeNull();
     expect(getCoordinatorRun(result.run.id)).toBeNull();
+  });
+
+  it('lets renderer actions inspect coordinator subtasks without tool tokens', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const credentialToken = readCredentialToken(result.credentialPath);
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+    mocks.getAgentScrollbackBufferMock.mockReturnValue(Buffer.from('renderer output'));
+
+    const list = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'renderer-list',
+        runId: result.run.id,
+        toolName: 'list_tasks',
+      },
+    );
+    const output = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        coordinatorTaskId: 'task-coordinator',
+        payload: { targetTaskId: 'task-child' },
+        requestId: 'renderer-output',
+        runId: result.run.id,
+        toolName: 'get_task_output',
+      },
+    );
+
+    expect(JSON.stringify(list)).not.toContain(credentialToken);
+    expect(list.result).toEqual([
+      expect.objectContaining({
+        assignment: 'Do the work',
+        taskId: 'task-child',
+      }),
+    ]);
+    expect(output.result).toMatchObject({
+      output: 'renderer output',
+      taskId: 'task-child',
+    });
+  });
+
+  it('rejects renderer coordinator mutations without the task command lease', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            targetTaskId: 'task-child',
+            text: 'Continue',
+          },
+          requestId: 'renderer-send',
+          runId: result.run.id,
+          toolName: 'send_prompt',
+        },
+      ),
+    ).rejects.toThrow('Coordinator task command lease is required');
+  });
+
+  it('allows renderer inspection on inactive runs but rejects inactive-run mutations', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+    updateCoordinatorRunStatus(result.run.id, 'completed');
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'coordinate subtasks');
+
+    const list = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'renderer-list-completed',
+        runId: result.run.id,
+        toolName: 'list_tasks',
+      },
+    );
+
+    expect(list.result).toEqual([
+      expect.objectContaining({
+        taskId: 'task-child',
+      }),
+    ]);
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            targetTaskId: 'task-child',
+            text: 'Continue',
+          },
+          requestId: 'renderer-send-completed',
+          runId: result.run.id,
+          toolName: 'send_prompt',
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is completed');
+  });
+
+  it('rejects renderer subtask spawn while a run is draining', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    updateCoordinatorRunStatus(result.run.id, 'draining');
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'coordinate subtasks');
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            agent: { command: 'codex' },
+            assignment: 'Do the work',
+            name: 'child',
+          },
+          requestId: 'renderer-spawn-draining',
+          runId: result.run.id,
+          toolName: 'spawn_subtask',
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is draining');
+  });
+
+  it('rejects subtask-owned tools through renderer coordinator actions', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+
+    await expect(
+      executeCoordinatorRendererAction({ context, taskNames: createTaskRegistry() }, {
+        coordinatorTaskId: 'task-coordinator',
+        payload: {
+          summary: 'Land work',
+          verification: ['npm test'],
+        },
+        requestId: 'renderer-land',
+        runId: result.run.id,
+        toolName: 'land_self',
+      } as never),
+    ).rejects.toThrow('Coordinator UI cannot call land_self');
+  });
+
+  it('rejects renderer coordinator actions for tasks that do not own the run', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          coordinatorTaskId: 'task-other',
+          requestId: 'renderer-list',
+          runId: result.run.id,
+          toolName: 'list_tasks',
+        },
+      ),
+    ).rejects.toThrow('coordinatorTaskId must own the coordinator run');
+  });
+
+  it('dedupes renderer coordinator mutations by request id after lease validation', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'coordinate subtasks');
+
+    const request = {
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      payload: {
+        targetTaskId: 'task-child',
+        text: 'Continue',
+      },
+      requestId: 'renderer-send',
+      runId: result.run.id,
+      toolName: 'send_prompt' as const,
+    };
+    const first = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      request,
+    );
+    const second = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      request,
+    );
+
+    expect(second).toEqual(first);
+    expect(getCoordinatorRun(result.run.id)?.promptQueue).toHaveLength(1);
   });
 });

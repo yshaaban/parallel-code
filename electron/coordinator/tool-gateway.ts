@@ -18,6 +18,7 @@ import {
 import {
   acquireTaskCommandLease,
   getTaskCommandControllerSnapshot,
+  isTaskCommandLeaseHeld,
   isTaskCommandLeaseGenerationHeld,
   releaseTaskCommandLease,
 } from '../ipc/task-command-leases.js';
@@ -46,6 +47,7 @@ import {
   type CoordinatorTargetTaskPayload,
   type CoordinatorToolCallEnvelope,
   type CoordinatorToolCallResult,
+  type CoordinatorUiToolCallRequest,
   type CoordinatorWaitForIdlePayload,
 } from '../../src/domain/coordinator.js';
 import { buildCoordinatorSubtaskAssignment } from '../../src/domain/coordinator-instructions.js';
@@ -94,6 +96,14 @@ const TASK_DIFF_MAX_BYTES = 512 * 1024;
 interface CoordinatorToolGatewayContext {
   context: HandlerContext;
   taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>;
+}
+
+interface CoordinatorToolInvocation {
+  callId: string;
+  payload?: unknown;
+  runId: string;
+  taskId: string;
+  toolName: CoordinatorToolCallEnvelope['toolName'];
 }
 
 let promptDeliveryCleanup: (() => void) | null = null;
@@ -505,7 +515,7 @@ function updateCoordinatorPromptDeliveryState(
   return prompt;
 }
 
-function assertCoordinatorTaskCaller(envelope: CoordinatorToolCallEnvelope): void {
+function assertCoordinatorTaskCaller(envelope: CoordinatorToolInvocation): void {
   const run = getCoordinatorRun(envelope.runId);
   if (!run || run.coordinatorTaskId !== envelope.taskId) {
     throw new BadRequestError('Only the coordinator task can call this tool');
@@ -513,7 +523,7 @@ function assertCoordinatorTaskCaller(envelope: CoordinatorToolCallEnvelope): voi
 }
 
 function assertCoordinatorSubtaskCaller(
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
 ): CoordinatorSubtaskSnapshot {
   const run = getCoordinatorRun(envelope.runId);
   const subtask = run?.subtasks.find((candidate) => candidate.taskId === envelope.taskId);
@@ -534,7 +544,7 @@ function requireCoordinatorRun(runId: string): CoordinatorRunSnapshot {
 }
 
 function resolveTargetSubtask(
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorTargetTaskPayload,
 ): CoordinatorSubtaskSnapshot {
   const run = requireCoordinatorRun(envelope.runId);
@@ -769,7 +779,7 @@ function getCreatedTaskMetadata(
 
 async function createHiddenSubtask(
   gateway: CoordinatorToolGatewayContext,
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorSpawnSubtaskPayload,
 ): Promise<CoordinatorSubtaskSnapshot> {
   assertCoordinatorTaskCaller(envelope);
@@ -1319,7 +1329,7 @@ async function deliverCoordinatorPrompt(
 
 async function sendCoordinatorPrompt(
   context: HandlerContext,
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorSendPromptPayload,
 ): Promise<CoordinatorPromptRequestSnapshot> {
   assertCoordinatorTaskCaller(envelope);
@@ -1365,7 +1375,7 @@ async function sendCoordinatorPrompt(
   return deliverCoordinatorPromptWithAdmission(context, prompt);
 }
 
-function listCoordinatorTasks(envelope: CoordinatorToolCallEnvelope): Array<{
+function listCoordinatorTasks(envelope: CoordinatorToolInvocation): Array<{
   agentId: string;
   assignment: string;
   branchName?: string;
@@ -1392,7 +1402,7 @@ function listCoordinatorTasks(envelope: CoordinatorToolCallEnvelope): Array<{
 }
 
 function getCoordinatorTaskOutput(
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorGetTaskOutputPayload,
 ): {
   agentId: string;
@@ -1417,7 +1427,7 @@ function getCoordinatorTaskOutput(
 }
 
 async function getCoordinatorTaskDiff(
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorGetTaskDiffPayload,
 ): Promise<{
   files: Awaited<ReturnType<typeof getProjectDiff>>['files'];
@@ -1456,7 +1466,7 @@ async function getCoordinatorTaskDiff(
 }
 
 async function waitForCoordinatorTaskIdle(
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorWaitForIdlePayload,
 ): Promise<{
   agentId: string;
@@ -1513,7 +1523,7 @@ async function waitForCoordinatorTaskIdle(
 
 async function closeCoordinatorSubtask(
   gateway: CoordinatorToolGatewayContext,
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorCloseTaskPayload,
 ): Promise<{
   cleanupWarnings: DeleteTaskCleanupWarning[];
@@ -1541,7 +1551,7 @@ async function closeCoordinatorSubtask(
 
 async function landCoordinatorSubtask(
   gateway: CoordinatorToolGatewayContext,
-  envelope: CoordinatorToolCallEnvelope,
+  envelope: CoordinatorToolInvocation,
   payload: CoordinatorLandSelfPayload,
 ): Promise<CoordinatorLandingStateSnapshot> {
   const context = gateway.context;
@@ -1719,6 +1729,126 @@ function assertAuthorized(envelope: CoordinatorToolCallEnvelope): void {
   }
 }
 
+function isCoordinatorRendererMutationTool(
+  toolName: CoordinatorToolInvocation['toolName'],
+): boolean {
+  return toolName === 'close_task' || toolName === 'send_prompt' || toolName === 'spawn_subtask';
+}
+
+function assertCoordinatorRendererToolAllowed(
+  toolName: CoordinatorToolInvocation['toolName'],
+): void {
+  if (toolName === 'signal_done' || toolName === 'land_self') {
+    throw new BadRequestError(`Coordinator UI cannot call ${toolName}`);
+  }
+}
+
+function assertRendererRunAcceptsMutation(
+  request: CoordinatorUiToolCallRequest,
+  run: CoordinatorRunSnapshot,
+): void {
+  if (request.toolName === 'spawn_subtask') {
+    if (run.status !== 'running') {
+      throw new BadRequestError(`Coordinator run is ${run.status}`);
+    }
+    return;
+  }
+
+  if (run.status !== 'running' && run.status !== 'draining') {
+    throw new BadRequestError(`Coordinator run is ${run.status}`);
+  }
+}
+
+function assertRendererActionAuthorized(request: CoordinatorUiToolCallRequest): void {
+  const run = getCoordinatorRun(request.runId);
+  if (!run) {
+    throw new BadRequestError('Coordinator run is no longer active');
+  }
+  if (run.coordinatorTaskId !== request.coordinatorTaskId) {
+    throw new BadRequestError('coordinatorTaskId must own the coordinator run');
+  }
+  assertCoordinatorRendererToolAllowed(request.toolName);
+  if (!isCoordinatorRendererMutationTool(request.toolName)) {
+    return;
+  }
+  assertRendererRunAcceptsMutation(request, run);
+  if (!request.controllerId) {
+    throw new BadRequestError('controllerId is required for coordinator mutations');
+  }
+  if (!isTaskCommandLeaseHeld(request.coordinatorTaskId, request.controllerId)) {
+    throw new BadRequestError('Coordinator task command lease is required');
+  }
+}
+
+async function dispatchCoordinatorToolInvocation(
+  gateway: CoordinatorToolGatewayContext,
+  invocation: CoordinatorToolInvocation,
+): Promise<unknown> {
+  let result: unknown;
+  switch (invocation.toolName) {
+    case 'close_task':
+      result = await closeCoordinatorSubtask(
+        gateway,
+        invocation,
+        readCloseTaskPayload(invocation.payload),
+      );
+      break;
+    case 'get_task_diff':
+      result = await getCoordinatorTaskDiff(invocation, readGetTaskDiffPayload(invocation.payload));
+      break;
+    case 'get_task_output':
+      result = getCoordinatorTaskOutput(invocation, readGetTaskOutputPayload(invocation.payload));
+      break;
+    case 'get_task_status':
+      assertCoordinatorTaskCaller(invocation);
+      result = getCoordinatorRun(invocation.runId);
+      break;
+    case 'list_tasks':
+      result = listCoordinatorTasks(invocation);
+      break;
+    case 'spawn_subtask':
+      result = await createHiddenSubtask(gateway, invocation, readSpawnPayload(invocation.payload));
+      break;
+    case 'send_prompt':
+      result = await sendCoordinatorPrompt(
+        gateway.context,
+        invocation,
+        readSendPromptPayload(invocation.payload),
+      );
+      break;
+    case 'signal_done': {
+      assertCoordinatorSubtaskCaller(invocation);
+      const payload = readSignalDonePayload(invocation.payload);
+      result = updateCoordinatorSubtaskStatus(
+        invocation.runId,
+        invocation.taskId,
+        'ready-for-review',
+        {
+          ...(payload.result !== undefined ? { result: payload.result } : {}),
+        },
+      );
+      break;
+    }
+    case 'land_self':
+      result = await landCoordinatorSubtask(
+        gateway,
+        invocation,
+        readLandSelfPayload(invocation.payload),
+      );
+      break;
+    case 'wait_for_idle':
+      result = await waitForCoordinatorTaskIdle(
+        invocation,
+        readWaitForIdlePayload(invocation.payload),
+      );
+      break;
+    default:
+      throw new BadRequestError('Unknown coordinator tool');
+  }
+
+  return result;
+}
+
 export async function executeCoordinatorToolCall(
   gateway: CoordinatorToolGatewayContext,
   envelope: CoordinatorToolCallEnvelope,
@@ -1735,63 +1865,41 @@ export async function executeCoordinatorToolCall(
     return previousResult as CoordinatorToolCallResult;
   }
 
-  let result: unknown;
-  switch (envelope.toolName) {
-    case 'close_task':
-      result = await closeCoordinatorSubtask(
-        gateway,
-        envelope,
-        readCloseTaskPayload(envelope.payload),
-      );
-      break;
-    case 'get_task_diff':
-      result = await getCoordinatorTaskDiff(envelope, readGetTaskDiffPayload(envelope.payload));
-      break;
-    case 'get_task_output':
-      result = getCoordinatorTaskOutput(envelope, readGetTaskOutputPayload(envelope.payload));
-      break;
-    case 'get_task_status':
-      assertCoordinatorTaskCaller(envelope);
-      result = getCoordinatorRun(envelope.runId);
-      break;
-    case 'list_tasks':
-      result = listCoordinatorTasks(envelope);
-      break;
-    case 'spawn_subtask':
-      result = await createHiddenSubtask(gateway, envelope, readSpawnPayload(envelope.payload));
-      break;
-    case 'send_prompt':
-      result = await sendCoordinatorPrompt(
-        gateway.context,
-        envelope,
-        readSendPromptPayload(envelope.payload),
-      );
-      break;
-    case 'signal_done': {
-      assertCoordinatorSubtaskCaller(envelope);
-      const payload = readSignalDonePayload(envelope.payload);
-      result = updateCoordinatorSubtaskStatus(envelope.runId, envelope.taskId, 'ready-for-review', {
-        ...(payload.result !== undefined ? { result: payload.result } : {}),
-      });
-      break;
-    }
-    case 'land_self':
-      result = await landCoordinatorSubtask(
-        gateway,
-        envelope,
-        readLandSelfPayload(envelope.payload),
-      );
-      break;
-    case 'wait_for_idle':
-      result = await waitForCoordinatorTaskIdle(envelope, readWaitForIdlePayload(envelope.payload));
-      break;
-    default:
-      throw new BadRequestError('Unknown coordinator tool');
-  }
-
+  const result = await dispatchCoordinatorToolInvocation(gateway, envelope);
   const response: CoordinatorToolCallResult = {
     accepted: true,
     callId: envelope.callId,
+    result,
+  };
+  rememberCoordinatorToolResult(toolCallKey, response);
+  return response;
+}
+
+export async function executeCoordinatorRendererAction(
+  gateway: CoordinatorToolGatewayContext,
+  request: CoordinatorUiToolCallRequest,
+): Promise<CoordinatorToolCallResult> {
+  assertString(request.requestId, 'requestId');
+  assertString(request.runId, 'runId');
+  assertString(request.coordinatorTaskId, 'coordinatorTaskId');
+  assertRendererActionAuthorized(request);
+
+  const toolCallKey = `renderer:${request.runId}:${request.coordinatorTaskId}:${request.requestId}`;
+  const previousResult = getCoordinatorToolResult(toolCallKey);
+  if (previousResult !== undefined) {
+    return previousResult as CoordinatorToolCallResult;
+  }
+
+  const result = await dispatchCoordinatorToolInvocation(gateway, {
+    callId: request.requestId,
+    runId: request.runId,
+    taskId: request.coordinatorTaskId,
+    toolName: request.toolName,
+    ...(request.payload !== undefined ? { payload: request.payload } : {}),
+  });
+  const response: CoordinatorToolCallResult = {
+    accepted: true,
+    callId: request.requestId,
     result,
   };
   rememberCoordinatorToolResult(toolCallKey, response);

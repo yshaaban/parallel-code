@@ -34,6 +34,7 @@ const ALLOWED_CHANNELS = new Set([
   'coordinator_create_run',
   'coordinator_get_diagnostics',
   'coordinator_tool_call',
+  'coordinator_ui_tool_call',
   // Task
   'create_task',
   'delete_task',

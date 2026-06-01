@@ -298,6 +298,43 @@ export interface CoordinatorToolCallResult {
   result?: unknown;
 }
 
+interface CoordinatorUiToolCallBase {
+  controllerId?: string;
+  coordinatorTaskId: string;
+  requestId: string;
+  runId: string;
+}
+
+export type CoordinatorUiToolCallRequest =
+  | (CoordinatorUiToolCallBase & {
+      payload?: undefined;
+      toolName: 'get_task_status' | 'list_tasks';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: CoordinatorGetTaskOutputPayload;
+      toolName: 'get_task_output';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: CoordinatorGetTaskDiffPayload;
+      toolName: 'get_task_diff';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: CoordinatorWaitForIdlePayload;
+      toolName: 'wait_for_idle';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorSendPromptPayload;
+      toolName: 'send_prompt';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorSpawnSubtaskPayload;
+      toolName: 'spawn_subtask';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorCloseTaskPayload;
+      toolName: 'close_task';
+    });
+
 export interface CoordinatorSpawnSubtaskPayload {
   agent: {
     args?: string[];

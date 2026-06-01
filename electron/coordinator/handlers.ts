@@ -13,7 +13,9 @@ import {
   ensureCoordinatorServiceLoaded,
 } from './service.js';
 import { getCoordinatorDiagnostics } from './runtime.js';
-import { executeCoordinatorToolCall } from './tool-gateway.js';
+import { executeCoordinatorRendererAction, executeCoordinatorToolCall } from './tool-gateway.js';
+
+const COORDINATOR_UI_CREDENTIAL_FIELDS = ['credentialPath', 'token', 'toolToken'] as const;
 
 function assertProjectMode(value: unknown): asserts value is ProjectMode {
   if (value !== 'git' && value !== 'non-git') {
@@ -49,6 +51,14 @@ function assertActivityHintKind(
 function assertCoordinatorToolName(value: unknown): asserts value is CoordinatorToolName {
   if (!isCoordinatorToolName(value)) {
     throw new BadRequestError('toolName must be a coordinator tool name');
+  }
+}
+
+function assertNoCoordinatorUiCredentials(request: object): void {
+  for (const field of COORDINATOR_UI_CREDENTIAL_FIELDS) {
+    if (Reflect.get(request, field) !== undefined) {
+      throw new BadRequestError('Coordinator UI action must not include tool credentials');
+    }
   }
 }
 
@@ -104,6 +114,19 @@ export function createCoordinatorIpcHandlers(
         assertCoordinatorToolName(request.toolName);
 
         return executeCoordinatorToolCall({ context, taskNames }, request);
+      },
+    ),
+
+    [IPC.CoordinatorUiToolCall]: defineIpcHandler<IPC.CoordinatorUiToolCall>(
+      IPC.CoordinatorUiToolCall,
+      (request) => {
+        assertNoCoordinatorUiCredentials(request);
+        assertString(request.requestId, 'requestId');
+        assertString(request.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(request.runId, 'runId');
+        assertCoordinatorToolName(request.toolName);
+
+        return executeCoordinatorRendererAction({ context, taskNames }, request);
       },
     ),
   };

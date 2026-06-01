@@ -19,6 +19,7 @@ type BrowserIpcTaskCommandArgChannel =
   | IPC.ContainersDestroyTask
   | IPC.ContainersStartTask
   | IPC.ContainersStopTask
+  | IPC.CoordinatorUiToolCall
   | IPC.DiscardUncommitted
   | IPC.EnsureAgentSessionsBatch
   | IPC.MergeArenaWorktree
@@ -178,6 +179,7 @@ const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   [IPC.ContainersDestroyTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.ContainersStartTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.ContainersStopTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.CoordinatorUiToolCall]: normalizeBrowserOwnedTaskArgs,
   [IPC.DiscardUncommitted]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.EnsureAgentSessionsBatch]: normalizeEnsureAgentSessionsBatchArgs,
   [IPC.MergeArenaWorktree]: normalizeRegisteredWorktreeMutationArgs,

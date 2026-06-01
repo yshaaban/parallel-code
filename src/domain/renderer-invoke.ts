@@ -32,6 +32,7 @@ import type {
   CoordinatorDiagnosticsSnapshot,
   CoordinatorToolCallEnvelope,
   CoordinatorToolCallResult,
+  CoordinatorUiToolCallRequest,
 } from './coordinator.js';
 import type {
   AgentSupervisionSnapshot,
@@ -321,6 +322,7 @@ export interface RendererInvokeRequestMap {
   [IPC.CoordinatorCreateRun]: CoordinatorCreateRunRequest;
   [IPC.CoordinatorGetDiagnostics]: undefined;
   [IPC.CoordinatorToolCall]: CoordinatorToolCallEnvelope;
+  [IPC.CoordinatorUiToolCall]: CoordinatorUiToolCallRequest;
   [IPC.ExposePort]: {
     label?: string;
     port: number;
@@ -668,6 +670,7 @@ export interface RendererInvokeResponseMap {
   [IPC.CoordinatorCreateRun]: CoordinatorCreateRunResult;
   [IPC.CoordinatorGetDiagnostics]: CoordinatorDiagnosticsSnapshot;
   [IPC.CoordinatorToolCall]: CoordinatorToolCallResult;
+  [IPC.CoordinatorUiToolCall]: CoordinatorToolCallResult;
   [IPC.ExposePort]: TaskPortSnapshot;
   [IPC.RefreshTaskPortPreview]: TaskPortSnapshot | undefined;
   [IPC.UnexposePort]: TaskPortSnapshot | undefined;

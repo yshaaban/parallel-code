@@ -4,6 +4,7 @@ import type {
   CoordinatorDiagnosticsSnapshot,
   CoordinatorToolCallEnvelope,
   CoordinatorToolCallResult,
+  CoordinatorUiToolCallRequest,
 } from '../domain/coordinator';
 import { invoke } from '../lib/ipc';
 
@@ -28,4 +29,10 @@ export async function callCoordinatorTool(
   envelope: CoordinatorToolCallEnvelope,
 ): Promise<CoordinatorToolCallResult> {
   return invoke(IPC.CoordinatorToolCall, envelope);
+}
+
+export async function callCoordinatorUiTool(
+  request: CoordinatorUiToolCallRequest,
+): Promise<CoordinatorToolCallResult> {
+  return invoke(IPC.CoordinatorUiToolCall, request);
 }

@@ -223,6 +223,28 @@ describe('browser IPC task-command args', () => {
     });
   });
 
+  it('injects browser controller identity into coordinator UI actions', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'spoofed-client',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'request-1',
+          runId: 'run-1',
+          toolName: 'send_prompt',
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      requestId: 'request-1',
+      runId: 'run-1',
+      toolName: 'send_prompt',
+    });
+  });
+
   it('injects browser controller identity into registered worktree git mutations', () => {
     const getAgentTaskId = vi.fn();
     const getWorktreeTaskId = vi.fn(() => 'task-from-worktree');

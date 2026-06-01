@@ -44,6 +44,7 @@ export enum IPC {
   CoordinatorCreateRun = 'coordinator_create_run',
   CoordinatorGetDiagnostics = 'coordinator_get_diagnostics',
   CoordinatorToolCall = 'coordinator_tool_call',
+  CoordinatorUiToolCall = 'coordinator_ui_tool_call',
   AcquireTaskCommandLease = 'acquire_task_command_lease',
   RenewTaskCommandLease = 'renew_task_command_lease',
   ReleaseTaskCommandLease = 'release_task_command_lease',
