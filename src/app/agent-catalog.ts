@@ -82,7 +82,16 @@ function isAgentDef(value: unknown): value is AgentDef {
     (agent.resume_strategy === undefined || isAgentResumeStrategy(agent.resume_strategy)) &&
     Array.isArray(agent.skip_permissions_args) &&
     (agent.adapter === undefined || agent.adapter === 'hydra') &&
+    (agent.env === undefined || isAgentEnvironment(agent.env)) &&
     typeof agent.description === 'string'
+  );
+}
+
+function isAgentEnvironment(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.values(value).every((entry) => typeof entry === 'string')
   );
 }
 

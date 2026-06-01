@@ -13,10 +13,12 @@ function makeExecutable(filePath: string): void {
 posixOnly('command resolver PATH expansion', () => {
   const originalNvmDir = process.env.NVM_DIR;
   const originalNvmHome = process.env.NVM_HOME;
+  const originalHome = process.env.HOME;
   const originalPath = process.env.PATH;
   const originalShell = process.env.SHELL;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.resetModules();
     if (originalNvmDir === undefined) {
       Reflect.deleteProperty(process.env, 'NVM_DIR');
@@ -32,6 +34,11 @@ posixOnly('command resolver PATH expansion', () => {
       Reflect.deleteProperty(process.env, 'PATH');
     } else {
       process.env.PATH = originalPath;
+    }
+    if (originalHome === undefined) {
+      Reflect.deleteProperty(process.env, 'HOME');
+    } else {
+      process.env.HOME = originalHome;
     }
     if (originalShell === undefined) {
       Reflect.deleteProperty(process.env, 'SHELL');
@@ -181,6 +188,53 @@ posixOnly('command resolver PATH expansion', () => {
       fs.writeFileSync(markerPath, 'installed\n');
 
       expect(() => validateCommand('codex-late-fixture')).not.toThrow();
+      expect(process.env.PATH?.split(path.delimiter)).toContain(binDir);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('expands PATH from env values set after the resolver module is imported', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-late-env-path-'));
+    const binDir = path.join(tempRoot, '.nvm', 'versions', 'node', 'v20.20.0', 'bin');
+    const commandPath = path.join(binDir, 'codex-late-env-fixture');
+
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      makeExecutable(commandPath);
+      process.env.PATH = fs.existsSync('/usr/bin/which') ? '/usr/bin' : '/bin';
+      Reflect.deleteProperty(process.env, 'NVM_DIR');
+      vi.resetModules();
+
+      const { validateCommand } = await import('./command-resolver.js');
+
+      process.env.NVM_DIR = path.join(tempRoot, '.nvm');
+
+      expect(() => validateCommand('codex-late-env-fixture')).not.toThrow();
+      expect(process.env.PATH?.split(path.delimiter)).toContain(binDir);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to HOME when os.homedir is unavailable during module import', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-home-fallback-'));
+    const binDir = path.join(tempRoot, '.local', 'bin');
+    const commandPath = path.join(binDir, 'codex-home-fallback-fixture');
+
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      makeExecutable(commandPath);
+      process.env.HOME = tempRoot;
+      process.env.PATH = fs.existsSync('/usr/bin/which') ? '/usr/bin' : '/bin';
+      vi.spyOn(os, 'homedir').mockImplementation(() => {
+        throw new Error('home unavailable');
+      });
+      vi.resetModules();
+
+      const { validateCommand } = await import('./command-resolver.js');
+
+      expect(() => validateCommand('codex-home-fallback-fixture')).not.toThrow();
       expect(process.env.PATH?.split(path.delimiter)).toContain(binDir);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });

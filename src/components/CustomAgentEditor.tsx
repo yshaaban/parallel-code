@@ -1,33 +1,75 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createSignal, type JSX } from 'solid-js';
 import { getAgentResumeStrategy } from '../lib/agent-resume';
+import { parseDirectCommandLine } from '../lib/direct-command';
+import { createRandomId } from '../lib/random-id';
 import { addCustomAgent, removeCustomAgent } from '../app/agent-catalog';
 import { store } from '../store/store';
 import { theme } from '../lib/theme';
 import type { AgentDef } from '../ipc/types';
 
-export function CustomAgentEditor() {
+export function CustomAgentEditor(): JSX.Element {
   const [showForm, setShowForm] = createSignal(false);
   const [name, setName] = createSignal('');
   const [command, setCommand] = createSignal('');
   const [resumeArgs, setResumeArgs] = createSignal('');
   const [skipArgs, setSkipArgs] = createSignal('');
+  const [error, setError] = createSignal('');
 
-  function handleAdd() {
-    const n = name().trim();
-    const cmd = command().trim();
-    if (!n || !cmd) return;
+  function updateName(value: string): void {
+    setName(value);
+    setError('');
+  }
 
-    const id = n
+  function updateCommand(value: string): void {
+    setCommand(value);
+    setError('');
+  }
+
+  function trimmedName(): string {
+    return name().trim();
+  }
+
+  function trimmedCommand(): string {
+    return command().trim();
+  }
+
+  function canAddAgent(): boolean {
+    return trimmedName().length > 0 && trimmedCommand().length > 0;
+  }
+
+  function splitOptionalArgs(value: string): string[] {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.split(/\s+/) : [];
+  }
+
+  function getCustomAgentId(agentName: string): string {
+    const slug = agentName
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+      .replace(/^-|-$/g, '')
+      .slice(0, 40);
+    const suffix = createRandomId().slice(0, 8);
+    return slug ? `custom-${slug}-${suffix}` : `custom-agent-${suffix}`;
+  }
+
+  function handleAdd(): void {
+    const n = trimmedName();
+    const cmd = trimmedCommand();
+    if (!n || !cmd) return;
+    const parsed = parseDirectCommandLine(cmd);
+    if (!parsed.ok) {
+      setError(parsed.error.message);
+      return;
+    }
+
     const agent: AgentDef = {
-      id: `custom-${id}`,
+      id: getCustomAgentId(n),
       name: n,
-      command: cmd,
-      args: [],
-      resume_args: resumeArgs().trim() ? resumeArgs().trim().split(/\s+/) : [],
-      skip_permissions_args: skipArgs().trim() ? skipArgs().trim().split(/\s+/) : [],
+      command: parsed.invocation.command,
+      args: parsed.invocation.args,
+      ...(parsed.invocation.env !== undefined ? { env: parsed.invocation.env } : {}),
+      resume_args: splitOptionalArgs(resumeArgs()),
+      skip_permissions_args: splitOptionalArgs(skipArgs()),
       description: `Custom agent: ${n}`,
     };
     agent.resume_strategy = getAgentResumeStrategy(agent);
@@ -36,19 +78,22 @@ export function CustomAgentEditor() {
     setCommand('');
     setResumeArgs('');
     setSkipArgs('');
+    setError('');
     setShowForm(false);
   }
 
-  const inputStyle = () => ({
-    padding: '8px 10px',
-    background: theme.bgInput,
-    border: `1px solid ${theme.border}`,
-    'border-radius': '6px',
-    color: theme.fg,
-    'font-size': '12px',
-    width: '100%',
-    'box-sizing': 'border-box' as const,
-  });
+  function inputStyle(): JSX.CSSProperties {
+    return {
+      padding: '8px 10px',
+      background: theme.bgInput,
+      border: `1px solid ${theme.border}`,
+      'border-radius': '6px',
+      color: theme.fg,
+      'font-size': '12px',
+      width: '100%',
+      'box-sizing': 'border-box' as const,
+    };
+  }
 
   return (
     <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
@@ -74,7 +119,7 @@ export function CustomAgentEditor() {
                   'font-family': "'JetBrains Mono', monospace",
                 }}
               >
-                {agent.command}
+                {[agent.command, ...agent.args].join(' ')}
               </span>
             </div>
             <button
@@ -129,16 +174,19 @@ export function CustomAgentEditor() {
             type="text"
             placeholder="Name (e.g. OpenCode)"
             value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
+            onInput={(e) => updateName(e.currentTarget.value)}
             style={inputStyle()}
           />
           <input
             type="text"
             placeholder="Command (e.g. opencode)"
             value={command()}
-            onInput={(e) => setCommand(e.currentTarget.value)}
+            onInput={(e) => updateCommand(e.currentTarget.value)}
             style={inputStyle()}
           />
+          <Show when={error()}>
+            <div style={{ color: theme.error, 'font-size': '12px' }}>{error()}</div>
+          </Show>
           <input
             type="text"
             placeholder="Resume args (optional, space-separated)"
@@ -171,6 +219,7 @@ export function CustomAgentEditor() {
             </button>
             <button
               type="button"
+              disabled={!canAddAgent()}
               onClick={handleAdd}
               style={{
                 padding: '6px 14px',
@@ -178,9 +227,9 @@ export function CustomAgentEditor() {
                 border: 'none',
                 'border-radius': '6px',
                 color: '#fff',
-                cursor: 'pointer',
+                cursor: canAddAgent() ? 'pointer' : 'not-allowed',
                 'font-size': '12px',
-                opacity: name().trim() && command().trim() ? 1 : 0.5,
+                opacity: canAddAgent() ? 1 : 0.5,
               }}
             >
               Add Agent

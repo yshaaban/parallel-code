@@ -13,11 +13,25 @@ function normalizeAgentArgList(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+function normalizeAgentEnvironment(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 function normalizePersistedAgentDef(agentDef: AgentDef, hydraCommand: string): AgentDef {
+  const { env, ...baseAgentDef } = agentDef;
+  const normalizedEnv = normalizeAgentEnvironment(env);
   const normalizedAgent: AgentDef = {
-    ...agentDef,
+    ...baseAgentDef,
     args: normalizeAgentArgList(agentDef.args),
     description: typeof agentDef.description === 'string' ? agentDef.description : agentDef.name,
+    ...(normalizedEnv !== undefined ? { env: normalizedEnv } : {}),
     resume_args: normalizeAgentArgList(agentDef.resume_args),
     skip_permissions_args: normalizeAgentArgList(agentDef.skip_permissions_args),
   };
@@ -49,6 +63,12 @@ export function hydratePersistedAgentDef(
   agentDef.args = normalizeAgentArgList(agentDef.args);
   agentDef.description =
     typeof agentDef.description === 'string' ? agentDef.description : agentDef.name;
+  const normalizedEnv = normalizeAgentEnvironment(agentDef.env);
+  if (normalizedEnv === undefined) {
+    delete agentDef.env;
+  } else {
+    agentDef.env = normalizedEnv;
+  }
   agentDef.resume_args = normalizeAgentArgList(agentDef.resume_args);
   agentDef.skip_permissions_args = normalizeAgentArgList(agentDef.skip_permissions_args);
   const fresh = availableAgents.find((agent) => agent.id === agentDef.id);

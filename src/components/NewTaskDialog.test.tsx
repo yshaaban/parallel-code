@@ -240,6 +240,75 @@ describe('NewTaskDialog', () => {
     expect(screen.queryByText('Selected agent: Stale Agent')).toBeNull();
   });
 
+  it('selects the first available agent instead of an unavailable Codex entry', async () => {
+    loadAgentsMock.mockResolvedValue([
+      createTestAgentDef({
+        available: false,
+        id: 'codex',
+        name: 'Codex',
+      }),
+      createTestAgentDef({
+        id: 'claude-code',
+        name: 'Claude',
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText('Selected agent: Claude')).toBeDefined();
+  });
+
+  it('creates a task from a custom command with parsed arguments', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-custom');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('checkbox', { name: /Use custom command/i }));
+    await user.type(screen.getByPlaceholderText('codex'), 'codex --model fast');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentDef: expect.objectContaining({
+            args: ['--model', 'fast'],
+            command: 'codex',
+            name: 'Terminal: codex --model fast',
+          }),
+          name: 'codex --model fast',
+          projectId: 'project-1',
+        }),
+      );
+    });
+  });
+
+  it('shows custom command parse errors before submit', async () => {
+    const user = userEvent.setup();
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('checkbox', { name: /Use custom command/i }));
+    await user.type(screen.getByPlaceholderText('codex'), 'codex "unfinished');
+
+    expect(screen.getByText('Command has an unterminated quote or escape.')).toBeDefined();
+    expect(
+      (screen.getByRole('button', { name: 'Create Task' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   it('passes skipPermissions through task creation by default', async () => {
     createTaskMock.mockResolvedValue('task-1');
 

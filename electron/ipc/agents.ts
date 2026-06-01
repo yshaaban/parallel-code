@@ -77,6 +77,7 @@ function cloneAgentDef(agent: AgentDef): AgentDef {
   return {
     ...agent,
     args: [...agent.args],
+    ...(agent.env !== undefined ? { env: { ...agent.env } } : {}),
     resume_args: [...agent.resume_args],
     skip_permissions_args: [...agent.skip_permissions_args],
   };

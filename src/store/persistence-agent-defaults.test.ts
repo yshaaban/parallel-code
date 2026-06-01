@@ -79,6 +79,21 @@ describe('persistence agent defaults', () => {
     });
   });
 
+  it('hydrates persisted agent environment values and drops invalid entries', () => {
+    const persistedAgent = createAgentDef({
+      env: {
+        CODEX_HOME: '/tmp/codex-home',
+        DROP_ME: 42,
+      } as never,
+    });
+
+    hydratePersistedAgentDef(persistedAgent, [], '');
+
+    expect(persistedAgent.env).toEqual({
+      CODEX_HOME: '/tmp/codex-home',
+    });
+  });
+
   it('normalizes persisted custom agents into the canonical agent shape', () => {
     const result = createWorkspaceStateBaseAgents(
       {
@@ -107,5 +122,30 @@ describe('persistence agent defaults', () => {
         skip_permissions_args: [],
       },
     ]);
+  });
+
+  it('preserves normalized custom agent environment during workspace restore', () => {
+    const result = createWorkspaceStateBaseAgents(
+      {
+        customAgents: [
+          {
+            id: 'custom-codex',
+            name: 'Custom Codex',
+            command: 'codex',
+            env: {
+              CODEX_HOME: '/tmp/codex-home',
+              DROP_ME: false,
+            },
+          },
+        ],
+      } as never,
+      '',
+      [],
+      [],
+    );
+
+    expect(result.customAgents[0]?.env).toEqual({
+      CODEX_HOME: '/tmp/codex-home',
+    });
   });
 });

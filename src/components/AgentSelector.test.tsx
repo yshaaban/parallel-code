@@ -43,4 +43,28 @@ describe('AgentSelector', () => {
 
     expect(onSelect).toHaveBeenCalledWith(agents[1]);
   });
+
+  it('does not select unavailable agents', () => {
+    resetStoreForTest();
+    const onSelect = vi.fn();
+    const agents = [
+      createTestAgentDef({ id: 'agent-0', name: 'Agent 0' }),
+      createTestAgentDef({
+        available: false,
+        availabilityReason: 'Command not found',
+        id: 'agent-1',
+        name: 'Agent 1',
+      }),
+    ];
+
+    render(() => (
+      <AgentSelector agents={agents} selectedAgent={agents[0] ?? null} onSelect={onSelect} />
+    ));
+
+    const unavailableButton = screen.getByRole('button', { name: /Agent 1/i });
+    fireEvent.click(unavailableButton);
+
+    expect(unavailableButton.hasAttribute('disabled')).toBe(true);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

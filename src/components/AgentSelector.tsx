@@ -57,11 +57,17 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
           <For each={props.agents}>
             {(agent) => {
               const isSelected = () => props.selectedAgent?.id === agent.id;
+              const isAvailable = () => agent.available !== false;
               return (
                 <button
                   type="button"
                   class={`agent-btn ${isSelected() ? 'selected' : ''}`}
-                  onClick={() => props.onSelect(agent)}
+                  disabled={!isAvailable()}
+                  onClick={() => {
+                    if (isAvailable()) {
+                      props.onSelect(agent);
+                    }
+                  }}
                   style={{
                     flex: '0 1 auto',
                     'min-width': '70px',
@@ -72,13 +78,13 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                       : `1px solid ${theme.border}`,
                     'border-radius': '8px',
                     color: getAgentTextColor(isSelected()),
-                    cursor: 'pointer',
+                    cursor: isAvailable() ? 'pointer' : 'not-allowed',
                     ...(isSelected() ? typography.metaStrong : typography.meta),
                     display: 'inline-flex',
                     'align-items': 'center',
                     'justify-content': 'center',
                     gap: '7px',
-                    opacity: agent.available === false ? '0.6' : '1',
+                    opacity: isAvailable() ? '1' : '0.6',
                   }}
                   title={agent.availabilityReason}
                 >

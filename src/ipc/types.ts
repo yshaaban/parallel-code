@@ -36,6 +36,7 @@ export interface AgentDef {
   skip_permissions_args: string[];
   description: string;
   adapter?: 'hydra';
+  env?: Record<string, string>;
   available?: boolean;
   availabilityReason?: string;
   availabilitySource?: 'path' | 'bundled' | 'override' | 'unavailable';

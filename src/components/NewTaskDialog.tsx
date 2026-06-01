@@ -40,6 +40,7 @@ import {
   toBranchName,
 } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
+import { parseDirectCommandLine } from '../lib/direct-command';
 import { extractGitHubUrl } from '../lib/github-url';
 import { isHydraAgentDef } from '../lib/hydra';
 import { isElectronRuntime } from '../lib/browser-auth';
@@ -65,6 +66,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [prompt, setPrompt] = createSignal('');
   const [name, setName] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
+  const [customAgentMode, setCustomAgentMode] = createSignal(false);
+  const [customAgentCommand, setCustomAgentCommand] = createSignal('');
+  const customAgentCommandParseResult = createMemo(() =>
+    parseDirectCommandLine(customAgentCommandLine()),
+  );
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
@@ -163,6 +169,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setName('');
     setError('');
     setLoading(false);
+    setCustomAgentMode(false);
+    setCustomAgentCommand('');
     setIgnoredDirsError(null);
     setCurrentBranchMode(false);
     setExistingWorktreeMode(false);
@@ -185,10 +193,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       }
 
       untrack(() => {
+        const launchableAgents = availableAgents.filter((agent) => agent.available !== false);
         const lastAgent = store.lastAgentId
-          ? (availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
+          ? (launchableAgents.find((a) => a.id === store.lastAgentId) ?? null)
           : null;
-        setSelectedAgent(lastAgent ?? availableAgents[0] ?? null);
+        setSelectedAgent(lastAgent ?? launchableAgents[0] ?? null);
 
         // Pre-fill from drop data if present
         const dropUrl = store.newTaskDropUrl;
@@ -357,6 +366,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     const p = prompt().trim();
     if (!p) {
+      if (customAgentMode()) {
+        return customAgentCommand().trim();
+      }
       return '';
     }
 
@@ -538,11 +550,62 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
   function agentSupportsSkipPermissions(): boolean {
     const agent = selectedAgent();
-    return !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
+    return !customAgentMode() && !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
   }
 
   function skipPermissionsActive(): boolean {
     return agentSupportsSkipPermissions() && skipPermissions();
+  }
+
+  function customAgentCommandLine(): string {
+    return customAgentCommand().trim();
+  }
+
+  function customAgentCommandError(): string | null {
+    if (!customAgentMode() || customAgentCommandLine().length === 0) {
+      return null;
+    }
+
+    const parsed = customAgentCommandParseResult();
+    return parsed.ok ? null : parsed.error.message;
+  }
+
+  function getCustomAgentName(command: string): string {
+    return `Terminal: ${command}`;
+  }
+
+  function getCustomAgentId(commandLine: string): string {
+    return `custom-command-${commandLine
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 64)}`;
+  }
+
+  function getSelectedAgentForSubmit(): AgentDef | null {
+    if (!customAgentMode()) {
+      const agent = selectedAgent();
+      return agent && agent.available !== false ? agent : null;
+    }
+
+    const parsed = customAgentCommandParseResult();
+    if (!parsed.ok) {
+      return null;
+    }
+
+    const commandLine = customAgentCommandLine();
+    const name = getCustomAgentName(commandLine);
+    return {
+      args: parsed.invocation.args,
+      command: parsed.invocation.command,
+      description: `Run ${commandLine} in the task terminal.`,
+      ...(parsed.invocation.env !== undefined ? { env: parsed.invocation.env } : {}),
+      id: getCustomAgentId(commandLine),
+      name,
+      resume_args: [],
+      resume_strategy: 'none',
+      skip_permissions_args: [],
+    };
   }
 
   function createsNewWorktree(): boolean {
@@ -551,6 +614,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
   function canSubmit(): boolean {
     const hasContent = !!effectiveName();
+    const hasLaunchableAgent = getSelectedAgentForSubmit() !== null;
     const hasRequiredWorktreePath =
       !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
     const canUseSelectedBranch =
@@ -558,6 +622,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       (branchListStatus() !== 'loading' && selectedBaseBranchAvailable());
     return (
       hasContent &&
+      hasLaunchableAgent &&
       !!selectedProjectId() &&
       hasRequiredWorktreePath &&
       canUseSelectedBranch &&
@@ -643,9 +708,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
 
-    const agent = selectedAgent();
+    const agent = getSelectedAgentForSubmit();
     if (!agent) {
-      setError('Select an agent');
+      if (customAgentMode()) {
+        const parsed = customAgentCommandParseResult();
+        setError(parsed.ok ? 'Enter a command' : parsed.error.message);
+      } else {
+        setError('Select an available agent');
+      }
       return;
     }
 
@@ -874,6 +944,43 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           selectedAgent={selectedAgent()}
           onSelect={setSelectedAgent}
         />
+
+        <div
+          data-nav-field="custom-agent-command"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
+          <label style={checkboxLabelStyle()}>
+            <input
+              type="checkbox"
+              checked={customAgentMode()}
+              onChange={(e) => setCustomAgentMode(e.currentTarget.checked)}
+              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+            />
+            Use custom command
+          </label>
+          <Show when={customAgentMode()}>
+            <input
+              class="input-field"
+              type="text"
+              value={customAgentCommand()}
+              onInput={(e) => {
+                setCustomAgentCommand(e.currentTarget.value);
+                setError('');
+              }}
+              placeholder="codex"
+              style={{
+                ...fieldInputStyle(),
+                ...typography.monoUi,
+              }}
+            />
+            <Show when={customAgentCommandError()}>
+              {(message) => <div style={calloutStyle('error')}>{message()}</div>}
+            </Show>
+            <div style={calloutStyle('muted')}>
+              Runs the command directly in the task folder, with any quoted arguments preserved.
+            </div>
+          </Show>
+        </div>
 
         {/* Project */}
         <div

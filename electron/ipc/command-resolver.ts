@@ -66,8 +66,16 @@ function getExistingNvmNodeBinDirs(nvmDir: string | undefined): string[] {
   ];
 }
 
+function getHomeDirectory(): string {
+  try {
+    return os.homedir() || process.env.HOME || process.env.USERPROFILE || '';
+  } catch {
+    return process.env.HOME || process.env.USERPROFILE || '';
+  }
+}
+
 function getDefaultPathExpansionDirs(): string[] {
-  const home = os.homedir() || process.env.HOME || process.env.USERPROFILE || '';
+  const home = getHomeDirectory();
   const dirs: string[] = [];
 
   if (process.env.PNPM_HOME) {
@@ -106,6 +114,10 @@ function getDefaultPathExpansionDirs(): string[] {
 
 // Server and Electron processes may not inherit the same PATH as the user's interactive shell.
 prependPathEntries(getDefaultPathExpansionDirs());
+
+function ensureDefaultPathExpansion(): void {
+  prependPathEntries(getDefaultPathExpansionDirs());
+}
 
 function quoteForShell(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -252,6 +264,7 @@ function isAbsoluteCommandPath(command: string): boolean {
 }
 
 async function commandExistsOnPath(command: string): Promise<boolean> {
+  ensureDefaultPathExpansion();
   try {
     await execFileAsync(PATH_LOOKUP_COMMAND, [command], {
       encoding: 'utf8',
@@ -274,6 +287,7 @@ function assertAbsoluteCommandPath(command: string): void {
 }
 
 export async function isCommandAvailable(command: string): Promise<boolean> {
+  ensureDefaultPathExpansion();
   if (!command || !command.trim()) return false;
   if (isAbsoluteCommandPath(command)) return isExecutable(command);
   return commandExistsOnPath(command);
@@ -281,6 +295,7 @@ export async function isCommandAvailable(command: string): Promise<boolean> {
 
 /** Verify that a command exists in PATH. Throws a descriptive error if not found. */
 export function validateCommand(command: string): void {
+  ensureDefaultPathExpansion();
   if (!command || !command.trim()) {
     throw new Error('Command must not be empty.');
   }
