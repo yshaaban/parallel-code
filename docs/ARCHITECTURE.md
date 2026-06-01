@@ -13,6 +13,8 @@ For the current explicit git-isolation model, migration rules, and remaining com
 [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
 For the browser-first startup contract and the split between cold bootstrap and reconnect restore,
 read [BROWSER-BOOTSTRAP-REDESIGN.md](./BROWSER-BOOTSTRAP-REDESIGN.md).
+For browser-server coordinator mode, hidden subtasks, tool credentials, and prompt-delivery
+ownership, read [COORDINATOR-MODE.md](./COORDINATOR-MODE.md).
 
 This document explains the current Parallel Code architecture after the recent browser control,
 multi-client, terminal-attach, and browser-lab work.
@@ -82,6 +84,8 @@ All three shells operate on the same underlying concepts:
 - an `Agent` is the long-lived PTY-backed worker attached to a task
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
+- `Coordinator` is the browser-server-only backend owner for orchestration runs, hidden subtasks,
+  prompt delivery, and self-landing state
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - `PeerPresence` is ephemeral per-browser-session identity plus focus/control context

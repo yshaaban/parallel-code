@@ -109,6 +109,19 @@ For agent-runner work:
 - keep renderer proof focused on configuration, command-target projection, and visible/passive
   terminal behavior; renderer code must not own Docker lifecycle truth
 
+For coordinator-mode work:
+
+- keep run, credential, prompt, landing, and cleanup proof in `node / backend` tests
+- prove server-state bootstrap and `coordinator-event` replay through the existing bootstrap
+  category seam
+- prove prompt delivery against backend supervision and task-command leases; mounted terminals or
+  `PromptInput` should not be required
+- prove spawn rollback, credential revocation, restored stale runs, and landing cleanup before
+  relying on browser canaries
+- keep browser canaries for true browser-server routing/UI creation only
+- do not enable coordinator mode for Electron-only or Docker-runner paths without separate gateway
+  and credential-mount proof
+
 For terminal clipboard-image and shortcut work:
 
 - keep native clipboard-image save proof in `node / backend` at the handler/transport seam

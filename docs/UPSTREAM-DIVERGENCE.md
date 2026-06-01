@@ -200,12 +200,14 @@ history:
   states instead of accidental upstream release checks.
 - selected-agent projection is now persisted and applied across task navigation, prompt/diff/notes
   targeting, browser session restore, cold bootstrap, collapse/restore, and AI terminal rendering.
-- coordinator/MCP remains intentionally unsupported/deferred behind an explicit backend-owner
-  boundary instead of UI prompt injection.
+- coordinator mode now has a local browser-server backend owner for replayable runs, hidden
+  subtasks, prompt delivery, task-command lease ownership, and self-landing. Upstream MCP shape is
+  still not imported; Electron-only and Docker-runner coordinator paths remain unsupported until
+  they have a separate gateway and credential policy.
 
 Remaining design-only work is limited to arbitrary/custom theme editing beyond guarded built-in
-tokens and coordinator/MCP backend orchestration. Both still require separate product decisions,
-replayable backend state machines, and browser/mobile proof before implementation. Real Docker
+tokens and deeper coordinator/MCP parity beyond the browser-server coordinator owner. Those pieces
+still require separate product decisions and browser/mobile proof before implementation. Real Docker
 agent runner execution and side-by-side multi-agent terminal layout now exist locally as
 browser-first opt-in implementations with backend-owned runner identity and dedicated validation
 lanes. The local multi-agent terminal surface includes explicit add-agent, select-agent, and
