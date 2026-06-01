@@ -179,6 +179,9 @@
     ],
     "*.{js,cjs,json,md,html,css}": "prettier --write"
   },
+  "overrides": {
+    "dompurify": "3.4.7"
+  },
   "build": {
     "appId": "com.parallel-code.app",
     "productName": "Parallel Code",
