@@ -2458,6 +2458,7 @@ describe('terminal-input-pipeline', () => {
   });
 
   it('ignores duplicate resize geometries that match the in-flight or last-sent size', async () => {
+    const onResizeCommitted = vi.fn();
     let resolveResize: ((value: undefined) => void) | undefined;
     vi.mocked(invoke).mockImplementation(
       () =>
@@ -2474,6 +2475,7 @@ describe('terminal-input-pipeline', () => {
       isRestoreBlocked: () => false,
       isSpawnFailed: () => false,
       isSpawnReady: () => true,
+      onResizeCommitted,
       props: {
         agentId: 'agent-1',
         args: [],
@@ -2493,14 +2495,21 @@ describe('terminal-input-pipeline', () => {
     pipeline.handleTerminalResize(100, 30);
     await vi.advanceTimersByTimeAsync(120);
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingCurrent).toBe(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingReasonCounts.sending).toBe(
+      1,
+    );
 
     resolveResize?.(undefined);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
+    expect(onResizeCommitted).toHaveBeenCalledTimes(1);
+    expect(onResizeCommitted).toHaveBeenCalledWith({ cols: 100, rows: 30 });
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingCurrent).toBe(0);
 
     pipeline.handleTerminalResize(100, 30);
     await vi.advanceTimersByTimeAsync(120);
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(onResizeCommitted).toHaveBeenCalledTimes(1);
 
     pipeline.cleanup();
   });

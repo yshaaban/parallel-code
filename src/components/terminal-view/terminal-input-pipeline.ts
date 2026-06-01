@@ -641,6 +641,18 @@ export function createTerminalInputPipeline(
     setResizeIdle();
   }
 
+  function clearDuplicatePendingResize(): void {
+    if (resizeState.kind === 'sending') {
+      setResizeState({
+        ...resizeState,
+        pending: null,
+      });
+      return;
+    }
+
+    clearPendingResize();
+  }
+
   function preserveResizeForPeerControl(geometry: TerminalGeometry): void {
     peerDeferredResize = geometry;
     setResizeIdle();
@@ -1434,7 +1446,7 @@ export function createTerminalInputPipeline(
       return;
     }
     if (isSameResizeGeometry(pendingResize, getInFlightResize())) {
-      clearPendingResize();
+      clearDuplicatePendingResize();
       recordTerminalResizeCommitNoopSkip();
       await (inFlightResizeCommitPromise ?? Promise.resolve());
       return;
