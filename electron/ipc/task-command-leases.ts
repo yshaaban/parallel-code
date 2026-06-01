@@ -256,6 +256,21 @@ export function isTaskCommandLeaseHeld(
   return currentLease?.clientId === clientId;
 }
 
+export function isTaskCommandLeaseGenerationHeld(
+  taskId: string,
+  clientId: string,
+  ownerId: string,
+  leaseGeneration: number,
+  now = Date.now(),
+): boolean {
+  const currentLease = getActiveTaskCommandLease(taskId, now);
+  return (
+    currentLease?.clientId === clientId &&
+    currentLease.ownerId === ownerId &&
+    currentLease.leaseGeneration === leaseGeneration
+  );
+}
+
 export function releaseTaskCommandLeasesForClient(
   clientId: string,
   now = Date.now(),

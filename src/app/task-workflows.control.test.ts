@@ -315,6 +315,59 @@ describe('task workflow control leases', () => {
     );
   });
 
+  it('wraps coordinator task prompts with tool instructions and preserves them as the saved initial prompt', async () => {
+    const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
+    setStore('projects', [
+      createTestProject({
+        id: 'project-1',
+        path: '/repo',
+      }),
+    ]);
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.CreateTask:
+          return Promise.resolve({
+            base_branch: 'main',
+            branch_name: 'feature/task-new',
+            git_isolation: 'worktree',
+            id: 'task-new',
+            worktree_path: '/repo/.worktrees/task-new',
+          });
+        case IPC.CoordinatorCreateRun:
+          return Promise.resolve({
+            credentialPath: '/tmp/coordinator-credential.json',
+            run: {
+              id: 'run-1',
+            },
+            toolCommand: 'parallel-code-coordinator',
+          });
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      createTask({
+        agentDef,
+        coordinatorMode: true,
+        initialPrompt: 'Build the coordinator slice',
+        name: 'Coordinator task',
+        projectId: 'project-1',
+      }),
+    ).resolves.toBe('task-new');
+
+    const task = store.tasks['task-new'];
+    expect(task?.coordinatorCredentialPath).toBe('/tmp/coordinator-credential.json');
+    expect(task?.coordinatorRunId).toBe('run-1');
+    expect(task?.coordinatorToolCommand).toBe('parallel-code-coordinator');
+    expect(task?.initialPrompt).toContain('You are the coordinator for this Parallel Code task.');
+    expect(task?.initialPrompt).toContain(
+      "Run coordinator tools with parallel-code-coordinator <tool-name> '<payload-json>'.",
+    );
+    expect(task?.initialPrompt).toContain('User task:\nBuild the coordinator slice');
+    expect(task?.savedInitialPrompt).toBe(task?.initialPrompt);
+  });
+
   it('rolls back a managed worktree when coordinator setup fails after task creation', async () => {
     const agentDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
     setStore('projects', [

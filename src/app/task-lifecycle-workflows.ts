@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { resolveAgentRunnerProfile } from '../domain/agent-runners';
+import { buildCoordinatorInitialPrompt } from '../domain/coordinator-instructions';
 import {
   hasProjectCurrentBranchTask,
   hasTaskClosingState,
@@ -61,6 +62,23 @@ interface TaskRuntimeCleanupOptions {
 }
 
 const TASK_CONTROLLED_BY_PEER_MESSAGE = 'Task is controlled by another client';
+
+function buildTaskInitialPrompt(
+  initialPrompt: string | undefined,
+  coordinatorMode: boolean,
+  coordinatorRunResult: CoordinatorCreateRunResult | undefined,
+): string | undefined {
+  if (!coordinatorMode) {
+    return initialPrompt;
+  }
+  if (coordinatorRunResult?.toolCommand === undefined) {
+    return buildCoordinatorInitialPrompt(initialPrompt);
+  }
+
+  return buildCoordinatorInitialPrompt(initialPrompt, {
+    toolCommand: coordinatorRunResult.toolCommand,
+  });
+}
 
 function getRuntimeAgentIds(task: Pick<Task, 'agentIds' | 'shellAgentIds'>): string[] {
   return [...task.agentIds, ...task.shellAgentIds];
@@ -421,6 +439,11 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       throw error;
     }
   }
+  const taskInitialPrompt = buildTaskInitialPrompt(
+    initialPrompt,
+    opts.coordinatorMode === true,
+    coordinatorRunResult,
+  );
   const task: Task = {
     id: result.id,
     name,
@@ -437,11 +460,11 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       ? buildTaskGitIsolationFields({ gitIsolation: resolvedGitIsolation })
       : {}),
     ...(typeof taskBaseBranch === 'string' ? { baseBranch: taskBaseBranch } : {}),
-    ...(initialPrompt ? { initialPrompt } : {}),
+    ...(taskInitialPrompt ? { initialPrompt: taskInitialPrompt } : {}),
     ...(skipPermissions ? { skipPermissions: true } : {}),
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
-    ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
+    ...(taskInitialPrompt ? { savedInitialPrompt: taskInitialPrompt } : {}),
     ...(coordinatorRunResult !== undefined
       ? {
           coordinatorCredentialPath: coordinatorRunResult.credentialPath,

@@ -3,9 +3,10 @@ import type { HandlerContext, IpcHandler } from '../ipc/handler-context.js';
 import { BadRequestError } from '../ipc/errors.js';
 import { defineIpcHandler } from '../ipc/typed-handler.js';
 import { assertBoolean, assertOptionalNonNegativeInt, assertString } from '../ipc/validate.js';
-import type { ProjectMode } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
+import { isCoordinatorToolName, type CoordinatorToolName } from '../../src/domain/coordinator.js';
 import { isNonNegativeInteger } from '../../src/lib/type-guards.js';
+import type { ProjectMode } from '../../src/store/types.js';
 import {
   applyCoordinatorActivityHint,
   createCoordinatorRunForTask,
@@ -45,21 +46,8 @@ function assertActivityHintKind(
   }
 }
 
-function assertCoordinatorToolName(
-  value: unknown,
-): asserts value is
-  | 'get_task_status'
-  | 'land_self'
-  | 'send_prompt'
-  | 'signal_done'
-  | 'spawn_subtask' {
-  if (
-    value !== 'get_task_status' &&
-    value !== 'land_self' &&
-    value !== 'send_prompt' &&
-    value !== 'signal_done' &&
-    value !== 'spawn_subtask'
-  ) {
+function assertCoordinatorToolName(value: unknown): asserts value is CoordinatorToolName {
+  if (!isCoordinatorToolName(value)) {
     throw new BadRequestError('toolName must be a coordinator tool name');
   }
 }

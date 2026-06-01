@@ -59,6 +59,19 @@ export const COORDINATOR_PROMPT_STATUSES = [
   'cancelled',
 ] as const;
 
+export const COORDINATOR_TOOL_NAMES = [
+  'close_task',
+  'get_task_diff',
+  'get_task_output',
+  'get_task_status',
+  'land_self',
+  'list_tasks',
+  'send_prompt',
+  'signal_done',
+  'spawn_subtask',
+  'wait_for_idle',
+] as const;
+
 export const COORDINATOR_LANDING_STATUSES = [
   'requested',
   'validating',
@@ -91,6 +104,7 @@ export type CoordinatorRunStatus = (typeof COORDINATOR_RUN_STATUSES)[number];
 export type CoordinatorSubtaskStatus = (typeof COORDINATOR_SUBTASK_STATUSES)[number];
 export type CoordinatorPromptKind = (typeof COORDINATOR_PROMPT_KINDS)[number];
 export type CoordinatorPromptStatus = (typeof COORDINATOR_PROMPT_STATUSES)[number];
+export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
 export type CoordinatorLandingStatus = (typeof COORDINATOR_LANDING_STATUSES)[number];
 export type CoordinatorEventType = (typeof COORDINATOR_EVENT_TYPES)[number];
 
@@ -272,7 +286,7 @@ export interface CoordinatorToolCallEnvelope {
   callId: string;
   runId: string;
   taskId: string;
-  toolName: 'get_task_status' | 'spawn_subtask' | 'send_prompt' | 'signal_done' | 'land_self';
+  toolName: CoordinatorToolName;
   token: string;
   payload?: unknown;
 }
@@ -306,6 +320,27 @@ export interface CoordinatorSendPromptPayload {
   text: string;
 }
 
+export interface CoordinatorTargetTaskPayload {
+  targetTaskId?: string;
+}
+
+export interface CoordinatorCloseTaskPayload {
+  targetTaskId: string;
+}
+
+export interface CoordinatorGetTaskOutputPayload extends CoordinatorTargetTaskPayload {
+  maxBytes?: number;
+}
+
+export interface CoordinatorGetTaskDiffPayload extends CoordinatorTargetTaskPayload {
+  includePatch?: boolean;
+  maxBytes?: number;
+}
+
+export interface CoordinatorWaitForIdlePayload extends CoordinatorTargetTaskPayload {
+  timeoutMs?: number;
+}
+
 export interface CoordinatorSignalDonePayload {
   result?: string;
 }
@@ -336,6 +371,10 @@ export function isCoordinatorTerminalSubtaskStatus(status: CoordinatorSubtaskSta
 
 export function isCoordinatorPromptKind(value: unknown): value is CoordinatorPromptKind {
   return isStringTupleMember(value, COORDINATOR_PROMPT_KINDS);
+}
+
+export function isCoordinatorToolName(value: unknown): value is CoordinatorToolName {
+  return isStringTupleMember(value, COORDINATOR_TOOL_NAMES);
 }
 
 export function isCoordinatorPromptStatus(value: unknown): value is CoordinatorPromptStatus {

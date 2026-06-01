@@ -3,17 +3,22 @@ import { createHash, randomUUID } from 'node:crypto';
 import { IPC } from '../ipc/channels.js';
 import type { HandlerContext } from '../ipc/handler-context.js';
 import { BadRequestError } from '../ipc/errors.js';
-import { getWorktreeStatus, mergeTask } from '../ipc/git.js';
+import { getAllFileDiffs, getProjectDiff, getWorktreeStatus, mergeTask } from '../ipc/git.js';
 import {
   getAgentSupervisionSnapshot,
   subscribeAgentSupervision,
 } from '../ipc/agent-supervision.js';
 import { normalizeAgentRunnerProfileConfig } from '../ipc/agent-runner-handlers.js';
-import { getAgentMeta, hasAgentSession, writeToAgent } from '../ipc/pty.js';
+import {
+  getAgentMeta,
+  getAgentScrollbackBuffer,
+  hasAgentSession,
+  writeToAgent,
+} from '../ipc/pty.js';
 import {
   acquireTaskCommandLease,
   getTaskCommandControllerSnapshot,
-  isTaskCommandLeaseHeld,
+  isTaskCommandLeaseGenerationHeld,
   releaseTaskCommandLease,
 } from '../ipc/task-command-leases.js';
 import {
@@ -26,6 +31,9 @@ import {
   COORDINATOR_LIMITS,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
+  type CoordinatorCloseTaskPayload,
+  type CoordinatorGetTaskDiffPayload,
+  type CoordinatorGetTaskOutputPayload,
   type CoordinatorLandSelfPayload,
   type CoordinatorLandingStateSnapshot,
   type CoordinatorPromptKind,
@@ -35,9 +43,13 @@ import {
   type CoordinatorSignalDonePayload,
   type CoordinatorSpawnSubtaskPayload,
   type CoordinatorSubtaskSnapshot,
+  type CoordinatorTargetTaskPayload,
   type CoordinatorToolCallEnvelope,
   type CoordinatorToolCallResult,
+  type CoordinatorWaitForIdlePayload,
 } from '../../src/domain/coordinator.js';
+import { buildCoordinatorSubtaskAssignment } from '../../src/domain/coordinator-instructions.js';
+import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
 import { materializePromptDispatch } from '../../src/domain/task-prompt-materialization.js';
 import { isRecord, isStringArray } from '../../src/lib/type-guards.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
@@ -53,6 +65,7 @@ import {
 } from './service.js';
 import {
   addCoordinatorSubtask,
+  cancelCoordinatorPromptsForTask,
   enqueueCoordinatorPrompt,
   getCoordinatorRun,
   getCoordinatorRunByCoordinatorTaskId,
@@ -71,6 +84,12 @@ const COORDINATOR_LANDING_OWNER_ID = 'coordinator-self-landing';
 const DEFAULT_TERMINAL_COLS = 80;
 const DEFAULT_TERMINAL_ROWS = 24;
 const PROMPT_DELIVERY_RETRY_DELAY_MS = 1_000;
+const WAIT_FOR_IDLE_MAX_TIMEOUT_MS = 60_000;
+const WAIT_FOR_IDLE_POLL_MS = 100;
+const TASK_OUTPUT_DEFAULT_MAX_BYTES = 64 * 1024;
+const TASK_OUTPUT_MAX_BYTES = 256 * 1024;
+const TASK_DIFF_DEFAULT_MAX_BYTES = 128 * 1024;
+const TASK_DIFF_MAX_BYTES = 512 * 1024;
 
 interface CoordinatorToolGatewayContext {
   context: HandlerContext;
@@ -83,6 +102,8 @@ let promptDeliveryForce = false;
 let promptDeliveryReferences = 0;
 let promptDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 const activePromptDeliveryKeys = new Set<string>();
+const scheduledPromptDeliveryKeys = new Set<string>();
+const promptDeliveryChainsByTargetKey = new Map<string, Promise<unknown>>();
 const activeSpawnSubtasksByDedupeKey = new Map<
   string,
   {
@@ -192,6 +213,118 @@ function readSendPromptPayload(payload: unknown): CoordinatorSendPromptPayload {
   };
 }
 
+function readTargetTaskPayload(payload: unknown): CoordinatorTargetTaskPayload {
+  if (payload === undefined) {
+    return {};
+  }
+  if (!isRecord(payload)) {
+    throw new BadRequestError('payload must be an object when provided');
+  }
+  assertOptionalString(payload.targetTaskId, 'targetTaskId');
+  return payload.targetTaskId === undefined ? {} : { targetTaskId: payload.targetTaskId };
+}
+
+function readPositiveByteLimit(
+  value: unknown,
+  label: string,
+  defaultValue: number,
+  max: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new BadRequestError(`${label} must be a positive integer`);
+  }
+
+  return Math.min(value, max);
+}
+
+function readNonNegativeTimeout(
+  value: unknown,
+  label: string,
+  defaultValue: number,
+  max: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new BadRequestError(`${label} must be a non-negative integer`);
+  }
+
+  return Math.min(value, max);
+}
+
+function readCloseTaskPayload(payload: unknown): CoordinatorCloseTaskPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('close_task payload is required');
+  }
+  assertString(payload.targetTaskId, 'targetTaskId');
+  return { targetTaskId: payload.targetTaskId };
+}
+
+function readGetTaskOutputPayload(payload: unknown): CoordinatorGetTaskOutputPayload {
+  const base = readTargetTaskPayload(payload);
+  if (payload === undefined) {
+    return base;
+  }
+  if (!isRecord(payload)) {
+    throw new BadRequestError('get_task_output payload must be an object when provided');
+  }
+  return {
+    ...base,
+    maxBytes: readPositiveByteLimit(
+      payload.maxBytes,
+      'maxBytes',
+      TASK_OUTPUT_DEFAULT_MAX_BYTES,
+      TASK_OUTPUT_MAX_BYTES,
+    ),
+  };
+}
+
+function readGetTaskDiffPayload(payload: unknown): CoordinatorGetTaskDiffPayload {
+  const base = readTargetTaskPayload(payload);
+  if (payload === undefined) {
+    return base;
+  }
+  if (!isRecord(payload)) {
+    throw new BadRequestError('get_task_diff payload must be an object when provided');
+  }
+  if (payload.includePatch !== undefined && typeof payload.includePatch !== 'boolean') {
+    throw new BadRequestError('includePatch must be a boolean when provided');
+  }
+  return {
+    ...base,
+    includePatch: payload.includePatch === true,
+    maxBytes: readPositiveByteLimit(
+      payload.maxBytes,
+      'maxBytes',
+      TASK_DIFF_DEFAULT_MAX_BYTES,
+      TASK_DIFF_MAX_BYTES,
+    ),
+  };
+}
+
+function readWaitForIdlePayload(payload: unknown): CoordinatorWaitForIdlePayload {
+  const base = readTargetTaskPayload(payload);
+  if (payload === undefined) {
+    return base;
+  }
+  if (!isRecord(payload)) {
+    throw new BadRequestError('wait_for_idle payload must be an object when provided');
+  }
+  return {
+    ...base,
+    timeoutMs: readNonNegativeTimeout(
+      payload.timeoutMs,
+      'timeoutMs',
+      WAIT_FOR_IDLE_MAX_TIMEOUT_MS,
+      WAIT_FOR_IDLE_MAX_TIMEOUT_MS,
+    ),
+  };
+}
+
 function readSignalDonePayload(payload: unknown): CoordinatorSignalDonePayload {
   if (payload === undefined) {
     return {};
@@ -238,6 +371,22 @@ function getPromptDeliveryKey(
   return `${prompt.runId}:${prompt.requestId}`;
 }
 
+function getPromptDeliveryTargetKey(
+  prompt: Pick<CoordinatorPromptRequestSnapshot, 'runId' | 'targetTaskId'>,
+): string {
+  return `${prompt.runId}:${prompt.targetTaskId}`;
+}
+
+function getLatestPromptSnapshot(
+  prompt: Pick<CoordinatorPromptRequestSnapshot, 'requestId' | 'runId'>,
+): CoordinatorPromptRequestSnapshot | null {
+  return (
+    getCoordinatorRun(prompt.runId)?.promptQueue.find(
+      (candidate) => candidate.requestId === prompt.requestId,
+    ) ?? null
+  );
+}
+
 function getActivePromptDeliveryCountForRun(runId: string): number {
   let count = 0;
   for (const key of activePromptDeliveryKeys) {
@@ -247,6 +396,14 @@ function getActivePromptDeliveryCountForRun(runId: string): number {
   }
 
   return count;
+}
+
+function hasPromptDeliveryCapacity(runId: string): boolean {
+  return (
+    activePromptDeliveryKeys.size < COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal &&
+    getActivePromptDeliveryCountForRun(runId) <
+      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun
+  );
 }
 
 function getSpawnDedupeKey(
@@ -280,6 +437,20 @@ function getActiveSpawnCountForProject(projectId: string): number {
   }
 
   return count;
+}
+
+function mergeLaunchArgs(
+  args: string[] | undefined,
+  skipPermissionsArgs: string[] | undefined,
+): string[] {
+  const mergedArgs = [...(args ?? [])];
+  for (const arg of skipPermissionsArgs ?? []) {
+    if (!mergedArgs.includes(arg)) {
+      mergedArgs.push(arg);
+    }
+  }
+
+  return mergedArgs;
 }
 
 function shouldCleanupCoordinatorSubtask(status: CoordinatorSubtaskSnapshot['status']): boolean {
@@ -353,6 +524,73 @@ function assertCoordinatorSubtaskCaller(
   return subtask;
 }
 
+function requireCoordinatorRun(runId: string): CoordinatorRunSnapshot {
+  const run = getCoordinatorRun(runId);
+  if (!run) {
+    throw new BadRequestError('Coordinator run not found');
+  }
+
+  return run;
+}
+
+function resolveTargetSubtask(
+  envelope: CoordinatorToolCallEnvelope,
+  payload: CoordinatorTargetTaskPayload,
+): CoordinatorSubtaskSnapshot {
+  const run = requireCoordinatorRun(envelope.runId);
+  const targetTaskId = payload.targetTaskId ?? envelope.taskId;
+  const subtask = run.subtasks.find((candidate) => candidate.taskId === targetTaskId);
+  if (!subtask) {
+    throw new BadRequestError('targetTaskId must belong to the coordinator run');
+  }
+
+  if (isCoordinatorTerminalSubtaskStatus(subtask.status)) {
+    throw new BadRequestError('targetTaskId is no longer active');
+  }
+
+  return subtask;
+}
+
+function trimUtf8BufferTail(
+  buffer: Buffer,
+  maxBytes: number,
+): {
+  text: string;
+  truncatedBytes: number;
+} {
+  if (buffer.length <= maxBytes) {
+    return {
+      text: buffer.toString('utf8'),
+      truncatedBytes: 0,
+    };
+  }
+
+  let start = buffer.length - maxBytes;
+  while (start < buffer.length) {
+    const byte = buffer[start];
+    if (byte === undefined || (byte & 0xc0) !== 0x80) {
+      break;
+    }
+    start += 1;
+  }
+
+  return {
+    text: buffer.subarray(start).toString('utf8'),
+    truncatedBytes: start,
+  };
+}
+
+function trimUtf8Text(
+  text: string,
+  maxBytes: number,
+): {
+  text: string;
+  truncatedBytes: number;
+} {
+  const buffer = Buffer.from(text, 'utf8');
+  return trimUtf8BufferTail(buffer, maxBytes);
+}
+
 function scheduleCoordinatorPromptDelivery(delayMs = 0, force = false): void {
   if (force) {
     promptDeliveryForce = true;
@@ -410,22 +648,7 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
         continue;
       }
 
-      const key = getPromptDeliveryKey(prompt);
-      if (activePromptDeliveryKeys.has(key)) {
-        continue;
-      }
-      if (
-        getActivePromptDeliveryCountForRun(run.id) >=
-        COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun
-      ) {
-        continue;
-      }
-
-      activePromptDeliveryKeys.add(key);
-      void deliverCoordinatorPrompt(context, prompt).finally(() => {
-        activePromptDeliveryKeys.delete(key);
-        scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-      });
+      void deliverCoordinatorPromptWithAdmission(context, prompt);
 
       if (activePromptDeliveryKeys.size >= COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal) {
         return;
@@ -472,6 +695,8 @@ export function startCoordinatorPromptDeliveryRuntime(context: HandlerContext): 
       promptDeliveryTimer = null;
     }
     activePromptDeliveryKeys.clear();
+    scheduledPromptDeliveryKeys.clear();
+    promptDeliveryChainsByTargetKey.clear();
     promptDeliveryForce = false;
     promptDeliveryReferences = 0;
     promptDeliveryCleanup = null;
@@ -493,6 +718,8 @@ export function resetCoordinatorToolGatewayForTests(): void {
     promptDeliveryTimer = null;
   }
   activePromptDeliveryKeys.clear();
+  scheduledPromptDeliveryKeys.clear();
+  promptDeliveryChainsByTargetKey.clear();
   activeSpawnSubtasksByDedupeKey.clear();
 }
 
@@ -610,6 +837,7 @@ async function createHiddenSubtaskAfterDedupe(
   const taskResult = await createTaskWorkflow(gateway.context, {
     ...(payload.baseBranch !== undefined ? { baseBranch: payload.baseBranch } : {}),
     ...(payload.branchPrefix !== undefined ? { branchPrefix: payload.branchPrefix } : {}),
+    ...(run.projectMode === 'git' ? { gitIsolation: 'worktree' as const } : {}),
     name: payload.name,
     projectId: run.projectId,
     ...(projectMode !== undefined ? { projectMode } : {}),
@@ -656,14 +884,16 @@ async function createHiddenSubtaskAfterDedupe(
     const env = {
       ...(payload.agent.env ?? {}),
       PARALLEL_CODE_COORDINATOR_CREDENTIAL: credential.credentialPath,
+      PARALLEL_CODE_COORDINATOR_RUN_ID: run.id,
       ...(credential.toolCommand !== undefined
         ? { PARALLEL_CODE_COORDINATOR_TOOL: credential.toolCommand }
         : {}),
     };
+    const launchArgs = mergeLaunchArgs(payload.agent.args, payload.agent.skipPermissionsArgs);
     const runnerProfile = normalizeAgentRunnerProfileConfig(undefined);
     spawnTaskAgentWorkflow(gateway.context, {
       agentId,
-      args: payload.agent.args ?? [],
+      args: launchArgs,
       command: payload.agent.command,
       cols: DEFAULT_TERMINAL_COLS,
       cwd: result.worktree_path,
@@ -681,11 +911,13 @@ async function createHiddenSubtaskAfterDedupe(
       sourceTaskId: run.coordinatorTaskId,
       targetAgentId: agentId,
       targetTaskId: result.id,
-      text: payload.assignment,
+      text: buildCoordinatorSubtaskAssignment(payload.assignment, {
+        ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
+      }),
       ...(payload.dedupeKey !== undefined ? { dedupeKey: payload.dedupeKey } : {}),
     });
     updateCoordinatorSubtaskStatus(run.id, result.id, 'waiting-for-agent-ready');
-    await deliverCoordinatorPrompt(gateway.context, prompt);
+    await deliverCoordinatorPromptWithAdmission(gateway.context, prompt);
     const latestSubtask = getCoordinatorRun(run.id)?.subtasks.find(
       (candidate) => candidate.taskId === result.id,
     );
@@ -761,6 +993,8 @@ async function cleanupCoordinatorSubtaskRuntime(
     return [];
   }
 
+  cancelCoordinatorPromptsForTask(run.id, subtask.taskId, 'subtask-cleaned-up');
+
   try {
     if (run.projectMode === 'git' && subtask.branchName) {
       const cleanup = await deleteTaskWorkflow({
@@ -824,6 +1058,73 @@ export async function cleanupCoordinatorTaskStateAndOwnedSubtasks(
   return warnings;
 }
 
+async function deliverCoordinatorPromptSerialized(
+  context: HandlerContext,
+  prompt: CoordinatorPromptRequestSnapshot,
+): Promise<CoordinatorPromptRequestSnapshot> {
+  const targetKey = getPromptDeliveryTargetKey(prompt);
+  const previousDelivery = promptDeliveryChainsByTargetKey.get(targetKey) ?? Promise.resolve();
+  const delivery = previousDelivery
+    .catch(() => undefined)
+    .then(async () => {
+      const latestPrompt = getLatestPromptSnapshot(prompt);
+      if (!latestPrompt) {
+        return prompt;
+      }
+      if (!isDeliverablePromptStatus(latestPrompt.status)) {
+        return latestPrompt;
+      }
+
+      return deliverCoordinatorPrompt(context, latestPrompt);
+    });
+  const trackedDelivery = delivery.finally(() => {
+    if (promptDeliveryChainsByTargetKey.get(targetKey) === trackedDelivery) {
+      promptDeliveryChainsByTargetKey.delete(targetKey);
+    }
+  });
+  promptDeliveryChainsByTargetKey.set(targetKey, trackedDelivery);
+  return delivery;
+}
+
+async function deliverCoordinatorPromptWithAdmission(
+  context: HandlerContext,
+  prompt: CoordinatorPromptRequestSnapshot,
+): Promise<CoordinatorPromptRequestSnapshot> {
+  const latestPrompt = getLatestPromptSnapshot(prompt);
+  if (!latestPrompt) {
+    return prompt;
+  }
+  if (!isDeliverablePromptStatus(latestPrompt.status)) {
+    return latestPrompt;
+  }
+
+  const key = getPromptDeliveryKey(latestPrompt);
+  if (scheduledPromptDeliveryKeys.has(key) || activePromptDeliveryKeys.has(key)) {
+    return latestPrompt;
+  }
+  if (!hasPromptDeliveryCapacity(latestPrompt.runId)) {
+    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
+    return latestPrompt;
+  }
+
+  scheduledPromptDeliveryKeys.add(key);
+  try {
+    return await deliverCoordinatorPromptSerialized(context, latestPrompt);
+  } finally {
+    scheduledPromptDeliveryKeys.delete(key);
+    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
+  }
+}
+
+function canCompletePromptDelivery(prompt: CoordinatorPromptRequestSnapshot): boolean {
+  const latestPrompt = getLatestPromptSnapshot(prompt);
+  if (!latestPrompt || latestPrompt.status !== 'delivering') {
+    return false;
+  }
+
+  return isPromptTargetActive(latestPrompt);
+}
+
 async function deliverCoordinatorPrompt(
   context: HandlerContext,
   prompt: CoordinatorPromptRequestSnapshot,
@@ -885,42 +1186,58 @@ async function deliverCoordinatorPrompt(
   }
 
   const automationClientId = getAutomationClientId(prompt.runId);
-  const lease = acquireTaskCommandLease(
-    prompt.targetTaskId,
-    automationClientId,
-    COORDINATOR_AUTOMATION_OWNER_ID,
-    'send a coordinator prompt',
-  );
-  if (!lease.acquired) {
+  const key = getPromptDeliveryKey(prompt);
+  if (activePromptDeliveryKeys.has(key)) {
+    return prompt;
+  }
+  if (!hasPromptDeliveryCapacity(prompt.runId)) {
+    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
     return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
       earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-command-lease',
-      waitingReason: 'task-command-lease-held',
+      status: 'queued',
+      waitingReason: undefined,
     });
   }
-  if (lease.changed) {
-    emitTaskCommandControllerChange(context, prompt.targetTaskId);
-  }
 
-  const deliveryAttemptId = randomUUID();
-  const journal = [
-    ...prompt.deliveryJournal,
-    {
-      agentGeneration: agentMeta.generation,
-      deliveryAttemptId,
-      ptySessionId: `${prompt.targetAgentId}:${agentMeta.generation}`,
-      requestId: prompt.requestId,
-      writePreparedAt: Date.now(),
-    },
-  ];
-  let updatedPrompt = updateCoordinatorPrompt(prompt.runId, prompt.requestId, {
-    attempts: prompt.attempts + 1,
-    deliveryJournal: journal,
-    status: 'delivering',
-    waitingReason: undefined,
-  });
-
+  activePromptDeliveryKeys.add(key);
+  let acquiredLeaseGeneration: number | null = null;
   try {
+    const lease = acquireTaskCommandLease(
+      prompt.targetTaskId,
+      automationClientId,
+      COORDINATOR_AUTOMATION_OWNER_ID,
+      'send a coordinator prompt',
+    );
+    if (!lease.acquired) {
+      return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
+        earliestDeliveryAt: nextRetryAt,
+        status: 'waiting-for-command-lease',
+        waitingReason: 'task-command-lease-held',
+      });
+    }
+    acquiredLeaseGeneration = lease.leaseGeneration;
+    if (lease.changed) {
+      emitTaskCommandControllerChange(context, prompt.targetTaskId);
+    }
+
+    const deliveryAttemptId = randomUUID();
+    const journal = [
+      ...prompt.deliveryJournal,
+      {
+        agentGeneration: agentMeta.generation,
+        deliveryAttemptId,
+        ptySessionId: `${prompt.targetAgentId}:${agentMeta.generation}`,
+        requestId: prompt.requestId,
+        writePreparedAt: Date.now(),
+      },
+    ];
+    let updatedPrompt = updateCoordinatorPrompt(prompt.runId, prompt.requestId, {
+      attempts: prompt.attempts + 1,
+      deliveryJournal: journal,
+      status: 'delivering',
+      waitingReason: undefined,
+    });
+
     const dispatch = materializePromptDispatch(prompt.text);
     for (const write of dispatch.writes) {
       if (!isPromptTargetActive(prompt)) {
@@ -936,7 +1253,14 @@ async function deliverCoordinatorPrompt(
       if (!currentMeta || currentMeta.generation !== agentMeta.generation) {
         throw new Error('Agent generation changed during prompt delivery');
       }
-      if (!isTaskCommandLeaseHeld(prompt.targetTaskId, automationClientId)) {
+      if (
+        !isTaskCommandLeaseGenerationHeld(
+          prompt.targetTaskId,
+          automationClientId,
+          COORDINATOR_AUTOMATION_OWNER_ID,
+          acquiredLeaseGeneration,
+        )
+      ) {
         throw new Error('Task command lease was lost during prompt delivery');
       }
       writeToAgent(prompt.targetAgentId, write.data);
@@ -945,7 +1269,20 @@ async function deliverCoordinatorPrompt(
       }
     }
 
-    const acceptedJournal = updatedPrompt.deliveryJournal.map((entry) =>
+    if (!canCompletePromptDelivery(prompt)) {
+      const latestPrompt = getLatestPromptSnapshot(prompt);
+      if (latestPrompt) {
+        return latestPrompt;
+      }
+
+      return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
+        status: 'cancelled',
+        waitingReason: 'prompt-no-longer-active',
+      });
+    }
+
+    const latestDeliveryPrompt = getLatestPromptSnapshot(prompt) ?? updatedPrompt;
+    const acceptedJournal = latestDeliveryPrompt.deliveryJournal.map((entry) =>
       entry.deliveryAttemptId === deliveryAttemptId
         ? { ...entry, writeAcceptedAt: Date.now() }
         : entry,
@@ -963,16 +1300,20 @@ async function deliverCoordinatorPrompt(
       waitingReason: error instanceof Error ? error.message : String(error),
     });
   } finally {
-    const release = releaseTaskCommandLease(
-      prompt.targetTaskId,
-      automationClientId,
-      COORDINATOR_AUTOMATION_OWNER_ID,
-      Date.now(),
-      lease.leaseGeneration,
-    );
-    if (release.changed) {
-      context.emitIpcEvent?.(IPC.TaskCommandControllerChanged, release.snapshot);
+    activePromptDeliveryKeys.delete(key);
+    if (acquiredLeaseGeneration !== null) {
+      const release = releaseTaskCommandLease(
+        prompt.targetTaskId,
+        automationClientId,
+        COORDINATOR_AUTOMATION_OWNER_ID,
+        Date.now(),
+        acquiredLeaseGeneration,
+      );
+      if (release.changed) {
+        context.emitIpcEvent?.(IPC.TaskCommandControllerChanged, release.snapshot);
+      }
     }
+    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
   }
 }
 
@@ -986,6 +1327,9 @@ async function sendCoordinatorPrompt(
   const subtask = run?.subtasks.find((candidate) => candidate.taskId === payload.targetTaskId);
   if (!run || !subtask) {
     throw new BadRequestError('targetTaskId must belong to the coordinator run');
+  }
+  if (isCoordinatorTerminalSubtaskStatus(subtask.status)) {
+    throw new BadRequestError('targetTaskId is no longer active');
   }
 
   if (payload.dedupeKey !== undefined) {
@@ -1018,7 +1362,181 @@ async function sendCoordinatorPrompt(
     text: payload.text,
     ...(payload.dedupeKey !== undefined ? { dedupeKey: payload.dedupeKey } : {}),
   });
-  return deliverCoordinatorPrompt(context, prompt);
+  return deliverCoordinatorPromptWithAdmission(context, prompt);
+}
+
+function listCoordinatorTasks(envelope: CoordinatorToolCallEnvelope): Array<{
+  agentId: string;
+  assignment: string;
+  branchName?: string;
+  lastPromptRequestId?: string;
+  status: CoordinatorSubtaskSnapshot['status'];
+  taskId: string;
+  updatedAt: number;
+  worktreePath: string;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const run = requireCoordinatorRun(envelope.runId);
+  return run.subtasks.map((subtask) => ({
+    agentId: subtask.agentId,
+    assignment: subtask.assignment,
+    ...(subtask.branchName !== undefined ? { branchName: subtask.branchName } : {}),
+    ...(subtask.lastPromptRequestId !== undefined
+      ? { lastPromptRequestId: subtask.lastPromptRequestId }
+      : {}),
+    status: subtask.status,
+    taskId: subtask.taskId,
+    updatedAt: subtask.updatedAt,
+    worktreePath: subtask.worktreePath,
+  }));
+}
+
+function getCoordinatorTaskOutput(
+  envelope: CoordinatorToolCallEnvelope,
+  payload: CoordinatorGetTaskOutputPayload,
+): {
+  agentId: string;
+  output: string;
+  taskId: string;
+  truncatedBytes: number;
+} {
+  assertCoordinatorTaskCaller(envelope);
+  const subtask = resolveTargetSubtask(envelope, payload);
+  const maxBytes = payload.maxBytes ?? TASK_OUTPUT_DEFAULT_MAX_BYTES;
+  const output = trimUtf8BufferTail(
+    getAgentScrollbackBuffer(subtask.agentId) ?? Buffer.alloc(0),
+    maxBytes,
+  );
+
+  return {
+    agentId: subtask.agentId,
+    output: output.text,
+    taskId: subtask.taskId,
+    truncatedBytes: output.truncatedBytes,
+  };
+}
+
+async function getCoordinatorTaskDiff(
+  envelope: CoordinatorToolCallEnvelope,
+  payload: CoordinatorGetTaskDiffPayload,
+): Promise<{
+  files: Awaited<ReturnType<typeof getProjectDiff>>['files'];
+  patch?: string;
+  taskId: string;
+  totalAdded: number;
+  totalRemoved: number;
+  truncatedBytes: number;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const run = requireCoordinatorRun(envelope.runId);
+  if (run.projectMode === 'non-git') {
+    throw new BadRequestError('get_task_diff requires a git-backed coordinator run');
+  }
+
+  const subtask = resolveTargetSubtask(envelope, payload);
+  const patchTextPromise =
+    payload.includePatch === true ? getAllFileDiffs(subtask.worktreePath) : Promise.resolve('');
+  const [summary, patchText] = await Promise.all([
+    getProjectDiff(subtask.worktreePath, 'all'),
+    patchTextPromise,
+  ]);
+  let trimmedPatch = { text: '', truncatedBytes: 0 };
+  if (payload.includePatch === true) {
+    trimmedPatch = trimUtf8Text(patchText, payload.maxBytes ?? TASK_DIFF_DEFAULT_MAX_BYTES);
+  }
+
+  return {
+    files: summary.files,
+    ...(payload.includePatch === true ? { patch: trimmedPatch.text } : {}),
+    taskId: subtask.taskId,
+    totalAdded: summary.totalAdded,
+    totalRemoved: summary.totalRemoved,
+    truncatedBytes: trimmedPatch.truncatedBytes,
+  };
+}
+
+async function waitForCoordinatorTaskIdle(
+  envelope: CoordinatorToolCallEnvelope,
+  payload: CoordinatorWaitForIdlePayload,
+): Promise<{
+  agentId: string;
+  idle: boolean;
+  state: AgentSupervisionSnapshot['state'] | 'missing';
+  taskId: string;
+  timedOut: boolean;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const subtask = resolveTargetSubtask(envelope, payload);
+  const deadline = Date.now() + (payload.timeoutMs ?? WAIT_FOR_IDLE_MAX_TIMEOUT_MS);
+
+  while (true) {
+    const currentSubtask = getCoordinatorRun(envelope.runId)?.subtasks.find(
+      (candidate) => candidate.taskId === subtask.taskId,
+    );
+    if (!currentSubtask || isCoordinatorTerminalSubtaskStatus(currentSubtask.status)) {
+      return {
+        agentId: subtask.agentId,
+        idle: false,
+        state: 'missing',
+        taskId: subtask.taskId,
+        timedOut: false,
+      };
+    }
+
+    const supervision = getAgentSupervisionSnapshot(subtask.agentId);
+    if (supervision?.taskId === subtask.taskId && supervision.state === 'idle-at-prompt') {
+      return {
+        agentId: subtask.agentId,
+        idle: true,
+        state: supervision.state,
+        taskId: subtask.taskId,
+        timedOut: false,
+      };
+    }
+
+    const now = Date.now();
+    if (now >= deadline) {
+      break;
+    }
+    await sleep(WAIT_FOR_IDLE_POLL_MS);
+  }
+
+  const supervision = getAgentSupervisionSnapshot(subtask.agentId);
+  return {
+    agentId: subtask.agentId,
+    idle: false,
+    state: supervision?.taskId === subtask.taskId ? supervision.state : 'missing',
+    taskId: subtask.taskId,
+    timedOut: true,
+  };
+}
+
+async function closeCoordinatorSubtask(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolCallEnvelope,
+  payload: CoordinatorCloseTaskPayload,
+): Promise<{
+  cleanupWarnings: DeleteTaskCleanupWarning[];
+  status: CoordinatorSubtaskSnapshot['status'];
+  taskId: string;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const run = requireCoordinatorRun(envelope.runId);
+  const subtask = run.subtasks.find((candidate) => candidate.taskId === payload.targetTaskId);
+  if (!subtask) {
+    throw new BadRequestError('targetTaskId must belong to the coordinator run');
+  }
+
+  const cleanupWarnings = await cleanupCoordinatorSubtaskRuntime(gateway, run, subtask);
+  const latestSubtask = getCoordinatorRun(run.id)?.subtasks.find(
+    (candidate) => candidate.taskId === subtask.taskId,
+  );
+
+  return {
+    cleanupWarnings,
+    status: latestSubtask?.status ?? subtask.status,
+    taskId: subtask.taskId,
+  };
 }
 
 async function landCoordinatorSubtask(
@@ -1219,8 +1737,25 @@ export async function executeCoordinatorToolCall(
 
   let result: unknown;
   switch (envelope.toolName) {
+    case 'close_task':
+      result = await closeCoordinatorSubtask(
+        gateway,
+        envelope,
+        readCloseTaskPayload(envelope.payload),
+      );
+      break;
+    case 'get_task_diff':
+      result = await getCoordinatorTaskDiff(envelope, readGetTaskDiffPayload(envelope.payload));
+      break;
+    case 'get_task_output':
+      result = getCoordinatorTaskOutput(envelope, readGetTaskOutputPayload(envelope.payload));
+      break;
     case 'get_task_status':
+      assertCoordinatorTaskCaller(envelope);
       result = getCoordinatorRun(envelope.runId);
+      break;
+    case 'list_tasks':
+      result = listCoordinatorTasks(envelope);
       break;
     case 'spawn_subtask':
       result = await createHiddenSubtask(gateway, envelope, readSpawnPayload(envelope.payload));
@@ -1246,6 +1781,9 @@ export async function executeCoordinatorToolCall(
         envelope,
         readLandSelfPayload(envelope.payload),
       );
+      break;
+    case 'wait_for_idle':
+      result = await waitForCoordinatorTaskIdle(envelope, readWaitForIdlePayload(envelope.payload));
       break;
     default:
       throw new BadRequestError('Unknown coordinator tool');
