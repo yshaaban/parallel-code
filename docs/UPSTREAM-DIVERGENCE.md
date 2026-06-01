@@ -160,10 +160,12 @@ history. The local implementation ports the behavior that fits this fork's brows
   `tmp`, `dompurify`, `electron`, `vite`, MCP transport dependencies, and related transitive
   security updates
 
-Coordinator prompt-delivery, write-lock, task self-landing, and Antigravity MCP restore changes from
-the same upstream span remain design-only. They depend on upstream coordinator architecture that is
-not the local browser-first control-plane owner. Port them only through a future backend-owned,
-replayable, multi-client coordinator design.
+Coordinator prompt-delivery, task-command lease ownership, hidden subtask inspection, explicit
+subtask cleanup, and task self-landing have now been ported by behavior through the local
+browser-server coordinator owner. Upstream's MCP runtime and Antigravity MCP restore path are still
+not imported because they depend on a different desktop-local coordinator architecture. Any future
+parity work in that area must continue to flow through the backend-owned, replayable, multi-client
+coordinator design in this fork.
 
 The bring/remap queue from `7aaf640..6097655` landed locally without merging upstream history. The
 local result is recorded by behavior and by local implementation commits:
@@ -201,9 +203,10 @@ history:
 - selected-agent projection is now persisted and applied across task navigation, prompt/diff/notes
   targeting, browser session restore, cold bootstrap, collapse/restore, and AI terminal rendering.
 - coordinator mode now has a local browser-server backend owner for replayable runs, hidden
-  subtasks, prompt delivery, task-command lease ownership, and self-landing. Upstream MCP shape is
-  still not imported; Electron-only and Docker-runner coordinator paths remain unsupported until
-  they have a separate gateway and credential policy.
+  subtasks, prompt delivery, task-command lease ownership, subtask inspection, explicit subtask
+  cleanup, and self-landing. Upstream MCP shape is still not imported; Electron-only and
+  Docker-runner coordinator paths remain unsupported until they have a separate gateway and
+  credential policy.
 
 Remaining design-only work is limited to arbitrary/custom theme editing beyond guarded built-in
 tokens and deeper coordinator/MCP parity beyond the browser-server coordinator owner. Those pieces

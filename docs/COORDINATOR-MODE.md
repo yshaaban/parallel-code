@@ -29,20 +29,31 @@ Browser mode exposes `POST /api/coordinator/tool-call`. The browser token is not
 that endpoint; each tool call must include the per-task coordinator token from the credential file.
 
 The helper command is exported to agents as `PARALLEL_CODE_COORDINATOR_TOOL` when a reachable
-tool-call URL exists. The credential path is exported as `PARALLEL_CODE_COORDINATOR_CREDENTIAL`.
+tool-call URL exists. The credential path is exported as `PARALLEL_CODE_COORDINATOR_CREDENTIAL`,
+and the durable run identifier is exported as `PARALLEL_CODE_COORDINATOR_RUN_ID`.
+
+Coordinator prompts are not sent as ordinary free text. The initial coordinator task prompt and
+each subtask assignment include the local tool command, the allowed workflow, and the expectation
+that subtasks report readiness through coordinator tools. This keeps Codex and custom terminal
+agents aligned without importing upstream MCP runtime assumptions.
 
 ## Tools
 
-The current tool surface is intentionally small:
+The current tool surface is intentionally small and explicit:
 
 - `get_task_status` returns the run snapshot.
+- `list_tasks` returns the coordinator-owned subtask list.
 - `spawn_subtask` creates a hidden task and hidden PTY-backed agent, then queues the assignment.
 - `send_prompt` queues a prompt for a run-owned subtask.
+- `wait_for_idle` waits for a target subtask to reach backend `idle-at-prompt` supervision.
+- `get_task_output` returns a capped tail of the target subtask's backend scrollback.
+- `get_task_diff` returns git diff summary, and optionally a capped patch, for a git-backed subtask.
 - `signal_done` marks a subtask ready for review.
 - `land_self` validates and lands a git-backed subtask into the coordinator project root.
+- `close_task` lets the coordinator explicitly clean up a run-owned subtask without landing it.
 
-Subtasks can call only subtask-owned tools. The coordinator task is the only caller allowed to spawn
-subtasks or send prompts.
+Subtasks can call only subtask-owned tools. The coordinator task is the only caller allowed to list,
+inspect, spawn, prompt, wait on, or close subtasks.
 
 ## Safety Rules
 
@@ -54,13 +65,21 @@ cleanup. Restored coordinator runs are marked `stale-after-restore` because hidd
 not reconstructed after a server restart.
 
 Prompt delivery goes through the task-command lease path before writing to the PTY. It waits for
-backend supervision to report `idle-at-prompt`, backs off while the agent is busy, and retries after
-supervision or timer events. A prompt blocked by `awaiting-input` is left for the coordinator to
-inspect instead of being force-written over a question.
+backend supervision to report `idle-at-prompt`, backs off while the agent is busy, verifies the exact
+lease generation while writing, and retries after supervision or timer events. A prompt blocked by
+`awaiting-input` is left for the coordinator to inspect instead of being force-written over a
+question.
 
 Prompt queues are bounded per target subtask, and stable prompt/spawn dedupe keys are honored before
 creating additional hidden tasks or queue entries. Subtask cleanup cancels queued prompts and
-revokes the subtask credential before any later retry can write to the PTY.
+revokes the subtask credential before any later retry can write to the PTY. Prompt writes are also
+serialized per target subtask, so direct tool calls and scheduled retries cannot interleave bytes in
+the same terminal.
+
+`spawn_subtask` accepts a direct command plus optional args, environment, and skip-permission args.
+This is the coordinator-compatible path for Codex and for custom terminal agents. Docker runner
+profiles stay outside the support boundary until credential mounting and container networking have
+their own design.
 
 `land_self` acquires the coordinator parent task command lease, checks child and parent git status,
 merges, runs the real task deletion workflow for the hidden child, revokes the child credential, and
@@ -73,7 +92,8 @@ Coordinator work should prefer browser-free tests first:
 - domain guard tests for coordinator snapshots and events
 - runtime tests for replayable state and restored stale status
 - service tests for credentials, token lookup, revocation, and persistence
-- tool-gateway tests for hidden spawn, prompt retry, authorization, and landing cleanup
+- tool-gateway tests for hidden spawn, prompt serialization, prompt retry, authorization, tool
+  payload validation, output/diff caps, idle waits, and landing cleanup
 - server-state bootstrap tests for coordinator snapshots and live events
 - browser-control-client tests for `coordinator-event` dispatch
 

@@ -116,8 +116,12 @@ For coordinator-mode work:
   category seam
 - prove prompt delivery against backend supervision and task-command leases; mounted terminals or
   `PromptInput` should not be required
+- prove direct and scheduled prompt delivery cannot interleave writes to the same target task
+- prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
+  runs
 - prove spawn rollback, credential revocation, restored stale runs, and landing cleanup before
   relying on browser canaries
+- prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests
 - keep browser canaries for true browser-server routing/UI creation only
 - do not enable coordinator mode for Electron-only or Docker-runner paths without separate gateway
   and credential-mount proof

@@ -85,7 +85,7 @@ All three shells operate on the same underlying concepts:
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
 - `Coordinator` is the browser-server-only backend owner for orchestration runs, hidden subtasks,
-  prompt delivery, and self-landing state
+  prompt delivery, subtask inspection, explicit subtask cleanup, and self-landing state
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - `PeerPresence` is ephemeral per-browser-session identity plus focus/control context
@@ -107,6 +107,13 @@ Recent quality work has made the real seams explicit:
 - server-owned state like browser git status now prefers push and replay over client polling
 - supervision and attention state are backend-owned and pushed to clients
 - lifecycle-heavy transport code is now typed and tested more aggressively
+
+Agent launch definitions may include a command, args, and a small explicit environment map. The UI
+can create one-off custom terminal agents from a direct command line, but spawning remains a backend
+PTY responsibility and command availability remains a backend check. `src/lib/direct-command.ts`
+parses launch intent, `src/lib/agent-spawn-config.ts` projects `AgentDef.env`, backend availability
+resolution stays in `electron/ipc/command-resolver.ts`, and PTY spawn/env filtering stays in the
+backend PTY owner.
 
 ## High-Level Layers
 
