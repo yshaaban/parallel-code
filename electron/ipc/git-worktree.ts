@@ -3,6 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
+import {
+  findBranchRefPrefixConflict,
+  formatBranchRefPrefixConflict,
+} from '../../src/lib/branch-name.js';
+import { BadRequestError } from './errors.js';
 import { invalidateGitQueryCacheForPath } from './git-cache.js';
 
 const exec = promisify(execFile);
@@ -100,6 +105,28 @@ export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeLis
     cwd: repoRoot,
   });
   return parseGitWorktreeList(stdout);
+}
+
+async function listLocalBranchNames(repoRoot: string): Promise<string[]> {
+  const { stdout } = await exec(
+    'git',
+    ['for-each-ref', '--format=%(refname:strip=2)', 'refs/heads'],
+    {
+      cwd: repoRoot,
+    },
+  );
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+async function assertBranchRefPrefixAvailable(repoRoot: string, branchName: string): Promise<void> {
+  const localBranches = await listLocalBranchNames(repoRoot);
+  const conflict = findBranchRefPrefixConflict(branchName, localBranches);
+  if (conflict) {
+    throw new BadRequestError(formatBranchRefPrefixConflict(conflict));
+  }
 }
 
 async function gitRefExists(repoRoot: string, refName: string): Promise<boolean> {
@@ -203,6 +230,8 @@ export async function createWorktree(
       `Branch "${baseBranch || startRef.refName}" does not exist. Please select a valid base branch or create the branch first.`,
     );
   }
+
+  await assertBranchRefPrefixAvailable(repoRoot, branchName);
 
   // Create fresh worktree with new branch
   const worktreeArgs = ['worktree', 'add', '-b', branchName, worktreePath];

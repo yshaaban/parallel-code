@@ -1,14 +1,15 @@
-import { Show } from 'solid-js';
+import { Show, type JSX } from 'solid-js';
 import { theme } from '../lib/theme';
 
 interface BranchPrefixFieldProps {
   branchPrefix: string;
   branchPreview: string;
+  conflictMessage?: string;
   projectPath: string | undefined;
   onPrefixChange: (prefix: string) => void;
 }
 
-export function BranchPrefixField(props: BranchPrefixFieldProps) {
+export function BranchPrefixField(props: BranchPrefixFieldProps): JSX.Element {
   return (
     <div
       data-nav-field="branch-prefix"
@@ -37,8 +38,25 @@ export function BranchPrefixField(props: BranchPrefixFieldProps) {
           }}
         />
       </div>
+      <Show when={props.conflictMessage}>
+        <div
+          role="alert"
+          style={{
+            background: 'color-mix(in srgb, var(--error) 10%, transparent)',
+            border: `1px solid color-mix(in srgb, ${theme.error} 45%, transparent)`,
+            'border-radius': '8px',
+            color: theme.errorText,
+            'font-size': '11px',
+            'line-height': '1.35',
+            padding: '7px 9px',
+          }}
+        >
+          {props.conflictMessage}
+        </div>
+      </Show>
       <Show when={props.branchPreview && props.projectPath}>
         <div
+          data-user-select="text"
           style={{
             'font-size': '11px',
             'font-family': "'JetBrains Mono', monospace",

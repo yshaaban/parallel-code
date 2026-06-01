@@ -147,6 +147,10 @@ describe('git-worktree', () => {
         return { stdout: 'abc123\n' };
       }
 
+      if (args.join(' ') === 'for-each-ref --format=%(refname:strip=2) refs/heads') {
+        return { stdout: 'main\nfeature/base\n' };
+      }
+
       if (
         args[0] === 'worktree' &&
         args[1] === 'add' &&
@@ -179,6 +183,10 @@ describe('git-worktree', () => {
         return { stdout: 'abc123\n' };
       }
 
+      if (args.join(' ') === 'for-each-ref --format=%(refname:strip=2) refs/heads') {
+        return { stdout: 'main\nfeature/base\n' };
+      }
+
       if (
         args[0] === 'worktree' &&
         args[1] === 'add' &&
@@ -196,6 +204,98 @@ describe('git-worktree', () => {
     const { createWorktree } = await import('./git-worktree.js');
 
     await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).resolves.toEqual({
+      branch: 'task/test',
+      path: '/repo/.worktrees/task/test',
+    });
+  });
+
+  it('rejects a proposed branch below an existing local branch ref', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD') {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (args.join(' ') === 'for-each-ref --format=%(refname:strip=2) refs/heads') {
+        return { stdout: 'main\nfeature\n' };
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { createWorktree } = await import('./git-worktree.js');
+
+    await expect(createWorktree('/repo', 'feature/task', [])).rejects.toThrow(
+      'Cannot create branch "feature/task" because local branch "feature" already uses that ref path.',
+    );
+    expect(
+      execFileMock.mock.calls.some(
+        ([, args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a proposed branch that would block an existing local branch ref', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD') {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (args.join(' ') === 'for-each-ref --format=%(refname:strip=2) refs/heads') {
+        return { stdout: 'main\nfeature/task\n' };
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { createWorktree } = await import('./git-worktree.js');
+
+    await expect(createWorktree('/repo', 'feature', [])).rejects.toThrow(
+      'Cannot create branch "feature" because it would block existing local branch "feature/task".',
+    );
+    expect(
+      execFileMock.mock.calls.some(
+        ([, args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
+      ),
+    ).toBe(false);
+  });
+
+  it('allows an exact local branch match so task allocation can retry on normal collision errors', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD') {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (args.join(' ') === 'for-each-ref --format=%(refname:strip=2) refs/heads') {
+        return { stdout: 'main\ntask/test\n' };
+      }
+
+      if (
+        args[0] === 'worktree' &&
+        args[1] === 'add' &&
+        args[2] === '-b' &&
+        args[3] === 'task/test'
+      ) {
+        return {};
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { createWorktree } = await import('./git-worktree.js');
+
+    await expect(createWorktree('/repo', 'task/test', [])).resolves.toEqual({
       branch: 'task/test',
       path: '/repo/.worktrees/task/test',
     });

@@ -48,7 +48,13 @@ vi.mock('./AgentSelector', () => ({
 }));
 
 vi.mock('./BranchPrefixField', () => ({
-  BranchPrefixField: () => null,
+  BranchPrefixField: (props: { conflictMessage?: string }) => (
+    <div>
+      <Show when={props.conflictMessage}>
+        <div role="alert">{props.conflictMessage}</div>
+      </Show>
+    </div>
+  ),
 }));
 
 vi.mock('./ProjectSelect', () => ({
@@ -113,6 +119,25 @@ async function openAdvanced(): Promise<void> {
   }
 }
 
+function mockListBranches(localBranchNames: string[]): void {
+  invokeMock.mockImplementation((channel: string) => {
+    if (channel === 'list_branches') {
+      return Promise.resolve({
+        branches: localBranchNames.map((name, index) => ({
+          current: index === 0,
+          local: true,
+          name,
+          remote: name === 'main' || name === 'release/main',
+        })),
+        defaultBranch: 'main',
+        generatedAt: 123,
+      });
+    }
+
+    return Promise.resolve([]);
+  });
+}
+
 describe('NewTaskDialog', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -128,30 +153,7 @@ describe('NewTaskDialog', () => {
         skip_permissions_args: ['--yolo'],
       }),
     ]);
-    invokeMock.mockImplementation((channel: string) => {
-      if (channel === 'list_branches') {
-        return Promise.resolve({
-          branches: [
-            {
-              current: true,
-              local: true,
-              name: 'main',
-              remote: true,
-            },
-            {
-              current: false,
-              local: true,
-              name: 'release/main',
-              remote: true,
-            },
-          ],
-          defaultBranch: 'main',
-          generatedAt: 123,
-        });
-      }
-
-      return Promise.resolve([]);
-    });
+    mockListBranches(['main', 'release/main']);
   });
 
   afterEach(() => {
@@ -499,6 +501,62 @@ describe('NewTaskDialog', () => {
         }),
       );
     });
+  });
+
+  it('blocks managed task creation when the local branch prefix would conflict', async () => {
+    const user = userEvent.setup();
+    setStore('projects', [
+      createTestProject({
+        branchPrefix: 'feature',
+      }),
+    ]);
+    mockListBranches(['main', 'feature']);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    await user.type(taskNameInput, 'Ship it');
+
+    expect(await screen.findByText(/Cannot create branch "feature\/ship-it"/)).toBeDefined();
+    const createButton = screen.getByRole('button', {
+      name: 'Create Task',
+    }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(false);
+
+    await user.click(createButton);
+    expect(createTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('reveals the branch conflict when submit is clicked with advanced collapsed', async () => {
+    const user = userEvent.setup();
+    setStore('projects', [
+      createTestProject({
+        branchPrefix: 'feature',
+      }),
+    ]);
+    mockListBranches(['main', 'feature']);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    await user.type(taskNameInput, 'Ship it');
+
+    const advancedToggle = await screen.findByRole('button', { name: /^Advanced/i });
+    expect(advancedToggle.getAttribute('aria-expanded')).toBe('false');
+
+    const createButton = screen.getByRole('button', {
+      name: 'Create Task',
+    }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(false);
+
+    await user.click(createButton);
+
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(advancedToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(await screen.findAllByText(/Cannot create branch "feature\/ship-it"/)).not.toHaveLength(
+      0,
+    );
   });
 
   it('creates non-git project tasks without branch controls', async () => {

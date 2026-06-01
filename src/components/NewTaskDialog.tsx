@@ -33,7 +33,12 @@ import {
   createTask,
 } from '../app/task-workflows';
 import { loadAgents } from '../app/agent-catalog';
-import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
+import {
+  findBranchRefPrefixConflict,
+  formatBranchRefPrefixConflict,
+  sanitizeBranchPrefix,
+  toBranchName,
+} from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';
 import { isHydraAgentDef } from '../lib/hydra';
@@ -366,6 +371,26 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return n ? `${prefix}/${toBranchName(n)}` : '';
   }
 
+  function localBranchNames(): string[] {
+    return branchOptions()
+      .filter((branch) => branch.local)
+      .map((branch) => branch.name);
+  }
+
+  function branchPreviewConflictMessage(): string | undefined {
+    if (branchListStatus() !== 'ready') {
+      return undefined;
+    }
+
+    const preview = branchPreview();
+    if (!preview) {
+      return undefined;
+    }
+
+    const conflict = findBranchRefPrefixConflict(preview, localBranchNames());
+    return conflict ? formatBranchRefPrefixConflict(conflict) : undefined;
+  }
+
   function selectedProjectPath(): string | undefined {
     const pid = selectedProjectId();
     return pid ? getProjectPath(pid) : undefined;
@@ -556,6 +581,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     ) {
       count += 1;
     }
+    if (createsNewWorktree() && branchPreviewConflictMessage()) {
+      count += 1;
+    }
     return count;
   }
 
@@ -627,6 +655,13 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     if (projectMode === 'git' && !selectedBaseBranchAvailable()) {
       setError('Selected base branch is no longer available. Refresh the branch list.');
+      setAdvancedOpen(true);
+      return;
+    }
+
+    const branchConflict = branchPreviewConflictMessage();
+    if (createsNewWorktree() && branchConflict) {
+      setError(branchConflict);
       setAdvancedOpen(true);
       return;
     }
@@ -779,6 +814,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       panelStyle={{ gap: '11px', padding: '20px' }}
     >
       <form
+        class="new-task-dialog-form"
         ref={formRef}
         onSubmit={handleSubmit}
         style={{
@@ -1152,6 +1188,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 <BranchPrefixField
                   branchPrefix={branchPrefix()}
                   branchPreview={branchPreview()}
+                  conflictMessage={branchPreviewConflictMessage()}
                   projectPath={selectedProjectPath()}
                   onPrefixChange={setBranchPrefix}
                 />

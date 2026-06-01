@@ -122,6 +122,19 @@ describe('createTask', () => {
     );
     expect(createWorktreeMock).toHaveBeenCalledOnce();
   });
+
+  it('does not retry branch ref prefix conflicts', async () => {
+    createWorktreeMock.mockRejectedValue(
+      new Error(
+        'Cannot create branch "feature/test" because local branch "feature" already uses that ref path.',
+      ),
+    );
+
+    await expect(createTask('Test', '/tmp/project', [], 'feature')).rejects.toThrow(
+      'Cannot create branch "feature/test"',
+    );
+    expect(createWorktreeMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe('createNonGitTask', () => {

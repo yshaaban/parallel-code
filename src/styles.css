@@ -920,6 +920,18 @@ body.dragging-task * {
   cursor: grabbing !important;
 }
 
+.new-task-dialog-form {
+  user-select: none;
+}
+
+.new-task-dialog-form input,
+.new-task-dialog-form select,
+.new-task-dialog-form textarea,
+.new-task-dialog-form [role='alert'],
+.new-task-dialog-form [data-user-select='text'] {
+  user-select: text;
+}
+
 .editable-text {
   font-family: var(--font-display);
   font-size: calc(13px * var(--font-scale, 1));
