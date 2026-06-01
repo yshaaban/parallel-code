@@ -2855,6 +2855,56 @@ describe('TerminalView', () => {
     );
   });
 
+  it('does not reserve switch echo grace for the initially selected terminal', async () => {
+    vi.useFakeTimers();
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      switchPostInputReadyEchoGraceMs: 120,
+      switchTargetWindowMs: 250,
+    };
+    setStore('activeTaskId', 'task-1');
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={true}
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    getLastPaintReadyChangeHandler()?.(true);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: expect.objectContaining({
+          reason: 'completed',
+          taskId: 'task-1',
+        }),
+      }),
+    );
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: null,
+        targetTaskId: null,
+      }),
+    );
+  });
+
   it('starts a post-input-ready switch echo grace when configured', async () => {
     vi.useFakeTimers();
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {

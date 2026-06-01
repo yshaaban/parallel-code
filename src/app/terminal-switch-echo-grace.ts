@@ -24,6 +24,7 @@ type TerminalSwitchEchoGraceState =
       kind: 'pending';
       startedAtMs: number;
       targetTaskId: string;
+      timeoutMs: number;
       timeoutAtMs: number;
     }
   | {
@@ -31,6 +32,7 @@ type TerminalSwitchEchoGraceState =
       kind: 'active';
       startedAtMs: number;
       targetTaskId: string;
+      timeoutMs: number;
       timeoutAtMs: number;
     };
 
@@ -42,7 +44,11 @@ let lastSwitchEchoGraceCompletion: TerminalSwitchEchoGraceCompletion | null = nu
 const switchEchoGraceListeners = new Set<TerminalSwitchEchoGraceListener>();
 
 function getNowMs(): number {
-  return typeof performance === 'undefined' ? 0 : performance.now();
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+
+  return Date.now();
 }
 
 function clearSwitchEchoGraceTimer(): void {
@@ -109,24 +115,29 @@ function advanceSwitchEchoGrace(expectedTaskId?: string): void {
 }
 
 export function activateTerminalSwitchEchoGrace(taskId: string): void {
+  clearExpiredSwitchEchoGrace();
   const activeGrace = switchEchoGraceState;
   switch (activeGrace.kind) {
     case 'idle':
       return;
-    case 'pending':
+    case 'pending': {
       if (activeGrace.targetTaskId !== taskId) {
         return;
       }
 
+      const activatedAtMs = getNowMs();
       switchEchoGraceState = {
-        activatedAtMs: getNowMs(),
+        activatedAtMs,
         kind: 'active',
         startedAtMs: activeGrace.startedAtMs,
         targetTaskId: activeGrace.targetTaskId,
-        timeoutAtMs: activeGrace.timeoutAtMs,
+        timeoutMs: activeGrace.timeoutMs,
+        timeoutAtMs: activatedAtMs + activeGrace.timeoutMs,
       };
+      scheduleSwitchEchoGraceTimer(taskId);
       notifySwitchEchoGraceListeners();
       return;
+    }
     case 'active':
       return;
     default:
@@ -177,6 +188,7 @@ export function beginTerminalSwitchEchoGrace(taskId: string, timeoutMs: number):
     kind: 'pending',
     startedAtMs,
     targetTaskId: taskId,
+    timeoutMs,
     timeoutAtMs: startedAtMs + timeoutMs,
   };
   scheduleSwitchEchoGraceTimer(taskId);
@@ -210,6 +222,19 @@ export function isTerminalSwitchEchoGraceActiveForTask(taskId: string): boolean 
     case 'idle':
     case 'pending':
       return false;
+    case 'active':
+      return switchEchoGraceState.targetTaskId === taskId;
+    default:
+      return assertNever(switchEchoGraceState, 'Unhandled terminal switch-echo-grace state');
+  }
+}
+
+export function hasTerminalSwitchEchoGraceReservationForTask(taskId: string): boolean {
+  clearExpiredSwitchEchoGrace();
+  switch (switchEchoGraceState.kind) {
+    case 'idle':
+      return false;
+    case 'pending':
     case 'active':
       return switchEchoGraceState.targetTaskId === taskId;
     default:

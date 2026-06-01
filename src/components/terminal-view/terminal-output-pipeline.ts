@@ -19,6 +19,7 @@ import { getTerminalFramePressureLevel } from '../../app/terminal-frame-pressure
 import { getVisibleTerminalCount } from '../../app/terminal-visible-set';
 import {
   completeTerminalSwitchEchoGrace,
+  hasTerminalSwitchEchoGraceReservationForTask,
   isTerminalSwitchEchoGraceActiveForTask,
 } from '../../app/terminal-switch-echo-grace';
 import { isTerminalSwitchWindowActive } from '../../app/terminal-switch-window';
@@ -173,11 +174,22 @@ export function createTerminalOutputPipeline(
   }
 
   function getStatusPayload(chunk: Uint8Array): Uint8Array {
-    if (chunk.length <= STATUS_ANALYSIS_MAX_BYTES) {
+    if (
+      chunk.length <= STATUS_ANALYSIS_MAX_BYTES &&
+      chunk.byteOffset === 0 &&
+      chunk.byteLength === chunk.buffer.byteLength
+    ) {
       return chunk;
     }
 
-    return chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES);
+    return copyStatusPayloadTail(chunk);
+  }
+
+  function copyStatusPayloadTail(payload: Uint8Array): Uint8Array {
+    const tail = payload.subarray(Math.max(0, payload.length - STATUS_ANALYSIS_MAX_BYTES));
+    const copy = new Uint8Array(tail.length);
+    copy.set(tail);
+    return copy;
   }
 
   function isFocusedOutputPriority(): boolean {
@@ -565,7 +577,7 @@ export function createTerminalOutputPipeline(
     batchLimitBytes: number,
     visibleTerminalCount: number,
   ): number {
-    if (!isFocusedOutputPriority() || !isTerminalSwitchEchoGraceActiveForTask(taskId)) {
+    if (!isFocusedOutputPriority() || !hasTerminalSwitchEchoGraceReservationForTask(taskId)) {
       return batchLimitBytes;
     }
 
@@ -599,11 +611,11 @@ export function createTerminalOutputPipeline(
     nextPayload: Uint8Array,
   ): Uint8Array {
     if (!previousPayload || previousPayload.length === 0) {
-      return nextPayload;
+      return getStatusPayload(nextPayload);
     }
 
     if (nextPayload.length >= STATUS_ANALYSIS_MAX_BYTES) {
-      return nextPayload.subarray(nextPayload.length - STATUS_ANALYSIS_MAX_BYTES);
+      return copyStatusPayloadTail(nextPayload);
     }
 
     const previousBytesToKeep = Math.min(
@@ -674,10 +686,7 @@ export function createTerminalOutputPipeline(
       return;
     }
 
-    pendingBackgroundStatusPayload =
-      statusPayload.length > STATUS_ANALYSIS_MAX_BYTES
-        ? statusPayload.subarray(statusPayload.length - STATUS_ANALYSIS_MAX_BYTES)
-        : statusPayload;
+    pendingBackgroundStatusPayload = getStatusPayload(statusPayload);
     if (backgroundStatusDispatchTimer !== undefined) {
       return;
     }
@@ -994,7 +1003,6 @@ export function createTerminalOutputPipeline(
           options.markTerminalReady();
           if (isFocusedOutputPriority()) {
             completeTerminalFocusedInputEcho(taskId, agentId);
-            completeTerminalSwitchEchoGrace(taskId);
           }
         }
         if (watermark < FLOW_LOW && isFlowPauseApplied()) {
@@ -1019,6 +1027,9 @@ export function createTerminalOutputPipeline(
 
         hasCompletedInitialQueueDrain = true;
         queuedRedrawControlSinceDrainStart = false;
+        if (isFocusedOutputPriority() && isTerminalSwitchEchoGraceActiveForTask(taskId)) {
+          completeTerminalSwitchEchoGrace(taskId);
+        }
         options.onQueueEmpty();
       } finally {
         recordTerminalOutputWriteFinalization({

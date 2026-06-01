@@ -439,6 +439,21 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('copies status payload tails so large write buffers can be released', () => {
+    const { finishNextWrite, onData, pipeline } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    const payload = onData.mock.calls[0]?.[0] as Uint8Array | undefined;
+    expect(payload?.length).toBe(8 * 1024);
+    expect(payload?.buffer.byteLength).toBe(8 * 1024);
+
+    pipeline.cleanup();
+  });
+
   it('keeps recent interactive echo chunks split while the first focused write is in flight', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
@@ -652,8 +667,10 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('completes the post-input-ready echo grace on the first focused write', () => {
-    const { pipeline, writes } = createPipeline();
+  it('completes the post-input-ready echo grace when focused output drains', () => {
+    const { pipeline, writes } = createPipelineWithOptions('focused', {
+      hasObservedLocalInput: true,
+    });
 
     beginTerminalSwitchEchoGrace('task-1', 120);
     activateTerminalSwitchEchoGrace('task-1');
@@ -673,10 +690,11 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('applies a one-shot focused queued-write cap while the post-input-ready echo grace is active', () => {
+  it('keeps the focused queued-write cap active while switch echo grace has backlog', () => {
+    const writeCapBytes = 8 * 1024;
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes: {
-        '1': 8 * 1024,
+        '1': writeCapBytes,
       },
     };
     resetTerminalPerformanceExperimentConfigForTests();
@@ -686,17 +704,35 @@ describe('terminal-output-pipeline', () => {
       createPipelineWithManualWrites('focused');
 
     markLocalInputObserved();
-    beginTerminalSwitchEchoGrace('task-1', 120);
+    beginTerminalSwitchEchoGrace('task-1', 1_500);
     activateTerminalSwitchEchoGrace('task-1');
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
     vi.advanceTimersToNextTimer();
 
-    expect(writes[0]?.length).toBe(8 * 1024);
+    expect(writes[0]?.length).toBe(writeCapBytes);
 
     finishNextWrite();
     advanceQueuedOutputFlushTimers();
 
-    expect(writes[1]?.length).toBe(40_000 - 8 * 1024);
+    expect(writes[1]?.length).toBe(writeCapBytes);
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        lastCompletion: null,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[4]?.length).toBe(40_000 - 4 * writeCapBytes);
+
+    finishNextWrite();
     expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
       expect.objectContaining({
         active: false,
@@ -704,15 +740,15 @@ describe('terminal-output-pipeline', () => {
           reason: 'completed',
           taskId: 'task-1',
         }),
+        targetTaskId: null,
       }),
     );
 
-    finishNextWrite();
     pipeline.cleanup();
     unregisterVisibleTerminals(visibleRegistrations);
   });
 
-  it('does not apply the focused queued-write cap before the post-input-ready echo grace activates', () => {
+  it('applies the focused queued-write cap while switch echo grace is pending', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       visibleCountSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes: {
         '1': 8 * 1024,
@@ -727,10 +763,11 @@ describe('terminal-output-pipeline', () => {
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
     advanceQueuedOutputFlushTimers();
 
-    expect(writes[0]?.length).toBe(40_000);
+    expect(writes[0]?.length).toBe(8 * 1024);
     expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
       expect.objectContaining({
         active: false,
+        lastCompletion: null,
         targetTaskId: 'task-1',
       }),
     );
@@ -1462,7 +1499,7 @@ describe('terminal-output-pipeline', () => {
       createPipelineWithManualWrites('focused');
 
     markLocalInputObserved();
-    beginTerminalSwitchEchoGrace('task-1', 180);
+    beginTerminalSwitchEchoGrace('task-1', 1_500);
     activateTerminalSwitchEchoGrace('task-1');
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
     vi.advanceTimersToNextTimer();
@@ -1472,9 +1509,90 @@ describe('terminal-output-pipeline', () => {
     finishNextWrite();
     advanceQueuedOutputFlushTimers();
 
-    expect(writes[1]?.length).toBe(40_000 - 8 * 1024);
+    expect(writes[1]?.length).toBe(8 * 1024);
 
     finishNextWrite();
+    pipeline.cleanup();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('keeps sparse switch echo grace reserved until local input is observed', () => {
+    Reflect.deleteProperty(window, '__PARALLEL_CODE_TERMINAL_EXPERIMENTS__');
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+
+    const visibleRegistrations = registerVisibleTerminals(2);
+    const { finishNextWrite, markLocalInputObserved, pipeline, writes } =
+      createPipelineWithManualWrites('focused');
+
+    beginTerminalSwitchEchoGrace('task-1', 1_500);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[0]?.length).toBe(8 * 1024);
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: null,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    finishNextWrite();
+
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: null,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    markLocalInputObserved();
+    activateTerminalSwitchEchoGrace('task-1');
+
+    expect(pipeline.flushOutputQueueSlice(64 * 1024)).toBe(8 * 1024);
+
+    finishNextWrite();
+
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        lastCompletion: null,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    pipeline.cleanup();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('does not complete a pending switch echo grace from stale local input history', () => {
+    Reflect.deleteProperty(window, '__PARALLEL_CODE_TERMINAL_EXPERIMENTS__');
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+
+    const visibleRegistrations = registerVisibleTerminals(2);
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused', {
+      hasObservedLocalInput: true,
+    });
+
+    beginTerminalSwitchEchoGrace('task-1', 1_500);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[0]?.length).toBe(8 * 1024);
+
+    finishNextWrite();
+
+    expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
+      expect.objectContaining({
+        active: false,
+        lastCompletion: null,
+        targetTaskId: 'task-1',
+      }),
+    );
+
     pipeline.cleanup();
     unregisterVisibleTerminals(visibleRegistrations);
   });

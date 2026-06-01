@@ -140,9 +140,10 @@ sparse hidden switches:
 
 - it preserves the default hidden-terminal render hibernation policy instead of accidentally
   disabling hidden-output suppression when the built-in High Load Mode config is active
-- it adds a 180ms post-input-ready switch echo grace for 1 and 2 visible terminals
-- it caps the first focused write during that sparse switch echo grace at 8KiB, so user echo is not
-  buried behind restored backlog
+- it adds a bounded switch echo grace reservation for 1 and 2 visible terminals, then renews the
+  1.5s active window when the first local input arrives
+- it caps focused writes during that sparse switch reservation at 8KiB, then completes the grace
+  when the focused backlog drains so user echo is not buried behind restored backlog
 
 The narrow browser comparison for the worst loaded lane used 24 terminals, `recent_hidden_switch`,
 one requested visible terminal, and a 3s measurement window. The first hibernation-only attempt

@@ -438,6 +438,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let switchWindowFirstPaintRaf: number | undefined;
   let switchWindowCompletionPending = false;
   let switchWindowCompletionRaf: number | undefined;
+  let switchWindowEchoGraceAllowed = false;
   let surfaceTierCleanup: (() => void) | undefined;
   let anomalyMonitorCleanup: (() => void) | undefined;
   let anomalyMonitorRegistration:
@@ -710,6 +711,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function cancelSwitchWindowState(): void {
     clearPendingSwitchWindowFirstPaint();
     clearPendingSwitchWindowCompletion();
+    switchWindowEchoGraceAllowed = false;
     if (!managesTaskSwitchWindowLifecycle) {
       return;
     }
@@ -718,7 +720,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     cancelTerminalSwitchWindow(taskId, switchWindowOwnerId);
   }
 
-  function startSwitchWindowForSelection(): void {
+  function startSwitchWindowForSelection(options?: { allowEchoGrace?: boolean }): void {
     if (!shouldManageTaskSwitchWindow()) {
       return;
     }
@@ -734,9 +736,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       switchWindowOwnerId,
       getSwitchWindowOwnerPriority(),
     );
+    switchWindowEchoGraceAllowed = options?.allowEchoGrace ?? true;
   }
 
   function beginSwitchWindowEchoGraceIfNeeded(): void {
+    if (!switchWindowEchoGraceAllowed) {
+      return;
+    }
+
     const switchPostInputReadyEchoGraceMs = getSwitchPostInputReadyEchoGraceMs();
     if (switchPostInputReadyEchoGraceMs <= 0) {
       return;
@@ -1937,7 +1944,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('focus', handleWindowFocus);
     if (isActiveCommandTarget() && initialVisibility) {
-      startSwitchWindowForSelection();
+      startSwitchWindowForSelection({ allowEchoGrace: false });
     }
 
     if (typeof IntersectionObserver === 'function') {

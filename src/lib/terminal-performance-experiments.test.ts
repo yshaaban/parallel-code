@@ -394,8 +394,8 @@ describe('terminal-performance-experiments', () => {
         'critical',
       ),
     ).toBe(0.125);
-    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(1)).toBe(180);
-    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(2)).toBe(180);
+    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(1)).toBe(1_500);
+    expect(getTerminalExperimentSwitchPostInputReadyEchoGraceMs(2)).toBe(1_500);
     expect(getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes(1)).toBe(
       8 * 1024,
     );
