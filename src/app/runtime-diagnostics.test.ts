@@ -43,6 +43,7 @@ import {
   recordTerminalResizeCommitNoopSkip,
   recordTerminalResizeCommitSuccess,
   recordTerminalResizeFlush,
+  recordTerminalResizePendingState,
   recordTerminalResizeQueued,
   resetRendererRuntimeDiagnostics,
 } from './runtime-diagnostics';
@@ -125,6 +126,12 @@ describe('runtime-diagnostics', () => {
     recordTerminalResizeCommitAttempt();
     recordTerminalResizeCommitNoopSkip();
     recordTerminalResizeCommitSuccess();
+    recordTerminalResizePendingState({
+      agentId: 'agent-1',
+      pending: true,
+      pendingSinceMs: 0,
+      reason: 'not-live',
+    });
     recordTerminalFitFlush(false);
     recordTerminalFitNoopSkip();
     recordTerminalRendererPoolSnapshot({
@@ -223,6 +230,12 @@ describe('runtime-diagnostics', () => {
     recordTerminalResizeCommitAttempt();
     recordTerminalResizeCommitNoopSkip();
     recordTerminalResizeCommitSuccess();
+    recordTerminalResizePendingState({
+      agentId: 'agent-1',
+      pending: true,
+      pendingSinceMs: 0,
+      reason: 'not-live',
+    });
     recordTerminalFitFlush(true);
     recordTerminalFitNoopSkip();
     recordTerminalRendererPoolSnapshot({
@@ -442,6 +455,10 @@ describe('runtime-diagnostics', () => {
         'restore-blocked'
       ],
     ).toBe(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingCurrent).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingReasonCounts['not-live'],
+    ).toBe(1);
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer).toEqual(
       expect.objectContaining({
         acquireAttempts: 1,
@@ -458,6 +475,76 @@ describe('runtime-diagnostics', () => {
     );
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer.rendererSwapCounts.attach).toBe(
       1,
+    );
+  });
+
+  it('tracks terminal resize pending age and clears it when the resize settles', () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+    const nowMs =
+      typeof performance === 'undefined' || typeof performance.now !== 'function'
+        ? Date.now()
+        : performance.now();
+
+    recordTerminalResizePendingState({
+      agentId: 'agent-1',
+      pending: true,
+      pendingSinceMs: nowMs - 75,
+      reason: 'scheduled',
+    });
+
+    const pendingSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(pendingSnapshot.pendingCurrent).toBe(1);
+    expect(pendingSnapshot.pendingCurrentMax).toBe(1);
+    expect(pendingSnapshot.pendingOldestAgeMs).toBeGreaterThanOrEqual(75);
+    expect(pendingSnapshot.pendingMaxAgeMs).toBeGreaterThanOrEqual(75);
+    expect(pendingSnapshot.pendingReasonCounts.scheduled).toBe(1);
+
+    recordTerminalResizePendingState({ agentId: 'agent-1', pending: false });
+
+    const clearedSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(clearedSnapshot.pendingCurrent).toBe(0);
+    expect(clearedSnapshot.pendingCurrentMax).toBe(1);
+    expect(clearedSnapshot.pendingOldestAgeMs).toBeNull();
+    expect(clearedSnapshot.pendingMaxAgeMs).toBeGreaterThanOrEqual(75);
+    expect(clearedSnapshot.pendingReasonCounts.scheduled).toBe(0);
+  });
+
+  it('clears terminal resize pending state when diagnostics are disabled before settlement', () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+
+    recordTerminalResizePendingState({
+      agentId: 'agent-1',
+      pending: true,
+      pendingSinceMs: 0,
+      reason: 'sending',
+    });
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingCurrent).toBe(1);
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {},
+    });
+    recordTerminalResizePendingState({ agentId: 'agent-1', pending: false });
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingCurrent).toBe(0);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalResize.pendingReasonCounts.sending).toBe(
+      0,
     );
   });
 });

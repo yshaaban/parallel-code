@@ -1999,6 +1999,55 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('reports pending resize age while geometry-live resize is deferred', async () => {
+    let shouldCommitResize = false;
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      shouldCommitResize: () => shouldCommitResize,
+      taskId: 'task-1',
+      term: createTestTerminal(),
+    });
+
+    pipeline.handleTerminalResize(120, 40);
+
+    const initialSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(initialSnapshot.pendingCurrent).toBe(1);
+    expect(initialSnapshot.pendingOldestAgeMs).not.toBeNull();
+    expect(initialSnapshot.pendingReasonCounts['not-live']).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(750);
+
+    const agedSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(agedSnapshot.pendingCurrent).toBe(1);
+    expect(agedSnapshot.pendingOldestAgeMs).toBeGreaterThanOrEqual(750);
+    expect(agedSnapshot.pendingMaxAgeMs).toBeGreaterThanOrEqual(750);
+
+    shouldCommitResize = true;
+    await pipeline.flushPendingResize();
+    await flushMicrotasks();
+
+    const settledSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(settledSnapshot.pendingCurrent).toBe(0);
+    expect(settledSnapshot.pendingOldestAgeMs).toBeNull();
+    expect(settledSnapshot.pendingMaxAgeMs).toBeGreaterThanOrEqual(750);
+
+    pipeline.cleanup();
+  });
+
   it('rehydrates task command ownership before committing a terminal resize for the controller', async () => {
     const acquireDeferred = createDeferred<boolean>();
     const leaseSession = mockNextTaskCommandLeaseSession({
@@ -2982,6 +3031,10 @@ describe('terminal-input-pipeline', () => {
     pipeline.handleTerminalResize(100, 30);
     await vi.advanceTimersByTimeAsync(48);
 
+    const sendingSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(sendingSnapshot.pendingCurrent).toBe(1);
+    expect(sendingSnapshot.pendingReasonCounts.sending).toBe(1);
+
     let flushResolved = false;
     const flushPromise = pipeline.flushPendingResize().then(() => {
       flushResolved = true;
@@ -2994,6 +3047,9 @@ describe('terminal-input-pipeline', () => {
     await flushPromise;
 
     expect(flushResolved).toBe(true);
+    const settledSnapshot = getRendererRuntimeDiagnosticsSnapshot().terminalResize;
+    expect(settledSnapshot.pendingCurrent).toBe(0);
+    expect(settledSnapshot.pendingReasonCounts.sending).toBe(0);
     pipeline.cleanup();
   });
 

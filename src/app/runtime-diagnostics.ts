@@ -55,6 +55,11 @@ const TERMINAL_RESIZE_DEFER_REASONS = [
   'restore-blocked',
   'spawn-pending',
 ] as const;
+const TERMINAL_RESIZE_PENDING_REASONS = [
+  ...TERMINAL_RESIZE_DEFER_REASONS,
+  'scheduled',
+  'sending',
+] as const;
 const TERMINAL_PRESENTATION_MODE_KINDS = [
   'error',
   'live',
@@ -104,6 +109,7 @@ export type BrowserStartupCancelReason = (typeof BROWSER_STARTUP_CANCEL_REASONS)
 export type BrowserReconnectRestoreOutcome = (typeof BROWSER_RECONNECT_RESTORE_OUTCOMES)[number];
 export type TerminalRendererSwapReason = 'attach' | 'restore' | 'selected-switch';
 export type TerminalResizeDeferReason = (typeof TERMINAL_RESIZE_DEFER_REASONS)[number];
+export type TerminalResizePendingReason = (typeof TERMINAL_RESIZE_PENDING_REASONS)[number];
 export type TerminalStartupPaintRole = (typeof TERMINAL_STARTUP_PAINT_ROLES)[number];
 export type TerminalStartupTaskSchedulingOutcome =
   (typeof TERMINAL_STARTUP_TASK_SCHEDULING_OUTCOMES)[number];
@@ -320,6 +326,11 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     commitNoopSkips: number;
     commitSuccesses: number;
     flushCalls: number;
+    pendingCurrent: number;
+    pendingCurrentMax: number;
+    pendingMaxAgeMs: number;
+    pendingOldestAgeMs: number | null;
+    pendingReasonCounts: Record<TerminalResizePendingReason, number>;
     queuedUpdates: number;
     trailingReschedules: number;
   };
@@ -401,6 +412,22 @@ function recordStartupDurationMetric(details: {
 
 let rendererRuntimeDiagnostics: RendererRuntimeDiagnosticsSnapshot = createInitialSnapshot();
 
+interface TerminalResizePendingEntry {
+  pendingSinceMs: number;
+  reason: TerminalResizePendingReason;
+}
+
+type TerminalResizePendingStateDetails =
+  | { agentId: string; pending: false }
+  | {
+      agentId: string;
+      pending: true;
+      pendingSinceMs: number;
+      reason: TerminalResizePendingReason;
+    };
+
+const terminalResizePendingEntries = new Map<string, TerminalResizePendingEntry>();
+
 function isBrowserRendererRuntimeDiagnosticsEnabled(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -437,6 +464,71 @@ function mutateRendererRuntimeDiagnostics(
 
   attachRendererRuntimeDiagnosticsStore();
   updater(rendererRuntimeDiagnostics);
+}
+
+function getDiagnosticsNowMs(): number {
+  if (typeof performance === 'undefined' || typeof performance.now !== 'function') {
+    return Date.now();
+  }
+
+  return performance.now();
+}
+
+function getTerminalResizePendingSummary(nowMs = getDiagnosticsNowMs()): {
+  current: number;
+  oldestAgeMs: number | null;
+  reasonCounts: Record<TerminalResizePendingReason, number>;
+} {
+  const reasonCounts = createCounterRecord(TERMINAL_RESIZE_PENDING_REASONS);
+  let oldestAgeMs: number | null = null;
+
+  for (const entry of terminalResizePendingEntries.values()) {
+    reasonCounts[entry.reason] += 1;
+    const ageMs = Math.max(0, nowMs - entry.pendingSinceMs);
+    if (oldestAgeMs === null || ageMs > oldestAgeMs) {
+      oldestAgeMs = ageMs;
+    }
+  }
+
+  return {
+    current: terminalResizePendingEntries.size,
+    oldestAgeMs,
+    reasonCounts,
+  };
+}
+
+function updateTerminalResizePendingEntries(
+  details: TerminalResizePendingStateDetails,
+  nowMs: number,
+): number {
+  if (details.pending) {
+    terminalResizePendingEntries.set(details.agentId, {
+      pendingSinceMs: details.pendingSinceMs,
+      reason: details.reason,
+    });
+    return 0;
+  }
+
+  const pendingEntry = terminalResizePendingEntries.get(details.agentId);
+  terminalResizePendingEntries.delete(details.agentId);
+  return pendingEntry ? Math.max(0, nowMs - pendingEntry.pendingSinceMs) : 0;
+}
+
+function syncKnownTerminalResizePendingEntryWhileDisabled(
+  details: TerminalResizePendingStateDetails,
+): void {
+  if (!details.pending) {
+    terminalResizePendingEntries.delete(details.agentId);
+    return;
+  }
+
+  const pendingEntry = terminalResizePendingEntries.get(details.agentId);
+  if (!pendingEntry) {
+    return;
+  }
+
+  pendingEntry.pendingSinceMs = details.pendingSinceMs;
+  pendingEntry.reason = details.reason;
 }
 
 function createInitialTerminalOutputSchedulerDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalOutputScheduler'] {
@@ -555,6 +647,11 @@ function createInitialTerminalResizeDiagnostics(): RendererRuntimeDiagnosticsSna
     commitNoopSkips: 0,
     commitSuccesses: 0,
     flushCalls: 0,
+    pendingCurrent: 0,
+    pendingCurrentMax: 0,
+    pendingMaxAgeMs: 0,
+    pendingOldestAgeMs: null,
+    pendingReasonCounts: createCounterRecord(TERMINAL_RESIZE_PENDING_REASONS),
     queuedUpdates: 0,
     trailingReschedules: 0,
   };
@@ -723,6 +820,8 @@ function createInitialSnapshot(): RendererRuntimeDiagnosticsSnapshot {
 }
 
 function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
+  const terminalResizePendingSummary = getTerminalResizePendingSummary();
+
   return {
     agentOutputAnalysis: { ...rendererRuntimeDiagnostics.agentOutputAnalysis },
     bootstrap: {
@@ -851,6 +950,17 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
     terminalResize: {
       ...rendererRuntimeDiagnostics.terminalResize,
       commitDeferredCounts: { ...rendererRuntimeDiagnostics.terminalResize.commitDeferredCounts },
+      pendingCurrent: terminalResizePendingSummary.current,
+      pendingCurrentMax: Math.max(
+        rendererRuntimeDiagnostics.terminalResize.pendingCurrentMax,
+        terminalResizePendingSummary.current,
+      ),
+      pendingMaxAgeMs: Math.max(
+        rendererRuntimeDiagnostics.terminalResize.pendingMaxAgeMs,
+        terminalResizePendingSummary.oldestAgeMs ?? 0,
+      ),
+      pendingOldestAgeMs: terminalResizePendingSummary.oldestAgeMs,
+      pendingReasonCounts: terminalResizePendingSummary.reasonCounts,
     },
     terminalRenderer: {
       ...rendererRuntimeDiagnostics.terminalRenderer,
@@ -868,6 +978,7 @@ function incrementCategoryCounter(
 
 export function resetRendererRuntimeDiagnostics(): void {
   rendererRuntimeDiagnostics = createInitialSnapshot();
+  terminalResizePendingEntries.clear();
   attachRendererRuntimeDiagnosticsStore();
 }
 
@@ -1470,6 +1581,31 @@ export function recordTerminalResizeCommitNoopSkip(): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.terminalResize.commitNoopSkips += 1;
   });
+}
+
+export function recordTerminalResizePendingState(details: TerminalResizePendingStateDetails): void {
+  if (!isRendererRuntimeDiagnosticsEnabled()) {
+    syncKnownTerminalResizePendingEntryWhileDisabled(details);
+    return;
+  }
+
+  attachRendererRuntimeDiagnosticsStore();
+  const nowMs = getDiagnosticsNowMs();
+  const completedPendingAgeMs = updateTerminalResizePendingEntries(details, nowMs);
+  const terminalResize = rendererRuntimeDiagnostics.terminalResize;
+  const pendingSummary = getTerminalResizePendingSummary(nowMs);
+  terminalResize.pendingCurrent = pendingSummary.current;
+  terminalResize.pendingCurrentMax = Math.max(
+    terminalResize.pendingCurrentMax,
+    pendingSummary.current,
+  );
+  terminalResize.pendingMaxAgeMs = Math.max(
+    terminalResize.pendingMaxAgeMs,
+    completedPendingAgeMs,
+    pendingSummary.oldestAgeMs ?? 0,
+  );
+  terminalResize.pendingOldestAgeMs = pendingSummary.oldestAgeMs;
+  terminalResize.pendingReasonCounts = pendingSummary.reasonCounts;
 }
 
 function syncTerminalRendererPoolSnapshot(snapshot: TerminalRendererPoolSnapshot): void {

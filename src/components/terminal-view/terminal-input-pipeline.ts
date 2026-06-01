@@ -41,7 +41,10 @@ import {
   recordTerminalResizeCommitNoopSkip,
   recordTerminalResizeCommitSuccess,
   recordTerminalResizeFlush,
+  recordTerminalResizePendingState,
   recordTerminalResizeQueued,
+  type TerminalResizeDeferReason,
+  type TerminalResizePendingReason,
 } from '../../app/runtime-diagnostics';
 import { getTaskCommandController } from '../../store/task-command-controllers';
 import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing';
@@ -123,20 +126,13 @@ interface TerminalGeometry {
   rows: number;
 }
 
-type ResizeCommitDeferReason =
-  | 'in-flight'
-  | 'not-live'
-  | 'peer-controlled'
-  | 'restore-blocked'
-  | 'spawn-pending';
-
 type TerminalResizeState =
   | { kind: 'idle'; lastSent: TerminalGeometry | null }
   | {
       kind: 'deferred';
       lastSent: TerminalGeometry | null;
       pending: TerminalGeometry;
-      reason: ResizeCommitDeferReason;
+      reason: TerminalResizeDeferReason;
     }
   | { kind: 'scheduled'; lastSent: TerminalGeometry | null; pending: TerminalGeometry }
   | {
@@ -354,6 +350,7 @@ export function createTerminalInputPipeline(
   let resizeFlushTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let resizeLifecycleGeneration = 0;
   let resizeState: TerminalResizeState = { kind: 'idle', lastSent: null };
+  let pendingResizeStartedAtMs: number | null = null;
   let inFlightResizeCommitPromise: Promise<void> | null = null;
   let peerDeferredResize: TerminalGeometry | null = null;
   let pendingInputTraceOutputTail = '';
@@ -515,10 +512,49 @@ export function createTerminalInputPipeline(
     return !options.isDisposed() && !options.isSpawnFailed() && !options.isProcessExited();
   }
 
+  function getResizeDiagnosticsNowMs(): number {
+    if (typeof performance === 'undefined' || typeof performance.now !== 'function') {
+      return Date.now();
+    }
+
+    return performance.now();
+  }
+
+  function getResizePendingReason(state: TerminalResizeState): TerminalResizePendingReason | null {
+    switch (state.kind) {
+      case 'idle':
+        return null;
+      case 'deferred':
+        return state.reason;
+      case 'scheduled':
+        return 'scheduled';
+      case 'sending':
+        return 'sending';
+    }
+  }
+
+  function syncResizePendingDiagnostics(nextState: TerminalResizeState): void {
+    const pendingReason = getResizePendingReason(nextState);
+    if (!pendingReason) {
+      pendingResizeStartedAtMs = null;
+      recordTerminalResizePendingState({ agentId, pending: false });
+      return;
+    }
+
+    pendingResizeStartedAtMs ??= getResizeDiagnosticsNowMs();
+    recordTerminalResizePendingState({
+      agentId,
+      pending: true,
+      pendingSinceMs: pendingResizeStartedAtMs,
+      reason: pendingReason,
+    });
+  }
+
   function setResizeState(nextState: TerminalResizeState): void {
     const wasActive = resizeState.kind !== 'idle';
     const isActive = nextState.kind !== 'idle';
     resizeState = nextState;
+    syncResizePendingDiagnostics(nextState);
     if (wasActive !== isActive) {
       options.onResizeTransactionChange?.(isActive);
     }
@@ -551,7 +587,7 @@ export function createTerminalInputPipeline(
     return resizeState.inFlight;
   }
 
-  function deferResize(pending: TerminalGeometry, reason: ResizeCommitDeferReason): void {
+  function deferResize(pending: TerminalGeometry, reason: TerminalResizeDeferReason): void {
     if (resizeState.kind === 'sending') {
       setResizeState({
         ...resizeState,
