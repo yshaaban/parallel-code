@@ -326,7 +326,6 @@ describe('browser IPC routes', () => {
     expect(emitGitStatusChanged).toHaveBeenCalledWith({
       branchName: 'feature/task-1',
       projectRoot: '/repo',
-      worktreePath: '/repo/.worktrees/task-1',
     });
     expect(removeGitStatus).toHaveBeenCalledWith('/repo/.worktrees/task-1');
   });
@@ -368,10 +367,12 @@ describe('browser IPC routes', () => {
     expect(broadcastControl).toHaveBeenCalledWith({
       type: 'task-event',
       event: 'deleted',
+      branchName: 'main',
       taskId: 'task-1',
       worktreePath: '/repo',
     });
     expect(emitGitStatusChanged).toHaveBeenCalledWith({
+      branchName: 'main',
       worktreePath: '/repo',
     });
     expect(removeGitStatus).toHaveBeenCalledWith('/repo');

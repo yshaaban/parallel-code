@@ -121,6 +121,7 @@ function buildTaskMetadata(source: TaskMetadataSource): RemoteAgentTaskMeta {
     lastPrompt:
       typeof source.lastPrompt === 'string' ? truncateLastPrompt(source.lastPrompt) : null,
     ...(projectMode !== null ? { projectMode } : {}),
+    ...(typeof source.worktreePath === 'string' ? { worktreePath: source.worktreePath } : {}),
     ...(worktreeOwnership !== null ? { worktreeOwnership } : {}),
   };
 }

@@ -161,10 +161,12 @@ function syncDeletedTask(
   body: Record<string, unknown> | undefined,
 ): void {
   const taskId = readOptionalString(body?.taskId);
-  const branchName = readOptionalString(body?.branchName);
-  const projectMode = readCreateTaskProjectMode(body?.projectMode);
+  const metadata = taskId === undefined ? null : context.taskNames.getTaskMetadata(taskId);
+  const branchName = metadata?.branchName ?? readOptionalString(body?.branchName);
+  const projectMode =
+    metadata?.projectMode ?? readCreateTaskProjectMode(body?.projectMode) ?? undefined;
   const projectRoot = readOptionalString(body?.projectRoot);
-  const worktreePath = readOptionalString(body?.worktreePath);
+  const worktreePath = metadata?.worktreePath ?? readOptionalString(body?.worktreePath);
 
   if (taskId !== undefined) {
     context.taskNames.deleteTask(taskId);
@@ -182,12 +184,21 @@ function syncDeletedTask(
   }
 
   if (worktreePath !== undefined) {
+    context.removeGitStatus?.(worktreePath);
+    const deletedManagedWorktree = projectRoot !== undefined && worktreePath !== projectRoot;
+    if (deletedManagedWorktree) {
+      emitGitStatusRefresh(context.emitGitStatusChanged, {
+        branchName,
+        projectRoot,
+      });
+      return;
+    }
+
     emitGitStatusRefresh(context.emitGitStatusChanged, {
       branchName,
       projectRoot,
       worktreePath,
     });
-    context.removeGitStatus?.(worktreePath);
     return;
   }
 

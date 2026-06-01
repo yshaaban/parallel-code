@@ -484,6 +484,7 @@ export interface RemoteAgentTaskMeta {
   gitIsolation?: 'worktree' | 'current-branch' | 'existing-worktree';
   lastPrompt: string | null;
   projectMode?: 'git' | 'non-git';
+  worktreePath?: string | null;
   worktreeOwnership?: 'external' | 'managed';
 }
 
@@ -535,6 +536,7 @@ function isRemoteAgentTaskMeta(value: unknown): value is RemoteAgentTaskMeta {
     isNullableString(value.lastPrompt) &&
     (value.projectMode === undefined ||
       isStringMember(value.projectMode, REMOTE_TASK_PROJECT_MODE_VALUES)) &&
+    (value.worktreePath === undefined || isNullableString(value.worktreePath)) &&
     (value.worktreeOwnership === undefined ||
       isStringMember(value.worktreeOwnership, WORKTREE_OWNERSHIP_VALUES))
   );

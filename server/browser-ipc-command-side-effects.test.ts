@@ -109,10 +109,12 @@ describe('browser IPC command side effects', () => {
     expect(context.broadcastControl).toHaveBeenCalledWith({
       type: 'task-event',
       event: 'deleted',
+      branchName: 'main',
       taskId: 'task-1',
       worktreePath: '/repo',
     });
     expect(context.emitGitStatusChanged).toHaveBeenCalledWith({
+      branchName: 'main',
       worktreePath: '/repo',
     });
     expect(context.removeGitStatus).toHaveBeenCalledWith('/repo');

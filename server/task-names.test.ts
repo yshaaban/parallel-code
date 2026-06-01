@@ -95,6 +95,7 @@ describe('createTaskNameRegistry', () => {
       folderName: 'feature-auth',
       lastPrompt: 'implement JWT validation',
       worktreeOwnership: 'external',
+      worktreePath: '/home/user/project/.worktrees/feature-auth',
     });
   });
 
@@ -212,6 +213,7 @@ describe('createTaskNameRegistry', () => {
       folderName: 'project',
       gitIsolation: 'current-branch',
       lastPrompt: null,
+      worktreePath: '/home/user/project',
     });
   });
 
@@ -238,6 +240,7 @@ describe('createTaskNameRegistry', () => {
       gitIsolation: 'existing-worktree',
       lastPrompt: null,
       worktreeOwnership: 'external',
+      worktreePath: '/tmp/imported',
     });
   });
 
@@ -263,6 +266,7 @@ describe('createTaskNameRegistry', () => {
       folderName: 'folder',
       lastPrompt: null,
       projectMode: 'non-git',
+      worktreePath: '/tmp/folder',
     });
   });
 
@@ -334,6 +338,7 @@ describe('createTaskNameRegistry', () => {
       directMode: true,
       folderName: 'auth-task',
       lastPrompt: null,
+      worktreePath: '/tmp/project/.worktrees/auth-task',
     });
 
     registry.deleteTask('task-1');
