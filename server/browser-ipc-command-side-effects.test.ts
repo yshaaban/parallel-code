@@ -145,6 +145,39 @@ describe('browser IPC command side effects', () => {
     expect(context.removeGitStatus).not.toHaveBeenCalled();
   });
 
+  it('removes deleted managed worktree status and refreshes the parent branch scope', () => {
+    const context = createContext();
+    context.taskNames.registerCreatedTask('task-1', {
+      branchName: 'feature/task-1',
+      projectMode: 'git',
+      taskName: 'Managed worktree task',
+      worktreePath: '/repo/.worktrees/task-1',
+      worktreeOwnership: 'managed',
+    });
+
+    runBrowserIpcCommandSideEffects(
+      context,
+      IPC.DeleteTask,
+      {
+        projectRoot: '/repo',
+        taskId: 'task-1',
+      },
+      undefined,
+    );
+
+    expect(context.taskNames.getTaskMetadata('task-1')).toBeNull();
+    expect(context.removeGitStatus).toHaveBeenCalledWith('/repo/.worktrees/task-1');
+    expect(context.emitGitStatusChanged).toHaveBeenCalledWith({
+      branchName: 'feature/task-1',
+      projectRoot: '/repo',
+    });
+    expect(context.emitGitStatusChanged).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: '/repo/.worktrees/task-1',
+      }),
+    );
+  });
+
   it('falls back to requested git isolation when created task results omit optional metadata', () => {
     const context = createContext();
 
