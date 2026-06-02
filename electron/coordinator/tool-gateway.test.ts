@@ -165,6 +165,30 @@ function mockCreatedTaskResult(): void {
   });
 }
 
+function addExitedCoordinatorOwnedSubtask(
+  context: HandlerContext,
+  runId: string,
+): ReturnType<typeof createCoordinatorCredential> {
+  addCoordinatorSubtask({
+    agentId: 'agent-child',
+    assignment: 'Do the work',
+    branchName: 'feature/child',
+    parentCoordinatorTaskId: 'task-coordinator',
+    runId,
+    status: 'exited',
+    taskId: 'task-child',
+    toolTokenId: 'token-child',
+    worktreePath: '/repo/task-child',
+  });
+
+  return createCoordinatorCredential(context, {
+    agentId: 'agent-child',
+    runId,
+    taskId: 'task-child',
+    toolCallUrl: context.coordinatorToolCallUrl,
+  });
+}
+
 describe('coordinator tool gateway', () => {
   const envs: StorageEnv[] = [];
 
@@ -797,6 +821,53 @@ describe('coordinator tool gateway', () => {
     expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
       status: 'cancelled',
       waitingReason: 'subtask-cleaned-up',
+    });
+  });
+
+  it('cleans up an exited coordinator-owned subtask when the coordinator closes it', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    const childCredential = addExitedCoordinatorOwnedSubtask(context, result.run.id);
+    const taskNames = createTaskRegistry();
+
+    const response = await executeCoordinatorToolCall(
+      { context, taskNames },
+      {
+        callId: 'call-close',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'close_task',
+        payload: {
+          targetTaskId: 'task-child',
+        },
+      },
+    );
+
+    expect(mocks.deleteTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentIds: ['agent-child'],
+        branchName: 'feature/child',
+        deleteBranch: true,
+        taskId: 'task-child',
+        worktreePath: '/repo/task-child',
+      }),
+    );
+    expect(taskNames.deleteTask).toHaveBeenCalledWith('task-child');
+    expect(resolveCoordinatorToken(childCredential.token)).toBeNull();
+    expect(response.result).toEqual({
+      cleanupWarnings: [],
+      status: 'cancelled',
+      taskId: 'task-child',
     });
   });
 
@@ -2092,6 +2163,40 @@ describe('coordinator tool gateway', () => {
       taskId: 'task-child',
       toolCallUrl: context.coordinatorToolCallUrl,
     });
+    const taskNames = createTaskRegistry();
+
+    const warnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
+      { context, taskNames },
+      'task-coordinator',
+    );
+
+    expect(warnings).toEqual([]);
+    expect(mocks.deleteTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentIds: ['agent-child'],
+        branchName: 'feature/child',
+        deleteBranch: true,
+        taskId: 'task-child',
+        worktreePath: '/repo/task-child',
+      }),
+    );
+    expect(taskNames.deleteTask).toHaveBeenCalledWith('task-child');
+    expect(resolveCoordinatorToken(childCredential.token)).toBeNull();
+    expect(getCoordinatorRun(result.run.id)).toBeNull();
+  });
+
+  it('cleans exited coordinator-owned hidden subtasks before removing a parent run', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const childCredential = addExitedCoordinatorOwnedSubtask(context, result.run.id);
     const taskNames = createTaskRegistry();
 
     const warnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(

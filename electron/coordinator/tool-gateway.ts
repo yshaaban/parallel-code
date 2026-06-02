@@ -464,7 +464,7 @@ function mergeLaunchArgs(
 }
 
 function shouldCleanupCoordinatorSubtask(status: CoordinatorSubtaskSnapshot['status']): boolean {
-  return status !== 'cancelled' && status !== 'exited' && status !== 'landed';
+  return status !== 'cancelled' && status !== 'landed';
 }
 
 function isStartupSubtaskStatus(status: CoordinatorSubtaskSnapshot['status']): boolean {
