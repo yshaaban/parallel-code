@@ -37,6 +37,7 @@
     "test:node:default": "vitest run --config vitest.config.ts --exclude server/terminal-latency.test.ts --exclude server/session-stress.test.ts",
     "test:node:server-integration": "vitest run --config vitest.config.ts --no-file-parallelism server/terminal-latency.test.ts server/session-stress.test.ts",
     "test:node:file": "node scripts/run-vitest-scoped.mjs --config vitest.config.ts",
+    "test:node:coordinator:e2e": "vitest run --config vitest.config.ts --no-file-parallelism tests/coordinator/coordinator-browserless-e2e.test.ts",
     "test:node:terminal:stress": "vitest run --config vitest.config.ts tests/terminal-core/nonbrowser-terminal-stress.test.ts src/store/task-terminal-layout.test.ts",
     "test:node:docker:integration": "RUN_DOCKER_INTEGRATION=1 vitest run --config vitest.config.ts electron/ipc/task-containers.integration.test.ts",
     "test:node:docker:integration:required": "node scripts/require-docker-compose.mjs && npm run test:node:docker:integration",

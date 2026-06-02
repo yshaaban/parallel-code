@@ -124,8 +124,11 @@ For coordinator-mode work:
 - prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
 - prove spawn rollback, credential revocation, restored stale runs, and landing cleanup before
   relying on browser canaries
+- run `npm run test:node:coordinator:e2e` when coordinator changes cross browser-server HTTP IPC,
+  `/api/coordinator/tool-call`, websocket replay, prompt delivery, or restart/persistence seams
 - prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests
-- keep browser canaries for true browser-server routing/UI creation only
+- keep browser canaries for browser UI creation, rendering, and client-runtime behavior that cannot
+  be proven by browser-less route tests
 - do not enable coordinator mode for Electron-only or Docker-runner paths without separate gateway
   and credential-mount proof
 

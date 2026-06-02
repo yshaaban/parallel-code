@@ -117,6 +117,9 @@ Coordinator work should prefer browser-free tests first:
 - Solid tests for the compact coordinator rail, peek inspector, prompt sending, and spawn form
 - server-state bootstrap tests for coordinator snapshots and live events
 - browser-control-client tests for `coordinator-event` dispatch
+- browser-less coordinator E2E tests through `npm run test:node:coordinator:e2e` for the full
+  browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
+  actions, task-command leases, prompt delivery, cleanup, stale restore, and websocket replay
 
-Use browser canaries only when a change crosses the actual browser server, websocket replay, or UI
-creation path.
+Use browser canaries only for actual browser UI creation, rendering, or client-runtime behavior that
+the browser-less route tests cannot exercise.
