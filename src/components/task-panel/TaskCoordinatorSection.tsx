@@ -22,6 +22,7 @@ import type {
   CoordinatorSpawnSubtaskPayload,
   CoordinatorUiToolCallRequest,
 } from '../../domain/coordinator';
+import { parseDirectCommandLine, type DirectCommandInvocation } from '../../lib/direct-command';
 import { sf } from '../../lib/fontScale';
 import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import { theme } from '../../lib/theme';
@@ -57,6 +58,16 @@ interface CoordinatorDiffResult {
   totalRemoved: number;
   truncatedBytes: number;
 }
+
+type CoordinatorSpawnPayloadParseResult =
+  | {
+      ok: true;
+      payload: CoordinatorSpawnSubtaskPayload;
+    }
+  | {
+      error: string;
+      ok: false;
+    };
 
 const TONE_COLOR: Record<CoordinatorAttentionLevel, string> = {
   danger: theme.error,
@@ -184,17 +195,43 @@ function createToolRequest(
   }
 }
 
-function createSpawnPayload(
+function toCoordinatorSpawnAgent(
+  invocation: DirectCommandInvocation,
+): CoordinatorSpawnSubtaskPayload['agent'] {
+  const agent: CoordinatorSpawnSubtaskPayload['agent'] = {
+    command: invocation.command,
+  };
+
+  if (invocation.args.length > 0) {
+    agent.args = invocation.args;
+  }
+  if (invocation.env !== undefined) {
+    agent.env = invocation.env;
+  }
+
+  return agent;
+}
+
+function parseCoordinatorSpawnPayload(
   name: string,
   assignment: string,
-  command: string,
-): CoordinatorSpawnSubtaskPayload {
+  commandLine: string,
+): CoordinatorSpawnPayloadParseResult {
+  const parsed = parseDirectCommandLine(commandLine);
+  if (!parsed.ok) {
+    return {
+      error: parsed.error.message,
+      ok: false,
+    };
+  }
+
   return {
-    agent: {
-      command,
+    ok: true,
+    payload: {
+      agent: toCoordinatorSpawnAgent(parsed.invocation),
+      assignment,
+      name,
     },
-    assignment,
-    name,
   };
 }
 
@@ -447,6 +484,11 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       setActionError('Name, assignment, and command are required.');
       return;
     }
+    const spawnPayload = parseCoordinatorSpawnPayload(name, assignment, command);
+    if (!spawnPayload.ok) {
+      setActionError(spawnPayload.error);
+      return;
+    }
 
     setBusyAction('spawn-subtask');
     setActionError(null);
@@ -454,7 +496,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       const response = await callCoordinatorUiTool({
         coordinatorTaskId: view.run.coordinatorTaskId,
         controllerId: getRuntimeClientId(),
-        payload: createSpawnPayload(name, assignment, command),
+        payload: spawnPayload.payload,
         requestId: createRequestId(),
         runId: view.run.id,
         toolName: 'spawn_subtask',

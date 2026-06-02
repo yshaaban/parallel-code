@@ -94,6 +94,24 @@ function createTask(): Task {
   };
 }
 
+function openSpawnForm(): void {
+  fireEvent.click(screen.getByLabelText('Spawn coordinator subtask'));
+}
+
+function fillSpawnForm(
+  options: { assignment?: string; command?: string; name?: string } = {},
+): void {
+  fireEvent.input(screen.getByLabelText('Subtask name'), {
+    target: { value: options.name ?? 'Parser fix' },
+  });
+  fireEvent.input(screen.getByLabelText('Subtask command'), {
+    target: { value: options.command ?? 'codex' },
+  });
+  fireEvent.input(screen.getByLabelText('Subtask assignment'), {
+    target: { value: options.assignment ?? 'Fix parser edge cases.' },
+  });
+}
+
 describe('TaskCoordinatorSection', () => {
   beforeEach(() => {
     Object.defineProperty(navigator, 'clipboard', {
@@ -214,12 +232,8 @@ describe('TaskCoordinatorSection', () => {
   it('spawns a subtask from the compact spawn slit', async () => {
     render(() => <TaskCoordinatorSection task={() => createTask()} />);
 
-    fireEvent.click(screen.getByLabelText('Spawn coordinator subtask'));
-    fireEvent.input(screen.getByLabelText('Subtask name'), { target: { value: 'Parser fix' } });
-    fireEvent.input(screen.getByLabelText('Subtask command'), { target: { value: 'codex' } });
-    fireEvent.input(screen.getByLabelText('Subtask assignment'), {
-      target: { value: 'Fix parser edge cases.' },
-    });
+    openSpawnForm();
+    fillSpawnForm();
     fireEvent.click(screen.getByText('Spawn'));
 
     await waitFor(() => {
@@ -234,5 +248,45 @@ describe('TaskCoordinatorSection', () => {
         }),
       );
     });
+  });
+
+  it('spawns coordinator subtasks with parsed command args and environment', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    openSpawnForm();
+    fillSpawnForm({
+      command: 'env FOO=1 codex --model "gpt-5.5 xhigh"',
+    });
+    fireEvent.click(screen.getByText('Spawn'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            agent: {
+              args: ['--model', 'gpt-5.5 xhigh'],
+              command: 'codex',
+              env: { FOO: '1' },
+            },
+            assignment: 'Fix parser edge cases.',
+            name: 'Parser fix',
+          },
+          toolName: 'spawn_subtask',
+        }),
+      );
+    });
+  });
+
+  it('rejects invalid coordinator subtask command syntax before calling the gateway', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    openSpawnForm();
+    fillSpawnForm({
+      command: 'codex "unterminated',
+    });
+    fireEvent.click(screen.getByText('Spawn'));
+
+    await screen.findByText('Command has an unterminated quote or escape.');
+    expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
   });
 });
