@@ -34,6 +34,8 @@ import {
   type CoordinatorBrowserlessHarness,
 } from './coordinator-browserless-harness.js';
 
+const SHORT_ASYNC_SETTLE_MS = 25;
+
 const mocks = vi.hoisted(() => {
   const agentMetaById = new Map<
     string,
@@ -175,7 +177,26 @@ interface SpawnedAgentOptions {
   command: string;
   cwd: string;
   env: Record<string, string>;
+  projectMode?: 'git' | 'non-git';
   taskId: string;
+}
+
+interface MockCreateTaskWorkflowOptions {
+  gitIsolation?: 'current-branch' | 'worktree';
+  name: string;
+  projectMode?: 'non-git';
+  projectRoot: string;
+}
+
+interface SpawnCoordinatorSubtaskOverrides {
+  args?: string[];
+  assignment?: string;
+  callId?: string;
+  command?: string;
+  dedupeKey?: string;
+  env?: Record<string, string>;
+  name?: string;
+  skipPermissionsArgs?: string[];
 }
 
 interface SequencedRunUpsertedMessage {
@@ -319,6 +340,12 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+async function waitForShortAsyncWindow(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, SHORT_ASYNC_SETTLE_MS);
+  });
+}
+
 function expectPromptStatus(
   run: CoordinatorRunSnapshot,
   requestId: string,
@@ -342,13 +369,7 @@ async function spawnCoordinatorSubtask(
   harness: CoordinatorBrowserlessHarness,
   run: CoordinatorRunSnapshot,
   token: string,
-  overrides: {
-    assignment?: string;
-    callId?: string;
-    command?: string;
-    dedupeKey?: string;
-    name?: string;
-  } = {},
+  overrides: SpawnCoordinatorSubtaskOverrides = {},
 ): Promise<CoordinatorSubtaskSnapshot> {
   spawnCallIndex += 1;
   const callId = overrides.callId ?? `spawn-${spawnCallIndex}`;
@@ -360,10 +381,10 @@ async function spawnCoordinatorSubtask(
     toolName: 'spawn_subtask',
     payload: {
       agent: {
-        args: ['--model', 'gpt-5.5'],
+        args: overrides.args ?? ['--model', 'gpt-5.5'],
         command: overrides.command ?? 'codex',
-        env: { FOO: '1' },
-        skipPermissionsArgs: ['--yolo'],
+        env: overrides.env ?? { FOO: '1' },
+        skipPermissionsArgs: overrides.skipPermissionsArgs ?? ['--yolo'],
       },
       assignment: overrides.assignment ?? 'Investigate coordinator E2E behavior.',
       dedupeKey: overrides.dedupeKey ?? `${callId}:${overrides.name ?? 'Coordinator child'}`,
@@ -371,6 +392,49 @@ async function spawnCoordinatorSubtask(
     },
   });
   return getToolResult<CoordinatorSubtaskSnapshot>(response);
+}
+
+function createCustomSpawnOverrides(
+  callId: string,
+  dedupeKey: string,
+): SpawnCoordinatorSubtaskOverrides {
+  return {
+    args: ['--profile', 'fast'],
+    assignment: 'Run the custom coordinator child.',
+    callId,
+    command: 'custom-agent',
+    dedupeKey,
+    env: { CUSTOM: '1' },
+    name: 'Custom child',
+    skipPermissionsArgs: ['--no-confirm'],
+  };
+}
+
+async function expectRejectedUiPromptMutation(options: {
+  clientId: string;
+  harness: CoordinatorBrowserlessHarness;
+  requestId: string;
+  run: CoordinatorRunSnapshot;
+  subtask: CoordinatorSubtaskSnapshot;
+  text: string;
+}): Promise<void> {
+  const response = await options.harness.ipcResponse(
+    IPC.CoordinatorUiToolCall,
+    {
+      coordinatorTaskId: options.run.coordinatorTaskId,
+      payload: {
+        targetTaskId: options.subtask.taskId,
+        text: options.text,
+      },
+      requestId: options.requestId,
+      runId: options.run.id,
+      toolName: 'send_prompt',
+    },
+    { clientId: options.clientId },
+  );
+  const body = (await response.json()) as { error?: string };
+  expect(response.status).toBe(400);
+  expect(body.error).toBe('Coordinator task command lease is required');
 }
 
 function resetMockState(): void {
@@ -385,15 +449,7 @@ function resetMockState(): void {
 function installDefaultWorkflowMocks(): void {
   let taskIndex = 0;
   mocks.createTaskWorkflowMock.mockImplementation(
-    async (
-      _context: unknown,
-      options: {
-        gitIsolation?: 'current-branch' | 'worktree';
-        name: string;
-        projectMode?: 'non-git';
-        projectRoot: string;
-      },
-    ) => {
+    async (_context: unknown, options: MockCreateTaskWorkflowOptions) => {
       taskIndex += 1;
       const id = `task-child-${taskIndex}`;
       const worktreePath =
@@ -569,6 +625,78 @@ describe('browser-less coordinator E2E', () => {
     }
   });
 
+  it('deduplicates route-level spawns and preserves custom agent launch config', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const createTaskWorkflowImpl = mocks.createTaskWorkflowMock.getMockImplementation();
+    if (!createTaskWorkflowImpl) {
+      throw new Error('Expected createTaskWorkflow mock implementation');
+    }
+
+    let releaseFirstCreate: (() => void) | undefined;
+    let firstCreateStarted = false;
+    mocks.createTaskWorkflowMock.mockImplementation(
+      async (context: unknown, options: MockCreateTaskWorkflowOptions) => {
+        if (!firstCreateStarted) {
+          firstCreateStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseFirstCreate = resolve;
+          });
+        }
+
+        return createTaskWorkflowImpl(context, options);
+      },
+    );
+
+    const dedupeKey = 'stable-route-spawn';
+    const firstPromise = spawnCoordinatorSubtask(
+      harness,
+      run,
+      credential.token,
+      createCustomSpawnOverrides('spawn-custom-first', dedupeKey),
+    );
+    await waitForCondition(() => firstCreateStarted, 'first spawn create admission');
+
+    let secondResolved = false;
+    const secondPromise = spawnCoordinatorSubtask(
+      harness,
+      run,
+      credential.token,
+      createCustomSpawnOverrides('spawn-custom-second', dedupeKey),
+    ).then((subtask) => {
+      secondResolved = true;
+      return subtask;
+    });
+    await waitForShortAsyncWindow();
+    const secondResolvedBeforeRelease = secondResolved;
+    const createWorkflowCallsBeforeRelease = mocks.createTaskWorkflowMock.mock.calls.length;
+    releaseFirstCreate?.();
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(secondResolvedBeforeRelease).toBe(false);
+    expect(createWorkflowCallsBeforeRelease).toBe(1);
+    expect(second.taskId).toBe(first.taskId);
+    expect(mocks.createTaskWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(getSpawnedAgentOptions()).toMatchObject({
+      args: ['--profile', 'fast', '--no-confirm'],
+      command: 'custom-agent',
+      env: expect.objectContaining({
+        CUSTOM: '1',
+        PARALLEL_CODE_COORDINATOR_RUN_ID: run.id,
+      }),
+    });
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-dedupe',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(status).subtasks).toHaveLength(1);
+  });
+
   it('queues prompt delivery behind TUI busy state and resumes through supervision without interleaving writes', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
     const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
@@ -615,6 +743,56 @@ describe('browser-less coordinator E2E', () => {
       getToolResult<CoordinatorRunSnapshot>(status),
       queuedPrompt.requestId,
       'delivered',
+    );
+  });
+
+  it('cancels queued prompts when their target closes before delivery', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
+    mocks.writes.length = 0;
+    setAgentSupervision(subtask.agentId, 'active');
+
+    const queuedResponse = await harness.callCoordinatorTool({
+      callId: 'queued-before-target-close',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'send_prompt',
+      payload: {
+        targetTaskId: subtask.taskId,
+        text: 'do not deliver',
+      },
+    });
+    const queuedPrompt = getToolResult<CoordinatorPromptRequestSnapshot>(queuedResponse);
+    expect(queuedPrompt.status).toBe('waiting-for-terminal-prompt');
+    expect(mocks.writes).toEqual([]);
+
+    const closeResponse = await harness.callCoordinatorTool({
+      callId: 'close-before-delivery',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'close_task',
+      payload: { targetTaskId: subtask.taskId },
+    });
+    expect(getToolResult<{ status: string }>(closeResponse).status).toBe('cancelled');
+
+    setAgentSupervision(subtask.agentId, 'idle-at-prompt');
+    emitSupervision(subtask.agentId);
+    await waitForShortAsyncWindow();
+    expect(mocks.writes).toEqual([]);
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-cancelled-prompt',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expectPromptStatus(
+      getToolResult<CoordinatorRunSnapshot>(status),
+      queuedPrompt.requestId,
+      'cancelled',
     );
   });
 
@@ -707,6 +885,150 @@ describe('browser-less coordinator E2E', () => {
     } finally {
       leaseSocket.close();
     }
+  });
+
+  it('rejects renderer mutations from peer clients and after websocket lease release', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
+    const leaseSocket = await harness.connectWebSocket('ui-owner-client');
+
+    try {
+      const leaseResult = await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'manage coordinator subtasks',
+        operation: 'acquire',
+        ownerId: 'ui-owner',
+        requestId: 'ui-owner-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+      if (leaseResult.operation !== 'acquire' || 'error' in leaseResult) {
+        throw new Error('Expected task command lease acquisition');
+      }
+
+      await expectRejectedUiPromptMutation({
+        clientId: 'ui-peer-client',
+        harness,
+        requestId: 'peer-send-without-owned-lease',
+        run,
+        subtask,
+        text: 'peer prompt',
+      });
+
+      await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        leaseGeneration: leaseResult.result.leaseGeneration,
+        operation: 'release',
+        ownerId: 'ui-owner',
+        requestId: 'ui-owner-release',
+        taskId: run.coordinatorTaskId,
+      });
+
+      await expectRejectedUiPromptMutation({
+        clientId: 'ui-owner-client',
+        harness,
+        requestId: 'owner-send-after-release',
+        run,
+        subtask,
+        text: 'released owner prompt',
+      });
+    } finally {
+      leaseSocket.close();
+    }
+  });
+
+  it('supports non-git route spawn and prompt flow while rejecting git-only tools', async () => {
+    const harness = await createCoordinatorBrowserlessHarness();
+    activeHarnesses.push(harness);
+    const { credential, result } = await harness.createCoordinatorRun({
+      coordinatorAgentId: 'agent-non-git-coordinator',
+      coordinatorTaskId: 'task-non-git-coordinator',
+      projectId: 'project-non-git',
+      projectMode: 'non-git',
+      projectRoot: harness.rootDir,
+    });
+    const run = result.run;
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token, {
+      callId: 'spawn-non-git-child',
+      command: 'custom-agent',
+      name: 'Folder child',
+    });
+    const spawnedAgent = getSpawnedAgentOptions();
+
+    expect(mocks.createTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        projectMode: 'non-git',
+        projectRoot: harness.rootDir,
+      }),
+    );
+    expect(spawnedAgent).toMatchObject({
+      command: 'custom-agent',
+      cwd: harness.rootDir,
+      projectMode: 'non-git',
+    });
+    expect(subtask.branchName).toBe('');
+    expect(subtask.worktreePath).toBe(harness.rootDir);
+
+    mocks.writes.length = 0;
+    const promptResponse = await harness.callCoordinatorTool({
+      callId: 'non-git-follow-up',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'send_prompt',
+      payload: {
+        targetTaskId: subtask.taskId,
+        text: 'non-git follow-up',
+      },
+    });
+    expect(getToolResult<CoordinatorPromptRequestSnapshot>(promptResponse).status).toBe(
+      'delivered',
+    );
+    expect(mocks.writes).toEqual([{ agentId: subtask.agentId, data: 'non-git follow-up\r' }]);
+
+    mocks.scrollbackByAgentId.set(subtask.agentId, Buffer.from('folder output'));
+    const outputResponse = await harness.callCoordinatorTool({
+      callId: 'non-git-output',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_output',
+      payload: { targetTaskId: subtask.taskId },
+    });
+    expect(getToolResult<{ output: string }>(outputResponse).output).toBe('folder output');
+
+    const diffResponse = await harness.toolCallResponse({
+      callId: 'non-git-diff',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_diff',
+      payload: { targetTaskId: subtask.taskId },
+    });
+    const diffBody = (await diffResponse.json()) as { error?: string };
+    expect(diffResponse.status).toBe(400);
+    expect(diffBody.error).toBe('get_task_diff requires a git-backed coordinator run');
+
+    const childCredentialPath = spawnedAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL;
+    const childCredential = JSON.parse(await readFile(childCredentialPath, 'utf8')) as {
+      token: string;
+    };
+    const landingResponse = await harness.callCoordinatorTool({
+      callId: 'non-git-land',
+      runId: run.id,
+      taskId: subtask.taskId,
+      token: childCredential.token,
+      toolName: 'land_self',
+      payload: {
+        summary: 'Try non-git landing',
+        verification: [],
+      },
+    });
+    expect(getToolResult<{ failure?: string; status: string }>(landingResponse)).toMatchObject({
+      failure: 'Self-landing is only available for git-backed subtasks.',
+      status: 'rejected',
+    });
   });
 
   it('cleans running and exited subtasks through route-level close with prompt cancellation and credential revocation', async () => {

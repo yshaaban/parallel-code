@@ -214,6 +214,39 @@ describe('TaskCoordinatorSection', () => {
     expect(screen.queryByText('Inspect output')).toBeNull();
   });
 
+  it('disables git-only peek and landing controls for non-git coordinator runs', () => {
+    coordinatorRunRef.current = createRun({
+      projectMode: 'non-git',
+      subtasks: [
+        {
+          agentId: 'agent-child',
+          assignment: 'Fix parser behavior',
+          createdAt: 1_000,
+          parentCoordinatorTaskId: 'task-coordinator',
+          status: 'ready-for-review',
+          taskId: 'task-child',
+          toolTokenId: 'token-child',
+          updatedAt: 1_100,
+          worktreePath: '/repo',
+        },
+      ],
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    const askToLand = screen.getByText('Ask to land');
+    expect(askToLand).toHaveProperty('disabled', true);
+    expect(askToLand).toHaveProperty('title', 'Landing requires a git-backed coordinator run.');
+
+    fireEvent.click(screen.getByText('Diff'));
+    const refreshDiff = screen.getByText('Refresh diff');
+    expect(refreshDiff).toHaveProperty('disabled', true);
+    expect(refreshDiff).toHaveProperty(
+      'title',
+      'Diff inspection requires a git-backed coordinator run.',
+    );
+  });
+
   it('copies the debug helper command from the overflow menu', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
