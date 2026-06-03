@@ -119,13 +119,16 @@ For coordinator-mode work:
 - prove direct and scheduled prompt delivery cannot interleave writes to the same target task
 - prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
   runs
-- prove renderer coordinator actions do not expose bearer tokens and require task-command leases for
-  mutating actions
+- prove renderer coordinator actions do not expose bearer tokens, reject peer clients, and require
+  currently held task-command leases for mutating actions
 - prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
-- prove spawn rollback, credential revocation, restored stale runs, and landing cleanup before
-  relying on browser canaries
+- prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
+  close-before-delivery cancellation, credential revocation, restored stale runs, and landing
+  cleanup before relying on browser canaries
 - run `npm run test:node:coordinator:e2e` when coordinator changes cross browser-server HTTP IPC,
   `/api/coordinator/tool-call`, websocket replay, prompt delivery, or restart/persistence seams
+- `npm run test:node` includes the coordinator E2E lane separately, with file parallelism disabled
+  for that harness
 - prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests
 - keep browser canaries for browser UI creation, rendering, and client-runtime behavior that cannot
   be proven by browser-less route tests
@@ -183,9 +186,10 @@ Use this split:
 - required product proof:
   - targeted `node / backend`, `runtime / integration`, and `Solid / UI` tests for the changed
     owner seam
-  - the default `npm run test:node` lane runs `server/terminal-latency.test.ts` and
-    `server/session-stress.test.ts` in a separate no-file-parallelism pass; keep strict latency and
-    live WebSocket stress assertions out of the broad Vitest worker pool
+  - the default `npm run test:node` lane runs `server/terminal-latency.test.ts`,
+    `server/session-stress.test.ts`, and coordinator browser-less E2E in separate
+    no-file-parallelism passes; keep strict latency, live WebSocket stress assertions, and
+    standalone-server route harnesses out of the broad Vitest worker pool
   - the scripted browser terminal matrix when terminal runtime behavior changed
   - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
     changed

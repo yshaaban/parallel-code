@@ -119,7 +119,9 @@ Coordinator work should prefer browser-free tests first:
 - browser-control-client tests for `coordinator-event` dispatch
 - browser-less coordinator E2E tests through `npm run test:node:coordinator:e2e` for the full
   browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
-  actions, task-command leases, prompt delivery, cleanup, stale restore, and websocket replay
+  actions, task-command leases, duplicate spawn dedupe, custom agent launch config, prompt delivery
+  and cancellation, git-only tool rejection for non-git runs, cleanup, stale restore, and websocket
+  replay
 
 Use browser canaries only for actual browser UI creation, rendering, or client-runtime behavior that
 the browser-less route tests cannot exercise.
