@@ -282,7 +282,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   };
   ensureCoordinatorServiceLoaded(handlerContext);
   const cleanupCoordinatorPersistence = startCoordinatorRuntimePersistence(handlerContext);
-  const cleanupCoordinatorPromptDelivery = startCoordinatorPromptDeliveryRuntime(handlerContext);
+  const cleanupCoordinatorPromptDelivery = startCoordinatorPromptDeliveryRuntime(
+    handlerContext,
+    taskNames,
+  );
   const handlers = createIpcHandlers(handlerContext, taskNames);
 
   if (savedAppState) {

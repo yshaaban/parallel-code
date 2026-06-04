@@ -61,7 +61,6 @@ import {
   type CoordinatorWaitForIdlePayload,
   type CoordinatorWorkflowFindingSnapshot,
   type CoordinatorWorkflowPolicySnapshot,
-  type CoordinatorWorkflowResultConfidence,
   type CoordinatorWorkflowResultSnapshot,
   type CoordinatorWorkflowResultStatus,
   type CoordinatorWorkflowSnapshot,
@@ -82,6 +81,17 @@ import {
   revokeCoordinatorTaskCredential,
   resolveCoordinatorToken,
 } from './service.js';
+import {
+  advanceCoordinatorWorkflowExecution,
+  DEFAULT_WORKFLOW_AGENT_COMMAND,
+  DEFAULT_WORKFLOW_CONCURRENCY,
+  getCoordinatorWorkflowNextTickAt,
+  normalizeWorkflowFindingsForResult,
+  recordWorkflowVerdictsFromResult,
+  resolveSubmittedWorkflowLane as resolveExecutorSubmittedWorkflowLane,
+  startCoordinatorWorkflowExecution,
+  tickCoordinatorWorkflowExecution,
+} from './workflow-executor.js';
 import {
   addCoordinatorWorkflowLane,
   addCoordinatorWorkflowResult,
@@ -118,8 +128,6 @@ const TASK_OUTPUT_DEFAULT_MAX_BYTES = 64 * 1024;
 const TASK_OUTPUT_MAX_BYTES = 256 * 1024;
 const TASK_DIFF_DEFAULT_MAX_BYTES = 128 * 1024;
 const TASK_DIFF_MAX_BYTES = 512 * 1024;
-const DEFAULT_WORKFLOW_AGENT_COMMAND = 'codex';
-const DEFAULT_WORKFLOW_CONCURRENCY = 3;
 
 interface CoordinatorToolGatewayContext {
   context: HandlerContext;
@@ -144,7 +152,12 @@ let promptDeliveryCleanup: (() => void) | null = null;
 let promptDeliveryContext: HandlerContext | null = null;
 let promptDeliveryForce = false;
 let promptDeliveryReferences = 0;
+let promptDeliveryTaskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> | null =
+  null;
 let promptDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
+let workflowExecutionActive = false;
+let workflowExecutionTimer: ReturnType<typeof setTimeout> | null = null;
+let workflowExecutionTimerDueAt: number | null = null;
 const activePromptDeliveryKeys = new Set<string>();
 const scheduledPromptDeliveryKeys = new Set<string>();
 const promptDeliveryChainsByTargetKey = new Map<string, Promise<unknown>>();
@@ -563,12 +576,19 @@ function readStartWorkflowPayload(payload: unknown): CoordinatorStartWorkflowPay
       `lanes must be no longer than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
     );
   }
+  if (payload.spec !== undefined && !isRecord(payload.spec)) {
+    throw new BadRequestError('spec must be an object when provided');
+  }
+  if (payload.spec !== undefined && payload.template !== 'custom') {
+    throw new BadRequestError('spec is only supported with the custom workflow template');
+  }
 
   const policy = readWorkflowPolicyPayload(payload.policy);
   return {
     agent,
     ...(policy !== undefined ? { policy } : {}),
     problem: payload.problem,
+    ...(payload.spec !== undefined ? { spec: payload.spec } : {}),
     template: payload.template,
     ...(Array.isArray(payload.lanes)
       ? { lanes: payload.lanes.map((lane) => readStartWorkflowLanePayload(lane, agent)) }
@@ -657,11 +677,73 @@ function readWorkflowFindings(value: unknown): CoordinatorWorkflowFindingSnapsho
       COORDINATOR_LIMITS.maxWorkflowEvidence,
       COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
     );
+    const fileRefs = readStringListPayload(
+      entry.fileRefs,
+      'finding.fileRefs',
+      COORDINATOR_LIMITS.maxWorkflowResultListItems,
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
     const finding: CoordinatorWorkflowFindingSnapshot = {
       summary: entry.summary,
     };
+    assertOptionalStringSize(entry.id, 'finding.id', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+    assertOptionalStringSize(
+      entry.owner,
+      'finding.owner',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    assertOptionalStringSize(
+      entry.riskType,
+      'finding.riskType',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    assertOptionalStringSize(
+      entry.sourceLaneId,
+      'finding.sourceLaneId',
+      COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+    );
+    assertOptionalStringSize(
+      entry.sourceResultId,
+      'finding.sourceResultId',
+      COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+    );
+    assertOptionalStringSize(
+      entry.title,
+      'finding.title',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    if (
+      entry.confidence !== undefined &&
+      !isCoordinatorWorkflowResultConfidence(entry.confidence)
+    ) {
+      throw new BadRequestError('finding.confidence must be low, medium, or high');
+    }
+    if (entry.confidence !== undefined) {
+      finding.confidence = entry.confidence;
+    }
     if (evidenceIds !== undefined) {
       finding.evidenceIds = evidenceIds;
+    }
+    if (fileRefs !== undefined) {
+      finding.fileRefs = fileRefs;
+    }
+    if (entry.id !== undefined) {
+      finding.id = entry.id;
+    }
+    if (entry.owner !== undefined) {
+      finding.owner = entry.owner;
+    }
+    if (entry.riskType !== undefined) {
+      finding.riskType = entry.riskType;
+    }
+    if (entry.sourceLaneId !== undefined) {
+      finding.sourceLaneId = entry.sourceLaneId;
+    }
+    if (entry.sourceResultId !== undefined) {
+      finding.sourceResultId = entry.sourceResultId;
+    }
+    if (entry.title !== undefined) {
+      finding.title = entry.title;
     }
     if (entry.severity !== undefined) {
       if (
@@ -698,13 +780,12 @@ function readSubmitResultPayload(payload: unknown): CoordinatorSubmitResultPaylo
   assertString(payload.summary, 'summary');
   assertOptionalString(payload.workflowId, 'workflowId');
   assertOptionalString(payload.laneId, 'laneId');
-  if (payload.status !== undefined && !isCoordinatorWorkflowResultStatus(payload.status)) {
+  const status = payload.status;
+  const confidence = payload.confidence;
+  if (status !== undefined && !isCoordinatorWorkflowResultStatus(status)) {
     throw new BadRequestError('status must be a coordinator workflow result status');
   }
-  if (
-    payload.confidence !== undefined &&
-    !isCoordinatorWorkflowResultConfidence(payload.confidence)
-  ) {
+  if (confidence !== undefined && !isCoordinatorWorkflowResultConfidence(confidence)) {
     throw new BadRequestError('confidence must be low, medium, or high');
   }
   if (payload.metadata !== undefined && !isRecord(payload.metadata)) {
@@ -735,15 +816,13 @@ function readSubmitResultPayload(payload: unknown): CoordinatorSubmitResultPaylo
   );
   return {
     ...(commandsRun !== undefined ? { commandsRun } : {}),
-    ...(payload.confidence !== undefined
-      ? { confidence: payload.confidence as CoordinatorWorkflowResultConfidence }
-      : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
     ...(evidence !== undefined ? { evidence } : {}),
     ...(findings !== undefined ? { findings } : {}),
     ...(payload.laneId !== undefined ? { laneId: payload.laneId } : {}),
     ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
     ...(risks !== undefined ? { risks } : {}),
-    status: (payload.status as CoordinatorWorkflowResultStatus | undefined) ?? 'completed',
+    status: status ?? 'completed',
     summary: payload.summary,
     ...(payload.workflowId !== undefined ? { workflowId: payload.workflowId } : {}),
   };
@@ -1154,8 +1233,179 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
   }
 }
 
-export function startCoordinatorPromptDeliveryRuntime(context: HandlerContext): () => void {
+function scheduleCoordinatorWorkflowExecution(delayMs = 0): void {
+  if (promptDeliveryContext === null) {
+    return;
+  }
+
+  const dueAt = Date.now() + delayMs;
+  if (
+    workflowExecutionTimer !== null &&
+    workflowExecutionTimerDueAt !== null &&
+    workflowExecutionTimerDueAt <= dueAt
+  ) {
+    return;
+  }
+  if (workflowExecutionTimer !== null) {
+    clearTimeout(workflowExecutionTimer);
+    workflowExecutionTimer = null;
+  }
+
+  workflowExecutionTimerDueAt = dueAt;
+  workflowExecutionTimer = setTimeout(() => {
+    workflowExecutionTimer = null;
+    workflowExecutionTimerDueAt = null;
+    void processCoordinatorWorkflowExecutionQueue();
+  }, delayMs);
+}
+
+function scheduleNextCoordinatorWorkflowExecution(): void {
+  const now = Date.now();
+  let nextTickAt: number | null = null;
+  for (const run of listCoordinatorRuns()) {
+    for (const workflow of run.workflows) {
+      const workflowTickAt = getCoordinatorWorkflowNextTickAt(workflow, now);
+      if (workflowTickAt === null) {
+        continue;
+      }
+      nextTickAt = nextTickAt === null ? workflowTickAt : Math.min(nextTickAt, workflowTickAt);
+    }
+  }
+
+  if (nextTickAt !== null) {
+    scheduleCoordinatorWorkflowExecution(Math.max(0, nextTickAt - now));
+  }
+}
+
+function isTerminalWorkflowStageStatus(
+  status: CoordinatorWorkflowSnapshot['stages'][number]['status'],
+): boolean {
+  return (
+    status === 'blocked' ||
+    status === 'cancelled' ||
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'stale-after-restore'
+  );
+}
+
+function getWorkflowSchedulerFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function failWorkflowAfterSchedulerError(
+  workflow: CoordinatorWorkflowSnapshot,
+  error: unknown,
+): void {
+  const now = Date.now();
+  const failure = `Workflow scheduler failed: ${getWorkflowSchedulerFailureMessage(error)}`;
+  appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+    at: now,
+    kind: 'workflow-scheduler-failed',
+    message: failure,
+  });
+  for (const lane of workflow.lanes) {
+    if (isCoordinatorTerminalWorkflowLaneStatus(lane.status)) {
+      continue;
+    }
+    if (lane.taskId !== undefined) {
+      cancelCoordinatorPromptsForTask(workflow.runId, lane.taskId, 'workflow-scheduler-failed');
+    }
+    try {
+      updateCoordinatorWorkflowLane(workflow.runId, workflow.id, lane.id, {
+        completedAt: now,
+        failure,
+        now,
+        status: 'failed',
+      });
+    } catch (laneFailureError) {
+      console.warn('Failed to mark coordinator workflow lane failed:', laneFailureError);
+    }
+  }
+  for (const stage of workflow.stages) {
+    if (isTerminalWorkflowStageStatus(stage.status)) {
+      continue;
+    }
+    updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stage.id, {
+      completedAt: now,
+      failure,
+      status: 'failed',
+    });
+  }
+  updateCoordinatorWorkflow(workflow.runId, workflow.id, {
+    completedAt: now,
+    execution: {
+      activeLaneCount: 0,
+      failureSummary: failure,
+      lastTickAt: now,
+      pendingRetryLaneIds: [],
+      readyStageIds: [],
+    },
+    now,
+    status: 'failed',
+  });
+}
+
+async function processCoordinatorWorkflowExecutionQueue(): Promise<void> {
+  const context = promptDeliveryContext;
+  const taskNames = promptDeliveryTaskNames;
+  if (context === null || taskNames === null || workflowExecutionActive) {
+    return;
+  }
+
+  workflowExecutionActive = true;
+  try {
+    const now = Date.now();
+    for (const run of listCoordinatorRuns()) {
+      for (const workflow of run.workflows) {
+        const workflowTickAt = getCoordinatorWorkflowNextTickAt(workflow, now);
+        if (workflowTickAt === null || workflowTickAt > now) {
+          continue;
+        }
+
+        try {
+          await tickCoordinatorWorkflowExecution({
+            now,
+            runId: run.id,
+            spawnLane: (currentWorkflow, stageId, lanePayload) =>
+              spawnWorkflowLane(
+                {
+                  context,
+                  taskNames,
+                },
+                {
+                  callId: `workflow-runtime:${currentWorkflow.id}`,
+                  runId: run.id,
+                  taskId: run.coordinatorTaskId,
+                  toolName: 'start_workflow',
+                },
+                currentWorkflow,
+                stageId,
+                lanePayload,
+              ),
+            workflowId: workflow.id,
+          });
+        } catch (error) {
+          try {
+            failWorkflowAfterSchedulerError(workflow, error);
+          } catch (failureError) {
+            console.warn('Failed to record coordinator workflow scheduler failure:', failureError);
+          }
+        }
+      }
+    }
+  } finally {
+    workflowExecutionActive = false;
+    scheduleNextCoordinatorWorkflowExecution();
+  }
+}
+
+export function startCoordinatorPromptDeliveryRuntime(
+  context: HandlerContext,
+  taskNames?: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
+): () => void {
   promptDeliveryContext = context;
+  promptDeliveryTaskNames = taskNames ?? promptDeliveryTaskNames;
   promptDeliveryReferences += 1;
 
   function stopCoordinatorPromptDeliveryRuntime(): void {
@@ -1169,12 +1419,16 @@ export function startCoordinatorPromptDeliveryRuntime(context: HandlerContext): 
 
   if (promptDeliveryCleanup !== null) {
     scheduleCoordinatorPromptDelivery();
+    scheduleNextCoordinatorWorkflowExecution();
     return stopCoordinatorPromptDeliveryRuntime;
   }
 
   const cleanupCoordinatorEvents = subscribeCoordinatorEvents((event) => {
     if (event.eventType === 'prompt-upserted' || event.eventType === 'subtask-upserted') {
       scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
+    }
+    if (event.eventType === 'run-upserted') {
+      scheduleNextCoordinatorWorkflowExecution();
     }
   });
   const cleanupSupervisionEvents = subscribeAgentSupervision(() => {
@@ -1187,15 +1441,23 @@ export function startCoordinatorPromptDeliveryRuntime(context: HandlerContext): 
       clearTimeout(promptDeliveryTimer);
       promptDeliveryTimer = null;
     }
+    if (workflowExecutionTimer !== null) {
+      clearTimeout(workflowExecutionTimer);
+      workflowExecutionTimer = null;
+    }
     activePromptDeliveryKeys.clear();
     scheduledPromptDeliveryKeys.clear();
     promptDeliveryChainsByTargetKey.clear();
     promptDeliveryForce = false;
     promptDeliveryReferences = 0;
+    workflowExecutionActive = false;
+    workflowExecutionTimerDueAt = null;
     promptDeliveryCleanup = null;
     promptDeliveryContext = null;
+    promptDeliveryTaskNames = null;
   };
   scheduleCoordinatorPromptDelivery();
+  scheduleNextCoordinatorWorkflowExecution();
 
   return stopCoordinatorPromptDeliveryRuntime;
 }
@@ -1205,14 +1467,21 @@ export function resetCoordinatorToolGatewayForTests(): void {
   promptDeliveryCleanup = null;
   promptDeliveryContext = null;
   promptDeliveryForce = false;
+  promptDeliveryTaskNames = null;
   promptDeliveryReferences = 0;
   if (promptDeliveryTimer !== null) {
     clearTimeout(promptDeliveryTimer);
     promptDeliveryTimer = null;
   }
+  if (workflowExecutionTimer !== null) {
+    clearTimeout(workflowExecutionTimer);
+    workflowExecutionTimer = null;
+  }
   activePromptDeliveryKeys.clear();
   scheduledPromptDeliveryKeys.clear();
   promptDeliveryChainsByTargetKey.clear();
+  workflowExecutionActive = false;
+  workflowExecutionTimerDueAt = null;
   activeSpawnSubtasksByDedupeKey.clear();
 }
 
@@ -1341,43 +1610,11 @@ function toLaneSpawnPayload(
   };
 }
 
-function getWorkflowStage(
-  workflow: CoordinatorWorkflowSnapshot,
-  stageId: string,
-): CoordinatorWorkflowSnapshot['stages'][number] {
-  const stage = workflow.stages.find((candidate) => candidate.id === stageId);
-  if (!stage) {
-    throw new Error(`Coordinator workflow stage not found: ${stageId}`);
-  }
-
-  return stage;
-}
-
-function getWorkflowLane(
-  workflow: CoordinatorWorkflowSnapshot,
-  laneId: string,
-): CoordinatorWorkflowSnapshot['lanes'][number] {
-  const lane = workflow.lanes.find((candidate) => candidate.id === laneId);
-  if (!lane) {
-    throw new Error(`Coordinator workflow lane not found: ${laneId}`);
-  }
-
-  return lane;
-}
-
-function getWorkflowLaneByTask(
-  workflow: CoordinatorWorkflowSnapshot,
-  taskId: string,
-): CoordinatorWorkflowSnapshot['lanes'][number] | undefined {
-  return workflow.lanes.find((lane) => lane.taskId === taskId);
-}
-
-function getWorkflowStageLanes(
-  workflow: CoordinatorWorkflowSnapshot,
-  stageId: string,
-): Array<CoordinatorWorkflowSnapshot['lanes'][number]> {
-  const stageLaneIds = new Set(getWorkflowStage(workflow, stageId).laneIds);
-  return workflow.lanes.filter((lane) => stageLaneIds.has(lane.id));
+function getWorkflowStageTimeoutMs(workflow: CoordinatorWorkflowSnapshot, stageId: string): number {
+  return (
+    workflow.sourceSpec?.steps.find((step) => step.id === stageId)?.policy?.timeoutMs ??
+    workflow.policy.timeoutMs
+  );
 }
 
 function countNewWorkflowLanePayloads(
@@ -1432,55 +1669,6 @@ function createWorkflowStageDefinitions(template: CoordinatorWorkflowTemplate): 
   }
 }
 
-function getDefaultWorkflowLanes(
-  payload: CoordinatorStartWorkflowPayload,
-): CoordinatorStartWorkflowLanePayload[] {
-  if (payload.lanes && payload.lanes.length > 0) {
-    return payload.lanes;
-  }
-
-  switch (payload.template) {
-    case 'adversarial_review':
-      return [
-        {
-          assignment: [
-            'Find every plausible flaw, inconsistency, incomplete path, reliability risk, performance risk, or maintainability concern.',
-            `Problem: ${payload.problem}`,
-            'Return findings with concrete evidence. Do not fix anything.',
-          ].join('\n'),
-          name: 'Critic',
-          role: 'critic',
-        },
-      ];
-    case 'map_reduce':
-      return [
-        {
-          assignment: `Analyze the backend/runtime angle for: ${payload.problem}`,
-          name: 'Backend',
-          role: 'map',
-        },
-        {
-          assignment: `Analyze the UI/product angle for: ${payload.problem}`,
-          name: 'UI',
-          role: 'map',
-        },
-        {
-          assignment: `Analyze the validation/testing angle for: ${payload.problem}`,
-          name: 'Validation',
-          role: 'map',
-        },
-      ];
-    case 'custom':
-      return [
-        {
-          assignment: payload.problem,
-          name: 'Worker',
-          role: 'custom',
-        },
-      ];
-  }
-}
-
 function buildLaneAssignment(
   workflow: CoordinatorWorkflowSnapshot,
   lane: Pick<CoordinatorStartWorkflowLanePayload, 'assignment' | 'name' | 'role'>,
@@ -1502,116 +1690,6 @@ function trimWorkflowAssignment(text: string): string {
   }
 
   return `${text.slice(0, COORDINATOR_LIMITS.assignmentTextMaxChars - 32)}\n[truncated]`;
-}
-
-function summarizeWorkflowResults(workflow: CoordinatorWorkflowSnapshot): string {
-  if (workflow.results.length === 0) {
-    return 'No typed results have been submitted yet.';
-  }
-
-  return workflow.results
-    .map((result, index) => {
-      const lane = result.laneId
-        ? workflow.lanes.find((candidate) => candidate.id === result.laneId)
-        : undefined;
-      const label = lane?.name ?? result.taskId;
-      const findings =
-        result.findings.length > 0
-          ? `\nFindings:\n${result.findings.map((finding) => `- ${finding.summary}`).join('\n')}`
-          : '';
-      const risks =
-        result.risks.length > 0
-          ? `\nRisks:\n${result.risks.map((risk) => `- ${risk}`).join('\n')}`
-          : '';
-      return [
-        `Result ${index + 1}: ${label}`,
-        `Status: ${result.status}`,
-        `Confidence: ${result.confidence ?? 'unspecified'}`,
-        result.summary,
-        findings,
-        risks,
-      ]
-        .filter((part) => part.length > 0)
-        .join('\n');
-    })
-    .join('\n\n');
-}
-
-function buildFollowupWorkflowBaseAssignment(
-  workflow: CoordinatorWorkflowSnapshot,
-  stage: CoordinatorWorkflowSnapshot['stages'][number],
-  previousResults: string,
-): string {
-  switch (stage.kind) {
-    case 'reduce':
-      return [
-        `Workflow: ${workflow.title}`,
-        'Role: reducer',
-        'Synthesize the map-lane results into one decision-ready result.',
-        'Preserve disagreements and unresolved risks instead of smoothing them over.',
-        '',
-        previousResults,
-      ].join('\n');
-    case 'verify':
-      return [
-        `Workflow: ${workflow.title}`,
-        'Role: verifier',
-        'Try to disprove each critic finding. Keep only findings that survive evidence checks.',
-        'Return rejected findings explicitly so the judge can see what was filtered out.',
-        '',
-        previousResults,
-      ].join('\n');
-    case 'judge':
-      return [
-        `Workflow: ${workflow.title}`,
-        'Role: judge',
-        'Decide which verified findings are confirmed, semi-confirmed, or highly likely.',
-        'Explain the confidence and identify blockers for uncertain findings.',
-        '',
-        previousResults,
-      ].join('\n');
-    case 'synthesize':
-      return [
-        `Workflow: ${workflow.title}`,
-        'Role: synthesizer',
-        'Produce the final concise review output and action plan from the judged findings.',
-        '',
-        previousResults,
-      ].join('\n');
-    case 'custom':
-    case 'fan-out':
-    case 'find':
-    case 'map':
-      return [
-        `Workflow: ${workflow.title}`,
-        `Role: ${stage.kind}`,
-        'Continue the workflow using the prior typed results.',
-        '',
-        previousResults,
-      ].join('\n');
-  }
-}
-
-function createFollowupWorkflowLanePayload(
-  workflow: CoordinatorWorkflowSnapshot,
-  stage: CoordinatorWorkflowSnapshot['stages'][number],
-): CoordinatorSpawnManyLanePayload {
-  const previousResults = summarizeWorkflowResults(workflow);
-  const baseAssignment = buildFollowupWorkflowBaseAssignment(workflow, stage, previousResults);
-
-  return {
-    agent: { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
-    assignment: trimWorkflowAssignment(
-      [
-        baseAssignment,
-        '',
-        'When finished, call submit_result with summary, findings, evidence, commandsRun, risks, and confidence.',
-      ].join('\n'),
-    ),
-    dedupeKey: `${workflow.id}:${stage.id}:${stage.kind}`,
-    name: stage.name,
-    role: stage.kind,
-  };
 }
 
 async function spawnWorkflowLane(
@@ -1641,13 +1719,14 @@ async function spawnWorkflowLane(
 
   const lane = addCoordinatorWorkflowLane({
     assignment: lanePayload.assignment,
+    ...(lanePayload.attempt !== undefined ? { attempt: lanePayload.attempt } : {}),
     dedupeKey: laneDedupeKey,
     name: lanePayload.name,
     ...(lanePayload.role !== undefined ? { role: lanePayload.role } : {}),
     runId: workflow.runId,
     stageId,
     status: 'spawning',
-    timeoutAt: Date.now() + workflow.policy.timeoutMs,
+    timeoutAt: Date.now() + getWorkflowStageTimeoutMs(workflow, stageId),
     workflowId: workflow.id,
   });
   updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stageId, {
@@ -1785,13 +1864,15 @@ async function spawnCoordinatorLanes(
       }
     }
   }
-  if (failedLaneIds.length > 0) {
-    await advanceWorkflowAfterResult(
-      gateway,
-      envelope,
-      workflow.id,
-      failedLaneIds[failedLaneIds.length - 1] as string,
-    );
+  const failedLaneId = failedLaneIds[failedLaneIds.length - 1];
+  if (failedLaneId !== undefined) {
+    await advanceCoordinatorWorkflowExecution({
+      laneId: failedLaneId,
+      runId: envelope.runId,
+      spawnLane: (currentWorkflow, stageId, lanePayload) =>
+        spawnWorkflowLane(gateway, envelope, currentWorkflow, stageId, lanePayload),
+      workflowId: workflow.id,
+    });
   }
 
   return {
@@ -1809,109 +1890,18 @@ async function startCoordinatorWorkflow(
   workflow: CoordinatorWorkflowSnapshot;
 }> {
   assertCoordinatorTaskCaller(envelope);
-  const initialLanes = getDefaultWorkflowLanes(payload);
-  if (initialLanes.length === 0) {
-    throw new BadRequestError('start_workflow requires at least one initial lane');
-  }
-  const policy = mergeWorkflowPolicyPayload(payload.policy, initialLanes.length);
-  const maxConcurrentLanes =
-    policy.maxConcurrentLanes ?? COORDINATOR_LIMITS.maxActiveSubtasksPerRun;
-  if (initialLanes.length > maxConcurrentLanes) {
-    throw new BadRequestError('start_workflow exceeds workflow maxConcurrentLanes');
-  }
-
-  const workflow = createCoordinatorWorkflow({
-    policy,
+  return startCoordinatorWorkflowExecution({
+    ...(payload.agent !== undefined ? { agent: payload.agent } : {}),
+    ...(payload.lanes !== undefined ? { lanes: payload.lanes } : {}),
+    ...(payload.policy !== undefined ? { policy: payload.policy } : {}),
+    problem: payload.problem,
     runId: envelope.runId,
-    stages: createWorkflowStageDefinitions(payload.template),
+    spawnLane: (workflow, stageId, lanePayload) =>
+      spawnWorkflowLane(gateway, envelope, workflow, stageId, lanePayload),
+    ...(payload.spec !== undefined ? { spec: payload.spec } : {}),
     template: payload.template,
-    title: payload.title ?? payload.template.replace(/_/g, ' '),
+    ...(payload.title !== undefined ? { title: payload.title } : {}),
   });
-
-  const initialStage = workflow.stages[0];
-  if (!initialStage) {
-    throw new BadRequestError('Coordinator workflow has no initial stage');
-  }
-
-  const spawned: WorkflowSpawnedLane[] = [];
-  const failedLaneIds: string[] = [];
-  for (const lane of initialLanes) {
-    const laneAgent = lane.agent ?? payload.agent;
-    const spawnedLane = await spawnWorkflowLane(gateway, envelope, workflow, initialStage.id, {
-      assignment: trimWorkflowAssignment(buildLaneAssignment(workflow, lane, payload.problem)),
-      name: lane.name,
-      ...(laneAgent !== undefined ? { agent: laneAgent } : {}),
-      ...(lane.role !== undefined ? { role: lane.role } : {}),
-    });
-    spawned.push(spawnedLane);
-    if (spawnedLane.error !== undefined) {
-      failedLaneIds.push(spawnedLane.laneId);
-      if (!workflow.policy.continueOnFailure) {
-        break;
-      }
-    }
-  }
-  if (failedLaneIds.length > 0) {
-    await advanceWorkflowAfterResult(
-      gateway,
-      envelope,
-      workflow.id,
-      failedLaneIds[failedLaneIds.length - 1] as string,
-    );
-  }
-
-  return {
-    lanes: spawned,
-    workflow: getCoordinatorWorkflow(envelope.runId, workflow.id) ?? workflow,
-  };
-}
-
-function resolveSubmittedWorkflowLane(
-  run: CoordinatorRunSnapshot,
-  subtask: CoordinatorSubtaskSnapshot,
-  payload: CoordinatorSubmitResultPayload,
-): {
-  lane: CoordinatorWorkflowSnapshot['lanes'][number];
-  workflow: CoordinatorWorkflowSnapshot;
-} {
-  const workflows = payload.workflowId
-    ? run.workflows.filter((workflow) => workflow.id === payload.workflowId)
-    : run.workflows;
-  const matches: Array<{
-    lane: CoordinatorWorkflowSnapshot['lanes'][number];
-    workflow: CoordinatorWorkflowSnapshot;
-  }> = [];
-
-  for (const workflow of workflows) {
-    if (payload.laneId !== undefined) {
-      const lane = workflow.lanes.find((candidate) => candidate.id === payload.laneId);
-      if (!lane) {
-        continue;
-      }
-      if (lane.taskId !== subtask.taskId) {
-        throw new BadRequestError('laneId must belong to the calling subtask');
-      }
-      matches.push({ lane, workflow });
-      continue;
-    }
-
-    const lane = getWorkflowLaneByTask(workflow, subtask.taskId);
-    if (lane) {
-      matches.push({ lane, workflow });
-    }
-  }
-
-  if (matches.length === 0) {
-    throw new BadRequestError('submit_result could not resolve a workflow lane for this subtask');
-  }
-  if (matches.length > 1) {
-    throw new BadRequestError('submit_result is ambiguous; provide workflowId and laneId');
-  }
-
-  return matches[0] as {
-    lane: CoordinatorWorkflowSnapshot['lanes'][number];
-    workflow: CoordinatorWorkflowSnapshot;
-  };
 }
 
 function getLaneStatusForResult(
@@ -1942,142 +1932,6 @@ function getSubtaskStatusForResult(
   }
 }
 
-function getCompletedStageStatus(
-  workflow: CoordinatorWorkflowSnapshot,
-  stageId: string,
-): CoordinatorWorkflowSnapshot['stages'][number]['status'] {
-  const lanes = getWorkflowStageLanes(workflow, stageId);
-  const hasCancelledLane = lanes.some((lane) => lane.status === 'cancelled');
-  const hasHardFailure = lanes.some(
-    (lane) =>
-      lane.status === 'failed' ||
-      lane.status === 'timed-out' ||
-      lane.status === 'stale-after-restore',
-  );
-  const hasBlockedLane = lanes.some(
-    (lane) => lane.status === 'blocked' || lane.status === 'cancelled',
-  );
-  const hasResult = lanes.some((lane) => lane.resultId !== undefined);
-  if (hasCancelledLane) {
-    return 'cancelled';
-  }
-  if (hasBlockedLane) {
-    return 'blocked';
-  }
-  if (workflow.policy.resultRequired && !hasResult) {
-    return 'failed';
-  }
-  if (hasHardFailure && !workflow.policy.continueOnFailure) {
-    return 'failed';
-  }
-
-  return 'completed';
-}
-
-function getCompletedWorkflowStatus(
-  workflow: CoordinatorWorkflowSnapshot,
-): CoordinatorWorkflowSnapshot['status'] {
-  const hasCancelledStage = workflow.stages.some((stage) => stage.status === 'cancelled');
-  const hasFailedStage = workflow.stages.some((stage) => stage.status === 'failed');
-  const hasBlockedStage = workflow.stages.some((stage) => stage.status === 'blocked');
-  if (hasCancelledStage) {
-    return 'cancelled';
-  }
-  if (hasFailedStage) {
-    return 'failed';
-  }
-  if (hasBlockedStage) {
-    return 'blocked';
-  }
-
-  return 'completed';
-}
-
-function getNextReadyWorkflowStage(
-  workflow: CoordinatorWorkflowSnapshot,
-): CoordinatorWorkflowSnapshot['stages'][number] | undefined {
-  return workflow.stages.find((stage) => {
-    if (stage.status !== 'pending' || stage.laneIds.length > 0) {
-      return false;
-    }
-
-    return stage.dependsOn.every((dependencyId) => {
-      const dependency = workflow.stages.find((candidate) => candidate.id === dependencyId);
-      return dependency?.status === 'completed';
-    });
-  });
-}
-
-async function advanceWorkflowAfterResult(
-  gateway: CoordinatorToolGatewayContext,
-  envelope: CoordinatorToolInvocation,
-  workflowId: string,
-  laneId: string,
-): Promise<CoordinatorWorkflowSnapshot> {
-  let workflow = getCoordinatorWorkflow(envelope.runId, workflowId);
-  if (!workflow) {
-    throw new BadRequestError('Coordinator workflow not found');
-  }
-
-  const lane = getWorkflowLane(workflow, laneId);
-  const stage = getWorkflowStage(workflow, lane.stageId);
-  const stageLanes = getWorkflowStageLanes(workflow, stage.id);
-  if (stageLanes.every((candidate) => isCoordinatorTerminalWorkflowLaneStatus(candidate.status))) {
-    const nextStatus = getCompletedStageStatus(workflow, stage.id);
-    updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stage.id, {
-      completedAt: Date.now(),
-      resultIds: stageLanes.flatMap((candidate) =>
-        candidate.resultId !== undefined ? [candidate.resultId] : [],
-      ),
-      status: nextStatus,
-    });
-    workflow = getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
-    if (nextStatus === 'blocked' || nextStatus === 'cancelled' || nextStatus === 'failed') {
-      return updateCoordinatorWorkflow(workflow.runId, workflow.id, {
-        completedAt: Date.now(),
-        status: nextStatus,
-      });
-    }
-  }
-
-  const nextStage = getNextReadyWorkflowStage(workflow);
-  if (nextStage) {
-    const run = requireCoordinatorRun(envelope.runId);
-    const spawnedLane = await spawnWorkflowLane(
-      gateway,
-      {
-        ...envelope,
-        taskId: run.coordinatorTaskId,
-      },
-      workflow,
-      nextStage.id,
-      createFollowupWorkflowLanePayload(workflow, nextStage),
-    );
-    if (spawnedLane.error !== undefined) {
-      return advanceWorkflowAfterResult(gateway, envelope, workflowId, spawnedLane.laneId);
-    }
-
-    return getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
-  }
-
-  workflow = getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
-  if (
-    workflow.stages.every(
-      (candidate) =>
-        candidate.status === 'completed' ||
-        candidate.status === 'failed' ||
-        candidate.status === 'blocked',
-    )
-  ) {
-    return updateCoordinatorWorkflow(workflow.runId, workflow.id, {
-      completedAt: Date.now(),
-      status: getCompletedWorkflowStatus(workflow),
-    });
-  }
-
-  return workflow;
-}
-
 async function submitCoordinatorWorkflowResult(
   gateway: CoordinatorToolGatewayContext,
   envelope: CoordinatorToolInvocation,
@@ -2088,7 +1942,12 @@ async function submitCoordinatorWorkflowResult(
 }> {
   const subtask = assertCoordinatorSubtaskCaller(envelope);
   const run = requireCoordinatorRun(envelope.runId);
-  const { lane, workflow } = resolveSubmittedWorkflowLane(run, subtask, payload);
+  const { lane, workflow } = resolveExecutorSubmittedWorkflowLane(
+    run.id,
+    subtask.taskId,
+    payload.workflowId,
+    payload.laneId,
+  );
   if (isCoordinatorTerminalWorkflowLaneStatus(lane.status) && lane.resultId !== undefined) {
     throw new BadRequestError('workflow lane already has a terminal result');
   }
@@ -2097,13 +1956,22 @@ async function submitCoordinatorWorkflowResult(
   }
 
   const now = Date.now();
+  const resultId = randomUUID();
   const result = addCoordinatorWorkflowResult({
     result: {
       agentId: subtask.agentId,
       commandsRun: payload.commandsRun ?? [],
       ...(payload.confidence !== undefined ? { confidence: payload.confidence } : {}),
       evidence: payload.evidence ?? [],
-      findings: payload.findings ?? [],
+      findings: normalizeWorkflowFindingsForResult(
+        {
+          id: resultId,
+          laneId: lane.id,
+          stageId: lane.stageId,
+        },
+        payload.findings ?? [],
+      ),
+      id: resultId,
       laneId: lane.id,
       ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
       risks: payload.risks ?? [],
@@ -2132,10 +2000,26 @@ async function submitCoordinatorWorkflowResult(
   updateCoordinatorSubtaskStatus(run.id, subtask.taskId, getSubtaskStatusForResult(result.status), {
     result: result.summary,
   });
+  recordWorkflowVerdictsFromResult(run.id, workflow.id, result);
 
   return {
     result,
-    workflow: await advanceWorkflowAfterResult(gateway, envelope, workflow.id, lane.id),
+    workflow: await advanceCoordinatorWorkflowExecution({
+      laneId: lane.id,
+      runId: run.id,
+      spawnLane: (currentWorkflow, stageId, lanePayload) =>
+        spawnWorkflowLane(
+          gateway,
+          {
+            ...envelope,
+            taskId: run.coordinatorTaskId,
+          },
+          currentWorkflow,
+          stageId,
+          lanePayload,
+        ),
+      workflowId: workflow.id,
+    }),
   };
 }
 

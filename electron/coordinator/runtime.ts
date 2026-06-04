@@ -29,6 +29,7 @@ import {
   type CoordinatorWorkflowTemplate,
   type CoordinatorWorkflowSnapshot,
 } from '../../src/domain/coordinator.js';
+import type { CoordinatorWorkflowSpecSnapshot } from '../../src/domain/coordinator-workflow-spec.js';
 import type { ProjectMode } from '../../src/store/types.js';
 
 export interface CoordinatorRuntimeState {
@@ -101,8 +102,10 @@ interface UpdateCoordinatorPromptPatch {
 }
 
 interface CreateCoordinatorWorkflowOptions {
+  execution?: CoordinatorWorkflowSnapshot['execution'];
   policy?: Partial<CoordinatorWorkflowPolicySnapshot>;
   runId: string;
+  sourceSpec?: CoordinatorWorkflowSpecSnapshot;
   stages: Array<{
     dependsOn?: string[];
     id?: string;
@@ -113,6 +116,7 @@ interface CreateCoordinatorWorkflowOptions {
   status?: CoordinatorWorkflowStatus;
   template: CoordinatorWorkflowTemplate;
   title: string;
+  verdicts?: CoordinatorWorkflowSnapshot['verdicts'];
   now?: number;
 }
 
@@ -157,7 +161,9 @@ interface UpdateCoordinatorWorkflowStagePatch {
 
 interface UpdateCoordinatorWorkflowPatch {
   completedAt?: number;
+  execution?: CoordinatorWorkflowSnapshot['execution'];
   status?: CoordinatorWorkflowStatus;
+  verdicts?: CoordinatorWorkflowSnapshot['verdicts'];
   now?: number;
 }
 
@@ -674,6 +680,7 @@ export function createCoordinatorWorkflow(
   const workflow: CoordinatorWorkflowSnapshot = {
     createdAt: now,
     eventVersion: version,
+    ...(options.execution !== undefined ? { execution: options.execution } : {}),
     id: workflowId,
     journal: [
       {
@@ -686,12 +693,14 @@ export function createCoordinatorWorkflow(
     policy: mergeWorkflowPolicy(options.policy),
     results: [],
     runId: options.runId,
+    ...(options.sourceSpec !== undefined ? { sourceSpec: options.sourceSpec } : {}),
     stages,
     startedAt: now,
     status: options.status ?? 'running',
     template: options.template,
     title: options.title,
     updatedAt: now,
+    ...(options.verdicts !== undefined ? { verdicts: options.verdicts } : {}),
   };
   return setWorkflow(record, workflow, now, version);
 }
@@ -856,8 +865,10 @@ export function updateCoordinatorWorkflow(
       ...workflow,
       ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
       eventVersion: version,
+      ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),
       updatedAt: now,
+      ...(patch.verdicts !== undefined ? { verdicts: patch.verdicts } : {}),
     },
     now,
     version,

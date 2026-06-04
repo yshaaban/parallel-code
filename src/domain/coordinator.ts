@@ -7,6 +7,10 @@ import {
   isStringArray,
   isStringTupleMember,
 } from '../lib/type-guards.js';
+import {
+  isCoordinatorWorkflowSpecSnapshot,
+  type CoordinatorWorkflowSpecSnapshot,
+} from './coordinator-workflow-spec.js';
 import type { ProjectMode } from '../store/types.js';
 
 export const COORDINATOR_RUN_STATUSES = [
@@ -345,10 +349,40 @@ export interface CoordinatorWorkflowEvidenceSnapshot {
 }
 
 export interface CoordinatorWorkflowFindingSnapshot {
+  confidence?: CoordinatorWorkflowResultConfidence;
   evidenceIds?: string[];
+  fileRefs?: string[];
+  id?: string;
+  owner?: string;
+  riskType?: string;
   severity?: 'critical' | 'major' | 'minor' | 'nit';
+  sourceLaneId?: string;
+  sourceResultId?: string;
   status?: 'confirmed' | 'semi-confirmed' | 'highly-likely' | 'rejected' | 'unknown';
   summary: string;
+  title?: string;
+}
+
+export interface CoordinatorWorkflowVerdictSnapshot {
+  createdAt: number;
+  findingId: string;
+  id: string;
+  reason: string;
+  resultId: string;
+  status: 'confirmed' | 'refuted' | 'needs-more-evidence';
+  verifierLaneId: string;
+}
+
+export interface CoordinatorWorkflowExecutionSnapshot {
+  activeLaneCount: number;
+  blockedReason?: string;
+  cancelledAt?: number;
+  deadlineAt?: number;
+  failureSummary?: string;
+  lastTickAt: number;
+  nextRetryAt?: number;
+  pendingRetryLaneIds: string[];
+  readyStageIds: string[];
 }
 
 export interface CoordinatorWorkflowResultSnapshot {
@@ -383,18 +417,21 @@ export interface CoordinatorWorkflowSnapshot {
   completedAt?: number;
   createdAt: number;
   eventVersion: number;
+  execution?: CoordinatorWorkflowExecutionSnapshot;
   id: string;
   journal: CoordinatorWorkflowJournalEntrySnapshot[];
   lanes: CoordinatorWorkflowLaneSnapshot[];
   policy: CoordinatorWorkflowPolicySnapshot;
   results: CoordinatorWorkflowResultSnapshot[];
   runId: string;
+  sourceSpec?: CoordinatorWorkflowSpecSnapshot;
   stages: CoordinatorWorkflowStageSnapshot[];
   startedAt?: number;
   status: CoordinatorWorkflowStatus;
   template: CoordinatorWorkflowTemplate;
   title: string;
   updatedAt: number;
+  verdicts?: CoordinatorWorkflowVerdictSnapshot[];
 }
 
 export interface CoordinatorRunSnapshot {
@@ -552,6 +589,7 @@ export interface CoordinatorSpawnSubtaskPayload {
 export interface CoordinatorSpawnManyLanePayload {
   agent?: CoordinatorSpawnSubtaskPayload['agent'];
   assignment: string;
+  attempt?: number;
   dedupeKey?: string;
   name: string;
   role?: string;
@@ -588,6 +626,7 @@ export interface CoordinatorStartWorkflowPayload {
   lanes?: CoordinatorStartWorkflowLanePayload[];
   policy?: CoordinatorWorkflowPolicyPayload;
   problem: string;
+  spec?: unknown;
   template: CoordinatorWorkflowTemplate;
   title?: string;
 }
@@ -936,19 +975,61 @@ function isCoordinatorWorkflowFindingSnapshot(
 ): value is CoordinatorWorkflowFindingSnapshot {
   return (
     isRecord(value) &&
+    (value.confidence === undefined || isCoordinatorWorkflowResultConfidence(value.confidence)) &&
     (value.evidenceIds === undefined || isStringArray(value.evidenceIds)) &&
+    (value.fileRefs === undefined || isStringArray(value.fileRefs)) &&
+    isOptionalString(value.id) &&
+    isOptionalString(value.owner) &&
+    isOptionalString(value.riskType) &&
     (value.severity === undefined ||
       value.severity === 'critical' ||
       value.severity === 'major' ||
       value.severity === 'minor' ||
       value.severity === 'nit') &&
+    isOptionalString(value.sourceLaneId) &&
+    isOptionalString(value.sourceResultId) &&
     (value.status === undefined ||
       value.status === 'confirmed' ||
       value.status === 'semi-confirmed' ||
       value.status === 'highly-likely' ||
       value.status === 'rejected' ||
       value.status === 'unknown') &&
-    typeof value.summary === 'string'
+    typeof value.summary === 'string' &&
+    isOptionalString(value.title)
+  );
+}
+
+function isCoordinatorWorkflowVerdictSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowVerdictSnapshot {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.createdAt) &&
+    typeof value.findingId === 'string' &&
+    typeof value.id === 'string' &&
+    typeof value.reason === 'string' &&
+    typeof value.resultId === 'string' &&
+    (value.status === 'confirmed' ||
+      value.status === 'refuted' ||
+      value.status === 'needs-more-evidence') &&
+    typeof value.verifierLaneId === 'string'
+  );
+}
+
+function isCoordinatorWorkflowExecutionSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowExecutionSnapshot {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.activeLaneCount) &&
+    isOptionalString(value.blockedReason) &&
+    isOptionalNonNegativeInteger(value.cancelledAt) &&
+    isOptionalNonNegativeInteger(value.deadlineAt) &&
+    isOptionalString(value.failureSummary) &&
+    isNonNegativeInteger(value.lastTickAt) &&
+    isOptionalNonNegativeInteger(value.nextRetryAt) &&
+    isStringArray(value.pendingRetryLaneIds) &&
+    isStringArray(value.readyStageIds)
   );
 }
 
@@ -998,18 +1079,22 @@ export function isCoordinatorWorkflowSnapshot(
     isOptionalNonNegativeInteger(value.completedAt) &&
     isNonNegativeInteger(value.createdAt) &&
     isNonNegativeInteger(value.eventVersion) &&
+    (value.execution === undefined || isCoordinatorWorkflowExecutionSnapshot(value.execution)) &&
     typeof value.id === 'string' &&
     isArrayOf(value.journal, isCoordinatorWorkflowJournalEntrySnapshot) &&
     isArrayOf(value.lanes, isCoordinatorWorkflowLaneSnapshot) &&
     isCoordinatorWorkflowPolicySnapshot(value.policy) &&
     isArrayOf(value.results, isCoordinatorWorkflowResultSnapshot) &&
     typeof value.runId === 'string' &&
+    (value.sourceSpec === undefined || isCoordinatorWorkflowSpecSnapshot(value.sourceSpec)) &&
     isArrayOf(value.stages, isCoordinatorWorkflowStageSnapshot) &&
     isOptionalNonNegativeInteger(value.startedAt) &&
     isCoordinatorWorkflowStatus(value.status) &&
     isCoordinatorWorkflowTemplate(value.template) &&
     typeof value.title === 'string' &&
-    isNonNegativeInteger(value.updatedAt)
+    isNonNegativeInteger(value.updatedAt) &&
+    (value.verdicts === undefined ||
+      isArrayOf(value.verdicts, isCoordinatorWorkflowVerdictSnapshot))
   );
 }
 

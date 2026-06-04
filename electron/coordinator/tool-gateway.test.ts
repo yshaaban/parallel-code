@@ -80,6 +80,7 @@ import {
   updateCoordinatorRunStatus,
   updateCoordinatorSubtaskStatus,
 } from './runtime.js';
+import * as coordinatorRuntime from './runtime.js';
 import {
   cleanupCoordinatorStateForTask,
   createCoordinatorCredential,
@@ -1819,6 +1820,385 @@ describe('coordinator tool gateway', () => {
     });
   });
 
+  it('runs a spec-backed fanout verify synthesize workflow with typed verdicts', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-backend', 'task-ui', 'task-skeptic', 'task-synthesis']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spec-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Review reliability.',
+          spec: {
+            steps: [
+              {
+                id: 'find',
+                kind: 'fanout',
+                lanes: [
+                  { assignment: 'Find backend risks.', id: 'backend', name: 'Backend' },
+                  { assignment: 'Find UI risks.', id: 'ui', name: 'UI' },
+                ],
+              },
+              {
+                dependsOn: ['find'],
+                findingSourceStepId: 'find',
+                id: 'verify',
+                kind: 'verify',
+                verifiers: [{ id: 'skeptic', name: 'Skeptic' }],
+              },
+              {
+                dependsOn: ['verify'],
+                id: 'synthesize',
+                kind: 'synthesize',
+                sourceStepIds: ['find', 'verify'],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Reliability review',
+        },
+      },
+    );
+
+    let workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      sourceSpec: expect.objectContaining({ version: 1 }),
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'verify', status: 'pending' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ],
+    });
+    expect(workflow?.lanes).toHaveLength(2);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'backend-result',
+        runId: result.run.id,
+        taskId: 'task-backend',
+        token: readTaskCredentialToken('task-backend'),
+        toolName: 'submit_result',
+        payload: {
+          findings: [{ severity: 'major', summary: 'Backend race can wedge the run.' }],
+          summary: 'Backend finding submitted.',
+          workflowId: workflow?.id,
+        },
+      },
+    );
+    workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.stages).toEqual([
+      expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
+      expect.objectContaining({ id: 'verify', status: 'pending' }),
+      expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+    ]);
+    expect(workflow?.lanes).toHaveLength(2);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'ui-result',
+        runId: result.run.id,
+        taskId: 'task-ui',
+        token: readTaskCredentialToken('task-ui'),
+        toolName: 'submit_result',
+        payload: {
+          findings: [{ severity: 'minor', summary: 'UI copy is unclear.' }],
+          summary: 'UI finding submitted.',
+          workflowId: workflow?.id,
+        },
+      },
+    );
+    workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    const backendFindingId = workflow?.results[0]?.findings[0]?.id;
+    expect(backendFindingId).toEqual(expect.any(String));
+    expect(workflow).toMatchObject({
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'completed' }),
+        expect.objectContaining({ id: 'verify', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({ taskId: 'task-backend', status: 'completed' }),
+      expect.objectContaining({ taskId: 'task-ui', status: 'completed' }),
+      expect.objectContaining({ role: 'verifier', taskId: 'task-skeptic' }),
+    ]);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'verify-result',
+        runId: result.run.id,
+        taskId: 'task-skeptic',
+        token: readTaskCredentialToken('task-skeptic'),
+        toolName: 'submit_result',
+        payload: {
+          metadata: {
+            verdicts: [
+              {
+                findingId: backendFindingId,
+                reason: 'The evidence matches the source.',
+                status: 'confirmed',
+              },
+            ],
+          },
+          summary: 'Verified one finding.',
+          workflowId: workflow?.id,
+        },
+      },
+    );
+
+    workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'completed' }),
+        expect.objectContaining({ id: 'verify', status: 'completed' }),
+        expect.objectContaining({ id: 'synthesize', status: 'waiting-for-results' }),
+      ],
+      verdicts: [
+        expect.objectContaining({
+          findingId: backendFindingId,
+          reason: 'The evidence matches the source.',
+          status: 'confirmed',
+        }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({ taskId: 'task-backend', status: 'completed' }),
+      expect.objectContaining({ taskId: 'task-ui', status: 'completed' }),
+      expect.objectContaining({ taskId: 'task-skeptic', status: 'completed' }),
+      expect.objectContaining({ role: 'synthesize', taskId: 'task-synthesis' }),
+    ]);
+  });
+
+  it('ticks workflow lane timeouts through the coordinator runtime scheduler', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const taskNames = createTaskRegistry();
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-worker']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+    startCoordinatorPromptDeliveryRuntime(context, taskNames);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames },
+      {
+        callId: 'scheduled-timeout-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Review scheduled timeout.',
+          spec: {
+            steps: [
+              {
+                assignment: 'Run a timeout lane.',
+                id: 'worker',
+                kind: 'worker',
+                policy: {
+                  retryCount: 0,
+                  timeoutMs: 5,
+                },
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Scheduled timeout',
+        },
+      },
+    );
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]).toMatchObject({
+      status: 'running',
+      lanes: [expect.objectContaining({ status: 'waiting-for-result' })],
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]).toMatchObject({
+      status: 'failed',
+      stages: [expect.objectContaining({ status: 'failed' })],
+      lanes: [
+        expect.objectContaining({
+          failure: 'Lane timed out after 5 ms.',
+          status: 'timed-out',
+        }),
+      ],
+    });
+  });
+
+  it('marks the workflow failed when the runtime scheduler tick throws', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const taskNames = createTaskRegistry();
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-worker']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+    startCoordinatorPromptDeliveryRuntime(context, taskNames);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames },
+      {
+        callId: 'scheduled-failure-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Review scheduled failure handling.',
+          spec: {
+            steps: [
+              {
+                assignment: 'Run a timeout lane.',
+                id: 'worker',
+                kind: 'worker',
+                policy: {
+                  retryCount: 0,
+                  timeoutMs: 5,
+                },
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Scheduled failure handling',
+        },
+      },
+    );
+
+    const updateLaneSpy = vi
+      .spyOn(coordinatorRuntime, 'updateCoordinatorWorkflowLane')
+      .mockImplementationOnce(() => {
+        throw new Error('runtime lane update failed');
+      });
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(updateLaneSpy).toHaveBeenCalled();
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]).toMatchObject({
+      execution: expect.objectContaining({
+        failureSummary: 'Workflow scheduler failed: runtime lane update failed',
+        pendingRetryLaneIds: [],
+        readyStageIds: [],
+      }),
+      journal: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'workflow-scheduler-failed',
+          message: 'Workflow scheduler failed: runtime lane update failed',
+        }),
+      ]),
+      lanes: [expect.objectContaining({ status: 'failed' })],
+      stages: [expect.objectContaining({ status: 'failed' })],
+      status: 'failed',
+    });
+  });
+
+  it('admits workflow retries through the coordinator runtime scheduler after backoff', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const taskNames = createTaskRegistry();
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-worker', 'task-worker-retry']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+    startCoordinatorPromptDeliveryRuntime(context, taskNames);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames },
+      {
+        callId: 'scheduled-retry-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Review scheduled retry.',
+          spec: {
+            steps: [
+              {
+                assignment: 'Run a retry lane.',
+                id: 'worker',
+                kind: 'worker',
+                policy: {
+                  retryBackoffMs: 5,
+                  retryCount: 1,
+                  timeoutMs: 5,
+                },
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Scheduled retry',
+        },
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]).toMatchObject({
+      status: 'running',
+      execution: expect.objectContaining({ nextRetryAt: 1_010 }),
+      stages: [expect.objectContaining({ status: 'waiting-for-results' })],
+      lanes: [expect.objectContaining({ attempt: 1, status: 'timed-out' })],
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toEqual([
+      expect.objectContaining({ attempt: 1, status: 'timed-out', taskId: 'task-worker' }),
+      expect.objectContaining({
+        attempt: 2,
+        status: 'waiting-for-result',
+        taskId: 'task-worker-retry',
+      }),
+    ]);
+  });
+
   it('records partial spawn_many lane failures without losing successful lanes', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -1916,6 +2296,27 @@ describe('coordinator tool gateway', () => {
         },
       ),
     ).rejects.toThrow('start_workflow exceeds workflow maxConcurrentLanes');
+    expect(getCoordinatorRun(result.run.id)?.workflows).toHaveLength(0);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'workflow-spec-template-mismatch',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'start_workflow',
+          payload: {
+            problem: 'Review spec mismatch.',
+            spec: {
+              steps: [{ id: 'worker', kind: 'worker' }],
+            },
+            template: 'map_reduce',
+          },
+        },
+      ),
+    ).rejects.toThrow('spec is only supported with the custom workflow template');
     expect(getCoordinatorRun(result.run.id)?.workflows).toHaveLength(0);
 
     await expect(

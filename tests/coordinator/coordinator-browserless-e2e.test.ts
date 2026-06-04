@@ -699,6 +699,209 @@ describe('browser-less coordinator E2E', () => {
     });
   });
 
+  it('rejects invalid workflow specs over HTTP without creating workflow state', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const response = await harness.toolCallResponse({
+      callId: 'invalid-spec-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review invalid specs.',
+        spec: {
+          steps: [
+            { dependsOn: ['b'], id: 'a', kind: 'worker' },
+            { dependsOn: ['a'], id: 'b', kind: 'worker' },
+          ],
+        },
+        template: 'custom',
+      },
+    });
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('dependency cycle');
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-invalid-spec',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(status).workflows).toHaveLength(0);
+  });
+
+  it('runs a browser-less spec workflow from fanout through verifier to synthesis', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'spec-workflow-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review reliability.',
+        spec: {
+          steps: [
+            {
+              id: 'find',
+              kind: 'fanout',
+              lanes: [
+                { assignment: 'Find backend risk.', id: 'backend', name: 'Backend' },
+                { assignment: 'Find UI risk.', id: 'ui', name: 'UI' },
+              ],
+            },
+            {
+              dependsOn: ['find'],
+              findingSourceStepId: 'find',
+              id: 'verify',
+              kind: 'verify',
+              verifiers: [{ id: 'skeptic', name: 'Skeptic' }],
+            },
+            {
+              dependsOn: ['verify'],
+              id: 'synthesize',
+              kind: 'synthesize',
+              sourceStepIds: ['find', 'verify'],
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Reliability workflow',
+      },
+    });
+    const workflowId = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow.id;
+    expect(
+      getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(started).workflow,
+    ).toMatchObject({
+      sourceSpec: expect.objectContaining({ version: 1 }),
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'verify', status: 'pending' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ],
+    });
+
+    const backendToken = JSON.parse(
+      await readFile(getSpawnedAgentOptions(0).env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    const uiToken = JSON.parse(
+      await readFile(getSpawnedAgentOptions(1).env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    await harness.callCoordinatorTool({
+      callId: 'spec-backend-result',
+      runId: run.id,
+      taskId: getSpawnedAgentOptions(0).taskId,
+      token: backendToken.token,
+      toolName: 'submit_result',
+      payload: {
+        findings: [{ severity: 'major', summary: 'Backend queue can wedge.' }],
+        summary: 'Backend finding.',
+        workflowId,
+      },
+    });
+    const afterFirstResult = await harness.callCoordinatorTool({
+      callId: 'status-after-first-spec-result',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(afterFirstResult).workflows[0]).toMatchObject({
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'verify', status: 'pending' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ],
+    });
+
+    await harness.callCoordinatorTool({
+      callId: 'spec-ui-result',
+      runId: run.id,
+      taskId: getSpawnedAgentOptions(1).taskId,
+      token: uiToken.token,
+      toolName: 'submit_result',
+      payload: {
+        findings: [{ severity: 'minor', summary: 'UI state is unclear.' }],
+        summary: 'UI finding.',
+        workflowId,
+      },
+    });
+    const afterFind = await harness.callCoordinatorTool({
+      callId: 'status-after-find-spec-results',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const workflowAfterFind = getToolResult<CoordinatorRunSnapshot>(afterFind).workflows[0];
+    const findingId = workflowAfterFind?.results[0]?.findings[0]?.id;
+    expect(findingId).toEqual(expect.any(String));
+    expect(workflowAfterFind).toMatchObject({
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'completed' }),
+        expect.objectContaining({ id: 'verify', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ],
+    });
+
+    const verifierToken = JSON.parse(
+      await readFile(getSpawnedAgentOptions(2).env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    await harness.callCoordinatorTool({
+      callId: 'spec-verifier-result',
+      runId: run.id,
+      taskId: getSpawnedAgentOptions(2).taskId,
+      token: verifierToken.token,
+      toolName: 'submit_result',
+      payload: {
+        metadata: {
+          verdicts: [
+            {
+              findingId,
+              reason: 'Evidence is sufficient.',
+              status: 'confirmed',
+            },
+          ],
+        },
+        summary: 'Verifier result.',
+        workflowId,
+      },
+    });
+
+    const afterVerify = await harness.callCoordinatorTool({
+      callId: 'status-after-verify-spec-result',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(afterVerify).workflows[0]).toMatchObject({
+      stages: [
+        expect.objectContaining({ id: 'find', status: 'completed' }),
+        expect.objectContaining({ id: 'verify', status: 'completed' }),
+        expect.objectContaining({ id: 'synthesize', status: 'waiting-for-results' }),
+      ],
+      verdicts: [
+        expect.objectContaining({
+          findingId,
+          reason: 'Evidence is sufficient.',
+          status: 'confirmed',
+        }),
+      ],
+    });
+    expect(getSpawnedAgentOptions(3)).toMatchObject({
+      command: 'codex',
+      taskId: 'task-child-4',
+    });
+  });
+
   it('deduplicates route-level spawns and preserves custom agent launch config', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
     const createTaskWorkflowImpl = mocks.createTaskWorkflowMock.getMockImplementation();

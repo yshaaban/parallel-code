@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  normalizeCoordinatorWorkflowSpec,
+  type CoordinatorWorkflowSpecValidationLimits,
+} from './coordinator-workflow-spec';
+
+const limits: CoordinatorWorkflowSpecValidationLimits = {
+  assignmentTextMaxChars: 16_000,
+  maxWorkflowLanes: 12,
+  maxWorkflowMetadataBytes: 16 * 1024,
+  maxWorkflowShortTextChars: 512,
+  workflowMaxLaneTimeoutMs: 24 * 60 * 60 * 1000,
+};
+
+describe('coordinator workflow spec validation', () => {
+  it('normalizes a fanout verify synthesize DAG', () => {
+    const spec = normalizeCoordinatorWorkflowSpec(
+      {
+        steps: [
+          {
+            id: 'find',
+            kind: 'fanout',
+            lanes: [
+              { assignment: 'Find backend issues.', id: 'backend', name: 'Backend' },
+              { assignment: 'Find UI issues.', id: 'ui', name: 'UI' },
+            ],
+          },
+          {
+            dependsOn: ['find'],
+            findingSourceStepId: 'find',
+            id: 'verify',
+            kind: 'verify',
+            verifiers: [{ id: 'skeptic', name: 'Skeptic' }],
+          },
+          {
+            dependsOn: ['verify'],
+            id: 'synthesize',
+            kind: 'synthesize',
+            sourceStepIds: ['find', 'verify'],
+          },
+        ],
+      },
+      { limits },
+    );
+
+    expect(spec).toMatchObject({
+      steps: [
+        expect.objectContaining({
+          id: 'find',
+          lanes: expect.arrayContaining([expect.any(Object)]),
+        }),
+        expect.objectContaining({
+          findingSourceStepId: 'find',
+          id: 'verify',
+          verifiers: [expect.objectContaining({ id: 'skeptic' })],
+        }),
+        expect.objectContaining({ dependsOn: ['verify'], id: 'synthesize' }),
+      ],
+      version: 1,
+    });
+  });
+
+  it('rejects duplicate step ids', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { id: 'find', kind: 'worker' },
+            { id: 'find', kind: 'worker' },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('duplicate id find');
+  });
+
+  it('rejects missing dependencies and dependency cycles', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [{ dependsOn: ['missing'], id: 'find', kind: 'worker' }],
+        },
+        { limits },
+      ),
+    ).toThrow('missing step missing');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { dependsOn: ['b'], id: 'a', kind: 'worker' },
+            { dependsOn: ['a'], id: 'b', kind: 'worker' },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('dependency cycle');
+  });
+
+  it('rejects over-cap fanout before execution', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            {
+              id: 'find',
+              kind: 'fanout',
+              lanes: Array.from({ length: limits.maxWorkflowLanes + 1 }, (_, index) => ({
+                assignment: `Lane ${index}`,
+                id: `lane-${index}`,
+                name: `Lane ${index}`,
+              })),
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow(`above limit ${limits.maxWorkflowLanes}`);
+  });
+
+  it('counts implicit worker and synthesis lanes toward the workflow cap', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: Array.from({ length: limits.maxWorkflowLanes + 1 }, (_, index) => ({
+            dependsOn: index === 0 ? [] : [`step-${index - 1}`],
+            id: `step-${index}`,
+            kind: index % 2 === 0 ? 'worker' : 'synthesize',
+          })),
+        },
+        { limits },
+      ),
+    ).toThrow(`above limit ${limits.maxWorkflowLanes}`);
+  });
+
+  it('rejects malformed agents and non-object inputs', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            {
+              agent: { command: 123 },
+              id: 'worker',
+              kind: 'worker',
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('steps[0].agent.command must be a string');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          inputs: ['not-a-record'],
+          steps: [{ id: 'worker', kind: 'worker' }],
+        },
+        { limits },
+      ),
+    ).toThrow('spec.inputs must be an object');
+  });
+});
