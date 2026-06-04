@@ -96,10 +96,53 @@ export interface CoordinatorWorkflowStageView {
   tone: CoordinatorAttentionLevel;
 }
 
+export interface CoordinatorWorkflowActivityView {
+  at: number;
+  kind: string;
+  laneLabel?: string;
+  message: string;
+  resultLabel?: string;
+  stageLabel?: string;
+  tone: CoordinatorAttentionLevel;
+}
+
+export interface CoordinatorWorkflowResultView {
+  commandCount: number;
+  commandsPreview: string[];
+  confidence?: string;
+  evidenceCount: number;
+  findingCount: number;
+  findingsPreview: string[];
+  id: string;
+  laneLabel?: string;
+  riskCount: number;
+  risksPreview: string[];
+  stageLabel?: string;
+  status: CoordinatorWorkflowSnapshot['results'][number]['status'];
+  statusLabel: string;
+  summary: string;
+  tone: CoordinatorAttentionLevel;
+}
+
+export interface CoordinatorWorkflowVerdictSummaryView {
+  confirmed: number;
+  needsMoreEvidence: number;
+  refuted: number;
+}
+
 export interface CoordinatorWorkflowTimelineView {
   activeLaneCount: number;
+  activityCount: number;
+  activityPreview: CoordinatorWorkflowActivityView[];
+  blockedReason?: string;
+  failedLaneCount: number;
+  failedLaneReason?: string;
   findingCount: number;
+  hasMoreActivity: boolean;
+  hasMoreResults: boolean;
   id: string;
+  latestActivityLabel?: string;
+  resultPreview: CoordinatorWorkflowResultView[];
   resultCount: number;
   stages: CoordinatorWorkflowStageView[];
   status: CoordinatorWorkflowSnapshot['status'];
@@ -109,6 +152,7 @@ export interface CoordinatorWorkflowTimelineView {
   title: string;
   tone: CoordinatorAttentionLevel;
   updatedAt: number;
+  verdictSummary: CoordinatorWorkflowVerdictSummaryView;
 }
 
 export interface CoordinatorRunView {
@@ -122,6 +166,9 @@ export interface CoordinatorRunView {
 }
 
 const MAX_PROMPT_BEADS_PER_SUBTASK = 3;
+const MAX_WORKFLOW_ACTIVITY_PREVIEW = 5;
+const MAX_WORKFLOW_RESULT_PREVIEW = 4;
+const MAX_WORKFLOW_RESULT_TEXT_PREVIEW = 3;
 
 const BLOCKED_SUBTASK_STATUSES = new Set<CoordinatorSubtaskStatus>([
   'waiting-for-user',
@@ -223,6 +270,20 @@ function getWorkflowStageTone(
     case 'running':
     case 'waiting-for-results':
       return 'info';
+    case 'completed':
+      return 'success';
+  }
+}
+
+function getWorkflowResultTone(
+  status: CoordinatorWorkflowSnapshot['results'][number]['status'],
+): CoordinatorAttentionLevel {
+  switch (status) {
+    case 'blocked':
+    case 'needs-followup':
+      return 'warning';
+    case 'failed':
+      return 'danger';
     case 'completed':
       return 'success';
   }
@@ -539,6 +600,123 @@ function createWorkflowStageView(
   };
 }
 
+function getWorkflowStageName(
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+): string | undefined {
+  return workflow.stages.find((stage) => stage.id === stageId)?.name;
+}
+
+function getWorkflowLaneName(
+  workflow: CoordinatorWorkflowSnapshot,
+  laneId: string,
+): string | undefined {
+  return workflow.lanes.find((lane) => lane.id === laneId)?.name;
+}
+
+function getWorkflowResultLabel(
+  workflow: CoordinatorWorkflowSnapshot,
+  resultId: string,
+): string | undefined {
+  const result = workflow.results.find((candidate) => candidate.id === resultId);
+  if (!result) {
+    return undefined;
+  }
+
+  return result.summary.slice(0, 80);
+}
+
+function getWorkflowActivityTone(kind: string): CoordinatorAttentionLevel {
+  if (kind.includes('failed') || kind.includes('timed-out') || kind.includes('cancelled')) {
+    return 'danger';
+  }
+  if (kind.includes('retry') || kind.includes('blocked')) {
+    return 'warning';
+  }
+  if (kind.includes('result') || kind.includes('completed') || kind.includes('verdict')) {
+    return 'success';
+  }
+  if (kind.includes('running') || kind.includes('spawning')) {
+    return 'info';
+  }
+
+  return 'normal';
+}
+
+function createWorkflowActivityViews(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowActivityView[] {
+  return workflow.journal
+    .slice(-MAX_WORKFLOW_ACTIVITY_PREVIEW)
+    .reverse()
+    .map((entry) => {
+      const view: CoordinatorWorkflowActivityView = {
+        at: entry.at,
+        kind: entry.kind,
+        message: entry.message,
+        tone: getWorkflowActivityTone(entry.kind),
+      };
+      if (entry.laneId !== undefined) {
+        view.laneLabel = getWorkflowLaneName(workflow, entry.laneId) ?? entry.laneId;
+      }
+      if (entry.resultId !== undefined) {
+        view.resultLabel = getWorkflowResultLabel(workflow, entry.resultId) ?? entry.resultId;
+      }
+      if (entry.stageId !== undefined) {
+        view.stageLabel = getWorkflowStageName(workflow, entry.stageId) ?? entry.stageId;
+      }
+      return view;
+    });
+}
+
+function createWorkflowResultViews(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowResultView[] {
+  return workflow.results
+    .slice(-MAX_WORKFLOW_RESULT_PREVIEW)
+    .reverse()
+    .map((result) => {
+      const view: CoordinatorWorkflowResultView = {
+        commandCount: result.commandsRun.length,
+        commandsPreview: result.commandsRun.slice(0, MAX_WORKFLOW_RESULT_TEXT_PREVIEW),
+        evidenceCount: result.evidence.length,
+        findingCount: result.findings.length,
+        findingsPreview: result.findings
+          .map((finding) => finding.title ?? finding.summary)
+          .slice(0, MAX_WORKFLOW_RESULT_TEXT_PREVIEW),
+        id: result.id,
+        riskCount: result.risks.length,
+        risksPreview: result.risks.slice(0, MAX_WORKFLOW_RESULT_TEXT_PREVIEW),
+        status: result.status,
+        statusLabel: humanizeStatus(result.status),
+        summary: result.summary,
+        tone: getWorkflowResultTone(result.status),
+      };
+      if (result.confidence !== undefined) {
+        view.confidence = result.confidence;
+      }
+      if (result.laneId !== undefined) {
+        view.laneLabel = getWorkflowLaneName(workflow, result.laneId) ?? result.laneId;
+      }
+      if (result.stageId !== undefined) {
+        view.stageLabel = getWorkflowStageName(workflow, result.stageId) ?? result.stageId;
+      }
+      return view;
+    });
+}
+
+function createWorkflowVerdictSummary(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowVerdictSummaryView {
+  const verdicts = workflow.verdicts ?? [];
+  return {
+    confirmed: verdicts.filter((verdict) => verdict.status === 'confirmed').length,
+    needsMoreEvidence: verdicts.filter((verdict) => verdict.status === 'needs-more-evidence')
+      .length,
+    refuted: verdicts.filter((verdict) => verdict.status === 'refuted').length,
+  };
+}
+
 function createWorkflowTimelineView(
   workflow: CoordinatorWorkflowSnapshot,
 ): CoordinatorWorkflowTimelineView {
@@ -549,11 +727,32 @@ function createWorkflowTimelineView(
     (count, result) => count + result.findings.length,
     0,
   );
+  const failedLanes = workflow.lanes.filter(
+    (lane) =>
+      lane.status === 'failed' ||
+      lane.status === 'timed-out' ||
+      lane.status === 'stale-after-restore',
+  );
+  const activityPreview = createWorkflowActivityViews(workflow);
+  const resultPreview = createWorkflowResultViews(workflow);
 
   return {
     activeLaneCount,
+    activityCount: workflow.journal.length,
+    activityPreview,
+    ...(workflow.execution?.blockedReason !== undefined
+      ? { blockedReason: workflow.execution.blockedReason }
+      : {}),
+    failedLaneCount: failedLanes.length,
+    ...(failedLanes[0]?.failure !== undefined ? { failedLaneReason: failedLanes[0].failure } : {}),
     findingCount,
+    hasMoreActivity: workflow.journal.length > activityPreview.length,
+    hasMoreResults: workflow.results.length > resultPreview.length,
     id: workflow.id,
+    ...(activityPreview[0] !== undefined
+      ? { latestActivityLabel: activityPreview[0].message }
+      : {}),
+    resultPreview,
     resultCount: workflow.results.length,
     stages: workflow.stages.map((stage) => createWorkflowStageView(workflow, stage)),
     status: workflow.status,
@@ -563,6 +762,7 @@ function createWorkflowTimelineView(
     title: workflow.title,
     tone: getWorkflowTone(workflow.status),
     updatedAt: workflow.updatedAt,
+    verdictSummary: createWorkflowVerdictSummary(workflow),
   };
 }
 

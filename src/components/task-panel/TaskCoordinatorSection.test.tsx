@@ -144,7 +144,16 @@ describe('TaskCoordinatorSection', () => {
           createdAt: 1_000,
           eventVersion: 2,
           id: 'workflow-1',
-          journal: [],
+          journal: [
+            {
+              at: 1_100,
+              kind: 'lane-result',
+              laneId: 'lane-map',
+              message: 'Mapped risk.',
+              resultId: 'result-1',
+              stageId: 'map',
+            },
+          ],
           lanes: [
             {
               agentId: 'agent-map',
@@ -217,6 +226,17 @@ describe('TaskCoordinatorSection', () => {
           template: 'map_reduce',
           title: 'Latency review',
           updatedAt: 1_100,
+          verdicts: [
+            {
+              createdAt: 1_120,
+              findingId: 'finding-1',
+              id: 'verdict-1',
+              reason: 'Evidence matched.',
+              resultId: 'result-1',
+              status: 'confirmed',
+              verifierLaneId: 'lane-map',
+            },
+          ],
         },
       ],
     });
@@ -226,6 +246,14 @@ describe('TaskCoordinatorSection', () => {
     expect(screen.getByLabelText('Coordinator workflows')).toBeDefined();
     expect(screen.getByText('Map')).toBeDefined();
     expect(screen.getByText('!1')).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText('Open workflow Latency review'));
+
+    expect(screen.getByText('Activity')).toBeDefined();
+    expect(screen.getByText('Results')).toBeDefined();
+    expect(screen.getAllByText('Mapped risk.').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Risk found/)).toBeDefined();
+    expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
   });
 
   it('opens the peek lens and fetches output through the coordinator UI action channel', async () => {

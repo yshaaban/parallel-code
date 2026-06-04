@@ -168,6 +168,7 @@ function createWorkflow(
     template: overrides.template ?? 'map_reduce',
     title: overrides.title ?? 'Latency review',
     updatedAt: overrides.updatedAt ?? now,
+    ...(overrides.verdicts !== undefined ? { verdicts: overrides.verdicts } : {}),
   };
 }
 
@@ -294,7 +295,31 @@ describe('coordinator UI model', () => {
 
   it('projects workflow timelines from backend-owned snapshots', () => {
     const run = createRun({
-      workflows: [createWorkflow()],
+      workflows: [
+        createWorkflow({
+          journal: [
+            {
+              at: now + 1,
+              kind: 'lane-result',
+              laneId: 'lane-map',
+              message: 'Mapped backend risk.',
+              resultId: 'result-1',
+              stageId: 'map',
+            },
+          ],
+          verdicts: [
+            {
+              createdAt: now + 2,
+              findingId: 'finding-1',
+              id: 'verdict-1',
+              reason: 'Evidence matched.',
+              resultId: 'result-1',
+              status: 'confirmed',
+              verifierLaneId: 'lane-map',
+            },
+          ],
+        }),
+      ],
     });
 
     const [workflow] = createCoordinatorRunView(run).workflows;
@@ -307,11 +332,30 @@ describe('coordinator UI model', () => {
       template: 'map_reduce',
       title: 'Latency review',
       tone: 'info',
+      verdictSummary: {
+        confirmed: 1,
+        needsMoreEvidence: 0,
+        refuted: 0,
+      },
     });
     expect(workflow?.stages.map((stage) => [stage.label, stage.tone, stage.laneCount])).toEqual([
       ['M', 'info', 1],
       ['R', 'normal', 0],
     ]);
+    expect(workflow?.activityPreview[0]).toMatchObject({
+      kind: 'lane-result',
+      laneLabel: 'Backend',
+      message: 'Mapped backend risk.',
+      stageLabel: 'Map',
+      tone: 'success',
+    });
+    expect(workflow?.resultPreview[0]).toMatchObject({
+      findingCount: 1,
+      findingsPreview: ['Risk found'],
+      laneLabel: 'Backend',
+      statusLabel: 'Completed',
+      summary: 'Mapped backend risk.',
+    });
   });
 
   it('projects landing failures as danger attention on the related chip', () => {

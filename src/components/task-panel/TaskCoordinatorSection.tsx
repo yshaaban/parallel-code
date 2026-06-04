@@ -304,6 +304,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   let lastTriggerRef: HTMLButtonElement | undefined;
 
   const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null);
+  const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(null);
   const [anchor, setAnchor] = createSignal<DOMRect | null>(null);
   const [tab, setTab] = createSignal<PeekTab>('tail');
   const [actionError, setActionError] = createSignal<string | null>(null);
@@ -339,6 +340,15 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
 
     return view.chips.find((chip) => chip.taskId === taskId) ?? null;
   });
+  const selectedWorkflow = createMemo(() => {
+    const view = runView();
+    const workflowId = selectedWorkflowId();
+    if (!view || !workflowId) {
+      return null;
+    }
+
+    return view.workflows.find((workflow) => workflow.id === workflowId) ?? null;
+  });
 
   createEffect(() => {
     const view = runView();
@@ -356,7 +366,23 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   });
 
   createEffect(() => {
+    const view = runView();
+    const selected = selectedWorkflowId();
+    if (!view || !selected) {
+      setSelectedWorkflowId(null);
+      return;
+    }
+
+    if (view.workflows.some((workflow) => workflow.id === selected)) {
+      return;
+    }
+
+    setSelectedWorkflowId(null);
+  });
+
+  createEffect(() => {
     selectedTaskId();
+    selectedWorkflowId();
     setActionError(null);
     setActionStatus(null);
     setCloseConfirmTaskId(null);
@@ -368,6 +394,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
 
   function closePopover(): void {
     setSelectedTaskId(null);
+    setSelectedWorkflowId(null);
     setAnchor(null);
     setShowDebug(false);
     setShowSpawn(false);
@@ -385,6 +412,18 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     lastTriggerRef = event.currentTarget as HTMLButtonElement;
     resetTransientState();
     setSelectedTaskId(chip.taskId);
+    setSelectedWorkflowId(null);
+    setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
+    setShowDebug(false);
+    setShowSpawn(false);
+  }
+
+  function openWorkflow(event: MouseEvent, workflow: CoordinatorWorkflowTimelineView): void {
+    event.stopPropagation();
+    lastTriggerRef = event.currentTarget as HTMLButtonElement;
+    resetTransientState();
+    setSelectedWorkflowId(workflow.id);
+    setSelectedTaskId(null);
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
     setShowDebug(false);
     setShowSpawn(false);
@@ -396,6 +435,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     resetTransientState();
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
     setSelectedTaskId(null);
+    setSelectedWorkflowId(null);
     setShowDebug(false);
     setShowSpawn(true);
   }
@@ -406,6 +446,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     resetTransientState();
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
     setSelectedTaskId(null);
+    setSelectedWorkflowId(null);
     setShowSpawn(false);
     setShowDebug(true);
   }
@@ -548,7 +589,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   }
 
   createEffect(() => {
-    if (!selectedChip() && !showSpawn() && !showDebug()) {
+    if (!selectedChip() && !selectedWorkflow() && !showSpawn() && !showDebug()) {
       return;
     }
 
@@ -646,7 +687,9 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                 >
                   <For each={view().workflows}>
                     {(workflow) => (
-                      <div
+                      <button
+                        aria-label={`Open workflow ${workflow.title}`}
+                        onClick={(event) => openWorkflow(event, workflow)}
                         title={`${workflow.title}: ${workflow.statusLabel}`}
                         style={{
                           display: 'inline-flex',
@@ -659,6 +702,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                           'border-radius': '8px',
                           background: `color-mix(in srgb, ${toneColor(workflow.tone)} 7%, transparent)`,
                           color: theme.fgMuted,
+                          cursor: 'pointer',
                           'font-size': sf(11),
                           'line-height': '1',
                           'white-space': 'nowrap',
@@ -695,7 +739,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                             </span>
                           )}
                         </For>
-                      </div>
+                      </button>
                     )}
                   </For>
                 </div>
@@ -810,7 +854,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
           )}
         </Show>
       </div>
-      <Show when={selectedChip() || showSpawn() || showDebug()}>
+      <Show when={selectedChip() || selectedWorkflow() || showSpawn() || showDebug()}>
         <Portal>
           <div
             ref={(element) => {
@@ -834,6 +878,201 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
             }}
             onClick={(event) => event.stopPropagation()}
           >
+            <Show when={selectedWorkflow()}>
+              {(workflow) => (
+                <>
+                  <div
+                    style={{
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'space-between',
+                      gap: '8px',
+                    }}
+                  >
+                    <div style={{ 'min-width': '0' }}>
+                      <div
+                        style={{
+                          color: theme.fg,
+                          'font-size': sf(12),
+                          'font-weight': 700,
+                          overflow: 'hidden',
+                          'text-overflow': 'ellipsis',
+                          'white-space': 'nowrap',
+                        }}
+                      >
+                        {workflow().title}
+                      </div>
+                      <div style={{ color: toneColor(workflow().tone), 'font-size': sf(11) }}>
+                        {workflow().statusLabel}
+                        <Show when={workflow().latestActivityLabel}>
+                          {(label) => ` · ${label()}`}
+                        </Show>
+                      </div>
+                    </div>
+                    <button
+                      aria-label="Close coordinator controls"
+                      onClick={closePopover}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: theme.fgMuted,
+                        cursor: 'pointer',
+                        'font-size': sf(14),
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <Show when={workflow().blockedReason ?? workflow().failedLaneReason}>
+                    {(reason) => (
+                      <div
+                        style={{
+                          border: `1px solid ${theme.warning}`,
+                          'border-radius': '6px',
+                          padding: '6px',
+                          color: theme.warning,
+                          'font-size': sf(11),
+                        }}
+                      >
+                        {reason()}
+                      </div>
+                    )}
+                  </Show>
+
+                  <div style={{ display: 'flex', gap: '5px', 'flex-wrap': 'wrap' }}>
+                    <For each={workflow().stages}>
+                      {(stage) => (
+                        <span
+                          title={stage.title}
+                          style={{
+                            display: 'inline-flex',
+                            'align-items': 'center',
+                            gap: '4px',
+                            border: `1px solid ${toneColor(stage.tone)}`,
+                            'border-radius': '6px',
+                            color: toneColor(stage.tone),
+                            padding: '3px 6px',
+                            'font-size': sf(10),
+                          }}
+                        >
+                          <strong>{stage.label}</strong>
+                          <span>{`${stage.completedLaneCount}/${stage.laneCount}`}</span>
+                        </span>
+                      )}
+                    </For>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      'grid-template-columns': 'repeat(4, minmax(0, 1fr))',
+                      gap: '6px',
+                      'font-size': sf(11),
+                    }}
+                  >
+                    <span>{`Results ${workflow().resultCount}`}</span>
+                    <span>{`Findings ${workflow().findingCount}`}</span>
+                    <span>{`Failed ${workflow().failedLaneCount}`}</span>
+                    <span>{`Verdicts ${
+                      workflow().verdictSummary.confirmed +
+                      workflow().verdictSummary.refuted +
+                      workflow().verdictSummary.needsMoreEvidence
+                    }`}</span>
+                  </div>
+
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                    <div style={{ color: theme.fgMuted, 'font-size': sf(11), 'font-weight': 700 }}>
+                      Activity
+                    </div>
+                    <Show
+                      when={workflow().activityPreview.length > 0}
+                      fallback={
+                        <div style={{ color: theme.fgSubtle, 'font-size': sf(11) }}>
+                          No activity yet.
+                        </div>
+                      }
+                    >
+                      <For each={workflow().activityPreview}>
+                        {(entry) => (
+                          <div
+                            style={{
+                              display: 'grid',
+                              'grid-template-columns': 'auto minmax(0, 1fr)',
+                              gap: '6px',
+                              color: theme.fgMuted,
+                              'font-size': sf(11),
+                            }}
+                          >
+                            <span style={{ color: toneColor(entry.tone), 'font-weight': 700 }}>
+                              {entry.kind}
+                            </span>
+                            <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                              {entry.message}
+                            </span>
+                          </div>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
+
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                    <div style={{ color: theme.fgMuted, 'font-size': sf(11), 'font-weight': 700 }}>
+                      Results
+                    </div>
+                    <Show
+                      when={workflow().resultPreview.length > 0}
+                      fallback={
+                        <div style={{ color: theme.fgSubtle, 'font-size': sf(11) }}>
+                          No results yet.
+                        </div>
+                      }
+                    >
+                      <For each={workflow().resultPreview}>
+                        {(result) => (
+                          <div
+                            style={{
+                              border: `1px solid ${theme.border}`,
+                              'border-radius': '6px',
+                              padding: '6px',
+                              display: 'flex',
+                              'flex-direction': 'column',
+                              gap: '4px',
+                              'font-size': sf(11),
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                'justify-content': 'space-between',
+                                gap: '8px',
+                              }}
+                            >
+                              <span style={{ color: toneColor(result.tone), 'font-weight': 700 }}>
+                                {result.statusLabel}
+                              </span>
+                              <span style={{ color: theme.fgSubtle }}>
+                                {result.laneLabel ?? result.stageLabel ?? result.id}
+                              </span>
+                            </div>
+                            <div style={{ color: theme.fg }}>{result.summary}</div>
+                            <div style={{ color: theme.fgMuted }}>
+                              {`${result.findingCount} findings · ${result.evidenceCount} evidence · ${result.riskCount} risks`}
+                            </div>
+                            <For each={result.findingsPreview}>
+                              {(finding) => (
+                                <div style={{ color: theme.fgMuted }}>{`• ${finding}`}</div>
+                              )}
+                            </For>
+                          </div>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
+                </>
+              )}
+            </Show>
+
             <Show when={selectedChip()}>
               {(chip) => {
                 const actions = createMemo(() => {
