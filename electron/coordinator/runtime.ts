@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   COORDINATOR_LIMITS,
   isCoordinatorPendingPromptStatus,
+  isCoordinatorTerminalWorkflowLaneStatus,
   type CoordinatorBootstrapSnapshot,
   type CoordinatorDiagnosticsSnapshot,
   type CoordinatorEventEnvelope,
@@ -16,6 +17,17 @@ import {
   type CoordinatorRunStatus,
   type CoordinatorSubtaskSnapshot,
   type CoordinatorSubtaskStatus,
+  type CoordinatorWorkflowJournalEntrySnapshot,
+  type CoordinatorWorkflowLaneSnapshot,
+  type CoordinatorWorkflowLaneStatus,
+  type CoordinatorWorkflowPolicySnapshot,
+  type CoordinatorWorkflowResultSnapshot,
+  type CoordinatorWorkflowStageKind,
+  type CoordinatorWorkflowStageSnapshot,
+  type CoordinatorWorkflowStageStatus,
+  type CoordinatorWorkflowStatus,
+  type CoordinatorWorkflowTemplate,
+  type CoordinatorWorkflowSnapshot,
 } from '../../src/domain/coordinator.js';
 import type { ProjectMode } from '../../src/store/types.js';
 
@@ -36,6 +48,7 @@ interface RunRecord {
   landingByTaskId: Map<string, CoordinatorLandingStateSnapshot>;
   promptsByRequestId: Map<string, CoordinatorPromptRequestSnapshot>;
   subtasksByTaskId: Map<string, CoordinatorSubtaskSnapshot>;
+  workflowsById: Map<string, CoordinatorWorkflowSnapshot>;
 }
 
 interface CreateCoordinatorRunOptions {
@@ -87,10 +100,91 @@ interface UpdateCoordinatorPromptPatch {
   waitingReason?: string | undefined;
 }
 
+interface CreateCoordinatorWorkflowOptions {
+  policy?: Partial<CoordinatorWorkflowPolicySnapshot>;
+  runId: string;
+  stages: Array<{
+    dependsOn?: string[];
+    id?: string;
+    kind: CoordinatorWorkflowStageKind;
+    name: string;
+    status?: CoordinatorWorkflowStageStatus;
+  }>;
+  status?: CoordinatorWorkflowStatus;
+  template: CoordinatorWorkflowTemplate;
+  title: string;
+  now?: number;
+}
+
+interface AddCoordinatorWorkflowLaneOptions {
+  assignment: string;
+  attempt?: number;
+  dedupeKey?: string;
+  id?: string;
+  name: string;
+  role?: string;
+  runId: string;
+  stageId: string;
+  status?: CoordinatorWorkflowLaneStatus;
+  taskId?: string;
+  agentId?: string;
+  timeoutAt?: number;
+  workflowId: string;
+  now?: number;
+}
+
+interface UpdateCoordinatorWorkflowLanePatch {
+  agentId?: string;
+  completedAt?: number;
+  failure?: string;
+  resultId?: string;
+  startedAt?: number;
+  status?: CoordinatorWorkflowLaneStatus;
+  taskId?: string;
+  timeoutAt?: number;
+  now?: number;
+}
+
+interface UpdateCoordinatorWorkflowStagePatch {
+  completedAt?: number;
+  failure?: string;
+  laneIds?: string[];
+  resultIds?: string[];
+  startedAt?: number;
+  status?: CoordinatorWorkflowStageStatus;
+  now?: number;
+}
+
+interface UpdateCoordinatorWorkflowPatch {
+  completedAt?: number;
+  status?: CoordinatorWorkflowStatus;
+  now?: number;
+}
+
+interface AddCoordinatorWorkflowResultOptions {
+  result: Omit<CoordinatorWorkflowResultSnapshot, 'createdAt' | 'id' | 'runId'> & {
+    createdAt?: number;
+    id?: string;
+  };
+  runId: string;
+  workflowId: string;
+  now?: number;
+}
+
 const DEFAULT_RUN_LIMITS: CoordinatorRunLimits = {
   maxActiveSubtasks: COORDINATOR_LIMITS.maxActiveSubtasksPerRun,
   maxPendingPromptsPerTarget: COORDINATOR_LIMITS.maxPendingPromptsPerTarget,
   maxQueuedSubtasks: COORDINATOR_LIMITS.maxQueuedSubtasksPerRun,
+};
+
+const DEFAULT_WORKFLOW_POLICY: CoordinatorWorkflowPolicySnapshot = {
+  continueOnFailure: true,
+  maxConcurrentLanes: COORDINATOR_LIMITS.maxActiveSubtasksPerRun,
+  maxOutputBytesPerLane: COORDINATOR_LIMITS.snapshotMaxBytes,
+  resultRequired: true,
+  retryBackoffMs: 1_000,
+  retryCount: 0,
+  timeoutMs: COORDINATOR_LIMITS.workflowDefaultLaneTimeoutMs,
 };
 
 let recordsByRunId = new Map<string, RunRecord>();
@@ -119,10 +213,14 @@ function getNow(now: number | undefined): number {
 
 function createRunRecord(run: CoordinatorRunSnapshot): RunRecord {
   return {
-    run,
+    run: {
+      ...run,
+      workflows: run.workflows ?? [],
+    },
     landingByTaskId: new Map(run.landing.map((landing) => [landing.taskId, landing])),
     promptsByRequestId: new Map(run.promptQueue.map((prompt) => [prompt.requestId, prompt])),
     subtasksByTaskId: new Map(run.subtasks.map((subtask) => [subtask.taskId, subtask])),
+    workflowsById: new Map((run.workflows ?? []).map((workflow) => [workflow.id, workflow])),
   };
 }
 
@@ -132,6 +230,7 @@ function materializeRun(record: RunRecord): CoordinatorRunSnapshot {
     landing: [...record.landingByTaskId.values()],
     promptQueue: [...record.promptsByRequestId.values()],
     subtasks: [...record.subtasksByTaskId.values()],
+    workflows: [...record.workflowsById.values()],
   };
 }
 
@@ -141,6 +240,7 @@ function replaceRun(record: RunRecord, run: CoordinatorRunSnapshot): void {
     landing: [...record.landingByTaskId.values()],
     promptQueue: [...record.promptsByRequestId.values()],
     subtasks: [...record.subtasksByTaskId.values()],
+    workflows: [...record.workflowsById.values()],
   };
 }
 
@@ -178,6 +278,53 @@ function normalizeRestoredRun(run: CoordinatorRunSnapshot): CoordinatorRunSnapsh
           }
         : subtask,
     ),
+    workflows: (run.workflows ?? []).map(normalizeRestoredWorkflow),
+  };
+}
+
+function normalizeRestoredWorkflow(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowSnapshot {
+  const staleWorkflowStatuses: CoordinatorWorkflowStatus[] = [
+    'pending',
+    'running',
+    'waiting-for-results',
+  ];
+  const staleStageStatuses: CoordinatorWorkflowStageStatus[] = [
+    'pending',
+    'running',
+    'waiting-for-results',
+  ];
+  const staleLaneStatuses: CoordinatorWorkflowLaneStatus[] = [
+    'pending',
+    'spawning',
+    'running',
+    'waiting-for-result',
+  ];
+
+  return {
+    ...workflow,
+    lanes: workflow.lanes.map((lane) =>
+      staleLaneStatuses.includes(lane.status)
+        ? {
+            ...lane,
+            failure: 'Server restored coordinator workflow state without the live PTY session.',
+            status: 'stale-after-restore',
+          }
+        : lane,
+    ),
+    stages: workflow.stages.map((stage) =>
+      staleStageStatuses.includes(stage.status)
+        ? {
+            ...stage,
+            failure: 'Server restored coordinator workflow state without the live PTY session.',
+            status: 'stale-after-restore',
+          }
+        : stage,
+    ),
+    status: staleWorkflowStatuses.includes(workflow.status)
+      ? 'stale-after-restore'
+      : workflow.status,
   };
 }
 
@@ -253,6 +400,7 @@ export function createCoordinatorRun(options: CreateCoordinatorRunOptions): Coor
     status: 'running',
     subtasks: [],
     updatedAt: now,
+    workflows: [],
   };
   const record = createRunRecord(run);
   recordsByRunId.set(run.id, record);
@@ -456,9 +604,402 @@ export function upsertCoordinatorLanding(
   return clone(options.landing);
 }
 
+function mergeWorkflowPolicy(
+  policy: Partial<CoordinatorWorkflowPolicySnapshot> | undefined,
+): CoordinatorWorkflowPolicySnapshot {
+  return {
+    ...DEFAULT_WORKFLOW_POLICY,
+    ...(policy?.budgetHint !== undefined ? { budgetHint: policy.budgetHint } : {}),
+    ...(policy?.continueOnFailure !== undefined
+      ? { continueOnFailure: policy.continueOnFailure }
+      : {}),
+    ...(policy?.maxConcurrentLanes !== undefined
+      ? { maxConcurrentLanes: policy.maxConcurrentLanes }
+      : {}),
+    ...(policy?.maxOutputBytesPerLane !== undefined
+      ? { maxOutputBytesPerLane: policy.maxOutputBytesPerLane }
+      : {}),
+    ...(policy?.resultRequired !== undefined ? { resultRequired: policy.resultRequired } : {}),
+    ...(policy?.retryBackoffMs !== undefined ? { retryBackoffMs: policy.retryBackoffMs } : {}),
+    ...(policy?.retryCount !== undefined ? { retryCount: policy.retryCount } : {}),
+    ...(policy?.timeoutMs !== undefined ? { timeoutMs: policy.timeoutMs } : {}),
+  };
+}
+
+function getWorkflowOrThrow(record: RunRecord, workflowId: string): CoordinatorWorkflowSnapshot {
+  const workflow = record.workflowsById.get(workflowId);
+  if (!workflow) {
+    throw new Error(`Coordinator workflow not found: ${workflowId}`);
+  }
+
+  return workflow;
+}
+
+function setWorkflow(
+  record: RunRecord,
+  workflow: CoordinatorWorkflowSnapshot,
+  now: number,
+  version: number,
+): CoordinatorWorkflowSnapshot {
+  record.workflowsById.set(workflow.id, workflow);
+  updateRunTimestamp(record, now);
+  emitCoordinatorEvent(
+    workflow.runId,
+    'run-upserted',
+    `run:${workflow.runId}`,
+    version,
+    materializeRun(record),
+  );
+  return clone(workflow);
+}
+
+export function createCoordinatorWorkflow(
+  options: CreateCoordinatorWorkflowOptions,
+): CoordinatorWorkflowSnapshot {
+  const record = requireRunRecord(options.runId);
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const workflowId = randomUUID();
+  const stages: CoordinatorWorkflowStageSnapshot[] = options.stages.map((stage) => ({
+    createdAt: now,
+    dependsOn: stage.dependsOn ?? [],
+    id: stage.id ?? randomUUID(),
+    kind: stage.kind,
+    laneIds: [],
+    name: stage.name,
+    resultIds: [],
+    status: stage.status ?? 'pending',
+    updatedAt: now,
+  }));
+  const workflow: CoordinatorWorkflowSnapshot = {
+    createdAt: now,
+    eventVersion: version,
+    id: workflowId,
+    journal: [
+      {
+        at: now,
+        kind: 'workflow-created',
+        message: `Created ${options.template} workflow.`,
+      },
+    ],
+    lanes: [],
+    policy: mergeWorkflowPolicy(options.policy),
+    results: [],
+    runId: options.runId,
+    stages,
+    startedAt: now,
+    status: options.status ?? 'running',
+    template: options.template,
+    title: options.title,
+    updatedAt: now,
+  };
+  return setWorkflow(record, workflow, now, version);
+}
+
+export function appendCoordinatorWorkflowJournal(
+  runId: string,
+  workflowId: string,
+  entry: Omit<CoordinatorWorkflowJournalEntrySnapshot, 'at'> & { at?: number },
+): CoordinatorWorkflowSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const now = getNow(entry.at);
+  const version = nextVersion();
+  return setWorkflow(
+    record,
+    {
+      ...workflow,
+      eventVersion: version,
+      journal: [
+        ...workflow.journal,
+        {
+          ...entry,
+          at: now,
+        },
+      ],
+      updatedAt: now,
+    },
+    now,
+    version,
+  );
+}
+
+export function addCoordinatorWorkflowLane(
+  options: AddCoordinatorWorkflowLaneOptions,
+): CoordinatorWorkflowLaneSnapshot {
+  const record = requireRunRecord(options.runId);
+  const workflow = getWorkflowOrThrow(record, options.workflowId);
+  const stage = workflow.stages.find((candidate) => candidate.id === options.stageId);
+  if (!stage) {
+    throw new Error(`Coordinator workflow stage not found: ${options.stageId}`);
+  }
+
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const lane: CoordinatorWorkflowLaneSnapshot = {
+    assignment: options.assignment,
+    attempt: options.attempt ?? 1,
+    createdAt: now,
+    ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
+    id: options.id ?? randomUUID(),
+    name: options.name,
+    ...(options.role !== undefined ? { role: options.role } : {}),
+    stageId: options.stageId,
+    status: options.status ?? 'pending',
+    ...(options.taskId !== undefined ? { taskId: options.taskId } : {}),
+    ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+    ...(options.timeoutAt !== undefined ? { timeoutAt: options.timeoutAt } : {}),
+    updatedAt: now,
+  };
+  const updatedStage = {
+    ...stage,
+    laneIds: [...new Set([...stage.laneIds, lane.id])],
+    updatedAt: now,
+  };
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflow,
+    eventVersion: version,
+    lanes: [...workflow.lanes, lane],
+    stages: workflow.stages.map((candidate) =>
+      candidate.id === updatedStage.id ? updatedStage : candidate,
+    ),
+    updatedAt: now,
+  };
+  setWorkflow(record, updatedWorkflow, now, version);
+  return clone(lane);
+}
+
+export function updateCoordinatorWorkflowLane(
+  runId: string,
+  workflowId: string,
+  laneId: string,
+  patch: UpdateCoordinatorWorkflowLanePatch,
+): CoordinatorWorkflowLaneSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const existing = workflow.lanes.find((lane) => lane.id === laneId);
+  if (!existing) {
+    throw new Error(`Coordinator workflow lane not found: ${laneId}`);
+  }
+
+  const now = getNow(patch.now);
+  const version = nextVersion();
+  const lane: CoordinatorWorkflowLaneSnapshot = {
+    ...existing,
+    ...(patch.agentId !== undefined ? { agentId: patch.agentId } : {}),
+    ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
+    ...(patch.failure !== undefined ? { failure: patch.failure } : {}),
+    ...(patch.resultId !== undefined ? { resultId: patch.resultId } : {}),
+    ...(patch.startedAt !== undefined ? { startedAt: patch.startedAt } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.taskId !== undefined ? { taskId: patch.taskId } : {}),
+    ...(patch.timeoutAt !== undefined ? { timeoutAt: patch.timeoutAt } : {}),
+    updatedAt: now,
+  };
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflow,
+    eventVersion: version,
+    lanes: workflow.lanes.map((candidate) => (candidate.id === laneId ? lane : candidate)),
+    updatedAt: now,
+  };
+  setWorkflow(record, updatedWorkflow, now, version);
+  return clone(lane);
+}
+
+export function updateCoordinatorWorkflowStage(
+  runId: string,
+  workflowId: string,
+  stageId: string,
+  patch: UpdateCoordinatorWorkflowStagePatch,
+): CoordinatorWorkflowStageSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const existing = workflow.stages.find((stage) => stage.id === stageId);
+  if (!existing) {
+    throw new Error(`Coordinator workflow stage not found: ${stageId}`);
+  }
+
+  const now = getNow(patch.now);
+  const version = nextVersion();
+  const stage: CoordinatorWorkflowStageSnapshot = {
+    ...existing,
+    ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
+    ...(patch.failure !== undefined ? { failure: patch.failure } : {}),
+    ...(patch.laneIds !== undefined ? { laneIds: patch.laneIds } : {}),
+    ...(patch.resultIds !== undefined ? { resultIds: patch.resultIds } : {}),
+    ...(patch.startedAt !== undefined ? { startedAt: patch.startedAt } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    updatedAt: now,
+  };
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflow,
+    eventVersion: version,
+    stages: workflow.stages.map((candidate) => (candidate.id === stageId ? stage : candidate)),
+    updatedAt: now,
+  };
+  setWorkflow(record, updatedWorkflow, now, version);
+  return clone(stage);
+}
+
+export function updateCoordinatorWorkflow(
+  runId: string,
+  workflowId: string,
+  patch: UpdateCoordinatorWorkflowPatch,
+): CoordinatorWorkflowSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const now = getNow(patch.now);
+  const version = nextVersion();
+  return setWorkflow(
+    record,
+    {
+      ...workflow,
+      ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
+      eventVersion: version,
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      updatedAt: now,
+    },
+    now,
+    version,
+  );
+}
+
+export function addCoordinatorWorkflowResult(
+  options: AddCoordinatorWorkflowResultOptions,
+): CoordinatorWorkflowResultSnapshot {
+  const record = requireRunRecord(options.runId);
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const result: CoordinatorWorkflowResultSnapshot = {
+    ...options.result,
+    createdAt: options.result.createdAt ?? now,
+    id: options.result.id ?? randomUUID(),
+    runId: options.runId,
+    workflowId: options.workflowId,
+  };
+
+  const workflow = getWorkflowOrThrow(record, options.workflowId);
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflow,
+    eventVersion: version,
+    results: [...workflow.results, result],
+    stages: workflow.stages.map((stage) =>
+      stage.id === result.stageId
+        ? {
+            ...stage,
+            resultIds: [...new Set([...stage.resultIds, result.id])],
+            updatedAt: now,
+          }
+        : stage,
+    ),
+    updatedAt: now,
+  };
+  setWorkflow(record, updatedWorkflow, now, version);
+  return clone(result);
+}
+
+export function cancelCoordinatorWorkflowLanesForTask(
+  runId: string,
+  taskId: string,
+  reason: string,
+): CoordinatorWorkflowLaneSnapshot[] {
+  const record = requireRunRecord(runId);
+  const now = Date.now();
+  const cancelled: CoordinatorWorkflowLaneSnapshot[] = [];
+
+  for (const workflow of record.workflowsById.values()) {
+    const matchingLaneIds = new Set(
+      workflow.lanes
+        .filter(
+          (lane) => lane.taskId === taskId && !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
+        )
+        .map((lane) => lane.id),
+    );
+    if (matchingLaneIds.size === 0) {
+      continue;
+    }
+
+    const version = nextVersion();
+    const updatedLanes = workflow.lanes.map((lane) => {
+      if (!matchingLaneIds.has(lane.id)) {
+        return lane;
+      }
+
+      const cancelledLane: CoordinatorWorkflowLaneSnapshot = {
+        ...lane,
+        completedAt: now,
+        failure: reason,
+        status: 'cancelled',
+        updatedAt: now,
+      };
+      cancelled.push(cancelledLane);
+      return cancelledLane;
+    });
+    const affectedStageIds = new Set(
+      updatedLanes.filter((lane) => matchingLaneIds.has(lane.id)).map((lane) => lane.stageId),
+    );
+    const updatedStages = workflow.stages.map((stage) => {
+      if (!affectedStageIds.has(stage.id)) {
+        return stage;
+      }
+
+      const stageLanes = updatedLanes.filter((lane) => stage.laneIds.includes(lane.id));
+      if (!stageLanes.every((lane) => isCoordinatorTerminalWorkflowLaneStatus(lane.status))) {
+        return {
+          ...stage,
+          updatedAt: now,
+        };
+      }
+
+      return {
+        ...stage,
+        completedAt: now,
+        failure: reason,
+        status: 'cancelled' as const,
+        updatedAt: now,
+      };
+    });
+    const workflowCancelled = updatedStages.some((stage) => stage.status === 'cancelled');
+    const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+      ...workflow,
+      ...(workflowCancelled ? { completedAt: now } : {}),
+      eventVersion: version,
+      journal: [
+        ...workflow.journal,
+        ...updatedLanes
+          .filter((lane) => matchingLaneIds.has(lane.id))
+          .map((lane) => ({
+            at: now,
+            kind: 'lane-cancelled',
+            laneId: lane.id,
+            message: reason,
+            stageId: lane.stageId,
+          })),
+      ],
+      lanes: updatedLanes,
+      stages: updatedStages,
+      ...(workflowCancelled ? { status: 'cancelled' as const } : {}),
+      updatedAt: now,
+    };
+    setWorkflow(record, updatedWorkflow, now, version);
+  }
+
+  return clone(cancelled);
+}
+
 export function getCoordinatorRun(runId: string): CoordinatorRunSnapshot | null {
   const record = recordsByRunId.get(runId);
   return record ? clone(materializeRun(record)) : null;
+}
+
+export function getCoordinatorWorkflow(
+  runId: string,
+  workflowId: string,
+): CoordinatorWorkflowSnapshot | null {
+  const record = recordsByRunId.get(runId);
+  return record?.workflowsById.has(workflowId)
+    ? clone(record.workflowsById.get(workflowId) as CoordinatorWorkflowSnapshot)
+    : null;
 }
 
 export function getCoordinatorRunByCoordinatorTaskId(

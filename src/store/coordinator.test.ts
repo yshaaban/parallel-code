@@ -27,6 +27,7 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
     status: 'running',
     subtasks: [],
     updatedAt: 1_000,
+    workflows: [],
     ...overrides,
   };
 }

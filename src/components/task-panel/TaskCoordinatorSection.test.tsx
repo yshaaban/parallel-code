@@ -74,6 +74,7 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
       },
     ],
     updatedAt: 1_200,
+    workflows: overrides.workflows ?? [],
   };
 }
 
@@ -134,6 +135,97 @@ describe('TaskCoordinatorSection', () => {
     expect(screen.getByText('1/5')).toBeDefined();
     expect(screen.getByText('Q1')).toBeDefined();
     expect(screen.getByLabelText('Open Fix parser behavior')).toBeDefined();
+  });
+
+  it('renders a compact workflow timeline when workflow snapshots exist', () => {
+    coordinatorRunRef.current = createRun({
+      workflows: [
+        {
+          createdAt: 1_000,
+          eventVersion: 2,
+          id: 'workflow-1',
+          journal: [],
+          lanes: [
+            {
+              agentId: 'agent-map',
+              assignment: 'Map backend risks.',
+              attempt: 1,
+              createdAt: 1_000,
+              id: 'lane-map',
+              name: 'Backend',
+              role: 'map',
+              stageId: 'map',
+              status: 'waiting-for-result',
+              taskId: 'task-map',
+              updatedAt: 1_000,
+            },
+          ],
+          policy: {
+            continueOnFailure: true,
+            maxConcurrentLanes: 3,
+            maxOutputBytesPerLane: 65_536,
+            resultRequired: true,
+            retryBackoffMs: 1_000,
+            retryCount: 0,
+            timeoutMs: 900_000,
+          },
+          results: [
+            {
+              agentId: 'agent-map',
+              commandsRun: [],
+              createdAt: 1_100,
+              evidence: [],
+              findings: [{ severity: 'major', status: 'confirmed', summary: 'Risk found' }],
+              id: 'result-1',
+              laneId: 'lane-map',
+              risks: [],
+              runId: 'run-1',
+              stageId: 'map',
+              status: 'completed',
+              summary: 'Mapped risk.',
+              taskId: 'task-map',
+              workflowId: 'workflow-1',
+            },
+          ],
+          runId: 'run-1',
+          stages: [
+            {
+              createdAt: 1_000,
+              dependsOn: [],
+              id: 'map',
+              kind: 'map',
+              laneIds: ['lane-map'],
+              name: 'Map',
+              resultIds: ['result-1'],
+              status: 'waiting-for-results',
+              updatedAt: 1_100,
+            },
+            {
+              createdAt: 1_000,
+              dependsOn: ['map'],
+              id: 'reduce',
+              kind: 'reduce',
+              laneIds: [],
+              name: 'Reduce',
+              resultIds: [],
+              status: 'pending',
+              updatedAt: 1_000,
+            },
+          ],
+          startedAt: 1_000,
+          status: 'waiting-for-results',
+          template: 'map_reduce',
+          title: 'Latency review',
+          updatedAt: 1_100,
+        },
+      ],
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    expect(screen.getByLabelText('Coordinator workflows')).toBeDefined();
+    expect(screen.getByText('Map')).toBeDefined();
+    expect(screen.getByText('!1')).toBeDefined();
   });
 
   it('opens the peek lens and fetches output through the coordinator UI action channel', async () => {

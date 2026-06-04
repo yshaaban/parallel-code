@@ -7,10 +7,13 @@ import type {
   CoordinatorSubtaskSnapshot,
   CoordinatorSubtaskStatus,
   CoordinatorToolName,
+  CoordinatorWorkflowSnapshot,
+  CoordinatorWorkflowStageSnapshot,
 } from '../domain/coordinator';
 import {
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
+  isCoordinatorTerminalWorkflowLaneStatus,
 } from '../domain/coordinator';
 
 export type CoordinatorAttentionLevel = 'normal' | 'info' | 'success' | 'warning' | 'danger';
@@ -25,7 +28,10 @@ export type CoordinatorUiActionId =
   | 'spawn-subtask'
   | 'wait-for-idle';
 
-type CoordinatorUiToolName = Exclude<CoordinatorToolName, 'land_self' | 'signal_done'>;
+type CoordinatorUiToolName = Exclude<
+  CoordinatorToolName,
+  'land_self' | 'signal_done' | 'submit_result'
+>;
 
 export interface CoordinatorUiAction {
   danger: boolean;
@@ -79,6 +85,32 @@ export interface CoordinatorRunSummaryView {
   subtaskLimit: number;
 }
 
+export interface CoordinatorWorkflowStageView {
+  completedLaneCount: number;
+  id: string;
+  label: string;
+  laneCount: number;
+  resultCount: number;
+  status: CoordinatorWorkflowStageSnapshot['status'];
+  title: string;
+  tone: CoordinatorAttentionLevel;
+}
+
+export interface CoordinatorWorkflowTimelineView {
+  activeLaneCount: number;
+  findingCount: number;
+  id: string;
+  resultCount: number;
+  stages: CoordinatorWorkflowStageView[];
+  status: CoordinatorWorkflowSnapshot['status'];
+  statusLabel: string;
+  stale: boolean;
+  template: CoordinatorWorkflowSnapshot['template'];
+  title: string;
+  tone: CoordinatorAttentionLevel;
+  updatedAt: number;
+}
+
 export interface CoordinatorRunView {
   chips: CoordinatorSubtaskChipView[];
   debugCommand?: string;
@@ -86,6 +118,7 @@ export interface CoordinatorRunView {
   run: CoordinatorRunSnapshot;
   spawnAction: CoordinatorUiAction;
   summary: CoordinatorRunSummaryView;
+  workflows: CoordinatorWorkflowTimelineView[];
 }
 
 const MAX_PROMPT_BEADS_PER_SUBTASK = 3;
@@ -157,6 +190,41 @@ function getRunTone(status: CoordinatorRunStatus): CoordinatorAttentionLevel {
       return 'info';
     case 'running':
       return 'normal';
+  }
+}
+
+function getWorkflowTone(status: CoordinatorWorkflowSnapshot['status']): CoordinatorAttentionLevel {
+  switch (status) {
+    case 'blocked':
+    case 'cancelled':
+    case 'failed':
+    case 'stale-after-restore':
+      return 'danger';
+    case 'pending':
+    case 'running':
+    case 'waiting-for-results':
+      return 'info';
+    case 'completed':
+      return 'success';
+  }
+}
+
+function getWorkflowStageTone(
+  status: CoordinatorWorkflowStageSnapshot['status'],
+): CoordinatorAttentionLevel {
+  switch (status) {
+    case 'blocked':
+    case 'cancelled':
+    case 'failed':
+    case 'stale-after-restore':
+      return 'danger';
+    case 'pending':
+      return 'normal';
+    case 'running':
+    case 'waiting-for-results':
+      return 'info';
+    case 'completed':
+      return 'success';
   }
 }
 
@@ -448,6 +516,64 @@ function createSummaryView(run: CoordinatorRunSnapshot): CoordinatorRunSummaryVi
   };
 }
 
+function createWorkflowStageView(
+  workflow: CoordinatorWorkflowSnapshot,
+  stage: CoordinatorWorkflowStageSnapshot,
+): CoordinatorWorkflowStageView {
+  const stageLaneIds = new Set(stage.laneIds);
+  const lanes = workflow.lanes.filter((lane) => stageLaneIds.has(lane.id));
+  const completedLaneCount = lanes.filter((lane) =>
+    isCoordinatorTerminalWorkflowLaneStatus(lane.status),
+  ).length;
+  const label = stage.name.slice(0, 1).toUpperCase();
+
+  return {
+    completedLaneCount,
+    id: stage.id,
+    label,
+    laneCount: lanes.length,
+    resultCount: stage.resultIds.length,
+    status: stage.status,
+    title: `${stage.name}: ${humanizeStatus(stage.status)} (${completedLaneCount}/${lanes.length} lanes, ${stage.resultIds.length} results)`,
+    tone: getWorkflowStageTone(stage.status),
+  };
+}
+
+function createWorkflowTimelineView(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowTimelineView {
+  const activeLaneCount = workflow.lanes.filter(
+    (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
+  ).length;
+  const findingCount = workflow.results.reduce(
+    (count, result) => count + result.findings.length,
+    0,
+  );
+
+  return {
+    activeLaneCount,
+    findingCount,
+    id: workflow.id,
+    resultCount: workflow.results.length,
+    stages: workflow.stages.map((stage) => createWorkflowStageView(workflow, stage)),
+    status: workflow.status,
+    statusLabel: humanizeStatus(workflow.status),
+    stale: workflow.status === 'stale-after-restore',
+    template: workflow.template,
+    title: workflow.title,
+    tone: getWorkflowTone(workflow.status),
+    updatedAt: workflow.updatedAt,
+  };
+}
+
+function createWorkflowTimelineViews(
+  run: CoordinatorRunSnapshot,
+): CoordinatorWorkflowTimelineView[] {
+  return (run.workflows ?? [])
+    .map(createWorkflowTimelineView)
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
 function createSpawnAction(run: CoordinatorRunSnapshot): CoordinatorUiAction {
   const activeOrQueuedCount = run.subtasks.filter((subtask) =>
     ACTIVE_SUBTASK_STATUSES.has(subtask.status),
@@ -544,6 +670,7 @@ export function createCoordinatorRunView(
     run,
     spawnAction: createSpawnAction(run),
     summary: createSummaryView(run),
+    workflows: createWorkflowTimelineViews(run),
   };
 }
 

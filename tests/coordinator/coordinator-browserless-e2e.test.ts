@@ -625,6 +625,80 @@ describe('browser-less coordinator E2E', () => {
     }
   });
 
+  it('runs a browser-less map-reduce workflow through HTTP tool calls', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'workflow-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        lanes: [{ assignment: 'Map backend reliability risks.', name: 'Backend', role: 'map' }],
+        problem: 'Review coordinator workflow reliability.',
+        template: 'map_reduce',
+        title: 'Coordinator workflow review',
+      },
+    });
+    expect(
+      getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(started),
+    ).toMatchObject({
+      workflow: {
+        stages: [
+          expect.objectContaining({ id: 'map', status: 'waiting-for-results' }),
+          expect.objectContaining({ id: 'reduce', status: 'pending' }),
+        ],
+        template: 'map_reduce',
+      },
+    });
+
+    const mapCredentialPath = getSpawnedAgentOptions(0).env.PARALLEL_CODE_COORDINATOR_CREDENTIAL;
+    const mapCredential = JSON.parse(await readFile(mapCredentialPath, 'utf8')) as {
+      token: string;
+    };
+    const workflowId = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow.id;
+    const mapTaskId = getSpawnedAgentOptions(0).taskId;
+
+    const submitted = await harness.callCoordinatorTool({
+      callId: 'workflow-map-result',
+      runId: run.id,
+      taskId: mapTaskId,
+      token: mapCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        commandsRun: ['npm run test:node:coordinator:e2e'],
+        confidence: 'high',
+        evidence: [{ label: 'browser-less route test' }],
+        findings: [{ severity: 'major', status: 'confirmed', summary: 'Typed result accepted' }],
+        summary: 'Mapped coordinator reliability.',
+        workflowId,
+      },
+    });
+
+    expect(
+      getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(submitted),
+    ).toMatchObject({
+      workflow: {
+        lanes: [
+          expect.objectContaining({ resultId: expect.any(String), status: 'completed' }),
+          expect.objectContaining({ role: 'reduce', status: 'waiting-for-result' }),
+        ],
+        results: [expect.objectContaining({ summary: 'Mapped coordinator reliability.' })],
+        stages: [
+          expect.objectContaining({ id: 'map', status: 'completed' }),
+          expect.objectContaining({ id: 'reduce', status: 'waiting-for-results' }),
+        ],
+      },
+    });
+    expect(getSpawnedAgentOptions(1)).toMatchObject({
+      command: 'codex',
+      taskId: 'task-child-2',
+    });
+  });
+
   it('deduplicates route-level spawns and preserves custom agent launch config', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
     const createTaskWorkflowImpl = mocks.createTaskWorkflowMock.getMockImplementation();
@@ -1202,6 +1276,18 @@ describe('browser-less coordinator E2E', () => {
     activeHarnesses.push(firstHarness);
     const { credential, result } = await firstHarness.createCoordinatorRun();
     await spawnCoordinatorSubtask(firstHarness, result.run, credential.token);
+    await firstHarness.callCoordinatorTool({
+      callId: 'workflow-before-restore',
+      runId: result.run.id,
+      taskId: result.run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        lanes: [{ assignment: 'Map restore behavior.', name: 'Restore' }],
+        problem: 'Review restore behavior.',
+        template: 'map_reduce',
+      },
+    });
     await firstHarness.close();
     forgetActiveHarness(firstHarness);
     resetCoordinatorToolGatewayForTests();
@@ -1226,6 +1312,14 @@ describe('browser-less coordinator E2E', () => {
     expect(restoredRun?.subtasks[0]).toMatchObject({
       status: 'exited',
       taskId: 'task-child-1',
+    });
+    expect(restoredRun?.workflows[0]).toMatchObject({
+      status: 'stale-after-restore',
+      stages: [expect.objectContaining({ status: 'stale-after-restore' }), expect.any(Object)],
+    });
+    expect(restoredRun?.workflows[0]?.lanes[0]).toMatchObject({
+      status: 'stale-after-restore',
+      taskId: 'task-child-2',
     });
 
     const oldCredentialResponse = await restoredHarness.toolCallResponse({

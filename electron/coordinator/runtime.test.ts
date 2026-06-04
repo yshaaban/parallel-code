@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COORDINATOR_LIMITS } from '../../src/domain/coordinator.js';
 import {
   addCoordinatorSubtask,
+  addCoordinatorWorkflowLane,
+  addCoordinatorWorkflowResult,
+  createCoordinatorWorkflow,
   createCoordinatorRun,
   enqueueCoordinatorPrompt,
   getCoordinatorBootstrapSnapshot,
@@ -16,6 +19,7 @@ import {
   subscribeCoordinatorEvents,
   updateCoordinatorPrompt,
   updateCoordinatorRunStatus,
+  updateCoordinatorWorkflowLane,
 } from './runtime.js';
 
 describe('coordinator runtime', () => {
@@ -140,6 +144,93 @@ describe('coordinator runtime', () => {
     expect(restored?.promptQueue[0]).toMatchObject({
       status: 'write-unknown-after-restore',
       waitingReason: 'server-restored-without-live-pty-session',
+    });
+  });
+
+  it('persists workflow state and marks active restored workflow lanes stale', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const workflow = createCoordinatorWorkflow({
+      now: 1_010,
+      runId: run.id,
+      stages: [
+        { id: 'map', kind: 'map', name: 'Map' },
+        { dependsOn: ['map'], id: 'reduce', kind: 'reduce', name: 'Reduce' },
+      ],
+      template: 'map_reduce',
+      title: 'Review startup',
+    });
+    const completedLane = addCoordinatorWorkflowLane({
+      agentId: 'agent-complete',
+      assignment: 'Map completed lane.',
+      name: 'Completed',
+      now: 1_020,
+      runId: run.id,
+      stageId: 'map',
+      status: 'waiting-for-result',
+      taskId: 'task-complete',
+      workflowId: workflow.id,
+    });
+    const activeLane = addCoordinatorWorkflowLane({
+      agentId: 'agent-active',
+      assignment: 'Map active lane.',
+      name: 'Active',
+      now: 1_030,
+      runId: run.id,
+      stageId: 'map',
+      status: 'waiting-for-result',
+      taskId: 'task-active',
+      workflowId: workflow.id,
+    });
+    const result = addCoordinatorWorkflowResult({
+      now: 1_040,
+      result: {
+        agentId: 'agent-complete',
+        commandsRun: ['npm test'],
+        evidence: [{ label: 'runtime' }],
+        findings: [],
+        laneId: completedLane.id,
+        risks: [],
+        stageId: 'map',
+        status: 'completed',
+        summary: 'Completed lane result.',
+        taskId: 'task-complete',
+        workflowId: workflow.id,
+      },
+      runId: run.id,
+      workflowId: workflow.id,
+    });
+    updateCoordinatorWorkflowLane(run.id, workflow.id, completedLane.id, {
+      completedAt: 1_050,
+      resultId: result.id,
+      status: 'completed',
+    });
+
+    const persisted = getCoordinatorRuntimeState();
+
+    resetCoordinatorRuntimeForTests();
+    restoreCoordinatorRuntimeState(persisted);
+
+    const restoredWorkflow = getCoordinatorRun(run.id)?.workflows[0];
+    expect(restoredWorkflow).toMatchObject({
+      status: 'stale-after-restore',
+      results: [expect.objectContaining({ summary: 'Completed lane result.' })],
+    });
+    expect(restoredWorkflow?.lanes.find((lane) => lane.id === completedLane.id)).toMatchObject({
+      status: 'completed',
+    });
+    expect(restoredWorkflow?.lanes.find((lane) => lane.id === activeLane.id)).toMatchObject({
+      failure: 'Server restored coordinator workflow state without the live PTY session.',
+      status: 'stale-after-restore',
+    });
+    expect(restoredWorkflow?.stages.find((stage) => stage.id === 'map')).toMatchObject({
+      failure: 'Server restored coordinator workflow state without the live PTY session.',
+      status: 'stale-after-restore',
     });
   });
 

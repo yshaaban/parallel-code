@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { IPC } from '../ipc/channels.js';
@@ -32,6 +33,10 @@ import {
   COORDINATOR_LIMITS,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
+  isCoordinatorTerminalWorkflowLaneStatus,
+  isCoordinatorWorkflowResultConfidence,
+  isCoordinatorWorkflowResultStatus,
+  isCoordinatorWorkflowTemplate,
   type CoordinatorCloseTaskPayload,
   type CoordinatorGetTaskDiffPayload,
   type CoordinatorGetTaskOutputPayload,
@@ -42,13 +47,25 @@ import {
   type CoordinatorRunSnapshot,
   type CoordinatorSendPromptPayload,
   type CoordinatorSignalDonePayload,
+  type CoordinatorSpawnManyLanePayload,
+  type CoordinatorSpawnManyPayload,
   type CoordinatorSpawnSubtaskPayload,
+  type CoordinatorStartWorkflowLanePayload,
+  type CoordinatorStartWorkflowPayload,
+  type CoordinatorSubmitResultPayload,
   type CoordinatorSubtaskSnapshot,
   type CoordinatorTargetTaskPayload,
   type CoordinatorToolCallEnvelope,
   type CoordinatorToolCallResult,
   type CoordinatorUiToolCallRequest,
   type CoordinatorWaitForIdlePayload,
+  type CoordinatorWorkflowFindingSnapshot,
+  type CoordinatorWorkflowPolicySnapshot,
+  type CoordinatorWorkflowResultConfidence,
+  type CoordinatorWorkflowResultSnapshot,
+  type CoordinatorWorkflowResultStatus,
+  type CoordinatorWorkflowSnapshot,
+  type CoordinatorWorkflowTemplate,
 } from '../../src/domain/coordinator.js';
 import { buildCoordinatorSubtaskAssignment } from '../../src/domain/coordinator-instructions.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
@@ -66,17 +83,26 @@ import {
   resolveCoordinatorToken,
 } from './service.js';
 import {
+  addCoordinatorWorkflowLane,
+  addCoordinatorWorkflowResult,
+  appendCoordinatorWorkflowJournal,
   addCoordinatorSubtask,
+  cancelCoordinatorWorkflowLanesForTask,
   cancelCoordinatorPromptsForTask,
+  createCoordinatorWorkflow,
   enqueueCoordinatorPrompt,
   getCoordinatorRun,
   getCoordinatorRunByCoordinatorTaskId,
   getCoordinatorToolResult,
+  getCoordinatorWorkflow,
   listCoordinatorRuns,
   rememberCoordinatorToolResult,
   subscribeCoordinatorEvents,
   updateCoordinatorPrompt,
   updateCoordinatorSubtaskStatus,
+  updateCoordinatorWorkflow,
+  updateCoordinatorWorkflowLane,
+  updateCoordinatorWorkflowStage,
   upsertCoordinatorLanding,
 } from './runtime.js';
 
@@ -92,6 +118,8 @@ const TASK_OUTPUT_DEFAULT_MAX_BYTES = 64 * 1024;
 const TASK_OUTPUT_MAX_BYTES = 256 * 1024;
 const TASK_DIFF_DEFAULT_MAX_BYTES = 128 * 1024;
 const TASK_DIFF_MAX_BYTES = 512 * 1024;
+const DEFAULT_WORKFLOW_AGENT_COMMAND = 'codex';
+const DEFAULT_WORKFLOW_CONCURRENCY = 3;
 
 interface CoordinatorToolGatewayContext {
   context: HandlerContext;
@@ -104,6 +132,12 @@ interface CoordinatorToolInvocation {
   runId: string;
   taskId: string;
   toolName: CoordinatorToolCallEnvelope['toolName'];
+}
+
+interface WorkflowSpawnedLane {
+  error?: string;
+  laneId: string;
+  subtask?: CoordinatorSubtaskSnapshot;
 }
 
 let promptDeliveryCleanup: (() => void) | null = null;
@@ -143,6 +177,55 @@ function assertTextSize(value: string, label: string, maxChars: number): void {
   if (value.length > maxChars) {
     throw new BadRequestError(`${label} must be no longer than ${maxChars} characters`);
   }
+}
+
+function assertOptionalStringSize(
+  value: unknown,
+  label: string,
+  maxChars: number,
+): asserts value is string | undefined {
+  assertOptionalString(value, label);
+  if (value !== undefined) {
+    assertTextSize(value, label, maxChars);
+  }
+}
+
+function assertJsonPayloadSize(value: unknown, label: string, maxBytes: number): void {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new BadRequestError(`${label} must be JSON-serializable`);
+  }
+  if (serialized === undefined) {
+    throw new BadRequestError(`${label} must be JSON-serializable`);
+  }
+
+  if (Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+    throw new BadRequestError(`${label} must be no larger than ${maxBytes} bytes`);
+  }
+}
+
+function readStringListPayload(
+  value: unknown,
+  label: string,
+  maxItems: number,
+  maxChars: number,
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isStringArray(value)) {
+    throw new BadRequestError(`${label} must be a string array when provided`);
+  }
+  if (value.length > maxItems) {
+    throw new BadRequestError(`${label} must be no longer than ${maxItems} entries`);
+  }
+  for (const entry of value) {
+    assertTextSize(entry, `${label} entry`, maxChars);
+  }
+
+  return value;
 }
 
 function isRecordOfStrings(value: unknown): value is Record<string, string> {
@@ -264,6 +347,406 @@ function readNonNegativeTimeout(
   }
 
   return Math.min(value, max);
+}
+
+function readOptionalPositiveInt(value: unknown, label: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new BadRequestError(`${label} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function readOptionalNonNegativeInt(value: unknown, label: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new BadRequestError(`${label} must be a non-negative integer`);
+  }
+
+  return value;
+}
+
+function readWorkflowPolicyPayload(
+  payload: unknown,
+): Partial<CoordinatorWorkflowPolicySnapshot> | undefined {
+  if (payload === undefined) {
+    return undefined;
+  }
+  if (!isRecord(payload)) {
+    throw new BadRequestError('policy must be an object when provided');
+  }
+  if (payload.continueOnFailure !== undefined && typeof payload.continueOnFailure !== 'boolean') {
+    throw new BadRequestError('policy.continueOnFailure must be a boolean when provided');
+  }
+  if (payload.resultRequired !== undefined && typeof payload.resultRequired !== 'boolean') {
+    throw new BadRequestError('policy.resultRequired must be a boolean when provided');
+  }
+  assertOptionalStringSize(
+    payload.budgetHint,
+    'policy.budgetHint',
+    COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+  );
+
+  const maxConcurrentLanes = readOptionalPositiveInt(
+    payload.maxConcurrentLanes,
+    'policy.maxConcurrentLanes',
+  );
+  if (
+    maxConcurrentLanes !== undefined &&
+    maxConcurrentLanes > COORDINATOR_LIMITS.maxWorkflowLanes
+  ) {
+    throw new BadRequestError(
+      `policy.maxConcurrentLanes must be no greater than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+
+  const timeoutMs = readOptionalNonNegativeInt(payload.timeoutMs, 'policy.timeoutMs');
+  if (timeoutMs !== undefined && timeoutMs > COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs) {
+    throw new BadRequestError(
+      `policy.timeoutMs must be no greater than ${COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs}`,
+    );
+  }
+  const maxOutputBytesPerLane = readOptionalPositiveInt(
+    payload.maxOutputBytesPerLane,
+    'policy.maxOutputBytesPerLane',
+  );
+  const retryBackoffMs = readOptionalNonNegativeInt(
+    payload.retryBackoffMs,
+    'policy.retryBackoffMs',
+  );
+  const retryCount = readOptionalNonNegativeInt(payload.retryCount, 'policy.retryCount');
+
+  return {
+    ...(payload.budgetHint !== undefined ? { budgetHint: payload.budgetHint } : {}),
+    ...(payload.continueOnFailure !== undefined
+      ? { continueOnFailure: payload.continueOnFailure }
+      : {}),
+    ...(maxConcurrentLanes !== undefined ? { maxConcurrentLanes } : {}),
+    ...(maxOutputBytesPerLane !== undefined ? { maxOutputBytesPerLane } : {}),
+    ...(payload.resultRequired !== undefined ? { resultRequired: payload.resultRequired } : {}),
+    ...(retryBackoffMs !== undefined ? { retryBackoffMs } : {}),
+    ...(retryCount !== undefined ? { retryCount } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+
+function readSpawnAgentPayload(
+  value: unknown,
+  fallback: CoordinatorSpawnSubtaskPayload['agent'] | undefined,
+): CoordinatorSpawnSubtaskPayload['agent'] {
+  if (value === undefined) {
+    return fallback ?? { command: DEFAULT_WORKFLOW_AGENT_COMMAND };
+  }
+  if (!isRecord(value)) {
+    throw new BadRequestError('agent must be an object when provided');
+  }
+  assertString(value.command, 'agent.command');
+  assertOptionalString(value.name, 'agent.name');
+  if (value.args !== undefined && !isStringArray(value.args)) {
+    throw new BadRequestError('agent.args must be a string array when provided');
+  }
+  if (value.skipPermissionsArgs !== undefined && !isStringArray(value.skipPermissionsArgs)) {
+    throw new BadRequestError('agent.skipPermissionsArgs must be a string array when provided');
+  }
+  if (value.env !== undefined && !isRecordOfStrings(value.env)) {
+    throw new BadRequestError('agent.env must be an object of string values when provided');
+  }
+
+  return {
+    ...(value.args !== undefined ? { args: value.args } : {}),
+    command: value.command,
+    ...(value.env !== undefined ? { env: value.env } : {}),
+    ...(value.name !== undefined ? { name: value.name } : {}),
+    ...(value.skipPermissionsArgs !== undefined
+      ? { skipPermissionsArgs: value.skipPermissionsArgs }
+      : {}),
+  };
+}
+
+function readSpawnManyLanePayload(
+  value: unknown,
+  fallbackAgent: CoordinatorSpawnSubtaskPayload['agent'] | undefined,
+): CoordinatorSpawnManyLanePayload {
+  if (!isRecord(value)) {
+    throw new BadRequestError('spawn_many lanes must be objects');
+  }
+  assertString(value.name, 'lane.name');
+  assertString(value.assignment, 'lane.assignment');
+  assertOptionalStringSize(
+    value.dedupeKey,
+    'lane.dedupeKey',
+    COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+  );
+  assertOptionalStringSize(value.role, 'lane.role', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertTextSize(value.name, 'lane.name', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertTextSize(value.assignment, 'lane.assignment', COORDINATOR_LIMITS.assignmentTextMaxChars);
+
+  return {
+    agent: readSpawnAgentPayload(value.agent, fallbackAgent),
+    assignment: value.assignment,
+    ...(value.dedupeKey !== undefined ? { dedupeKey: value.dedupeKey } : {}),
+    name: value.name,
+    ...(value.role !== undefined ? { role: value.role } : {}),
+  };
+}
+
+function readSpawnManyPayload(payload: unknown): CoordinatorSpawnManyPayload {
+  if (!isRecord(payload) || !Array.isArray(payload.lanes)) {
+    throw new BadRequestError('spawn_many payload with lanes is required');
+  }
+  if (payload.lanes.length === 0) {
+    throw new BadRequestError('spawn_many requires at least one lane');
+  }
+  if (payload.lanes.length > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `spawn_many lanes must be no longer than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+  assertOptionalStringSize(payload.title, 'title', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertOptionalString(payload.workflowId, 'workflowId');
+  const agent = readSpawnAgentPayload(payload.agent, undefined);
+  const policy = readWorkflowPolicyPayload(payload.policy);
+
+  return {
+    agent,
+    lanes: payload.lanes.map((lane) => readSpawnManyLanePayload(lane, agent)),
+    ...(policy !== undefined ? { policy } : {}),
+    ...(payload.title !== undefined ? { title: payload.title } : {}),
+    ...(payload.workflowId !== undefined ? { workflowId: payload.workflowId } : {}),
+  };
+}
+
+function readStartWorkflowLanePayload(
+  value: unknown,
+  fallbackAgent: CoordinatorSpawnSubtaskPayload['agent'],
+): CoordinatorStartWorkflowLanePayload {
+  if (!isRecord(value)) {
+    throw new BadRequestError('workflow lanes must be objects');
+  }
+  assertString(value.name, 'lane.name');
+  assertOptionalString(value.assignment, 'lane.assignment');
+  assertOptionalStringSize(value.role, 'lane.role', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertTextSize(value.name, 'lane.name', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  if (value.assignment !== undefined) {
+    assertTextSize(value.assignment, 'lane.assignment', COORDINATOR_LIMITS.assignmentTextMaxChars);
+  }
+
+  return {
+    agent: readSpawnAgentPayload(value.agent, fallbackAgent),
+    ...(value.assignment !== undefined ? { assignment: value.assignment } : {}),
+    name: value.name,
+    ...(value.role !== undefined ? { role: value.role } : {}),
+  };
+}
+
+function readStartWorkflowPayload(payload: unknown): CoordinatorStartWorkflowPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('start_workflow payload is required');
+  }
+  if (!isCoordinatorWorkflowTemplate(payload.template)) {
+    throw new BadRequestError('template must be a coordinator workflow template');
+  }
+  assertString(payload.problem, 'problem');
+  assertOptionalStringSize(payload.title, 'title', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertTextSize(payload.problem, 'problem', COORDINATOR_LIMITS.assignmentTextMaxChars);
+  const agent = readSpawnAgentPayload(payload.agent, undefined);
+  if (payload.lanes !== undefined && !Array.isArray(payload.lanes)) {
+    throw new BadRequestError('lanes must be an array when provided');
+  }
+  if (Array.isArray(payload.lanes) && payload.lanes.length > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `lanes must be no longer than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+
+  const policy = readWorkflowPolicyPayload(payload.policy);
+  return {
+    agent,
+    ...(policy !== undefined ? { policy } : {}),
+    problem: payload.problem,
+    template: payload.template,
+    ...(Array.isArray(payload.lanes)
+      ? { lanes: payload.lanes.map((lane) => readStartWorkflowLanePayload(lane, agent)) }
+      : {}),
+    ...(payload.title !== undefined ? { title: payload.title } : {}),
+  };
+}
+
+function readWorkflowEvidence(value: unknown): CoordinatorSubmitResultPayload['evidence'] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new BadRequestError('evidence must be an array when provided');
+  }
+  if (value.length > COORDINATOR_LIMITS.maxWorkflowEvidence) {
+    throw new BadRequestError(
+      `evidence must be no longer than ${COORDINATOR_LIMITS.maxWorkflowEvidence}`,
+    );
+  }
+
+  return value.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new BadRequestError('evidence entries must be objects');
+    }
+    assertString(entry.label, 'evidence.label');
+    assertOptionalStringSize(
+      entry.file,
+      'evidence.file',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    assertOptionalStringSize(
+      entry.note,
+      'evidence.note',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    assertOptionalStringSize(
+      entry.url,
+      'evidence.url',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    assertTextSize(entry.label, 'evidence.label', COORDINATOR_LIMITS.maxWorkflowResultEntryChars);
+    if (
+      entry.line !== undefined &&
+      (typeof entry.line !== 'number' || !Number.isInteger(entry.line) || entry.line < 0)
+    ) {
+      throw new BadRequestError('evidence.line must be a non-negative integer when provided');
+    }
+
+    return {
+      ...(entry.file !== undefined ? { file: entry.file } : {}),
+      label: entry.label,
+      ...(entry.line !== undefined ? { line: entry.line } : {}),
+      ...(entry.note !== undefined ? { note: entry.note } : {}),
+      ...(entry.url !== undefined ? { url: entry.url } : {}),
+    };
+  });
+}
+
+function readWorkflowFindings(value: unknown): CoordinatorWorkflowFindingSnapshot[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new BadRequestError('findings must be an array when provided');
+  }
+  if (value.length > COORDINATOR_LIMITS.maxWorkflowFindings) {
+    throw new BadRequestError(
+      `findings must be no longer than ${COORDINATOR_LIMITS.maxWorkflowFindings}`,
+    );
+  }
+
+  return value.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new BadRequestError('finding entries must be objects');
+    }
+    assertString(entry.summary, 'finding.summary');
+    assertTextSize(
+      entry.summary,
+      'finding.summary',
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    const evidenceIds = readStringListPayload(
+      entry.evidenceIds,
+      'finding.evidenceIds',
+      COORDINATOR_LIMITS.maxWorkflowEvidence,
+      COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+    );
+    const finding: CoordinatorWorkflowFindingSnapshot = {
+      summary: entry.summary,
+    };
+    if (evidenceIds !== undefined) {
+      finding.evidenceIds = evidenceIds;
+    }
+    if (entry.severity !== undefined) {
+      if (
+        entry.severity !== 'critical' &&
+        entry.severity !== 'major' &&
+        entry.severity !== 'minor' &&
+        entry.severity !== 'nit'
+      ) {
+        throw new BadRequestError('finding.severity must be critical, major, minor, or nit');
+      }
+      finding.severity = entry.severity;
+    }
+    if (entry.status !== undefined) {
+      if (
+        entry.status !== 'confirmed' &&
+        entry.status !== 'semi-confirmed' &&
+        entry.status !== 'highly-likely' &&
+        entry.status !== 'rejected' &&
+        entry.status !== 'unknown'
+      ) {
+        throw new BadRequestError('finding.status must be a valid workflow finding status');
+      }
+      finding.status = entry.status;
+    }
+
+    return finding;
+  });
+}
+
+function readSubmitResultPayload(payload: unknown): CoordinatorSubmitResultPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('submit_result payload is required');
+  }
+  assertString(payload.summary, 'summary');
+  assertOptionalString(payload.workflowId, 'workflowId');
+  assertOptionalString(payload.laneId, 'laneId');
+  if (payload.status !== undefined && !isCoordinatorWorkflowResultStatus(payload.status)) {
+    throw new BadRequestError('status must be a coordinator workflow result status');
+  }
+  if (
+    payload.confidence !== undefined &&
+    !isCoordinatorWorkflowResultConfidence(payload.confidence)
+  ) {
+    throw new BadRequestError('confidence must be low, medium, or high');
+  }
+  if (payload.metadata !== undefined && !isRecord(payload.metadata)) {
+    throw new BadRequestError('metadata must be an object when provided');
+  }
+  if (payload.metadata !== undefined) {
+    assertJsonPayloadSize(
+      payload.metadata,
+      'metadata',
+      COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
+    );
+  }
+  assertTextSize(payload.summary, 'summary', COORDINATOR_LIMITS.maxWorkflowSummaryChars);
+
+  const commandsRun = readStringListPayload(
+    payload.commandsRun,
+    'commandsRun',
+    COORDINATOR_LIMITS.maxWorkflowResultListItems,
+    COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+  );
+  const evidence = readWorkflowEvidence(payload.evidence);
+  const findings = readWorkflowFindings(payload.findings);
+  const risks = readStringListPayload(
+    payload.risks,
+    'risks',
+    COORDINATOR_LIMITS.maxWorkflowResultListItems,
+    COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
+  );
+  return {
+    ...(commandsRun !== undefined ? { commandsRun } : {}),
+    ...(payload.confidence !== undefined
+      ? { confidence: payload.confidence as CoordinatorWorkflowResultConfidence }
+      : {}),
+    ...(evidence !== undefined ? { evidence } : {}),
+    ...(findings !== undefined ? { findings } : {}),
+    ...(payload.laneId !== undefined ? { laneId: payload.laneId } : {}),
+    ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
+    ...(risks !== undefined ? { risks } : {}),
+    status: (payload.status as CoordinatorWorkflowResultStatus | undefined) ?? 'completed',
+    summary: payload.summary,
+    ...(payload.workflowId !== undefined ? { workflowId: payload.workflowId } : {}),
+  };
 }
 
 function readCloseTaskPayload(payload: unknown): CoordinatorCloseTaskPayload {
@@ -836,6 +1319,826 @@ async function createHiddenSubtask(
   }
 }
 
+function getWorkflowLaneDedupeKey(
+  lane: CoordinatorSpawnManyLanePayload,
+  workflow: CoordinatorWorkflowSnapshot,
+): string {
+  return (
+    lane.dedupeKey ??
+    `${workflow.runId}:workflow:${workflow.template}:${workflow.title}:${lane.name}:${lane.assignment}`
+  );
+}
+
+function toLaneSpawnPayload(
+  lane: CoordinatorSpawnManyLanePayload,
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorSpawnSubtaskPayload {
+  return {
+    agent: lane.agent ?? { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
+    assignment: lane.assignment,
+    dedupeKey: getWorkflowLaneDedupeKey(lane, workflow),
+    name: lane.name,
+  };
+}
+
+function getWorkflowStage(
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+): CoordinatorWorkflowSnapshot['stages'][number] {
+  const stage = workflow.stages.find((candidate) => candidate.id === stageId);
+  if (!stage) {
+    throw new Error(`Coordinator workflow stage not found: ${stageId}`);
+  }
+
+  return stage;
+}
+
+function getWorkflowLane(
+  workflow: CoordinatorWorkflowSnapshot,
+  laneId: string,
+): CoordinatorWorkflowSnapshot['lanes'][number] {
+  const lane = workflow.lanes.find((candidate) => candidate.id === laneId);
+  if (!lane) {
+    throw new Error(`Coordinator workflow lane not found: ${laneId}`);
+  }
+
+  return lane;
+}
+
+function getWorkflowLaneByTask(
+  workflow: CoordinatorWorkflowSnapshot,
+  taskId: string,
+): CoordinatorWorkflowSnapshot['lanes'][number] | undefined {
+  return workflow.lanes.find((lane) => lane.taskId === taskId);
+}
+
+function getWorkflowStageLanes(
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+): Array<CoordinatorWorkflowSnapshot['lanes'][number]> {
+  const stageLaneIds = new Set(getWorkflowStage(workflow, stageId).laneIds);
+  return workflow.lanes.filter((lane) => stageLaneIds.has(lane.id));
+}
+
+function countNewWorkflowLanePayloads(
+  workflow: CoordinatorWorkflowSnapshot,
+  lanes: CoordinatorSpawnManyLanePayload[],
+): number {
+  const existingKeys = new Set(
+    workflow.lanes.flatMap((lane) => (lane.dedupeKey !== undefined ? [lane.dedupeKey] : [])),
+  );
+  const newKeys = new Set<string>();
+  for (const lane of lanes) {
+    const dedupeKey = getWorkflowLaneDedupeKey(lane, workflow);
+    if (!existingKeys.has(dedupeKey)) {
+      newKeys.add(dedupeKey);
+    }
+  }
+
+  return newKeys.size;
+}
+
+function mergeWorkflowPolicyPayload(
+  policy: Partial<CoordinatorWorkflowPolicySnapshot> | undefined,
+  laneCount: number,
+): Partial<CoordinatorWorkflowPolicySnapshot> {
+  return {
+    maxConcurrentLanes: Math.max(DEFAULT_WORKFLOW_CONCURRENCY, laneCount),
+    ...(policy ?? {}),
+  };
+}
+
+function createWorkflowStageDefinitions(template: CoordinatorWorkflowTemplate): Array<{
+  id: string;
+  kind: CoordinatorWorkflowSnapshot['stages'][number]['kind'];
+  name: string;
+  dependsOn?: string[];
+}> {
+  switch (template) {
+    case 'adversarial_review':
+      return [
+        { id: 'find', kind: 'find', name: 'Find' },
+        { id: 'verify', kind: 'verify', name: 'Verify', dependsOn: ['find'] },
+        { id: 'judge', kind: 'judge', name: 'Judge', dependsOn: ['verify'] },
+        { id: 'synthesize', kind: 'synthesize', name: 'Synthesize', dependsOn: ['judge'] },
+      ];
+    case 'map_reduce':
+      return [
+        { id: 'map', kind: 'map', name: 'Map' },
+        { id: 'reduce', kind: 'reduce', name: 'Reduce', dependsOn: ['map'] },
+      ];
+    case 'custom':
+      return [{ id: 'fan-out', kind: 'fan-out', name: 'Fan-out' }];
+  }
+}
+
+function getDefaultWorkflowLanes(
+  payload: CoordinatorStartWorkflowPayload,
+): CoordinatorStartWorkflowLanePayload[] {
+  if (payload.lanes && payload.lanes.length > 0) {
+    return payload.lanes;
+  }
+
+  switch (payload.template) {
+    case 'adversarial_review':
+      return [
+        {
+          assignment: [
+            'Find every plausible flaw, inconsistency, incomplete path, reliability risk, performance risk, or maintainability concern.',
+            `Problem: ${payload.problem}`,
+            'Return findings with concrete evidence. Do not fix anything.',
+          ].join('\n'),
+          name: 'Critic',
+          role: 'critic',
+        },
+      ];
+    case 'map_reduce':
+      return [
+        {
+          assignment: `Analyze the backend/runtime angle for: ${payload.problem}`,
+          name: 'Backend',
+          role: 'map',
+        },
+        {
+          assignment: `Analyze the UI/product angle for: ${payload.problem}`,
+          name: 'UI',
+          role: 'map',
+        },
+        {
+          assignment: `Analyze the validation/testing angle for: ${payload.problem}`,
+          name: 'Validation',
+          role: 'map',
+        },
+      ];
+    case 'custom':
+      return [
+        {
+          assignment: payload.problem,
+          name: 'Worker',
+          role: 'custom',
+        },
+      ];
+  }
+}
+
+function buildLaneAssignment(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: Pick<CoordinatorStartWorkflowLanePayload, 'assignment' | 'name' | 'role'>,
+  problem: string,
+): string {
+  const body = lane.assignment ?? problem;
+  return [
+    `Workflow: ${workflow.title}`,
+    lane.role !== undefined ? `Role: ${lane.role}` : `Lane: ${lane.name}`,
+    body,
+    '',
+    'When finished, call submit_result with summary, findings, evidence, commandsRun, risks, and confidence.',
+  ].join('\n');
+}
+
+function trimWorkflowAssignment(text: string): string {
+  if (text.length <= COORDINATOR_LIMITS.assignmentTextMaxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, COORDINATOR_LIMITS.assignmentTextMaxChars - 32)}\n[truncated]`;
+}
+
+function summarizeWorkflowResults(workflow: CoordinatorWorkflowSnapshot): string {
+  if (workflow.results.length === 0) {
+    return 'No typed results have been submitted yet.';
+  }
+
+  return workflow.results
+    .map((result, index) => {
+      const lane = result.laneId
+        ? workflow.lanes.find((candidate) => candidate.id === result.laneId)
+        : undefined;
+      const label = lane?.name ?? result.taskId;
+      const findings =
+        result.findings.length > 0
+          ? `\nFindings:\n${result.findings.map((finding) => `- ${finding.summary}`).join('\n')}`
+          : '';
+      const risks =
+        result.risks.length > 0
+          ? `\nRisks:\n${result.risks.map((risk) => `- ${risk}`).join('\n')}`
+          : '';
+      return [
+        `Result ${index + 1}: ${label}`,
+        `Status: ${result.status}`,
+        `Confidence: ${result.confidence ?? 'unspecified'}`,
+        result.summary,
+        findings,
+        risks,
+      ]
+        .filter((part) => part.length > 0)
+        .join('\n');
+    })
+    .join('\n\n');
+}
+
+function buildFollowupWorkflowBaseAssignment(
+  workflow: CoordinatorWorkflowSnapshot,
+  stage: CoordinatorWorkflowSnapshot['stages'][number],
+  previousResults: string,
+): string {
+  switch (stage.kind) {
+    case 'reduce':
+      return [
+        `Workflow: ${workflow.title}`,
+        'Role: reducer',
+        'Synthesize the map-lane results into one decision-ready result.',
+        'Preserve disagreements and unresolved risks instead of smoothing them over.',
+        '',
+        previousResults,
+      ].join('\n');
+    case 'verify':
+      return [
+        `Workflow: ${workflow.title}`,
+        'Role: verifier',
+        'Try to disprove each critic finding. Keep only findings that survive evidence checks.',
+        'Return rejected findings explicitly so the judge can see what was filtered out.',
+        '',
+        previousResults,
+      ].join('\n');
+    case 'judge':
+      return [
+        `Workflow: ${workflow.title}`,
+        'Role: judge',
+        'Decide which verified findings are confirmed, semi-confirmed, or highly likely.',
+        'Explain the confidence and identify blockers for uncertain findings.',
+        '',
+        previousResults,
+      ].join('\n');
+    case 'synthesize':
+      return [
+        `Workflow: ${workflow.title}`,
+        'Role: synthesizer',
+        'Produce the final concise review output and action plan from the judged findings.',
+        '',
+        previousResults,
+      ].join('\n');
+    case 'custom':
+    case 'fan-out':
+    case 'find':
+    case 'map':
+      return [
+        `Workflow: ${workflow.title}`,
+        `Role: ${stage.kind}`,
+        'Continue the workflow using the prior typed results.',
+        '',
+        previousResults,
+      ].join('\n');
+  }
+}
+
+function createFollowupWorkflowLanePayload(
+  workflow: CoordinatorWorkflowSnapshot,
+  stage: CoordinatorWorkflowSnapshot['stages'][number],
+): CoordinatorSpawnManyLanePayload {
+  const previousResults = summarizeWorkflowResults(workflow);
+  const baseAssignment = buildFollowupWorkflowBaseAssignment(workflow, stage, previousResults);
+
+  return {
+    agent: { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
+    assignment: trimWorkflowAssignment(
+      [
+        baseAssignment,
+        '',
+        'When finished, call submit_result with summary, findings, evidence, commandsRun, risks, and confidence.',
+      ].join('\n'),
+    ),
+    dedupeKey: `${workflow.id}:${stage.id}:${stage.kind}`,
+    name: stage.name,
+    role: stage.kind,
+  };
+}
+
+async function spawnWorkflowLane(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+  lanePayload: CoordinatorSpawnManyLanePayload,
+): Promise<WorkflowSpawnedLane> {
+  const laneDedupeKey = getWorkflowLaneDedupeKey(lanePayload, workflow);
+  const existingLane = getCoordinatorWorkflow(workflow.runId, workflow.id)?.lanes.find(
+    (candidate) => candidate.dedupeKey === laneDedupeKey,
+  );
+  if (existingLane) {
+    const existingSubtask =
+      existingLane.taskId !== undefined
+        ? getCoordinatorRun(workflow.runId)?.subtasks.find(
+            (subtask) => subtask.taskId === existingLane.taskId,
+          )
+        : undefined;
+    return {
+      ...(existingLane.failure !== undefined ? { error: existingLane.failure } : {}),
+      laneId: existingLane.id,
+      ...(existingSubtask !== undefined ? { subtask: existingSubtask } : {}),
+    };
+  }
+
+  const lane = addCoordinatorWorkflowLane({
+    assignment: lanePayload.assignment,
+    dedupeKey: laneDedupeKey,
+    name: lanePayload.name,
+    ...(lanePayload.role !== undefined ? { role: lanePayload.role } : {}),
+    runId: workflow.runId,
+    stageId,
+    status: 'spawning',
+    timeoutAt: Date.now() + workflow.policy.timeoutMs,
+    workflowId: workflow.id,
+  });
+  updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stageId, {
+    startedAt: Date.now(),
+    status: 'running',
+  });
+  appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+    kind: 'lane-spawning',
+    laneId: lane.id,
+    message: `Spawning lane ${lanePayload.name}.`,
+    stageId,
+  });
+
+  try {
+    const subtask = await createHiddenSubtask(
+      gateway,
+      envelope,
+      toLaneSpawnPayload(lanePayload, workflow),
+    );
+    if (isCoordinatorTerminalSubtaskStatus(subtask.status)) {
+      const failure = subtask.result ?? `Lane subtask ended with status ${subtask.status}.`;
+      updateCoordinatorWorkflowLane(workflow.runId, workflow.id, lane.id, {
+        agentId: subtask.agentId,
+        completedAt: Date.now(),
+        failure,
+        status: 'failed',
+        taskId: subtask.taskId,
+      });
+      appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+        kind: 'lane-spawn-failed',
+        laneId: lane.id,
+        message: failure,
+        stageId,
+      });
+      return { error: failure, laneId: lane.id, subtask };
+    }
+
+    updateCoordinatorWorkflowLane(workflow.runId, workflow.id, lane.id, {
+      agentId: subtask.agentId,
+      startedAt: Date.now(),
+      status: 'waiting-for-result',
+      taskId: subtask.taskId,
+    });
+    updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stageId, {
+      status: 'waiting-for-results',
+    });
+    appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+      kind: 'lane-running',
+      laneId: lane.id,
+      message: `Lane ${lanePayload.name} is running.`,
+      stageId,
+    });
+    return { laneId: lane.id, subtask };
+  } catch (error) {
+    const failure = error instanceof Error ? error.message : String(error);
+    updateCoordinatorWorkflowLane(workflow.runId, workflow.id, lane.id, {
+      completedAt: Date.now(),
+      failure,
+      status: 'failed',
+    });
+    appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+      kind: 'lane-spawn-failed',
+      laneId: lane.id,
+      message: failure,
+      stageId,
+    });
+    return { error: failure, laneId: lane.id };
+  }
+}
+
+async function spawnCoordinatorLanes(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  payload: CoordinatorSpawnManyPayload,
+): Promise<{
+  lanes: WorkflowSpawnedLane[];
+  workflow: CoordinatorWorkflowSnapshot;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const policy = mergeWorkflowPolicyPayload(payload.policy, payload.lanes.length);
+  const maxConcurrentLanes =
+    policy.maxConcurrentLanes ?? COORDINATOR_LIMITS.maxActiveSubtasksPerRun;
+  if (payload.lanes.length > maxConcurrentLanes) {
+    throw new BadRequestError('spawn_many exceeds workflow maxConcurrentLanes');
+  }
+  const existingWorkflow =
+    payload.workflowId !== undefined
+      ? getCoordinatorWorkflow(envelope.runId, payload.workflowId)
+      : null;
+  if (payload.workflowId !== undefined && existingWorkflow === null) {
+    throw new BadRequestError('Coordinator workflow not found');
+  }
+  if (existingWorkflow !== null && existingWorkflow.template !== 'custom') {
+    throw new BadRequestError('spawn_many can only extend custom workflows');
+  }
+  const workflow =
+    existingWorkflow ??
+    createCoordinatorWorkflow({
+      policy,
+      runId: envelope.runId,
+      stages: createWorkflowStageDefinitions('custom'),
+      template: 'custom',
+      title: payload.title ?? 'Fan-out',
+    });
+  const stage = workflow.stages[0];
+  if (!stage) {
+    throw new BadRequestError('Coordinator workflow has no stage for fan-out');
+  }
+  const lanesToSpawn = payload.lanes.map((lane) => ({
+    ...lane,
+    assignment: trimWorkflowAssignment(buildLaneAssignment(workflow, lane, lane.assignment)),
+  }));
+  const newLaneCount = countNewWorkflowLanePayloads(workflow, lanesToSpawn);
+  if (workflow.lanes.length + newLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `spawn_many would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+  const activeLaneCount = workflow.lanes.filter(
+    (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
+  ).length;
+  if (activeLaneCount + newLaneCount > workflow.policy.maxConcurrentLanes) {
+    throw new BadRequestError('spawn_many exceeds workflow maxConcurrentLanes');
+  }
+
+  const lanes: WorkflowSpawnedLane[] = [];
+  const failedLaneIds: string[] = [];
+  for (const lane of lanesToSpawn) {
+    const spawnedLane = await spawnWorkflowLane(gateway, envelope, workflow, stage.id, lane);
+    lanes.push(spawnedLane);
+    if (spawnedLane.error !== undefined) {
+      failedLaneIds.push(spawnedLane.laneId);
+      if (!workflow.policy.continueOnFailure) {
+        break;
+      }
+    }
+  }
+  if (failedLaneIds.length > 0) {
+    await advanceWorkflowAfterResult(
+      gateway,
+      envelope,
+      workflow.id,
+      failedLaneIds[failedLaneIds.length - 1] as string,
+    );
+  }
+
+  return {
+    lanes,
+    workflow: getCoordinatorWorkflow(envelope.runId, workflow.id) ?? workflow,
+  };
+}
+
+async function startCoordinatorWorkflow(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  payload: CoordinatorStartWorkflowPayload,
+): Promise<{
+  lanes: WorkflowSpawnedLane[];
+  workflow: CoordinatorWorkflowSnapshot;
+}> {
+  assertCoordinatorTaskCaller(envelope);
+  const initialLanes = getDefaultWorkflowLanes(payload);
+  if (initialLanes.length === 0) {
+    throw new BadRequestError('start_workflow requires at least one initial lane');
+  }
+  const policy = mergeWorkflowPolicyPayload(payload.policy, initialLanes.length);
+  const maxConcurrentLanes =
+    policy.maxConcurrentLanes ?? COORDINATOR_LIMITS.maxActiveSubtasksPerRun;
+  if (initialLanes.length > maxConcurrentLanes) {
+    throw new BadRequestError('start_workflow exceeds workflow maxConcurrentLanes');
+  }
+
+  const workflow = createCoordinatorWorkflow({
+    policy,
+    runId: envelope.runId,
+    stages: createWorkflowStageDefinitions(payload.template),
+    template: payload.template,
+    title: payload.title ?? payload.template.replace(/_/g, ' '),
+  });
+
+  const initialStage = workflow.stages[0];
+  if (!initialStage) {
+    throw new BadRequestError('Coordinator workflow has no initial stage');
+  }
+
+  const spawned: WorkflowSpawnedLane[] = [];
+  const failedLaneIds: string[] = [];
+  for (const lane of initialLanes) {
+    const laneAgent = lane.agent ?? payload.agent;
+    const spawnedLane = await spawnWorkflowLane(gateway, envelope, workflow, initialStage.id, {
+      assignment: trimWorkflowAssignment(buildLaneAssignment(workflow, lane, payload.problem)),
+      name: lane.name,
+      ...(laneAgent !== undefined ? { agent: laneAgent } : {}),
+      ...(lane.role !== undefined ? { role: lane.role } : {}),
+    });
+    spawned.push(spawnedLane);
+    if (spawnedLane.error !== undefined) {
+      failedLaneIds.push(spawnedLane.laneId);
+      if (!workflow.policy.continueOnFailure) {
+        break;
+      }
+    }
+  }
+  if (failedLaneIds.length > 0) {
+    await advanceWorkflowAfterResult(
+      gateway,
+      envelope,
+      workflow.id,
+      failedLaneIds[failedLaneIds.length - 1] as string,
+    );
+  }
+
+  return {
+    lanes: spawned,
+    workflow: getCoordinatorWorkflow(envelope.runId, workflow.id) ?? workflow,
+  };
+}
+
+function resolveSubmittedWorkflowLane(
+  run: CoordinatorRunSnapshot,
+  subtask: CoordinatorSubtaskSnapshot,
+  payload: CoordinatorSubmitResultPayload,
+): {
+  lane: CoordinatorWorkflowSnapshot['lanes'][number];
+  workflow: CoordinatorWorkflowSnapshot;
+} {
+  const workflows = payload.workflowId
+    ? run.workflows.filter((workflow) => workflow.id === payload.workflowId)
+    : run.workflows;
+  const matches: Array<{
+    lane: CoordinatorWorkflowSnapshot['lanes'][number];
+    workflow: CoordinatorWorkflowSnapshot;
+  }> = [];
+
+  for (const workflow of workflows) {
+    if (payload.laneId !== undefined) {
+      const lane = workflow.lanes.find((candidate) => candidate.id === payload.laneId);
+      if (!lane) {
+        continue;
+      }
+      if (lane.taskId !== subtask.taskId) {
+        throw new BadRequestError('laneId must belong to the calling subtask');
+      }
+      matches.push({ lane, workflow });
+      continue;
+    }
+
+    const lane = getWorkflowLaneByTask(workflow, subtask.taskId);
+    if (lane) {
+      matches.push({ lane, workflow });
+    }
+  }
+
+  if (matches.length === 0) {
+    throw new BadRequestError('submit_result could not resolve a workflow lane for this subtask');
+  }
+  if (matches.length > 1) {
+    throw new BadRequestError('submit_result is ambiguous; provide workflowId and laneId');
+  }
+
+  return matches[0] as {
+    lane: CoordinatorWorkflowSnapshot['lanes'][number];
+    workflow: CoordinatorWorkflowSnapshot;
+  };
+}
+
+function getLaneStatusForResult(
+  status: CoordinatorWorkflowResultStatus,
+): CoordinatorWorkflowSnapshot['lanes'][number]['status'] {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'blocked':
+    case 'needs-followup':
+      return 'blocked';
+    case 'failed':
+      return 'failed';
+  }
+}
+
+function getSubtaskStatusForResult(
+  status: CoordinatorWorkflowResultStatus,
+): CoordinatorSubtaskSnapshot['status'] {
+  switch (status) {
+    case 'completed':
+      return 'ready-for-review';
+    case 'blocked':
+    case 'needs-followup':
+      return 'waiting-for-coordinator';
+    case 'failed':
+      return 'failed';
+  }
+}
+
+function getCompletedStageStatus(
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+): CoordinatorWorkflowSnapshot['stages'][number]['status'] {
+  const lanes = getWorkflowStageLanes(workflow, stageId);
+  const hasCancelledLane = lanes.some((lane) => lane.status === 'cancelled');
+  const hasHardFailure = lanes.some(
+    (lane) =>
+      lane.status === 'failed' ||
+      lane.status === 'timed-out' ||
+      lane.status === 'stale-after-restore',
+  );
+  const hasBlockedLane = lanes.some(
+    (lane) => lane.status === 'blocked' || lane.status === 'cancelled',
+  );
+  const hasResult = lanes.some((lane) => lane.resultId !== undefined);
+  if (hasCancelledLane) {
+    return 'cancelled';
+  }
+  if (hasBlockedLane) {
+    return 'blocked';
+  }
+  if (workflow.policy.resultRequired && !hasResult) {
+    return 'failed';
+  }
+  if (hasHardFailure && !workflow.policy.continueOnFailure) {
+    return 'failed';
+  }
+
+  return 'completed';
+}
+
+function getCompletedWorkflowStatus(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowSnapshot['status'] {
+  const hasCancelledStage = workflow.stages.some((stage) => stage.status === 'cancelled');
+  const hasFailedStage = workflow.stages.some((stage) => stage.status === 'failed');
+  const hasBlockedStage = workflow.stages.some((stage) => stage.status === 'blocked');
+  if (hasCancelledStage) {
+    return 'cancelled';
+  }
+  if (hasFailedStage) {
+    return 'failed';
+  }
+  if (hasBlockedStage) {
+    return 'blocked';
+  }
+
+  return 'completed';
+}
+
+function getNextReadyWorkflowStage(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowSnapshot['stages'][number] | undefined {
+  return workflow.stages.find((stage) => {
+    if (stage.status !== 'pending' || stage.laneIds.length > 0) {
+      return false;
+    }
+
+    return stage.dependsOn.every((dependencyId) => {
+      const dependency = workflow.stages.find((candidate) => candidate.id === dependencyId);
+      return dependency?.status === 'completed';
+    });
+  });
+}
+
+async function advanceWorkflowAfterResult(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  workflowId: string,
+  laneId: string,
+): Promise<CoordinatorWorkflowSnapshot> {
+  let workflow = getCoordinatorWorkflow(envelope.runId, workflowId);
+  if (!workflow) {
+    throw new BadRequestError('Coordinator workflow not found');
+  }
+
+  const lane = getWorkflowLane(workflow, laneId);
+  const stage = getWorkflowStage(workflow, lane.stageId);
+  const stageLanes = getWorkflowStageLanes(workflow, stage.id);
+  if (stageLanes.every((candidate) => isCoordinatorTerminalWorkflowLaneStatus(candidate.status))) {
+    const nextStatus = getCompletedStageStatus(workflow, stage.id);
+    updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stage.id, {
+      completedAt: Date.now(),
+      resultIds: stageLanes.flatMap((candidate) =>
+        candidate.resultId !== undefined ? [candidate.resultId] : [],
+      ),
+      status: nextStatus,
+    });
+    workflow = getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
+    if (nextStatus === 'blocked' || nextStatus === 'cancelled' || nextStatus === 'failed') {
+      return updateCoordinatorWorkflow(workflow.runId, workflow.id, {
+        completedAt: Date.now(),
+        status: nextStatus,
+      });
+    }
+  }
+
+  const nextStage = getNextReadyWorkflowStage(workflow);
+  if (nextStage) {
+    const run = requireCoordinatorRun(envelope.runId);
+    const spawnedLane = await spawnWorkflowLane(
+      gateway,
+      {
+        ...envelope,
+        taskId: run.coordinatorTaskId,
+      },
+      workflow,
+      nextStage.id,
+      createFollowupWorkflowLanePayload(workflow, nextStage),
+    );
+    if (spawnedLane.error !== undefined) {
+      return advanceWorkflowAfterResult(gateway, envelope, workflowId, spawnedLane.laneId);
+    }
+
+    return getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
+  }
+
+  workflow = getCoordinatorWorkflow(envelope.runId, workflowId) ?? workflow;
+  if (
+    workflow.stages.every(
+      (candidate) =>
+        candidate.status === 'completed' ||
+        candidate.status === 'failed' ||
+        candidate.status === 'blocked',
+    )
+  ) {
+    return updateCoordinatorWorkflow(workflow.runId, workflow.id, {
+      completedAt: Date.now(),
+      status: getCompletedWorkflowStatus(workflow),
+    });
+  }
+
+  return workflow;
+}
+
+async function submitCoordinatorWorkflowResult(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  payload: CoordinatorSubmitResultPayload,
+): Promise<{
+  result: CoordinatorWorkflowResultSnapshot;
+  workflow: CoordinatorWorkflowSnapshot;
+}> {
+  const subtask = assertCoordinatorSubtaskCaller(envelope);
+  const run = requireCoordinatorRun(envelope.runId);
+  const { lane, workflow } = resolveSubmittedWorkflowLane(run, subtask, payload);
+  if (isCoordinatorTerminalWorkflowLaneStatus(lane.status) && lane.resultId !== undefined) {
+    throw new BadRequestError('workflow lane already has a terminal result');
+  }
+  if (workflow.results.length >= COORDINATOR_LIMITS.maxWorkflowResults) {
+    throw new BadRequestError('Coordinator workflow result limit reached');
+  }
+
+  const now = Date.now();
+  const result = addCoordinatorWorkflowResult({
+    result: {
+      agentId: subtask.agentId,
+      commandsRun: payload.commandsRun ?? [],
+      ...(payload.confidence !== undefined ? { confidence: payload.confidence } : {}),
+      evidence: payload.evidence ?? [],
+      findings: payload.findings ?? [],
+      laneId: lane.id,
+      ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
+      risks: payload.risks ?? [],
+      stageId: lane.stageId,
+      status: payload.status ?? 'completed',
+      summary: payload.summary,
+      taskId: subtask.taskId,
+      workflowId: workflow.id,
+    },
+    runId: run.id,
+    workflowId: workflow.id,
+    now,
+  });
+  updateCoordinatorWorkflowLane(run.id, workflow.id, lane.id, {
+    completedAt: now,
+    resultId: result.id,
+    status: getLaneStatusForResult(result.status),
+  });
+  appendCoordinatorWorkflowJournal(run.id, workflow.id, {
+    kind: 'lane-result',
+    laneId: lane.id,
+    message: result.summary,
+    resultId: result.id,
+    stageId: lane.stageId,
+  });
+  updateCoordinatorSubtaskStatus(run.id, subtask.taskId, getSubtaskStatusForResult(result.status), {
+    result: result.summary,
+  });
+
+  return {
+    result,
+    workflow: await advanceWorkflowAfterResult(gateway, envelope, workflow.id, lane.id),
+  };
+}
+
 async function createHiddenSubtaskAfterDedupe(
   gateway: CoordinatorToolGatewayContext,
   payload: CoordinatorSpawnSubtaskPayload,
@@ -1004,6 +2307,7 @@ async function cleanupCoordinatorSubtaskRuntime(
   }
 
   cancelCoordinatorPromptsForTask(run.id, subtask.taskId, 'subtask-cleaned-up');
+  cancelCoordinatorWorkflowLanesForTask(run.id, subtask.taskId, 'subtask-cleaned-up');
 
   try {
     if (run.projectMode === 'git' && subtask.branchName) {
@@ -1732,13 +3036,19 @@ function assertAuthorized(envelope: CoordinatorToolCallEnvelope): void {
 function isCoordinatorRendererMutationTool(
   toolName: CoordinatorToolInvocation['toolName'],
 ): boolean {
-  return toolName === 'close_task' || toolName === 'send_prompt' || toolName === 'spawn_subtask';
+  return (
+    toolName === 'close_task' ||
+    toolName === 'send_prompt' ||
+    toolName === 'spawn_many' ||
+    toolName === 'spawn_subtask' ||
+    toolName === 'start_workflow'
+  );
 }
 
 function assertCoordinatorRendererToolAllowed(
   toolName: CoordinatorToolInvocation['toolName'],
 ): void {
-  if (toolName === 'signal_done' || toolName === 'land_self') {
+  if (toolName === 'land_self' || toolName === 'signal_done' || toolName === 'submit_result') {
     throw new BadRequestError(`Coordinator UI cannot call ${toolName}`);
   }
 }
@@ -1747,7 +3057,11 @@ function assertRendererRunAcceptsMutation(
   request: CoordinatorUiToolCallRequest,
   run: CoordinatorRunSnapshot,
 ): void {
-  if (request.toolName === 'spawn_subtask') {
+  if (
+    request.toolName === 'spawn_many' ||
+    request.toolName === 'spawn_subtask' ||
+    request.toolName === 'start_workflow'
+  ) {
     if (run.status !== 'running') {
       throw new BadRequestError(`Coordinator run is ${run.status}`);
     }
@@ -1808,6 +3122,27 @@ async function dispatchCoordinatorToolInvocation(
       break;
     case 'spawn_subtask':
       result = await createHiddenSubtask(gateway, invocation, readSpawnPayload(invocation.payload));
+      break;
+    case 'spawn_many':
+      result = await spawnCoordinatorLanes(
+        gateway,
+        invocation,
+        readSpawnManyPayload(invocation.payload),
+      );
+      break;
+    case 'start_workflow':
+      result = await startCoordinatorWorkflow(
+        gateway,
+        invocation,
+        readStartWorkflowPayload(invocation.payload),
+      );
+      break;
+    case 'submit_result':
+      result = await submitCoordinatorWorkflowResult(
+        gateway,
+        invocation,
+        readSubmitResultPayload(invocation.payload),
+      );
       break;
     case 'send_prompt':
       result = await sendCoordinatorPrompt(

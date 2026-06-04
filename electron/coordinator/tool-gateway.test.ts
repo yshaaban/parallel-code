@@ -3,7 +3,11 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskNameRegistry } from '../../server/task-names.js';
-import { COORDINATOR_LIMITS, type CoordinatorSubtaskStatus } from '../../src/domain/coordinator.js';
+import {
+  COORDINATOR_LIMITS,
+  type CoordinatorSubtaskStatus,
+  type CoordinatorUiToolCallRequest,
+} from '../../src/domain/coordinator.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
 import type { HandlerContext } from '../ipc/handler-context.js';
 import type { StorageEnv } from '../ipc/storage.js';
@@ -80,6 +84,7 @@ import {
   cleanupCoordinatorStateForTask,
   createCoordinatorCredential,
   createCoordinatorRunForTask,
+  getCoordinatorTaskCredentialPath,
   resetCoordinatorServiceForTests,
   resolveCoordinatorToken,
 } from './service.js';
@@ -123,6 +128,10 @@ function createTaskRegistry(): Pick<TaskNameRegistry, 'deleteTask' | 'registerCr
   };
 }
 
+function unsafeRendererRequest(value: unknown): CoordinatorUiToolCallRequest {
+  return value as CoordinatorUiToolCallRequest;
+}
+
 function createDeferredPromise<T>(): {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
@@ -163,6 +172,30 @@ function mockCreatedTaskResult(): void {
     id: 'task-child',
     worktree_path: '/repo/task-child',
   });
+}
+
+function mockCreatedTaskSequence(taskIds: string[]): void {
+  let index = 0;
+  mocks.createTaskWorkflowMock.mockImplementation(async () => {
+    const taskId = taskIds[index] ?? `task-child-${index}`;
+    index += 1;
+    return {
+      base_branch: 'main',
+      branch_name: `feature/${taskId}`,
+      git_isolation: 'worktree',
+      id: taskId,
+      worktree_path: `/repo/${taskId}`,
+    };
+  });
+}
+
+function readTaskCredentialToken(taskId: string): string {
+  const credentialPath = getCoordinatorTaskCredentialPath(taskId);
+  if (credentialPath === null) {
+    throw new Error(`Missing coordinator credential for ${taskId}`);
+  }
+
+  return readCredentialToken(credentialPath);
 }
 
 function addExitedCoordinatorOwnedSubtask(
@@ -1701,6 +1734,610 @@ describe('coordinator tool gateway', () => {
     expect(getCoordinatorRun(result.run.id)?.subtasks).toHaveLength(1);
   });
 
+  it('starts a map-reduce workflow and advances to reduce when a map lane submits a typed result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-map', 'task-reduce']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    const started = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          agent: { command: 'codex' },
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend', role: 'map' }],
+          problem: 'Review startup latency.',
+          template: 'map_reduce',
+          title: 'Startup review',
+        },
+      },
+    );
+    expect(started.result).toMatchObject({
+      lanes: [
+        expect.objectContaining({ subtask: expect.objectContaining({ taskId: 'task-map' }) }),
+      ],
+      workflow: expect.objectContaining({ template: 'map_reduce' }),
+    });
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    expect(workflowId).toEqual(expect.any(String));
+    const childToken = readTaskCredentialToken('task-map');
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'map-result',
+        runId: result.run.id,
+        taskId: 'task-map',
+        token: childToken,
+        toolName: 'submit_result',
+        payload: {
+          commandsRun: ['npm test'],
+          confidence: 'high',
+          evidence: [{ label: 'gateway test' }],
+          findings: [{ severity: 'major', status: 'confirmed', summary: 'Map finding' }],
+          summary: 'Mapped startup latency.',
+          workflowId,
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.stages).toEqual([
+      expect.objectContaining({ id: 'map', status: 'completed' }),
+      expect.objectContaining({ id: 'reduce', status: 'waiting-for-results' }),
+    ]);
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({
+        resultId: expect.any(String),
+        status: 'completed',
+        taskId: 'task-map',
+      }),
+      expect.objectContaining({
+        role: 'reduce',
+        status: 'waiting-for-result',
+        taskId: 'task-reduce',
+      }),
+    ]);
+    expect(workflow?.results[0]).toMatchObject({
+      confidence: 'high',
+      summary: 'Mapped startup latency.',
+    });
+  });
+
+  it('records partial spawn_many lane failures without losing successful lanes', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    let createCount = 0;
+    mocks.createTaskWorkflowMock.mockImplementation(async () => {
+      createCount += 1;
+      if (createCount === 2) {
+        throw new Error('spawn failed');
+      }
+
+      return {
+        base_branch: 'main',
+        branch_name: 'feature/task-map',
+        git_isolation: 'worktree',
+        id: 'task-map',
+        worktree_path: '/repo/task-map',
+      };
+    });
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    const response = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-many',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_many',
+        payload: {
+          lanes: [
+            { assignment: 'Map backend risks.', name: 'Backend' },
+            { assignment: 'Map UI risks.', name: 'UI' },
+          ],
+          title: 'Fan out review',
+        },
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      lanes: [
+        expect.objectContaining({ subtask: expect.objectContaining({ taskId: 'task-map' }) }),
+        expect.objectContaining({ error: 'spawn failed' }),
+      ],
+    });
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toEqual([
+      expect.objectContaining({
+        name: 'Backend',
+        status: 'waiting-for-result',
+        taskId: 'task-map',
+      }),
+      expect.objectContaining({ failure: 'spawn failed', name: 'UI', status: 'failed' }),
+    ]);
+  });
+
+  it('rejects invalid workflow admission without leaving empty workflow state', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'workflow-over-cap',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'start_workflow',
+          payload: {
+            lanes: [
+              { assignment: 'Map backend risks.', name: 'Backend' },
+              { assignment: 'Map UI risks.', name: 'UI' },
+            ],
+            policy: { maxConcurrentLanes: 1 },
+            problem: 'Review cap behavior.',
+            template: 'map_reduce',
+          },
+        },
+      ),
+    ).rejects.toThrow('start_workflow exceeds workflow maxConcurrentLanes');
+    expect(getCoordinatorRun(result.run.id)?.workflows).toHaveLength(0);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'spawn-many-missing-workflow',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_many',
+          payload: {
+            lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+            workflowId: 'missing-workflow',
+          },
+        },
+      ),
+    ).rejects.toThrow('Coordinator workflow not found');
+    expect(getCoordinatorRun(result.run.id)?.workflows).toHaveLength(0);
+  });
+
+  it('uses existing workflow policy when extending a custom fan-out workflow', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-one', 'task-two']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-many-create-capped',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_many',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          policy: { maxConcurrentLanes: 1 },
+          title: 'Capped fan out',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'spawn-many-extend-over-cap',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_many',
+          payload: {
+            lanes: [{ assignment: 'Map UI risks.', name: 'UI' }],
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('spawn_many exceeds workflow maxConcurrentLanes');
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toHaveLength(1);
+
+    const duplicate = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-many-extend-duplicate',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_many',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          workflowId,
+        },
+      },
+    );
+    expect(duplicate.result).toMatchObject({
+      lanes: [
+        expect.objectContaining({ subtask: expect.objectContaining({ taskId: 'task-one' }) }),
+      ],
+    });
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toHaveLength(1);
+  });
+
+  it('blocks workflow advancement when a lane submits a needs-followup result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-map', 'task-reduce']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start-needs-followup',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          problem: 'Review follow-up behavior.',
+          template: 'map_reduce',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-needs-followup',
+        runId: result.run.id,
+        taskId: 'task-map',
+        token: readTaskCredentialToken('task-map'),
+        toolName: 'submit_result',
+        payload: {
+          status: 'needs-followup',
+          summary: 'Need coordinator input before reducing.',
+          workflowId,
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      status: 'blocked',
+      stages: [
+        expect.objectContaining({ id: 'map', status: 'blocked' }),
+        expect.objectContaining({ id: 'reduce', status: 'pending' }),
+      ],
+    });
+    expect(mocks.createTaskWorkflowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a workflow when a required follow-up lane cannot spawn', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    let createCount = 0;
+    mocks.createTaskWorkflowMock.mockImplementation(async () => {
+      createCount += 1;
+      if (createCount === 2) {
+        throw new Error('reduce spawn failed');
+      }
+
+      return {
+        base_branch: 'main',
+        branch_name: 'feature/task-map',
+        git_isolation: 'worktree',
+        id: 'task-map',
+        worktree_path: '/repo/task-map',
+      };
+    });
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start-reduce-fail',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          problem: 'Review follow-up spawn behavior.',
+          template: 'map_reduce',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-map-result-reduce-fail',
+        runId: result.run.id,
+        taskId: 'task-map',
+        token: readTaskCredentialToken('task-map'),
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Map result ready.',
+          workflowId,
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      status: 'failed',
+      stages: [
+        expect.objectContaining({ id: 'map', status: 'completed' }),
+        expect.objectContaining({ id: 'reduce', status: 'failed' }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({ status: 'completed', taskId: 'task-map' }),
+      expect.objectContaining({ failure: 'reduce spawn failed', role: 'reduce', status: 'failed' }),
+    ]);
+  });
+
+  it('fails a workflow instead of advancing when required initial lanes all fail before results', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mocks.createTaskWorkflowMock.mockRejectedValue(new Error('initial spawn failed'));
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start-initial-fail',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          problem: 'Review initial spawn behavior.',
+          template: 'map_reduce',
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      status: 'failed',
+      stages: [
+        expect.objectContaining({ id: 'map', status: 'failed' }),
+        expect.objectContaining({ id: 'reduce', status: 'pending' }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({
+        failure: 'initial spawn failed',
+        name: 'Backend',
+        status: 'failed',
+      }),
+    ]);
+    expect(mocks.createTaskWorkflowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects oversized workflow result payloads before storing them', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-map']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start-result-limits',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          problem: 'Review result limits.',
+          template: 'map_reduce',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    const childToken = readTaskCredentialToken('task-map');
+    const oversizedText = 'x'.repeat(COORDINATOR_LIMITS.maxWorkflowResultEntryChars + 1);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'workflow-result-command-limit',
+          runId: result.run.id,
+          taskId: 'task-map',
+          token: childToken,
+          toolName: 'submit_result',
+          payload: {
+            commandsRun: Array.from(
+              { length: COORDINATOR_LIMITS.maxWorkflowResultListItems + 1 },
+              (_, index) => `command-${index}`,
+            ),
+            summary: 'Oversized commands.',
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('commandsRun must be no longer');
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'workflow-result-risk-limit',
+          runId: result.run.id,
+          taskId: 'task-map',
+          token: childToken,
+          toolName: 'submit_result',
+          payload: {
+            risks: [oversizedText],
+            summary: 'Oversized risk.',
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('risks entry must be no longer');
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'workflow-result-metadata-limit',
+          runId: result.run.id,
+          taskId: 'task-map',
+          token: childToken,
+          toolName: 'submit_result',
+          payload: {
+            metadata: { payload: 'x'.repeat(COORDINATOR_LIMITS.maxWorkflowMetadataBytes + 1) },
+            summary: 'Oversized metadata.',
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('metadata must be no larger');
+
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.results).toHaveLength(0);
+  });
+
+  it('cancels workflow lanes when the coordinator closes their hidden subtask', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-map']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          problem: 'Review cleanup behavior.',
+          template: 'map_reduce',
+        },
+      },
+    );
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-close',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'close_task',
+        payload: { targetTaskId: 'task-map' },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      status: 'cancelled',
+      stages: [expect.objectContaining({ id: 'map', status: 'cancelled' }), expect.any(Object)],
+    });
+    expect(workflow?.lanes[0]).toMatchObject({
+      failure: 'subtask-cleaned-up',
+      status: 'cancelled',
+    });
+  });
+
   it('enforces project spawn concurrency while a hidden task is being created', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -2316,6 +2953,54 @@ describe('coordinator tool gateway', () => {
     ).rejects.toThrow('Coordinator task command lease is required');
   });
 
+  it('requires the coordinator task lease for renderer workflow starts', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    mockCreatedTaskSequence(['task-map']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    const request = {
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      payload: {
+        lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+        problem: 'Review startup.',
+        template: 'map_reduce' as const,
+      },
+      requestId: 'renderer-start-workflow',
+      runId: result.run.id,
+      toolName: 'start_workflow' as const,
+    };
+
+    await expect(
+      executeCoordinatorRendererAction({ context, taskNames: createTaskRegistry() }, request),
+    ).rejects.toThrow('Coordinator task command lease is required');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'coordinate subtasks');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          ...request,
+          requestId: 'renderer-start-workflow-with-lease',
+        },
+      ),
+    ).resolves.toMatchObject({
+      accepted: true,
+      result: {
+        workflow: expect.objectContaining({ template: 'map_reduce' }),
+      },
+    });
+  });
+
   it('allows renderer inspection on inactive runs but rejects inactive-run mutations', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -2419,17 +3104,34 @@ describe('coordinator tool gateway', () => {
     });
 
     await expect(
-      executeCoordinatorRendererAction({ context, taskNames: createTaskRegistry() }, {
-        coordinatorTaskId: 'task-coordinator',
-        payload: {
-          summary: 'Land work',
-          verification: ['npm test'],
-        },
-        requestId: 'renderer-land',
-        runId: result.run.id,
-        toolName: 'land_self',
-      } as never),
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        unsafeRendererRequest({
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            summary: 'Land work',
+            verification: ['npm test'],
+          },
+          requestId: 'renderer-land',
+          runId: result.run.id,
+          toolName: 'land_self',
+        }),
+      ),
     ).rejects.toThrow('Coordinator UI cannot call land_self');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        unsafeRendererRequest({
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            summary: 'Done',
+          },
+          requestId: 'renderer-submit-result',
+          runId: result.run.id,
+          toolName: 'submit_result',
+        }),
+      ),
+    ).rejects.toThrow('Coordinator UI cannot call submit_result');
   });
 
   it('rejects renderer coordinator actions for tasks that do not own the run', async () => {

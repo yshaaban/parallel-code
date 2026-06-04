@@ -4,6 +4,7 @@ import type {
   CoordinatorPromptRequestSnapshot,
   CoordinatorRunSnapshot,
   CoordinatorSubtaskSnapshot,
+  CoordinatorWorkflowSnapshot,
 } from '../domain/coordinator';
 import { createCoordinatorRunView, getCoordinatorSubtaskActions } from './coordinator-ui-model';
 
@@ -86,6 +87,90 @@ function createLanding(
   };
 }
 
+function createWorkflow(
+  overrides: Partial<CoordinatorWorkflowSnapshot> = {},
+): CoordinatorWorkflowSnapshot {
+  return {
+    createdAt: overrides.createdAt ?? now,
+    eventVersion: overrides.eventVersion ?? 2,
+    id: overrides.id ?? 'workflow-1',
+    journal: overrides.journal ?? [],
+    lanes: overrides.lanes ?? [
+      {
+        agentId: 'agent-map',
+        assignment: 'Map backend risks.',
+        attempt: 1,
+        createdAt: now,
+        id: 'lane-map',
+        name: 'Backend',
+        role: 'map',
+        stageId: 'map',
+        status: 'waiting-for-result',
+        taskId: 'task-map',
+        updatedAt: now,
+      },
+    ],
+    policy: overrides.policy ?? {
+      continueOnFailure: true,
+      maxConcurrentLanes: 3,
+      maxOutputBytesPerLane: 65_536,
+      resultRequired: true,
+      retryBackoffMs: 1_000,
+      retryCount: 0,
+      timeoutMs: 900_000,
+    },
+    results: overrides.results ?? [
+      {
+        agentId: 'agent-map',
+        commandsRun: ['npm test'],
+        confidence: 'high',
+        createdAt: now,
+        evidence: [{ label: 'runtime test' }],
+        findings: [{ severity: 'major', status: 'confirmed', summary: 'Risk found' }],
+        id: 'result-1',
+        laneId: 'lane-map',
+        risks: [],
+        runId: 'run-1',
+        stageId: 'map',
+        status: 'completed',
+        summary: 'Mapped backend risk.',
+        taskId: 'task-map',
+        workflowId: overrides.id ?? 'workflow-1',
+      },
+    ],
+    runId: overrides.runId ?? 'run-1',
+    stages: overrides.stages ?? [
+      {
+        createdAt: now,
+        dependsOn: [],
+        id: 'map',
+        kind: 'map',
+        laneIds: ['lane-map'],
+        name: 'Map',
+        resultIds: ['result-1'],
+        status: 'waiting-for-results',
+        updatedAt: now,
+      },
+      {
+        createdAt: now,
+        dependsOn: ['map'],
+        id: 'reduce',
+        kind: 'reduce',
+        laneIds: [],
+        name: 'Reduce',
+        resultIds: [],
+        status: 'pending',
+        updatedAt: now,
+      },
+    ],
+    startedAt: overrides.startedAt ?? now,
+    status: overrides.status ?? 'waiting-for-results',
+    template: overrides.template ?? 'map_reduce',
+    title: overrides.title ?? 'Latency review',
+    updatedAt: overrides.updatedAt ?? now,
+  };
+}
+
 function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): CoordinatorRunSnapshot {
   return {
     coordinatorTaskId: overrides.coordinatorTaskId ?? 'task-coordinator',
@@ -105,6 +190,7 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
     status: overrides.status ?? 'running',
     subtasks: overrides.subtasks ?? [],
     updatedAt: overrides.updatedAt ?? now,
+    workflows: overrides.workflows ?? [],
   };
 }
 
@@ -204,6 +290,28 @@ describe('coordinator UI model', () => {
     expect(view.summary.runTone).toBe('danger');
     expect(view.spawnAction.disabled).toBe(true);
     expect(view.spawnAction.reason).toBe('Run is stale-after-restore.');
+  });
+
+  it('projects workflow timelines from backend-owned snapshots', () => {
+    const run = createRun({
+      workflows: [createWorkflow()],
+    });
+
+    const [workflow] = createCoordinatorRunView(run).workflows;
+
+    expect(workflow).toMatchObject({
+      activeLaneCount: 1,
+      findingCount: 1,
+      resultCount: 1,
+      status: 'waiting-for-results',
+      template: 'map_reduce',
+      title: 'Latency review',
+      tone: 'info',
+    });
+    expect(workflow?.stages.map((stage) => [stage.label, stage.tone, stage.laneCount])).toEqual([
+      ['M', 'info', 1],
+      ['R', 'normal', 0],
+    ]);
   });
 
   it('projects landing failures as danger attention on the related chip', () => {

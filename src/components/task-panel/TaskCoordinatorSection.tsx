@@ -17,6 +17,7 @@ import {
   type CoordinatorSubtaskChipView,
   type CoordinatorUiAction,
   type CoordinatorUiActionId,
+  type CoordinatorWorkflowTimelineView,
 } from '../../app/coordinator-ui-model';
 import type {
   CoordinatorSpawnSubtaskPayload,
@@ -271,6 +272,17 @@ function findAction(
   id: CoordinatorUiActionId,
 ): CoordinatorUiAction | undefined {
   return actions.find((action) => action.id === id);
+}
+
+function getWorkflowLabel(workflow: CoordinatorWorkflowTimelineView): string {
+  switch (workflow.template) {
+    case 'adversarial_review':
+      return 'Review';
+    case 'custom':
+      return 'Flow';
+    case 'map_reduce':
+      return 'Map';
+  }
 }
 
 function getPopoverStyle(anchor: DOMRect | null): JSX.CSSProperties {
@@ -617,6 +629,77 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                   >{`!${view().summary.attentionCount}`}</span>
                 </Show>
               </div>
+
+              <Show when={view().workflows.length > 0}>
+                <div
+                  aria-label="Coordinator workflows"
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '4px',
+                    overflow: 'auto hidden',
+                    'max-width': '38%',
+                    'min-width': '120px',
+                    'scrollbar-width': 'none',
+                    'flex-shrink': '1',
+                  }}
+                >
+                  <For each={view().workflows}>
+                    {(workflow) => (
+                      <div
+                        title={`${workflow.title}: ${workflow.statusLabel}`}
+                        style={{
+                          display: 'inline-flex',
+                          'align-items': 'center',
+                          gap: '5px',
+                          height: '24px',
+                          'min-width': '0',
+                          padding: '0 7px',
+                          border: `1px solid color-mix(in srgb, ${toneColor(workflow.tone)} 38%, ${theme.border})`,
+                          'border-radius': '8px',
+                          background: `color-mix(in srgb, ${toneColor(workflow.tone)} 7%, transparent)`,
+                          color: theme.fgMuted,
+                          'font-size': sf(11),
+                          'line-height': '1',
+                          'white-space': 'nowrap',
+                          'flex-shrink': '0',
+                        }}
+                      >
+                        <span style={{ color: toneColor(workflow.tone), 'font-weight': 700 }}>
+                          {getWorkflowLabel(workflow)}
+                        </span>
+                        <span>{workflow.resultCount}</span>
+                        <Show when={workflow.findingCount > 0}>
+                          <span
+                            style={{ color: theme.warning }}
+                          >{`!${workflow.findingCount}`}</span>
+                        </Show>
+                        <For each={workflow.stages}>
+                          {(stage) => (
+                            <span
+                              title={stage.title}
+                              style={{
+                                display: 'inline-flex',
+                                'align-items': 'center',
+                                'justify-content': 'center',
+                                width: '14px',
+                                height: '14px',
+                                border: `1px solid ${toneColor(stage.tone)}`,
+                                'border-radius': '999px',
+                                color: toneColor(stage.tone),
+                                'font-size': sf(9),
+                                'font-weight': 700,
+                              }}
+                            >
+                              {stage.label}
+                            </span>
+                          )}
+                        </For>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
 
               <div
                 aria-label="Coordinator subtasks"

@@ -15,6 +15,7 @@ import {
 } from './persistence.js';
 import {
   cancelCoordinatorPromptsForTask,
+  cancelCoordinatorWorkflowLanesForTask,
   createCoordinatorRun,
   getCoordinatorRun,
   getCoordinatorRunByCoordinatorTaskId,
@@ -394,6 +395,7 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
 
     revokeCoordinatorTaskCredential(env, taskId);
     cancelCoordinatorPromptsForTask(candidate.id, taskId, 'task-cleaned-up');
+    cancelCoordinatorWorkflowLanesForTask(candidate.id, taskId, 'task-cleaned-up');
     updateCoordinatorSubtaskStatus(candidate.id, taskId, 'cancelled');
     persistRuntimeState(env);
     return;

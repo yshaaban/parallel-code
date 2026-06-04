@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isCoordinatorBootstrapSnapshot,
   isCoordinatorEventEnvelope,
+  isCoordinatorRunSnapshot,
   type CoordinatorRunSnapshot,
 } from './coordinator';
 
@@ -24,6 +25,7 @@ function createCoordinatorRunSnapshot(): CoordinatorRunSnapshot {
     status: 'running',
     subtasks: [],
     updatedAt: 1_000,
+    workflows: [],
   };
 }
 
@@ -77,5 +79,96 @@ describe('coordinator domain guards', () => {
         tombstone: true,
       }),
     ).toBe(true);
+  });
+
+  it('accepts workflow snapshots and legacy runs without workflow state', () => {
+    const run = createCoordinatorRunSnapshot();
+    const workflowRun: CoordinatorRunSnapshot = {
+      ...run,
+      workflows: [
+        {
+          createdAt: 1_000,
+          eventVersion: 2,
+          id: 'workflow-1',
+          journal: [
+            {
+              at: 1_000,
+              kind: 'workflow-created',
+              message: 'Created map_reduce workflow.',
+            },
+          ],
+          lanes: [
+            {
+              agentId: 'agent-child',
+              assignment: 'Map the backend risks.',
+              attempt: 1,
+              createdAt: 1_010,
+              id: 'lane-1',
+              name: 'Backend',
+              role: 'map',
+              stageId: 'map',
+              startedAt: 1_020,
+              status: 'waiting-for-result',
+              taskId: 'task-child',
+              timeoutAt: 2_000,
+              updatedAt: 1_020,
+            },
+          ],
+          policy: {
+            continueOnFailure: true,
+            maxConcurrentLanes: 3,
+            maxOutputBytesPerLane: 65_536,
+            resultRequired: true,
+            retryBackoffMs: 1_000,
+            retryCount: 0,
+            timeoutMs: 900_000,
+          },
+          results: [
+            {
+              agentId: 'agent-child',
+              commandsRun: ['npm test'],
+              confidence: 'high',
+              createdAt: 1_200,
+              evidence: [{ label: 'runtime test' }],
+              findings: [{ severity: 'major', status: 'confirmed', summary: 'Risk found' }],
+              id: 'result-1',
+              laneId: 'lane-1',
+              risks: ['follow-up needed'],
+              runId: run.id,
+              stageId: 'map',
+              status: 'completed',
+              summary: 'Backend map result',
+              taskId: 'task-child',
+              workflowId: 'workflow-1',
+            },
+          ],
+          runId: run.id,
+          stages: [
+            {
+              createdAt: 1_000,
+              dependsOn: [],
+              id: 'map',
+              kind: 'map',
+              laneIds: ['lane-1'],
+              name: 'Map',
+              resultIds: ['result-1'],
+              startedAt: 1_020,
+              status: 'waiting-for-results',
+              updatedAt: 1_200,
+            },
+          ],
+          startedAt: 1_000,
+          status: 'running',
+          template: 'map_reduce',
+          title: 'Review latency',
+          updatedAt: 1_200,
+        },
+      ],
+    };
+    const legacyRun = { ...run };
+    delete (legacyRun as { workflows?: unknown }).workflows;
+
+    expect(isCoordinatorRunSnapshot(workflowRun)).toBe(true);
+    expect(isCoordinatorRunSnapshot(legacyRun)).toBe(true);
   });
 });

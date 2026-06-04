@@ -26,6 +26,7 @@ function createCoordinatorRunSnapshot(): CoordinatorRunSnapshot {
     status: 'running',
     subtasks: [],
     updatedAt: 1_000,
+    workflows: [],
   };
 }
 

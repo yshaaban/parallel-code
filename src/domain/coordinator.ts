@@ -68,9 +68,73 @@ export const COORDINATOR_TOOL_NAMES = [
   'list_tasks',
   'send_prompt',
   'signal_done',
+  'spawn_many',
   'spawn_subtask',
+  'start_workflow',
+  'submit_result',
   'wait_for_idle',
 ] as const;
+
+export const COORDINATOR_WORKFLOW_TEMPLATES = [
+  'custom',
+  'map_reduce',
+  'adversarial_review',
+] as const;
+
+export const COORDINATOR_WORKFLOW_STATUSES = [
+  'pending',
+  'running',
+  'waiting-for-results',
+  'completed',
+  'blocked',
+  'failed',
+  'cancelled',
+  'stale-after-restore',
+] as const;
+
+export const COORDINATOR_WORKFLOW_STAGE_KINDS = [
+  'fan-out',
+  'map',
+  'reduce',
+  'find',
+  'verify',
+  'judge',
+  'synthesize',
+  'custom',
+] as const;
+
+export const COORDINATOR_WORKFLOW_STAGE_STATUSES = [
+  'pending',
+  'running',
+  'waiting-for-results',
+  'completed',
+  'blocked',
+  'failed',
+  'cancelled',
+  'stale-after-restore',
+] as const;
+
+export const COORDINATOR_WORKFLOW_LANE_STATUSES = [
+  'pending',
+  'spawning',
+  'running',
+  'waiting-for-result',
+  'completed',
+  'blocked',
+  'failed',
+  'timed-out',
+  'cancelled',
+  'stale-after-restore',
+] as const;
+
+export const COORDINATOR_WORKFLOW_RESULT_STATUSES = [
+  'completed',
+  'blocked',
+  'failed',
+  'needs-followup',
+] as const;
+
+export const COORDINATOR_WORKFLOW_RESULT_CONFIDENCES = ['low', 'medium', 'high'] as const;
 
 export const COORDINATOR_LANDING_STATUSES = [
   'requested',
@@ -105,6 +169,14 @@ export type CoordinatorSubtaskStatus = (typeof COORDINATOR_SUBTASK_STATUSES)[num
 export type CoordinatorPromptKind = (typeof COORDINATOR_PROMPT_KINDS)[number];
 export type CoordinatorPromptStatus = (typeof COORDINATOR_PROMPT_STATUSES)[number];
 export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
+export type CoordinatorWorkflowTemplate = (typeof COORDINATOR_WORKFLOW_TEMPLATES)[number];
+export type CoordinatorWorkflowStatus = (typeof COORDINATOR_WORKFLOW_STATUSES)[number];
+export type CoordinatorWorkflowStageKind = (typeof COORDINATOR_WORKFLOW_STAGE_KINDS)[number];
+export type CoordinatorWorkflowStageStatus = (typeof COORDINATOR_WORKFLOW_STAGE_STATUSES)[number];
+export type CoordinatorWorkflowLaneStatus = (typeof COORDINATOR_WORKFLOW_LANE_STATUSES)[number];
+export type CoordinatorWorkflowResultStatus = (typeof COORDINATOR_WORKFLOW_RESULT_STATUSES)[number];
+export type CoordinatorWorkflowResultConfidence =
+  (typeof COORDINATOR_WORKFLOW_RESULT_CONFIDENCES)[number];
 export type CoordinatorLandingStatus = (typeof COORDINATOR_LANDING_STATUSES)[number];
 export type CoordinatorEventType = (typeof COORDINATOR_EVENT_TYPES)[number];
 
@@ -123,7 +195,18 @@ export const COORDINATOR_LIMITS = {
   maxConcurrentSpawnsPerProject: 1,
   maxRememberedToolCallResults: 500,
   maxPendingPromptsPerTarget: 3,
+  maxWorkflowFindings: 100,
+  maxWorkflowEvidence: 200,
+  maxWorkflowLanes: 12,
+  maxWorkflowMetadataBytes: 16 * 1024,
+  maxWorkflowResults: 500,
+  maxWorkflowResultEntryChars: 2_000,
+  maxWorkflowResultListItems: 100,
+  maxWorkflowShortTextChars: 512,
+  maxWorkflowSummaryChars: 12_000,
   spawnSpacingWhileSelectedRestoringMs: 500,
+  workflowDefaultLaneTimeoutMs: 15 * 60 * 1000,
+  workflowMaxLaneTimeoutMs: 24 * 60 * 60 * 1000,
 } as const;
 
 export interface CoordinatorRunLimits {
@@ -207,6 +290,113 @@ export interface CoordinatorSubtaskSnapshot {
   worktreePath: string;
 }
 
+export interface CoordinatorWorkflowPolicySnapshot {
+  budgetHint?: string;
+  continueOnFailure: boolean;
+  maxConcurrentLanes: number;
+  maxOutputBytesPerLane: number;
+  resultRequired: boolean;
+  retryBackoffMs: number;
+  retryCount: number;
+  timeoutMs: number;
+}
+
+export interface CoordinatorWorkflowStageSnapshot {
+  completedAt?: number;
+  createdAt: number;
+  dependsOn: string[];
+  failure?: string;
+  id: string;
+  kind: CoordinatorWorkflowStageKind;
+  laneIds: string[];
+  name: string;
+  resultIds: string[];
+  startedAt?: number;
+  status: CoordinatorWorkflowStageStatus;
+  updatedAt: number;
+}
+
+export interface CoordinatorWorkflowLaneSnapshot {
+  agentId?: string;
+  assignment: string;
+  attempt: number;
+  completedAt?: number;
+  createdAt: number;
+  dedupeKey?: string;
+  failure?: string;
+  id: string;
+  name: string;
+  resultId?: string;
+  role?: string;
+  stageId: string;
+  startedAt?: number;
+  status: CoordinatorWorkflowLaneStatus;
+  taskId?: string;
+  timeoutAt?: number;
+  updatedAt: number;
+}
+
+export interface CoordinatorWorkflowEvidenceSnapshot {
+  file?: string;
+  label: string;
+  line?: number;
+  note?: string;
+  url?: string;
+}
+
+export interface CoordinatorWorkflowFindingSnapshot {
+  evidenceIds?: string[];
+  severity?: 'critical' | 'major' | 'minor' | 'nit';
+  status?: 'confirmed' | 'semi-confirmed' | 'highly-likely' | 'rejected' | 'unknown';
+  summary: string;
+}
+
+export interface CoordinatorWorkflowResultSnapshot {
+  agentId: string;
+  commandsRun: string[];
+  confidence?: CoordinatorWorkflowResultConfidence;
+  createdAt: number;
+  evidence: CoordinatorWorkflowEvidenceSnapshot[];
+  findings: CoordinatorWorkflowFindingSnapshot[];
+  id: string;
+  laneId?: string;
+  metadata?: Record<string, unknown>;
+  risks: string[];
+  runId: string;
+  stageId?: string;
+  status: CoordinatorWorkflowResultStatus;
+  summary: string;
+  taskId: string;
+  workflowId?: string;
+}
+
+export interface CoordinatorWorkflowJournalEntrySnapshot {
+  at: number;
+  kind: string;
+  laneId?: string;
+  message: string;
+  resultId?: string;
+  stageId?: string;
+}
+
+export interface CoordinatorWorkflowSnapshot {
+  completedAt?: number;
+  createdAt: number;
+  eventVersion: number;
+  id: string;
+  journal: CoordinatorWorkflowJournalEntrySnapshot[];
+  lanes: CoordinatorWorkflowLaneSnapshot[];
+  policy: CoordinatorWorkflowPolicySnapshot;
+  results: CoordinatorWorkflowResultSnapshot[];
+  runId: string;
+  stages: CoordinatorWorkflowStageSnapshot[];
+  startedAt?: number;
+  status: CoordinatorWorkflowStatus;
+  template: CoordinatorWorkflowTemplate;
+  title: string;
+  updatedAt: number;
+}
+
 export interface CoordinatorRunSnapshot {
   coordinatorTaskId: string;
   createdAt: number;
@@ -221,6 +411,7 @@ export interface CoordinatorRunSnapshot {
   status: CoordinatorRunStatus;
   subtasks: CoordinatorSubtaskSnapshot[];
   updatedAt: number;
+  workflows: CoordinatorWorkflowSnapshot[];
 }
 
 export interface CoordinatorBootstrapSnapshot {
@@ -331,6 +522,14 @@ export type CoordinatorUiToolCallRequest =
       toolName: 'spawn_subtask';
     })
   | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorSpawnManyPayload;
+      toolName: 'spawn_many';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorStartWorkflowPayload;
+      toolName: 'start_workflow';
+    })
+  | (CoordinatorUiToolCallBase & {
       payload: CoordinatorCloseTaskPayload;
       toolName: 'close_task';
     });
@@ -348,6 +547,62 @@ export interface CoordinatorSpawnSubtaskPayload {
   branchPrefix?: string;
   dedupeKey?: string;
   name: string;
+}
+
+export interface CoordinatorSpawnManyLanePayload {
+  agent?: CoordinatorSpawnSubtaskPayload['agent'];
+  assignment: string;
+  dedupeKey?: string;
+  name: string;
+  role?: string;
+}
+
+export interface CoordinatorWorkflowPolicyPayload {
+  budgetHint?: string;
+  continueOnFailure?: boolean;
+  maxConcurrentLanes?: number;
+  maxOutputBytesPerLane?: number;
+  resultRequired?: boolean;
+  retryBackoffMs?: number;
+  retryCount?: number;
+  timeoutMs?: number;
+}
+
+export interface CoordinatorSpawnManyPayload {
+  agent?: CoordinatorSpawnSubtaskPayload['agent'];
+  lanes: CoordinatorSpawnManyLanePayload[];
+  policy?: CoordinatorWorkflowPolicyPayload;
+  title?: string;
+  workflowId?: string;
+}
+
+export interface CoordinatorStartWorkflowLanePayload {
+  agent?: CoordinatorSpawnSubtaskPayload['agent'];
+  assignment?: string;
+  name: string;
+  role?: string;
+}
+
+export interface CoordinatorStartWorkflowPayload {
+  agent?: CoordinatorSpawnSubtaskPayload['agent'];
+  lanes?: CoordinatorStartWorkflowLanePayload[];
+  policy?: CoordinatorWorkflowPolicyPayload;
+  problem: string;
+  template: CoordinatorWorkflowTemplate;
+  title?: string;
+}
+
+export interface CoordinatorSubmitResultPayload {
+  commandsRun?: string[];
+  confidence?: CoordinatorWorkflowResultConfidence;
+  evidence?: CoordinatorWorkflowEvidenceSnapshot[];
+  findings?: CoordinatorWorkflowFindingSnapshot[];
+  laneId?: string;
+  metadata?: Record<string, unknown>;
+  risks?: string[];
+  status?: CoordinatorWorkflowResultStatus;
+  summary: string;
+  workflowId?: string;
 }
 
 export interface CoordinatorSendPromptPayload {
@@ -435,6 +690,59 @@ export function isCoordinatorLandingStatus(value: unknown): value is Coordinator
   return isStringTupleMember(value, COORDINATOR_LANDING_STATUSES);
 }
 
+export function isCoordinatorWorkflowTemplate(
+  value: unknown,
+): value is CoordinatorWorkflowTemplate {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_TEMPLATES);
+}
+
+export function isCoordinatorWorkflowStatus(value: unknown): value is CoordinatorWorkflowStatus {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_STATUSES);
+}
+
+export function isCoordinatorWorkflowStageKind(
+  value: unknown,
+): value is CoordinatorWorkflowStageKind {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_STAGE_KINDS);
+}
+
+export function isCoordinatorWorkflowStageStatus(
+  value: unknown,
+): value is CoordinatorWorkflowStageStatus {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_STAGE_STATUSES);
+}
+
+export function isCoordinatorWorkflowLaneStatus(
+  value: unknown,
+): value is CoordinatorWorkflowLaneStatus {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_LANE_STATUSES);
+}
+
+export function isCoordinatorTerminalWorkflowLaneStatus(
+  status: CoordinatorWorkflowLaneStatus,
+): boolean {
+  return (
+    status === 'blocked' ||
+    status === 'cancelled' ||
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'stale-after-restore' ||
+    status === 'timed-out'
+  );
+}
+
+export function isCoordinatorWorkflowResultStatus(
+  value: unknown,
+): value is CoordinatorWorkflowResultStatus {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_RESULT_STATUSES);
+}
+
+export function isCoordinatorWorkflowResultConfidence(
+  value: unknown,
+): value is CoordinatorWorkflowResultConfidence {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_RESULT_CONFIDENCES);
+}
+
 export function isCoordinatorEventType(value: unknown): value is CoordinatorEventType {
   return isStringTupleMember(value, COORDINATOR_EVENT_TYPES);
 }
@@ -450,6 +758,10 @@ function isCoordinatorRunLimits(value: unknown): value is CoordinatorRunLimits {
     isNonNegativeInteger(value.maxQueuedSubtasks) &&
     isNonNegativeInteger(value.maxPendingPromptsPerTarget)
   );
+}
+
+function isOptionalRecord(value: unknown): value is Record<string, unknown> | undefined {
+  return value === undefined || isRecord(value);
 }
 
 function isCoordinatorHiddenOutputState(value: unknown): value is CoordinatorHiddenOutputState {
@@ -545,6 +857,162 @@ export function isCoordinatorSubtaskSnapshot(value: unknown): value is Coordinat
   );
 }
 
+function isCoordinatorWorkflowPolicySnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowPolicySnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalString(value.budgetHint) &&
+    typeof value.continueOnFailure === 'boolean' &&
+    isNonNegativeInteger(value.maxConcurrentLanes) &&
+    isNonNegativeInteger(value.maxOutputBytesPerLane) &&
+    typeof value.resultRequired === 'boolean' &&
+    isNonNegativeInteger(value.retryBackoffMs) &&
+    isNonNegativeInteger(value.retryCount) &&
+    isNonNegativeInteger(value.timeoutMs)
+  );
+}
+
+function isCoordinatorWorkflowStageSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowStageSnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeInteger(value.completedAt) &&
+    isNonNegativeInteger(value.createdAt) &&
+    isStringArray(value.dependsOn) &&
+    isOptionalString(value.failure) &&
+    typeof value.id === 'string' &&
+    isCoordinatorWorkflowStageKind(value.kind) &&
+    isStringArray(value.laneIds) &&
+    typeof value.name === 'string' &&
+    isStringArray(value.resultIds) &&
+    isOptionalNonNegativeInteger(value.startedAt) &&
+    isCoordinatorWorkflowStageStatus(value.status) &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
+function isCoordinatorWorkflowLaneSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowLaneSnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalString(value.agentId) &&
+    typeof value.assignment === 'string' &&
+    isNonNegativeInteger(value.attempt) &&
+    isOptionalNonNegativeInteger(value.completedAt) &&
+    isNonNegativeInteger(value.createdAt) &&
+    isOptionalString(value.dedupeKey) &&
+    isOptionalString(value.failure) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    isOptionalString(value.resultId) &&
+    isOptionalString(value.role) &&
+    typeof value.stageId === 'string' &&
+    isOptionalNonNegativeInteger(value.startedAt) &&
+    isCoordinatorWorkflowLaneStatus(value.status) &&
+    isOptionalString(value.taskId) &&
+    isOptionalNonNegativeInteger(value.timeoutAt) &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
+function isCoordinatorWorkflowEvidenceSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowEvidenceSnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalString(value.file) &&
+    typeof value.label === 'string' &&
+    isOptionalNonNegativeInteger(value.line) &&
+    isOptionalString(value.note) &&
+    isOptionalString(value.url)
+  );
+}
+
+function isCoordinatorWorkflowFindingSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowFindingSnapshot {
+  return (
+    isRecord(value) &&
+    (value.evidenceIds === undefined || isStringArray(value.evidenceIds)) &&
+    (value.severity === undefined ||
+      value.severity === 'critical' ||
+      value.severity === 'major' ||
+      value.severity === 'minor' ||
+      value.severity === 'nit') &&
+    (value.status === undefined ||
+      value.status === 'confirmed' ||
+      value.status === 'semi-confirmed' ||
+      value.status === 'highly-likely' ||
+      value.status === 'rejected' ||
+      value.status === 'unknown') &&
+    typeof value.summary === 'string'
+  );
+}
+
+export function isCoordinatorWorkflowResultSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowResultSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.agentId === 'string' &&
+    isStringArray(value.commandsRun) &&
+    (value.confidence === undefined || isCoordinatorWorkflowResultConfidence(value.confidence)) &&
+    isNonNegativeInteger(value.createdAt) &&
+    isArrayOf(value.evidence, isCoordinatorWorkflowEvidenceSnapshot) &&
+    isArrayOf(value.findings, isCoordinatorWorkflowFindingSnapshot) &&
+    typeof value.id === 'string' &&
+    isOptionalString(value.laneId) &&
+    isOptionalRecord(value.metadata) &&
+    isStringArray(value.risks) &&
+    typeof value.runId === 'string' &&
+    isOptionalString(value.stageId) &&
+    isCoordinatorWorkflowResultStatus(value.status) &&
+    typeof value.summary === 'string' &&
+    typeof value.taskId === 'string' &&
+    isOptionalString(value.workflowId)
+  );
+}
+
+function isCoordinatorWorkflowJournalEntrySnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowJournalEntrySnapshot {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.at) &&
+    typeof value.kind === 'string' &&
+    isOptionalString(value.laneId) &&
+    typeof value.message === 'string' &&
+    isOptionalString(value.resultId) &&
+    isOptionalString(value.stageId)
+  );
+}
+
+export function isCoordinatorWorkflowSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowSnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeInteger(value.completedAt) &&
+    isNonNegativeInteger(value.createdAt) &&
+    isNonNegativeInteger(value.eventVersion) &&
+    typeof value.id === 'string' &&
+    isArrayOf(value.journal, isCoordinatorWorkflowJournalEntrySnapshot) &&
+    isArrayOf(value.lanes, isCoordinatorWorkflowLaneSnapshot) &&
+    isCoordinatorWorkflowPolicySnapshot(value.policy) &&
+    isArrayOf(value.results, isCoordinatorWorkflowResultSnapshot) &&
+    typeof value.runId === 'string' &&
+    isArrayOf(value.stages, isCoordinatorWorkflowStageSnapshot) &&
+    isOptionalNonNegativeInteger(value.startedAt) &&
+    isCoordinatorWorkflowStatus(value.status) &&
+    isCoordinatorWorkflowTemplate(value.template) &&
+    typeof value.title === 'string' &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
 export function isCoordinatorRunSnapshot(value: unknown): value is CoordinatorRunSnapshot {
   return (
     isRecord(value) &&
@@ -560,7 +1028,8 @@ export function isCoordinatorRunSnapshot(value: unknown): value is CoordinatorRu
     isArrayOf(value.promptQueue, isCoordinatorPromptRequestSnapshot) &&
     isCoordinatorRunStatus(value.status) &&
     isArrayOf(value.subtasks, isCoordinatorSubtaskSnapshot) &&
-    isNonNegativeInteger(value.updatedAt)
+    isNonNegativeInteger(value.updatedAt) &&
+    (value.workflows === undefined || isArrayOf(value.workflows, isCoordinatorWorkflowSnapshot))
   );
 }
 
