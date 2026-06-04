@@ -121,6 +121,9 @@ For coordinator-mode work:
   runs
 - prove renderer coordinator actions do not expose bearer tokens, reject peer clients, and require
   currently held task-command leases for mutating actions
+- prove coordinator workflows at the backend seam: `spawn_many`, `start_workflow`, subtask-owned
+  `submit_result`, lane ownership checks, stage advancement, partial lane failures, cleanup
+  propagation, and stale workflow restore
 - prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
 - prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
   close-before-delivery cancellation, credential revocation, restored stale runs, and landing
