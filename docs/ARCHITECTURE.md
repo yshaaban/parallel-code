@@ -85,7 +85,8 @@ All three shells operate on the same underlying concepts:
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
 - `Coordinator` is the browser-server-only backend owner for orchestration runs, hidden subtasks,
-  prompt delivery, subtask inspection, explicit subtask cleanup, and self-landing state
+  prompt delivery, subtask inspection, explicit subtask cleanup, self-landing state, and
+  backend-owned workflow DAG execution
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - `PeerPresence` is ephemeral per-browser-session identity plus focus/control context

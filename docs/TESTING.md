@@ -122,14 +122,17 @@ For coordinator-mode work:
 - prove renderer coordinator actions do not expose bearer tokens, reject peer clients, and require
   currently held task-command leases for mutating actions
 - prove coordinator workflows at the backend seam: `spawn_many`, `start_workflow`, subtask-owned
-  `submit_result`, lane ownership checks, stage advancement, partial lane failures, cleanup
-  propagation, and stale workflow restore
+  `submit_result`, constrained `steps[]` spec rejection, lane ownership checks, DAG dependency
+  advancement, partial lane failures, scheduled retry/timeout/cancel policy, typed verifier
+  verdicts, cleanup propagation, and stale workflow restore
 - prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
+  including workflow activity, failed/blocked reasons, result previews, and verdict counts
 - prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
   close-before-delivery cancellation, credential revocation, restored stale runs, and landing
   cleanup before relying on browser canaries
 - run `npm run test:node:coordinator:e2e` when coordinator changes cross browser-server HTTP IPC,
-  `/api/coordinator/tool-call`, websocket replay, prompt delivery, or restart/persistence seams
+  `/api/coordinator/tool-call`, websocket replay, workflow spec execution, prompt delivery, or
+  restart/persistence seams
 - `npm run test:node` includes the coordinator E2E lane separately, with file parallelism disabled
   for that harness
 - prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests
