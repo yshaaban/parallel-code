@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   COORDINATOR_LIMITS,
   isCoordinatorTerminalWorkflowLaneStatus,
@@ -12,18 +14,23 @@ import {
   type CoordinatorWorkflowResultSnapshot,
   type CoordinatorWorkflowSnapshot,
   type CoordinatorWorkflowStageKind,
+  type CoordinatorWorkflowStepAppendSnapshot,
   type CoordinatorWorkflowTemplate,
   type CoordinatorWorkflowVerdictSnapshot,
 } from '../../src/domain/coordinator.js';
 import {
   COORDINATOR_WORKFLOW_SPEC_VERSION,
   normalizeCoordinatorWorkflowSpec,
+  normalizeCoordinatorWorkflowStepAppend,
   type CoordinatorWorkflowSpecLaneSnapshot,
   type CoordinatorWorkflowSpecSnapshot,
   type CoordinatorWorkflowSpecStepSnapshot,
+  type CoordinatorWorkflowSpecValidationLimits,
+  type CoordinatorWorkflowStepAppendNormalizationResult,
 } from '../../src/domain/coordinator-workflow-spec.js';
 import { BadRequestError } from '../ipc/errors.js';
 import {
+  appendCoordinatorWorkflowSteps,
   appendCoordinatorWorkflowJournal,
   cancelCoordinatorPromptsForTask,
   createCoordinatorWorkflow,
@@ -66,6 +73,23 @@ export interface StartCoordinatorWorkflowExecutionResult {
   workflow: CoordinatorWorkflowSnapshot;
 }
 
+export interface AppendCoordinatorWorkflowStepsExecutionOptions {
+  appendId: string;
+  reason?: string;
+  runId: string;
+  sourceLaneId?: string;
+  sourceTaskId: string;
+  spawnLane: SpawnCoordinatorWorkflowLane;
+  steps: unknown[];
+  workflowId: string;
+}
+
+export interface AppendCoordinatorWorkflowStepsExecutionResult {
+  append: CoordinatorWorkflowStepAppendSnapshot;
+  lanes: WorkflowSpawnedLane[];
+  workflow: CoordinatorWorkflowSnapshot;
+}
+
 export interface AdvanceCoordinatorWorkflowExecutionOptions {
   laneId: string;
   runId: string;
@@ -78,6 +102,11 @@ export interface TickCoordinatorWorkflowExecutionOptions {
   runId: string;
   spawnLane: SpawnCoordinatorWorkflowLane;
   workflowId: string;
+}
+
+interface ResolveOwnedWorkflowLaneOptions {
+  actionName: string;
+  requireActiveLane?: boolean;
 }
 
 interface ReconcileWorkflowOptions {
@@ -117,6 +146,16 @@ function mergeWorkflowPolicyPayload(
   };
 }
 
+function getSpecNormalizationLimits(): CoordinatorWorkflowSpecValidationLimits {
+  return {
+    assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
+    maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
+    maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
+    maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+    workflowMaxLaneTimeoutMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+  };
+}
+
 function readSpec(
   value: unknown,
   options: Pick<StartCoordinatorWorkflowExecutionOptions, 'agent' | 'policy'>,
@@ -124,13 +163,7 @@ function readSpec(
   try {
     return normalizeCoordinatorWorkflowSpec(value, {
       ...(options.agent !== undefined ? { fallbackAgent: options.agent } : {}),
-      limits: {
-        assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
-        maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
-        maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
-        maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
-        workflowMaxLaneTimeoutMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
-      },
+      limits: getSpecNormalizationLimits(),
     });
   } catch (error) {
     if (error instanceof Error) {
@@ -170,6 +203,23 @@ function createWorkflowStageKind(
   }
 }
 
+function createStageDefinition(
+  template: CoordinatorWorkflowTemplate,
+  step: CoordinatorWorkflowSpecStepSnapshot,
+): {
+  dependsOn?: string[];
+  id: string;
+  kind: CoordinatorWorkflowStageKind;
+  name: string;
+} {
+  return {
+    dependsOn: step.dependsOn,
+    id: step.id,
+    kind: createWorkflowStageKind(template, step),
+    name: step.name,
+  };
+}
+
 function createStageDefinitions(
   template: CoordinatorWorkflowTemplate,
   spec: CoordinatorWorkflowSpecSnapshot,
@@ -179,12 +229,7 @@ function createStageDefinitions(
   kind: CoordinatorWorkflowStageKind;
   name: string;
 }> {
-  return spec.steps.map((step) => ({
-    dependsOn: step.dependsOn,
-    id: step.id,
-    kind: createWorkflowStageKind(template, step),
-    name: step.name,
-  }));
+  return spec.steps.map((step) => createStageDefinition(template, step));
 }
 
 function getDefaultWorkflowLanes(
@@ -656,6 +701,71 @@ function countWorkflowSpecLanes(spec: CoordinatorWorkflowSpecSnapshot): number {
   return spec.steps.reduce((count, step) => count + countStepLanes(step), 0);
 }
 
+function hashWorkflowAppendPayload(steps: unknown[]): string {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(steps);
+  } catch {
+    throw new BadRequestError('append workflow steps must be JSON-serializable');
+  }
+  if (serialized === undefined) {
+    throw new BadRequestError('append workflow steps must be JSON-serializable');
+  }
+
+  return createHash('sha256').update(serialized).digest('hex');
+}
+
+function getWorkerStepLaneDedupeKey(
+  workflowId: string,
+  step: CoordinatorWorkflowSpecStepSnapshot,
+): string {
+  const lane = step.lanes[0];
+  const name = lane?.name ?? step.name;
+  return lane?.dedupeKey ?? `${workflowId}:${step.id}:${name}`;
+}
+
+function getStepLaneDedupeKeys(
+  workflowId: string,
+  step: CoordinatorWorkflowSpecStepSnapshot,
+): string[] {
+  switch (step.kind) {
+    case 'fanout':
+      return step.lanes.map((lane) => lane.dedupeKey ?? `${workflowId}:${step.id}:${lane.id}`);
+    case 'synthesize':
+      return [`${workflowId}:${step.id}:${step.kind}`];
+    case 'verify':
+      return step.verifiers.map(
+        (verifier) => verifier.dedupeKey ?? `${workflowId}:${step.id}:${verifier.id}`,
+      );
+    case 'worker':
+      return [getWorkerStepLaneDedupeKey(workflowId, step)];
+  }
+}
+
+function assertAppendedLaneDedupeKeys(
+  workflow: CoordinatorWorkflowSnapshot,
+  appendedSteps: CoordinatorWorkflowSpecStepSnapshot[],
+): void {
+  const reservedKeys = new Set(
+    workflow.lanes.flatMap((lane) => (lane.dedupeKey !== undefined ? [lane.dedupeKey] : [])),
+  );
+  for (const step of workflow.sourceSpec?.steps ?? []) {
+    for (const dedupeKey of getStepLaneDedupeKeys(workflow.id, step)) {
+      reservedKeys.add(dedupeKey);
+    }
+  }
+
+  const appendedKeys = new Set<string>();
+  for (const step of appendedSteps) {
+    for (const dedupeKey of getStepLaneDedupeKeys(workflow.id, step)) {
+      if (reservedKeys.has(dedupeKey) || appendedKeys.has(dedupeKey)) {
+        throw new BadRequestError(`append workflow steps reuse lane dedupeKey ${dedupeKey}`);
+      }
+      appendedKeys.add(dedupeKey);
+    }
+  }
+}
+
 function getCompletedStageStatus(
   workflow: CoordinatorWorkflowSnapshot,
   stageId: string,
@@ -923,34 +1033,44 @@ async function spawnReadyStages(
   workflow: CoordinatorWorkflowSnapshot,
 ): Promise<WorkflowSpawnedLane[]> {
   const spawned: WorkflowSpawnedLane[] = [];
-  let activeLaneCount = getActiveLaneCount(workflow);
   for (const stage of workflow.stages) {
-    if (!isStageReady(workflow, stage)) {
+    const latestWorkflow = getWorkflowOrThrow(options.runId, options.workflowId);
+    const latestStage = latestWorkflow.stages.find((candidate) => candidate.id === stage.id);
+    if (!latestStage || !isStageReady(latestWorkflow, latestStage)) {
       continue;
     }
 
-    const lanePayloads = createStageLanePayloads(workflow, stage.id);
-    if (
-      workflow.lanes.length + spawned.length + lanePayloads.length >
-      COORDINATOR_LIMITS.maxWorkflowLanes
-    ) {
-      updateCoordinatorWorkflowStage(workflow.runId, workflow.id, stage.id, {
+    const lanePayloads = createStageLanePayloads(latestWorkflow, latestStage.id);
+    if (latestWorkflow.lanes.length + lanePayloads.length > COORDINATOR_LIMITS.maxWorkflowLanes) {
+      updateCoordinatorWorkflowStage(latestWorkflow.runId, latestWorkflow.id, latestStage.id, {
         completedAt: Date.now(),
         failure: `Workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes} reached.`,
         status: 'failed',
       });
-      updateCoordinatorWorkflow(workflow.runId, workflow.id, {
+      updateCoordinatorWorkflow(latestWorkflow.runId, latestWorkflow.id, {
         completedAt: Date.now(),
         status: 'failed',
       });
       break;
     }
-    if (activeLaneCount + lanePayloads.length > workflow.policy.maxConcurrentLanes) {
+    let activeLaneCount = getActiveLaneCount(latestWorkflow);
+    if (activeLaneCount + lanePayloads.length > latestWorkflow.policy.maxConcurrentLanes) {
       continue;
     }
 
     for (const lanePayload of lanePayloads) {
-      const result = await options.spawnLane(workflow, stage.id, lanePayload);
+      const currentWorkflow = getWorkflowOrThrow(options.runId, options.workflowId);
+      const currentStage = currentWorkflow.stages.find(
+        (candidate) => candidate.id === latestStage.id,
+      );
+      if (
+        !currentStage ||
+        (currentStage.laneIds.length === 0 && !isStageReady(currentWorkflow, currentStage))
+      ) {
+        break;
+      }
+
+      const result = await options.spawnLane(currentWorkflow, currentStage.id, lanePayload);
       activeLaneCount += result.error === undefined ? 1 : 0;
       spawned.push(result);
     }
@@ -1116,6 +1236,103 @@ export async function startCoordinatorWorkflowExecution(
     spawnLane: options.spawnLane,
     workflowId: workflow.id,
   });
+}
+
+export async function appendCoordinatorWorkflowExecutionSteps(
+  options: AppendCoordinatorWorkflowStepsExecutionOptions,
+): Promise<AppendCoordinatorWorkflowStepsExecutionResult> {
+  const workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  const payloadHash = hashWorkflowAppendPayload(options.steps);
+  const existingAppend = workflow.stepAppends?.find(
+    (append) => append.appendId === options.appendId,
+  );
+  if (existingAppend !== undefined) {
+    if (existingAppend.payloadHash !== payloadHash) {
+      throw new BadRequestError('appendId was already used with different workflow steps');
+    }
+
+    return {
+      append: existingAppend,
+      lanes: [],
+      workflow,
+    };
+  }
+
+  if (
+    workflow.status === 'blocked' ||
+    workflow.status === 'cancelled' ||
+    workflow.status === 'failed' ||
+    workflow.status === 'stale-after-restore'
+  ) {
+    throw new BadRequestError(`Coordinator workflow is ${workflow.status}`);
+  }
+  if (workflow.sourceSpec === undefined) {
+    throw new BadRequestError('append_workflow_steps requires a sourceSpec-backed workflow');
+  }
+
+  let normalizedAppend: CoordinatorWorkflowStepAppendNormalizationResult;
+  try {
+    normalizedAppend = normalizeCoordinatorWorkflowStepAppend(workflow.sourceSpec, options.steps, {
+      limits: getSpecNormalizationLimits(),
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new BadRequestError(error.message);
+    }
+
+    throw new BadRequestError('Invalid workflow append steps');
+  }
+  const appendedSteps = normalizedAppend.appendedSteps;
+
+  const appendedLaneCount = countWorkflowSpecLanes({
+    steps: appendedSteps,
+    version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+  });
+  if (workflow.lanes.length + appendedLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `append_workflow_steps would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+
+  const maxAppendedStageLaneCount = appendedSteps.reduce(
+    (count, step) => Math.max(count, countStepLanes(step)),
+    0,
+  );
+  if (maxAppendedStageLaneCount > workflow.policy.maxConcurrentLanes) {
+    throw new BadRequestError('append_workflow_steps exceeds workflow maxConcurrentLanes');
+  }
+  assertAppendedLaneDedupeKeys(workflow, appendedSteps);
+
+  const now = Date.now();
+  const append: CoordinatorWorkflowStepAppendSnapshot = {
+    appendId: options.appendId,
+    createdAt: now,
+    payloadHash,
+    ...(options.reason !== undefined ? { reason: options.reason } : {}),
+    ...(options.sourceLaneId !== undefined ? { sourceLaneId: options.sourceLaneId } : {}),
+    sourceTaskId: options.sourceTaskId,
+    stepIds: appendedSteps.map((step) => step.id),
+  };
+  appendCoordinatorWorkflowSteps({
+    append,
+    now,
+    runId: options.runId,
+    sourceSpec: normalizedAppend.sourceSpec,
+    stages: appendedSteps.map((step) => createStageDefinition(workflow.template, step)),
+    workflowId: options.workflowId,
+  });
+  const result = await reconcileCoordinatorWorkflowExecution({
+    now,
+    runId: options.runId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+
+  return {
+    append,
+    lanes: result.lanes,
+    workflow: result.workflow,
+  };
 }
 
 export async function advanceCoordinatorWorkflowExecution(
@@ -1333,11 +1550,12 @@ export function cancelCoordinatorWorkflowExecution(
   });
 }
 
-export function resolveSubmittedWorkflowLane(
+export function resolveOwnedWorkflowLane(
   runId: string,
   taskId: string,
   workflowId: string | undefined,
   laneId: string | undefined,
+  options: ResolveOwnedWorkflowLaneOptions,
 ): {
   lane: CoordinatorWorkflowSnapshot['lanes'][number];
   workflow: CoordinatorWorkflowSnapshot;
@@ -1346,42 +1564,56 @@ export function resolveSubmittedWorkflowLane(
   if (!run) {
     throw new BadRequestError('Coordinator run is no longer active');
   }
-  const workflows = workflowId
-    ? run.workflows.filter((workflow) => workflow.id === workflowId)
-    : run.workflows;
-  const matches: Array<{
-    lane: CoordinatorWorkflowSnapshot['lanes'][number];
-    workflow: CoordinatorWorkflowSnapshot;
-  }> = [];
+  const workflows =
+    workflowId !== undefined
+      ? run.workflows.filter((workflow) => workflow.id === workflowId)
+      : run.workflows;
+  let match:
+    | {
+        lane: CoordinatorWorkflowSnapshot['lanes'][number];
+        workflow: CoordinatorWorkflowSnapshot;
+      }
+    | undefined;
 
   for (const workflow of workflows) {
+    let lane: CoordinatorWorkflowSnapshot['lanes'][number] | undefined;
     if (laneId !== undefined) {
-      const lane = workflow.lanes.find((candidate) => candidate.id === laneId);
+      lane = workflow.lanes.find((candidate) => candidate.id === laneId);
       if (!lane) {
         continue;
       }
       if (lane.taskId !== taskId) {
         throw new BadRequestError('laneId must belong to the calling subtask');
       }
-      matches.push({ lane, workflow });
-      continue;
+    } else {
+      lane = getLaneByTask(workflow, taskId);
+      if (!lane) {
+        continue;
+      }
     }
 
-    const lane = getLaneByTask(workflow, taskId);
-    if (lane) {
-      matches.push({ lane, workflow });
+    if (match !== undefined) {
+      throw new BadRequestError(
+        `${options.actionName} is ambiguous; provide workflowId and laneId`,
+      );
     }
+    match = { lane, workflow };
   }
 
-  if (matches.length === 0) {
-    throw new BadRequestError('submit_result could not resolve a workflow lane for this subtask');
+  if (match === undefined) {
+    throw new BadRequestError(
+      `${options.actionName} could not resolve a workflow lane for this subtask`,
+    );
   }
-  if (matches.length > 1) {
-    throw new BadRequestError('submit_result is ambiguous; provide workflowId and laneId');
+  if (
+    options.requireActiveLane === true &&
+    (match.lane.resultId !== undefined ||
+      isCoordinatorTerminalWorkflowLaneStatus(match.lane.status))
+  ) {
+    throw new BadRequestError(
+      `${options.actionName} requires an active workflow lane without a terminal result`,
+    );
   }
 
-  return matches[0] as {
-    lane: CoordinatorWorkflowSnapshot['lanes'][number];
-    workflow: CoordinatorWorkflowSnapshot;
-  };
+  return match;
 }

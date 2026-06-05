@@ -37,6 +37,7 @@ import {
   isCoordinatorWorkflowResultConfidence,
   isCoordinatorWorkflowResultStatus,
   isCoordinatorWorkflowTemplate,
+  type CoordinatorAppendWorkflowStepsPayload,
   type CoordinatorCloseTaskPayload,
   type CoordinatorGetTaskDiffPayload,
   type CoordinatorGetTaskOutputPayload,
@@ -82,13 +83,15 @@ import {
   resolveCoordinatorToken,
 } from './service.js';
 import {
+  appendCoordinatorWorkflowExecutionSteps,
+  type AppendCoordinatorWorkflowStepsExecutionResult,
   advanceCoordinatorWorkflowExecution,
   DEFAULT_WORKFLOW_AGENT_COMMAND,
   DEFAULT_WORKFLOW_CONCURRENCY,
   getCoordinatorWorkflowNextTickAt,
   normalizeWorkflowFindingsForResult,
   recordWorkflowVerdictsFromResult,
-  resolveSubmittedWorkflowLane as resolveExecutorSubmittedWorkflowLane,
+  resolveOwnedWorkflowLane as resolveExecutorOwnedWorkflowLane,
   startCoordinatorWorkflowExecution,
   tickCoordinatorWorkflowExecution,
 } from './workflow-executor.js';
@@ -594,6 +597,38 @@ function readStartWorkflowPayload(payload: unknown): CoordinatorStartWorkflowPay
       ? { lanes: payload.lanes.map((lane) => readStartWorkflowLanePayload(lane, agent)) }
       : {}),
     ...(payload.title !== undefined ? { title: payload.title } : {}),
+  };
+}
+
+function readAppendWorkflowStepsPayload(payload: unknown): CoordinatorAppendWorkflowStepsPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('append_workflow_steps payload is required');
+  }
+  assertString(payload.appendId, 'appendId');
+  assertString(payload.workflowId, 'workflowId');
+  assertOptionalString(payload.laneId, 'laneId');
+  assertOptionalStringSize(payload.reason, 'reason', COORDINATOR_LIMITS.maxWorkflowSummaryChars);
+  if (!Array.isArray(payload.steps) || payload.steps.length === 0) {
+    throw new BadRequestError('steps must be a non-empty array');
+  }
+  if (payload.steps.length > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `steps must be no longer than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+  assertTextSize(payload.appendId, 'appendId', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  assertTextSize(payload.workflowId, 'workflowId', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  if (payload.laneId !== undefined) {
+    assertTextSize(payload.laneId, 'laneId', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+  }
+  assertJsonPayloadSize(payload.steps, 'steps', COORDINATOR_LIMITS.maxWorkflowMetadataBytes);
+
+  return {
+    appendId: payload.appendId,
+    ...(payload.laneId !== undefined ? { laneId: payload.laneId } : {}),
+    ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+    steps: payload.steps,
+    workflowId: payload.workflowId,
   };
 }
 
@@ -1904,6 +1939,80 @@ async function startCoordinatorWorkflow(
   });
 }
 
+function resolveWorkflowAppendCaller(
+  envelope: CoordinatorToolInvocation,
+  payload: CoordinatorAppendWorkflowStepsPayload,
+): {
+  run: CoordinatorRunSnapshot;
+  sourceLaneId?: string;
+  sourceTaskId: string;
+  workflow: CoordinatorWorkflowSnapshot;
+} {
+  const run = requireCoordinatorRun(envelope.runId);
+  if (run.status !== 'running') {
+    throw new BadRequestError(`Coordinator run is ${run.status}`);
+  }
+  if (envelope.taskId === run.coordinatorTaskId) {
+    const workflow = getCoordinatorWorkflow(run.id, payload.workflowId);
+    if (!workflow) {
+      throw new BadRequestError('Coordinator workflow not found');
+    }
+
+    return {
+      run,
+      sourceTaskId: envelope.taskId,
+      workflow,
+    };
+  }
+
+  const subtask = assertCoordinatorSubtaskCaller(envelope);
+  const { lane, workflow } = resolveExecutorOwnedWorkflowLane(
+    run.id,
+    subtask.taskId,
+    payload.workflowId,
+    payload.laneId,
+    {
+      actionName: 'append_workflow_steps',
+      requireActiveLane: true,
+    },
+  );
+
+  return {
+    run,
+    sourceLaneId: lane.id,
+    sourceTaskId: subtask.taskId,
+    workflow,
+  };
+}
+
+async function appendCoordinatorWorkflowStepsFromTool(
+  gateway: CoordinatorToolGatewayContext,
+  envelope: CoordinatorToolInvocation,
+  payload: CoordinatorAppendWorkflowStepsPayload,
+): Promise<AppendCoordinatorWorkflowStepsExecutionResult> {
+  const caller = resolveWorkflowAppendCaller(envelope, payload);
+  return appendCoordinatorWorkflowExecutionSteps({
+    appendId: payload.appendId,
+    ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+    runId: caller.run.id,
+    ...(caller.sourceLaneId !== undefined ? { sourceLaneId: caller.sourceLaneId } : {}),
+    sourceTaskId: caller.sourceTaskId,
+    spawnLane: (workflow, stageId, lanePayload) =>
+      spawnWorkflowLane(
+        gateway,
+        {
+          ...envelope,
+          taskId: caller.run.coordinatorTaskId,
+        },
+        workflow,
+        stageId,
+        lanePayload,
+      ),
+    steps: payload.steps,
+    workflowId: caller.workflow.id,
+  });
+}
+
 function getLaneStatusForResult(
   status: CoordinatorWorkflowResultStatus,
 ): CoordinatorWorkflowSnapshot['lanes'][number]['status'] {
@@ -1942,11 +2051,14 @@ async function submitCoordinatorWorkflowResult(
 }> {
   const subtask = assertCoordinatorSubtaskCaller(envelope);
   const run = requireCoordinatorRun(envelope.runId);
-  const { lane, workflow } = resolveExecutorSubmittedWorkflowLane(
+  const { lane, workflow } = resolveExecutorOwnedWorkflowLane(
     run.id,
     subtask.taskId,
     payload.workflowId,
     payload.laneId,
+    {
+      actionName: 'submit_result',
+    },
   );
   if (isCoordinatorTerminalWorkflowLaneStatus(lane.status) && lane.resultId !== undefined) {
     throw new BadRequestError('workflow lane already has a terminal result');
@@ -2932,7 +3044,12 @@ function isCoordinatorRendererMutationTool(
 function assertCoordinatorRendererToolAllowed(
   toolName: CoordinatorToolInvocation['toolName'],
 ): void {
-  if (toolName === 'land_self' || toolName === 'signal_done' || toolName === 'submit_result') {
+  if (
+    toolName === 'append_workflow_steps' ||
+    toolName === 'land_self' ||
+    toolName === 'signal_done' ||
+    toolName === 'submit_result'
+  ) {
     throw new BadRequestError(`Coordinator UI cannot call ${toolName}`);
   }
 }
@@ -2984,6 +3101,13 @@ async function dispatchCoordinatorToolInvocation(
 ): Promise<unknown> {
   let result: unknown;
   switch (invocation.toolName) {
+    case 'append_workflow_steps':
+      result = await appendCoordinatorWorkflowStepsFromTool(
+        gateway,
+        invocation,
+        readAppendWorkflowStepsPayload(invocation.payload),
+      );
+      break;
     case 'close_task':
       result = await closeCoordinatorSubtask(
         gateway,

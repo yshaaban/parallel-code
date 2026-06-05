@@ -64,6 +64,7 @@ export const COORDINATOR_PROMPT_STATUSES = [
 ] as const;
 
 export const COORDINATOR_TOOL_NAMES = [
+  'append_workflow_steps',
   'close_task',
   'get_task_diff',
   'get_task_output',
@@ -373,6 +374,16 @@ export interface CoordinatorWorkflowVerdictSnapshot {
   verifierLaneId: string;
 }
 
+export interface CoordinatorWorkflowStepAppendSnapshot {
+  appendId: string;
+  createdAt: number;
+  payloadHash: string;
+  reason?: string;
+  sourceLaneId?: string;
+  sourceTaskId: string;
+  stepIds: string[];
+}
+
 export interface CoordinatorWorkflowExecutionSnapshot {
   activeLaneCount: number;
   blockedReason?: string;
@@ -428,6 +439,7 @@ export interface CoordinatorWorkflowSnapshot {
   stages: CoordinatorWorkflowStageSnapshot[];
   startedAt?: number;
   status: CoordinatorWorkflowStatus;
+  stepAppends?: CoordinatorWorkflowStepAppendSnapshot[];
   template: CoordinatorWorkflowTemplate;
   title: string;
   updatedAt: number;
@@ -629,6 +641,14 @@ export interface CoordinatorStartWorkflowPayload {
   spec?: unknown;
   template: CoordinatorWorkflowTemplate;
   title?: string;
+}
+
+export interface CoordinatorAppendWorkflowStepsPayload {
+  appendId: string;
+  laneId?: string;
+  reason?: string;
+  steps: unknown[];
+  workflowId: string;
 }
 
 export interface CoordinatorSubmitResultPayload {
@@ -1016,6 +1036,21 @@ function isCoordinatorWorkflowVerdictSnapshot(
   );
 }
 
+function isCoordinatorWorkflowStepAppendSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowStepAppendSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.appendId === 'string' &&
+    isNonNegativeInteger(value.createdAt) &&
+    typeof value.payloadHash === 'string' &&
+    isOptionalString(value.reason) &&
+    isOptionalString(value.sourceLaneId) &&
+    typeof value.sourceTaskId === 'string' &&
+    isStringArray(value.stepIds)
+  );
+}
+
 function isCoordinatorWorkflowExecutionSnapshot(
   value: unknown,
 ): value is CoordinatorWorkflowExecutionSnapshot {
@@ -1090,6 +1125,8 @@ export function isCoordinatorWorkflowSnapshot(
     isArrayOf(value.stages, isCoordinatorWorkflowStageSnapshot) &&
     isOptionalNonNegativeInteger(value.startedAt) &&
     isCoordinatorWorkflowStatus(value.status) &&
+    (value.stepAppends === undefined ||
+      isArrayOf(value.stepAppends, isCoordinatorWorkflowStepAppendSnapshot)) &&
     isCoordinatorWorkflowTemplate(value.template) &&
     typeof value.title === 'string' &&
     isNonNegativeInteger(value.updatedAt) &&

@@ -21,14 +21,7 @@ export interface CoordinatorWorkflowSpecLaneSnapshot {
   role?: string;
 }
 
-export interface CoordinatorWorkflowSpecVerifierSnapshot {
-  agent?: CoordinatorSpawnSubtaskPayload['agent'];
-  assignment?: string;
-  dedupeKey?: string;
-  id: string;
-  name: string;
-  role?: string;
-}
+export type CoordinatorWorkflowSpecVerifierSnapshot = CoordinatorWorkflowSpecLaneSnapshot;
 
 export interface CoordinatorWorkflowSpecStepPolicySnapshot {
   resultRequired?: boolean;
@@ -71,6 +64,11 @@ export interface CoordinatorWorkflowSpecPayload {
   inputs?: Record<string, unknown>;
   steps: unknown[];
   version?: CoordinatorWorkflowSpecVersion;
+}
+
+export interface CoordinatorWorkflowStepAppendNormalizationResult {
+  appendedSteps: CoordinatorWorkflowSpecStepSnapshot[];
+  sourceSpec: CoordinatorWorkflowSpecSnapshot;
 }
 
 export interface CoordinatorWorkflowSpecValidationLimits {
@@ -480,6 +478,36 @@ function assertUniqueIds(values: string[], label: string): void {
   }
 }
 
+function assertUniqueLaneDedupeKeys(steps: CoordinatorWorkflowSpecStepSnapshot[]): void {
+  const seen = new Set<string>();
+  for (const step of steps) {
+    const plannedLanes = [...step.lanes, ...step.verifiers];
+    for (const lane of plannedLanes) {
+      if (lane.dedupeKey === undefined) {
+        continue;
+      }
+      if (seen.has(lane.dedupeKey)) {
+        throw new CoordinatorWorkflowSpecValidationError(
+          `workflow spec reuses lane dedupeKey ${lane.dedupeKey}`,
+        );
+      }
+      seen.add(lane.dedupeKey);
+    }
+  }
+}
+
+function assertAppendDoesNotModifyExistingSteps(
+  existingSteps: CoordinatorWorkflowSpecStepSnapshot[],
+  sourceSpec: CoordinatorWorkflowSpecSnapshot,
+): void {
+  const preservedSteps = sourceSpec.steps.slice(0, existingSteps.length);
+  if (JSON.stringify(preservedSteps) !== JSON.stringify(existingSteps)) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      'append steps must not modify existing workflow steps',
+    );
+  }
+}
+
 function assertNoCycles(steps: CoordinatorWorkflowSpecStepSnapshot[]): void {
   const stepsById = new Map(steps.map((step) => [step.id, step]));
   const visiting = new Set<string>();
@@ -613,6 +641,7 @@ export function normalizeCoordinatorWorkflowSpec(
     assertStepShape(step);
   }
   assertStepReferences(steps);
+  assertUniqueLaneDedupeKeys(steps);
   assertNoCycles(steps);
 
   const laneCount = countSpecLanes(steps);
@@ -636,6 +665,32 @@ export function normalizeCoordinatorWorkflowSpec(
     ...(inputs !== undefined ? { inputs } : {}),
     steps,
     version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+  };
+}
+
+export function normalizeCoordinatorWorkflowStepAppend(
+  existingSpec: CoordinatorWorkflowSpecSnapshot,
+  steps: unknown,
+  options: WorkflowSpecNormalizationOptions,
+): CoordinatorWorkflowStepAppendNormalizationResult {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    throw new CoordinatorWorkflowSpecValidationError('steps must be a non-empty array');
+  }
+
+  const sourceSpec = normalizeCoordinatorWorkflowSpec(
+    {
+      ...(existingSpec.description !== undefined ? { description: existingSpec.description } : {}),
+      ...(existingSpec.inputs !== undefined ? { inputs: existingSpec.inputs } : {}),
+      steps: [...existingSpec.steps, ...steps],
+      version: existingSpec.version,
+    },
+    options,
+  );
+  assertAppendDoesNotModifyExistingSteps(existingSpec.steps, sourceSpec);
+
+  return {
+    appendedSteps: sourceSpec.steps.slice(existingSpec.steps.length),
+    sourceSpec,
   };
 }
 

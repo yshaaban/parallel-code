@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   normalizeCoordinatorWorkflowSpec,
+  normalizeCoordinatorWorkflowStepAppend,
   type CoordinatorWorkflowSpecValidationLimits,
 } from './coordinator-workflow-spec';
 
@@ -159,5 +160,76 @@ describe('coordinator workflow spec validation', () => {
         { limits },
       ),
     ).toThrow('spec.inputs must be an object');
+  });
+
+  it('normalizes appended steps against the whole workflow graph', () => {
+    const initial = normalizeCoordinatorWorkflowSpec(
+      {
+        steps: [{ id: 'scout', kind: 'worker' }],
+      },
+      { limits },
+    );
+
+    const append = normalizeCoordinatorWorkflowStepAppend(
+      initial,
+      [
+        {
+          dependsOn: ['scout'],
+          id: 'followup',
+          kind: 'fanout',
+          lanes: [{ assignment: 'Follow up.', id: 'lane-a', name: 'Lane A' }],
+        },
+      ],
+      { limits },
+    );
+
+    expect(append.appendedSteps.map((step) => step.id)).toEqual(['followup']);
+    expect(append.sourceSpec.steps.map((step) => step.id)).toEqual(['scout', 'followup']);
+    expect(initial.steps.map((step) => step.id)).toEqual(['scout']);
+  });
+
+  it('rejects appended steps that break existing graph invariants', () => {
+    const initial = normalizeCoordinatorWorkflowSpec(
+      {
+        steps: [{ id: 'scout', kind: 'worker' }],
+      },
+      { limits },
+    );
+
+    expect(() =>
+      normalizeCoordinatorWorkflowStepAppend(
+        initial,
+        [{ dependsOn: ['missing'], id: 'followup', kind: 'worker' }],
+        { limits },
+      ),
+    ).toThrow('missing step missing');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowStepAppend(
+        initial,
+        [{ dependsOn: ['cycle'], id: 'cycle', kind: 'worker' }],
+        { limits },
+      ),
+    ).toThrow('dependency cycle');
+  });
+
+  it('rejects duplicate explicit lane dedupe keys across planned workflow lanes', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            {
+              id: 'find',
+              kind: 'fanout',
+              lanes: [
+                { dedupeKey: 'stable-lane', id: 'backend', name: 'Backend' },
+                { dedupeKey: 'stable-lane', id: 'ui', name: 'UI' },
+              ],
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('workflow spec reuses lane dedupeKey stable-lane');
   });
 });

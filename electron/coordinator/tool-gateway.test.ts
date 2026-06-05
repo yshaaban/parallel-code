@@ -1820,6 +1820,279 @@ describe('coordinator tool gateway', () => {
     });
   });
 
+  it('lets a workflow lane append dependent steps before submitting its result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-followup']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Find whether the workflow needs more lanes.',
+          spec: {
+            steps: [{ id: 'scout', kind: 'worker', name: 'Scout' }],
+          },
+          template: 'custom',
+          title: 'Adaptive workflow',
+        },
+      },
+    );
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected adaptive workflow id');
+    }
+    const scoutToken = readTaskCredentialToken('task-scout');
+    const appendPayload = {
+      appendId: 'append-followup',
+      reason: 'Scout found a follow-up lane is needed.',
+      steps: [
+        {
+          dependsOn: ['scout'],
+          id: 'followup',
+          kind: 'worker',
+          name: 'Followup',
+        },
+      ],
+      workflowId,
+    };
+
+    const appended = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-append',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: scoutToken,
+        toolName: 'append_workflow_steps',
+        payload: appendPayload,
+      },
+    );
+    expect(appended.result).toMatchObject({
+      append: expect.objectContaining({
+        appendId: 'append-followup',
+        sourceTaskId: 'task-scout',
+        stepIds: ['followup'],
+      }),
+      lanes: [],
+    });
+    expect(mocks.createTaskWorkflowMock).toHaveBeenCalledTimes(1);
+
+    const repeatedAppend = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-append-repeat',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: scoutToken,
+        toolName: 'append_workflow_steps',
+        payload: appendPayload,
+      },
+    );
+    expect(repeatedAppend.result).toMatchObject({
+      lanes: [],
+      workflow: expect.objectContaining({
+        stepAppends: [expect.objectContaining({ appendId: 'append-followup' })],
+      }),
+    });
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.stages).toHaveLength(2);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: scoutToken,
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Scout completed.',
+          workflowId,
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      sourceSpec: {
+        steps: [
+          expect.objectContaining({ id: 'scout' }),
+          expect.objectContaining({ dependsOn: ['scout'], id: 'followup' }),
+        ],
+      },
+      stages: [
+        expect.objectContaining({ id: 'scout', status: 'completed' }),
+        expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({ name: 'Scout', status: 'completed', taskId: 'task-scout' }),
+      expect.objectContaining({
+        name: 'Followup',
+        status: 'waiting-for-result',
+        taskId: 'task-followup',
+      }),
+    ]);
+  });
+
+  it('rejects invalid appended workflow steps without mutating the workflow', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-invalid-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Find whether the workflow needs more lanes.',
+          spec: {
+            steps: [{ id: 'scout', kind: 'worker', name: 'Scout' }],
+          },
+          template: 'custom',
+          title: 'Adaptive invalid workflow',
+        },
+      },
+    );
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected adaptive workflow id');
+    }
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'adaptive-invalid-append',
+          runId: result.run.id,
+          taskId: 'task-scout',
+          token: readTaskCredentialToken('task-scout'),
+          toolName: 'append_workflow_steps',
+          payload: {
+            appendId: 'append-invalid',
+            steps: [{ dependsOn: ['missing'], id: 'followup', kind: 'worker' }],
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('missing step missing');
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.sourceSpec?.steps.map((step) => step.id)).toEqual(['scout']);
+    expect(workflow?.stages.map((stage) => stage.id)).toEqual(['scout']);
+    expect(workflow?.stepAppends).toBeUndefined();
+  });
+
+  it('rejects appended steps from a lane that already submitted a terminal result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-append-after-result-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Find whether the workflow needs more lanes.',
+          spec: {
+            steps: [{ id: 'scout', kind: 'worker', name: 'Scout' }],
+          },
+          template: 'custom',
+          title: 'Adaptive append after result',
+        },
+      },
+    );
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected adaptive workflow id');
+    }
+    const scoutToken = readTaskCredentialToken('task-scout');
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'adaptive-append-after-result-submit',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: scoutToken,
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Scout completed.',
+          workflowId,
+        },
+      },
+    );
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'adaptive-append-after-result',
+          runId: result.run.id,
+          taskId: 'task-scout',
+          token: scoutToken,
+          toolName: 'append_workflow_steps',
+          payload: {
+            appendId: 'append-after-result',
+            steps: [{ dependsOn: ['scout'], id: 'followup', kind: 'worker' }],
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'append_workflow_steps requires an active workflow lane without a terminal result',
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.sourceSpec?.steps.map((step) => step.id)).toEqual(['scout']);
+    expect(workflow?.stages.map((stage) => stage.id)).toEqual(['scout']);
+    expect(workflow?.stepAppends).toBeUndefined();
+  });
+
   it('runs a spec-backed fanout verify synthesize workflow with typed verdicts', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -3533,6 +3806,22 @@ describe('coordinator tool gateway', () => {
         }),
       ),
     ).rejects.toThrow('Coordinator UI cannot call submit_result');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        unsafeRendererRequest({
+          coordinatorTaskId: 'task-coordinator',
+          payload: {
+            appendId: 'renderer-append',
+            steps: [{ id: 'followup', kind: 'worker' }],
+            workflowId: 'workflow-1',
+          },
+          requestId: 'renderer-append',
+          runId: result.run.id,
+          toolName: 'append_workflow_steps',
+        }),
+      ),
+    ).rejects.toThrow('Coordinator UI cannot call append_workflow_steps');
   });
 
   it('rejects renderer coordinator actions for tasks that do not own the run', async () => {

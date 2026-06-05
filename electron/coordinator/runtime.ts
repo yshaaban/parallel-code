@@ -26,6 +26,7 @@ import {
   type CoordinatorWorkflowStageSnapshot,
   type CoordinatorWorkflowStageStatus,
   type CoordinatorWorkflowStatus,
+  type CoordinatorWorkflowStepAppendSnapshot,
   type CoordinatorWorkflowTemplate,
   type CoordinatorWorkflowSnapshot,
 } from '../../src/domain/coordinator.js';
@@ -117,6 +118,20 @@ interface CreateCoordinatorWorkflowOptions {
   template: CoordinatorWorkflowTemplate;
   title: string;
   verdicts?: CoordinatorWorkflowSnapshot['verdicts'];
+  now?: number;
+}
+
+interface AppendCoordinatorWorkflowStepsOptions {
+  append: CoordinatorWorkflowStepAppendSnapshot;
+  runId: string;
+  sourceSpec: CoordinatorWorkflowSpecSnapshot;
+  stages: Array<{
+    dependsOn?: string[];
+    id: string;
+    kind: CoordinatorWorkflowStageKind;
+    name: string;
+  }>;
+  workflowId: string;
   now?: number;
 }
 
@@ -659,6 +674,54 @@ function setWorkflow(
   return clone(workflow);
 }
 
+function isRuntimeWorkflowStageReady(
+  workflow: CoordinatorWorkflowSnapshot,
+  stage: CoordinatorWorkflowStageSnapshot,
+): boolean {
+  if (stage.status !== 'pending') {
+    return false;
+  }
+
+  return stage.dependsOn.every((dependencyId) =>
+    workflow.stages.some(
+      (candidate) => candidate.id === dependencyId && candidate.status === 'completed',
+    ),
+  );
+}
+
+function createRuntimeWorkflowExecutionSnapshot(
+  workflow: CoordinatorWorkflowSnapshot,
+  now: number,
+): NonNullable<CoordinatorWorkflowSnapshot['execution']> {
+  const knownLaneIds = new Set(workflow.lanes.map((lane) => lane.id));
+  const pendingRetryLaneIds =
+    workflow.execution?.pendingRetryLaneIds.filter((laneId) => knownLaneIds.has(laneId)) ?? [];
+
+  return {
+    activeLaneCount: workflow.lanes.filter(
+      (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
+    ).length,
+    lastTickAt: now,
+    pendingRetryLaneIds,
+    readyStageIds: workflow.stages
+      .filter((stage) => isRuntimeWorkflowStageReady(workflow, stage))
+      .map((stage) => stage.id),
+  };
+}
+
+function omitWorkflowCompletedAt(
+  workflow: CoordinatorWorkflowSnapshot,
+): Omit<CoordinatorWorkflowSnapshot, 'completedAt'> {
+  const copy: CoordinatorWorkflowSnapshot = { ...workflow };
+  delete copy.completedAt;
+  return copy;
+}
+
+function createWorkflowStepAppendMessage(stepIds: string[]): string {
+  const noun = stepIds.length === 1 ? 'step' : 'steps';
+  return `Appended ${stepIds.length} workflow ${noun}: ${stepIds.join(', ')}.`;
+}
+
 export function createCoordinatorWorkflow(
   options: CreateCoordinatorWorkflowOptions,
 ): CoordinatorWorkflowSnapshot {
@@ -703,6 +766,76 @@ export function createCoordinatorWorkflow(
     ...(options.verdicts !== undefined ? { verdicts: options.verdicts } : {}),
   };
   return setWorkflow(record, workflow, now, version);
+}
+
+export function appendCoordinatorWorkflowSteps(
+  options: AppendCoordinatorWorkflowStepsOptions,
+): CoordinatorWorkflowSnapshot {
+  const record = requireRunRecord(options.runId);
+  const workflow = getWorkflowOrThrow(record, options.workflowId);
+  if (workflow.stepAppends?.some((append) => append.appendId === options.append.appendId)) {
+    return clone(workflow);
+  }
+
+  const existingStageIds = new Set(workflow.stages.map((stage) => stage.id));
+  for (const stage of options.stages) {
+    if (existingStageIds.has(stage.id)) {
+      throw new Error(`Coordinator workflow stage already exists: ${stage.id}`);
+    }
+  }
+  if (
+    workflow.status === 'blocked' ||
+    workflow.status === 'cancelled' ||
+    workflow.status === 'failed' ||
+    workflow.status === 'stale-after-restore'
+  ) {
+    throw new Error(`Coordinator workflow is ${workflow.status}`);
+  }
+
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const appendedStages: CoordinatorWorkflowStageSnapshot[] = options.stages.map((stage) => ({
+    createdAt: now,
+    dependsOn: stage.dependsOn ?? [],
+    id: stage.id,
+    kind: stage.kind,
+    laneIds: [],
+    name: stage.name,
+    resultIds: [],
+    status: 'pending',
+    updatedAt: now,
+  }));
+  const reopensCompletedWorkflow = workflow.status === 'completed';
+  const nextStatus: CoordinatorWorkflowStatus = reopensCompletedWorkflow
+    ? 'running'
+    : workflow.status;
+  const workflowBase = reopensCompletedWorkflow ? omitWorkflowCompletedAt(workflow) : workflow;
+  const workflowWithAppend: CoordinatorWorkflowSnapshot = {
+    ...workflowBase,
+    eventVersion: version,
+    journal: [
+      ...workflow.journal,
+      {
+        at: now,
+        kind: 'workflow-steps-appended',
+        ...(options.append.sourceLaneId !== undefined
+          ? { laneId: options.append.sourceLaneId }
+          : {}),
+        message: createWorkflowStepAppendMessage(options.append.stepIds),
+      },
+    ],
+    sourceSpec: options.sourceSpec,
+    stages: [...workflow.stages, ...appendedStages],
+    status: nextStatus,
+    stepAppends: [...(workflow.stepAppends ?? []), options.append],
+    updatedAt: now,
+  };
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflowWithAppend,
+    execution: createRuntimeWorkflowExecutionSnapshot(workflowWithAppend, now),
+  };
+
+  return setWorkflow(record, updatedWorkflow, now, version);
 }
 
 export function appendCoordinatorWorkflowJournal(

@@ -2,14 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { COORDINATOR_LIMITS } from '../../src/domain/coordinator.js';
 import {
+  addCoordinatorWorkflowResult,
   addCoordinatorWorkflowLane,
   appendCoordinatorWorkflowJournal,
   createCoordinatorRun,
   getCoordinatorWorkflow,
   resetCoordinatorRuntimeForTests,
+  updateCoordinatorWorkflow,
+  updateCoordinatorWorkflowLane,
   updateCoordinatorWorkflowStage,
 } from './runtime.js';
 import {
+  advanceCoordinatorWorkflowExecution,
+  appendCoordinatorWorkflowExecutionSteps,
   cancelCoordinatorWorkflowExecution,
   startCoordinatorWorkflowExecution,
   tickCoordinatorWorkflowExecution,
@@ -69,6 +74,46 @@ function createFakeSpawnLane(): SpawnCoordinatorWorkflowLane {
     });
     return { laneId: lane.id };
   };
+}
+
+function completeWorkflowLane(
+  workflow: NonNullable<ReturnType<typeof getCoordinatorWorkflow>>,
+  laneId: string,
+): void {
+  const lane = workflow.lanes.find((candidate) => candidate.id === laneId);
+  if (!lane) {
+    throw new Error(`Missing workflow lane ${laneId}`);
+  }
+
+  const result = addCoordinatorWorkflowResult({
+    result: {
+      agentId: lane.agentId ?? 'agent-unknown',
+      commandsRun: [],
+      evidence: [],
+      findings: [],
+      laneId: lane.id,
+      risks: [],
+      stageId: lane.stageId,
+      status: 'completed',
+      summary: `Completed ${lane.name}.`,
+      taskId: lane.taskId ?? 'task-unknown',
+      workflowId: workflow.id,
+    },
+    runId: workflow.runId,
+    workflowId: workflow.id,
+  });
+  updateCoordinatorWorkflowLane(workflow.runId, workflow.id, lane.id, {
+    completedAt: Date.now(),
+    resultId: result.id,
+    status: 'completed',
+  });
+  appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+    kind: 'lane-result',
+    laneId: lane.id,
+    message: result.summary,
+    resultId: result.id,
+    stageId: lane.stageId,
+  });
 }
 
 describe('coordinator workflow executor', () => {
@@ -290,6 +335,242 @@ describe('coordinator workflow executor', () => {
         title: 'Template mismatch',
       }),
     ).rejects.toThrow('spec is only supported with the custom workflow template');
+  });
+
+  it('appends dependent steps and spawns them after their dependency completes', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Explore adaptive follow-up.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [{ id: 'scout', kind: 'worker', name: 'Scout' }],
+      },
+      template: 'custom',
+      title: 'Adaptive review',
+    });
+    const initialLane = started.workflow.lanes[0];
+    if (!initialLane) {
+      throw new Error('Expected initial workflow lane');
+    }
+
+    const appended = await appendCoordinatorWorkflowExecutionSteps({
+      appendId: 'append-followups',
+      reason: 'Scout requested parallel follow-up.',
+      runId: run.id,
+      sourceLaneId: initialLane.id,
+      sourceTaskId: initialLane.taskId ?? 'task-1',
+      spawnLane,
+      steps: [
+        {
+          dependsOn: ['scout'],
+          id: 'followups',
+          kind: 'fanout',
+          lanes: [
+            { assignment: 'Follow backend.', id: 'backend', name: 'Backend' },
+            { assignment: 'Follow UI.', id: 'ui', name: 'UI' },
+          ],
+        },
+      ],
+      workflowId: started.workflow.id,
+    });
+
+    expect(appended.lanes).toHaveLength(0);
+    expect(appended.append).toMatchObject({
+      appendId: 'append-followups',
+      reason: 'Scout requested parallel follow-up.',
+      stepIds: ['followups'],
+    });
+    expect(appended.workflow).toMatchObject({
+      sourceSpec: {
+        steps: [
+          expect.objectContaining({ id: 'scout' }),
+          expect.objectContaining({ dependsOn: ['scout'], id: 'followups' }),
+        ],
+      },
+      stages: [
+        expect.objectContaining({ id: 'scout' }),
+        expect.objectContaining({ id: 'followups', status: 'pending' }),
+      ],
+      stepAppends: [expect.objectContaining({ appendId: 'append-followups' })],
+    });
+
+    const workflowBeforeCompletion = getCoordinatorWorkflow(run.id, started.workflow.id);
+    if (!workflowBeforeCompletion?.lanes[0]) {
+      throw new Error('Expected initial workflow lane');
+    }
+    completeWorkflowLane(workflowBeforeCompletion, workflowBeforeCompletion.lanes[0].id);
+
+    await advanceCoordinatorWorkflowExecution({
+      laneId: workflowBeforeCompletion.lanes[0].id,
+      runId: run.id,
+      spawnLane,
+      workflowId: started.workflow.id,
+    });
+
+    const workflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    expect(workflow?.stages).toEqual([
+      expect.objectContaining({ id: 'scout', status: 'completed' }),
+      expect.objectContaining({ id: 'followups', status: 'waiting-for-results' }),
+    ]);
+    expect(workflow?.lanes).toEqual([
+      expect.objectContaining({ name: 'Scout', status: 'completed' }),
+      expect.objectContaining({ name: 'Backend', stageId: 'followups' }),
+      expect.objectContaining({ name: 'UI', stageId: 'followups' }),
+    ]);
+  });
+
+  it('reopens completed workflows for idempotent appended steps', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Run the first step.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [{ id: 'first', kind: 'worker', name: 'First' }],
+      },
+      template: 'custom',
+      title: 'Adaptive completion',
+    });
+    const initialWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    if (!initialWorkflow?.lanes[0]) {
+      throw new Error('Expected initial workflow lane');
+    }
+    completeWorkflowLane(initialWorkflow, initialWorkflow.lanes[0].id);
+
+    const completed = await advanceCoordinatorWorkflowExecution({
+      laneId: initialWorkflow.lanes[0].id,
+      runId: run.id,
+      spawnLane,
+      workflowId: started.workflow.id,
+    });
+    expect(completed.status).toBe('completed');
+
+    const steps = [{ id: 'second', kind: 'worker', name: 'Second' }];
+    const appended = await appendCoordinatorWorkflowExecutionSteps({
+      appendId: 'append-second',
+      runId: run.id,
+      sourceTaskId: 'task-coordinator',
+      spawnLane,
+      steps,
+      workflowId: started.workflow.id,
+    });
+
+    expect(appended.workflow.status).toBe('running');
+    expect(appended.workflow.completedAt).toBeUndefined();
+    expect(appended.workflow.lanes).toEqual([
+      expect.objectContaining({ name: 'First', status: 'completed' }),
+      expect.objectContaining({ name: 'Second', status: 'waiting-for-result' }),
+    ]);
+
+    const repeated = await appendCoordinatorWorkflowExecutionSteps({
+      appendId: 'append-second',
+      runId: run.id,
+      sourceTaskId: 'task-coordinator',
+      spawnLane,
+      steps,
+      workflowId: started.workflow.id,
+    });
+    expect(repeated.lanes).toHaveLength(0);
+    expect(repeated.workflow.lanes).toHaveLength(2);
+
+    await expect(
+      appendCoordinatorWorkflowExecutionSteps({
+        appendId: 'append-second',
+        runId: run.id,
+        sourceTaskId: 'task-coordinator',
+        spawnLane,
+        steps: [{ id: 'third', kind: 'worker', name: 'Third' }],
+        workflowId: started.workflow.id,
+      }),
+    ).rejects.toThrow('appendId was already used with different workflow steps');
+  });
+
+  it('rejects appends for failed workflows without mutating the workflow', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Run the first step.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [{ id: 'first', kind: 'worker', name: 'First' }],
+      },
+      template: 'custom',
+      title: 'Adaptive failed workflow',
+    });
+
+    updateCoordinatorWorkflow(run.id, started.workflow.id, {
+      completedAt: Date.now(),
+      status: 'failed',
+    });
+
+    await expect(
+      appendCoordinatorWorkflowExecutionSteps({
+        appendId: 'append-after-failure',
+        runId: run.id,
+        sourceTaskId: 'task-coordinator',
+        spawnLane,
+        steps: [{ id: 'second', kind: 'worker', name: 'Second' }],
+        workflowId: started.workflow.id,
+      }),
+    ).rejects.toThrow('Coordinator workflow is failed');
+
+    const workflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    expect(workflow?.status).toBe('failed');
+    expect(workflow?.sourceSpec?.steps.map((step) => step.id)).toEqual(['first']);
+    expect(workflow?.stages.map((stage) => stage.id)).toEqual(['first']);
+    expect(workflow?.stepAppends).toBeUndefined();
+  });
+
+  it('rejects appended lane dedupe collisions without mutating the workflow', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Run the first step.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [{ id: 'first', kind: 'worker', name: 'First' }],
+      },
+      template: 'custom',
+      title: 'Adaptive collision',
+    });
+    const existingDedupeKey = started.workflow.lanes[0]?.dedupeKey;
+    if (existingDedupeKey === undefined) {
+      throw new Error('Expected first lane dedupe key');
+    }
+
+    await expect(
+      appendCoordinatorWorkflowExecutionSteps({
+        appendId: 'append-collision',
+        runId: run.id,
+        sourceTaskId: 'task-coordinator',
+        spawnLane,
+        steps: [
+          {
+            id: 'collision',
+            kind: 'fanout',
+            lanes: [
+              {
+                assignment: 'Collide with the first lane.',
+                dedupeKey: existingDedupeKey,
+                id: 'colliding-lane',
+                name: 'Colliding lane',
+              },
+            ],
+          },
+        ],
+        workflowId: started.workflow.id,
+      }),
+    ).rejects.toThrow('reuse lane dedupeKey');
+
+    const workflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    expect(workflow?.sourceSpec?.steps.map((step) => step.id)).toEqual(['first']);
+    expect(workflow?.stages.map((stage) => stage.id)).toEqual(['first']);
+    expect(workflow?.stepAppends).toBeUndefined();
   });
 
   it('cancels active lanes and prevents later scheduling', async () => {
