@@ -17,6 +17,8 @@ describe('coordinator instructions', () => {
     expect(prompt).toContain(
       'Use close_task to explicitly clean up and discard subtasks when they are no longer needed.',
     );
+    expect(prompt).toContain('Use start_workflow for backend-owned map-reduce');
+    expect(prompt).toContain('Use append_workflow_steps only to append validated follow-up steps');
     expect(prompt).toContain('User task:\nInvestigate latency');
   });
 
@@ -26,6 +28,8 @@ describe('coordinator instructions', () => {
     expect(prompt).toContain(
       "Run coordinator tools with $PARALLEL_CODE_COORDINATOR_TOOL <tool-name> '<payload-json>'.",
     );
+    expect(prompt).toContain('call submit_result with summary, findings, evidence');
+    expect(prompt).toContain('call append_workflow_steps with a stable appendId');
     expect(prompt).toContain('Assignment:\nBuild the parser');
   });
 });

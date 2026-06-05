@@ -33,6 +33,8 @@ Renderer UI actions use the typed `coordinator_ui_tool_call` IPC path instead. T
 accepts or exposes coordinator bearer tokens; it validates the coordinator run, verifies the
 coordinator task owns the run, and requires the task-command lease for mutating actions such as
 `spawn_subtask`, `spawn_many`, `start_workflow`, `send_prompt`, and `close_task`.
+Adaptive workflow mutation through `append_workflow_steps` is reserved for coordinator-agent tool
+calls; the renderer does not expose it as a direct UI action.
 
 The helper command is exported to agents as `PARALLEL_CODE_COORDINATOR_TOOL` when a reachable
 tool-call URL exists. The credential path is exported as `PARALLEL_CODE_COORDINATOR_CREDENTIAL`,
@@ -44,9 +46,10 @@ that subtasks report readiness through coordinator tools. This keeps Codex and c
 agents aligned without importing upstream MCP runtime assumptions.
 
 Workflow state is also backend owned. A workflow snapshot records the template, optional normalized
-`steps[]` spec, execution policy, stages, lanes, typed results, verifier verdicts, and journal
-entries. The renderer only projects that state into the compact rail; it does not decide stage
-advancement, result ownership, retry, timeout, or verification outcomes.
+`steps[]` spec, append audit entries, execution policy, stages, lanes, typed results, verifier
+verdicts, and journal entries. The renderer only projects that state into the compact rail; it does
+not decide stage advancement, result ownership, retry, timeout, append validity, or verification
+outcomes.
 
 `electron/coordinator/workflow-executor.ts` owns the workflow state machine. It compiles fixed
 templates and custom `steps[]` payloads into the same stage/lane representation, starts ready
@@ -68,6 +71,13 @@ The current tool surface is intentionally small and explicit:
   custom `steps[]` spec. Current templates are `custom`, `map_reduce`, and `adversarial_review`.
   Template workflows are compiled into the same normalized spec shape as custom DAG workflows.
   Caller-supplied specs are accepted only with the `custom` template.
+- `append_workflow_steps` lets the coordinator task or a workflow-lane subtask append new `steps[]`
+  to an existing source-spec-backed workflow. The payload includes `workflowId`, `appendId`,
+  `steps`, optional `reason`, and optional `laneId` for disambiguating subtask ownership. Appends
+  are append-only and idempotent by `appendId`; repeated calls with the same steps return the
+  existing append, while reusing an `appendId` for different steps is rejected. Appended steps are
+  normalized against the whole workflow graph before any state changes, and ready appended stages
+  are reconciled immediately.
 - `send_prompt` queues a prompt for a run-owned subtask.
 - `wait_for_idle` waits for a target subtask to reach backend `idle-at-prompt` supervision.
 - `get_task_output` returns a capped tail of the target subtask's backend scrollback.
@@ -80,21 +90,21 @@ The current tool surface is intentionally small and explicit:
 - `land_self` validates and lands a git-backed subtask into the coordinator project root.
 - `close_task` lets the coordinator explicitly clean up a run-owned subtask without landing it.
 
-Subtasks can call only subtask-owned tools such as `signal_done`, `submit_result`, and `land_self`.
-The coordinator task is the only caller allowed to list, inspect, spawn, start workflows, prompt,
-wait on, or close subtasks.
+Subtasks can call only subtask-owned tools such as `signal_done`, `submit_result`, `land_self`, and
+`append_workflow_steps` for lanes they own. The coordinator task is the only caller allowed to list,
+inspect, spawn, start workflows, prompt, wait on, or close subtasks.
 
 ## Compact UI
 
 The coordinator task panel renders a compact rail instead of asking users to type raw helper
 commands. The rail shows run health, active subtask capacity, pending prompt pressure, attention
 counts, compact workflow timelines, and one chip per hidden subtask. Workflow timelines show the
-template, result/finding counts, verdict counts, latest activity, and one marker per stage. Clicking
-a workflow opens a compact passive drilldown with latest journal entries, failed/blocked lane
-reasons, submitted result summaries, finding previews, and verifier verdict counts. The timeline
-and drilldown are projections of backend state, not an alternate workflow engine. Chips are sorted
-by attention first, so blocked, failed, landing, or ready-for-review subtasks stay visible before
-healthy running work.
+template, result/finding counts, append count, verdict counts, latest activity, and one marker per
+stage. Clicking a workflow opens a compact passive drilldown with step and append counts, latest
+journal entries, failed/blocked lane reasons, submitted result summaries, finding previews, and
+verifier verdict counts. The timeline and drilldown are projections of backend state, not an
+alternate workflow engine. Chips are sorted by attention first, so blocked, failed, landing, or
+ready-for-review subtasks stay visible before healthy running work.
 
 Clicking a chip opens a small anchored inspector with output tail, diff, metadata, follow-up, wait,
 ask-to-land, and close controls. The `+` button opens a compact spawn form for a new hidden subtask.
@@ -145,6 +155,16 @@ dependencies, dependency cycles, missing verifier sources, empty fanout/verifier
 agent launch configs, over-cap lane counts including implicit synthesis and template follow-up
 lanes, invalid timeout/retry policy, oversized payloads, and unsupported spec versions.
 
+Appended workflow steps use the same validation rules against `existing steps + appended steps`.
+Existing steps, stages, lanes, results, and verdicts are never rewritten or reordered. New step IDs
+must be globally unique, new dependency and source references may point to either existing or newly
+appended steps, and explicit lane dedupe keys must not collide with existing or appended planned
+lanes. Blocked, cancelled, failed, and stale-restored workflows reject appends. Running workflows
+can grow in place, and completed workflows can be reopened by a valid append; the backend clears the
+old completion marker, records a `workflow-steps-appended` journal entry, refreshes execution
+state, and immediately reconciles ready stages. Workflow-lane subtasks must append before they
+submit a terminal result.
+
 Retry and timeout policy is enforced by the backend executor and driven by the coordinator runtime
 scheduler. Timed-out lanes become terminal, queued prompts for that lane are cancelled, retry lanes
 are admitted only after their backoff and while retry budget and lane caps remain, and cancelled or
@@ -163,10 +183,10 @@ Coordinator work should prefer browser-free tests first:
 - service tests for credentials, token lookup, revocation, and persistence
 - tool-gateway tests for hidden spawn, prompt serialization, prompt retry, authorization, tool
   payload validation, renderer action authorization, output/diff caps, idle waits, workflow
-  advancement, typed result submission, partial lane failure, typed verifier verdicts, cleanup
-  propagation, and landing cleanup
+  advancement, adaptive step appends, typed result submission, partial lane failure, typed verifier
+  verdicts, cleanup propagation, and landing cleanup
 - app projection tests for coordinator rail summaries, attention ordering, prompt beads, landing
-  labels, workflow timelines, and legal actions
+  labels, workflow timelines, append activity, and legal actions
 - Solid tests for the compact coordinator rail, workflow timeline, peek inspector, prompt sending,
   and spawn form
 - server-state bootstrap tests for coordinator snapshots and live events
@@ -175,8 +195,8 @@ Coordinator work should prefer browser-free tests first:
   browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
   actions, task-command leases, duplicate spawn dedupe, custom agent launch config, prompt delivery
   and cancellation, git-only tool rejection for non-git runs, workflow start/result/advance,
-  invalid spec rejection, spec-backed fanout/verify/synthesize workflows, cleanup, stale restore,
-  and websocket replay
+  adaptive append/result/advance, invalid spec rejection, spec-backed fanout/verify/synthesize
+  workflows, cleanup, stale restore, and websocket replay
 
 Use browser canaries only for actual browser UI creation, rendering, or client-runtime behavior that
 the browser-less route tests cannot exercise.

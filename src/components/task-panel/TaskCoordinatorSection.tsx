@@ -718,6 +718,9 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                             style={{ color: theme.warning }}
                           >{`!${workflow.findingCount}`}</span>
                         </Show>
+                        <Show when={workflow.appendCount > 0}>
+                          <span style={{ color: theme.accent }}>{`+${workflow.appendCount}`}</span>
+                        </Show>
                         <For each={workflow.stages}>
                           {(stage) => (
                             <span
@@ -966,11 +969,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                   <div
                     style={{
                       display: 'grid',
-                      'grid-template-columns': 'repeat(4, minmax(0, 1fr))',
+                      'grid-template-columns': 'repeat(3, minmax(0, 1fr))',
                       gap: '6px',
                       'font-size': sf(11),
                     }}
                   >
+                    <span>{`Steps ${workflow().stepCount}`}</span>
+                    <span>{`Appends ${workflow().appendCount}`}</span>
                     <span>{`Results ${workflow().resultCount}`}</span>
                     <span>{`Findings ${workflow().findingCount}`}</span>
                     <span>{`Failed ${workflow().failedLaneCount}`}</span>

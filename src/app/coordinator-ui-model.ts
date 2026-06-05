@@ -30,7 +30,7 @@ export type CoordinatorUiActionId =
 
 type CoordinatorUiToolName = Exclude<
   CoordinatorToolName,
-  'land_self' | 'signal_done' | 'submit_result'
+  'append_workflow_steps' | 'land_self' | 'signal_done' | 'submit_result'
 >;
 
 export interface CoordinatorUiAction {
@@ -132,6 +132,7 @@ export interface CoordinatorWorkflowVerdictSummaryView {
 
 export interface CoordinatorWorkflowTimelineView {
   activeLaneCount: number;
+  appendCount: number;
   activityCount: number;
   activityPreview: CoordinatorWorkflowActivityView[];
   blockedReason?: string;
@@ -145,6 +146,7 @@ export interface CoordinatorWorkflowTimelineView {
   resultPreview: CoordinatorWorkflowResultView[];
   resultCount: number;
   stages: CoordinatorWorkflowStageView[];
+  stepCount: number;
   status: CoordinatorWorkflowSnapshot['status'];
   statusLabel: string;
   stale: boolean;
@@ -636,7 +638,7 @@ function getWorkflowActivityTone(kind: string): CoordinatorAttentionLevel {
   if (kind.includes('result') || kind.includes('completed') || kind.includes('verdict')) {
     return 'success';
   }
-  if (kind.includes('running') || kind.includes('spawning')) {
+  if (kind.includes('appended') || kind.includes('running') || kind.includes('spawning')) {
     return 'info';
   }
 
@@ -734,27 +736,28 @@ function createWorkflowTimelineView(
       lane.status === 'stale-after-restore',
   );
   const activityPreview = createWorkflowActivityViews(workflow);
+  const blockedReason = workflow.execution?.blockedReason;
+  const latestActivityLabel = activityPreview[0]?.message;
   const resultPreview = createWorkflowResultViews(workflow);
+  const stepCount = workflow.sourceSpec?.steps.length ?? workflow.stages.length;
 
   return {
     activeLaneCount,
+    appendCount: workflow.stepAppends?.length ?? 0,
     activityCount: workflow.journal.length,
     activityPreview,
-    ...(workflow.execution?.blockedReason !== undefined
-      ? { blockedReason: workflow.execution.blockedReason }
-      : {}),
+    ...(blockedReason !== undefined ? { blockedReason } : {}),
     failedLaneCount: failedLanes.length,
     ...(failedLanes[0]?.failure !== undefined ? { failedLaneReason: failedLanes[0].failure } : {}),
     findingCount,
     hasMoreActivity: workflow.journal.length > activityPreview.length,
     hasMoreResults: workflow.results.length > resultPreview.length,
     id: workflow.id,
-    ...(activityPreview[0] !== undefined
-      ? { latestActivityLabel: activityPreview[0].message }
-      : {}),
+    ...(latestActivityLabel !== undefined ? { latestActivityLabel } : {}),
     resultPreview,
     resultCount: workflow.results.length,
     stages: workflow.stages.map((stage) => createWorkflowStageView(workflow, stage)),
+    stepCount,
     status: workflow.status,
     statusLabel: humanizeStatus(workflow.status),
     stale: workflow.status === 'stale-after-restore',

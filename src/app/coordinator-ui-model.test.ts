@@ -139,6 +139,7 @@ function createWorkflow(
       },
     ],
     runId: overrides.runId ?? 'run-1',
+    ...(overrides.sourceSpec !== undefined ? { sourceSpec: overrides.sourceSpec } : {}),
     stages: overrides.stages ?? [
       {
         createdAt: now,
@@ -165,6 +166,7 @@ function createWorkflow(
     ],
     startedAt: overrides.startedAt ?? now,
     status: overrides.status ?? 'waiting-for-results',
+    ...(overrides.stepAppends !== undefined ? { stepAppends: overrides.stepAppends } : {}),
     template: overrides.template ?? 'map_reduce',
     title: overrides.title ?? 'Latency review',
     updatedAt: overrides.updatedAt ?? now,
@@ -355,6 +357,71 @@ describe('coordinator UI model', () => {
       laneLabel: 'Backend',
       statusLabel: 'Completed',
       summary: 'Mapped backend risk.',
+    });
+  });
+
+  it('projects appended workflow steps and append activity', () => {
+    const run = createRun({
+      workflows: [
+        createWorkflow({
+          journal: [
+            {
+              at: now + 1,
+              kind: 'workflow-steps-appended',
+              laneId: 'lane-map',
+              message: 'Appended 1 workflow step: followup.',
+            },
+          ],
+          sourceSpec: {
+            steps: [
+              {
+                dependsOn: [],
+                id: 'map',
+                kind: 'worker',
+                lanes: [],
+                name: 'Map',
+                resultSourceStepIds: [],
+                sourceStepIds: [],
+                verifiers: [],
+              },
+              {
+                dependsOn: ['map'],
+                id: 'followup',
+                kind: 'worker',
+                lanes: [],
+                name: 'Followup',
+                resultSourceStepIds: [],
+                sourceStepIds: [],
+                verifiers: [],
+              },
+            ],
+            version: 1,
+          },
+          stepAppends: [
+            {
+              appendId: 'append-followup',
+              createdAt: now + 1,
+              payloadHash: 'hash',
+              sourceLaneId: 'lane-map',
+              sourceTaskId: 'task-map',
+              stepIds: ['followup'],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const [workflow] = createCoordinatorRunView(run).workflows;
+
+    expect(workflow).toMatchObject({
+      appendCount: 1,
+      stepCount: 2,
+    });
+    expect(workflow?.activityPreview[0]).toMatchObject({
+      kind: 'workflow-steps-appended',
+      laneLabel: 'Backend',
+      message: 'Appended 1 workflow step: followup.',
+      tone: 'info',
     });
   });
 
