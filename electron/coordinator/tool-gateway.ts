@@ -1083,10 +1083,13 @@ function getLatestPromptSnapshot(
   );
 }
 
-function getActivePromptDeliveryCountForRun(runId: string): number {
+function countReservedPromptDeliveryTargets(
+  keys: Iterable<string>,
+  runId: string | null = null,
+): number {
   let count = 0;
-  for (const key of activePromptDeliveryKeys) {
-    if (key.startsWith(`${runId}:`)) {
+  for (const key of keys) {
+    if (runId === null || key.startsWith(`${runId}:`)) {
       count += 1;
     }
   }
@@ -1094,10 +1097,31 @@ function getActivePromptDeliveryCountForRun(runId: string): number {
   return count;
 }
 
-function hasPromptDeliveryCapacity(runId: string): boolean {
+function getReservedPromptDeliveryTargetKeys(excludedTargetKey: string | null = null): Set<string> {
+  const reservedTargetKeys = new Set(promptDeliveryChainsByTargetKey.keys());
+  if (excludedTargetKey !== null) {
+    reservedTargetKeys.delete(excludedTargetKey);
+  }
+
+  return reservedTargetKeys;
+}
+
+function hasGlobalPromptDeliveryCapacity(): boolean {
   return (
-    activePromptDeliveryKeys.size < COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal &&
-    getActivePromptDeliveryCountForRun(runId) <
+    countReservedPromptDeliveryTargets(getReservedPromptDeliveryTargetKeys()) <
+    COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal
+  );
+}
+
+function hasPromptDeliveryCapacity(
+  runId: string,
+  excludedTargetKey: string | null = null,
+): boolean {
+  const reservedTargetKeys = getReservedPromptDeliveryTargetKeys(excludedTargetKey);
+  return (
+    countReservedPromptDeliveryTargets(reservedTargetKeys) <
+      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal &&
+    countReservedPromptDeliveryTargets(reservedTargetKeys, runId) <
       COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun
   );
 }
@@ -1411,7 +1435,7 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
 
       void deliverCoordinatorPromptWithAdmission(context, prompt);
 
-      if (activePromptDeliveryKeys.size >= COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal) {
+      if (!hasGlobalPromptDeliveryCapacity()) {
         return;
       }
     }
@@ -2685,7 +2709,7 @@ async function deliverCoordinatorPrompt(
   if (activePromptDeliveryKeys.has(key)) {
     return prompt;
   }
-  if (!hasPromptDeliveryCapacity(prompt.runId)) {
+  if (!hasPromptDeliveryCapacity(prompt.runId, getPromptDeliveryTargetKey(prompt))) {
     scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
     return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
       earliestDeliveryAt: nextRetryAt,

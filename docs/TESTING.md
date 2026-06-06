@@ -119,6 +119,10 @@ For coordinator-mode work:
 - prove seeded initial assignment separately from readiness-gated follow-up prompt delivery
 - prove Codex readiness detection from captured visible-tail fixtures instead of only shell prompts
 - prove direct and scheduled prompt delivery cannot interleave writes to the same target task
+- prove prompt-delivery admission caps against queued sweep retries and direct multi-target sends;
+  counting must be per active target delivery chain rather than per queued request
+- prove prompts block cleanly on `awaiting-input` and fail cleanly if task-command control is lost
+  mid-write
 - prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
   runs
 - prove renderer coordinator actions do not expose bearer tokens, reject peer clients, and require

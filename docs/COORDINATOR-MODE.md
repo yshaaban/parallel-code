@@ -151,7 +151,9 @@ Prompt queues are bounded per target subtask, and stable prompt/spawn dedupe key
 creating additional hidden tasks or queue entries. Subtask cleanup cancels queued prompts and
 open workflow lanes, then revokes the subtask credential before any later retry can write to the
 PTY. Prompt writes are also serialized per target subtask, so direct tool calls and scheduled
-retries cannot interleave bytes in the same terminal.
+retries cannot interleave bytes in the same terminal. Prompt-delivery admission is tracked per
+active target delivery chain rather than per queued request, so a second prompt already waiting
+behind the same terminal does not consume another global or per-run delivery slot.
 
 `spawn_subtask` accepts a direct command plus optional args, environment, and skip-permission args.
 This is the coordinator-compatible path for Codex and for custom terminal agents. Docker runner
@@ -210,7 +212,8 @@ Coordinator work should prefer browser-free tests first:
 - runtime tests for replayable state and restored stale status
 - service tests for credentials, token lookup, revocation, and persistence
 - tool-gateway tests for hidden spawn, prompt serialization, prompt retry, authorization, tool
-  payload validation, renderer action authorization, output/diff caps, idle waits, workflow
+  payload validation, renderer action authorization, output/diff caps, idle waits, queued and
+  direct prompt admission caps, `awaiting-input` blocking, mid-write lease-loss failure, workflow
   advancement, adaptive step appends, decision-lane workflow actions, typed result submission,
   partial lane failure, typed verifier verdicts, cleanup propagation, and landing cleanup
 - app projection tests for coordinator rail summaries, attention ordering, prompt beads, landing
@@ -223,9 +226,10 @@ Coordinator work should prefer browser-free tests first:
   browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
   actions, task-command leases, duplicate spawn dedupe, custom agent launch config, prompt delivery
   and cancellation, seeded initial assignment, follow-up prompt rejection for disallowed subtasks,
-  Codex readiness detection, git-only tool rejection for non-git runs, workflow start/result/advance,
-  adaptive append/result/advance, decision-lane workflow actions, invalid spec rejection,
-  spec-backed fanout/verify/synthesize workflows, cleanup, stale restore, and websocket replay
+  `awaiting-input` blocking, Codex readiness detection, git-only tool rejection for non-git runs,
+  workflow start/result/advance, adaptive append/result/advance, decision-lane workflow actions,
+  invalid spec rejection, spec-backed fanout/verify/synthesize workflows, cleanup, stale restore,
+  and websocket replay
 
 Use browser canaries only for actual browser UI creation, rendering, or client-runtime behavior that
 the browser-less route tests cannot exercise.

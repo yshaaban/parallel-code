@@ -1240,6 +1240,32 @@ describe('browser-less coordinator E2E', () => {
     );
   });
 
+  it('blocks follow-up prompts while the target TUI is awaiting input', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
+    mocks.writes.length = 0;
+    setAgentSupervision(subtask.agentId, 'awaiting-input');
+
+    const blockedResponse = await harness.callCoordinatorTool({
+      callId: 'send-while-awaiting-input',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'send_prompt',
+      payload: {
+        targetTaskId: subtask.taskId,
+        text: 'Please continue',
+      },
+    });
+
+    expect(getToolResult<CoordinatorPromptRequestSnapshot>(blockedResponse)).toMatchObject({
+      status: 'blocked-by-question',
+      targetTaskId: subtask.taskId,
+      waitingReason: 'agent-awaiting-input',
+    });
+    expect(mocks.writes).toEqual([]);
+  });
+
   it('seeds the default Codex assignment at spawn and reports the startup contract in list_tasks', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
     const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);

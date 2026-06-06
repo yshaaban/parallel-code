@@ -75,6 +75,7 @@ import {
 } from '../ipc/task-command-leases.js';
 import {
   addCoordinatorSubtask,
+  enqueueCoordinatorPrompt,
   getCoordinatorRun,
   resetCoordinatorRuntimeForTests,
   updateCoordinatorRunStatus,
@@ -623,6 +624,209 @@ describe('coordinator tool gateway', () => {
     await Promise.all([first, second]);
 
     expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toContain('Third prompt\r');
+  });
+
+  it('applies prompt delivery admission caps during queued prompt sweeps', async () => {
+    vi.useFakeTimers();
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const multilinePrompt = 'First line\nSecond line';
+    startCoordinatorPromptDeliveryRuntime(context);
+    for (let index = 0; index < 3; index += 1) {
+      addCoordinatorSubtask({
+        agentId: `agent-child-${index}`,
+        assignment: `Do the work ${index}`,
+        parentCoordinatorTaskId: 'task-coordinator',
+        runId: result.run.id,
+        status: 'running',
+        taskId: `task-child-${index}`,
+        toolTokenId: `token-child-${index}`,
+        worktreePath: `/repo/task-child-${index}`,
+      });
+      enqueueCoordinatorPrompt({
+        kind: 'follow-up',
+        runId: result.run.id,
+        sourceTaskId: 'task-coordinator',
+        targetAgentId: `agent-child-${index}`,
+        targetTaskId: `task-child-${index}`,
+        text: multilinePrompt,
+      });
+    }
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 1,
+      isShell: false,
+      taskId: agentId.replace('agent-', 'task-'),
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockImplementation((agentId: string) =>
+      createSupervisionSnapshot('idle-at-prompt', {
+        agentId,
+        taskId: agentId.replace('agent-', 'task-'),
+      }),
+    );
+
+    for (const listener of mocks.supervisionListeners) {
+      listener({ kind: 'snapshot' });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(
+      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun,
+    );
+    expect(getCoordinatorRun(result.run.id)?.promptQueue).toEqual([
+      expect.objectContaining({ status: 'delivering', targetTaskId: 'task-child-0' }),
+      expect.objectContaining({ status: 'delivering', targetTaskId: 'task-child-1' }),
+      expect.objectContaining({ status: 'queued', targetTaskId: 'task-child-2' }),
+    ]);
+
+    await vi.runAllTimersAsync();
+
+    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toContain(
+      '\x1B[200~First line\nSecond line\x1B[201~',
+    );
+    expect(getCoordinatorRun(result.run.id)?.promptQueue).toEqual([
+      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-0' }),
+      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-1' }),
+      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-2' }),
+    ]);
+  });
+
+  it('blocks prompt delivery while the target agent is awaiting input', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-child',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    });
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('awaiting-input'),
+    );
+
+    const response = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'call-awaiting-input',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'send_prompt',
+        payload: {
+          targetTaskId: 'task-child',
+          text: 'Please continue',
+        },
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      status: 'blocked-by-question',
+      waitingReason: 'agent-awaiting-input',
+    });
+    expect(mocks.writeToAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('fails prompt delivery when the task command lease is lost mid-write', async () => {
+    vi.useFakeTimers();
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-child',
+      worktreePath: '/repo/task-child',
+    });
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-child',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    });
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+    let didStealLease = false;
+    mocks.writeToAgentMock.mockImplementation(() => {
+      if (didStealLease) {
+        return;
+      }
+      didStealLease = true;
+      acquireTaskCommandLease(
+        'task-child',
+        'intruder-client',
+        'intruder-owner',
+        'interrupt prompt delivery',
+        true,
+      );
+    });
+
+    const responsePromise = executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'call-lose-lease',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'send_prompt',
+        payload: {
+          targetTaskId: 'task-child',
+          text: 'First line\nSecond line',
+        },
+      },
+    );
+
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    const response = await responsePromise;
+
+    expect(response.result).toMatchObject({
+      status: 'failed',
+      waitingReason: 'Task command lease was lost during prompt delivery',
+    });
+    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not overwrite prompt cancellation after an in-flight write finishes', async () => {
