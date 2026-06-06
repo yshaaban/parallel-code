@@ -46,17 +46,17 @@ that subtasks report readiness through coordinator tools. This keeps Codex and c
 agents aligned without importing upstream MCP runtime assumptions.
 
 Workflow state is also backend owned. A workflow snapshot records the template, optional normalized
-`steps[]` spec, append audit entries, execution policy, stages, lanes, typed results, verifier
-verdicts, and journal entries. The renderer only projects that state into the compact rail; it does
-not decide stage advancement, result ownership, retry, timeout, append validity, or verification
-outcomes.
+`steps[]` spec, append policy, append audit entries, recorded expansions, execution policy, stages,
+lanes, typed results, verifier verdicts, and sequenced journal entries. The renderer only projects
+that state into the compact rail; it does not decide stage advancement, result ownership, retry,
+timeout, append validity, or verification outcomes.
 
 `electron/coordinator/workflow-executor.ts` owns the workflow state machine. It compiles fixed
 templates and custom `steps[]` payloads into the same stage/lane representation, starts ready
 dependency stages, records timeout/retry/cancel execution state, aggregates typed verifier
-verdicts, and writes replayable journal entries. `electron/coordinator/tool-gateway.ts` remains the
-authorization, transport, hidden-spawn, prompt-delivery, and landing adapter; it does not own the
-DAG scheduler.
+verdicts, applies decision-lane workflow actions into append-only graph mutation, and writes
+replayable journal entries. `electron/coordinator/tool-gateway.ts` remains the authorization,
+transport, hidden-spawn, prompt-delivery, and landing adapter; it does not own the DAG scheduler.
 
 ## Tools
 
@@ -87,6 +87,10 @@ The current tool surface is intentionally small and explicit:
   commands run, risks, status, confidence, and optional verifier verdict metadata. The backend binds
   the result to the lane owned by the calling subtask, assigns stable finding IDs when omitted,
   records typed verdict snapshots, and advances dependent stages when the stage is complete.
+  Decision lanes may also include `metadata.workflowActions` with structured append or terminal
+  actions. The backend validates those actions, converts append actions into new `steps[]`, records
+  the resulting expansion, and rejects invalid or out-of-policy mutations before the workflow
+  changes.
 - `land_self` validates and lands a git-backed subtask into the coordinator project root.
 - `close_task` lets the coordinator explicitly clean up a run-owned subtask without landing it.
 
@@ -99,11 +103,12 @@ inspect, spawn, start workflows, prompt, wait on, or close subtasks.
 The coordinator task panel renders a compact rail instead of asking users to type raw helper
 commands. The rail shows run health, active subtask capacity, pending prompt pressure, attention
 counts, compact workflow timelines, and one chip per hidden subtask. Workflow timelines show the
-template, result/finding counts, append count, verdict counts, latest activity, and one marker per
-stage. Clicking a workflow opens a compact passive drilldown with step and append counts, latest
-journal entries, failed/blocked lane reasons, submitted result summaries, finding previews, and
-verifier verdict counts. The timeline and drilldown are projections of backend state, not an
-alternate workflow engine. Chips are sorted by attention first, so blocked, failed, landing, or
+template, result/finding counts, append and expansion counts, verdict counts, latest activity, and
+one marker per stage. Clicking a workflow opens a compact passive drilldown with step, append,
+expansion, retry, timeout, and skipped-stage counts plus latest journal entries, failed/blocked
+lane reasons, completion reasons, submitted result summaries, finding previews, and verifier
+verdict counts. The timeline and drilldown are projections of backend state, not an alternate
+workflow engine. Chips are sorted by attention first, so blocked, failed, landing, or
 ready-for-review subtasks stay visible before healthy running work.
 
 Clicking a chip opens a small anchored inspector with output tail, diff, metadata, follow-up, wait,
@@ -144,6 +149,7 @@ Agent launch secrets are not persisted inside workflow snapshots.
 Custom workflow specs are intentionally constrained data, not executable scripts. Supported step
 kinds are:
 
+- `decision`: one decision lane that may append validated follow-up steps or terminate the workflow.
 - `fanout`: many named worker lanes under one dependency step.
 - `worker`: one worker lane.
 - `verify`: verifier lanes that evaluate findings or results from prior steps and submit typed
@@ -163,7 +169,8 @@ lanes. Blocked, cancelled, failed, and stale-restored workflows reject appends. 
 can grow in place, and completed workflows can be reopened by a valid append; the backend clears the
 old completion marker, records a `workflow-steps-appended` journal entry, refreshes execution
 state, and immediately reconciles ready stages. Workflow-lane subtasks must append before they
-submit a terminal result.
+submit a terminal result. Decision-lane `metadata.workflowActions` go through the same append-only
+validation path and are capped by per-workflow append and per-result action limits.
 
 Retry and timeout policy is enforced by the backend executor and driven by the coordinator runtime
 scheduler. Timed-out lanes become terminal, queued prompts for that lane are cancelled, retry lanes
@@ -183,8 +190,8 @@ Coordinator work should prefer browser-free tests first:
 - service tests for credentials, token lookup, revocation, and persistence
 - tool-gateway tests for hidden spawn, prompt serialization, prompt retry, authorization, tool
   payload validation, renderer action authorization, output/diff caps, idle waits, workflow
-  advancement, adaptive step appends, typed result submission, partial lane failure, typed verifier
-  verdicts, cleanup propagation, and landing cleanup
+  advancement, adaptive step appends, decision-lane workflow actions, typed result submission,
+  partial lane failure, typed verifier verdicts, cleanup propagation, and landing cleanup
 - app projection tests for coordinator rail summaries, attention ordering, prompt beads, landing
   labels, workflow timelines, append activity, and legal actions
 - Solid tests for the compact coordinator rail, workflow timeline, peek inspector, prompt sending,
@@ -195,8 +202,8 @@ Coordinator work should prefer browser-free tests first:
   browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
   actions, task-command leases, duplicate spawn dedupe, custom agent launch config, prompt delivery
   and cancellation, git-only tool rejection for non-git runs, workflow start/result/advance,
-  adaptive append/result/advance, invalid spec rejection, spec-backed fanout/verify/synthesize
-  workflows, cleanup, stale restore, and websocket replay
+  adaptive append/result/advance, decision-lane workflow actions, invalid spec rejection,
+  spec-backed fanout/verify/synthesize workflows, cleanup, stale restore, and websocket replay
 
 Use browser canaries only for actual browser UI creation, rendering, or client-runtime behavior that
 the browser-less route tests cannot exercise.
