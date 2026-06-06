@@ -19,6 +19,9 @@ describe('coordinator instructions', () => {
     );
     expect(prompt).toContain('Use start_workflow for backend-owned map-reduce');
     expect(prompt).toContain('Use append_workflow_steps only to append validated follow-up steps');
+    expect(prompt).toContain(
+      'Use decision workflow stages when one lane should choose the next append-only steps',
+    );
     expect(prompt).toContain('User task:\nInvestigate latency');
   });
 
@@ -30,6 +33,7 @@ describe('coordinator instructions', () => {
     );
     expect(prompt).toContain('call submit_result with summary, findings, evidence');
     expect(prompt).toContain('call append_workflow_steps with a stable appendId');
+    expect(prompt).toContain('metadata.workflowActions on submit_result');
     expect(prompt).toContain('Assignment:\nBuild the parser');
   });
 });

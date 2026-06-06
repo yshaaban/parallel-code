@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { COORDINATOR_LIMITS } from '../../src/domain/coordinator.js';
+import { normalizeCoordinatorWorkflowDynamicActions } from '../../src/domain/coordinator-workflow-spec.js';
 import {
   addCoordinatorWorkflowResult,
   addCoordinatorWorkflowLane,
@@ -571,6 +572,347 @@ describe('coordinator workflow executor', () => {
     expect(workflow?.sourceSpec?.steps.map((step) => step.id)).toEqual(['first']);
     expect(workflow?.stages.map((stage) => stage.id)).toEqual(['first']);
     expect(workflow?.stepAppends).toBeUndefined();
+  });
+
+  it('applies decision-lane append actions and records workflow expansions', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Decide the next follow-up.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [
+          { id: 'scout', kind: 'worker', name: 'Scout' },
+          {
+            dependsOn: ['scout'],
+            id: 'decide',
+            kind: 'decision',
+            name: 'Decide',
+            sourceStepIds: ['scout'],
+          },
+        ],
+      },
+      template: 'custom',
+      title: 'Decision workflow',
+    });
+
+    const initialWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    if (!initialWorkflow?.lanes[0]) {
+      throw new Error('Expected initial scout lane');
+    }
+    completeWorkflowLane(initialWorkflow, initialWorkflow.lanes[0].id);
+    await advanceCoordinatorWorkflowExecution({
+      laneId: initialWorkflow.lanes[0].id,
+      runId: run.id,
+      spawnLane,
+      workflowId: started.workflow.id,
+    });
+
+    const decisionWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    const decisionLane = decisionWorkflow?.lanes.find((lane) => lane.stageId === 'decide');
+    if (!decisionWorkflow || !decisionLane?.taskId) {
+      throw new Error('Expected decision lane');
+    }
+
+    const result = addCoordinatorWorkflowResult({
+      result: {
+        agentId: decisionLane.agentId ?? 'agent-decision',
+        commandsRun: [],
+        evidence: [],
+        findings: [],
+        laneId: decisionLane.id,
+        risks: [],
+        stageId: decisionLane.stageId,
+        status: 'completed',
+        summary: 'Append a focused follow-up.',
+        taskId: decisionLane.taskId,
+        workflowId: decisionWorkflow.id,
+      },
+      runId: run.id,
+      workflowId: decisionWorkflow.id,
+    });
+    updateCoordinatorWorkflowLane(run.id, decisionWorkflow.id, decisionLane.id, {
+      completedAt: Date.now(),
+      resultId: result.id,
+      status: 'completed',
+    });
+
+    const actions = normalizeCoordinatorWorkflowDynamicActions(
+      [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+      {
+        limits: {
+          assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
+          maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
+          maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
+          maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+          workflowMaxLaneTimeoutMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+        },
+      },
+    );
+
+    const advanced = await advanceCoordinatorWorkflowExecution({
+      laneId: decisionLane.id,
+      result,
+      runId: run.id,
+      sourceTaskId: decisionLane.taskId,
+      spawnLane,
+      workflowActions: actions,
+      workflowId: decisionWorkflow.id,
+    });
+
+    expect(advanced.expansions).toEqual([
+      expect.objectContaining({
+        actions: [
+          expect.objectContaining({
+            kind: 'append_worker',
+            stepIds: ['followup'],
+          }),
+        ],
+        sourceLaneId: decisionLane.id,
+        sourceResultId: result.id,
+      }),
+    ]);
+    expect(advanced.stepAppends).toEqual([
+      expect.objectContaining({
+        sourceLaneId: decisionLane.id,
+        stepIds: ['followup'],
+      }),
+    ]);
+    expect(advanced.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'decide', status: 'completed' }),
+        expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+      ]),
+    );
+  });
+
+  it('applies batched decision append actions atomically even when dependencies are out of order', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Decide the next follow-up.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [
+          { id: 'scout', kind: 'worker', name: 'Scout' },
+          {
+            dependsOn: ['scout'],
+            id: 'decide',
+            kind: 'decision',
+            name: 'Decide',
+            sourceStepIds: ['scout'],
+          },
+        ],
+      },
+      template: 'custom',
+      title: 'Decision workflow',
+    });
+
+    const initialWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    if (!initialWorkflow?.lanes[0]) {
+      throw new Error('Expected initial scout lane');
+    }
+    completeWorkflowLane(initialWorkflow, initialWorkflow.lanes[0].id);
+    await advanceCoordinatorWorkflowExecution({
+      laneId: initialWorkflow.lanes[0].id,
+      runId: run.id,
+      spawnLane,
+      workflowId: started.workflow.id,
+    });
+
+    const decisionWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    const decisionLane = decisionWorkflow?.lanes.find((lane) => lane.stageId === 'decide');
+    if (!decisionWorkflow || !decisionLane?.taskId) {
+      throw new Error('Expected decision lane');
+    }
+
+    const result = addCoordinatorWorkflowResult({
+      result: {
+        agentId: decisionLane.agentId ?? 'agent-decision',
+        commandsRun: [],
+        evidence: [],
+        findings: [],
+        laneId: decisionLane.id,
+        risks: [],
+        stageId: decisionLane.stageId,
+        status: 'completed',
+        summary: 'Append dependent follow-up work.',
+        taskId: decisionLane.taskId,
+        workflowId: decisionWorkflow.id,
+      },
+      runId: run.id,
+      workflowId: decisionWorkflow.id,
+    });
+    updateCoordinatorWorkflowLane(run.id, decisionWorkflow.id, decisionLane.id, {
+      completedAt: Date.now(),
+      resultId: result.id,
+      status: 'completed',
+    });
+
+    const actions = normalizeCoordinatorWorkflowDynamicActions(
+      [
+        {
+          dependsOn: ['followup'],
+          id: 'summary',
+          kind: 'append_synthesize',
+          name: 'Summary',
+          sourceStepIds: ['followup'],
+        },
+        {
+          dependsOn: ['decide'],
+          id: 'followup',
+          kind: 'append_worker',
+          name: 'Followup',
+        },
+      ],
+      {
+        limits: {
+          assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
+          maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
+          maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
+          maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+          workflowMaxLaneTimeoutMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+        },
+      },
+    );
+
+    const advanced = await advanceCoordinatorWorkflowExecution({
+      laneId: decisionLane.id,
+      result,
+      runId: run.id,
+      sourceTaskId: decisionLane.taskId,
+      spawnLane,
+      workflowActions: actions,
+      workflowId: decisionWorkflow.id,
+    });
+
+    expect(advanced.stepAppends).toEqual([
+      expect.objectContaining({
+        appendId: `${result.id}:workflow-actions`,
+        stepIds: ['summary', 'followup'],
+      }),
+    ]);
+    expect(advanced.expansions).toEqual([
+      expect.objectContaining({
+        actions: [
+          expect.objectContaining({ actionId: `${result.id}:action:1`, stepIds: ['summary'] }),
+          expect.objectContaining({ actionId: `${result.id}:action:2`, stepIds: ['followup'] }),
+        ],
+      }),
+    ]);
+    expect(advanced.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'summary', status: 'pending' }),
+      ]),
+    );
+  });
+
+  it('lets decision lanes block the workflow and skip pending stages', async () => {
+    const run = createRun();
+    const spawnLane = createFakeSpawnLane();
+    const started = await startCoordinatorWorkflowExecution({
+      problem: 'Decide whether user input is required.',
+      runId: run.id,
+      spawnLane,
+      spec: {
+        steps: [
+          { id: 'scout', kind: 'worker', name: 'Scout' },
+          {
+            dependsOn: ['scout'],
+            id: 'decide',
+            kind: 'decision',
+            name: 'Decide',
+            sourceStepIds: ['scout'],
+          },
+          {
+            dependsOn: ['decide'],
+            id: 'followup',
+            kind: 'worker',
+            name: 'Followup',
+          },
+        ],
+      },
+      template: 'custom',
+      title: 'Blocking decision workflow',
+    });
+
+    const initialWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    if (!initialWorkflow?.lanes[0]) {
+      throw new Error('Expected initial scout lane');
+    }
+    completeWorkflowLane(initialWorkflow, initialWorkflow.lanes[0].id);
+    await advanceCoordinatorWorkflowExecution({
+      laneId: initialWorkflow.lanes[0].id,
+      runId: run.id,
+      spawnLane,
+      workflowId: started.workflow.id,
+    });
+
+    const decisionWorkflow = getCoordinatorWorkflow(run.id, started.workflow.id);
+    const decisionLane = decisionWorkflow?.lanes.find((lane) => lane.stageId === 'decide');
+    if (!decisionWorkflow || !decisionLane?.taskId) {
+      throw new Error('Expected decision lane');
+    }
+
+    const result = addCoordinatorWorkflowResult({
+      result: {
+        agentId: decisionLane.agentId ?? 'agent-decision',
+        commandsRun: [],
+        evidence: [],
+        findings: [],
+        laneId: decisionLane.id,
+        risks: [],
+        stageId: decisionLane.stageId,
+        status: 'blocked',
+        summary: 'Need a user decision before continuing.',
+        taskId: decisionLane.taskId,
+        workflowId: decisionWorkflow.id,
+      },
+      runId: run.id,
+      workflowId: decisionWorkflow.id,
+    });
+    updateCoordinatorWorkflowLane(run.id, decisionWorkflow.id, decisionLane.id, {
+      completedAt: Date.now(),
+      resultId: result.id,
+      status: 'blocked',
+    });
+
+    const actions = normalizeCoordinatorWorkflowDynamicActions(
+      [{ kind: 'mark_blocked', reason: 'Need user approval before the follow-up lane runs.' }],
+      {
+        limits: {
+          assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
+          maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
+          maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
+          maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
+          workflowMaxLaneTimeoutMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+        },
+      },
+    );
+
+    const advanced = await advanceCoordinatorWorkflowExecution({
+      laneId: decisionLane.id,
+      result,
+      runId: run.id,
+      sourceTaskId: decisionLane.taskId,
+      spawnLane,
+      workflowActions: actions,
+      workflowId: decisionWorkflow.id,
+    });
+
+    expect(advanced.status).toBe('blocked');
+    expect(advanced.execution?.blockedReason).toBe(
+      'Need user approval before the follow-up lane runs.',
+    );
+    expect(advanced.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'decide', status: 'blocked' }),
+        expect.objectContaining({ id: 'followup', status: 'skipped' }),
+      ]),
+    );
   });
 
   it('cancels active lanes and prevents later scheduling', async () => {

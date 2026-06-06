@@ -89,11 +89,14 @@ import {
   DEFAULT_WORKFLOW_AGENT_COMMAND,
   DEFAULT_WORKFLOW_CONCURRENCY,
   getCoordinatorWorkflowNextTickAt,
+  getWorkflowResultStatusForActions,
   normalizeWorkflowFindingsForResult,
+  readWorkflowDecisionActions,
   recordWorkflowVerdictsFromResult,
   resolveOwnedWorkflowLane as resolveExecutorOwnedWorkflowLane,
   startCoordinatorWorkflowExecution,
   tickCoordinatorWorkflowExecution,
+  validateWorkflowDecisionActionsForResult,
 } from './workflow-executor.js';
 import {
   addCoordinatorWorkflowLane,
@@ -1320,6 +1323,7 @@ function isTerminalWorkflowStageStatus(
     status === 'cancelled' ||
     status === 'completed' ||
     status === 'failed' ||
+    status === 'skipped' ||
     status === 'stale-after-restore'
   );
 }
@@ -2066,9 +2070,12 @@ async function submitCoordinatorWorkflowResult(
   if (workflow.results.length >= COORDINATOR_LIMITS.maxWorkflowResults) {
     throw new BadRequestError('Coordinator workflow result limit reached');
   }
+  const workflowActions = readWorkflowDecisionActions(workflow, lane, payload.metadata);
+  const resultStatus = getWorkflowResultStatusForActions(workflowActions, payload.status);
 
   const now = Date.now();
   const resultId = randomUUID();
+  validateWorkflowDecisionActionsForResult(workflow, lane, resultId, workflowActions);
   const result = addCoordinatorWorkflowResult({
     result: {
       agentId: subtask.agentId,
@@ -2088,7 +2095,7 @@ async function submitCoordinatorWorkflowResult(
       ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
       risks: payload.risks ?? [],
       stageId: lane.stageId,
-      status: payload.status ?? 'completed',
+      status: resultStatus,
       summary: payload.summary,
       taskId: subtask.taskId,
       workflowId: workflow.id,
@@ -2118,7 +2125,9 @@ async function submitCoordinatorWorkflowResult(
     result,
     workflow: await advanceCoordinatorWorkflowExecution({
       laneId: lane.id,
+      result,
       runId: run.id,
+      sourceTaskId: subtask.taskId,
       spawnLane: (currentWorkflow, stageId, lanePayload) =>
         spawnWorkflowLane(
           gateway,
@@ -2130,6 +2139,7 @@ async function submitCoordinatorWorkflowResult(
           stageId,
           lanePayload,
         ),
+      workflowActions,
       workflowId: workflow.id,
     }),
   };

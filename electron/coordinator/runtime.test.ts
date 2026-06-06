@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COORDINATOR_LIMITS } from '../../src/domain/coordinator.js';
 import {
   addCoordinatorSubtask,
+  appendCoordinatorWorkflowSteps,
   addCoordinatorWorkflowLane,
   addCoordinatorWorkflowResult,
   createCoordinatorWorkflow,
@@ -232,6 +233,138 @@ describe('coordinator runtime', () => {
       failure: 'Server restored coordinator workflow state without the live PTY session.',
       status: 'stale-after-restore',
     });
+  });
+
+  it('backfills legacy workflow append policy, program version, and journal sequence on restore', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    createCoordinatorWorkflow({
+      now: 1_010,
+      runId: run.id,
+      stages: [{ id: 'map', kind: 'map', name: 'Map' }],
+      template: 'map_reduce',
+      title: 'Legacy restore',
+    });
+    const persisted = getCoordinatorRuntimeState();
+    const legacyState = {
+      ...persisted,
+      runs: persisted.runs.map((entry) => ({
+        ...entry,
+        workflows: entry.workflows.map((workflow) => ({
+          ...workflow,
+          journal: workflow.journal.map(({ seq: _seq, ...journalEntry }) => journalEntry),
+          programVersion: undefined,
+          appendPolicy: undefined,
+        })),
+      })),
+    };
+
+    resetCoordinatorRuntimeForTests();
+    restoreCoordinatorRuntimeState(legacyState);
+
+    const restoredWorkflow = getCoordinatorRun(run.id)?.workflows[0];
+    expect(restoredWorkflow).toMatchObject({
+      appendPolicy: {
+        maxActionsPerDecision: COORDINATOR_LIMITS.maxWorkflowDecisionActionsPerResult,
+        maxStepAppends: COORDINATOR_LIMITS.maxWorkflowStepAppends,
+      },
+      programVersion: 2,
+    });
+    expect(restoredWorkflow?.journal[0]).toMatchObject({
+      kind: 'workflow-created',
+      seq: 1,
+    });
+  });
+
+  it('clears stale completion reason when appending to a completed workflow', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const workflow = createCoordinatorWorkflow({
+      execution: {
+        activeLaneCount: 0,
+        completionReason: 'Workflow already finished.',
+        lastTickAt: 1_010,
+        pendingRetryLaneIds: [],
+        readyStageIds: [],
+      },
+      now: 1_010,
+      runId: run.id,
+      sourceSpec: {
+        steps: [
+          {
+            dependsOn: [],
+            id: 'initial',
+            kind: 'worker',
+            lanes: [],
+            name: 'Initial',
+            resultSourceStepIds: [],
+            sourceStepIds: [],
+            verifiers: [],
+          },
+        ],
+        version: 1,
+      },
+      stages: [{ id: 'initial', kind: 'custom', name: 'Initial', status: 'completed' }],
+      status: 'completed',
+      template: 'custom',
+      title: 'Reopen workflow',
+    });
+
+    const reopened = appendCoordinatorWorkflowSteps({
+      append: {
+        appendId: 'append-1',
+        createdAt: 1_020,
+        payloadHash: 'hash-1',
+        sourceTaskId: 'task-coordinator',
+        stepIds: ['followup'],
+      },
+      now: 1_020,
+      runId: run.id,
+      sourceSpec: {
+        steps: [
+          {
+            dependsOn: [],
+            id: 'initial',
+            kind: 'worker',
+            lanes: [],
+            name: 'Initial',
+            resultSourceStepIds: [],
+            sourceStepIds: [],
+            verifiers: [],
+          },
+          {
+            dependsOn: ['initial'],
+            id: 'followup',
+            kind: 'worker',
+            lanes: [],
+            name: 'Followup',
+            resultSourceStepIds: [],
+            sourceStepIds: [],
+            verifiers: [],
+          },
+        ],
+        version: 1,
+      },
+      stages: [{ dependsOn: ['initial'], id: 'followup', kind: 'custom', name: 'Followup' }],
+      workflowId: workflow.id,
+    });
+
+    expect(reopened.status).toBe('running');
+    expect(reopened.completedAt).toBeUndefined();
+    expect(reopened.execution?.completionReason).toBeUndefined();
+    expect(reopened.stages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'followup', status: 'pending' })]),
+    );
   });
 
   it('bounds remembered tool-call results and evicts the oldest entries', () => {

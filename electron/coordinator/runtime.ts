@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   COORDINATOR_LIMITS,
+  COORDINATOR_WORKFLOW_PROGRAM_VERSION,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
   type CoordinatorBootstrapSnapshot,
@@ -20,6 +21,7 @@ import {
   type CoordinatorWorkflowJournalEntrySnapshot,
   type CoordinatorWorkflowLaneSnapshot,
   type CoordinatorWorkflowLaneStatus,
+  type CoordinatorWorkflowAppendPolicySnapshot,
   type CoordinatorWorkflowPolicySnapshot,
   type CoordinatorWorkflowResultSnapshot,
   type CoordinatorWorkflowStageKind,
@@ -103,6 +105,7 @@ interface UpdateCoordinatorPromptPatch {
 }
 
 interface CreateCoordinatorWorkflowOptions {
+  appendPolicy?: Partial<CoordinatorWorkflowAppendPolicySnapshot>;
   execution?: CoordinatorWorkflowSnapshot['execution'];
   policy?: Partial<CoordinatorWorkflowPolicySnapshot>;
   runId: string;
@@ -175,8 +178,10 @@ interface UpdateCoordinatorWorkflowStagePatch {
 }
 
 interface UpdateCoordinatorWorkflowPatch {
+  appendPolicy?: CoordinatorWorkflowSnapshot['appendPolicy'];
   completedAt?: number;
   execution?: CoordinatorWorkflowSnapshot['execution'];
+  expansions?: CoordinatorWorkflowSnapshot['expansions'];
   status?: CoordinatorWorkflowStatus;
   verdicts?: CoordinatorWorkflowSnapshot['verdicts'];
   now?: number;
@@ -206,6 +211,11 @@ const DEFAULT_WORKFLOW_POLICY: CoordinatorWorkflowPolicySnapshot = {
   retryBackoffMs: 1_000,
   retryCount: 0,
   timeoutMs: COORDINATOR_LIMITS.workflowDefaultLaneTimeoutMs,
+};
+
+const DEFAULT_WORKFLOW_APPEND_POLICY: CoordinatorWorkflowAppendPolicySnapshot = {
+  maxActionsPerDecision: COORDINATOR_LIMITS.maxWorkflowDecisionActionsPerResult,
+  maxStepAppends: COORDINATOR_LIMITS.maxWorkflowStepAppends,
 };
 
 let recordsByRunId = new Map<string, RunRecord>();
@@ -322,9 +332,13 @@ function normalizeRestoredWorkflow(
     'running',
     'waiting-for-result',
   ];
-
-  return {
+  const restoredWorkflow: CoordinatorWorkflowSnapshot = {
     ...workflow,
+    appendPolicy: mergeWorkflowAppendPolicy(workflow.appendPolicy),
+    journal: workflow.journal.map((entry, index) => ({
+      ...entry,
+      seq: entry.seq ?? index + 1,
+    })),
     lanes: workflow.lanes.map((lane) =>
       staleLaneStatuses.includes(lane.status)
         ? {
@@ -343,9 +357,15 @@ function normalizeRestoredWorkflow(
           }
         : stage,
     ),
+    programVersion: workflow.programVersion ?? COORDINATOR_WORKFLOW_PROGRAM_VERSION,
     status: staleWorkflowStatuses.includes(workflow.status)
       ? 'stale-after-restore'
       : workflow.status,
+  };
+
+  return {
+    ...restoredWorkflow,
+    execution: createRuntimeWorkflowExecutionSnapshot(restoredWorkflow, Date.now()),
   };
 }
 
@@ -647,6 +667,22 @@ function mergeWorkflowPolicy(
   };
 }
 
+function mergeWorkflowAppendPolicy(
+  policy: Partial<CoordinatorWorkflowAppendPolicySnapshot> | undefined,
+): CoordinatorWorkflowAppendPolicySnapshot {
+  return {
+    ...DEFAULT_WORKFLOW_APPEND_POLICY,
+    ...(policy?.maxActionsPerDecision !== undefined
+      ? { maxActionsPerDecision: policy.maxActionsPerDecision }
+      : {}),
+    ...(policy?.maxStepAppends !== undefined ? { maxStepAppends: policy.maxStepAppends } : {}),
+  };
+}
+
+function getNextWorkflowJournalSeq(workflow: Pick<CoordinatorWorkflowSnapshot, 'journal'>): number {
+  return (workflow.journal[workflow.journal.length - 1]?.seq ?? 0) + 1;
+}
+
 function getWorkflowOrThrow(record: RunRecord, workflowId: string): CoordinatorWorkflowSnapshot {
   const workflow = record.workflowsById.get(workflowId);
   if (!workflow) {
@@ -696,24 +732,59 @@ function createRuntimeWorkflowExecutionSnapshot(
   const knownLaneIds = new Set(workflow.lanes.map((lane) => lane.id));
   const pendingRetryLaneIds =
     workflow.execution?.pendingRetryLaneIds.filter((laneId) => knownLaneIds.has(laneId)) ?? [];
+  const completedStageCount = workflow.stages.filter(
+    (stage) => stage.status === 'completed',
+  ).length;
+  const skippedStageCount = workflow.stages.filter((stage) => stage.status === 'skipped').length;
+  const failedLaneCount = workflow.lanes.filter((lane) => lane.status === 'failed').length;
+  const retryableLaneCount = pendingRetryLaneIds.length;
+  const timedOutLaneCount = workflow.lanes.filter((lane) => lane.status === 'timed-out').length;
 
   return {
     activeLaneCount: workflow.lanes.filter(
       (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
     ).length,
+    completedStageCount,
+    ...(workflow.execution?.blockedReason !== undefined
+      ? { blockedReason: workflow.execution.blockedReason }
+      : {}),
+    ...(workflow.execution?.cancelledAt !== undefined
+      ? { cancelledAt: workflow.execution.cancelledAt }
+      : {}),
+    ...(workflow.execution?.completionReason !== undefined
+      ? { completionReason: workflow.execution.completionReason }
+      : {}),
+    ...(workflow.execution?.deadlineAt !== undefined
+      ? { deadlineAt: workflow.execution.deadlineAt }
+      : {}),
+    expansionCount: workflow.expansions?.length ?? 0,
+    failedLaneCount,
+    ...(workflow.execution?.failureSummary !== undefined
+      ? { failureSummary: workflow.execution.failureSummary }
+      : {}),
     lastTickAt: now,
+    ...(workflow.execution?.nextRetryAt !== undefined
+      ? { nextRetryAt: workflow.execution.nextRetryAt }
+      : {}),
     pendingRetryLaneIds,
+    retryableLaneCount,
     readyStageIds: workflow.stages
       .filter((stage) => isRuntimeWorkflowStageReady(workflow, stage))
       .map((stage) => stage.id),
+    skippedStageCount,
+    timedOutLaneCount,
   };
 }
 
-function omitWorkflowCompletedAt(
+function reopenCompletedWorkflow(
   workflow: CoordinatorWorkflowSnapshot,
 ): Omit<CoordinatorWorkflowSnapshot, 'completedAt'> {
   const copy: CoordinatorWorkflowSnapshot = { ...workflow };
   delete copy.completedAt;
+  if (copy.execution?.completionReason !== undefined) {
+    copy.execution = { ...copy.execution };
+    delete copy.execution.completionReason;
+  }
   return copy;
 }
 
@@ -741,6 +812,7 @@ export function createCoordinatorWorkflow(
     updatedAt: now,
   }));
   const workflow: CoordinatorWorkflowSnapshot = {
+    appendPolicy: mergeWorkflowAppendPolicy(options.appendPolicy),
     createdAt: now,
     eventVersion: version,
     ...(options.execution !== undefined ? { execution: options.execution } : {}),
@@ -750,10 +822,12 @@ export function createCoordinatorWorkflow(
         at: now,
         kind: 'workflow-created',
         message: `Created ${options.template} workflow.`,
+        seq: 1,
       },
     ],
     lanes: [],
     policy: mergeWorkflowPolicy(options.policy),
+    programVersion: COORDINATOR_WORKFLOW_PROGRAM_VERSION,
     results: [],
     runId: options.runId,
     ...(options.sourceSpec !== undefined ? { sourceSpec: options.sourceSpec } : {}),
@@ -809,7 +883,7 @@ export function appendCoordinatorWorkflowSteps(
   const nextStatus: CoordinatorWorkflowStatus = reopensCompletedWorkflow
     ? 'running'
     : workflow.status;
-  const workflowBase = reopensCompletedWorkflow ? omitWorkflowCompletedAt(workflow) : workflow;
+  const workflowBase = reopensCompletedWorkflow ? reopenCompletedWorkflow(workflow) : workflow;
   const workflowWithAppend: CoordinatorWorkflowSnapshot = {
     ...workflowBase,
     eventVersion: version,
@@ -822,6 +896,7 @@ export function appendCoordinatorWorkflowSteps(
           ? { laneId: options.append.sourceLaneId }
           : {}),
         message: createWorkflowStepAppendMessage(options.append.stepIds),
+        seq: getNextWorkflowJournalSeq(workflow),
       },
     ],
     sourceSpec: options.sourceSpec,
@@ -841,7 +916,10 @@ export function appendCoordinatorWorkflowSteps(
 export function appendCoordinatorWorkflowJournal(
   runId: string,
   workflowId: string,
-  entry: Omit<CoordinatorWorkflowJournalEntrySnapshot, 'at'> & { at?: number },
+  entry: Omit<CoordinatorWorkflowJournalEntrySnapshot, 'at' | 'seq'> & {
+    at?: number;
+    seq?: number;
+  },
 ): CoordinatorWorkflowSnapshot {
   const record = requireRunRecord(runId);
   const workflow = getWorkflowOrThrow(record, workflowId);
@@ -857,6 +935,7 @@ export function appendCoordinatorWorkflowJournal(
         {
           ...entry,
           at: now,
+          seq: entry.seq ?? getNextWorkflowJournalSeq(workflow),
         },
       ],
       updatedAt: now,
@@ -996,9 +1075,11 @@ export function updateCoordinatorWorkflow(
     record,
     {
       ...workflow,
+      ...(patch.appendPolicy !== undefined ? { appendPolicy: patch.appendPolicy } : {}),
       ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
       eventVersion: version,
       ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
+      ...(patch.expansions !== undefined ? { expansions: patch.expansions } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),
       updatedAt: now,
       ...(patch.verdicts !== undefined ? { verdicts: patch.verdicts } : {}),
@@ -1104,6 +1185,7 @@ export function cancelCoordinatorWorkflowLanesForTask(
       };
     });
     const workflowCancelled = updatedStages.some((stage) => stage.status === 'cancelled');
+    let nextJournalSeq = getNextWorkflowJournalSeq(workflow);
     const updatedWorkflow: CoordinatorWorkflowSnapshot = {
       ...workflow,
       ...(workflowCancelled ? { completedAt: now } : {}),
@@ -1117,6 +1199,7 @@ export function cancelCoordinatorWorkflowLanesForTask(
             kind: 'lane-cancelled',
             laneId: lane.id,
             message: reason,
+            seq: nextJournalSeq++,
             stageId: lane.stageId,
           })),
       ],

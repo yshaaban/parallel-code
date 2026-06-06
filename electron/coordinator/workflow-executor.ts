@@ -7,6 +7,8 @@ import {
   type CoordinatorSpawnSubtaskPayload,
   type CoordinatorStartWorkflowLanePayload,
   type CoordinatorSubtaskSnapshot,
+  type CoordinatorWorkflowExpansionActionSnapshot,
+  type CoordinatorWorkflowExpansionSnapshot,
   type CoordinatorWorkflowExecutionSnapshot,
   type CoordinatorWorkflowFindingSnapshot,
   type CoordinatorWorkflowPolicyPayload,
@@ -20,8 +22,10 @@ import {
 } from '../../src/domain/coordinator.js';
 import {
   COORDINATOR_WORKFLOW_SPEC_VERSION,
+  normalizeCoordinatorWorkflowDynamicActions,
   normalizeCoordinatorWorkflowSpec,
   normalizeCoordinatorWorkflowStepAppend,
+  type CoordinatorWorkflowDynamicActionSnapshot,
   type CoordinatorWorkflowSpecLaneSnapshot,
   type CoordinatorWorkflowSpecSnapshot,
   type CoordinatorWorkflowSpecStepSnapshot,
@@ -92,8 +96,11 @@ export interface AppendCoordinatorWorkflowStepsExecutionResult {
 
 export interface AdvanceCoordinatorWorkflowExecutionOptions {
   laneId: string;
+  result?: CoordinatorWorkflowResultSnapshot;
   runId: string;
+  sourceTaskId?: string;
   spawnLane: SpawnCoordinatorWorkflowLane;
+  workflowActions?: CoordinatorWorkflowDynamicActionSnapshot[];
   workflowId: string;
 }
 
@@ -121,6 +128,15 @@ interface EffectiveStagePolicy {
   retryBackoffMs: number;
   retryCount: number;
   timeoutMs: number;
+}
+
+interface DecisionAppendActionPlan {
+  actionId: string;
+  kind: Extract<
+    CoordinatorWorkflowDynamicActionSnapshot['kind'],
+    'append_fanout' | 'append_synthesize' | 'append_verify' | 'append_worker'
+  >;
+  step: CoordinatorWorkflowSpecStepSnapshot;
 }
 
 function getNow(now: number | undefined): number {
@@ -192,6 +208,8 @@ function createWorkflowStageKind(
   }
 
   switch (step.kind) {
+    case 'decision':
+      return 'decision';
     case 'fanout':
       return 'fan-out';
     case 'synthesize':
@@ -589,6 +607,41 @@ function createSynthesisAssignment(
   );
 }
 
+function createDecisionAssignment(
+  workflow: CoordinatorWorkflowSnapshot,
+  step: CoordinatorWorkflowSpecStepSnapshot,
+): string {
+  const sourceStageIds = getDecisionAssignmentSourceStageIds(step);
+  return trimWorkflowAssignment(
+    [
+      `Workflow: ${workflow.title}`,
+      `Role: ${step.role ?? step.name}`,
+      step.prompt ??
+        'Decide whether the workflow needs more work. Append only the next useful steps, block when user input is required, or stop when the workflow can end cleanly now.',
+      '',
+      summarizeWorkflowResults(workflow, sourceStageIds),
+      '',
+      step.includeVerdicts === true ? summarizeWorkflowVerdicts(workflow) : '',
+      '',
+      'If follow-up is needed, call submit_result with metadata.workflowActions using append_worker, append_fanout, append_verify, or append_synthesize.',
+      'Use mark_blocked only when progress needs user input. Use stop_workflow only when this lane is the only active work left and the workflow should end now.',
+    ]
+      .filter((part) => part.length > 0)
+      .join('\n'),
+  );
+}
+
+function getDecisionAssignmentSourceStageIds(step: CoordinatorWorkflowSpecStepSnapshot): string[] {
+  if (step.sourceStepIds.length > 0) {
+    return step.sourceStepIds;
+  }
+  if (step.resultSourceStepIds.length > 0) {
+    return step.resultSourceStepIds;
+  }
+
+  return step.dependsOn;
+}
+
 function createWorkerLanePayload(
   workflow: CoordinatorWorkflowSnapshot,
   step: CoordinatorWorkflowSpecStepSnapshot,
@@ -655,6 +708,16 @@ function createStageLanePayloads(
   }
 
   switch (step.kind) {
+    case 'decision':
+      return [
+        {
+          agent: step.lanes[0]?.agent ?? step.agent ?? { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
+          assignment: createDecisionAssignment(workflow, step),
+          dedupeKey: getWorkerStepLaneDedupeKey(workflow.id, step),
+          name: step.lanes[0]?.name ?? step.name,
+          role: step.lanes[0]?.role ?? step.role ?? 'decision',
+        },
+      ];
     case 'fanout':
       return createFanoutLanePayloads(workflow, step, workflow.title);
     case 'synthesize':
@@ -686,6 +749,8 @@ function countStepLanes(step: CoordinatorWorkflowSpecStepSnapshot | undefined): 
   }
 
   switch (step.kind) {
+    case 'decision':
+      return Math.max(1, step.lanes.length);
     case 'fanout':
       return step.lanes.length;
     case 'synthesize':
@@ -729,6 +794,8 @@ function getStepLaneDedupeKeys(
   step: CoordinatorWorkflowSpecStepSnapshot,
 ): string[] {
   switch (step.kind) {
+    case 'decision':
+      return [getWorkerStepLaneDedupeKey(workflowId, step)];
     case 'fanout':
       return step.lanes.map((lane) => lane.dedupeKey ?? `${workflowId}:${step.id}:${lane.id}`);
     case 'synthesize':
@@ -764,6 +831,440 @@ function assertAppendedLaneDedupeKeys(
       appendedKeys.add(dedupeKey);
     }
   }
+}
+
+function withDefaultDecisionDependency(
+  step: CoordinatorWorkflowSpecStepSnapshot,
+  stageId: string,
+): CoordinatorWorkflowSpecStepSnapshot {
+  if (step.dependsOn.length > 0) {
+    return step;
+  }
+
+  return {
+    ...step,
+    dependsOn: [stageId],
+  };
+}
+
+function getWorkflowDecisionActionId(
+  action: CoordinatorWorkflowDynamicActionSnapshot,
+  resultId: string,
+  index: number,
+): string {
+  return action.actionId ?? `${resultId}:action:${index + 1}`;
+}
+
+function isWorkflowAppendAction(
+  action: CoordinatorWorkflowDynamicActionSnapshot,
+): action is Extract<CoordinatorWorkflowDynamicActionSnapshot, { step: unknown }> {
+  return 'step' in action;
+}
+
+function isWorkflowTerminalAction(
+  action: CoordinatorWorkflowDynamicActionSnapshot | undefined,
+): action is Extract<
+  CoordinatorWorkflowDynamicActionSnapshot,
+  { kind: 'mark_blocked' | 'stop_workflow' }
+> {
+  return action?.kind === 'mark_blocked' || action?.kind === 'stop_workflow';
+}
+
+function getDecisionAppendActionPlans(
+  actions: CoordinatorWorkflowDynamicActionSnapshot[],
+  resultId: string,
+  stageId: string,
+): DecisionAppendActionPlan[] {
+  const plans: DecisionAppendActionPlan[] = [];
+  for (const [index, action] of actions.entries()) {
+    if (!isWorkflowAppendAction(action)) {
+      continue;
+    }
+
+    plans.push({
+      actionId: getWorkflowDecisionActionId(action, resultId, index),
+      kind: action.kind,
+      step: withDefaultDecisionDependency(action.step, stageId),
+    });
+  }
+
+  return plans;
+}
+
+function createDecisionAppendReason(laneName: string, stepId: string): string {
+  return `Decision lane ${laneName} appended ${stepId}.`;
+}
+
+function createDecisionAppendBatchReason(laneName: string, stepIds: string[]): string {
+  const noun = stepIds.length === 1 ? 'step' : 'steps';
+  return `Decision lane ${laneName} appended ${stepIds.length} workflow ${noun}: ${stepIds.join(', ')}.`;
+}
+
+function validateDecisionAppendActionPlans(
+  workflow: CoordinatorWorkflowSnapshot,
+  plans: DecisionAppendActionPlan[],
+): void {
+  if (plans.length === 0) {
+    return;
+  }
+  if (workflow.sourceSpec === undefined) {
+    throw new BadRequestError('decision workflowActions require a sourceSpec-backed workflow');
+  }
+
+  const seenActionIds = new Set<string>();
+  for (const plan of plans) {
+    if (seenActionIds.has(plan.actionId)) {
+      throw new BadRequestError(`workflowActions reuse actionId ${plan.actionId}`);
+    }
+    seenActionIds.add(plan.actionId);
+  }
+
+  let normalizedAppend: CoordinatorWorkflowStepAppendNormalizationResult;
+  try {
+    normalizedAppend = normalizeCoordinatorWorkflowStepAppend(
+      workflow.sourceSpec,
+      plans.map((plan) => plan.step),
+      {
+        limits: getSpecNormalizationLimits(),
+      },
+    );
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new BadRequestError(error.message);
+    }
+
+    throw new BadRequestError('Invalid decision workflowActions');
+  }
+  const appendedSteps = normalizedAppend.appendedSteps;
+
+  const appendedLaneCount = countWorkflowSpecLanes({
+    steps: appendedSteps,
+    version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+  });
+  if (workflow.lanes.length + appendedLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
+    throw new BadRequestError(
+      `workflowActions would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+    );
+  }
+
+  const maxAppendedStageLaneCount = appendedSteps.reduce(
+    (count, step) => Math.max(count, countStepLanes(step)),
+    0,
+  );
+  if (maxAppendedStageLaneCount > workflow.policy.maxConcurrentLanes) {
+    throw new BadRequestError('workflowActions exceed workflow maxConcurrentLanes');
+  }
+
+  assertAppendedLaneDedupeKeys(workflow, appendedSteps);
+}
+
+export function readWorkflowDecisionActions(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  metadata: Record<string, unknown> | undefined,
+): CoordinatorWorkflowDynamicActionSnapshot[] {
+  const rawActions = metadata?.workflowActions;
+  if (rawActions === undefined) {
+    return [];
+  }
+
+  const step = getStep(workflow, lane.stageId);
+  if (step?.kind !== 'decision') {
+    throw new BadRequestError('metadata.workflowActions are only supported for decision steps');
+  }
+
+  let actions: CoordinatorWorkflowDynamicActionSnapshot[];
+  try {
+    actions = normalizeCoordinatorWorkflowDynamicActions(rawActions, {
+      limits: getSpecNormalizationLimits(),
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new BadRequestError(error.message);
+    }
+    throw new BadRequestError('Invalid metadata.workflowActions');
+  }
+
+  if (actions.length > workflow.appendPolicy.maxActionsPerDecision) {
+    throw new BadRequestError(
+      `metadata.workflowActions exceeds limit ${workflow.appendPolicy.maxActionsPerDecision}`,
+    );
+  }
+
+  const appendActionCount = actions.filter(isWorkflowAppendAction).length;
+  if (
+    (workflow.stepAppends?.length ?? 0) + appendActionCount >
+    workflow.appendPolicy.maxStepAppends
+  ) {
+    throw new BadRequestError(
+      `metadata.workflowActions would exceed append limit ${workflow.appendPolicy.maxStepAppends}`,
+    );
+  }
+
+  return actions;
+}
+
+export function getWorkflowResultStatusForActions(
+  actions: CoordinatorWorkflowDynamicActionSnapshot[],
+  requestedStatus: CoordinatorWorkflowResultSnapshot['status'] | undefined,
+): CoordinatorWorkflowResultSnapshot['status'] {
+  if (actions.length === 0) {
+    return requestedStatus ?? 'completed';
+  }
+
+  const terminalAction = actions[actions.length - 1];
+  if (terminalAction?.kind === 'mark_blocked') {
+    if (
+      requestedStatus !== undefined &&
+      requestedStatus !== 'blocked' &&
+      requestedStatus !== 'needs-followup'
+    ) {
+      throw new BadRequestError('mark_blocked requires result status blocked or needs-followup');
+    }
+    return requestedStatus ?? 'blocked';
+  }
+  if (terminalAction?.kind === 'stop_workflow') {
+    if (requestedStatus !== undefined && requestedStatus !== 'completed') {
+      throw new BadRequestError('stop_workflow requires result status completed');
+    }
+    return 'completed';
+  }
+  if (requestedStatus !== undefined && requestedStatus !== 'completed') {
+    throw new BadRequestError('append workflowActions require result status completed');
+  }
+
+  return 'completed';
+}
+
+export function validateWorkflowDecisionActionsForResult(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  resultId: string,
+  actions: CoordinatorWorkflowDynamicActionSnapshot[],
+): void {
+  if (actions.length === 0) {
+    return;
+  }
+
+  const appendPlans = getDecisionAppendActionPlans(actions, resultId, lane.stageId);
+  validateDecisionAppendActionPlans(workflow, appendPlans);
+
+  const terminalAction = actions[actions.length - 1];
+  if (isWorkflowTerminalAction(terminalAction)) {
+    assertTerminalDecisionActionQuiescent(workflow, lane.id, terminalAction.kind);
+  }
+}
+
+function recordWorkflowExpansion(
+  runId: string,
+  workflowId: string,
+  expansion: CoordinatorWorkflowExpansionSnapshot,
+  now: number,
+): CoordinatorWorkflowSnapshot {
+  const workflow = getWorkflowOrThrow(runId, workflowId);
+  return updateCoordinatorWorkflow(runId, workflowId, {
+    expansions: [...(workflow.expansions ?? []), expansion],
+    now,
+  });
+}
+
+function assertTerminalDecisionActionQuiescent(
+  workflow: CoordinatorWorkflowSnapshot,
+  laneId: string,
+  actionKind: 'mark_blocked' | 'stop_workflow',
+): void {
+  const hasOtherActiveLanes = workflow.lanes.some(
+    (candidate) =>
+      candidate.id !== laneId && !isCoordinatorTerminalWorkflowLaneStatus(candidate.status),
+  );
+  if (hasOtherActiveLanes) {
+    throw new BadRequestError(`${actionKind} requires the calling lane to be the only active lane`);
+  }
+}
+
+function skipWorkflowPendingStages(
+  runId: string,
+  workflowId: string,
+  reason: string,
+  now: number,
+): CoordinatorWorkflowSnapshot {
+  let workflow = getWorkflowOrThrow(runId, workflowId);
+  for (const stage of workflow.stages) {
+    if (stage.status !== 'pending') {
+      continue;
+    }
+
+    updateCoordinatorWorkflowStage(runId, workflowId, stage.id, {
+      completedAt: now,
+      failure: reason,
+      now,
+      status: 'skipped',
+    });
+    workflow = getWorkflowOrThrow(runId, workflowId);
+  }
+
+  return workflow;
+}
+
+function blockWorkflowFromDecisionAction(
+  runId: string,
+  workflowId: string,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  reason: string,
+  now: number,
+): CoordinatorWorkflowSnapshot {
+  updateCoordinatorWorkflowStage(runId, workflowId, lane.stageId, {
+    completedAt: now,
+    failure: reason,
+    now,
+    resultIds: getStageLanes(getWorkflowOrThrow(runId, workflowId), lane.stageId).flatMap(
+      (candidate) => (candidate.resultId !== undefined ? [candidate.resultId] : []),
+    ),
+    status: 'blocked',
+  });
+  let workflow = skipWorkflowPendingStages(runId, workflowId, reason, now);
+  appendCoordinatorWorkflowJournal(runId, workflowId, {
+    at: now,
+    kind: 'workflow-blocked',
+    laneId: lane.id,
+    message: reason,
+    stageId: lane.stageId,
+  });
+  workflow = getWorkflowOrThrow(runId, workflowId);
+  return updateCoordinatorWorkflow(runId, workflowId, {
+    completedAt: now,
+    execution: {
+      ...createExecutionSnapshot(workflow, now),
+      blockedReason: reason,
+      pendingRetryLaneIds: [],
+      readyStageIds: [],
+    },
+    now,
+    status: 'blocked',
+  });
+}
+
+function stopWorkflowFromDecisionAction(
+  runId: string,
+  workflowId: string,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  reason: string,
+  now: number,
+): CoordinatorWorkflowSnapshot {
+  completeTerminalStages(runId, workflowId);
+  let workflow = skipWorkflowPendingStages(runId, workflowId, reason, now);
+  appendCoordinatorWorkflowJournal(runId, workflowId, {
+    at: now,
+    kind: 'workflow-stopped',
+    laneId: lane.id,
+    message: reason,
+    stageId: lane.stageId,
+  });
+  workflow = getWorkflowOrThrow(runId, workflowId);
+  return updateCoordinatorWorkflow(runId, workflowId, {
+    completedAt: now,
+    execution: {
+      ...createExecutionSnapshot(workflow, now),
+      completionReason: reason,
+      pendingRetryLaneIds: [],
+      readyStageIds: [],
+    },
+    now,
+    status: 'completed',
+  });
+}
+
+async function applyDecisionWorkflowActions(
+  actions: CoordinatorWorkflowDynamicActionSnapshot[],
+  options: {
+    lane: CoordinatorWorkflowSnapshot['lanes'][number];
+    result: CoordinatorWorkflowResultSnapshot;
+    runId: string;
+    sourceTaskId: string;
+    spawnLane: SpawnCoordinatorWorkflowLane;
+    workflowId: string;
+  },
+): Promise<CoordinatorWorkflowSnapshot> {
+  if (actions.length === 0) {
+    return getWorkflowOrThrow(options.runId, options.workflowId);
+  }
+
+  let workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  const now = options.result.createdAt;
+  const appendPlans = getDecisionAppendActionPlans(
+    actions,
+    options.result.id,
+    options.lane.stageId,
+  );
+  const expansionActions: CoordinatorWorkflowExpansionActionSnapshot[] = [];
+  if (appendPlans.length > 0) {
+    const appendResult = await appendCoordinatorWorkflowExecutionSteps({
+      appendId: `${options.result.id}:workflow-actions`,
+      reason: createDecisionAppendBatchReason(
+        options.lane.name,
+        appendPlans.map((plan) => plan.step.id),
+      ),
+      runId: options.runId,
+      sourceLaneId: options.lane.id,
+      sourceTaskId: options.sourceTaskId,
+      spawnLane: options.spawnLane,
+      steps: appendPlans.map((plan) => plan.step),
+      workflowId: options.workflowId,
+    });
+    workflow = appendResult.workflow;
+    for (const plan of appendPlans) {
+      expansionActions.push({
+        actionId: plan.actionId,
+        kind: plan.kind,
+        reason: createDecisionAppendReason(options.lane.name, plan.step.id),
+        stepIds: [plan.step.id],
+      });
+    }
+  } else {
+    const terminalAction = actions[actions.length - 1];
+    if (!isWorkflowTerminalAction(terminalAction)) {
+      return workflow;
+    }
+
+    assertTerminalDecisionActionQuiescent(workflow, options.lane.id, terminalAction.kind);
+    if (terminalAction.kind === 'mark_blocked') {
+      workflow = blockWorkflowFromDecisionAction(
+        options.runId,
+        options.workflowId,
+        options.lane,
+        terminalAction.reason,
+        now,
+      );
+    } else {
+      workflow = stopWorkflowFromDecisionAction(
+        options.runId,
+        options.workflowId,
+        options.lane,
+        terminalAction.reason,
+        now,
+      );
+    }
+    expansionActions.push({
+      actionId: getWorkflowDecisionActionId(terminalAction, options.result.id, actions.length - 1),
+      kind: terminalAction.kind,
+      reason: terminalAction.reason,
+    });
+  }
+
+  workflow = recordWorkflowExpansion(
+    options.runId,
+    options.workflowId,
+    {
+      actions: expansionActions,
+      createdAt: now,
+      id: `${options.result.id}:expansion`,
+      sourceLaneId: options.lane.id,
+      sourceResultId: options.result.id,
+      sourceTaskId: options.sourceTaskId,
+    },
+    now,
+  );
+  return workflow;
 }
 
 function getCompletedStageStatus(
@@ -855,15 +1356,27 @@ function createExecutionSnapshot(
   const activeLaneCount = workflow.lanes.filter(
     (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
   ).length;
+  const completedStageCount = workflow.stages.filter(
+    (stage) => stage.status === 'completed',
+  ).length;
   const laneDedupeKeys = new Set(
     workflow.lanes.flatMap((lane) => (lane.dedupeKey !== undefined ? [lane.dedupeKey] : [])),
   );
   const failedLane = workflow.lanes.find(
     (lane) => lane.failure !== undefined && isCoordinatorTerminalWorkflowLaneStatus(lane.status),
   );
+  const failedLaneCount = workflow.lanes.filter((lane) => lane.status === 'failed').length;
   const retryState = getWorkflowRetryState(workflow, now);
+  const skippedStageCount = workflow.stages.filter((stage) => stage.status === 'skipped').length;
+  const timedOutLaneCount = workflow.lanes.filter((lane) => lane.status === 'timed-out').length;
   return {
     activeLaneCount,
+    completedStageCount,
+    ...(workflow.execution?.completionReason !== undefined
+      ? { completionReason: workflow.execution.completionReason }
+      : {}),
+    expansionCount: workflow.expansions?.length ?? 0,
+    failedLaneCount,
     ...(failedLane?.failure !== undefined ? { failureSummary: failedLane.failure } : {}),
     lastTickAt: now,
     ...(retryState.nextRetryAt !== undefined ? { nextRetryAt: retryState.nextRetryAt } : {}),
@@ -874,9 +1387,12 @@ function createExecutionSnapshot(
         !laneDedupeKeys.has(`${lane.dedupeKey ?? lane.id}:retry:${lane.attempt + 1}`)
       );
     }),
+    retryableLaneCount: retryState.pendingLaneIds.length,
     readyStageIds: workflow.stages
       .filter((stage) => isStageReady(workflow, stage))
       .map((stage) => stage.id),
+    skippedStageCount,
+    timedOutLaneCount,
   };
 }
 
@@ -1140,6 +1656,7 @@ function completeWorkflowIfDone(runId: string, workflowId: string): CoordinatorW
     workflow.stages.every(
       (stage) =>
         stage.status === 'completed' ||
+        stage.status === 'skipped' ||
         stage.status === 'failed' ||
         stage.status === 'blocked' ||
         stage.status === 'cancelled',
@@ -1269,6 +1786,11 @@ export async function appendCoordinatorWorkflowExecutionSteps(
   if (workflow.sourceSpec === undefined) {
     throw new BadRequestError('append_workflow_steps requires a sourceSpec-backed workflow');
   }
+  if ((workflow.stepAppends?.length ?? 0) >= workflow.appendPolicy.maxStepAppends) {
+    throw new BadRequestError(
+      `append_workflow_steps would exceed append limit ${workflow.appendPolicy.maxStepAppends}`,
+    );
+  }
 
   let normalizedAppend: CoordinatorWorkflowStepAppendNormalizationResult;
   try {
@@ -1338,6 +1860,39 @@ export async function appendCoordinatorWorkflowExecutionSteps(
 export async function advanceCoordinatorWorkflowExecution(
   options: AdvanceCoordinatorWorkflowExecutionOptions,
 ): Promise<CoordinatorWorkflowSnapshot> {
+  if (
+    options.result !== undefined &&
+    options.sourceTaskId !== undefined &&
+    options.workflowActions !== undefined &&
+    options.workflowActions.length > 0
+  ) {
+    const workflow = await applyDecisionWorkflowActions(options.workflowActions, {
+      lane: resolveOwnedWorkflowLane(
+        options.runId,
+        options.sourceTaskId,
+        options.workflowId,
+        options.laneId,
+        {
+          actionName: 'advanceCoordinatorWorkflowExecution',
+        },
+      ).lane,
+      result: options.result,
+      runId: options.runId,
+      sourceTaskId: options.sourceTaskId,
+      spawnLane: options.spawnLane,
+      workflowId: options.workflowId,
+    });
+    if (
+      workflow.status === 'blocked' ||
+      workflow.status === 'cancelled' ||
+      workflow.status === 'completed' ||
+      workflow.status === 'failed' ||
+      workflow.status === 'stale-after-restore'
+    ) {
+      return workflow;
+    }
+  }
+
   const result = await reconcileCoordinatorWorkflowExecution(options);
   return result.workflow;
 }

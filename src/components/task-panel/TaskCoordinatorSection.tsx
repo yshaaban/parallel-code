@@ -118,6 +118,20 @@ function toneColor(tone: CoordinatorAttentionLevel): string {
   return TONE_COLOR[tone];
 }
 
+function getWorkflowReason(workflow: CoordinatorWorkflowTimelineView): string | undefined {
+  return workflow.blockedReason ?? workflow.completionReason ?? workflow.failedLaneReason;
+}
+
+function getWorkflowReasonTone(
+  workflow: CoordinatorWorkflowTimelineView,
+): CoordinatorAttentionLevel {
+  if (workflow.blockedReason !== undefined || workflow.failedLaneReason !== undefined) {
+    return 'warning';
+  }
+
+  return 'info';
+}
+
 function createToolRequest(
   action: CoordinatorUiAction,
   chip: CoordinatorSubtaskChipView,
@@ -927,14 +941,14 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     </button>
                   </div>
 
-                  <Show when={workflow().blockedReason ?? workflow().failedLaneReason}>
+                  <Show when={getWorkflowReason(workflow())}>
                     {(reason) => (
                       <div
                         style={{
-                          border: `1px solid ${theme.warning}`,
+                          border: `1px solid ${toneColor(getWorkflowReasonTone(workflow()))}`,
                           'border-radius': '6px',
                           padding: '6px',
-                          color: theme.warning,
+                          color: toneColor(getWorkflowReasonTone(workflow())),
                           'font-size': sf(11),
                         }}
                       >
@@ -969,16 +983,21 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                   <div
                     style={{
                       display: 'grid',
-                      'grid-template-columns': 'repeat(3, minmax(0, 1fr))',
+                      'grid-template-columns': 'repeat(4, minmax(0, 1fr))',
                       gap: '6px',
                       'font-size': sf(11),
                     }}
                   >
                     <span>{`Steps ${workflow().stepCount}`}</span>
                     <span>{`Appends ${workflow().appendCount}`}</span>
+                    <span>{`Expand ${workflow().expansionCount}`}</span>
+                    <span>{`Done ${workflow().completedStageCount}`}</span>
                     <span>{`Results ${workflow().resultCount}`}</span>
                     <span>{`Findings ${workflow().findingCount}`}</span>
                     <span>{`Failed ${workflow().failedLaneCount}`}</span>
+                    <span>{`Retry ${workflow().retryableLaneCount}`}</span>
+                    <span>{`Skip ${workflow().skippedStageCount}`}</span>
+                    <span>{`Timeout ${workflow().timedOutLaneCount}`}</span>
                     <span>{`Verdicts ${
                       workflow().verdictSummary.confirmed +
                       workflow().verdictSummary.refuted +
@@ -1013,7 +1032,9 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                               {entry.kind}
                             </span>
                             <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-                              {entry.message}
+                              {[entry.stageLabel, entry.laneLabel, entry.message]
+                                .filter((part) => part !== undefined && part.length > 0)
+                                .join(' · ')}
                             </span>
                           </div>
                         )}

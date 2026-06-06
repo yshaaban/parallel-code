@@ -88,10 +88,12 @@ export interface CoordinatorRunSummaryView {
 export interface CoordinatorWorkflowStageView {
   completedLaneCount: number;
   id: string;
+  kind: CoordinatorWorkflowStageSnapshot['kind'];
   label: string;
   laneCount: number;
   resultCount: number;
   status: CoordinatorWorkflowStageSnapshot['status'];
+  statusLabel: string;
   title: string;
   tone: CoordinatorAttentionLevel;
 }
@@ -136,6 +138,9 @@ export interface CoordinatorWorkflowTimelineView {
   activityCount: number;
   activityPreview: CoordinatorWorkflowActivityView[];
   blockedReason?: string;
+  completedStageCount: number;
+  completionReason?: string;
+  expansionCount: number;
   failedLaneCount: number;
   failedLaneReason?: string;
   findingCount: number;
@@ -145,12 +150,15 @@ export interface CoordinatorWorkflowTimelineView {
   latestActivityLabel?: string;
   resultPreview: CoordinatorWorkflowResultView[];
   resultCount: number;
+  retryableLaneCount: number;
+  skippedStageCount: number;
   stages: CoordinatorWorkflowStageView[];
   stepCount: number;
   status: CoordinatorWorkflowSnapshot['status'];
   statusLabel: string;
   stale: boolean;
   template: CoordinatorWorkflowSnapshot['template'];
+  timedOutLaneCount: number;
   title: string;
   tone: CoordinatorAttentionLevel;
   updatedAt: number;
@@ -268,6 +276,7 @@ function getWorkflowStageTone(
     case 'stale-after-restore':
       return 'danger';
     case 'pending':
+    case 'skipped':
       return 'normal';
     case 'running':
     case 'waiting-for-results':
@@ -593,10 +602,12 @@ function createWorkflowStageView(
   return {
     completedLaneCount,
     id: stage.id,
+    kind: stage.kind,
     label,
     laneCount: lanes.length,
     resultCount: stage.resultIds.length,
     status: stage.status,
+    statusLabel: humanizeStatus(stage.status),
     title: `${stage.name}: ${humanizeStatus(stage.status)} (${completedLaneCount}/${lanes.length} lanes, ${stage.resultIds.length} results)`,
     tone: getWorkflowStageTone(stage.status),
   };
@@ -635,10 +646,20 @@ function getWorkflowActivityTone(kind: string): CoordinatorAttentionLevel {
   if (kind.includes('retry') || kind.includes('blocked')) {
     return 'warning';
   }
-  if (kind.includes('result') || kind.includes('completed') || kind.includes('verdict')) {
+  if (
+    kind.includes('result') ||
+    kind.includes('completed') ||
+    kind.includes('stopped') ||
+    kind.includes('verdict')
+  ) {
     return 'success';
   }
-  if (kind.includes('appended') || kind.includes('running') || kind.includes('spawning')) {
+  if (
+    kind.includes('appended') ||
+    kind.includes('running') ||
+    kind.includes('spawning') ||
+    kind.includes('skipped')
+  ) {
     return 'info';
   }
 
@@ -722,9 +743,13 @@ function createWorkflowVerdictSummary(
 function createWorkflowTimelineView(
   workflow: CoordinatorWorkflowSnapshot,
 ): CoordinatorWorkflowTimelineView {
-  const activeLaneCount = workflow.lanes.filter(
-    (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
-  ).length;
+  const activeLaneCount =
+    workflow.execution?.activeLaneCount ??
+    workflow.lanes.filter((lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status)).length;
+  const completedStageCount =
+    workflow.execution?.completedStageCount ??
+    workflow.stages.filter((stage) => stage.status === 'completed').length;
+  const expansionCount = workflow.execution?.expansionCount ?? workflow.expansions?.length ?? 0;
   const findingCount = workflow.results.reduce(
     (count, result) => count + result.findings.length,
     0,
@@ -737,9 +762,18 @@ function createWorkflowTimelineView(
   );
   const activityPreview = createWorkflowActivityViews(workflow);
   const blockedReason = workflow.execution?.blockedReason;
+  const completionReason = workflow.execution?.completionReason;
+  const failedLaneReason = failedLanes[0]?.failure;
   const latestActivityLabel = activityPreview[0]?.message;
   const resultPreview = createWorkflowResultViews(workflow);
+  const retryableLaneCount = workflow.execution?.retryableLaneCount ?? 0;
+  const skippedStageCount =
+    workflow.execution?.skippedStageCount ??
+    workflow.stages.filter((stage) => stage.status === 'skipped').length;
   const stepCount = workflow.sourceSpec?.steps.length ?? workflow.stages.length;
+  const timedOutLaneCount =
+    workflow.execution?.timedOutLaneCount ??
+    workflow.lanes.filter((lane) => lane.status === 'timed-out').length;
 
   return {
     activeLaneCount,
@@ -747,8 +781,11 @@ function createWorkflowTimelineView(
     activityCount: workflow.journal.length,
     activityPreview,
     ...(blockedReason !== undefined ? { blockedReason } : {}),
+    completedStageCount,
+    ...(completionReason !== undefined ? { completionReason } : {}),
+    expansionCount,
     failedLaneCount: failedLanes.length,
-    ...(failedLanes[0]?.failure !== undefined ? { failedLaneReason: failedLanes[0].failure } : {}),
+    ...(failedLaneReason !== undefined ? { failedLaneReason } : {}),
     findingCount,
     hasMoreActivity: workflow.journal.length > activityPreview.length,
     hasMoreResults: workflow.results.length > resultPreview.length,
@@ -756,12 +793,15 @@ function createWorkflowTimelineView(
     ...(latestActivityLabel !== undefined ? { latestActivityLabel } : {}),
     resultPreview,
     resultCount: workflow.results.length,
+    retryableLaneCount,
+    skippedStageCount,
     stages: workflow.stages.map((stage) => createWorkflowStageView(workflow, stage)),
     stepCount,
     status: workflow.status,
     statusLabel: humanizeStatus(workflow.status),
     stale: workflow.status === 'stale-after-restore',
     template: workflow.template,
+    timedOutLaneCount,
     title: workflow.title,
     tone: getWorkflowTone(workflow.status),
     updatedAt: workflow.updatedAt,

@@ -9,6 +9,7 @@ import {
 } from '../lib/type-guards.js';
 import {
   isCoordinatorWorkflowSpecSnapshot,
+  type CoordinatorWorkflowDynamicActionKind,
   type CoordinatorWorkflowSpecSnapshot,
 } from './coordinator-workflow-spec.js';
 import type { ProjectMode } from '../store/types.js';
@@ -98,6 +99,7 @@ export const COORDINATOR_WORKFLOW_STATUSES = [
 ] as const;
 
 export const COORDINATOR_WORKFLOW_STAGE_KINDS = [
+  'decision',
   'fan-out',
   'map',
   'reduce',
@@ -113,11 +115,14 @@ export const COORDINATOR_WORKFLOW_STAGE_STATUSES = [
   'running',
   'waiting-for-results',
   'completed',
+  'skipped',
   'blocked',
   'failed',
   'cancelled',
   'stale-after-restore',
 ] as const;
+
+export const COORDINATOR_WORKFLOW_PROGRAM_VERSION = 2 as const;
 
 export const COORDINATOR_WORKFLOW_LANE_STATUSES = [
   'pending',
@@ -204,11 +209,13 @@ export const COORDINATOR_LIMITS = {
   maxWorkflowEvidence: 200,
   maxWorkflowLanes: 12,
   maxWorkflowMetadataBytes: 16 * 1024,
+  maxWorkflowDecisionActionsPerResult: 8,
   maxWorkflowResults: 500,
   maxWorkflowResultEntryChars: 2_000,
   maxWorkflowResultListItems: 100,
   maxWorkflowShortTextChars: 512,
   maxWorkflowSummaryChars: 12_000,
+  maxWorkflowStepAppends: 24,
   spawnSpacingWhileSelectedRestoringMs: 500,
   workflowDefaultLaneTimeoutMs: 15 * 60 * 1000,
   workflowMaxLaneTimeoutMs: 24 * 60 * 60 * 1000,
@@ -384,16 +391,44 @@ export interface CoordinatorWorkflowStepAppendSnapshot {
   stepIds: string[];
 }
 
+export interface CoordinatorWorkflowAppendPolicySnapshot {
+  maxActionsPerDecision: number;
+  maxStepAppends: number;
+}
+
+export interface CoordinatorWorkflowExpansionActionSnapshot {
+  actionId: string;
+  kind: CoordinatorWorkflowDynamicActionKind;
+  reason?: string;
+  stepIds?: string[];
+}
+
+export interface CoordinatorWorkflowExpansionSnapshot {
+  actions: CoordinatorWorkflowExpansionActionSnapshot[];
+  createdAt: number;
+  id: string;
+  sourceLaneId: string;
+  sourceResultId: string;
+  sourceTaskId: string;
+}
+
 export interface CoordinatorWorkflowExecutionSnapshot {
   activeLaneCount: number;
   blockedReason?: string;
   cancelledAt?: number;
+  completedStageCount?: number;
+  completionReason?: string;
   deadlineAt?: number;
+  expansionCount?: number;
+  failedLaneCount?: number;
   failureSummary?: string;
   lastTickAt: number;
   nextRetryAt?: number;
   pendingRetryLaneIds: string[];
+  retryableLaneCount?: number;
   readyStageIds: string[];
+  skippedStageCount?: number;
+  timedOutLaneCount?: number;
 }
 
 export interface CoordinatorWorkflowResultSnapshot {
@@ -421,18 +456,22 @@ export interface CoordinatorWorkflowJournalEntrySnapshot {
   laneId?: string;
   message: string;
   resultId?: string;
+  seq: number;
   stageId?: string;
 }
 
 export interface CoordinatorWorkflowSnapshot {
+  appendPolicy: CoordinatorWorkflowAppendPolicySnapshot;
   completedAt?: number;
   createdAt: number;
   eventVersion: number;
   execution?: CoordinatorWorkflowExecutionSnapshot;
+  expansions?: CoordinatorWorkflowExpansionSnapshot[];
   id: string;
   journal: CoordinatorWorkflowJournalEntrySnapshot[];
   lanes: CoordinatorWorkflowLaneSnapshot[];
   policy: CoordinatorWorkflowPolicySnapshot;
+  programVersion: number;
   results: CoordinatorWorkflowResultSnapshot[];
   runId: string;
   sourceSpec?: CoordinatorWorkflowSpecSnapshot;
@@ -932,6 +971,16 @@ function isCoordinatorWorkflowPolicySnapshot(
   );
 }
 
+function isCoordinatorWorkflowAppendPolicySnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowAppendPolicySnapshot {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.maxActionsPerDecision) &&
+    isNonNegativeInteger(value.maxStepAppends)
+  );
+}
+
 function isCoordinatorWorkflowStageSnapshot(
   value: unknown,
 ): value is CoordinatorWorkflowStageSnapshot {
@@ -1051,6 +1100,37 @@ function isCoordinatorWorkflowStepAppendSnapshot(
   );
 }
 
+function isCoordinatorWorkflowExpansionActionSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowExpansionActionSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.actionId === 'string' &&
+    (value.kind === 'append_fanout' ||
+      value.kind === 'append_synthesize' ||
+      value.kind === 'append_verify' ||
+      value.kind === 'append_worker' ||
+      value.kind === 'mark_blocked' ||
+      value.kind === 'stop_workflow') &&
+    (value.reason === undefined || typeof value.reason === 'string') &&
+    (value.stepIds === undefined || isStringArray(value.stepIds))
+  );
+}
+
+function isCoordinatorWorkflowExpansionSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowExpansionSnapshot {
+  return (
+    isRecord(value) &&
+    isArrayOf(value.actions, isCoordinatorWorkflowExpansionActionSnapshot) &&
+    isNonNegativeInteger(value.createdAt) &&
+    typeof value.id === 'string' &&
+    typeof value.sourceLaneId === 'string' &&
+    typeof value.sourceResultId === 'string' &&
+    typeof value.sourceTaskId === 'string'
+  );
+}
+
 function isCoordinatorWorkflowExecutionSnapshot(
   value: unknown,
 ): value is CoordinatorWorkflowExecutionSnapshot {
@@ -1059,12 +1139,19 @@ function isCoordinatorWorkflowExecutionSnapshot(
     isNonNegativeInteger(value.activeLaneCount) &&
     isOptionalString(value.blockedReason) &&
     isOptionalNonNegativeInteger(value.cancelledAt) &&
+    isOptionalNonNegativeInteger(value.completedStageCount) &&
+    isOptionalString(value.completionReason) &&
     isOptionalNonNegativeInteger(value.deadlineAt) &&
+    isOptionalNonNegativeInteger(value.expansionCount) &&
+    isOptionalNonNegativeInteger(value.failedLaneCount) &&
     isOptionalString(value.failureSummary) &&
     isNonNegativeInteger(value.lastTickAt) &&
     isOptionalNonNegativeInteger(value.nextRetryAt) &&
     isStringArray(value.pendingRetryLaneIds) &&
-    isStringArray(value.readyStageIds)
+    isOptionalNonNegativeInteger(value.retryableLaneCount) &&
+    isStringArray(value.readyStageIds) &&
+    isOptionalNonNegativeInteger(value.skippedStageCount) &&
+    isOptionalNonNegativeInteger(value.timedOutLaneCount)
   );
 }
 
@@ -1102,6 +1189,7 @@ function isCoordinatorWorkflowJournalEntrySnapshot(
     isOptionalString(value.laneId) &&
     typeof value.message === 'string' &&
     isOptionalString(value.resultId) &&
+    isOptionalNonNegativeInteger(value.seq) &&
     isOptionalString(value.stageId)
   );
 }
@@ -1111,14 +1199,19 @@ export function isCoordinatorWorkflowSnapshot(
 ): value is CoordinatorWorkflowSnapshot {
   return (
     isRecord(value) &&
+    (value.appendPolicy === undefined ||
+      isCoordinatorWorkflowAppendPolicySnapshot(value.appendPolicy)) &&
     isOptionalNonNegativeInteger(value.completedAt) &&
     isNonNegativeInteger(value.createdAt) &&
     isNonNegativeInteger(value.eventVersion) &&
     (value.execution === undefined || isCoordinatorWorkflowExecutionSnapshot(value.execution)) &&
+    (value.expansions === undefined ||
+      isArrayOf(value.expansions, isCoordinatorWorkflowExpansionSnapshot)) &&
     typeof value.id === 'string' &&
     isArrayOf(value.journal, isCoordinatorWorkflowJournalEntrySnapshot) &&
     isArrayOf(value.lanes, isCoordinatorWorkflowLaneSnapshot) &&
     isCoordinatorWorkflowPolicySnapshot(value.policy) &&
+    isOptionalNonNegativeInteger(value.programVersion) &&
     isArrayOf(value.results, isCoordinatorWorkflowResultSnapshot) &&
     typeof value.runId === 'string' &&
     (value.sourceSpec === undefined || isCoordinatorWorkflowSpecSnapshot(value.sourceSpec)) &&

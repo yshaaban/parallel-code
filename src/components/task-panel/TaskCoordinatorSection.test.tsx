@@ -141,6 +141,10 @@ describe('TaskCoordinatorSection', () => {
     coordinatorRunRef.current = createRun({
       workflows: [
         {
+          appendPolicy: {
+            maxActionsPerDecision: 8,
+            maxStepAppends: 24,
+          },
           createdAt: 1_000,
           eventVersion: 2,
           id: 'workflow-1',
@@ -151,6 +155,7 @@ describe('TaskCoordinatorSection', () => {
               laneId: 'lane-map',
               message: 'Mapped risk.',
               resultId: 'result-1',
+              seq: 1,
               stageId: 'map',
             },
           ],
@@ -196,6 +201,7 @@ describe('TaskCoordinatorSection', () => {
               workflowId: 'workflow-1',
             },
           ],
+          programVersion: 2,
           runId: 'run-1',
           stages: [
             {

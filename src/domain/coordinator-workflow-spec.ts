@@ -3,14 +3,26 @@ import type { CoordinatorSpawnSubtaskPayload } from './coordinator.js';
 export const COORDINATOR_WORKFLOW_SPEC_VERSION = 1 as const;
 
 export const COORDINATOR_WORKFLOW_SPEC_STEP_KINDS = [
+  'decision',
   'fanout',
   'synthesize',
   'verify',
   'worker',
 ] as const;
 
+export const COORDINATOR_WORKFLOW_DYNAMIC_ACTION_KINDS = [
+  'append_fanout',
+  'append_synthesize',
+  'append_verify',
+  'append_worker',
+  'mark_blocked',
+  'stop_workflow',
+] as const;
+
 export type CoordinatorWorkflowSpecVersion = typeof COORDINATOR_WORKFLOW_SPEC_VERSION;
 export type CoordinatorWorkflowSpecStepKind = (typeof COORDINATOR_WORKFLOW_SPEC_STEP_KINDS)[number];
+export type CoordinatorWorkflowDynamicActionKind =
+  (typeof COORDINATOR_WORKFLOW_DYNAMIC_ACTION_KINDS)[number];
 
 export interface CoordinatorWorkflowSpecLaneSnapshot {
   agent?: CoordinatorSpawnSubtaskPayload['agent'];
@@ -70,6 +82,25 @@ export interface CoordinatorWorkflowStepAppendNormalizationResult {
   appendedSteps: CoordinatorWorkflowSpecStepSnapshot[];
   sourceSpec: CoordinatorWorkflowSpecSnapshot;
 }
+
+export interface CoordinatorWorkflowDynamicAppendActionSnapshot {
+  actionId?: string;
+  kind: Extract<
+    CoordinatorWorkflowDynamicActionKind,
+    'append_fanout' | 'append_synthesize' | 'append_verify' | 'append_worker'
+  >;
+  step: CoordinatorWorkflowSpecStepSnapshot;
+}
+
+export interface CoordinatorWorkflowDynamicTerminalActionSnapshot {
+  actionId?: string;
+  kind: Extract<CoordinatorWorkflowDynamicActionKind, 'mark_blocked' | 'stop_workflow'>;
+  reason: string;
+}
+
+export type CoordinatorWorkflowDynamicActionSnapshot =
+  | CoordinatorWorkflowDynamicAppendActionSnapshot
+  | CoordinatorWorkflowDynamicTerminalActionSnapshot;
 
 export interface CoordinatorWorkflowSpecValidationLimits {
   assignmentTextMaxChars: number;
@@ -271,9 +302,35 @@ function readAgent(
 }
 
 function readStepKind(value: unknown, label: string): CoordinatorWorkflowSpecStepKind {
-  if (value !== 'fanout' && value !== 'synthesize' && value !== 'verify' && value !== 'worker') {
+  if (
+    value !== 'decision' &&
+    value !== 'fanout' &&
+    value !== 'synthesize' &&
+    value !== 'verify' &&
+    value !== 'worker'
+  ) {
     throw new CoordinatorWorkflowSpecValidationError(
-      `${label} must be fanout, synthesize, verify, or worker`,
+      `${label} must be decision, fanout, synthesize, verify, or worker`,
+    );
+  }
+
+  return value;
+}
+
+function readDynamicActionKind(
+  value: unknown,
+  label: string,
+): CoordinatorWorkflowDynamicActionKind {
+  if (
+    value !== 'append_fanout' &&
+    value !== 'append_synthesize' &&
+    value !== 'append_verify' &&
+    value !== 'append_worker' &&
+    value !== 'mark_blocked' &&
+    value !== 'stop_workflow'
+  ) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      `${label} must be append_fanout, append_synthesize, append_verify, append_worker, mark_blocked, or stop_workflow`,
     );
   }
 
@@ -369,67 +426,49 @@ function readLanes(
   return value.map((entry, index) => readLane(entry, `${label}[${index}]`, options, fallbackAgent));
 }
 
-function readStep(
-  value: unknown,
-  index: number,
+function normalizeStepRecord(
+  step: NormalizedStepInput,
+  label: string,
   options: WorkflowSpecNormalizationOptions,
+  forcedKind?: CoordinatorWorkflowSpecStepKind,
 ): CoordinatorWorkflowSpecStepSnapshot {
-  assertRecord(value, `steps[${index}]`);
-  const step = value as NormalizedStepInput;
-  const kind = readStepKind(step.kind, `steps[${index}].kind`);
-  const id = readRequiredString(
-    step.id,
-    `steps[${index}].id`,
-    options.limits.maxWorkflowShortTextChars,
-  );
+  const kind = forcedKind ?? readStepKind(step.kind, `${label}.kind`);
+  const id = readRequiredString(step.id, `${label}.id`, options.limits.maxWorkflowShortTextChars);
   const name =
-    readOptionalString(
-      step.name,
-      `steps[${index}].name`,
-      options.limits.maxWorkflowShortTextChars,
-    ) ?? id;
-  const agent = readAgent(step.agent, `steps[${index}].agent`, options, options.fallbackAgent);
-  const lanes = readLanes(step.lanes, `steps[${index}].lanes`, options, agent);
-  const verifiers = readLanes(step.verifiers, `steps[${index}].verifiers`, options, agent);
+    readOptionalString(step.name, `${label}.name`, options.limits.maxWorkflowShortTextChars) ?? id;
+  const agent = readAgent(step.agent, `${label}.agent`, options, options.fallbackAgent);
+  const lanes = readLanes(step.lanes, `${label}.lanes`, options, agent);
+  const verifiers = readLanes(step.verifiers, `${label}.verifiers`, options, agent);
   const policy = readStepPolicy(step.policy, options.limits);
   const assignment = readOptionalString(
     step.assignment,
-    `steps[${index}].assignment`,
+    `${label}.assignment`,
     options.limits.assignmentTextMaxChars,
   );
   const findingSourceStepId = readOptionalString(
     step.findingSourceStepId,
-    `steps[${index}].findingSourceStepId`,
+    `${label}.findingSourceStepId`,
     options.limits.maxWorkflowShortTextChars,
   );
-  const includeEvidence = readOptionalBoolean(
-    step.includeEvidence,
-    `steps[${index}].includeEvidence`,
-  );
-  const includeFindings = readOptionalBoolean(
-    step.includeFindings,
-    `steps[${index}].includeFindings`,
-  );
+  const includeEvidence = readOptionalBoolean(step.includeEvidence, `${label}.includeEvidence`);
+  const includeFindings = readOptionalBoolean(step.includeFindings, `${label}.includeFindings`);
   const includeUnverifiedFindings = readOptionalBoolean(
     step.includeUnverifiedFindings,
-    `steps[${index}].includeUnverifiedFindings`,
+    `${label}.includeUnverifiedFindings`,
   );
-  const includeVerdicts = readOptionalBoolean(
-    step.includeVerdicts,
-    `steps[${index}].includeVerdicts`,
-  );
+  const includeVerdicts = readOptionalBoolean(step.includeVerdicts, `${label}.includeVerdicts`);
   const minimumVerifierCount = readOptionalNonNegativeInteger(
     step.minimumVerifierCount,
-    `steps[${index}].minimumVerifierCount`,
+    `${label}.minimumVerifierCount`,
   );
   const prompt = readOptionalString(
     step.prompt,
-    `steps[${index}].prompt`,
+    `${label}.prompt`,
     options.limits.assignmentTextMaxChars,
   );
   const role = readOptionalString(
     step.role,
-    `steps[${index}].role`,
+    `${label}.role`,
     options.limits.maxWorkflowShortTextChars,
   );
 
@@ -438,7 +477,7 @@ function readStep(
     ...(assignment !== undefined ? { assignment } : {}),
     dependsOn: readOptionalStringArray(
       step.dependsOn,
-      `steps[${index}].dependsOn`,
+      `${label}.dependsOn`,
       options.limits.maxWorkflowShortTextChars,
     ),
     ...(findingSourceStepId !== undefined ? { findingSourceStepId } : {}),
@@ -455,17 +494,28 @@ function readStep(
     ...(prompt !== undefined ? { prompt } : {}),
     resultSourceStepIds: readOptionalStringArray(
       step.resultSourceStepIds,
-      `steps[${index}].resultSourceStepIds`,
+      `${label}.resultSourceStepIds`,
       options.limits.maxWorkflowShortTextChars,
     ),
     ...(role !== undefined ? { role } : {}),
     sourceStepIds: readOptionalStringArray(
       step.sourceStepIds,
-      `steps[${index}].sourceStepIds`,
+      `${label}.sourceStepIds`,
       options.limits.maxWorkflowShortTextChars,
     ),
     verifiers,
   };
+}
+
+function readStep(
+  value: unknown,
+  index: number,
+  options: WorkflowSpecNormalizationOptions,
+): CoordinatorWorkflowSpecStepSnapshot {
+  const label = `steps[${index}]`;
+  assertRecord(value, label);
+  const step = value as NormalizedStepInput;
+  return normalizeStepRecord(step, label, options);
 }
 
 function assertUniqueIds(values: string[], label: string): void {
@@ -575,6 +625,18 @@ function assertStepReferences(steps: CoordinatorWorkflowSpecStepSnapshot[]): voi
 }
 
 function assertStepShape(step: CoordinatorWorkflowSpecStepSnapshot): void {
+  if (step.kind === 'decision') {
+    if (step.verifiers.length > 0) {
+      throw new CoordinatorWorkflowSpecValidationError(
+        `decision step ${step.id} must not define verifiers`,
+      );
+    }
+    if (step.lanes.length > 1) {
+      throw new CoordinatorWorkflowSpecValidationError(
+        `decision step ${step.id} supports one lane`,
+      );
+    }
+  }
   if (step.kind === 'fanout' && step.lanes.length === 0) {
     throw new CoordinatorWorkflowSpecValidationError(`fanout step ${step.id} requires lanes`);
   }
@@ -595,6 +657,9 @@ function assertStepShape(step: CoordinatorWorkflowSpecStepSnapshot): void {
 
 function countSpecLanes(steps: CoordinatorWorkflowSpecStepSnapshot[]): number {
   return steps.reduce((count, step) => {
+    if (step.kind === 'decision') {
+      return count + Math.max(1, step.lanes.length);
+    }
     if (step.kind === 'verify') {
       return count + step.verifiers.length;
     }
@@ -607,6 +672,79 @@ function countSpecLanes(steps: CoordinatorWorkflowSpecStepSnapshot[]): number {
 
     return count + step.lanes.length;
   }, 0);
+}
+
+function mapDynamicActionToStepKind(
+  kind: CoordinatorWorkflowDynamicActionKind,
+): CoordinatorWorkflowSpecStepKind {
+  switch (kind) {
+    case 'append_fanout':
+      return 'fanout';
+    case 'append_synthesize':
+      return 'synthesize';
+    case 'append_verify':
+      return 'verify';
+    case 'append_worker':
+      return 'worker';
+    case 'mark_blocked':
+    case 'stop_workflow':
+      throw new CoordinatorWorkflowSpecValidationError(`${kind} does not define workflow steps`);
+  }
+}
+
+function normalizeCoordinatorWorkflowDynamicAppendAction(
+  value: Record<string, unknown>,
+  label: string,
+  kind: Extract<
+    CoordinatorWorkflowDynamicActionKind,
+    'append_fanout' | 'append_synthesize' | 'append_verify' | 'append_worker'
+  >,
+  options: WorkflowSpecNormalizationOptions,
+): CoordinatorWorkflowDynamicAppendActionSnapshot {
+  const actionId = readOptionalString(
+    value.actionId,
+    `${label}.actionId`,
+    options.limits.maxWorkflowShortTextChars,
+  );
+  const step = normalizeStepRecord(
+    {
+      ...(value as NormalizedStepInput),
+      kind: mapDynamicActionToStepKind(kind),
+    },
+    `${label}.step`,
+    options,
+    mapDynamicActionToStepKind(kind),
+  );
+
+  return {
+    ...(actionId !== undefined ? { actionId } : {}),
+    kind,
+    step,
+  };
+}
+
+function normalizeCoordinatorWorkflowDynamicTerminalAction(
+  value: Record<string, unknown>,
+  label: string,
+  kind: Extract<CoordinatorWorkflowDynamicActionKind, 'mark_blocked' | 'stop_workflow'>,
+  options: WorkflowSpecNormalizationOptions,
+): CoordinatorWorkflowDynamicTerminalActionSnapshot {
+  const actionId = readOptionalString(
+    value.actionId,
+    `${label}.actionId`,
+    options.limits.maxWorkflowShortTextChars,
+  );
+  const reason = readRequiredString(
+    value.reason,
+    `${label}.reason`,
+    options.limits.assignmentTextMaxChars,
+  );
+
+  return {
+    ...(actionId !== undefined ? { actionId } : {}),
+    kind,
+    reason,
+  };
 }
 
 export function normalizeCoordinatorWorkflowSpec(
@@ -692,6 +830,65 @@ export function normalizeCoordinatorWorkflowStepAppend(
     appendedSteps: sourceSpec.steps.slice(existingSpec.steps.length),
     sourceSpec,
   };
+}
+
+export function normalizeCoordinatorWorkflowDynamicActions(
+  value: unknown,
+  options: WorkflowSpecNormalizationOptions,
+): CoordinatorWorkflowDynamicActionSnapshot[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new CoordinatorWorkflowSpecValidationError('workflowActions must be a non-empty array');
+  }
+
+  const actions = value.map((entry, index) => {
+    const label = `workflowActions[${index}]`;
+    assertRecord(entry, label);
+    const kind = readDynamicActionKind(entry.kind, `${label}.kind`);
+    switch (kind) {
+      case 'append_fanout':
+      case 'append_synthesize':
+      case 'append_verify':
+      case 'append_worker':
+        return normalizeCoordinatorWorkflowDynamicAppendAction(entry, label, kind, options);
+      case 'mark_blocked':
+      case 'stop_workflow':
+        return normalizeCoordinatorWorkflowDynamicTerminalAction(entry, label, kind, options);
+    }
+  });
+
+  const seenActionIds = new Set<string>();
+  for (const action of actions) {
+    if (action.actionId === undefined) {
+      continue;
+    }
+    if (seenActionIds.has(action.actionId)) {
+      throw new CoordinatorWorkflowSpecValidationError(
+        `workflowActions reuse actionId ${action.actionId}`,
+      );
+    }
+    seenActionIds.add(action.actionId);
+  }
+
+  const terminalActions = actions.filter(
+    (action) => action.kind === 'mark_blocked' || action.kind === 'stop_workflow',
+  );
+  if (terminalActions.length > 1) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      'workflowActions may include at most one terminal action',
+    );
+  }
+  if (terminalActions.length === 1 && actions[actions.length - 1] !== terminalActions[0]) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      'terminal workflowActions must be the final action',
+    );
+  }
+  if (terminalActions.length === 1 && actions.length > 1) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      'terminal workflowActions cannot be combined with append actions',
+    );
+  }
+
+  return actions;
 }
 
 export function isCoordinatorWorkflowSpecSnapshot(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  normalizeCoordinatorWorkflowDynamicActions,
   normalizeCoordinatorWorkflowSpec,
   normalizeCoordinatorWorkflowStepAppend,
   type CoordinatorWorkflowSpecValidationLimits,
@@ -135,6 +136,31 @@ describe('coordinator workflow spec validation', () => {
     ).toThrow(`above limit ${limits.maxWorkflowLanes}`);
   });
 
+  it('normalizes decision steps with one implicit lane', () => {
+    const spec = normalizeCoordinatorWorkflowSpec(
+      {
+        steps: [
+          { id: 'find', kind: 'worker' },
+          {
+            dependsOn: ['find'],
+            id: 'decide',
+            includeVerdicts: true,
+            kind: 'decision',
+            sourceStepIds: ['find'],
+          },
+        ],
+      },
+      { limits },
+    );
+
+    expect(spec.steps[1]).toMatchObject({
+      dependsOn: ['find'],
+      id: 'decide',
+      kind: 'decision',
+      sourceStepIds: ['find'],
+    });
+  });
+
   it('rejects malformed agents and non-object inputs', () => {
     expect(() =>
       normalizeCoordinatorWorkflowSpec(
@@ -231,5 +257,66 @@ describe('coordinator workflow spec validation', () => {
         { limits },
       ),
     ).toThrow('workflow spec reuses lane dedupeKey stable-lane');
+  });
+
+  it('normalizes structured workflow actions into append steps and terminal actions', () => {
+    const actions = normalizeCoordinatorWorkflowDynamicActions(
+      [
+        {
+          id: 'followup',
+          kind: 'append_worker',
+          name: 'Followup',
+        },
+      ],
+      { limits },
+    );
+
+    expect(actions).toEqual([
+      expect.objectContaining({
+        kind: 'append_worker',
+        step: expect.objectContaining({
+          id: 'followup',
+          kind: 'worker',
+          name: 'Followup',
+        }),
+      }),
+    ]);
+
+    expect(() =>
+      normalizeCoordinatorWorkflowDynamicActions(
+        [
+          {
+            kind: 'append_worker',
+            name: 'Followup',
+          },
+        ],
+        { limits },
+      ),
+    ).toThrow('workflowActions[0].step.id is required');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowDynamicActions(
+        [
+          { kind: 'append_worker', id: 'followup', name: 'Followup' },
+          { kind: 'mark_blocked', reason: 'Need approval' },
+        ],
+        { limits },
+      ),
+    ).toThrow('terminal workflowActions cannot be combined with append actions');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowDynamicActions(
+        [
+          { actionId: 'stable-action', id: 'followup', kind: 'append_worker', name: 'Followup' },
+          {
+            actionId: 'stable-action',
+            id: 'summary',
+            kind: 'append_synthesize',
+            name: 'Summary',
+          },
+        ],
+        { limits },
+      ),
+    ).toThrow('workflowActions reuse actionId stable-action');
   });
 });

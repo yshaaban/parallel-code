@@ -800,6 +800,100 @@ describe('browser-less coordinator E2E', () => {
     });
   });
 
+  it('lets decision lanes submit structured workflowActions over HTTP', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'decision-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Decide whether a focused follow-up is needed.',
+        spec: {
+          steps: [
+            { id: 'scout', kind: 'worker', name: 'Scout' },
+            {
+              dependsOn: ['scout'],
+              id: 'decide',
+              kind: 'decision',
+              name: 'Decide',
+              sourceStepIds: ['scout'],
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Decision workflow',
+      },
+    });
+    const workflowId = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow.id;
+    const scoutAgent = getSpawnedAgentOptions(0);
+    const scoutCredential = JSON.parse(
+      await readFile(scoutAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    await harness.callCoordinatorTool({
+      callId: 'decision-scout-result',
+      runId: run.id,
+      taskId: scoutAgent.taskId,
+      token: scoutCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        summary: 'Scout completed.',
+        workflowId,
+      },
+    });
+
+    const decisionAgent = getSpawnedAgentOptions(1);
+    const decisionCredential = JSON.parse(
+      await readFile(decisionAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    const submitted = await harness.callCoordinatorTool({
+      callId: 'decision-result',
+      runId: run.id,
+      taskId: decisionAgent.taskId,
+      token: decisionCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        metadata: {
+          workflowActions: [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+        },
+        summary: 'Decision appended a focused follow-up.',
+        workflowId,
+      },
+    });
+
+    expect(
+      getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(submitted),
+    ).toMatchObject({
+      workflow: {
+        expansions: [
+          expect.objectContaining({
+            actions: [expect.objectContaining({ kind: 'append_worker', stepIds: ['followup'] })],
+          }),
+        ],
+        lanes: [
+          expect.objectContaining({ name: 'Scout', status: 'completed' }),
+          expect.objectContaining({ name: 'Decide', status: 'completed' }),
+          expect.objectContaining({ name: 'Followup', status: 'waiting-for-result' }),
+        ],
+        stages: [
+          expect.objectContaining({ id: 'scout', status: 'completed' }),
+          expect.objectContaining({ id: 'decide', status: 'completed' }),
+          expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+        ],
+      },
+    });
+    expect(getSpawnedAgentOptions(2)).toMatchObject({
+      command: 'codex',
+      taskId: 'task-child-3',
+    });
+  });
+
   it('rejects invalid workflow specs over HTTP without creating workflow state', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
 

@@ -2093,6 +2093,217 @@ describe('coordinator tool gateway', () => {
     expect(workflow?.stepAppends).toBeUndefined();
   });
 
+  it('lets a decision lane submit structured workflowActions for follow-up work', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-decide', 'task-followup']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'decision-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Decide whether a focused follow-up is needed.',
+          spec: {
+            steps: [
+              { id: 'scout', kind: 'worker', name: 'Scout' },
+              {
+                dependsOn: ['scout'],
+                id: 'decide',
+                kind: 'decision',
+                name: 'Decide',
+                sourceStepIds: ['scout'],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Decision workflow',
+        },
+      },
+    );
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected decision workflow id');
+    }
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'decision-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: readTaskCredentialToken('task-scout'),
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Scout completed.',
+          workflowId,
+        },
+      },
+    );
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'decision-result',
+        runId: result.run.id,
+        taskId: 'task-decide',
+        token: readTaskCredentialToken('task-decide'),
+        toolName: 'submit_result',
+        payload: {
+          metadata: {
+            workflowActions: [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+          },
+          summary: 'Decision appended a focused follow-up.',
+          workflowId,
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow).toMatchObject({
+      expansions: [
+        expect.objectContaining({
+          actions: [expect.objectContaining({ kind: 'append_worker', stepIds: ['followup'] })],
+        }),
+      ],
+      stages: [
+        expect.objectContaining({ id: 'scout', status: 'completed' }),
+        expect.objectContaining({ id: 'decide', status: 'completed' }),
+        expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+      ],
+    });
+    expect(workflow?.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ taskId: 'task-scout', status: 'completed' }),
+        expect.objectContaining({ taskId: 'task-decide', status: 'completed' }),
+        expect.objectContaining({ taskId: 'task-followup', status: 'waiting-for-result' }),
+      ]),
+    );
+  });
+
+  it('rejects invalid decision workflowActions before storing a terminal result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-decide']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'decision-invalid-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          problem: 'Decide whether a focused follow-up is needed.',
+          spec: {
+            steps: [
+              { id: 'scout', kind: 'worker', name: 'Scout' },
+              {
+                dependsOn: ['scout'],
+                id: 'decide',
+                kind: 'decision',
+                name: 'Decide',
+                sourceStepIds: ['scout'],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Decision workflow',
+        },
+      },
+    );
+
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected decision workflow id');
+    }
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'decision-invalid-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: readTaskCredentialToken('task-scout'),
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Scout completed.',
+          workflowId,
+        },
+      },
+    );
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'decision-invalid-result',
+          runId: result.run.id,
+          taskId: 'task-decide',
+          token: readTaskCredentialToken('task-decide'),
+          toolName: 'submit_result',
+          payload: {
+            metadata: {
+              workflowActions: [
+                {
+                  dependsOn: ['missing-step'],
+                  id: 'followup',
+                  kind: 'append_worker',
+                  name: 'Followup',
+                },
+              ],
+            },
+            summary: 'Decision attempted an invalid follow-up.',
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('step followup depends on missing step missing-step');
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.results).toHaveLength(1);
+    expect(workflow?.results[0]).toMatchObject({ summary: 'Scout completed.' });
+    expect(workflow?.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ taskId: 'task-scout', status: 'completed' }),
+        expect.objectContaining({ taskId: 'task-decide', status: 'waiting-for-result' }),
+      ]),
+    );
+    expect(workflow?.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'decide', status: 'waiting-for-results' }),
+      ]),
+    );
+    expect(workflow?.stepAppends).toBeUndefined();
+    expect(workflow?.expansions).toBeUndefined();
+  });
+
   it('runs a spec-backed fanout verify synthesize workflow with typed verdicts', async () => {
     const env = createStorageEnv();
     envs.push(env);

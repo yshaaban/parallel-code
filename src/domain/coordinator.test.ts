@@ -87,6 +87,10 @@ describe('coordinator domain guards', () => {
       ...run,
       workflows: [
         {
+          appendPolicy: {
+            maxActionsPerDecision: 8,
+            maxStepAppends: 24,
+          },
           createdAt: 1_000,
           eventVersion: 2,
           id: 'workflow-1',
@@ -95,6 +99,7 @@ describe('coordinator domain guards', () => {
               at: 1_000,
               kind: 'workflow-created',
               message: 'Created map_reduce workflow.',
+              seq: 1,
             },
           ],
           lanes: [
@@ -142,6 +147,7 @@ describe('coordinator domain guards', () => {
               workflowId: 'workflow-1',
             },
           ],
+          programVersion: 2,
           runId: run.id,
           stages: [
             {

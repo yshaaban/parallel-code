@@ -91,6 +91,10 @@ function createWorkflow(
   overrides: Partial<CoordinatorWorkflowSnapshot> = {},
 ): CoordinatorWorkflowSnapshot {
   return {
+    appendPolicy: overrides.appendPolicy ?? {
+      maxActionsPerDecision: 8,
+      maxStepAppends: 24,
+    },
     createdAt: overrides.createdAt ?? now,
     eventVersion: overrides.eventVersion ?? 2,
     id: overrides.id ?? 'workflow-1',
@@ -138,6 +142,7 @@ function createWorkflow(
         workflowId: overrides.id ?? 'workflow-1',
       },
     ],
+    programVersion: overrides.programVersion ?? 2,
     runId: overrides.runId ?? 'run-1',
     ...(overrides.sourceSpec !== undefined ? { sourceSpec: overrides.sourceSpec } : {}),
     stages: overrides.stages ?? [
@@ -306,6 +311,7 @@ describe('coordinator UI model', () => {
               laneId: 'lane-map',
               message: 'Mapped backend risk.',
               resultId: 'result-1',
+              seq: 1,
               stageId: 'map',
             },
           ],
@@ -370,6 +376,7 @@ describe('coordinator UI model', () => {
               kind: 'workflow-steps-appended',
               laneId: 'lane-map',
               message: 'Appended 1 workflow step: followup.',
+              seq: 1,
             },
           ],
           sourceSpec: {
