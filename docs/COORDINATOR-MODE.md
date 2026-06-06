@@ -42,8 +42,10 @@ and the durable run identifier is exported as `PARALLEL_CODE_COORDINATOR_RUN_ID`
 
 Coordinator prompts are not sent as ordinary free text. The initial coordinator task prompt and
 each subtask assignment include the local tool command, the allowed workflow, and the expectation
-that subtasks report readiness through coordinator tools. This keeps Codex and custom terminal
-agents aligned without importing upstream MCP runtime assumptions.
+that subtasks report readiness through coordinator tools. Hidden Codex subtasks now seed their
+initial assignment at spawn by default instead of waiting for a shell-style prompt, while follow-up
+prompts still use the readiness-gated delivery path. This keeps Codex and custom terminal agents
+aligned without importing upstream MCP runtime assumptions.
 
 Workflow state is also backend owned. A workflow snapshot records the template, optional normalized
 `steps[]` spec, append policy, append audit entries, recorded expansions, execution policy, stages,
@@ -64,7 +66,9 @@ The current tool surface is intentionally small and explicit:
 
 - `get_task_status` returns the run snapshot.
 - `list_tasks` returns the coordinator-owned subtask list.
-- `spawn_subtask` creates a hidden task and hidden PTY-backed agent, then queues the assignment.
+- `spawn_subtask` creates a hidden task and hidden PTY-backed agent. Codex subtasks default to a
+  seeded initial assignment at spawn; generic/custom terminal agents still use the readiness-gated
+  prompt queue for the initial assignment.
 - `spawn_many` creates or extends a custom fan-out workflow with named lanes. Lane-level spawn
   failures are recorded in the workflow instead of losing the whole call result.
 - `start_workflow` creates a backend-owned workflow from a named template or from a constrained
@@ -78,7 +82,8 @@ The current tool surface is intentionally small and explicit:
   existing append, while reusing an `appendId` for different steps is rejected. Appended steps are
   normalized against the whole workflow graph before any state changes, and ready appended stages
   are reconciled immediately.
-- `send_prompt` queues a prompt for a run-owned subtask.
+- `send_prompt` queues a follow-up prompt for a run-owned subtask. Subtasks whose launch contract
+  disallows follow-up prompts reject it instead of silently queueing an unreachable write.
 - `wait_for_idle` waits for a target subtask to reach backend `idle-at-prompt` supervision.
 - `get_task_output` returns a capped tail of the target subtask's backend scrollback.
 - `get_task_diff` returns git diff summary, and optionally a capped patch, for a git-backed subtask.
@@ -114,7 +119,9 @@ ready-for-review subtasks stay visible before healthy running work.
 Clicking a chip opens a small anchored inspector with output tail, diff, metadata, follow-up, wait,
 ask-to-land, and close controls. The `+` button opens a compact spawn form for a new hidden subtask.
 The overflow menu keeps debug access, including copying a `list_tasks` helper command, but the raw
-CLI helper is no longer the primary UI.
+CLI helper is no longer the primary UI. The chip metadata and passive detail line also project the
+launch contract: seeded-at-spawn versus prompt-delivered startup, whether follow-up prompts are
+allowed, the readiness policy in effect, and any current prompt wait reason.
 
 ## Safety Rules
 
@@ -125,11 +132,20 @@ Credentials are revoked when a coordinator parent task or subtask is removed thr
 cleanup. Restored coordinator runs are marked `stale-after-restore` because hidden PTY sessions are
 not reconstructed after a server restart.
 
-Prompt delivery goes through the task-command lease path before writing to the PTY. It waits for
-backend supervision to report `idle-at-prompt`, backs off while the agent is busy, verifies the exact
-lease generation while writing, and retries after supervision or timer events. A prompt blocked by
-`awaiting-input` is left for the coordinator to inspect instead of being force-written over a
-question.
+Prompt delivery goes through the task-command lease path before writing to the PTY. Initial
+assignment and follow-up prompting are separate contracts:
+
+- seeded-start subtasks receive their first assignment in the process launch arguments and do not
+  queue an initial prompt
+- readiness-gated subtasks queue their initial assignment like any other prompt
+- follow-up prompts always wait for backend supervision to report `idle-at-prompt`, back off while
+  the agent is busy, verify the exact lease generation while writing, and retry after supervision
+  or timer events
+
+A prompt blocked by `awaiting-input` is left for the coordinator to inspect instead of being
+force-written over a question. Codex readiness detection also recognizes the visible Codex composer
+prompt, not only shell-style prompts, so follow-up delivery can recover once the TUI is actually
+ready.
 
 Prompt queues are bounded per target subtask, and stable prompt/spawn dedupe keys are honored before
 creating additional hidden tasks or queue entries. Subtask cleanup cancels queued prompts and
@@ -144,7 +160,12 @@ their own design.
 
 Workflow lanes use the same direct-command launch path. Follow-up stages spawned by fixed templates
 or custom specs use the default `codex` command unless the spec/lane payload supplies an agent.
-Agent launch secrets are not persisted inside workflow snapshots.
+Agent launch secrets are not persisted inside workflow snapshots. Workflow specs can also override
+the startup contract per agent through `initialAssignmentMode`, `followupPromptMode`, and
+`readinessPolicy`; the current default for `codex` remains seeded interactive startup with
+readiness-gated follow-up prompts. `readinessPolicy` is not cosmetic: `codex` and `shell` decide
+which prompt shapes count as ready before the backend writes a follow-up, while
+`terminal-generic` trusts the existing `idle-at-prompt` supervision state.
 
 Custom workflow specs are intentionally constrained data, not executable scripts. Supported step
 kinds are:
@@ -201,7 +222,8 @@ Coordinator work should prefer browser-free tests first:
 - browser-less coordinator E2E tests through `npm run test:node:coordinator:e2e` for the full
   browser-server route shape: HTTP IPC run creation, `/api/coordinator/tool-call`, renderer UI
   actions, task-command leases, duplicate spawn dedupe, custom agent launch config, prompt delivery
-  and cancellation, git-only tool rejection for non-git runs, workflow start/result/advance,
+  and cancellation, seeded initial assignment, follow-up prompt rejection for disallowed subtasks,
+  Codex readiness detection, git-only tool rejection for non-git runs, workflow start/result/advance,
   adaptive append/result/advance, decision-lane workflow actions, invalid spec rejection,
   spec-backed fanout/verify/synthesize workflows, cleanup, stale restore, and websocket replay
 

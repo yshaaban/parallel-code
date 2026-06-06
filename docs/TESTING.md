@@ -116,6 +116,8 @@ For coordinator-mode work:
   category seam
 - prove prompt delivery against backend supervision and task-command leases; mounted terminals or
   `PromptInput` should not be required
+- prove seeded initial assignment separately from readiness-gated follow-up prompt delivery
+- prove Codex readiness detection from captured visible-tail fixtures instead of only shell prompts
 - prove direct and scheduled prompt delivery cannot interleave writes to the same target task
 - prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
   runs
@@ -131,8 +133,9 @@ For coordinator-mode work:
   including workflow activity, append and expansion activity, failed/blocked reasons, completion
   reasons, retry/timeout/skipped counts, result previews, and verdict counts
 - prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
-  close-before-delivery cancellation, credential revocation, restored stale runs, and landing
-  cleanup before relying on browser canaries
+  close-before-delivery cancellation, seeded-start versus prompt-delivered startup contracts,
+  follow-up rejection for disallowed subtasks, credential revocation, restored stale runs, and
+  landing cleanup before relying on browser canaries
 - run `npm run test:node:coordinator:e2e` when coordinator changes cross browser-server HTTP IPC,
   `/api/coordinator/tool-call`, websocket replay, workflow spec execution, adaptive workflow
   appends, decision-lane workflow actions, prompt delivery, or restart/persistence seams
