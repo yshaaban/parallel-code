@@ -30,7 +30,8 @@ export function buildCoordinatorInitialPrompt(
     'Use decision workflow stages when one lane should choose the next append-only steps instead of hard-coding the whole plan up front.',
     'Use close_task to explicitly clean up and discard subtasks when they are no longer needed.',
     'Use list_tasks, get_task_status, wait_for_idle, get_task_output, and get_task_diff to inspect work before asking for changes.',
-    'Use send_prompt for follow-up instructions. Do not send overlapping prompt writes to the same subtask.',
+    'Use send_prompt only for follow-up instructions. Codex subtasks usually start with the assignment already seeded at spawn.',
+    'Do not send overlapping prompt writes to the same subtask.',
     'Ask subtasks to call signal_done when their work is ready, and land_self when they should merge themselves.',
     'Keep destructive cleanup explicit. Do not merge or close work until the result and verification are clear.',
   ];

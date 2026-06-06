@@ -281,6 +281,62 @@ describe('coordinator runtime', () => {
     });
   });
 
+  it('backfills legacy subtask startup state on restore', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-id',
+      worktreePath: '/repo/task-child',
+      now: 1_100,
+    });
+    const prompt = enqueueCoordinatorPrompt({
+      kind: 'initial-assignment',
+      runId: run.id,
+      sourceTaskId: 'task-coordinator',
+      targetAgentId: 'agent-child',
+      targetTaskId: 'task-child',
+      text: 'Continue',
+      now: 1_200,
+    });
+    updateCoordinatorPrompt(run.id, prompt.requestId, {
+      deliveredAt: 1_230,
+      status: 'delivered',
+    });
+    const persisted = getCoordinatorRuntimeState();
+    const legacyState = {
+      ...persisted,
+      runs: persisted.runs.map((entry) => ({
+        ...entry,
+        subtasks: entry.subtasks.map(({ startup: _startup, ...subtask }) => subtask),
+      })),
+    };
+
+    resetCoordinatorRuntimeForTests();
+    restoreCoordinatorRuntimeState(legacyState);
+
+    expect(getCoordinatorRun(run.id)?.subtasks[0]).toMatchObject({
+      startup: {
+        deliveredAt: 1_230,
+        followupPromptMode: 'post-ready-prompt',
+        initialAssignmentMode: 'post-ready-prompt',
+        initialAssignmentStatus: 'delivered',
+        readinessPolicy: 'terminal-generic',
+      },
+      status: 'exited',
+    });
+  });
+
   it('clears stale completion reason when appending to a completed workflow', () => {
     const run = createCoordinatorRun({
       coordinatorTaskId: 'task-coordinator',

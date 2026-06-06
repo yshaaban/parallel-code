@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   COORDINATOR_LIMITS,
   COORDINATOR_WORKFLOW_PROGRAM_VERSION,
+  getCoordinatorSubtaskStartupSnapshot,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
   type CoordinatorBootstrapSnapshot,
@@ -17,6 +18,7 @@ import {
   type CoordinatorRunSnapshot,
   type CoordinatorRunStatus,
   type CoordinatorSubtaskSnapshot,
+  type CoordinatorSubtaskStartupSnapshot,
   type CoordinatorSubtaskStatus,
   type CoordinatorWorkflowJournalEntrySnapshot,
   type CoordinatorWorkflowLaneSnapshot,
@@ -70,6 +72,7 @@ interface AddCoordinatorSubtaskOptions {
   dedupeKey?: string;
   parentCoordinatorTaskId: string;
   runId: string;
+  startup?: CoordinatorSubtaskStartupSnapshot;
   status?: CoordinatorSubtaskStatus;
   taskId: string;
   toolTokenId: string;
@@ -102,6 +105,12 @@ interface UpdateCoordinatorPromptPatch {
   failedAt?: number;
   status?: CoordinatorPromptRequestSnapshot['status'];
   waitingReason?: string | undefined;
+}
+
+interface UpdateCoordinatorSubtaskPatch {
+  now?: number;
+  result?: string;
+  startup?: CoordinatorSubtaskStartupSnapshot;
 }
 
 interface CreateCoordinatorWorkflowOptions {
@@ -275,6 +284,81 @@ function replaceRun(record: RunRecord, run: CoordinatorRunSnapshot): void {
   };
 }
 
+function createLegacyPromptStartupSnapshot(
+  initialAssignmentStatus: CoordinatorSubtaskStartupSnapshot['initialAssignmentStatus'],
+  deliveredAt?: number,
+): CoordinatorSubtaskStartupSnapshot {
+  return {
+    followupPromptMode: 'post-ready-prompt',
+    initialAssignmentMode: 'post-ready-prompt',
+    initialAssignmentStatus,
+    readinessPolicy: 'terminal-generic',
+    ...(deliveredAt !== undefined ? { deliveredAt } : {}),
+  };
+}
+
+function getLegacySubtaskInitialAssignmentStatus(
+  subtask: CoordinatorSubtaskSnapshot,
+): CoordinatorSubtaskStartupSnapshot['initialAssignmentStatus'] {
+  if (subtask.status === 'waiting-for-agent-ready') {
+    return 'pending-prompt';
+  }
+
+  return 'delivered';
+}
+
+function createLegacySubtaskStartupSnapshot(
+  subtask: CoordinatorSubtaskSnapshot,
+  prompts: readonly CoordinatorPromptRequestSnapshot[],
+): CoordinatorSubtaskStartupSnapshot {
+  const initialPrompts = prompts.filter(
+    (prompt) => prompt.kind === 'initial-assignment' && prompt.targetTaskId === subtask.taskId,
+  );
+  const initialPrompt = initialPrompts[initialPrompts.length - 1];
+  if (initialPrompt) {
+    switch (initialPrompt.status) {
+      case 'delivered':
+        return createLegacyPromptStartupSnapshot('delivered', initialPrompt.deliveredAt);
+      case 'blocked-by-question':
+        return createLegacyPromptStartupSnapshot('blocked-by-question');
+      case 'failed':
+        return createLegacyPromptStartupSnapshot('failed');
+      default:
+        return createLegacyPromptStartupSnapshot('pending-prompt');
+    }
+  }
+
+  return {
+    ...getCoordinatorSubtaskStartupSnapshot(subtask.startup),
+    initialAssignmentMode: 'post-ready-prompt',
+    initialAssignmentStatus: getLegacySubtaskInitialAssignmentStatus(subtask),
+  };
+}
+
+function normalizeRestoredSubtask(
+  subtask: CoordinatorSubtaskSnapshot,
+  prompts: readonly CoordinatorPromptRequestSnapshot[],
+): CoordinatorSubtaskSnapshot {
+  const startup = subtask.startup ?? createLegacySubtaskStartupSnapshot(subtask, prompts);
+  if (
+    subtask.status === 'running' ||
+    subtask.status === 'spawning' ||
+    subtask.status === 'waiting-for-agent-ready'
+  ) {
+    return {
+      ...subtask,
+      result: 'Server restored coordinator state without the live PTY session.',
+      startup,
+      status: 'exited',
+    };
+  }
+
+  return {
+    ...subtask,
+    startup,
+  };
+}
+
 function normalizeRestoredRun(run: CoordinatorRunSnapshot): CoordinatorRunSnapshot {
   const staleStatuses: CoordinatorRunStatus[] = ['draining', 'running', 'starting'];
   const stalePromptStatuses: CoordinatorPromptStatus[] = [
@@ -286,29 +370,22 @@ function normalizeRestoredRun(run: CoordinatorRunSnapshot): CoordinatorRunSnapsh
     'waiting-for-terminal-prompt',
     'waiting-for-user-idle',
   ];
+  const restoredPrompts: CoordinatorPromptRequestSnapshot[] = run.promptQueue.map((prompt) => {
+    if (!stalePromptStatuses.includes(prompt.status)) {
+      return prompt;
+    }
+
+    return {
+      ...prompt,
+      status: 'write-unknown-after-restore',
+      waitingReason: 'server-restored-without-live-pty-session',
+    };
+  });
   return {
     ...run,
-    promptQueue: run.promptQueue.map((prompt) =>
-      stalePromptStatuses.includes(prompt.status)
-        ? {
-            ...prompt,
-            status: 'write-unknown-after-restore',
-            waitingReason: 'server-restored-without-live-pty-session',
-          }
-        : prompt,
-    ),
+    promptQueue: restoredPrompts,
     status: staleStatuses.includes(run.status) ? 'stale-after-restore' : run.status,
-    subtasks: run.subtasks.map((subtask) =>
-      subtask.status === 'running' ||
-      subtask.status === 'spawning' ||
-      subtask.status === 'waiting-for-agent-ready'
-        ? {
-            ...subtask,
-            status: 'exited',
-            result: 'Server restored coordinator state without the live PTY session.',
-          }
-        : subtask,
-    ),
+    subtasks: run.subtasks.map((subtask) => normalizeRestoredSubtask(subtask, run.promptQueue)),
     workflows: (run.workflows ?? []).map(normalizeRestoredWorkflow),
   };
 }
@@ -482,6 +559,7 @@ export function addCoordinatorSubtask(
     createdAt: existing?.createdAt ?? now,
     ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
     parentCoordinatorTaskId: options.parentCoordinatorTaskId,
+    startup: getCoordinatorSubtaskStartupSnapshot(options.startup ?? existing?.startup),
     status: options.status ?? existing?.status ?? 'running',
     taskId: options.taskId,
     toolTokenId: options.toolTokenId,
@@ -511,10 +589,7 @@ export function updateCoordinatorSubtaskStatus(
   runId: string,
   taskId: string,
   status: CoordinatorSubtaskStatus,
-  options: {
-    result?: string;
-    now?: number;
-  } = {},
+  options: UpdateCoordinatorSubtaskPatch = {},
 ): CoordinatorSubtaskSnapshot {
   const record = requireRunRecord(runId);
   const existing = record.subtasksByTaskId.get(taskId);
@@ -527,6 +602,7 @@ export function updateCoordinatorSubtaskStatus(
   const subtask: CoordinatorSubtaskSnapshot = {
     ...existing,
     ...(options.result !== undefined ? { result: options.result } : {}),
+    ...(options.startup !== undefined ? { startup: options.startup } : {}),
     status,
     updatedAt: now,
   };

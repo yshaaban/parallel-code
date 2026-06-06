@@ -188,6 +188,28 @@ describe('coordinator workflow spec validation', () => {
     ).toThrow('spec.inputs must be an object');
   });
 
+  it('rejects unsupported noninteractive startup modes in workflow agents', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            {
+              agent: {
+                command: 'codex',
+                initialAssignmentMode: 'spawn-seeded-noninteractive',
+              },
+              id: 'worker',
+              kind: 'worker',
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow(
+      'steps[0].agent.initialAssignmentMode must be spawn-seeded-interactive or post-ready-prompt',
+    );
+  });
+
   it('normalizes appended steps against the whole workflow graph', () => {
     const initial = normalizeCoordinatorWorkflowSpec(
       {

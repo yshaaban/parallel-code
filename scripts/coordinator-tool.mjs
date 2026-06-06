@@ -71,11 +71,17 @@ async function main() {
     ...(rawPayload !== undefined ? { payload: readPayload(rawPayload) } : {}),
   };
 
-  const response = await fetch(credential.toolCallUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(envelope),
-  });
+  let response;
+  try {
+    response = await fetch(credential.toolCallUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(envelope),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Coordinator tool fetch failed for ${credential.toolCallUrl}: ${message}`);
+  }
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(body?.error ?? `Coordinator tool call failed with HTTP ${response.status}`);

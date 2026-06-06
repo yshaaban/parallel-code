@@ -89,6 +89,7 @@ const mocks = vi.hoisted(() => {
         _context: unknown,
         options: {
           agentId: string;
+          command: string;
           isShell: boolean;
           taskId: string;
         },
@@ -101,6 +102,12 @@ const mocks = vi.hoisted(() => {
           taskId: options.taskId,
         });
         supervisionByAgentId.set(options.agentId, createSupervisionSnapshot(options));
+        if (options.command === 'codex') {
+          scrollbackByAgentId.set(
+            options.agentId,
+            Buffer.from('› Investigate coordinator E2E behavior.'),
+          );
+        }
         return false;
       },
     ),
@@ -195,7 +202,10 @@ interface SpawnCoordinatorSubtaskOverrides {
   command?: string;
   dedupeKey?: string;
   env?: Record<string, string>;
+  followupPromptMode?: 'post-ready-prompt' | 'disallow';
+  initialAssignmentMode?: 'spawn-seeded-interactive' | 'post-ready-prompt';
   name?: string;
+  readinessPolicy?: 'codex' | 'shell' | 'terminal-generic';
   skipPermissionsArgs?: string[];
 }
 
@@ -384,6 +394,15 @@ async function spawnCoordinatorSubtask(
         args: overrides.args ?? ['--model', 'gpt-5.5'],
         command: overrides.command ?? 'codex',
         env: overrides.env ?? { FOO: '1' },
+        ...(overrides.followupPromptMode !== undefined
+          ? { followupPromptMode: overrides.followupPromptMode }
+          : {}),
+        ...(overrides.initialAssignmentMode !== undefined
+          ? { initialAssignmentMode: overrides.initialAssignmentMode }
+          : {}),
+        ...(overrides.readinessPolicy !== undefined
+          ? { readinessPolicy: overrides.readinessPolicy }
+          : {}),
         skipPermissionsArgs: overrides.skipPermissionsArgs ?? ['--yolo'],
       },
       assignment: overrides.assignment ?? 'Investigate coordinator E2E behavior.',
@@ -586,7 +605,12 @@ describe('browser-less coordinator E2E', () => {
 
       expect(subtask.status).toBe('running');
       expect(spawnedAgent).toMatchObject({
-        args: ['--model', 'gpt-5.5', '--yolo'],
+        args: [
+          '--model',
+          'gpt-5.5',
+          '--yolo',
+          expect.stringContaining('Investigate coordinator E2E behavior.'),
+        ],
         command: 'codex',
         cwd: subtask.worktreePath,
         taskId: subtask.taskId,
@@ -598,9 +622,7 @@ describe('browser-less coordinator E2E', () => {
       expect(spawnedAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL).toContain(
         'coordinator-credentials',
       );
-      expect(mocks.writes.map((write) => write.data).join('\n')).toContain(
-        'Investigate coordinator E2E behavior.',
-      );
+      expect(mocks.writes).toEqual([]);
       await expect(subtaskEvent).resolves.toMatchObject({
         event: {
           payload: {
@@ -1216,6 +1238,70 @@ describe('browser-less coordinator E2E', () => {
       queuedPrompt.requestId,
       'delivered',
     );
+  });
+
+  it('seeds the default Codex assignment at spawn and reports the startup contract in list_tasks', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
+
+    expect(subtask).toMatchObject({
+      startup: {
+        followupPromptMode: 'post-ready-prompt',
+        initialAssignmentMode: 'spawn-seeded-interactive',
+        initialAssignmentStatus: 'seeded-at-spawn',
+        readinessPolicy: 'codex',
+      },
+      status: 'running',
+    });
+    expect(mocks.writes).toEqual([]);
+    expect(getSpawnedAgentOptions()).toMatchObject({
+      args: [
+        '--model',
+        'gpt-5.5',
+        '--yolo',
+        expect.stringContaining('Investigate coordinator E2E behavior.'),
+      ],
+      command: 'codex',
+    });
+
+    const taskList = await harness.callCoordinatorTool({
+      callId: 'list-seeded-subtasks',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'list_tasks',
+    });
+    expect(getToolResult<Array<Record<string, unknown>>>(taskList)).toEqual([
+      expect.objectContaining({
+        followupPromptMode: 'post-ready-prompt',
+        initialAssignmentMode: 'spawn-seeded-interactive',
+        initialAssignmentStatus: 'seeded-at-spawn',
+        readinessPolicy: 'codex',
+        status: 'running',
+        taskId: subtask.taskId,
+      }),
+    ]);
+  });
+
+  it('rejects follow-up prompts for subtasks that disallow them', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token, {
+      followupPromptMode: 'disallow',
+    });
+
+    await expect(
+      harness.callCoordinatorTool({
+        callId: 'send-followup-disallowed',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'send_prompt',
+        payload: {
+          targetTaskId: subtask.taskId,
+          text: 'Please continue.',
+        },
+      }),
+    ).rejects.toThrow('targetTaskId does not accept follow-up prompts');
   });
 
   it('cancels queued prompts when their target closes before delivery', async () => {

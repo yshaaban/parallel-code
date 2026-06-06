@@ -1555,6 +1555,107 @@ describe('coordinator tool gateway', () => {
     });
   });
 
+  it('seeds the initial Codex assignment at spawn instead of queueing a prompt', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+
+    const response = await executeCoordinatorToolCall(
+      {
+        context,
+        taskNames: createTaskRegistry(),
+      },
+      {
+        callId: 'spawn-seeded-codex',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: {
+            args: ['--model', 'gpt-5.5'],
+            command: 'codex',
+          },
+          assignment: 'Review the coordinator startup path.',
+          name: 'Codex child',
+        },
+      },
+    );
+
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        args: [
+          '--model',
+          'gpt-5.5',
+          expect.stringContaining('Review the coordinator startup path.'),
+        ],
+        command: 'codex',
+      }),
+    );
+    expect(mocks.writeToAgentMock).not.toHaveBeenCalled();
+    expect(getCoordinatorRun(result.run.id)?.promptQueue).toEqual([]);
+    expect(response.result).toMatchObject({
+      startup: {
+        followupPromptMode: 'post-ready-prompt',
+        initialAssignmentMode: 'spawn-seeded-interactive',
+        initialAssignmentStatus: 'seeded-at-spawn',
+        readinessPolicy: 'codex',
+      },
+      status: 'running',
+      taskId: 'task-child',
+    });
+  });
+
+  it('rejects unsupported noninteractive seeded startup', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    await expect(
+      executeCoordinatorToolCall(
+        {
+          context,
+          taskNames: createTaskRegistry(),
+        },
+        {
+          callId: 'spawn-seeded-codex-noninteractive',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_subtask',
+          payload: {
+            agent: {
+              command: 'codex',
+              followupPromptMode: 'disallow',
+              initialAssignmentMode: 'spawn-seeded-noninteractive',
+            },
+            assignment: 'Summarize the startup path.',
+            name: 'Codex one-shot child',
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'agent.initialAssignmentMode must be spawn-seeded-interactive or post-ready-prompt',
+    );
+  });
+
   it('marks spawned subtasks running after the initial assignment is delivered', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -1608,6 +1709,175 @@ describe('coordinator tool gateway', () => {
       status: 'delivered',
     });
     expect(mocks.writeToAgentMock).toHaveBeenCalled();
+  });
+
+  it('keeps prompt-delivered startup waiting when shell readiness sees only a Codex composer prompt', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+    mocks.getAgentScrollbackBufferMock.mockReturnValue(
+      Buffer.from('› Improve documentation in @docs/ARCHITECTURE.md'),
+    );
+
+    const response = await executeCoordinatorToolCall(
+      {
+        context,
+        taskNames: createTaskRegistry(),
+      },
+      {
+        callId: 'spawn-shell-readiness-codex-tail',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: {
+            command: 'custom-agent',
+            readinessPolicy: 'shell',
+          },
+          assignment: 'Build the slice',
+          name: 'Child Task',
+        },
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      startup: {
+        initialAssignmentMode: 'post-ready-prompt',
+        initialAssignmentStatus: 'pending-prompt',
+        readinessPolicy: 'shell',
+      },
+      status: 'waiting-for-agent-ready',
+      taskId: 'task-child',
+    });
+    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
+      status: 'waiting-for-terminal-prompt',
+      waitingReason: 'agent-quiet',
+    });
+    expect(mocks.writeToAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('delivers prompt-delivered startup when codex readiness sees a Codex composer prompt', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+    mocks.getAgentScrollbackBufferMock.mockReturnValue(
+      Buffer.from('› Improve documentation in @docs/ARCHITECTURE.md'),
+    );
+
+    const response = await executeCoordinatorToolCall(
+      {
+        context,
+        taskNames: createTaskRegistry(),
+      },
+      {
+        callId: 'spawn-codex-readiness-codex-tail',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: {
+            command: 'custom-agent',
+            readinessPolicy: 'codex',
+          },
+          assignment: 'Build the slice',
+          name: 'Child Task',
+        },
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      startup: {
+        initialAssignmentMode: 'post-ready-prompt',
+        initialAssignmentStatus: 'delivered',
+        readinessPolicy: 'codex',
+      },
+      status: 'running',
+      taskId: 'task-child',
+    });
+    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
+      status: 'delivered',
+    });
+    expect(mocks.writeToAgentMock).toHaveBeenCalled();
+  });
+
+  it('rejects seeded initial assignment for unsupported non-Codex agents', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+
+    await expect(
+      executeCoordinatorToolCall(
+        {
+          context,
+          taskNames: createTaskRegistry(),
+        },
+        {
+          callId: 'spawn-unsupported-seeded',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_subtask',
+          payload: {
+            agent: {
+              command: 'custom-agent',
+              initialAssignmentMode: 'spawn-seeded-interactive',
+            },
+            assignment: 'Build the slice',
+            name: 'Child Task',
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'Seeded initial assignment modes are currently supported only for codex agents',
+    );
   });
 
   it('deduplicates logical spawn retries before creating another hidden task', async () => {

@@ -66,6 +66,13 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
         branchName: 'task/parser',
         createdAt: 1_000,
         parentCoordinatorTaskId: 'task-coordinator',
+        startup: {
+          followupPromptMode: 'post-ready-prompt',
+          initialAssignmentMode: 'spawn-seeded-interactive',
+          initialAssignmentStatus: 'seeded-at-spawn',
+          readinessPolicy: 'codex',
+          seededAt: 1_000,
+        },
         status: 'running',
         taskId: 'task-child',
         toolTokenId: 'token-child',
@@ -135,6 +142,42 @@ describe('TaskCoordinatorSection', () => {
     expect(screen.getByText('1/5')).toBeDefined();
     expect(screen.getByText('Q1')).toBeDefined();
     expect(screen.getByLabelText('Open Fix parser behavior')).toBeDefined();
+  });
+
+  it('shows seeded startup details and disables follow-up input when prompts are disallowed', () => {
+    coordinatorRunRef.current = createRun({
+      promptQueue: [],
+      subtasks: [
+        {
+          agentId: 'agent-child',
+          assignment: 'Run a one-shot audit',
+          createdAt: 1_000,
+          parentCoordinatorTaskId: 'task-coordinator',
+          startup: {
+            followupPromptMode: 'disallow',
+            initialAssignmentMode: 'spawn-seeded-interactive',
+            initialAssignmentStatus: 'seeded-at-spawn',
+            readinessPolicy: 'codex',
+            seededAt: 1_000,
+          },
+          status: 'running',
+          taskId: 'task-child',
+          toolTokenId: 'token-child',
+          updatedAt: 1_100,
+          worktreePath: '/repo/.worktrees/task-child',
+        },
+      ],
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Open Run a one-shot audit'));
+    fireEvent.click(screen.getByText('Meta'));
+
+    expect(screen.getByText('Initial assignment seeded at spawn')).toBeDefined();
+    expect(screen.getByText('Follow-up prompts disabled')).toBeDefined();
+    expect(screen.getByText('Codex readiness detection')).toBeDefined();
+    expect(screen.getByLabelText('Follow-up prompt')).toHaveProperty('disabled', true);
+    expect(screen.getByText('Ask to land')).toHaveProperty('disabled', true);
   });
 
   it('renders a compact workflow timeline when workflow snapshots exist', () => {
@@ -324,6 +367,13 @@ describe('TaskCoordinatorSection', () => {
           branchName: 'task/parser',
           createdAt: 1_000,
           parentCoordinatorTaskId: 'task-coordinator',
+          startup: {
+            followupPromptMode: 'post-ready-prompt',
+            initialAssignmentMode: 'spawn-seeded-interactive',
+            initialAssignmentStatus: 'seeded-at-spawn',
+            readinessPolicy: 'codex',
+            seededAt: 1_000,
+          },
           status: 'failed',
           taskId: 'task-child',
           toolTokenId: 'token-child',
@@ -349,6 +399,13 @@ describe('TaskCoordinatorSection', () => {
           assignment: 'Fix parser behavior',
           createdAt: 1_000,
           parentCoordinatorTaskId: 'task-coordinator',
+          startup: {
+            followupPromptMode: 'post-ready-prompt',
+            initialAssignmentMode: 'spawn-seeded-interactive',
+            initialAssignmentStatus: 'seeded-at-spawn',
+            readinessPolicy: 'codex',
+            seededAt: 1_000,
+          },
           status: 'ready-for-review',
           taskId: 'task-child',
           toolTokenId: 'token-child',

@@ -5,12 +5,14 @@ import type {
   CoordinatorRunSnapshot,
   CoordinatorRunStatus,
   CoordinatorSubtaskSnapshot,
+  CoordinatorSubtaskStartupSnapshot,
   CoordinatorSubtaskStatus,
   CoordinatorToolName,
   CoordinatorWorkflowSnapshot,
   CoordinatorWorkflowStageSnapshot,
 } from '../domain/coordinator';
 import {
+  getCoordinatorSubtaskStartupSnapshot,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
@@ -56,12 +58,17 @@ export interface CoordinatorSubtaskChipView {
   badgeText?: string;
   branchName?: string;
   diffHint: boolean;
+  followupPromptEnabled: boolean;
+  followupPromptModeLabel: string;
+  initialAssignmentLabel: string;
   label: string;
   landing?: CoordinatorLandingStateSnapshot;
   landingLabel?: string;
   promptBeads: CoordinatorPromptBeadView[];
+  readinessPolicyLabel: string;
   result?: string;
   status: CoordinatorSubtaskStatus;
+  statusDetail?: string;
   statusLabel: string;
   taskId: string;
   title: string;
@@ -230,6 +237,143 @@ function humanizeStatus(status: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function humanizeWaitingReason(reason: string): string {
+  switch (reason) {
+    case 'agent-active':
+      return 'Agent is still rendering output';
+    case 'agent-awaiting-input':
+      return 'Agent is blocked on an interactive question';
+    case 'agent-quiet':
+      return 'Waiting for the terminal to reach a prompt';
+    case 'agent-session-missing':
+      return 'Waiting for the agent session';
+    case 'agent-supervision-missing':
+      return 'Waiting for agent supervision';
+    case 'task-command-lease-held':
+      return 'Waiting for command control';
+    case 'terminal-pending-input':
+      return 'Waiting for pending terminal input to clear';
+    case 'terminal-printable-input':
+      return 'Waiting for terminal input to clear';
+    case 'prompt-draft':
+      return 'Waiting for the prompt draft to clear';
+    case 'terminal-focus':
+      return 'Waiting for terminal focus to clear';
+    case 'manual-prompt-sent':
+      return 'Waiting for another prompt to finish';
+    default:
+      if (reason.startsWith('agent-')) {
+        return humanizeStatus(reason.slice('agent-'.length));
+      }
+
+      return humanizeStatus(reason);
+  }
+}
+
+function getInitialAssignmentLabel(subtask: CoordinatorSubtaskSnapshot): string {
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  switch (startup.initialAssignmentStatus) {
+    case 'blocked-by-question':
+      return 'Initial assignment blocked by question';
+    case 'delivered':
+      return 'Initial assignment delivered after prompt';
+    case 'failed':
+      return 'Initial assignment delivery failed';
+    case 'pending-prompt':
+      return 'Initial assignment waits for prompt readiness';
+    case 'seeded-at-spawn':
+      return 'Initial assignment seeded at spawn';
+  }
+}
+
+function getFollowupPromptModeLabel(subtask: CoordinatorSubtaskSnapshot): string {
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  switch (startup.followupPromptMode) {
+    case 'disallow':
+      return 'Follow-up prompts disabled';
+    case 'post-ready-prompt':
+      return 'Follow-up prompts wait for readiness';
+  }
+}
+
+function getReadinessPolicyLabel(subtask: CoordinatorSubtaskSnapshot): string {
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  switch (startup.readinessPolicy) {
+    case 'codex':
+      return 'Codex readiness detection';
+    case 'shell':
+      return 'Shell prompt detection';
+    case 'terminal-generic':
+      return 'Generic terminal prompt detection';
+  }
+}
+
+function getWaitingForPromptDetail(
+  readinessPolicy: CoordinatorSubtaskStartupSnapshot['readinessPolicy'],
+): string {
+  if (readinessPolicy === 'codex') {
+    return 'Waiting for the Codex composer prompt';
+  }
+
+  return 'Waiting for a terminal prompt';
+}
+
+function getPromptStatusDetail(
+  prompt: CoordinatorPromptRequestSnapshot,
+  subtask: CoordinatorSubtaskSnapshot,
+): string | undefined {
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  switch (prompt.status) {
+    case 'blocked-by-question':
+      return 'Blocked on an interactive question';
+    case 'waiting-for-agent-session':
+      return 'Waiting for the agent session';
+    case 'waiting-for-command-lease':
+      return 'Waiting for command control';
+    case 'waiting-for-terminal-input-clear':
+      return 'Waiting for terminal input to clear';
+    case 'waiting-for-terminal-prompt':
+      return getWaitingForPromptDetail(startup.readinessPolicy);
+    case 'waiting-for-user-idle':
+      return 'Waiting for manual terminal activity to stop';
+    case 'queued':
+      return 'Queued for delivery';
+    case 'delivering':
+      return 'Delivering prompt';
+    case 'cancelled':
+    case 'delivered':
+    case 'failed':
+    case 'write-unknown-after-restore':
+      break;
+  }
+
+  return prompt.waitingReason ? humanizeWaitingReason(prompt.waitingReason) : undefined;
+}
+
+function getSubtaskStatusDetail(
+  subtask: CoordinatorSubtaskSnapshot,
+  pendingPrompts: readonly CoordinatorPromptRequestSnapshot[],
+): string | undefined {
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  const nextPrompt = pendingPrompts[0];
+  if (nextPrompt) {
+    return getPromptStatusDetail(nextPrompt, subtask);
+  }
+
+  if (subtask.status === 'running' && startup.initialAssignmentStatus === 'seeded-at-spawn') {
+    return 'Started with the assignment at launch';
+  }
+
+  if (
+    subtask.status === 'waiting-for-agent-ready' &&
+    startup.initialAssignmentStatus === 'pending-prompt'
+  ) {
+    return getWaitingForPromptDetail(startup.readinessPolicy);
+  }
+
+  return undefined;
 }
 
 function getRunTone(status: CoordinatorRunStatus): CoordinatorAttentionLevel {
@@ -446,6 +590,10 @@ function getChipTitle(
   landing: CoordinatorLandingStateSnapshot | undefined,
 ): string {
   const parts = [subtask.assignment, humanizeStatus(subtask.status)];
+  const statusDetail = getSubtaskStatusDetail(subtask, pendingPrompts);
+  if (statusDetail !== undefined) {
+    parts.push(statusDetail);
+  }
   if (pendingPrompts.length > 0) {
     parts.push(`${pendingPrompts.length} pending prompt${pendingPrompts.length === 1 ? '' : 's'}`);
   }
@@ -499,6 +647,8 @@ function createSubtaskChipViews(run: CoordinatorRunSnapshot): CoordinatorSubtask
       const label = getSubtaskLabel(subtask, index);
       const badgeText = getSubtaskBadgeText(subtask, pendingPrompts, landing);
       const landingLabel = getLandingLabel(landing);
+      const statusDetail = getSubtaskStatusDetail(subtask, pendingPrompts);
+      const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
       return {
         agentId: subtask.agentId,
         assignment: subtask.assignment,
@@ -509,12 +659,17 @@ function createSubtaskChipViews(run: CoordinatorRunSnapshot): CoordinatorSubtask
           subtask.status === 'ready-for-review' ||
           subtask.status === 'landing' ||
           (landing !== undefined && landing.status !== 'landed'),
+        followupPromptEnabled: startup.followupPromptMode === 'post-ready-prompt',
+        followupPromptModeLabel: getFollowupPromptModeLabel(subtask),
+        initialAssignmentLabel: getInitialAssignmentLabel(subtask),
         label,
         ...(landing !== undefined ? { landing } : {}),
         ...(landingLabel !== undefined ? { landingLabel } : {}),
         promptBeads: getPromptBeads(pendingPrompts),
+        readinessPolicyLabel: getReadinessPolicyLabel(subtask),
         ...(subtask.result !== undefined ? { result: subtask.result } : {}),
         status: subtask.status,
+        ...(statusDetail !== undefined ? { statusDetail } : {}),
         statusLabel: humanizeStatus(subtask.status),
         taskId: subtask.taskId,
         title: getChipTitle(subtask, pendingPrompts, landing),
@@ -869,11 +1024,15 @@ function getMutationDisabledReason(run: CoordinatorRunSnapshot): string | undefi
 }
 
 function getSendPromptDisabledReason(
+  chip: CoordinatorSubtaskChipView,
   run: CoordinatorRunSnapshot,
   terminal: boolean,
 ): string | undefined {
   if (terminal) {
     return 'Terminal subtask cannot receive follow-up prompts.';
+  }
+  if (!chip.followupPromptEnabled) {
+    return 'This subtask only accepts the initial seeded assignment.';
   }
 
   return getMutationDisabledReason(run);
@@ -894,6 +1053,9 @@ function getAskLandDisabledReason(
   }
   if (chip.status !== 'ready-for-review') {
     return 'Subtask must be ready for review before landing.';
+  }
+  if (!chip.followupPromptEnabled) {
+    return 'This subtask does not accept follow-up prompts.';
   }
   if (nonGit) {
     return 'Landing requires a git-backed coordinator run.';
@@ -926,7 +1088,7 @@ export function getCoordinatorSubtaskActions(
   const terminalReason = getTerminalDisabledReason(terminal);
   const inspectDiffReason = getInspectDiffDisabledReason(nonGit, terminal);
   const mutationReason = getMutationDisabledReason(run);
-  const sendPromptReason = getSendPromptDisabledReason(run, terminal);
+  const sendPromptReason = getSendPromptDisabledReason(chip, run, terminal);
   const askLandReason = getAskLandDisabledReason(chip, nonGit, run, terminal);
   const actions: CoordinatorUiAction[] = [
     {

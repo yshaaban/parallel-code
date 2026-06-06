@@ -18,6 +18,13 @@ function createSubtask(
     assignment: overrides.assignment ?? 'Fix parser behavior',
     createdAt: overrides.createdAt ?? now,
     parentCoordinatorTaskId: overrides.parentCoordinatorTaskId ?? 'task-coordinator',
+    startup: overrides.startup ?? {
+      followupPromptMode: 'post-ready-prompt',
+      initialAssignmentMode: 'spawn-seeded-interactive',
+      initialAssignmentStatus: 'seeded-at-spawn',
+      readinessPolicy: 'codex',
+      seededAt: now,
+    },
     status: overrides.status ?? 'running',
     taskId: overrides.taskId ?? 'task-child',
     toolTokenId: overrides.toolTokenId ?? `token-${overrides.taskId ?? '1'}`,
@@ -287,6 +294,42 @@ describe('coordinator UI model', () => {
     expect(chip?.badgeText).toBe('4');
     expect(chip?.promptBeads).toHaveLength(3);
     expect(chip?.promptBeads.map((bead) => bead.tone)).toEqual(['info', 'info', 'warning']);
+  });
+
+  it('projects seeded Codex startup and prompt-wait detail for subtasks', () => {
+    const run = createRun({
+      promptQueue: [
+        createPrompt({
+          requestId: 'prompt-followup',
+          status: 'waiting-for-terminal-prompt',
+          targetTaskId: 'task-codex',
+          waitingReason: 'agent-quiet',
+        }),
+      ],
+      subtasks: [
+        createSubtask({
+          startup: {
+            followupPromptMode: 'post-ready-prompt',
+            initialAssignmentMode: 'spawn-seeded-interactive',
+            initialAssignmentStatus: 'seeded-at-spawn',
+            readinessPolicy: 'codex',
+            seededAt: now,
+          },
+          status: 'running',
+          taskId: 'task-codex',
+        }),
+      ],
+    });
+
+    const [chip] = createCoordinatorRunView(run).chips;
+
+    expect(chip).toMatchObject({
+      followupPromptEnabled: true,
+      followupPromptModeLabel: 'Follow-up prompts wait for readiness',
+      initialAssignmentLabel: 'Initial assignment seeded at spawn',
+      readinessPolicyLabel: 'Codex readiness detection',
+      statusDetail: 'Waiting for the Codex composer prompt',
+    });
   });
 
   it('marks stale restored runs as danger and disables spawning', () => {

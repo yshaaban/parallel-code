@@ -40,6 +40,13 @@ function createSubtask(
     assignment: 'Do work',
     createdAt: 1_000,
     parentCoordinatorTaskId: 'task-coordinator',
+    startup: {
+      followupPromptMode: 'post-ready-prompt',
+      initialAssignmentMode: 'spawn-seeded-interactive',
+      initialAssignmentStatus: 'seeded-at-spawn',
+      readinessPolicy: 'codex',
+      seededAt: 1_000,
+    },
     status: 'running',
     taskId: 'task-child',
     toolTokenId: 'token-child',

@@ -31,12 +31,20 @@ import {
 } from '../ipc/task-workflows.js';
 import {
   COORDINATOR_LIMITS,
+  createCoordinatorSubtaskStartupSnapshot,
+  getCoordinatorAgentFollowupPromptMode,
+  getCoordinatorAgentInitialAssignmentMode,
+  getCoordinatorSubtaskStartupSnapshot,
+  isCodexCoordinatorAgentCommand,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
   isCoordinatorWorkflowResultConfidence,
   isCoordinatorWorkflowResultStatus,
   isCoordinatorWorkflowTemplate,
+  type CoordinatorAgentFollowupPromptMode,
+  type CoordinatorAgentInitialAssignmentMode,
+  type CoordinatorAgentReadinessPolicy,
   type CoordinatorAppendWorkflowStepsPayload,
   type CoordinatorCloseTaskPayload,
   type CoordinatorGetTaskDiffPayload,
@@ -47,6 +55,7 @@ import {
   type CoordinatorPromptRequestSnapshot,
   type CoordinatorRunSnapshot,
   type CoordinatorSendPromptPayload,
+  type CoordinatorSpawnAgentConfig,
   type CoordinatorSignalDonePayload,
   type CoordinatorSpawnManyLanePayload,
   type CoordinatorSpawnManyPayload,
@@ -55,6 +64,7 @@ import {
   type CoordinatorStartWorkflowPayload,
   type CoordinatorSubmitResultPayload,
   type CoordinatorSubtaskSnapshot,
+  type CoordinatorSubtaskStartupSnapshot,
   type CoordinatorTargetTaskPayload,
   type CoordinatorToolCallEnvelope,
   type CoordinatorToolCallResult,
@@ -70,6 +80,7 @@ import {
 import { buildCoordinatorSubtaskAssignment } from '../../src/domain/coordinator-instructions.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
 import { materializePromptDispatch } from '../../src/domain/task-prompt-materialization.js';
+import { hasCodexPromptInTail, hasShellPromptReadyInTail } from '../../src/lib/prompt-detection.js';
 import { isRecord, isStringArray } from '../../src/lib/type-guards.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import type { DeleteTaskCleanupWarning } from '../../src/domain/task-cleanup.js';
@@ -254,6 +265,33 @@ function isRecordOfStrings(value: unknown): value is Record<string, string> {
   );
 }
 
+function assertOptionalCoordinatorAgentInitialAssignmentMode(value: unknown, label: string): void {
+  if (
+    value !== undefined &&
+    value !== 'spawn-seeded-interactive' &&
+    value !== 'post-ready-prompt'
+  ) {
+    throw new BadRequestError(`${label} must be spawn-seeded-interactive or post-ready-prompt`);
+  }
+}
+
+function assertOptionalCoordinatorAgentFollowupPromptMode(value: unknown, label: string): void {
+  if (value !== undefined && value !== 'post-ready-prompt' && value !== 'disallow') {
+    throw new BadRequestError(`${label} must be a coordinator follow-up prompt mode`);
+  }
+}
+
+function assertOptionalCoordinatorAgentReadinessPolicy(value: unknown, label: string): void {
+  if (
+    value !== undefined &&
+    value !== 'codex' &&
+    value !== 'shell' &&
+    value !== 'terminal-generic'
+  ) {
+    throw new BadRequestError(`${label} must be a coordinator readiness policy`);
+  }
+}
+
 function readSpawnPayload(payload: unknown): CoordinatorSpawnSubtaskPayload {
   if (!isRecord(payload) || !isRecord(payload.agent)) {
     throw new BadRequestError('spawn_subtask payload is required');
@@ -263,6 +301,18 @@ function readSpawnPayload(payload: unknown): CoordinatorSpawnSubtaskPayload {
   assertString(payload.assignment, 'assignment');
   assertString(payload.agent.command, 'agent.command');
   assertOptionalString(payload.agent.name, 'agent.name');
+  assertOptionalCoordinatorAgentInitialAssignmentMode(
+    payload.agent.initialAssignmentMode,
+    'agent.initialAssignmentMode',
+  );
+  assertOptionalCoordinatorAgentFollowupPromptMode(
+    payload.agent.followupPromptMode,
+    'agent.followupPromptMode',
+  );
+  assertOptionalCoordinatorAgentReadinessPolicy(
+    payload.agent.readinessPolicy,
+    'agent.readinessPolicy',
+  );
   assertOptionalString(payload.baseBranch, 'baseBranch');
   assertOptionalString(payload.branchPrefix, 'branchPrefix');
   assertOptionalString(payload.dedupeKey, 'dedupeKey');
@@ -285,7 +335,22 @@ function readSpawnPayload(payload: unknown): CoordinatorSpawnSubtaskPayload {
       ...(payload.agent.args !== undefined ? { args: payload.agent.args } : {}),
       command: payload.agent.command,
       ...(payload.agent.env !== undefined ? { env: payload.agent.env } : {}),
+      ...(payload.agent.followupPromptMode !== undefined
+        ? {
+            followupPromptMode: payload.agent
+              .followupPromptMode as CoordinatorAgentFollowupPromptMode,
+          }
+        : {}),
+      ...(payload.agent.initialAssignmentMode !== undefined
+        ? {
+            initialAssignmentMode: payload.agent
+              .initialAssignmentMode as CoordinatorAgentInitialAssignmentMode,
+          }
+        : {}),
       ...(payload.agent.name !== undefined ? { name: payload.agent.name } : {}),
+      ...(payload.agent.readinessPolicy !== undefined
+        ? { readinessPolicy: payload.agent.readinessPolicy as CoordinatorAgentReadinessPolicy }
+        : {}),
       ...(payload.agent.skipPermissionsArgs !== undefined
         ? { skipPermissionsArgs: payload.agent.skipPermissionsArgs }
         : {}),
@@ -466,6 +531,15 @@ function readSpawnAgentPayload(
   }
   assertString(value.command, 'agent.command');
   assertOptionalString(value.name, 'agent.name');
+  assertOptionalCoordinatorAgentInitialAssignmentMode(
+    value.initialAssignmentMode,
+    'agent.initialAssignmentMode',
+  );
+  assertOptionalCoordinatorAgentFollowupPromptMode(
+    value.followupPromptMode,
+    'agent.followupPromptMode',
+  );
+  assertOptionalCoordinatorAgentReadinessPolicy(value.readinessPolicy, 'agent.readinessPolicy');
   if (value.args !== undefined && !isStringArray(value.args)) {
     throw new BadRequestError('agent.args must be a string array when provided');
   }
@@ -480,7 +554,19 @@ function readSpawnAgentPayload(
     ...(value.args !== undefined ? { args: value.args } : {}),
     command: value.command,
     ...(value.env !== undefined ? { env: value.env } : {}),
+    ...(value.followupPromptMode !== undefined
+      ? { followupPromptMode: value.followupPromptMode as CoordinatorAgentFollowupPromptMode }
+      : {}),
+    ...(value.initialAssignmentMode !== undefined
+      ? {
+          initialAssignmentMode:
+            value.initialAssignmentMode as CoordinatorAgentInitialAssignmentMode,
+        }
+      : {}),
     ...(value.name !== undefined ? { name: value.name } : {}),
+    ...(value.readinessPolicy !== undefined
+      ? { readinessPolicy: value.readinessPolicy as CoordinatorAgentReadinessPolicy }
+      : {}),
     ...(value.skipPermissionsArgs !== undefined
       ? { skipPermissionsArgs: value.skipPermissionsArgs }
       : {}),
@@ -1063,6 +1149,42 @@ function mergeLaunchArgs(
   return mergedArgs;
 }
 
+function usesSeededInitialAssignment(agent: CoordinatorSpawnAgentConfig): boolean {
+  return getCoordinatorAgentInitialAssignmentMode(agent) !== 'post-ready-prompt';
+}
+
+function canSendFollowupPrompt(
+  agentOrMode: CoordinatorSpawnAgentConfig | CoordinatorAgentFollowupPromptMode,
+): boolean {
+  return (
+    (typeof agentOrMode === 'string'
+      ? agentOrMode
+      : getCoordinatorAgentFollowupPromptMode(agentOrMode)) === 'post-ready-prompt'
+  );
+}
+
+function buildCoordinatorSeededLaunchArgs(
+  agent: CoordinatorSpawnAgentConfig,
+  assignment: string,
+  toolCommand: string | undefined,
+): string[] {
+  const prompt = buildCoordinatorSubtaskAssignment(assignment, {
+    ...(toolCommand !== undefined ? { toolCommand } : {}),
+  });
+  return [...mergeLaunchArgs(agent.args, agent.skipPermissionsArgs), prompt];
+}
+
+function assertSupportedSeededInitialAssignment(agent: CoordinatorSpawnAgentConfig): void {
+  if (!usesSeededInitialAssignment(agent)) {
+    return;
+  }
+  if (!isCodexCoordinatorAgentCommand(agent.command)) {
+    throw new BadRequestError(
+      'Seeded initial assignment modes are currently supported only for codex agents',
+    );
+  }
+}
+
 function shouldCleanupCoordinatorSubtask(status: CoordinatorSubtaskSnapshot['status']): boolean {
   return status !== 'cancelled' && status !== 'landed';
 }
@@ -1087,19 +1209,34 @@ function updateInitialPromptSubtaskStatus(prompt: CoordinatorPromptRequestSnapsh
   if (!subtask || !isStartupSubtaskStatus(subtask.status)) {
     return;
   }
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
 
   if (prompt.status === 'delivered') {
-    updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'running');
+    updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'running', {
+      startup: {
+        ...startup,
+        initialAssignmentStatus: 'delivered',
+        ...(prompt.deliveredAt !== undefined ? { deliveredAt: prompt.deliveredAt } : {}),
+      },
+    });
     return;
   }
   if (prompt.status === 'failed') {
     updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'failed', {
       result: prompt.waitingReason ?? 'Initial assignment delivery failed.',
+      startup: {
+        ...startup,
+        initialAssignmentStatus: 'failed',
+      },
     });
     return;
   }
   if (prompt.status === 'blocked-by-question') {
     updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'waiting-for-user', {
+      startup: {
+        ...startup,
+        initialAssignmentStatus: 'blocked-by-question',
+      },
       ...(prompt.waitingReason !== undefined ? { result: prompt.waitingReason } : {}),
     });
   }
@@ -1113,6 +1250,20 @@ function updateCoordinatorPromptDeliveryState(
   const prompt = updateCoordinatorPrompt(runId, requestId, patch);
   updateInitialPromptSubtaskStatus(prompt);
   return prompt;
+}
+
+function isPromptReadyForReadinessPolicy(
+  readinessPolicy: CoordinatorAgentReadinessPolicy,
+  scrollback: string,
+): boolean {
+  switch (readinessPolicy) {
+    case 'codex':
+      return hasCodexPromptInTail(scrollback);
+    case 'shell':
+      return hasShellPromptReadyInTail(scrollback);
+    case 'terminal-generic':
+      return true;
+  }
 }
 
 function assertCoordinatorTaskCaller(envelope: CoordinatorToolInvocation): void {
@@ -2151,6 +2302,7 @@ async function createHiddenSubtaskAfterDedupe(
   run: CoordinatorRunSnapshot,
   dedupeKey: string,
 ): Promise<CoordinatorSubtaskSnapshot> {
+  assertSupportedSeededInitialAssignment(payload.agent);
   const agentId = randomUUID();
   const projectMode = getTaskProjectMode(run.projectMode);
   const taskResult = await createTaskWorkflow(gateway.context, {
@@ -2187,6 +2339,11 @@ async function createHiddenSubtaskAfterDedupe(
         ? { toolCallUrl: gateway.context.coordinatorToolCallUrl }
         : {}),
     });
+    const initialAssignmentMode = getCoordinatorAgentInitialAssignmentMode(payload.agent);
+    const usesSeededStartup = initialAssignmentMode !== 'post-ready-prompt';
+    const launchArgs = usesSeededStartup
+      ? buildCoordinatorSeededLaunchArgs(payload.agent, payload.assignment, credential.toolCommand)
+      : mergeLaunchArgs(payload.agent.args, payload.agent.skipPermissionsArgs);
     addCoordinatorSubtask({
       agentId,
       assignment: payload.assignment,
@@ -2194,6 +2351,10 @@ async function createHiddenSubtaskAfterDedupe(
       dedupeKey,
       parentCoordinatorTaskId: run.coordinatorTaskId,
       runId: run.id,
+      startup: createCoordinatorSubtaskStartupSnapshot(
+        payload.agent,
+        usesSeededStartup ? 'seeded-at-spawn' : 'pending-prompt',
+      ),
       status: 'spawning',
       taskId: result.id,
       toolTokenId: credential.tokenId,
@@ -2208,7 +2369,6 @@ async function createHiddenSubtaskAfterDedupe(
         ? { PARALLEL_CODE_COORDINATOR_TOOL: credential.toolCommand }
         : {}),
     };
-    const launchArgs = mergeLaunchArgs(payload.agent.args, payload.agent.skipPermissionsArgs);
     const runnerProfile = normalizeAgentRunnerProfileConfig(undefined);
     spawnTaskAgentWorkflow(gateway.context, {
       agentId,
@@ -2224,19 +2384,23 @@ async function createHiddenSubtaskAfterDedupe(
       ...(runnerProfile !== undefined ? { runnerProfile } : {}),
     });
 
-    const prompt = enqueueCoordinatorPrompt({
-      kind: 'initial-assignment',
-      runId: run.id,
-      sourceTaskId: run.coordinatorTaskId,
-      targetAgentId: agentId,
-      targetTaskId: result.id,
-      text: buildCoordinatorSubtaskAssignment(payload.assignment, {
-        ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
-      }),
-      ...(payload.dedupeKey !== undefined ? { dedupeKey: payload.dedupeKey } : {}),
-    });
-    updateCoordinatorSubtaskStatus(run.id, result.id, 'waiting-for-agent-ready');
-    await deliverCoordinatorPromptWithAdmission(gateway.context, prompt);
+    if (usesSeededStartup) {
+      updateCoordinatorSubtaskStatus(run.id, result.id, 'running');
+    } else {
+      const prompt = enqueueCoordinatorPrompt({
+        kind: 'initial-assignment',
+        runId: run.id,
+        sourceTaskId: run.coordinatorTaskId,
+        targetAgentId: agentId,
+        targetTaskId: result.id,
+        text: buildCoordinatorSubtaskAssignment(payload.assignment, {
+          ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
+        }),
+        ...(payload.dedupeKey !== undefined ? { dedupeKey: payload.dedupeKey } : {}),
+      });
+      updateCoordinatorSubtaskStatus(run.id, result.id, 'waiting-for-agent-ready');
+      await deliverCoordinatorPromptWithAdmission(gateway.context, prompt);
+    }
     const latestSubtask = getCoordinatorRun(run.id)?.subtasks.find(
       (candidate) => candidate.taskId === result.id,
     );
@@ -2504,6 +2668,17 @@ async function deliverCoordinatorPrompt(
       waitingReason: `agent-${supervision.state}`,
     });
   }
+  const run = getCoordinatorRun(prompt.runId);
+  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask?.startup);
+  const scrollback = getAgentScrollbackBuffer(prompt.targetAgentId)?.toString('utf8') ?? '';
+  if (!isPromptReadyForReadinessPolicy(startup.readinessPolicy, scrollback)) {
+    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
+      earliestDeliveryAt: nextRetryAt,
+      status: 'waiting-for-terminal-prompt',
+      waitingReason: 'agent-quiet',
+    });
+  }
 
   const automationClientId = getAutomationClientId(prompt.runId);
   const key = getPromptDeliveryKey(prompt);
@@ -2651,6 +2826,12 @@ async function sendCoordinatorPrompt(
   if (isCoordinatorTerminalSubtaskStatus(subtask.status)) {
     throw new BadRequestError('targetTaskId is no longer active');
   }
+  if (
+    payload.kind !== 'initial-assignment' &&
+    !canSendFollowupPrompt(getCoordinatorSubtaskStartupSnapshot(subtask.startup).followupPromptMode)
+  ) {
+    throw new BadRequestError('targetTaskId does not accept follow-up prompts');
+  }
 
   if (payload.dedupeKey !== undefined) {
     const existingPrompt = run.promptQueue.find(
@@ -2689,7 +2870,13 @@ function listCoordinatorTasks(envelope: CoordinatorToolInvocation): Array<{
   agentId: string;
   assignment: string;
   branchName?: string;
+  followupPromptMode: CoordinatorSubtaskStartupSnapshot['followupPromptMode'];
+  initialAssignmentMode: CoordinatorSubtaskStartupSnapshot['initialAssignmentMode'];
+  initialAssignmentStatus: CoordinatorSubtaskStartupSnapshot['initialAssignmentStatus'];
   lastPromptRequestId?: string;
+  pendingPromptStatus?: CoordinatorPromptRequestSnapshot['status'];
+  pendingPromptWaitingReason?: string;
+  readinessPolicy: CoordinatorSubtaskStartupSnapshot['readinessPolicy'];
   status: CoordinatorSubtaskSnapshot['status'];
   taskId: string;
   updatedAt: number;
@@ -2697,18 +2884,33 @@ function listCoordinatorTasks(envelope: CoordinatorToolInvocation): Array<{
 }> {
   assertCoordinatorTaskCaller(envelope);
   const run = requireCoordinatorRun(envelope.runId);
-  return run.subtasks.map((subtask) => ({
-    agentId: subtask.agentId,
-    assignment: subtask.assignment,
-    ...(subtask.branchName !== undefined ? { branchName: subtask.branchName } : {}),
-    ...(subtask.lastPromptRequestId !== undefined
-      ? { lastPromptRequestId: subtask.lastPromptRequestId }
-      : {}),
-    status: subtask.status,
-    taskId: subtask.taskId,
-    updatedAt: subtask.updatedAt,
-    worktreePath: subtask.worktreePath,
-  }));
+  return run.subtasks.map((subtask) => {
+    const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+    const pendingPrompt = run.promptQueue.find(
+      (prompt) =>
+        prompt.targetTaskId === subtask.taskId && isCoordinatorPendingPromptStatus(prompt.status),
+    );
+    return {
+      agentId: subtask.agentId,
+      assignment: subtask.assignment,
+      ...(subtask.branchName !== undefined ? { branchName: subtask.branchName } : {}),
+      followupPromptMode: startup.followupPromptMode,
+      initialAssignmentMode: startup.initialAssignmentMode,
+      initialAssignmentStatus: startup.initialAssignmentStatus,
+      ...(subtask.lastPromptRequestId !== undefined
+        ? { lastPromptRequestId: subtask.lastPromptRequestId }
+        : {}),
+      ...(pendingPrompt !== undefined ? { pendingPromptStatus: pendingPrompt.status } : {}),
+      ...(pendingPrompt?.waitingReason !== undefined
+        ? { pendingPromptWaitingReason: pendingPrompt.waitingReason }
+        : {}),
+      readinessPolicy: startup.readinessPolicy,
+      status: subtask.status,
+      taskId: subtask.taskId,
+      updatedAt: subtask.updatedAt,
+      worktreePath: subtask.worktreePath,
+    };
+  });
 }
 
 function getCoordinatorTaskOutput(

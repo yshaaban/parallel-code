@@ -11,6 +11,8 @@ const PROMPT_PATTERNS: RegExp[] = [
   /\[y\/N\]\s*$/i,
 ];
 
+const CODEX_PROMPT_LINE_PATTERN = /^\s*›(?:\s+\S.*)?$/u;
+
 const HYDRA_READY_TAIL_PATTERN = /(?:^|[\r\n])\s*hydra(?:\[[^\]\r\n]+\])?>\s*(?:[\r\n]|$)/i;
 
 const QUESTION_PATTERN =
@@ -47,8 +49,24 @@ export function looksLikePromptLine(line: string): boolean {
   const stripped = stripAnsi(line).trimEnd();
   if (stripped.length === 0) return false;
   return (
-    PROMPT_PATTERNS.some((pattern) => pattern.test(stripped)) || isCommonShellPromptLine(stripped)
+    PROMPT_PATTERNS.some((pattern) => pattern.test(stripped)) ||
+    looksLikeCodexPromptLine(stripped) ||
+    isCommonShellPromptLine(stripped)
   );
+}
+
+export function looksLikeCodexPromptLine(line: string): boolean {
+  const stripped = stripAnsi(line).trimEnd();
+  if (!CODEX_PROMPT_LINE_PATTERN.test(stripped)) {
+    return false;
+  }
+
+  const promptText = stripped.replace(/^\s*›\s*/u, '');
+  if (promptText.length === 0) {
+    return true;
+  }
+
+  return !QUESTION_PATTERN.test(promptText);
 }
 
 export function isNonBlockingShortcutHintLine(line: string): boolean {
@@ -71,6 +89,12 @@ export function hasReadyPromptInTail(tail: string): boolean {
   return lines.some((line) => looksLikePromptLine(line));
 }
 
+export function hasCodexPromptInTail(tail: string): boolean {
+  if (tail.length === 0) return false;
+  const lines = getRecentVisibleLinesFromTail(tail);
+  return lines.some((line) => looksLikeCodexPromptLine(line));
+}
+
 export function hasShellPromptReadyInTail(tail: string): boolean {
   if (tail.length === 0) return false;
   const lines = getRecentVisibleLinesFromTail(tail);
@@ -83,7 +107,7 @@ export function hasShellPromptReadyInTail(tail: string): boolean {
     return false;
   }
 
-  return !lineLooksLikeQuestion(lastLine) && looksLikePromptLine(lastLine);
+  return !lineLooksLikeQuestion(lastLine) && looksLikeShellPromptLine(lastLine);
 }
 
 export function chunkContainsAgentPrompt(stripped: string): boolean {
@@ -117,6 +141,20 @@ function lineLooksLikeQuestion(line: string): boolean {
   );
 }
 
+function getLastMatchingLineIndex(
+  lines: readonly string[],
+  matcher: (line: string) => boolean,
+): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line && matcher(line)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
 function isCommonShellPromptLine(line: string): boolean {
   const trimmed = line.trimEnd();
   if (trimmed.length === 0) {
@@ -129,6 +167,17 @@ function isCommonShellPromptLine(line: string): boolean {
     /^\s*➜(?:\s+\S+)+\s*$/u.test(trimmed) ||
     /^\s*[\w.@~:/-]+[$#]\s*$/u.test(trimmed) ||
     /^\s*[\w./~:-]+\s%\s*$/u.test(trimmed)
+  );
+}
+
+function looksLikeShellPromptLine(line: string): boolean {
+  const stripped = stripAnsi(line).trimEnd();
+  if (stripped.length === 0) {
+    return false;
+  }
+
+  return (
+    PROMPT_PATTERNS.some((pattern) => pattern.test(stripped)) || isCommonShellPromptLine(stripped)
   );
 }
 
@@ -163,6 +212,16 @@ export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
   const lines = getRecentVisibleLines(visibleTail);
   if (lines.length === 0) return false;
 
+  const lastQuestionIndex = getLastMatchingLineIndex(lines, lineLooksLikeQuestion);
+  if (lastQuestionIndex < 0) {
+    return false;
+  }
+
+  const lastCodexPromptIndex = getLastMatchingLineIndex(lines, looksLikeCodexPromptLine);
+  if (lastCodexPromptIndex > lastQuestionIndex) {
+    return false;
+  }
+
   const lastLine = lines[lines.length - 1];
   if (!lastLine) return false;
 
@@ -170,7 +229,7 @@ export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
     return false;
   }
 
-  return lines.some(lineLooksLikeQuestion);
+  return true;
 }
 
 export function hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail: string): boolean {

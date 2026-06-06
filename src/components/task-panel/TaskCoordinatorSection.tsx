@@ -1144,6 +1144,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                           {chip().statusLabel}
                           <Show when={chip().landingLabel}>{(label) => ` · ${label()}`}</Show>
                         </div>
+                        <Show when={chip().statusDetail}>
+                          {(detail) => (
+                            <div style={{ color: theme.fgMuted, 'font-size': sf(10.5) }}>
+                              {detail()}
+                            </div>
+                          )}
+                        </Show>
                       </div>
                       <button
                         aria-label="Close coordinator controls"
@@ -1314,15 +1321,26 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                         <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
                           {chip().worktreePath}
                         </span>
+                        <span>Initial</span>
+                        <span>{chip().initialAssignmentLabel}</span>
+                        <span>Follow-up</span>
+                        <span>{chip().followupPromptModeLabel}</span>
+                        <span>Readiness</span>
+                        <span>{chip().readinessPolicyLabel}</span>
                       </div>
                     </Show>
 
                     <textarea
                       class="input-field"
                       aria-label="Follow-up prompt"
+                      disabled={!chip().followupPromptEnabled}
                       value={followUpText()}
                       onInput={(event) => setFollowUpText(event.currentTarget.value)}
-                      placeholder="Send a follow-up..."
+                      placeholder={
+                        chip().followupPromptEnabled
+                          ? 'Send a follow-up...'
+                          : 'This subtask does not accept follow-up prompts.'
+                      }
                       rows={2}
                       style={{ resize: 'vertical', 'min-height': '54px' }}
                     />

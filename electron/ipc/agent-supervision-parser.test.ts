@@ -60,6 +60,28 @@ describe('agent supervision parser', () => {
     });
   });
 
+  it('classifies the Codex composer line as idle at prompt', () => {
+    const result = classifyOutputState(
+      'What would you like to work on?\n› Improve documentation in @docs/ARCHITECTURE.md',
+    );
+
+    expect(result).toEqual({
+      preview: '› Improve documentation in @docs/ARCHITECTURE.md',
+      state: 'idle-at-prompt',
+    });
+  });
+
+  it('still treats a later confirmation question as awaiting input after a Codex prompt', () => {
+    const result = classifyOutputState(
+      '› Improve documentation in @docs/ARCHITECTURE.md\nAre you sure you want to continue? [Y/n]',
+    );
+
+    expect(result).toEqual({
+      preview: 'Are you sure you want to continue? [Y/n]',
+      state: 'awaiting-input',
+    });
+  });
+
   it('ignores terminal query replies when computing active previews', () => {
     const result = classifyOutputState('\u001b[>0q\u001b[c');
 

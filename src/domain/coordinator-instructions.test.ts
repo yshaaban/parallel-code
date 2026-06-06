@@ -22,6 +22,9 @@ describe('coordinator instructions', () => {
     expect(prompt).toContain(
       'Use decision workflow stages when one lane should choose the next append-only steps',
     );
+    expect(prompt).toContain(
+      'Use send_prompt only for follow-up instructions. Codex subtasks usually start with the assignment already seeded at spawn.',
+    );
     expect(prompt).toContain('User task:\nInvestigate latency');
   });
 

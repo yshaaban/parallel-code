@@ -42,6 +42,23 @@ export const COORDINATOR_SUBTASK_STATUSES = [
   'cancelled',
 ] as const;
 
+export const COORDINATOR_AGENT_INITIAL_ASSIGNMENT_MODES = [
+  'spawn-seeded-interactive',
+  'post-ready-prompt',
+] as const;
+
+export const COORDINATOR_AGENT_FOLLOWUP_PROMPT_MODES = ['post-ready-prompt', 'disallow'] as const;
+
+export const COORDINATOR_AGENT_READINESS_POLICIES = ['codex', 'shell', 'terminal-generic'] as const;
+
+export const COORDINATOR_SUBTASK_INITIAL_ASSIGNMENT_STATUSES = [
+  'seeded-at-spawn',
+  'pending-prompt',
+  'delivered',
+  'blocked-by-question',
+  'failed',
+] as const;
+
 export const COORDINATOR_PROMPT_KINDS = [
   'initial-assignment',
   'follow-up',
@@ -176,6 +193,13 @@ export const COORDINATOR_EVENT_TYPES = [
 
 export type CoordinatorRunStatus = (typeof COORDINATOR_RUN_STATUSES)[number];
 export type CoordinatorSubtaskStatus = (typeof COORDINATOR_SUBTASK_STATUSES)[number];
+export type CoordinatorAgentInitialAssignmentMode =
+  (typeof COORDINATOR_AGENT_INITIAL_ASSIGNMENT_MODES)[number];
+export type CoordinatorAgentFollowupPromptMode =
+  (typeof COORDINATOR_AGENT_FOLLOWUP_PROMPT_MODES)[number];
+export type CoordinatorAgentReadinessPolicy = (typeof COORDINATOR_AGENT_READINESS_POLICIES)[number];
+export type CoordinatorSubtaskInitialAssignmentStatus =
+  (typeof COORDINATOR_SUBTASK_INITIAL_ASSIGNMENT_STATUSES)[number];
 export type CoordinatorPromptKind = (typeof COORDINATOR_PROMPT_KINDS)[number];
 export type CoordinatorPromptStatus = (typeof COORDINATOR_PROMPT_STATUSES)[number];
 export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
@@ -232,6 +256,26 @@ export interface CoordinatorHiddenOutputState {
   retainedBytes: number;
   spoolLimitBytes: number;
   updatedAt: number;
+}
+
+export interface CoordinatorSpawnAgentConfig {
+  args?: string[];
+  command: string;
+  env?: Record<string, string>;
+  followupPromptMode?: CoordinatorAgentFollowupPromptMode;
+  initialAssignmentMode?: CoordinatorAgentInitialAssignmentMode;
+  name?: string;
+  readinessPolicy?: CoordinatorAgentReadinessPolicy;
+  skipPermissionsArgs?: string[];
+}
+
+export interface CoordinatorSubtaskStartupSnapshot {
+  deliveredAt?: number;
+  followupPromptMode: CoordinatorAgentFollowupPromptMode;
+  initialAssignmentMode: CoordinatorAgentInitialAssignmentMode;
+  initialAssignmentStatus: CoordinatorSubtaskInitialAssignmentStatus;
+  readinessPolicy: CoordinatorAgentReadinessPolicy;
+  seededAt?: number;
 }
 
 export interface CoordinatorPromptDeliveryJournalEntry {
@@ -291,6 +335,7 @@ export interface CoordinatorSubtaskSnapshot {
   lastPromptRequestId?: string;
   parentCoordinatorTaskId: string;
   result?: string;
+  startup?: CoordinatorSubtaskStartupSnapshot;
   status: CoordinatorSubtaskStatus;
   taskId: string;
   /**
@@ -623,13 +668,7 @@ export type CoordinatorUiToolCallRequest =
     });
 
 export interface CoordinatorSpawnSubtaskPayload {
-  agent: {
-    args?: string[];
-    command: string;
-    env?: Record<string, string>;
-    name?: string;
-    skipPermissionsArgs?: string[];
-  };
+  agent: CoordinatorSpawnAgentConfig;
   assignment: string;
   baseBranch?: string;
   branchPrefix?: string;
@@ -746,6 +785,97 @@ export function isCoordinatorRunStatus(value: unknown): value is CoordinatorRunS
 
 export function isCoordinatorSubtaskStatus(value: unknown): value is CoordinatorSubtaskStatus {
   return isStringTupleMember(value, COORDINATOR_SUBTASK_STATUSES);
+}
+
+export function isCoordinatorAgentInitialAssignmentMode(
+  value: unknown,
+): value is CoordinatorAgentInitialAssignmentMode {
+  return isStringTupleMember(value, COORDINATOR_AGENT_INITIAL_ASSIGNMENT_MODES);
+}
+
+export function isCoordinatorAgentFollowupPromptMode(
+  value: unknown,
+): value is CoordinatorAgentFollowupPromptMode {
+  return isStringTupleMember(value, COORDINATOR_AGENT_FOLLOWUP_PROMPT_MODES);
+}
+
+export function isCoordinatorAgentReadinessPolicy(
+  value: unknown,
+): value is CoordinatorAgentReadinessPolicy {
+  return isStringTupleMember(value, COORDINATOR_AGENT_READINESS_POLICIES);
+}
+
+export function isCoordinatorSubtaskInitialAssignmentStatus(
+  value: unknown,
+): value is CoordinatorSubtaskInitialAssignmentStatus {
+  return isStringTupleMember(value, COORDINATOR_SUBTASK_INITIAL_ASSIGNMENT_STATUSES);
+}
+
+function getCoordinatorAgentCommandBasename(command: string): string {
+  return command.split(/[\\/]/u).pop()?.trim().toLowerCase() ?? '';
+}
+
+export function isCodexCoordinatorAgentCommand(command: string): boolean {
+  return getCoordinatorAgentCommandBasename(command) === 'codex';
+}
+
+export function getCoordinatorAgentInitialAssignmentMode(
+  agent: CoordinatorSpawnAgentConfig,
+): CoordinatorAgentInitialAssignmentMode {
+  if (agent.initialAssignmentMode !== undefined) {
+    return agent.initialAssignmentMode;
+  }
+
+  return isCodexCoordinatorAgentCommand(agent.command)
+    ? 'spawn-seeded-interactive'
+    : 'post-ready-prompt';
+}
+
+export function getCoordinatorAgentFollowupPromptMode(
+  agent: CoordinatorSpawnAgentConfig,
+): CoordinatorAgentFollowupPromptMode {
+  if (agent.followupPromptMode !== undefined) {
+    return agent.followupPromptMode;
+  }
+
+  return 'post-ready-prompt';
+}
+
+export function getCoordinatorAgentReadinessPolicy(
+  agent: CoordinatorSpawnAgentConfig,
+): CoordinatorAgentReadinessPolicy {
+  if (agent.readinessPolicy !== undefined) {
+    return agent.readinessPolicy;
+  }
+
+  return isCodexCoordinatorAgentCommand(agent.command) ? 'codex' : 'terminal-generic';
+}
+
+export function createCoordinatorSubtaskStartupSnapshot(
+  agent: CoordinatorSpawnAgentConfig,
+  initialAssignmentStatus: CoordinatorSubtaskInitialAssignmentStatus,
+  now = Date.now(),
+): CoordinatorSubtaskStartupSnapshot {
+  return {
+    followupPromptMode: getCoordinatorAgentFollowupPromptMode(agent),
+    initialAssignmentMode: getCoordinatorAgentInitialAssignmentMode(agent),
+    initialAssignmentStatus,
+    readinessPolicy: getCoordinatorAgentReadinessPolicy(agent),
+    ...(initialAssignmentStatus === 'seeded-at-spawn' ? { seededAt: now } : {}),
+  };
+}
+
+export function getCoordinatorSubtaskStartupSnapshot(
+  startup: CoordinatorSubtaskSnapshot['startup'],
+): CoordinatorSubtaskStartupSnapshot {
+  return (
+    startup ?? {
+      followupPromptMode: 'post-ready-prompt',
+      initialAssignmentMode: 'post-ready-prompt',
+      initialAssignmentStatus: 'delivered',
+      readinessPolicy: 'terminal-generic',
+    }
+  );
 }
 
 export function isCoordinatorTerminalSubtaskStatus(status: CoordinatorSubtaskStatus): boolean {
@@ -886,6 +1016,20 @@ function isCoordinatorPromptDeliveryJournalEntry(
   );
 }
 
+function isCoordinatorSubtaskStartupSnapshot(
+  value: unknown,
+): value is CoordinatorSubtaskStartupSnapshot {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeInteger(value.deliveredAt) &&
+    isCoordinatorAgentFollowupPromptMode(value.followupPromptMode) &&
+    isCoordinatorAgentInitialAssignmentMode(value.initialAssignmentMode) &&
+    isCoordinatorSubtaskInitialAssignmentStatus(value.initialAssignmentStatus) &&
+    isCoordinatorAgentReadinessPolicy(value.readinessPolicy) &&
+    isOptionalNonNegativeInteger(value.seededAt)
+  );
+}
+
 export function isCoordinatorPromptRequestSnapshot(
   value: unknown,
 ): value is CoordinatorPromptRequestSnapshot {
@@ -947,6 +1091,7 @@ export function isCoordinatorSubtaskSnapshot(value: unknown): value is Coordinat
     isOptionalString(value.lastPromptRequestId) &&
     typeof value.parentCoordinatorTaskId === 'string' &&
     isOptionalString(value.result) &&
+    (value.startup === undefined || isCoordinatorSubtaskStartupSnapshot(value.startup)) &&
     isCoordinatorSubtaskStatus(value.status) &&
     typeof value.taskId === 'string' &&
     typeof value.toolTokenId === 'string' &&

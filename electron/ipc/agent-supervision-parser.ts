@@ -1,4 +1,5 @@
 import {
+  hasCodexPromptInTail,
   getVisibleTerminalTextForDetection,
   hasPromptAdjacentInteractiveChoiceInVisibleTail,
   hasHydraPromptInTail,
@@ -134,7 +135,11 @@ export function classifyOutputState(rawTail: string): {
     };
   }
 
-  if (looksLikePromptLine(lastVisibleLine) || hasHydraPromptInTail(rawTail)) {
+  if (
+    looksLikePromptLine(lastVisibleLine) ||
+    hasCodexPromptInTail(rawTail) ||
+    hasHydraPromptInTail(rawTail)
+  ) {
     return {
       preview: getPromptPreview(rawTail),
       state: 'idle-at-prompt',

@@ -281,11 +281,54 @@ function readAgent(
     `${label}.env`,
     options.limits.maxWorkflowShortTextChars,
   );
+  const followupPromptMode = readOptionalString(
+    value.followupPromptMode,
+    `${label}.followupPromptMode`,
+    options.limits.maxWorkflowShortTextChars,
+  );
+  if (
+    followupPromptMode !== undefined &&
+    followupPromptMode !== 'post-ready-prompt' &&
+    followupPromptMode !== 'disallow'
+  ) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      `${label}.followupPromptMode must be post-ready-prompt or disallow`,
+    );
+  }
+  const initialAssignmentMode = readOptionalString(
+    value.initialAssignmentMode,
+    `${label}.initialAssignmentMode`,
+    options.limits.maxWorkflowShortTextChars,
+  );
+  if (
+    initialAssignmentMode !== undefined &&
+    initialAssignmentMode !== 'spawn-seeded-interactive' &&
+    initialAssignmentMode !== 'post-ready-prompt'
+  ) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      `${label}.initialAssignmentMode must be spawn-seeded-interactive or post-ready-prompt`,
+    );
+  }
   const name = readOptionalString(
     value.name,
     `${label}.name`,
     options.limits.maxWorkflowShortTextChars,
   );
+  const readinessPolicy = readOptionalString(
+    value.readinessPolicy,
+    `${label}.readinessPolicy`,
+    options.limits.maxWorkflowShortTextChars,
+  );
+  if (
+    readinessPolicy !== undefined &&
+    readinessPolicy !== 'codex' &&
+    readinessPolicy !== 'shell' &&
+    readinessPolicy !== 'terminal-generic'
+  ) {
+    throw new CoordinatorWorkflowSpecValidationError(
+      `${label}.readinessPolicy must be codex, shell, or terminal-generic`,
+    );
+  }
   const skipPermissionsArgs = readOptionalStringArray(
     value.skipPermissionsArgs,
     `${label}.skipPermissionsArgs`,
@@ -296,7 +339,10 @@ function readAgent(
     ...(args.length > 0 ? { args } : {}),
     command,
     ...(env !== undefined ? { env } : {}),
+    ...(followupPromptMode !== undefined ? { followupPromptMode } : {}),
+    ...(initialAssignmentMode !== undefined ? { initialAssignmentMode } : {}),
     ...(name !== undefined ? { name } : {}),
+    ...(readinessPolicy !== undefined ? { readinessPolicy } : {}),
     ...(skipPermissionsArgs.length > 0 ? { skipPermissionsArgs } : {}),
   };
 }
