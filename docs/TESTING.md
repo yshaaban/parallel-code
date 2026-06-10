@@ -123,6 +123,10 @@ For coordinator-mode work:
   counting must be per active target delivery chain rather than per queued request
 - prove prompts block cleanly on `awaiting-input` and fail cleanly if task-command control is lost
   mid-write
+- prove the prompt-delivery machine (serialization, admission caps, readiness gating,
+  `awaiting-input` blocking, mid-write lease loss, dedupe/bounds) at the module seam in
+  `electron/coordinator/prompt-delivery.test.ts`; tool-gateway tests keep thin
+  `send_prompt`/spawn/cleanup integration locks over the composed runtime
 - prove coordinator inspection tools cap output/diff payloads and reject non-git diffs for non-git
   runs
 - prove renderer coordinator actions do not expose bearer tokens, reject peer clients, and require
@@ -131,18 +135,56 @@ For coordinator-mode work:
   `submit_result`, subtask-owned `append_workflow_steps`, constrained `steps[]` spec rejection,
   append-only graph mutation, decision-lane `metadata.workflowActions`, append idempotency, lane
   ownership checks, DAG dependency advancement, partial lane failures, scheduled
-  retry/timeout/cancel policy, typed verifier verdicts, cleanup propagation, and stale workflow
-  restore
+  retry/timeout/cancel policy, typed verifier verdicts, join-policy fan-in (`all`, `any`,
+  `first-success`, `quorum`), impossible verifier threshold rejection, branch-bundle iteration
+  limits, cleanup propagation, and stale workflow restore
+- prove per-workflow budget enforcement at the backend seam: above-cap budget policy rejection at
+  the tool boundary, lowered-budget rejection of starts/appends/decision actions with no state
+  mutation, committed-lane counting through the single lane-admission authority, provenance-aware
+  retry suppression with one `workflow-budget-exhausted` journal entry (including legacy lanes
+  without `spawnedBy` and a zero retry budget), wall-clock trips to `blocked` with the typed
+  reason, trip idempotence across repeated ticks, completed-workflow late-append rejection without
+  a trip, exactly-at-limit admission boundaries, resume-past-deadline extension by the stale gap,
+  and at least one browserless e2e budget-trip scenario (blocked workflow, typed reason, further
+  appends rejected, journal kind present)
 - prove compact coordinator UI projections in app/Solid tests before relying on browser canaries
   including workflow activity, append and expansion activity, failed/blocked reasons, completion
-  reasons, retry/timeout/skipped counts, result previews, and verdict counts
+  reasons, retry/timeout/skipped counts, result previews, join progress, verdict counts,
+  pause/unpause controls, pending-approval attention with legal-action gating, manual-retry lane
+  projection, and exact operator journal-kind tones
 - prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
   close-before-delivery cancellation, seeded-start versus prompt-delivered startup contracts,
   follow-up rejection for disallowed subtasks, credential revocation, restored stale runs, and
   landing cleanup before relying on browser canaries
+- prove operator controls at the backend seam: per-action run-status and lease authorization for
+  the operator-action rule table (`resume_run`, `pause_run`, `unpause_run`,
+  `approve_workflow_actions`, `deny_workflow_actions`, `retry_lane`) with structural rejection of
+  operator names on the agent tool path, pause admission across every seam (the prompt-delivery
+  run-status hook in `electron/coordinator/prompt-delivery.test.ts`, executor reconcile deferral
+  with lane timeouts still firing, agent spawn/prompt/append rejection while inspection and
+  in-flight completions stay accepted), the approval lifecycle (gated submit holds the lane
+  without a result, approve re-validates against the current graph, deny discards with a journaled
+  reason, close-out and restore cancel pending approvals, resume re-records them), and manual lane
+  retry outside the auto-retry counter but inside the effective lane caps with shared dedupe keys;
+  keep the approval round-trip, deny path, pause/unpause prompt flow, and budget-bounded
+  `retry_lane` scenarios in the browserless coordinator e2e lane
+- prove coordinator resume at the backend seam: stale restore followed by `resume_run` must show
+  respawn idempotency (same `requestId` replays the remembered result, a second resume is
+  rejected, deterministic `:resume:` dedupe keys cannot double-spawn replacement lanes, and a
+  remembered-result replay still requires the held task-command lease), cached-fact replay for
+  completed lanes/results/verdicts/expansions, stage completion after a never-spawned lane's
+  replacement submits its result, per-workflow resume failure isolation that still records the
+  `resumes[]` outcome, credential rotation that invalidates the old subtask token, readiness-gated
+  respawns receiving a fresh initial assignment even when the pre-restart prompt had already been
+  delivered, and respawn clocks refreshed outside the retry budget; keep the restart-then-resume
+  scenario in the browserless coordinator e2e lane
 - run `npm run test:node:coordinator:e2e` when coordinator changes cross browser-server HTTP IPC,
   `/api/coordinator/tool-call`, websocket replay, workflow spec execution, adaptive workflow
-  appends, decision-lane workflow actions, prompt delivery, or restart/persistence seams
+  appends, decision-lane workflow actions, prompt delivery, or restart/resume/persistence seams
+- when coordinator workflow changes are meant to improve real repo work, turn at least one actual
+  repo-review or regression-hunt scenario into either a browser-less fixture or a reproducible
+  empirical harness under `tmp/` so the proving loop is grounded in real operator work instead of
+  only synthetic DAGs
 - `npm run test:node` includes the coordinator E2E lane separately, with file parallelism disabled
   for that harness
 - prove custom terminal agent parsing and env propagation with owner-local parser/spawn-config tests

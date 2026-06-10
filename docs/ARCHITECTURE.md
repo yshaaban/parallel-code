@@ -88,7 +88,12 @@ All three shells operate on the same underlying concepts:
   prompt delivery, startup assignment contracts, Codex readiness detection, subtask inspection,
   explicit subtask cleanup, self-landing state, and backend-owned workflow DAG execution,
   including append-only adaptive step mutation, decision-lane workflow actions, execution
-  journaling, and compact workflow-state projection
+  journaling, join-policy fan-in, branch-bundle iteration limits, repo-review proving templates,
+  durable subtask launch payloads with explicit stale-run resume and credential rotation,
+  backend-owned per-workflow budget enforcement (steps, lanes, retries, wall-clock) with the
+  `execution.budget` projection consumed by the rail, operator approval gates for decision-lane
+  workflow actions, run pause/unpause admission control, operator lane retry, and compact
+  workflow-state projection
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - `PeerPresence` is ephemeral per-browser-session identity plus focus/control context
