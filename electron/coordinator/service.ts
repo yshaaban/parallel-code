@@ -22,6 +22,7 @@ import {
   getCoordinatorRuntimeState,
   listCoordinatorRuns,
   removeCoordinatorRun,
+  removeCoordinatorSubtaskLaunch,
   restoreCoordinatorRuntimeState,
   subscribeCoordinatorEvents,
   updateCoordinatorRunStatus,
@@ -213,6 +214,7 @@ export function ensureCoordinatorServiceLoaded(env: StorageEnv): void {
     restoreCoordinatorRuntimeState({
       runs: [],
       stateVersion: 0,
+      subtaskLaunches: [],
       toolCallResults: [],
     });
   }
@@ -396,7 +398,10 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
     revokeCoordinatorTaskCredential(env, taskId);
     cancelCoordinatorPromptsForTask(candidate.id, taskId, 'task-cleaned-up');
     cancelCoordinatorWorkflowLanesForTask(candidate.id, taskId, 'task-cleaned-up');
-    updateCoordinatorSubtaskStatus(candidate.id, taskId, 'cancelled');
+    removeCoordinatorSubtaskLaunch(candidate.id, taskId);
+    updateCoordinatorSubtaskStatus(candidate.id, taskId, 'cancelled', {
+      interruptedByRestoreAt: undefined,
+    });
     persistRuntimeState(env);
     return;
   }

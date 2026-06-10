@@ -8,9 +8,13 @@ import {
   isStringTupleMember,
 } from '../lib/type-guards.js';
 import {
+  COORDINATOR_WORKFLOW_DYNAMIC_ACTION_KINDS,
+  countCoordinatorWorkflowSpecStepLanes,
   isCoordinatorWorkflowSpecSnapshot,
   type CoordinatorWorkflowDynamicActionKind,
+  type CoordinatorWorkflowDynamicActionSnapshot,
   type CoordinatorWorkflowSpecSnapshot,
+  type CoordinatorWorkflowSpecStepSnapshot,
 } from './coordinator-workflow-spec.js';
 import type { ProjectMode } from '../store/types.js';
 
@@ -98,10 +102,20 @@ export const COORDINATOR_TOOL_NAMES = [
   'wait_for_idle',
 ] as const;
 
+export const COORDINATOR_OPERATOR_ACTION_NAMES = [
+  'approve_workflow_actions',
+  'deny_workflow_actions',
+  'pause_run',
+  'resume_run',
+  'retry_lane',
+  'unpause_run',
+] as const;
+
 export const COORDINATOR_WORKFLOW_TEMPLATES = [
   'custom',
   'map_reduce',
   'adversarial_review',
+  'repo_review',
 ] as const;
 
 export const COORDINATOR_WORKFLOW_STATUSES = [
@@ -203,6 +217,7 @@ export type CoordinatorSubtaskInitialAssignmentStatus =
 export type CoordinatorPromptKind = (typeof COORDINATOR_PROMPT_KINDS)[number];
 export type CoordinatorPromptStatus = (typeof COORDINATOR_PROMPT_STATUSES)[number];
 export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
+export type CoordinatorOperatorActionName = (typeof COORDINATOR_OPERATOR_ACTION_NAMES)[number];
 export type CoordinatorWorkflowTemplate = (typeof COORDINATOR_WORKFLOW_TEMPLATES)[number];
 export type CoordinatorWorkflowStatus = (typeof COORDINATOR_WORKFLOW_STATUSES)[number];
 export type CoordinatorWorkflowStageKind = (typeof COORDINATOR_WORKFLOW_STAGE_KINDS)[number];
@@ -229,6 +244,7 @@ export const COORDINATOR_LIMITS = {
   maxConcurrentSpawnsPerProject: 1,
   maxRememberedToolCallResults: 500,
   maxPendingPromptsPerTarget: 3,
+  maxWorkflowBranchIterations: 8,
   maxWorkflowFindings: 100,
   maxWorkflowEvidence: 200,
   maxWorkflowLanes: 12,
@@ -240,8 +256,11 @@ export const COORDINATOR_LIMITS = {
   maxWorkflowShortTextChars: 512,
   maxWorkflowSummaryChars: 12_000,
   maxWorkflowStepAppends: 24,
+  maxWorkflowTotalRetries: 8,
+  maxWorkflowTotalSteps: 24,
   spawnSpacingWhileSelectedRestoringMs: 500,
   workflowDefaultLaneTimeoutMs: 15 * 60 * 1000,
+  workflowDefaultWallClockMs: 60 * 60 * 1000,
   workflowMaxLaneTimeoutMs: 24 * 60 * 60 * 1000,
 } as const;
 
@@ -332,6 +351,7 @@ export interface CoordinatorSubtaskSnapshot {
   createdAt: number;
   dedupeKey?: string;
   hiddenOutputState?: CoordinatorHiddenOutputState;
+  interruptedByRestoreAt?: number;
   lastPromptRequestId?: string;
   parentCoordinatorTaskId: string;
   result?: string;
@@ -347,11 +367,34 @@ export interface CoordinatorSubtaskSnapshot {
   worktreePath: string;
 }
 
+export const COORDINATOR_WORKFLOW_LANE_SPAWN_SOURCES = ['scheduler', 'operator', 'resume'] as const;
+
+export type CoordinatorWorkflowLaneSpawnSource =
+  (typeof COORDINATOR_WORKFLOW_LANE_SPAWN_SOURCES)[number];
+
+export interface CoordinatorSubtaskLaunchSnapshot {
+  agent: CoordinatorSpawnAgentConfig;
+  assignment: string;
+  baseBranch?: string;
+  branchPrefix?: string;
+  dedupeKey: string;
+  name: string;
+  recordedAt: number;
+  runId: string;
+  taskId: string;
+}
+
 export interface CoordinatorWorkflowPolicySnapshot {
   budgetHint?: string;
   continueOnFailure: boolean;
   maxConcurrentLanes: number;
+  maxIterationsPerBranch: number;
   maxOutputBytesPerLane: number;
+  maxTotalLanes?: number;
+  maxTotalRetries?: number;
+  maxTotalSteps?: number;
+  maxWallClockMs?: number;
+  requireDecisionApproval?: boolean;
   resultRequired: boolean;
   retryBackoffMs: number;
   retryCount: number;
@@ -385,9 +428,12 @@ export interface CoordinatorWorkflowLaneSnapshot {
   name: string;
   resultId?: string;
   role?: string;
+  spawnedBy?: CoordinatorWorkflowLaneSpawnSource;
   stageId: string;
   startedAt?: number;
   status: CoordinatorWorkflowLaneStatus;
+  /** Set when resume cancels this lane in favor of a replacement lane it spawned. */
+  supersededByLaneId?: string;
   taskId?: string;
   timeoutAt?: number;
   updatedAt: number;
@@ -443,6 +489,9 @@ export interface CoordinatorWorkflowAppendPolicySnapshot {
 
 export interface CoordinatorWorkflowExpansionActionSnapshot {
   actionId: string;
+  branchKey?: string;
+  bundleId?: string;
+  iteration?: number;
   kind: CoordinatorWorkflowDynamicActionKind;
   reason?: string;
   stepIds?: string[];
@@ -457,9 +506,64 @@ export interface CoordinatorWorkflowExpansionSnapshot {
   sourceTaskId: string;
 }
 
+export const COORDINATOR_WORKFLOW_APPROVAL_STATUSES = [
+  'pending',
+  'approved',
+  'denied',
+  'cancelled',
+] as const;
+
+export type CoordinatorWorkflowApprovalStatus =
+  (typeof COORDINATOR_WORKFLOW_APPROVAL_STATUSES)[number];
+
+export interface CoordinatorWorkflowPendingApprovalSnapshot {
+  actions: CoordinatorWorkflowDynamicActionSnapshot[];
+  createdAt: number;
+  id: string;
+  laneId: string;
+  reason?: string;
+  resolvedAt?: number;
+  resultId: string;
+  stageId: string;
+  status: CoordinatorWorkflowApprovalStatus;
+}
+
+export const COORDINATOR_WORKFLOW_BUDGET_DIMENSIONS = [
+  'steps',
+  'lanes',
+  'retries',
+  'wall-clock',
+] as const;
+
+export type CoordinatorWorkflowBudgetDimension =
+  (typeof COORDINATOR_WORKFLOW_BUDGET_DIMENSIONS)[number];
+
+export interface CoordinatorWorkflowBudgetUsageSnapshot {
+  limit: number;
+  used: number;
+}
+
+export interface CoordinatorWorkflowBudgetSnapshot {
+  deadlineAt: number;
+  exhausted?: CoordinatorWorkflowBudgetDimension;
+  lanes: CoordinatorWorkflowBudgetUsageSnapshot;
+  retries: CoordinatorWorkflowBudgetUsageSnapshot;
+  /** Set once when a lane retry is first denied by the retry budget; dedupes the journal entry. */
+  retriesExhaustedAt?: number;
+  steps: CoordinatorWorkflowBudgetUsageSnapshot;
+}
+
+export interface CoordinatorWorkflowBudgetLimits {
+  maxTotalLanes: number;
+  maxTotalRetries: number;
+  maxTotalSteps: number;
+  maxWallClockMs: number;
+}
+
 export interface CoordinatorWorkflowExecutionSnapshot {
   activeLaneCount: number;
   blockedReason?: string;
+  budget?: CoordinatorWorkflowBudgetSnapshot;
   cancelledAt?: number;
   completedStageCount?: number;
   completionReason?: string;
@@ -515,6 +619,7 @@ export interface CoordinatorWorkflowSnapshot {
   id: string;
   journal: CoordinatorWorkflowJournalEntrySnapshot[];
   lanes: CoordinatorWorkflowLaneSnapshot[];
+  pendingApprovals?: CoordinatorWorkflowPendingApprovalSnapshot[];
   policy: CoordinatorWorkflowPolicySnapshot;
   programVersion: number;
   results: CoordinatorWorkflowResultSnapshot[];
@@ -530,6 +635,13 @@ export interface CoordinatorWorkflowSnapshot {
   verdicts?: CoordinatorWorkflowVerdictSnapshot[];
 }
 
+export interface CoordinatorRunResumeSnapshot {
+  failedTaskIds: string[];
+  requestedAt: number;
+  respawnedTaskIds: string[];
+  resumeId: string;
+}
+
 export interface CoordinatorRunSnapshot {
   coordinatorTaskId: string;
   createdAt: number;
@@ -537,10 +649,16 @@ export interface CoordinatorRunSnapshot {
   id: string;
   landing: CoordinatorLandingStateSnapshot[];
   limits: CoordinatorRunLimits;
+  /**
+   * Set while the run is paused by the operator. The marker survives restore, so a paused run
+   * that went stale across a restart is resumed back to `paused-by-user` instead of `running`.
+   */
+  pausedAt?: number;
   projectId: string;
   projectMode: ProjectMode;
   projectRoot: string;
   promptQueue: CoordinatorPromptRequestSnapshot[];
+  resumes?: CoordinatorRunResumeSnapshot[];
   status: CoordinatorRunStatus;
   subtasks: CoordinatorSubtaskSnapshot[];
   updatedAt: number;
@@ -665,7 +783,97 @@ export type CoordinatorUiToolCallRequest =
   | (CoordinatorUiToolCallBase & {
       payload: CoordinatorCloseTaskPayload;
       toolName: 'close_task';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: undefined;
+      toolName: 'pause_run';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: undefined;
+      toolName: 'resume_run';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload?: undefined;
+      toolName: 'unpause_run';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorApproveWorkflowActionsPayload;
+      toolName: 'approve_workflow_actions';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorDenyWorkflowActionsPayload;
+      toolName: 'deny_workflow_actions';
+    })
+  | (CoordinatorUiToolCallBase & {
+      payload: CoordinatorRetryLanePayload;
+      toolName: 'retry_lane';
     });
+
+/**
+ * One authority for renderer-initiated mutating coordinator actions. Presence in this table means
+ * the action mutates the run and requires the coordinator task command lease; the value is the set
+ * of run statuses that admit the action. The tool gateway enforces the rule and the renderer
+ * projection derives its action gating from the same data.
+ */
+export const COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES: Record<
+  | CoordinatorOperatorActionName
+  | 'close_task'
+  | 'send_prompt'
+  | 'spawn_many'
+  | 'spawn_subtask'
+  | 'start_workflow',
+  readonly CoordinatorRunStatus[]
+> = {
+  approve_workflow_actions: ['running', 'draining', 'paused-by-user'],
+  close_task: ['running', 'draining'],
+  deny_workflow_actions: ['running', 'draining', 'paused-by-user'],
+  pause_run: ['running'],
+  resume_run: ['stale-after-restore'],
+  retry_lane: ['running'],
+  send_prompt: ['running', 'draining'],
+  spawn_many: ['running'],
+  spawn_subtask: ['running'],
+  start_workflow: ['running'],
+  unpause_run: ['paused-by-user'],
+};
+
+export function getCoordinatorRendererActionAllowedRunStatuses(
+  toolName: CoordinatorUiToolCallRequest['toolName'],
+): readonly CoordinatorRunStatus[] | undefined {
+  const table: Partial<
+    Record<CoordinatorUiToolCallRequest['toolName'], readonly CoordinatorRunStatus[]>
+  > = COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES;
+  return table[toolName];
+}
+
+export interface CoordinatorApproveWorkflowActionsPayload {
+  approvalId: string;
+  workflowId: string;
+}
+
+export interface CoordinatorDenyWorkflowActionsPayload {
+  approvalId: string;
+  reason?: string;
+  workflowId: string;
+}
+
+export interface CoordinatorRetryLanePayload {
+  laneId: string;
+  workflowId: string;
+}
+
+export interface CoordinatorRunResumeFailure {
+  laneId?: string;
+  reason: string;
+  taskId?: string;
+}
+
+export interface CoordinatorRunResumeResult {
+  failed: CoordinatorRunResumeFailure[];
+  respawned: string[];
+  resumeId: string;
+  run: CoordinatorRunSnapshot;
+}
 
 export interface CoordinatorSpawnSubtaskPayload {
   agent: CoordinatorSpawnAgentConfig;
@@ -683,13 +891,19 @@ export interface CoordinatorSpawnManyLanePayload {
   dedupeKey?: string;
   name: string;
   role?: string;
+  spawnedBy?: CoordinatorWorkflowLaneSpawnSource;
 }
 
 export interface CoordinatorWorkflowPolicyPayload {
   budgetHint?: string;
   continueOnFailure?: boolean;
   maxConcurrentLanes?: number;
+  maxIterationsPerBranch?: number;
   maxOutputBytesPerLane?: number;
+  maxTotalLanes?: number;
+  maxTotalRetries?: number;
+  maxTotalSteps?: number;
+  maxWallClockMs?: number;
   resultRequired?: boolean;
   retryBackoffMs?: number;
   retryCount?: number;
@@ -781,6 +995,17 @@ export interface CoordinatorLandSelfPayload {
 
 export function isCoordinatorRunStatus(value: unknown): value is CoordinatorRunStatus {
   return isStringTupleMember(value, COORDINATOR_RUN_STATUSES);
+}
+
+/**
+ * A paused run stops admitting new coordinator work (spawns, prompt delivery, retries, ready-stage
+ * starts) while in-flight work still settles. A missing run admits by default so callers that only
+ * have an optional status can defer to their own existence checks.
+ */
+export function coordinatorRunAdmitsNewWork(
+  status: CoordinatorRunStatus | null | undefined,
+): boolean {
+  return status !== 'paused-by-user';
 }
 
 export function isCoordinatorSubtaskStatus(value: unknown): value is CoordinatorSubtaskStatus {
@@ -897,6 +1122,12 @@ export function isCoordinatorToolName(value: unknown): value is CoordinatorToolN
   return isStringTupleMember(value, COORDINATOR_TOOL_NAMES);
 }
 
+export function isCoordinatorOperatorActionName(
+  value: unknown,
+): value is CoordinatorOperatorActionName {
+  return isStringTupleMember(value, COORDINATOR_OPERATOR_ACTION_NAMES);
+}
+
 export function isCoordinatorPromptStatus(value: unknown): value is CoordinatorPromptStatus {
   return isStringTupleMember(value, COORDINATOR_PROMPT_STATUSES);
 }
@@ -938,6 +1169,16 @@ export function isCoordinatorWorkflowStageStatus(
   value: unknown,
 ): value is CoordinatorWorkflowStageStatus {
   return isStringTupleMember(value, COORDINATOR_WORKFLOW_STAGE_STATUSES);
+}
+
+export function isCoordinatorTerminalWorkflowStatus(status: CoordinatorWorkflowStatus): boolean {
+  return (
+    status === 'blocked' ||
+    status === 'cancelled' ||
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'stale-after-restore'
+  );
 }
 
 export function isCoordinatorWorkflowLaneStatus(
@@ -1088,6 +1329,7 @@ export function isCoordinatorSubtaskSnapshot(value: unknown): value is Coordinat
     isOptionalString(value.dedupeKey) &&
     (value.hiddenOutputState === undefined ||
       isCoordinatorHiddenOutputState(value.hiddenOutputState)) &&
+    isOptionalNonNegativeInteger(value.interruptedByRestoreAt) &&
     isOptionalString(value.lastPromptRequestId) &&
     typeof value.parentCoordinatorTaskId === 'string' &&
     isOptionalString(value.result) &&
@@ -1108,7 +1350,14 @@ function isCoordinatorWorkflowPolicySnapshot(
     isOptionalString(value.budgetHint) &&
     typeof value.continueOnFailure === 'boolean' &&
     isNonNegativeInteger(value.maxConcurrentLanes) &&
+    isNonNegativeInteger(value.maxIterationsPerBranch) &&
     isNonNegativeInteger(value.maxOutputBytesPerLane) &&
+    isOptionalNonNegativeInteger(value.maxTotalLanes) &&
+    isOptionalNonNegativeInteger(value.maxTotalRetries) &&
+    isOptionalNonNegativeInteger(value.maxTotalSteps) &&
+    isOptionalNonNegativeInteger(value.maxWallClockMs) &&
+    (value.requireDecisionApproval === undefined ||
+      typeof value.requireDecisionApproval === 'boolean') &&
     typeof value.resultRequired === 'boolean' &&
     isNonNegativeInteger(value.retryBackoffMs) &&
     isNonNegativeInteger(value.retryCount) &&
@@ -1162,9 +1411,12 @@ function isCoordinatorWorkflowLaneSnapshot(
     typeof value.name === 'string' &&
     isOptionalString(value.resultId) &&
     isOptionalString(value.role) &&
+    (value.spawnedBy === undefined ||
+      isStringTupleMember(value.spawnedBy, COORDINATOR_WORKFLOW_LANE_SPAWN_SOURCES)) &&
     typeof value.stageId === 'string' &&
     isOptionalNonNegativeInteger(value.startedAt) &&
     isCoordinatorWorkflowLaneStatus(value.status) &&
+    isOptionalString(value.supersededByLaneId) &&
     isOptionalString(value.taskId) &&
     isOptionalNonNegativeInteger(value.timeoutAt) &&
     isNonNegativeInteger(value.updatedAt)
@@ -1251,12 +1503,16 @@ function isCoordinatorWorkflowExpansionActionSnapshot(
   return (
     isRecord(value) &&
     typeof value.actionId === 'string' &&
-    (value.kind === 'append_fanout' ||
+    (value.kind === 'append_branch_bundle' ||
+      value.kind === 'append_fanout' ||
       value.kind === 'append_synthesize' ||
       value.kind === 'append_verify' ||
       value.kind === 'append_worker' ||
       value.kind === 'mark_blocked' ||
       value.kind === 'stop_workflow') &&
+    isOptionalString(value.branchKey) &&
+    isOptionalString(value.bundleId) &&
+    isOptionalNonNegativeInteger(value.iteration) &&
     (value.reason === undefined || typeof value.reason === 'string') &&
     (value.stepIds === undefined || isStringArray(value.stepIds))
   );
@@ -1276,6 +1532,63 @@ function isCoordinatorWorkflowExpansionSnapshot(
   );
 }
 
+export function isCoordinatorWorkflowApprovalStatus(
+  value: unknown,
+): value is CoordinatorWorkflowApprovalStatus {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_APPROVAL_STATUSES);
+}
+
+function isCoordinatorWorkflowApprovalAction(
+  value: unknown,
+): value is CoordinatorWorkflowDynamicActionSnapshot {
+  return (
+    isRecord(value) && isStringTupleMember(value.kind, COORDINATOR_WORKFLOW_DYNAMIC_ACTION_KINDS)
+  );
+}
+
+export function isCoordinatorWorkflowPendingApprovalSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowPendingApprovalSnapshot {
+  return (
+    isRecord(value) &&
+    isArrayOf(value.actions, isCoordinatorWorkflowApprovalAction) &&
+    isNonNegativeInteger(value.createdAt) &&
+    typeof value.id === 'string' &&
+    typeof value.laneId === 'string' &&
+    isOptionalString(value.reason) &&
+    isOptionalNonNegativeInteger(value.resolvedAt) &&
+    typeof value.resultId === 'string' &&
+    typeof value.stageId === 'string' &&
+    isCoordinatorWorkflowApprovalStatus(value.status)
+  );
+}
+
+export function isCoordinatorWorkflowBudgetDimension(
+  value: unknown,
+): value is CoordinatorWorkflowBudgetDimension {
+  return isStringTupleMember(value, COORDINATOR_WORKFLOW_BUDGET_DIMENSIONS);
+}
+
+function isCoordinatorWorkflowBudgetUsageSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowBudgetUsageSnapshot {
+  return isRecord(value) && isNonNegativeInteger(value.limit) && isNonNegativeInteger(value.used);
+}
+
+export function isCoordinatorWorkflowBudgetSnapshot(
+  value: unknown,
+): value is CoordinatorWorkflowBudgetSnapshot {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.deadlineAt) &&
+    (value.exhausted === undefined || isCoordinatorWorkflowBudgetDimension(value.exhausted)) &&
+    isCoordinatorWorkflowBudgetUsageSnapshot(value.lanes) &&
+    isCoordinatorWorkflowBudgetUsageSnapshot(value.retries) &&
+    isOptionalNonNegativeInteger(value.retriesExhaustedAt) &&
+    isCoordinatorWorkflowBudgetUsageSnapshot(value.steps)
+  );
+}
+
 function isCoordinatorWorkflowExecutionSnapshot(
   value: unknown,
 ): value is CoordinatorWorkflowExecutionSnapshot {
@@ -1283,6 +1596,7 @@ function isCoordinatorWorkflowExecutionSnapshot(
     isRecord(value) &&
     isNonNegativeInteger(value.activeLaneCount) &&
     isOptionalString(value.blockedReason) &&
+    (value.budget === undefined || isCoordinatorWorkflowBudgetSnapshot(value.budget)) &&
     isOptionalNonNegativeInteger(value.cancelledAt) &&
     isOptionalNonNegativeInteger(value.completedStageCount) &&
     isOptionalString(value.completionReason) &&
@@ -1355,6 +1669,8 @@ export function isCoordinatorWorkflowSnapshot(
     typeof value.id === 'string' &&
     isArrayOf(value.journal, isCoordinatorWorkflowJournalEntrySnapshot) &&
     isArrayOf(value.lanes, isCoordinatorWorkflowLaneSnapshot) &&
+    (value.pendingApprovals === undefined ||
+      isArrayOf(value.pendingApprovals, isCoordinatorWorkflowPendingApprovalSnapshot)) &&
     isCoordinatorWorkflowPolicySnapshot(value.policy) &&
     isOptionalNonNegativeInteger(value.programVersion) &&
     isArrayOf(value.results, isCoordinatorWorkflowResultSnapshot) &&
@@ -1373,6 +1689,259 @@ export function isCoordinatorWorkflowSnapshot(
   );
 }
 
+function clampWorkflowBudgetLimit(
+  value: number | undefined,
+  defaultValue: number,
+  cap: number,
+): number {
+  return Math.min(value ?? defaultValue, cap);
+}
+
+export function getCoordinatorWorkflowBudgetLimits(
+  policy:
+    | Pick<
+        CoordinatorWorkflowPolicySnapshot,
+        'maxTotalLanes' | 'maxTotalRetries' | 'maxTotalSteps' | 'maxWallClockMs'
+      >
+    | undefined,
+): CoordinatorWorkflowBudgetLimits {
+  return {
+    maxTotalLanes: clampWorkflowBudgetLimit(
+      policy?.maxTotalLanes,
+      COORDINATOR_LIMITS.maxWorkflowLanes,
+      COORDINATOR_LIMITS.maxWorkflowLanes,
+    ),
+    maxTotalRetries: clampWorkflowBudgetLimit(
+      policy?.maxTotalRetries,
+      COORDINATOR_LIMITS.maxWorkflowTotalRetries,
+      COORDINATOR_LIMITS.maxWorkflowTotalRetries,
+    ),
+    maxTotalSteps: clampWorkflowBudgetLimit(
+      policy?.maxTotalSteps,
+      COORDINATOR_LIMITS.maxWorkflowTotalSteps,
+      COORDINATOR_LIMITS.maxWorkflowTotalSteps,
+    ),
+    maxWallClockMs: clampWorkflowBudgetLimit(
+      policy?.maxWallClockMs,
+      COORDINATOR_LIMITS.workflowDefaultWallClockMs,
+      COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+    ),
+  };
+}
+
+/**
+ * Retry budget counts scheduler-spawned retry attempts only. Lanes spawned by `resume` (and any
+ * future non-scheduler provenance such as `operator`) are excluded from the counter entirely, not
+ * merely exempt from the admission gate.
+ */
+export function countCoordinatorWorkflowRetriesUsed(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
+): number {
+  return workflow.lanes.filter(
+    (lane) => lane.attempt > 1 && (lane.spawnedBy ?? 'scheduler') === 'scheduler',
+  ).length;
+}
+
+export function countCoordinatorWorkflowPendingApprovals(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'pendingApprovals'>,
+): number {
+  return (workflow.pendingApprovals ?? []).filter((approval) => approval.status === 'pending')
+    .length;
+}
+
+/**
+ * One authority for the lane-retry dedupe-key scheme. The backend executor derives scheduled and
+ * manual retry lanes from this key, and the renderer projection uses the same helper to decide
+ * whether a retry is already scheduled instead of recomputing the scheme inline.
+ */
+export function getCoordinatorWorkflowLaneRetryDedupeKey(
+  lane: Pick<CoordinatorWorkflowLaneSnapshot, 'attempt' | 'dedupeKey' | 'id'>,
+): string {
+  return `${lane.dedupeKey ?? lane.id}:retry:${lane.attempt + 1}`;
+}
+
+export function hasScheduledCoordinatorWorkflowLaneRetry(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
+  lane: Pick<CoordinatorWorkflowLaneSnapshot, 'attempt' | 'dedupeKey' | 'id'>,
+): boolean {
+  const retryDedupeKey = getCoordinatorWorkflowLaneRetryDedupeKey(lane);
+  return workflow.lanes.some((candidate) => candidate.dedupeKey === retryDedupeKey);
+}
+
+function isCommittedPlannedStageStatus(status: CoordinatorWorkflowStageStatus): boolean {
+  return (
+    status !== 'blocked' &&
+    status !== 'cancelled' &&
+    status !== 'completed' &&
+    status !== 'failed' &&
+    status !== 'skipped' &&
+    status !== 'stale-after-restore'
+  );
+}
+
+export function getCommittedWorkflowLaneCount(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes' | 'sourceSpec' | 'stages'>,
+): number {
+  let plannedLaneCount = 0;
+  for (const stage of workflow.stages) {
+    if (stage.laneIds.length > 0 || !isCommittedPlannedStageStatus(stage.status)) {
+      continue;
+    }
+
+    const step = workflow.sourceSpec?.steps.find((candidate) => candidate.id === stage.id);
+    if (step !== undefined) {
+      plannedLaneCount += countCoordinatorWorkflowSpecStepLanes(step);
+    }
+  }
+
+  return workflow.lanes.length + plannedLaneCount;
+}
+
+export function getCoordinatorWorkflowStageSatisfiedResultCount(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
+  stage: Pick<CoordinatorWorkflowStageSnapshot, 'laneIds'>,
+): number {
+  const stageLaneIds = new Set(stage.laneIds);
+  return workflow.lanes.filter(
+    (lane) =>
+      stageLaneIds.has(lane.id) &&
+      lane.resultId !== undefined &&
+      (lane.status === 'completed' || lane.status === 'waiting-for-result'),
+  ).length;
+}
+
+export function getCoordinatorWorkflowStageRequiredResultCount(
+  step: CoordinatorWorkflowSpecStepSnapshot | undefined,
+): number {
+  if (step?.kind === 'verify' && step.minimumVerifierCount !== undefined) {
+    return step.minimumVerifierCount;
+  }
+
+  return 1;
+}
+
+/**
+ * One authority for join-mode satisfaction. The backend executor and the renderer projection both
+ * decide whether a stage unblocks its dependents from this helper; `step` is the stage's
+ * `sourceSpec` step when one exists. The quorum fallback is the stage's required result count, not
+ * a bare 1, so verify steps without an explicit quorum still honor `minimumVerifierCount`.
+ */
+export function isCoordinatorWorkflowStageDependencySatisfied(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
+  stage: Pick<CoordinatorWorkflowStageSnapshot, 'laneIds' | 'status'>,
+  step: CoordinatorWorkflowSpecStepSnapshot | undefined,
+): boolean {
+  if (
+    stage.status === 'blocked' ||
+    stage.status === 'cancelled' ||
+    stage.status === 'failed' ||
+    stage.status === 'stale-after-restore'
+  ) {
+    return false;
+  }
+  if (stage.status === 'completed') {
+    return true;
+  }
+  if (stage.laneIds.length === 0) {
+    return false;
+  }
+
+  const joinMode = step?.policy?.joinMode ?? 'all';
+  const satisfiedResultCount = getCoordinatorWorkflowStageSatisfiedResultCount(workflow, stage);
+  switch (joinMode) {
+    case 'all':
+      return false;
+    case 'any':
+      return satisfiedResultCount >= 1;
+    case 'first-success':
+      return satisfiedResultCount >= 1;
+    case 'quorum':
+      return (
+        satisfiedResultCount >=
+        (step?.policy?.quorumCount ?? getCoordinatorWorkflowStageRequiredResultCount(step))
+      );
+  }
+}
+
+export function createCoordinatorWorkflowBudgetSnapshot(
+  workflow: CoordinatorWorkflowSnapshot,
+): CoordinatorWorkflowBudgetSnapshot {
+  const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
+  const exhausted = workflow.execution?.budget?.exhausted;
+  const retriesExhaustedAt = workflow.execution?.budget?.retriesExhaustedAt;
+  return {
+    deadlineAt:
+      workflow.execution?.deadlineAt ??
+      (workflow.startedAt ?? workflow.createdAt) + limits.maxWallClockMs,
+    ...(exhausted !== undefined ? { exhausted } : {}),
+    lanes: { limit: limits.maxTotalLanes, used: getCommittedWorkflowLaneCount(workflow) },
+    retries: {
+      limit: limits.maxTotalRetries,
+      used: countCoordinatorWorkflowRetriesUsed(workflow),
+    },
+    ...(retriesExhaustedAt !== undefined ? { retriesExhaustedAt } : {}),
+    steps: {
+      limit: limits.maxTotalSteps,
+      used: workflow.sourceSpec?.steps.length ?? workflow.stages.length,
+    },
+  };
+}
+
+export function formatCoordinatorWorkflowBudgetExhaustedReason(
+  dimension: CoordinatorWorkflowBudgetDimension,
+  usage: CoordinatorWorkflowBudgetUsageSnapshot,
+): string {
+  return `budget-exhausted: ${dimension} (${usage.used}/${usage.limit})`;
+}
+
+function isCoordinatorSpawnAgentConfig(value: unknown): value is CoordinatorSpawnAgentConfig {
+  return (
+    isRecord(value) &&
+    (value.args === undefined || isStringArray(value.args)) &&
+    typeof value.command === 'string' &&
+    (value.env === undefined ||
+      (isRecord(value.env) &&
+        Object.values(value.env).every((entry) => typeof entry === 'string'))) &&
+    (value.followupPromptMode === undefined ||
+      isCoordinatorAgentFollowupPromptMode(value.followupPromptMode)) &&
+    (value.initialAssignmentMode === undefined ||
+      isCoordinatorAgentInitialAssignmentMode(value.initialAssignmentMode)) &&
+    isOptionalString(value.name) &&
+    (value.readinessPolicy === undefined ||
+      isCoordinatorAgentReadinessPolicy(value.readinessPolicy)) &&
+    (value.skipPermissionsArgs === undefined || isStringArray(value.skipPermissionsArgs))
+  );
+}
+
+export function isCoordinatorSubtaskLaunchSnapshot(
+  value: unknown,
+): value is CoordinatorSubtaskLaunchSnapshot {
+  return (
+    isRecord(value) &&
+    isCoordinatorSpawnAgentConfig(value.agent) &&
+    typeof value.assignment === 'string' &&
+    isOptionalString(value.baseBranch) &&
+    isOptionalString(value.branchPrefix) &&
+    typeof value.dedupeKey === 'string' &&
+    typeof value.name === 'string' &&
+    isNonNegativeInteger(value.recordedAt) &&
+    typeof value.runId === 'string' &&
+    typeof value.taskId === 'string'
+  );
+}
+
+export function isCoordinatorRunResumeSnapshot(
+  value: unknown,
+): value is CoordinatorRunResumeSnapshot {
+  return (
+    isRecord(value) &&
+    isStringArray(value.failedTaskIds) &&
+    isNonNegativeInteger(value.requestedAt) &&
+    isStringArray(value.respawnedTaskIds) &&
+    typeof value.resumeId === 'string'
+  );
+}
+
 export function isCoordinatorRunSnapshot(value: unknown): value is CoordinatorRunSnapshot {
   return (
     isRecord(value) &&
@@ -1382,10 +1951,12 @@ export function isCoordinatorRunSnapshot(value: unknown): value is CoordinatorRu
     typeof value.id === 'string' &&
     isArrayOf(value.landing, isCoordinatorLandingStateSnapshot) &&
     isCoordinatorRunLimits(value.limits) &&
+    isOptionalNonNegativeInteger(value.pausedAt) &&
     typeof value.projectId === 'string' &&
     isProjectMode(value.projectMode) &&
     typeof value.projectRoot === 'string' &&
     isArrayOf(value.promptQueue, isCoordinatorPromptRequestSnapshot) &&
+    (value.resumes === undefined || isArrayOf(value.resumes, isCoordinatorRunResumeSnapshot)) &&
     isCoordinatorRunStatus(value.status) &&
     isArrayOf(value.subtasks, isCoordinatorSubtaskSnapshot) &&
     isNonNegativeInteger(value.updatedAt) &&

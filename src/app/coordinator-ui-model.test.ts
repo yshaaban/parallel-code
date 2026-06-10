@@ -104,8 +104,13 @@ function createWorkflow(
     },
     createdAt: overrides.createdAt ?? now,
     eventVersion: overrides.eventVersion ?? 2,
+    ...(overrides.execution !== undefined ? { execution: overrides.execution } : {}),
     id: overrides.id ?? 'workflow-1',
+    ...(overrides.expansions !== undefined ? { expansions: overrides.expansions } : {}),
     journal: overrides.journal ?? [],
+    ...(overrides.pendingApprovals !== undefined
+      ? { pendingApprovals: overrides.pendingApprovals }
+      : {}),
     lanes: overrides.lanes ?? [
       {
         agentId: 'agent-map',
@@ -124,6 +129,7 @@ function createWorkflow(
     policy: overrides.policy ?? {
       continueOnFailure: true,
       maxConcurrentLanes: 3,
+      maxIterationsPerBranch: 3,
       maxOutputBytesPerLane: 65_536,
       resultRequired: true,
       retryBackoffMs: 1_000,
@@ -201,7 +207,9 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
     projectId: overrides.projectId ?? 'project-1',
     projectMode: overrides.projectMode ?? 'git',
     projectRoot: overrides.projectRoot ?? '/tmp/project',
+    ...(overrides.pausedAt !== undefined ? { pausedAt: overrides.pausedAt } : {}),
     promptQueue: overrides.promptQueue ?? [],
+    ...(overrides.resumes !== undefined ? { resumes: overrides.resumes } : {}),
     status: overrides.status ?? 'running',
     subtasks: overrides.subtasks ?? [],
     updatedAt: overrides.updatedAt ?? now,
@@ -343,6 +351,260 @@ describe('coordinator UI model', () => {
     expect(view.spawnAction.reason).toBe('Run is stale-after-restore.');
   });
 
+  it('enables the resume action only for stale restored runs', () => {
+    const staleView = createCoordinatorRunView(createRun({ status: 'stale-after-restore' }));
+
+    expect(staleView.resumeAction).toEqual({
+      danger: false,
+      disabled: false,
+      id: 'resume-run',
+      label: 'Resume run',
+      toolName: 'resume_run',
+    });
+
+    for (const status of ['running', 'completed', 'cancelled'] as const) {
+      const view = createCoordinatorRunView(createRun({ status }));
+      expect(view.resumeAction).toMatchObject({
+        disabled: true,
+        id: 'resume-run',
+        reason: `Run is ${status}; only stale runs can be resumed.`,
+        toolName: 'resume_run',
+      });
+    }
+  });
+
+  it('offers pause for running runs and unpause for paused runs', () => {
+    const runningView = createCoordinatorRunView(createRun());
+    expect(runningView.pauseAction).toEqual({
+      danger: false,
+      disabled: false,
+      id: 'pause-run',
+      label: 'Pause',
+      toolName: 'pause_run',
+    });
+    expect(runningView.summary.paused).toBe(false);
+
+    const pausedView = createCoordinatorRunView(
+      createRun({ pausedAt: now + 100, status: 'paused-by-user' }),
+    );
+    expect(pausedView.pauseAction).toEqual({
+      danger: false,
+      disabled: false,
+      id: 'unpause-run',
+      label: 'Unpause',
+      toolName: 'unpause_run',
+    });
+    expect(pausedView.summary).toMatchObject({
+      paused: true,
+      runTone: 'warning',
+      statusLabel: 'Paused By User',
+    });
+    expect(pausedView.spawnAction).toMatchObject({
+      disabled: true,
+      reason: 'Run is paused-by-user.',
+    });
+
+    for (const status of ['completed', 'cancelled', 'stale-after-restore'] as const) {
+      const view = createCoordinatorRunView(createRun({ status }));
+      expect(view.pauseAction).toMatchObject({
+        disabled: true,
+        id: 'pause-run',
+        reason: `Run is ${status}; only running runs can be paused.`,
+      });
+    }
+  });
+
+  it('projects pending approvals as attention with legal-action gating', () => {
+    const pendingApprovals: NonNullable<CoordinatorWorkflowSnapshot['pendingApprovals']> = [
+      {
+        actions: [
+          {
+            kind: 'append_worker',
+            step: {
+              assignment: 'Follow up.',
+              dependsOn: ['map'],
+              id: 'followup',
+              kind: 'worker',
+              lanes: [{ assignment: 'Follow up.', id: 'followup-lane', name: 'Followup' }],
+              name: 'Followup',
+              resultSourceStepIds: [],
+              sourceStepIds: [],
+              verifiers: [],
+            },
+          },
+          { kind: 'stop_workflow', reason: 'Then stop.' },
+        ],
+        createdAt: now + 50,
+        id: 'result-1:approval',
+        laneId: 'lane-map',
+        resultId: 'result-1',
+        stageId: 'map',
+        status: 'pending',
+      },
+      {
+        actions: [{ kind: 'stop_workflow', reason: 'Old request.' }],
+        createdAt: now,
+        id: 'result-0:approval',
+        laneId: 'lane-map',
+        resolvedAt: now + 10,
+        resultId: 'result-0',
+        status: 'denied',
+        stageId: 'map',
+      },
+    ];
+    const run = createRun({ workflows: [createWorkflow({ pendingApprovals })] });
+
+    const view = createCoordinatorRunView(run);
+    const workflow = requireValue(view.workflows[0]);
+    expect(view.summary.pendingApprovalCount).toBe(1);
+    expect(view.summary.attentionCount).toBe(1);
+    expect(workflow.tone).toBe('warning');
+    expect(workflow.pendingApprovals).toEqual([
+      {
+        actionSummary: 'append_worker followup · stop_workflow: Then stop.',
+        createdAt: now + 50,
+        id: 'result-1:approval',
+        laneLabel: 'Backend',
+        stageLabel: 'Map',
+      },
+    ]);
+
+    const pausedView = createCoordinatorRunView(
+      createRun({
+        pausedAt: now,
+        status: 'paused-by-user',
+        workflows: [createWorkflow({ pendingApprovals })],
+      }),
+    );
+    expect(requireValue(pausedView.workflows[0]).pendingApprovals[0]?.approvalGateReason).toBe(
+      undefined,
+    );
+
+    const cancelledView = createCoordinatorRunView(
+      createRun({
+        status: 'cancelled',
+        workflows: [createWorkflow({ pendingApprovals })],
+      }),
+    );
+    expect(requireValue(cancelledView.workflows[0]).pendingApprovals[0]).toMatchObject({
+      approvalGateReason: 'Run is cancelled.',
+    });
+  });
+
+  it('projects manual-retry lanes only when no retry is already scheduled', () => {
+    const lanes: CoordinatorWorkflowSnapshot['lanes'] = [
+      {
+        assignment: 'Map backend risks.',
+        attempt: 1,
+        createdAt: now,
+        dedupeKey: 'lane-a',
+        failure: 'agent crashed',
+        id: 'lane-a',
+        name: 'Backend',
+        stageId: 'map',
+        status: 'failed',
+        updatedAt: now,
+      },
+      {
+        assignment: 'Map frontend risks.',
+        attempt: 1,
+        createdAt: now,
+        dedupeKey: 'lane-b',
+        failure: 'lane timed out',
+        id: 'lane-b',
+        name: 'Frontend',
+        stageId: 'map',
+        status: 'timed-out',
+        updatedAt: now,
+      },
+      {
+        assignment: 'Map frontend risks.',
+        attempt: 2,
+        createdAt: now + 10,
+        dedupeKey: 'lane-b:retry:2',
+        id: 'lane-b-retry',
+        name: 'Frontend',
+        stageId: 'map',
+        status: 'waiting-for-result',
+        updatedAt: now + 10,
+      },
+    ];
+    const view = createCoordinatorRunView(
+      createRun({ workflows: [createWorkflow({ lanes, status: 'running' })] }),
+    );
+
+    expect(requireValue(view.workflows[0]).retryableManualLanes).toEqual([
+      {
+        failure: 'agent crashed',
+        laneId: 'lane-a',
+        name: 'Backend',
+        status: 'failed',
+      },
+    ]);
+
+    const pausedView = createCoordinatorRunView(
+      createRun({
+        pausedAt: now,
+        status: 'paused-by-user',
+        workflows: [createWorkflow({ lanes, status: 'running' })],
+      }),
+    );
+    expect(requireValue(pausedView.workflows[0]).retryableManualLanes[0]).toMatchObject({
+      retryGateReason: 'Run is paused-by-user.',
+    });
+  });
+
+  it('maps operator journal kinds to tones by exact kind', () => {
+    const view = createCoordinatorRunView(
+      createRun({
+        workflows: [
+          createWorkflow({
+            journal: [
+              { at: now, kind: 'decision-approval-requested', message: 'Requested.', seq: 1 },
+              { at: now + 1, kind: 'decision-approval-approved', message: 'Approved.', seq: 2 },
+              { at: now + 2, kind: 'decision-approval-denied', message: 'Denied.', seq: 3 },
+              { at: now + 3, kind: 'run-paused', message: 'Paused.', seq: 4 },
+              { at: now + 4, kind: 'lane-manual-retry', message: 'Retried.', seq: 5 },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const activity = requireValue(view.workflows[0]).activityPreview;
+    expect(activity.map((entry) => [entry.kind, entry.tone])).toEqual([
+      ['lane-manual-retry', 'info'],
+      ['run-paused', 'warning'],
+      ['decision-approval-denied', 'warning'],
+      ['decision-approval-approved', 'success'],
+      ['decision-approval-requested', 'warning'],
+    ]);
+  });
+
+  it('projects respawned subtask chips with an active tone after a resume snapshot', () => {
+    const run = createRun({
+      resumes: [
+        {
+          failedTaskIds: [],
+          requestedAt: now + 100,
+          respawnedTaskIds: ['task-child'],
+          resumeId: 'resume-1',
+        },
+      ],
+      status: 'running',
+      subtasks: [createSubtask({ status: 'running', taskId: 'task-child' })],
+    });
+
+    const view = createCoordinatorRunView(run);
+
+    expect(view.chips[0]).toMatchObject({
+      status: 'running',
+      taskId: 'task-child',
+      tone: 'normal',
+    });
+    expect(view.resumeAction.disabled).toBe(true);
+  });
+
   it('projects workflow timelines from backend-owned snapshots', () => {
     const run = createRun({
       workflows: [
@@ -409,6 +671,196 @@ describe('coordinator UI model', () => {
     });
   });
 
+  it('projects join progress and branch iteration counts for adaptive workflows', () => {
+    const run = createRun({
+      workflows: [
+        createWorkflow({
+          expansions: [
+            {
+              actions: [
+                {
+                  actionId: 'action-1',
+                  branchKey: 'repo-followup',
+                  bundleId: 'repo-followup',
+                  iteration: 1,
+                  kind: 'append_branch_bundle',
+                  stepIds: ['repo-followup-fanout', 'repo-followup-verify'],
+                },
+              ],
+              createdAt: now + 5,
+              id: 'expansion-1',
+              sourceLaneId: 'lane-map',
+              sourceResultId: 'result-1',
+              sourceTaskId: 'task-map',
+            },
+          ],
+          sourceSpec: {
+            steps: [
+              {
+                dependsOn: [],
+                id: 'scan',
+                kind: 'fanout',
+                lanes: [
+                  { id: 'backend', name: 'Backend' },
+                  { id: 'ui', name: 'UI' },
+                  { id: 'docs', name: 'Docs' },
+                ],
+                name: 'Scan',
+                policy: {
+                  joinMode: 'quorum',
+                  quorumCount: 2,
+                },
+                resultSourceStepIds: [],
+                sourceStepIds: [],
+                verifiers: [],
+              },
+              {
+                dependsOn: ['scan'],
+                id: 'synthesize',
+                kind: 'synthesize',
+                lanes: [],
+                name: 'Synthesize',
+                resultSourceStepIds: ['scan'],
+                sourceStepIds: ['scan'],
+                verifiers: [],
+              },
+            ],
+            version: 2,
+          },
+          stages: [
+            {
+              createdAt: now,
+              dependsOn: [],
+              id: 'scan',
+              kind: 'map',
+              laneIds: ['lane-backend', 'lane-ui', 'lane-docs'],
+              name: 'Scan',
+              resultIds: ['result-backend', 'result-ui'],
+              status: 'waiting-for-results',
+              updatedAt: now + 2,
+            },
+            {
+              createdAt: now,
+              dependsOn: ['scan'],
+              id: 'synthesize',
+              kind: 'synthesize',
+              laneIds: ['lane-synthesize'],
+              name: 'Synthesize',
+              resultIds: [],
+              status: 'waiting-for-results',
+              updatedAt: now + 3,
+            },
+          ],
+          lanes: [
+            {
+              agentId: 'agent-backend',
+              assignment: 'Scan backend.',
+              attempt: 1,
+              completedAt: now + 1,
+              createdAt: now,
+              id: 'lane-backend',
+              name: 'Backend',
+              resultId: 'result-backend',
+              role: 'map',
+              stageId: 'scan',
+              status: 'completed',
+              taskId: 'task-backend',
+              updatedAt: now + 1,
+            },
+            {
+              agentId: 'agent-ui',
+              assignment: 'Scan UI.',
+              attempt: 1,
+              completedAt: now + 2,
+              createdAt: now,
+              id: 'lane-ui',
+              name: 'UI',
+              resultId: 'result-ui',
+              role: 'map',
+              stageId: 'scan',
+              status: 'completed',
+              taskId: 'task-ui',
+              updatedAt: now + 2,
+            },
+            {
+              agentId: 'agent-docs',
+              assignment: 'Scan docs.',
+              attempt: 1,
+              createdAt: now,
+              id: 'lane-docs',
+              name: 'Docs',
+              role: 'map',
+              stageId: 'scan',
+              status: 'waiting-for-result',
+              taskId: 'task-docs',
+              updatedAt: now + 2,
+            },
+            {
+              agentId: 'agent-synthesize',
+              assignment: 'Synthesize findings.',
+              attempt: 1,
+              createdAt: now + 3,
+              id: 'lane-synthesize',
+              name: 'Synthesize',
+              role: 'reduce',
+              stageId: 'synthesize',
+              status: 'waiting-for-result',
+              taskId: 'task-synthesize',
+              updatedAt: now + 3,
+            },
+          ],
+          results: [
+            {
+              agentId: 'agent-backend',
+              commandsRun: [],
+              createdAt: now + 1,
+              evidence: [],
+              findings: [{ summary: 'Backend issue' }],
+              id: 'result-backend',
+              laneId: 'lane-backend',
+              risks: [],
+              runId: 'run-1',
+              stageId: 'scan',
+              status: 'completed',
+              summary: 'Backend scan complete.',
+              taskId: 'task-backend',
+              workflowId: 'workflow-1',
+            },
+            {
+              agentId: 'agent-ui',
+              commandsRun: [],
+              createdAt: now + 2,
+              evidence: [],
+              findings: [{ summary: 'UI issue' }],
+              id: 'result-ui',
+              laneId: 'lane-ui',
+              risks: [],
+              runId: 'run-1',
+              stageId: 'scan',
+              status: 'completed',
+              summary: 'UI scan complete.',
+              taskId: 'task-ui',
+              workflowId: 'workflow-1',
+            },
+          ],
+        }),
+      ],
+    });
+
+    const [workflow] = createCoordinatorRunView(run).workflows;
+
+    expect(workflow).toMatchObject({
+      branchIterationCount: 1,
+      dependencySatisfiedStageCount: 1,
+    });
+    expect(workflow?.stages[0]).toMatchObject({
+      dependencySatisfied: true,
+      dependencyStatusLabel: 'Downstream unblocked',
+      joinLabel: 'Join quorum 2',
+      name: 'Scan',
+    });
+  });
+
   it('projects appended workflow steps and append activity', () => {
     const run = createRun({
       workflows: [
@@ -445,7 +897,7 @@ describe('coordinator UI model', () => {
                 verifiers: [],
               },
             ],
-            version: 1,
+            version: 2,
           },
           stepAppends: [
             {
@@ -472,6 +924,106 @@ describe('coordinator UI model', () => {
       laneLabel: 'Backend',
       message: 'Appended 1 workflow step: followup.',
       tone: 'info',
+    });
+  });
+
+  it('projects the workflow execution budget with derived pressure', () => {
+    const baseExecution = {
+      activeLaneCount: 1,
+      lastTickAt: now,
+      pendingRetryLaneIds: [],
+      readyStageIds: [],
+    };
+    const okRun = createRun({
+      workflows: [
+        createWorkflow({
+          execution: {
+            ...baseExecution,
+            budget: {
+              deadlineAt: now + 3_600_000,
+              lanes: { limit: 12, used: 2 },
+              retries: { limit: 8, used: 0 },
+              steps: { limit: 24, used: 2 },
+            },
+            deadlineAt: now + 3_600_000,
+          },
+        }),
+      ],
+    });
+    const [okWorkflow] = createCoordinatorRunView(okRun).workflows;
+    expect(okWorkflow?.budget).toEqual({
+      deadlineAt: now + 3_600_000,
+      lanes: { limit: 12, used: 2 },
+      pressure: 'ok',
+      retries: { limit: 8, used: 0 },
+      steps: { limit: 24, used: 2 },
+    });
+
+    const highRun = createRun({
+      workflows: [
+        createWorkflow({
+          execution: {
+            ...baseExecution,
+            budget: {
+              deadlineAt: now + 3_600_000,
+              lanes: { limit: 10, used: 8 },
+              retries: { limit: 8, used: 0 },
+              steps: { limit: 24, used: 2 },
+            },
+          },
+        }),
+      ],
+    });
+    expect(createCoordinatorRunView(highRun).workflows[0]?.budget?.pressure).toBe('high');
+
+    const exhaustedRun = createRun({
+      workflows: [
+        createWorkflow({
+          execution: {
+            ...baseExecution,
+            budget: {
+              deadlineAt: now + 3_600_000,
+              exhausted: 'wall-clock',
+              lanes: { limit: 12, used: 2 },
+              retries: { limit: 8, used: 0 },
+              steps: { limit: 24, used: 2 },
+            },
+          },
+          status: 'blocked',
+        }),
+      ],
+    });
+    expect(createCoordinatorRunView(exhaustedRun).workflows[0]?.budget).toMatchObject({
+      exhaustedLabel: 'wall-clock',
+      pressure: 'exhausted',
+    });
+
+    const legacyRun = createRun({
+      workflows: [createWorkflow({ execution: baseExecution })],
+    });
+    expect(createCoordinatorRunView(legacyRun).workflows[0]?.budget).toBeUndefined();
+  });
+
+  it('maps workflow-budget-exhausted journal entries to danger tone by exact kind', () => {
+    const run = createRun({
+      workflows: [
+        createWorkflow({
+          journal: [
+            {
+              at: now + 1,
+              kind: 'workflow-budget-exhausted',
+              message: 'Budget exhausted: wall-clock (60000/60000).',
+              seq: 1,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const [workflow] = createCoordinatorRunView(run).workflows;
+    expect(workflow?.activityPreview[0]).toMatchObject({
+      kind: 'workflow-budget-exhausted',
+      tone: 'danger',
     });
   });
 

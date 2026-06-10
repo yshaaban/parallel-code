@@ -1,5 +1,6 @@
 import type {
   CoordinatorLandingStateSnapshot,
+  CoordinatorOperatorActionName,
   CoordinatorPromptRequestSnapshot,
   CoordinatorPromptStatus,
   CoordinatorRunSnapshot,
@@ -8,32 +9,50 @@ import type {
   CoordinatorSubtaskStartupSnapshot,
   CoordinatorSubtaskStatus,
   CoordinatorToolName,
+  CoordinatorWorkflowBudgetSnapshot,
+  CoordinatorWorkflowPendingApprovalSnapshot,
   CoordinatorWorkflowSnapshot,
   CoordinatorWorkflowStageSnapshot,
 } from '../domain/coordinator';
 import {
+  COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES,
+  countCoordinatorWorkflowPendingApprovals,
   getCoordinatorSubtaskStartupSnapshot,
+  hasScheduledCoordinatorWorkflowLaneRetry,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
+  isCoordinatorWorkflowStageDependencySatisfied,
 } from '../domain/coordinator';
+import type {
+  CoordinatorWorkflowSpecSnapshot,
+  CoordinatorWorkflowSpecStepJoinMode,
+} from '../domain/coordinator-workflow-spec';
 
 export type CoordinatorAttentionLevel = 'normal' | 'info' | 'success' | 'warning' | 'danger';
 
 export type CoordinatorUiActionId =
+  | 'approve-actions'
   | 'ask-land'
   | 'close'
   | 'copy-debug-command'
+  | 'deny-actions'
   | 'inspect-diff'
   | 'inspect-output'
+  | 'pause-run'
+  | 'resume-run'
+  | 'retry-lane'
   | 'send-prompt'
   | 'spawn-subtask'
+  | 'unpause-run'
   | 'wait-for-idle';
 
-type CoordinatorUiToolName = Exclude<
-  CoordinatorToolName,
-  'append_workflow_steps' | 'land_self' | 'signal_done' | 'submit_result'
->;
+type CoordinatorUiToolName =
+  | Exclude<
+      CoordinatorToolName,
+      'append_workflow_steps' | 'land_self' | 'signal_done' | 'submit_result'
+    >
+  | CoordinatorOperatorActionName;
 
 export interface CoordinatorUiAction {
   danger: boolean;
@@ -83,6 +102,8 @@ export interface CoordinatorRunSummaryView {
   blockedCount: number;
   failedCount: number;
   landingCount: number;
+  paused: boolean;
+  pendingApprovalCount: number;
   pendingPromptCount: number;
   readyCount: number;
   runStatus: CoordinatorRunStatus;
@@ -93,12 +114,20 @@ export interface CoordinatorRunSummaryView {
 }
 
 export interface CoordinatorWorkflowStageView {
+  blockedLaneCount: number;
   completedLaneCount: number;
+  dependencySatisfied: boolean;
+  dependencyStatusLabel: string;
+  failedLaneCount: number;
+  failure?: string;
   id: string;
+  joinLabel: string;
   kind: CoordinatorWorkflowStageSnapshot['kind'];
   label: string;
   laneCount: number;
+  name: string;
   resultCount: number;
+  runningLaneCount: number;
   status: CoordinatorWorkflowStageSnapshot['status'];
   statusLabel: string;
   title: string;
@@ -139,14 +168,49 @@ export interface CoordinatorWorkflowVerdictSummaryView {
   refuted: number;
 }
 
+export interface CoordinatorWorkflowBudgetUsageView {
+  limit: number;
+  used: number;
+}
+
+export interface CoordinatorWorkflowBudgetView {
+  deadlineAt: number;
+  exhaustedLabel?: string;
+  lanes: CoordinatorWorkflowBudgetUsageView;
+  pressure: 'ok' | 'high' | 'exhausted';
+  retries: CoordinatorWorkflowBudgetUsageView;
+  steps: CoordinatorWorkflowBudgetUsageView;
+}
+
+export interface CoordinatorWorkflowApprovalView {
+  actionSummary: string;
+  approvalGateReason?: string;
+  createdAt: number;
+  id: string;
+  laneLabel: string;
+  stageLabel: string;
+}
+
+export interface CoordinatorWorkflowRetryableLaneView {
+  failure?: string;
+  laneId: string;
+  name: string;
+  retryGateReason?: string;
+  status: 'failed' | 'timed-out';
+}
+
 export interface CoordinatorWorkflowTimelineView {
   activeLaneCount: number;
   appendCount: number;
   activityCount: number;
   activityPreview: CoordinatorWorkflowActivityView[];
+  blockedStageCount: number;
   blockedReason?: string;
+  branchIterationCount: number;
+  budget?: CoordinatorWorkflowBudgetView;
   completedStageCount: number;
   completionReason?: string;
+  dependencySatisfiedStageCount: number;
   expansionCount: number;
   failedLaneCount: number;
   failedLaneReason?: string;
@@ -155,9 +219,11 @@ export interface CoordinatorWorkflowTimelineView {
   hasMoreResults: boolean;
   id: string;
   latestActivityLabel?: string;
+  pendingApprovals: CoordinatorWorkflowApprovalView[];
   resultPreview: CoordinatorWorkflowResultView[];
   resultCount: number;
   retryableLaneCount: number;
+  retryableManualLanes: CoordinatorWorkflowRetryableLaneView[];
   skippedStageCount: number;
   stages: CoordinatorWorkflowStageView[];
   stepCount: number;
@@ -176,6 +242,8 @@ export interface CoordinatorRunView {
   chips: CoordinatorSubtaskChipView[];
   debugCommand?: string;
   empty: boolean;
+  pauseAction: CoordinatorUiAction;
+  resumeAction: CoordinatorUiAction;
   run: CoordinatorRunSnapshot;
   spawnAction: CoordinatorUiAction;
   summary: CoordinatorRunSummaryView;
@@ -186,6 +254,7 @@ const MAX_PROMPT_BEADS_PER_SUBTASK = 3;
 const MAX_WORKFLOW_ACTIVITY_PREVIEW = 5;
 const MAX_WORKFLOW_RESULT_PREVIEW = 4;
 const MAX_WORKFLOW_RESULT_TEXT_PREVIEW = 3;
+const MAX_WORKFLOW_RETRYABLE_LANE_PREVIEW = 4;
 
 const BLOCKED_SUBTASK_STATUSES = new Set<CoordinatorSubtaskStatus>([
   'waiting-for-user',
@@ -726,13 +795,19 @@ function createSummaryView(run: CoordinatorRunSnapshot): CoordinatorRunSummaryVi
   const pendingPromptCount = run.promptQueue.filter((prompt) =>
     isCoordinatorPendingPromptStatus(prompt.status),
   ).length;
+  const pendingApprovalCount = (run.workflows ?? []).reduce(
+    (count, workflow) => count + countCoordinatorWorkflowPendingApprovals(workflow),
+    0,
+  );
 
   return {
     activeCount,
-    attentionCount: attentionTaskIds.size,
+    attentionCount: attentionTaskIds.size + pendingApprovalCount,
     blockedCount,
     failedCount,
     landingCount,
+    paused: run.status === 'paused-by-user',
+    pendingApprovalCount,
     pendingPromptCount,
     readyCount,
     runStatus: run.status,
@@ -743,27 +818,98 @@ function createSummaryView(run: CoordinatorRunSnapshot): CoordinatorRunSummaryVi
   };
 }
 
+function getWorkflowSpecStep(
+  workflow: CoordinatorWorkflowSnapshot,
+  stageId: string,
+): CoordinatorWorkflowSpecSnapshot['steps'][number] | undefined {
+  return workflow.sourceSpec?.steps.find((step) => step.id === stageId);
+}
+
+function getWorkflowJoinModeLabel(
+  joinMode: CoordinatorWorkflowSpecStepJoinMode | undefined,
+  quorumCount: number | undefined,
+): string {
+  switch (joinMode) {
+    case 'any':
+      return 'Join any';
+    case 'first-success':
+      return 'Join first success';
+    case 'quorum':
+      return `Join quorum${quorumCount !== undefined ? ` ${quorumCount}` : ''}`;
+    case 'all':
+    case undefined:
+      return 'Join all';
+  }
+}
+
 function createWorkflowStageView(
   workflow: CoordinatorWorkflowSnapshot,
   stage: CoordinatorWorkflowStageSnapshot,
 ): CoordinatorWorkflowStageView {
+  const step = getWorkflowSpecStep(workflow, stage.id);
   const stageLaneIds = new Set(stage.laneIds);
-  const lanes = workflow.lanes.filter((lane) => stageLaneIds.has(lane.id));
-  const completedLaneCount = lanes.filter((lane) =>
-    isCoordinatorTerminalWorkflowLaneStatus(lane.status),
-  ).length;
+  let blockedLaneCount = 0;
+  let completedLaneCount = 0;
+  let failedLaneCount = 0;
+  let laneCount = 0;
+  let runningLaneCount = 0;
+  for (const lane of workflow.lanes) {
+    if (!stageLaneIds.has(lane.id)) {
+      continue;
+    }
+
+    laneCount += 1;
+    if (isCoordinatorTerminalWorkflowLaneStatus(lane.status)) {
+      completedLaneCount += 1;
+    } else {
+      runningLaneCount += 1;
+    }
+    if (lane.status === 'blocked' || lane.status === 'cancelled') {
+      blockedLaneCount += 1;
+    }
+    if (
+      lane.status === 'failed' ||
+      lane.status === 'timed-out' ||
+      lane.status === 'stale-after-restore'
+    ) {
+      failedLaneCount += 1;
+    }
+  }
+  const dependencySatisfied = isCoordinatorWorkflowStageDependencySatisfied(workflow, stage, step);
   const label = stage.name.slice(0, 1).toUpperCase();
+  const joinLabel = getWorkflowJoinModeLabel(step?.policy?.joinMode, step?.policy?.quorumCount);
+  const dependencyStatusLabel = dependencySatisfied
+    ? 'Downstream unblocked'
+    : step?.policy?.joinMode !== undefined && step.policy.joinMode !== 'all'
+      ? 'Waiting for join'
+      : 'Waits for full completion';
+  const titleParts = [
+    `${stage.name}: ${humanizeStatus(stage.status)} (${completedLaneCount}/${laneCount} lanes, ${stage.resultIds.length} results)`,
+    joinLabel,
+    dependencyStatusLabel,
+  ];
+  if (stage.failure !== undefined) {
+    titleParts.push(stage.failure);
+  }
 
   return {
+    blockedLaneCount,
     completedLaneCount,
+    dependencySatisfied,
+    dependencyStatusLabel,
+    failedLaneCount,
+    ...(stage.failure !== undefined ? { failure: stage.failure } : {}),
     id: stage.id,
+    joinLabel,
     kind: stage.kind,
     label,
-    laneCount: lanes.length,
+    laneCount,
+    name: stage.name,
     resultCount: stage.resultIds.length,
+    runningLaneCount,
     status: stage.status,
     statusLabel: humanizeStatus(stage.status),
-    title: `${stage.name}: ${humanizeStatus(stage.status)} (${completedLaneCount}/${lanes.length} lanes, ${stage.resultIds.length} results)`,
+    title: titleParts.join(' · '),
     tone: getWorkflowStageTone(stage.status),
   };
 }
@@ -794,7 +940,22 @@ function getWorkflowResultLabel(
   return result.summary.slice(0, 80);
 }
 
+const WORKFLOW_ACTIVITY_TONE_BY_KIND: Record<string, CoordinatorAttentionLevel> = {
+  'decision-approval-approved': 'success',
+  'decision-approval-cancelled': 'danger',
+  'decision-approval-denied': 'warning',
+  'decision-approval-requested': 'warning',
+  'lane-manual-retry': 'info',
+  'run-paused': 'warning',
+  'run-unpaused': 'info',
+  'workflow-budget-exhausted': 'danger',
+};
+
 function getWorkflowActivityTone(kind: string): CoordinatorAttentionLevel {
+  const exactTone = WORKFLOW_ACTIVITY_TONE_BY_KIND[kind];
+  if (exactTone !== undefined) {
+    return exactTone;
+  }
   if (kind.includes('failed') || kind.includes('timed-out') || kind.includes('cancelled')) {
     return 'danger';
   }
@@ -883,6 +1044,124 @@ function createWorkflowResultViews(
     });
 }
 
+function createWorkflowBudgetView(
+  budget: CoordinatorWorkflowBudgetSnapshot,
+): CoordinatorWorkflowBudgetView {
+  const usages = [budget.lanes, budget.retries, budget.steps];
+  const highPressure = usages.some((usage) => usage.limit > 0 && usage.used >= usage.limit * 0.8);
+
+  let pressure: CoordinatorWorkflowBudgetView['pressure'] = 'ok';
+  if (budget.exhausted !== undefined) {
+    pressure = 'exhausted';
+  } else if (highPressure) {
+    pressure = 'high';
+  }
+
+  return {
+    deadlineAt: budget.deadlineAt,
+    ...(budget.exhausted !== undefined ? { exhaustedLabel: budget.exhausted } : {}),
+    lanes: { limit: budget.lanes.limit, used: budget.lanes.used },
+    pressure,
+    retries: { limit: budget.retries.limit, used: budget.retries.used },
+    steps: { limit: budget.steps.limit, used: budget.steps.used },
+  };
+}
+
+function getWorkflowApprovalActionSummary(
+  actions: CoordinatorWorkflowPendingApprovalSnapshot['actions'],
+): string {
+  return actions
+    .map((action) => {
+      switch (action.kind) {
+        case 'append_branch_bundle':
+          return `${action.kind} ${action.bundleId}`;
+        case 'mark_blocked':
+        case 'stop_workflow':
+          return `${action.kind}: ${action.reason}`;
+        case 'append_fanout':
+        case 'append_synthesize':
+        case 'append_verify':
+        case 'append_worker':
+          return `${action.kind} ${action.step.id}`;
+      }
+    })
+    .join(' · ');
+}
+
+function getWorkflowApprovalGateReason(
+  run: CoordinatorRunSnapshot,
+  workflow: CoordinatorWorkflowSnapshot,
+): string | undefined {
+  if (
+    !COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES.approve_workflow_actions.includes(run.status)
+  ) {
+    return `Run is ${run.status}.`;
+  }
+  if (workflow.status !== 'running' && workflow.status !== 'waiting-for-results') {
+    return `Workflow is ${workflow.status}.`;
+  }
+
+  return undefined;
+}
+
+function getWorkflowManualRetryGateReason(
+  run: CoordinatorRunSnapshot,
+  workflow: CoordinatorWorkflowSnapshot,
+): string | undefined {
+  if (!COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES.retry_lane.includes(run.status)) {
+    return `Run is ${run.status}.`;
+  }
+  if (workflow.status !== 'running' && workflow.status !== 'waiting-for-results') {
+    return `Workflow is ${workflow.status}.`;
+  }
+
+  return undefined;
+}
+
+function createWorkflowApprovalViews(
+  workflow: CoordinatorWorkflowSnapshot,
+  run: CoordinatorRunSnapshot,
+): CoordinatorWorkflowApprovalView[] {
+  const gateReason = getWorkflowApprovalGateReason(run, workflow);
+  return (workflow.pendingApprovals ?? [])
+    .filter((approval) => approval.status === 'pending')
+    .map((approval) => ({
+      actionSummary: getWorkflowApprovalActionSummary(approval.actions),
+      ...(gateReason !== undefined ? { approvalGateReason: gateReason } : {}),
+      createdAt: approval.createdAt,
+      id: approval.id,
+      laneLabel: getWorkflowLaneName(workflow, approval.laneId) ?? approval.laneId,
+      stageLabel: getWorkflowStageName(workflow, approval.stageId) ?? approval.stageId,
+    }));
+}
+
+function createWorkflowRetryableLaneViews(
+  workflow: CoordinatorWorkflowSnapshot,
+  run: CoordinatorRunSnapshot,
+): CoordinatorWorkflowRetryableLaneView[] {
+  const gateReason = getWorkflowManualRetryGateReason(run, workflow);
+  return workflow.lanes
+    .flatMap((lane) => {
+      if (lane.status !== 'failed' && lane.status !== 'timed-out') {
+        return [];
+      }
+      if (lane.resultId !== undefined || hasScheduledCoordinatorWorkflowLaneRetry(workflow, lane)) {
+        return [];
+      }
+
+      return [
+        {
+          ...(lane.failure !== undefined ? { failure: lane.failure } : {}),
+          laneId: lane.id,
+          name: lane.name,
+          ...(gateReason !== undefined ? { retryGateReason: gateReason } : {}),
+          status: lane.status,
+        },
+      ];
+    })
+    .slice(0, MAX_WORKFLOW_RETRYABLE_LANE_PREVIEW);
+}
+
 function createWorkflowVerdictSummary(
   workflow: CoordinatorWorkflowSnapshot,
 ): CoordinatorWorkflowVerdictSummaryView {
@@ -897,13 +1176,20 @@ function createWorkflowVerdictSummary(
 
 function createWorkflowTimelineView(
   workflow: CoordinatorWorkflowSnapshot,
+  run: CoordinatorRunSnapshot,
 ): CoordinatorWorkflowTimelineView {
+  const stages = workflow.stages.map((stage) => createWorkflowStageView(workflow, stage));
   const activeLaneCount =
     workflow.execution?.activeLaneCount ??
     workflow.lanes.filter((lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status)).length;
+  const blockedStageCount = workflow.stages.filter((stage) => stage.status === 'blocked').length;
+  const branchIterationCount = (workflow.expansions ?? [])
+    .flatMap((expansion) => expansion.actions)
+    .filter((action) => action.iteration !== undefined).length;
   const completedStageCount =
     workflow.execution?.completedStageCount ??
     workflow.stages.filter((stage) => stage.status === 'completed').length;
+  const dependencySatisfiedStageCount = stages.filter((stage) => stage.dependencySatisfied).length;
   const expansionCount = workflow.execution?.expansionCount ?? workflow.expansions?.length ?? 0;
   const findingCount = workflow.results.reduce(
     (count, result) => count + result.findings.length,
@@ -917,6 +1203,7 @@ function createWorkflowTimelineView(
   );
   const activityPreview = createWorkflowActivityViews(workflow);
   const blockedReason = workflow.execution?.blockedReason;
+  const budget = workflow.execution?.budget;
   const completionReason = workflow.execution?.completionReason;
   const failedLaneReason = failedLanes[0]?.failure;
   const latestActivityLabel = activityPreview[0]?.message;
@@ -929,15 +1216,22 @@ function createWorkflowTimelineView(
   const timedOutLaneCount =
     workflow.execution?.timedOutLaneCount ??
     workflow.lanes.filter((lane) => lane.status === 'timed-out').length;
+  const pendingApprovals = createWorkflowApprovalViews(workflow, run);
+  const retryableManualLanes = createWorkflowRetryableLaneViews(workflow, run);
+  const baseTone = getWorkflowTone(workflow.status);
 
   return {
     activeLaneCount,
     appendCount: workflow.stepAppends?.length ?? 0,
     activityCount: workflow.journal.length,
     activityPreview,
+    blockedStageCount,
     ...(blockedReason !== undefined ? { blockedReason } : {}),
+    branchIterationCount,
+    ...(budget !== undefined ? { budget: createWorkflowBudgetView(budget) } : {}),
     completedStageCount,
     ...(completionReason !== undefined ? { completionReason } : {}),
+    dependencySatisfiedStageCount,
     expansionCount,
     failedLaneCount: failedLanes.length,
     ...(failedLaneReason !== undefined ? { failedLaneReason } : {}),
@@ -946,11 +1240,13 @@ function createWorkflowTimelineView(
     hasMoreResults: workflow.results.length > resultPreview.length,
     id: workflow.id,
     ...(latestActivityLabel !== undefined ? { latestActivityLabel } : {}),
+    pendingApprovals,
     resultPreview,
     resultCount: workflow.results.length,
     retryableLaneCount,
+    retryableManualLanes,
     skippedStageCount,
-    stages: workflow.stages.map((stage) => createWorkflowStageView(workflow, stage)),
+    stages,
     stepCount,
     status: workflow.status,
     statusLabel: humanizeStatus(workflow.status),
@@ -958,7 +1254,7 @@ function createWorkflowTimelineView(
     template: workflow.template,
     timedOutLaneCount,
     title: workflow.title,
-    tone: getWorkflowTone(workflow.status),
+    tone: pendingApprovals.length > 0 && baseTone === 'info' ? 'warning' : baseTone,
     updatedAt: workflow.updatedAt,
     verdictSummary: createWorkflowVerdictSummary(workflow),
   };
@@ -968,7 +1264,7 @@ function createWorkflowTimelineViews(
   run: CoordinatorRunSnapshot,
 ): CoordinatorWorkflowTimelineView[] {
   return (run.workflows ?? [])
-    .map(createWorkflowTimelineView)
+    .map((workflow) => createWorkflowTimelineView(workflow, run))
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
@@ -993,6 +1289,43 @@ function createSpawnAction(run: CoordinatorRunSnapshot): CoordinatorUiAction {
         }
       : {}),
     toolName: 'spawn_subtask',
+  };
+}
+
+function createPauseAction(run: CoordinatorRunSnapshot): CoordinatorUiAction {
+  if (COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES.unpause_run.includes(run.status)) {
+    return {
+      danger: false,
+      disabled: false,
+      id: 'unpause-run',
+      label: 'Unpause',
+      toolName: 'unpause_run',
+    };
+  }
+
+  const disabled = !COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES.pause_run.includes(run.status);
+  return {
+    danger: false,
+    disabled,
+    id: 'pause-run',
+    label: 'Pause',
+    ...(disabled ? { reason: `Run is ${run.status}; only running runs can be paused.` } : {}),
+    toolName: 'pause_run',
+  };
+}
+
+function createResumeAction(run: CoordinatorRunSnapshot): CoordinatorUiAction {
+  const disabled = !COORDINATOR_RENDERER_ACTION_ALLOWED_RUN_STATUSES.resume_run.includes(
+    run.status,
+  );
+
+  return {
+    danger: false,
+    disabled,
+    id: 'resume-run',
+    label: 'Resume run',
+    ...(disabled ? { reason: `Run is ${run.status}; only stale runs can be resumed.` } : {}),
+    toolName: 'resume_run',
   };
 }
 
@@ -1072,6 +1405,8 @@ export function createCoordinatorRunView(
     chips: createSubtaskChipViews(run),
     ...(options.debugCommand !== undefined ? { debugCommand: options.debugCommand } : {}),
     empty: run.subtasks.length === 0,
+    pauseAction: createPauseAction(run),
+    resumeAction: createResumeAction(run),
     run,
     spawnAction: createSpawnAction(run),
     summary: createSummaryView(run),

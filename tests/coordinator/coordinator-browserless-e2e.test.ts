@@ -21,11 +21,12 @@ import {
   BRACKETED_PASTE_START,
 } from '../../src/domain/task-prompt-materialization.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
-import type {
-  CoordinatorPromptRequestSnapshot,
-  CoordinatorRunSnapshot,
-  CoordinatorSubtaskSnapshot,
-  CoordinatorToolCallResult,
+import {
+  COORDINATOR_LIMITS,
+  type CoordinatorPromptRequestSnapshot,
+  type CoordinatorRunSnapshot,
+  type CoordinatorSubtaskSnapshot,
+  type CoordinatorToolCallResult,
 } from '../../src/domain/coordinator.js';
 import type { ServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
 import {
@@ -916,6 +917,228 @@ describe('browser-less coordinator E2E', () => {
     });
   });
 
+  it('runs the repo_review template on concrete repo-review lanes and unblocks verify after quorum', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'repo-review-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review coordinator runtime, UI, tests, and docs in this repo.',
+        template: 'repo_review',
+        title: 'Repo review',
+      },
+    });
+    const workflow = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow;
+    expect(workflow.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'scan', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'verify', status: 'pending' }),
+        expect.objectContaining({ id: 'decide', status: 'pending' }),
+        expect.objectContaining({ id: 'synthesize', status: 'pending' }),
+      ]),
+    );
+    expect(workflow.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Backend' }),
+        expect.objectContaining({ name: 'UI' }),
+        expect.objectContaining({ name: 'Validation' }),
+        expect.objectContaining({ name: 'Docs' }),
+      ]),
+    );
+
+    const backendAgent = getSpawnedAgentOptions(0);
+    const uiAgent = getSpawnedAgentOptions(1);
+    const backendCredential = JSON.parse(
+      await readFile(backendAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    const uiCredential = JSON.parse(
+      await readFile(uiAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    await harness.callCoordinatorTool({
+      callId: 'repo-review-backend',
+      runId: run.id,
+      taskId: backendAgent.taskId,
+      token: backendCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        findings: [{ severity: 'major', summary: 'Backend queue handling needs review.' }],
+        summary: 'Backend scan complete.',
+        workflowId: workflow.id,
+      },
+    });
+    const afterFirstResult = await harness.callCoordinatorTool({
+      callId: 'repo-review-status-1',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(afterFirstResult).workflows[0]?.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'scan', status: 'waiting-for-results' }),
+        expect.objectContaining({ id: 'verify', status: 'pending' }),
+      ]),
+    );
+
+    await harness.callCoordinatorTool({
+      callId: 'repo-review-ui',
+      runId: run.id,
+      taskId: uiAgent.taskId,
+      token: uiCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        findings: [{ severity: 'major', summary: 'UI blocker state needs polish.' }],
+        summary: 'UI scan complete.',
+        workflowId: workflow.id,
+      },
+    });
+
+    const afterQuorum = await harness.callCoordinatorTool({
+      callId: 'repo-review-status-2',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(afterQuorum).workflows[0]).toEqual(
+      expect.objectContaining({
+        stages: expect.arrayContaining([
+          expect.objectContaining({ id: 'scan', status: 'waiting-for-results' }),
+          expect.objectContaining({ id: 'verify', status: 'waiting-for-results' }),
+        ]),
+      }),
+    );
+    expect(getSpawnedAgentOptions(4)).toMatchObject({ taskId: 'task-child-5' });
+    expect(getSpawnedAgentOptions(5)).toMatchObject({ taskId: 'task-child-6' });
+  });
+
+  it('lets decision lanes append branch bundles over HTTP for focused repo follow-up work', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'branch-bundle-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Decide whether the repo review needs a focused follow-up.',
+        spec: {
+          steps: [
+            { id: 'scan', kind: 'worker', name: 'Scan' },
+            {
+              dependsOn: ['scan'],
+              id: 'decide',
+              kind: 'decision',
+              lanes: [],
+              name: 'Decide',
+              sourceStepIds: ['scan'],
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Branch bundle workflow',
+      },
+    });
+    const workflowId = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow.id;
+    const scanAgent = getSpawnedAgentOptions(0);
+    const scanCredential = JSON.parse(
+      await readFile(scanAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    await harness.callCoordinatorTool({
+      callId: 'branch-bundle-scan-result',
+      runId: run.id,
+      taskId: scanAgent.taskId,
+      token: scanCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        summary: 'Initial scan complete.',
+        workflowId,
+      },
+    });
+
+    const decisionAgent = getSpawnedAgentOptions(1);
+    const decisionCredential = JSON.parse(
+      await readFile(decisionAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+
+    const submitted = await harness.callCoordinatorTool({
+      callId: 'branch-bundle-result',
+      runId: run.id,
+      taskId: decisionAgent.taskId,
+      token: decisionCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        metadata: {
+          workflowActions: [
+            {
+              branchKey: 'repo-followup',
+              bundleId: 'repo-followup',
+              kind: 'append_branch_bundle',
+              lanes: [
+                { assignment: 'Deep dive backend queue behavior.', id: 'backend', name: 'Backend' },
+                { assignment: 'Deep dive UI blocker clarity.', id: 'ui', name: 'UI' },
+              ],
+              maxIterations: 2,
+              name: 'Repo follow-up',
+              reduce: {
+                name: 'Reduce',
+                prompt: 'Summarize the focused repo follow-up work.',
+              },
+              verify: {
+                joinMode: 'quorum',
+                quorumCount: 1,
+                verifiers: [
+                  { id: 'skeptic', name: 'Skeptic' },
+                  { id: 'archivist', name: 'Archivist' },
+                ],
+              },
+            },
+          ],
+        },
+        summary: 'Decision appended a focused repo follow-up.',
+        workflowId,
+      },
+    });
+
+    expect(
+      getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(submitted),
+    ).toEqual(
+      expect.objectContaining({
+        workflow: expect.objectContaining({
+          expansions: expect.arrayContaining([
+            expect.objectContaining({
+              actions: [
+                expect.objectContaining({
+                  branchKey: 'repo-followup',
+                  bundleId: 'repo-followup',
+                  iteration: 1,
+                  kind: 'append_branch_bundle',
+                  stepIds: ['repo-followup-fanout', 'repo-followup-verify', 'repo-followup-reduce'],
+                }),
+              ],
+            }),
+          ]),
+          stages: expect.arrayContaining([
+            expect.objectContaining({ id: 'repo-followup-fanout', status: 'waiting-for-results' }),
+            expect.objectContaining({ id: 'repo-followup-verify', status: 'pending' }),
+            expect.objectContaining({ id: 'repo-followup-reduce', status: 'pending' }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it('rejects invalid workflow specs over HTTP without creating workflow state', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
 
@@ -948,6 +1171,214 @@ describe('browser-less coordinator E2E', () => {
       toolName: 'get_task_status',
     });
     expect(getToolResult<CoordinatorRunSnapshot>(status).workflows).toHaveLength(0);
+  });
+
+  it('rejects source-consuming workflow specs that omit explicit dependencies', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const response = await harness.toolCallResponse({
+      callId: 'invalid-source-spec-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review invalid source dependency specs.',
+        spec: {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              id: 'decide',
+              kind: 'decision',
+              sourceStepIds: ['scan'],
+            },
+          ],
+        },
+        template: 'custom',
+      },
+    });
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('step decide must depend on source step scan');
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-invalid-source-spec',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(status).workflows).toHaveLength(0);
+  });
+
+  it('rejects verify workflows whose minimum verifier threshold cannot satisfy the join policy', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const response = await harness.toolCallResponse({
+      callId: 'invalid-verify-threshold-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review invalid verifier threshold specs.',
+        spec: {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              dependsOn: ['scan'],
+              findingSourceStepId: 'scan',
+              id: 'verify',
+              kind: 'verify',
+              minimumVerifierCount: 2,
+              policy: {
+                joinMode: 'quorum',
+                quorumCount: 1,
+              },
+              verifiers: [
+                { id: 'skeptic', name: 'Skeptic' },
+                { id: 'archivist', name: 'Archivist' },
+              ],
+            },
+          ],
+        },
+        template: 'custom',
+      },
+    });
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toContain(
+      'step verify.minimumVerifierCount must be no greater than step verify.quorumCount',
+    );
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-invalid-verify-threshold',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(status).workflows).toHaveLength(0);
+  });
+
+  it('rejects above-cap workflow budget policies over HTTP without creating workflow state', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const response = await harness.toolCallResponse({
+      callId: 'budget-policy-over-cap',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        policy: { maxTotalSteps: COORDINATOR_LIMITS.maxWorkflowTotalSteps + 1 },
+        problem: 'Review budget caps.',
+        spec: {
+          steps: [{ id: 'worker', kind: 'worker' }],
+        },
+        template: 'custom',
+      },
+    });
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toContain(
+      `policy.maxTotalSteps must be no greater than ${COORDINATOR_LIMITS.maxWorkflowTotalSteps}`,
+    );
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'status-after-budget-policy-over-cap',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expect(getToolResult<CoordinatorRunSnapshot>(status).workflows).toHaveLength(0);
+  });
+
+  it('trips an exhausted wall-clock budget into a blocked workflow that rejects further appends', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    await harness.callCoordinatorTool({
+      callId: 'budget-trip-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        policy: { maxWallClockMs: 1, timeoutMs: 600_000 },
+        problem: 'Review wall-clock budget trips.',
+        spec: {
+          steps: [{ id: 'worker', kind: 'worker', name: 'Worker' }],
+        },
+        template: 'custom',
+        title: 'Budget trip workflow',
+      },
+    });
+    const startedStatus = await harness.callCoordinatorTool({
+      callId: 'budget-trip-started-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const workflowId = getToolResult<CoordinatorRunSnapshot>(startedStatus).workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected budget trip workflow id');
+    }
+    await waitForShortAsyncWindow();
+
+    const firstAppend = await harness.toolCallResponse({
+      callId: 'budget-trip-append',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'append_workflow_steps',
+      payload: {
+        appendId: 'budget-trip-append',
+        steps: [{ dependsOn: ['worker'], id: 'followup', kind: 'worker', name: 'Followup' }],
+        workflowId,
+      },
+    });
+    const firstAppendBody = (await firstAppend.json()) as { error?: string };
+    expect(firstAppend.status).toBe(400);
+    expect(firstAppendBody.error).toMatch(
+      /budget-exhausted: wall-clock \(1\/1\)|Coordinator workflow is blocked/,
+    );
+
+    const trippedStatus = await harness.callCoordinatorTool({
+      callId: 'budget-trip-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const trippedWorkflow = getToolResult<CoordinatorRunSnapshot>(trippedStatus).workflows[0];
+    expect(trippedWorkflow).toMatchObject({
+      execution: expect.objectContaining({
+        blockedReason: 'budget-exhausted: wall-clock (1/1)',
+        budget: expect.objectContaining({ exhausted: 'wall-clock' }),
+      }),
+      status: 'blocked',
+    });
+    expect(
+      trippedWorkflow?.journal.some((entry) => entry.kind === 'workflow-budget-exhausted'),
+    ).toBe(true);
+
+    const secondAppend = await harness.toolCallResponse({
+      callId: 'budget-trip-append-after-block',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'append_workflow_steps',
+      payload: {
+        appendId: 'budget-trip-append-after-block',
+        steps: [{ dependsOn: ['worker'], id: 'late-followup', kind: 'worker', name: 'Late' }],
+        workflowId,
+      },
+    });
+    const secondAppendBody = (await secondAppend.json()) as { error?: string };
+    expect(secondAppend.status).toBe(400);
+    expect(secondAppendBody.error).toContain('Coordinator workflow is blocked');
   });
 
   it('runs a browser-less spec workflow from fanout through verifier to synthesis', async () => {
@@ -996,7 +1427,7 @@ describe('browser-less coordinator E2E', () => {
     expect(
       getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(started).workflow,
     ).toMatchObject({
-      sourceSpec: expect.objectContaining({ version: 1 }),
+      sourceSpec: expect.objectContaining({ version: 2 }),
       stages: [
         expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
         expect.objectContaining({ id: 'verify', status: 'pending' }),
@@ -1521,6 +1952,615 @@ describe('browser-less coordinator E2E', () => {
     }
   });
 
+  it('holds gated decision actions for approval and applies them through a leased approve', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    const started = await harness.callCoordinatorTool({
+      callId: 'gated-approve-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        policy: { requireDecisionApproval: true },
+        problem: 'Decide with operator approval.',
+        spec: {
+          steps: [
+            { id: 'scout', kind: 'worker', name: 'Scout' },
+            {
+              dependsOn: ['scout'],
+              id: 'decide',
+              kind: 'decision',
+              name: 'Decide',
+              sourceStepIds: ['scout'],
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Gated decision workflow',
+      },
+    });
+    const workflowId = getToolResult<{ workflow: CoordinatorRunSnapshot['workflows'][number] }>(
+      started,
+    ).workflow.id;
+    const scoutAgent = getSpawnedAgentOptions(0);
+    const scoutCredential = JSON.parse(
+      await readFile(scoutAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    await harness.callCoordinatorTool({
+      callId: 'gated-approve-scout-result',
+      runId: run.id,
+      taskId: scoutAgent.taskId,
+      token: scoutCredential.token,
+      toolName: 'submit_result',
+      payload: { summary: 'Scout completed.', workflowId },
+    });
+
+    const decisionAgent = getSpawnedAgentOptions(1);
+    const decisionCredential = JSON.parse(
+      await readFile(decisionAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    const submitted = await harness.callCoordinatorTool({
+      callId: 'gated-approve-decide-result',
+      runId: run.id,
+      taskId: decisionAgent.taskId,
+      token: decisionCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        metadata: {
+          workflowActions: [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+        },
+        summary: 'Decision wants a follow-up step.',
+        workflowId,
+      },
+    });
+    const heldWorkflow = getToolResult<{
+      workflow: CoordinatorRunSnapshot['workflows'][number];
+    }>(submitted).workflow;
+    const approvalId = heldWorkflow.pendingApprovals?.[0]?.id;
+    if (approvalId === undefined) {
+      throw new Error('Expected pending approval id');
+    }
+    expect(heldWorkflow.pendingApprovals).toEqual([
+      expect.objectContaining({ laneId: expect.any(String), status: 'pending' }),
+    ]);
+    expect(heldWorkflow.lanes.find((lane) => lane.name === 'Decide')).toMatchObject({
+      status: 'waiting-for-result',
+    });
+    expect(heldWorkflow.lanes.find((lane) => lane.name === 'Decide')?.resultId).toBeUndefined();
+    expect(heldWorkflow.stages.map((stage) => stage.id)).toEqual(['scout', 'decide']);
+    expect(mocks.spawnTaskAgentWorkflowMock.mock.calls).toHaveLength(2);
+
+    const noLeaseApprove = await harness.ipcResponse(
+      IPC.CoordinatorUiToolCall,
+      {
+        coordinatorTaskId: run.coordinatorTaskId,
+        payload: { approvalId, workflowId },
+        requestId: 'ui-approve-no-lease',
+        runId: run.id,
+        toolName: 'approve_workflow_actions',
+      },
+      { clientId: 'ui-client' },
+    );
+    const noLeaseApproveBody = (await noLeaseApprove.json()) as { error?: string };
+    expect(noLeaseApprove.status).toBe(400);
+    expect(noLeaseApproveBody.error).toBe('Coordinator task command lease is required');
+
+    const leaseSocket = await harness.connectWebSocket('ui-client');
+    try {
+      await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'approve workflow actions',
+        operation: 'acquire',
+        ownerId: 'ui-test',
+        requestId: 'ui-approve-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+      const approved = await harness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          payload: { approvalId, workflowId },
+          requestId: 'ui-approve',
+          runId: run.id,
+          toolName: 'approve_workflow_actions',
+        },
+        { clientId: 'ui-client' },
+      );
+      expect(approved.accepted).toBe(true);
+    } finally {
+      leaseSocket.close();
+    }
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'gated-approve-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const appliedWorkflow = getToolResult<CoordinatorRunSnapshot>(status).workflows[0];
+    expect(appliedWorkflow).toMatchObject({
+      pendingApprovals: [expect.objectContaining({ status: 'approved' })],
+      stages: [
+        expect.objectContaining({ id: 'scout', status: 'completed' }),
+        expect.objectContaining({ id: 'decide', status: 'completed' }),
+        expect.objectContaining({ id: 'followup', status: 'waiting-for-results' }),
+      ],
+    });
+    expect(appliedWorkflow?.lanes.find((lane) => lane.name === 'Decide')).toMatchObject({
+      status: 'completed',
+    });
+    expect(getSpawnedAgentOptions(2)).toMatchObject({ command: 'codex' });
+  });
+
+  it('discards gated decision actions through a leased deny so dependents proceed', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    await harness.callCoordinatorTool({
+      callId: 'gated-deny-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        policy: { requireDecisionApproval: true },
+        problem: 'Decide with operator approval.',
+        spec: {
+          steps: [
+            { id: 'scout', kind: 'worker', name: 'Scout' },
+            {
+              dependsOn: ['scout'],
+              id: 'decide',
+              kind: 'decision',
+              name: 'Decide',
+              sourceStepIds: ['scout'],
+            },
+            { dependsOn: ['decide'], id: 'report', kind: 'worker', name: 'Report' },
+          ],
+        },
+        template: 'custom',
+        title: 'Denied decision workflow',
+      },
+    });
+    const startedStatus = await harness.callCoordinatorTool({
+      callId: 'gated-deny-started-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const workflowId = getToolResult<CoordinatorRunSnapshot>(startedStatus).workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected denied workflow id');
+    }
+    const scoutAgent = getSpawnedAgentOptions(0);
+    const scoutCredential = JSON.parse(
+      await readFile(scoutAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    await harness.callCoordinatorTool({
+      callId: 'gated-deny-scout-result',
+      runId: run.id,
+      taskId: scoutAgent.taskId,
+      token: scoutCredential.token,
+      toolName: 'submit_result',
+      payload: { summary: 'Scout completed.', workflowId },
+    });
+    const decisionAgent = getSpawnedAgentOptions(1);
+    const decisionCredential = JSON.parse(
+      await readFile(decisionAgent.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL, 'utf8'),
+    ) as { token: string };
+    const submitted = await harness.callCoordinatorTool({
+      callId: 'gated-deny-decide-result',
+      runId: run.id,
+      taskId: decisionAgent.taskId,
+      token: decisionCredential.token,
+      toolName: 'submit_result',
+      payload: {
+        metadata: {
+          workflowActions: [{ kind: 'stop_workflow', reason: 'No more work needed.' }],
+        },
+        summary: 'Decision wants to stop early.',
+        workflowId,
+      },
+    });
+    const approvalId = getToolResult<{
+      workflow: CoordinatorRunSnapshot['workflows'][number];
+    }>(submitted).workflow.pendingApprovals?.[0]?.id;
+    if (approvalId === undefined) {
+      throw new Error('Expected pending approval id');
+    }
+
+    const noLeaseDeny = await harness.ipcResponse(
+      IPC.CoordinatorUiToolCall,
+      {
+        coordinatorTaskId: run.coordinatorTaskId,
+        payload: {
+          approvalId,
+          reason: 'Keep the planned report stage.',
+          workflowId,
+        },
+        requestId: 'ui-deny-no-lease',
+        runId: run.id,
+        toolName: 'deny_workflow_actions',
+      },
+      { clientId: 'ui-client' },
+    );
+    const noLeaseDenyBody = (await noLeaseDeny.json()) as { error?: string };
+    expect(noLeaseDeny.status).toBe(400);
+    expect(noLeaseDenyBody.error).toBe('Coordinator task command lease is required');
+
+    const leaseSocket = await harness.connectWebSocket('ui-client');
+    try {
+      await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'deny workflow actions',
+        operation: 'acquire',
+        ownerId: 'ui-test',
+        requestId: 'ui-deny-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+      const denied = await harness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          payload: {
+            approvalId,
+            reason: 'Keep the planned report stage.',
+            workflowId,
+          },
+          requestId: 'ui-deny',
+          runId: run.id,
+          toolName: 'deny_workflow_actions',
+        },
+        { clientId: 'ui-client' },
+      );
+      expect(denied.accepted).toBe(true);
+    } finally {
+      leaseSocket.close();
+    }
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'gated-deny-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const deniedWorkflow = getToolResult<CoordinatorRunSnapshot>(status).workflows[0];
+    expect(deniedWorkflow?.pendingApprovals).toEqual([
+      expect.objectContaining({
+        reason: 'Keep the planned report stage.',
+        status: 'denied',
+      }),
+    ]);
+    expect(deniedWorkflow?.status).not.toBe('completed');
+    expect(deniedWorkflow?.lanes.find((lane) => lane.name === 'Decide')).toMatchObject({
+      status: 'completed',
+    });
+    expect(deniedWorkflow?.lanes.find((lane) => lane.name === 'Report')).toMatchObject({
+      status: 'waiting-for-result',
+    });
+    expect(deniedWorkflow?.journal.some((entry) => entry.kind === 'decision-approval-denied')).toBe(
+      true,
+    );
+  });
+
+  it('pauses run admission for prompts and spawns and delivers deferred prompts after unpause', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+    const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
+    mocks.writes.length = 0;
+    setAgentSupervision(subtask.agentId, 'active');
+
+    const queuedResponse = await harness.callCoordinatorTool({
+      callId: 'pause-send-before',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'send_prompt',
+      payload: { targetTaskId: subtask.taskId, text: 'deferred by pause' },
+    });
+    const queuedPrompt = getToolResult<CoordinatorPromptRequestSnapshot>(queuedResponse);
+    expect(queuedPrompt.status).toBe('waiting-for-terminal-prompt');
+
+    const noLeasePause = await harness.ipcResponse(
+      IPC.CoordinatorUiToolCall,
+      {
+        coordinatorTaskId: run.coordinatorTaskId,
+        requestId: 'ui-pause-no-lease',
+        runId: run.id,
+        toolName: 'pause_run',
+      },
+      { clientId: 'ui-client' },
+    );
+    const noLeasePauseBody = (await noLeasePause.json()) as { error?: string };
+    expect(noLeasePause.status).toBe(400);
+    expect(noLeasePauseBody.error).toBe('Coordinator task command lease is required');
+
+    const leaseSocket = await harness.connectWebSocket('ui-client');
+    try {
+      await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'pause the coordinator run',
+        operation: 'acquire',
+        ownerId: 'ui-test',
+        requestId: 'ui-pause-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+      const paused = await harness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          requestId: 'ui-pause',
+          runId: run.id,
+          toolName: 'pause_run',
+        },
+        { clientId: 'ui-client' },
+      );
+      expect(getToolResult<CoordinatorRunSnapshot>(paused).status).toBe('paused-by-user');
+
+      setAgentSupervision(subtask.agentId, 'idle-at-prompt');
+      emitSupervision(subtask.agentId);
+      await waitForShortAsyncWindow();
+      expect(mocks.writes).toEqual([]);
+
+      const spawnRejected = await harness.toolCallResponse({
+        callId: 'pause-spawn-rejected',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: { command: 'codex' },
+          assignment: 'Work during the pause.',
+          name: 'Deferred child',
+        },
+      });
+      const spawnRejectedBody = (await spawnRejected.json()) as { error?: string };
+      expect(spawnRejected.status).toBe(400);
+      expect(spawnRejectedBody.error).toBe('Coordinator run is paused-by-user');
+
+      const noLeaseUnpause = await harness.ipcResponse(
+        IPC.CoordinatorUiToolCall,
+        {
+          coordinatorTaskId: run.coordinatorTaskId,
+          requestId: 'ui-unpause-no-lease',
+          runId: run.id,
+          toolName: 'unpause_run',
+        },
+        { clientId: 'ui-peer-client' },
+      );
+      const noLeaseUnpauseBody = (await noLeaseUnpause.json()) as { error?: string };
+      expect(noLeaseUnpause.status).toBe(400);
+      expect(noLeaseUnpauseBody.error).toBe('Coordinator task command lease is required');
+
+      const unpaused = await harness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          requestId: 'ui-unpause',
+          runId: run.id,
+          toolName: 'unpause_run',
+        },
+        { clientId: 'ui-client' },
+      );
+      expect(getToolResult<CoordinatorRunSnapshot>(unpaused).status).toBe('running');
+
+      await waitForCondition(
+        () => mocks.writes.some((write) => write.data.includes('deferred by pause')),
+        'deferred prompt delivery after unpause',
+      );
+    } finally {
+      leaseSocket.close();
+    }
+
+    const status = await harness.callCoordinatorTool({
+      callId: 'pause-final-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    expectPromptStatus(
+      getToolResult<CoordinatorRunSnapshot>(status),
+      queuedPrompt.requestId,
+      'delivered',
+    );
+  });
+
+  it('retries a spawn-failed lane through retry_lane within the effective lane budget', async () => {
+    const { credential, harness, run } = await createHarnessWithRun();
+
+    mocks.createTaskWorkflowMock.mockImplementationOnce(async () => {
+      throw new Error('spawn backend unavailable');
+    });
+    await harness.callCoordinatorTool({
+      callId: 'retry-capped-start',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        policy: { maxTotalLanes: 2, retryCount: 0 },
+        problem: 'Scan both halves.',
+        spec: {
+          steps: [
+            {
+              id: 'scan',
+              kind: 'fanout',
+              lanes: [
+                { assignment: 'Scan the backend.', id: 'lane-a', name: 'Backend' },
+                { assignment: 'Scan the frontend.', id: 'lane-b', name: 'Frontend' },
+              ],
+              name: 'Scan',
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Capped retry workflow',
+      },
+    });
+    const cappedStatus = await harness.callCoordinatorTool({
+      callId: 'retry-capped-status',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'get_task_status',
+    });
+    const cappedWorkflow = getToolResult<CoordinatorRunSnapshot>(cappedStatus).workflows[0];
+    const cappedFailedLane = cappedWorkflow?.lanes.find((lane) => lane.status === 'failed');
+    if (cappedWorkflow === undefined || cappedFailedLane === undefined) {
+      throw new Error('Expected a spawn-failed capped lane');
+    }
+
+    const noLeaseRetry = await harness.ipcResponse(
+      IPC.CoordinatorUiToolCall,
+      {
+        coordinatorTaskId: run.coordinatorTaskId,
+        payload: { laneId: cappedFailedLane.id, workflowId: cappedWorkflow.id },
+        requestId: 'ui-retry-no-lease',
+        runId: run.id,
+        toolName: 'retry_lane',
+      },
+      { clientId: 'ui-client' },
+    );
+    const noLeaseRetryBody = (await noLeaseRetry.json()) as { error?: string };
+    expect(noLeaseRetry.status).toBe(400);
+    expect(noLeaseRetryBody.error).toBe('Coordinator task command lease is required');
+
+    const leaseSocket = await harness.connectWebSocket('ui-client');
+    try {
+      await harness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'retry workflow lanes',
+        operation: 'acquire',
+        ownerId: 'ui-test',
+        requestId: 'ui-retry-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+
+      const cappedRetry = await harness.ipcResponse(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          payload: { laneId: cappedFailedLane.id, workflowId: cappedWorkflow.id },
+          requestId: 'ui-retry-capped',
+          runId: run.id,
+          toolName: 'retry_lane',
+        },
+        { clientId: 'ui-client' },
+      );
+      const cappedRetryBody = (await cappedRetry.json()) as { error?: string };
+      expect(cappedRetry.status).toBe(400);
+      expect(cappedRetryBody.error).toBe('budget-exhausted: lanes (2/2)');
+
+      mocks.createTaskWorkflowMock.mockImplementationOnce(async () => {
+        throw new Error('spawn backend unavailable');
+      });
+      await harness.callCoordinatorTool({
+        callId: 'retry-roomy-start',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { retryCount: 0 },
+          problem: 'Scan both halves again.',
+          spec: {
+            steps: [
+              {
+                id: 'scan',
+                kind: 'fanout',
+                lanes: [
+                  { assignment: 'Scan the backend.', id: 'lane-a', name: 'Backend' },
+                  { assignment: 'Scan the frontend.', id: 'lane-b', name: 'Frontend' },
+                ],
+                name: 'Scan',
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Roomy retry workflow',
+        },
+      });
+      const roomyStatus = await harness.callCoordinatorTool({
+        callId: 'retry-roomy-status',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'get_task_status',
+      });
+      const roomyWorkflow = getToolResult<CoordinatorRunSnapshot>(roomyStatus).workflows.find(
+        (workflow) => workflow.title === 'Roomy retry workflow',
+      );
+      const roomyFailedLane = roomyWorkflow?.lanes.find((lane) => lane.status === 'failed');
+      if (roomyWorkflow === undefined || roomyFailedLane === undefined) {
+        throw new Error('Expected a spawn-failed roomy lane');
+      }
+
+      const retried = await harness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          payload: { laneId: roomyFailedLane.id, workflowId: roomyWorkflow.id },
+          requestId: 'ui-retry-roomy',
+          runId: run.id,
+          toolName: 'retry_lane',
+        },
+        { clientId: 'ui-client' },
+      );
+      expect(retried.accepted).toBe(true);
+
+      const retriedStatus = await harness.callCoordinatorTool({
+        callId: 'retry-roomy-after-status',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'get_task_status',
+      });
+      const retriedWorkflow = getToolResult<CoordinatorRunSnapshot>(retriedStatus).workflows.find(
+        (workflow) => workflow.title === 'Roomy retry workflow',
+      );
+      expect(
+        retriedWorkflow?.lanes.find(
+          (lane) => lane.dedupeKey === `${roomyFailedLane.dedupeKey ?? roomyFailedLane.id}:retry:2`,
+        ),
+      ).toMatchObject({ attempt: 2, spawnedBy: 'operator', status: 'waiting-for-result' });
+      expect(retriedWorkflow?.execution?.budget?.retries.used).toBe(0);
+      expect(retriedWorkflow?.journal.some((entry) => entry.kind === 'lane-manual-retry')).toBe(
+        true,
+      );
+
+      const duplicateRetry = await harness.ipcResponse(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'ui-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          payload: { laneId: roomyFailedLane.id, workflowId: roomyWorkflow.id },
+          requestId: 'ui-retry-duplicate',
+          runId: run.id,
+          toolName: 'retry_lane',
+        },
+        { clientId: 'ui-client' },
+      );
+      const duplicateRetryBody = (await duplicateRetry.json()) as { error?: string };
+      expect(duplicateRetry.status).toBe(400);
+      expect(duplicateRetryBody.error).toBe('Lane retry was already scheduled');
+    } finally {
+      leaseSocket.close();
+    }
+  });
+
   it('supports non-git route spawn and prompt flow while rejecting git-only tools', async () => {
     const harness = await createCoordinatorBrowserlessHarness();
     activeHarnesses.push(harness);
@@ -1842,6 +2882,401 @@ describe('browser-less coordinator E2E', () => {
     const body = (await oldCredentialResponse.json()) as { error?: string };
     expect(oldCredentialResponse.status).toBe(400);
     expect(body.error).toBe('Coordinator run is stale-after-restore');
+  });
+
+  it('resumes a stale restored run by respawning unfinished work with rotated credentials', async () => {
+    const persistedRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'parallel-code-coordinator-resume-'),
+    );
+    tempDirs.push(persistedRoot);
+    const firstHarness = await createCoordinatorBrowserlessHarness({
+      userDataPath: path.join(persistedRoot, 'user-data'),
+    });
+    activeHarnesses.push(firstHarness);
+    const { credential, result } = await firstHarness.createCoordinatorRun();
+    const run = result.run;
+    await spawnCoordinatorSubtask(firstHarness, run, credential.token, {
+      callId: 'spawn-direct-child',
+      name: 'Direct child',
+    });
+    const started = await firstHarness.callCoordinatorTool({
+      callId: 'workflow-before-resume',
+      runId: run.id,
+      taskId: run.coordinatorTaskId,
+      token: credential.token,
+      toolName: 'start_workflow',
+      payload: {
+        problem: 'Review resume behavior.',
+        spec: {
+          steps: [
+            {
+              id: 'scan',
+              kind: 'fanout',
+              lanes: [
+                { assignment: 'Scan lane A.', id: 'lane-a', name: 'Lane A' },
+                { assignment: 'Scan lane B.', id: 'lane-b', name: 'Lane B' },
+              ],
+            },
+            {
+              dependsOn: ['scan'],
+              id: 'synthesize',
+              kind: 'synthesize',
+              prompt: 'Synthesize the scan results.',
+            },
+          ],
+        },
+        template: 'custom',
+        title: 'Resume proving workflow',
+      },
+    });
+    const startedWorkflow = getToolResult<{ workflow: { id: string } }>(started).workflow;
+    const workflowBeforeRestart = getToolResult<CoordinatorRunSnapshot>(
+      await firstHarness.callCoordinatorTool({
+        callId: 'status-before-result',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'get_task_status',
+      }),
+    ).workflows.find((workflow) => workflow.id === startedWorkflow.id);
+    const laneATaskId = workflowBeforeRestart?.lanes.find((lane) => lane.name === 'Lane A')?.taskId;
+    const laneBTaskId = workflowBeforeRestart?.lanes.find((lane) => lane.name === 'Lane B')?.taskId;
+    if (laneATaskId === undefined || laneBTaskId === undefined) {
+      throw new Error('Expected spawned workflow lanes before restart');
+    }
+
+    const laneASpawn = mocks.spawnTaskAgentWorkflowMock.mock.calls
+      .map((call) => call[1] as SpawnedAgentOptions)
+      .find((options) => options.taskId === laneATaskId);
+    const laneBSpawn = mocks.spawnTaskAgentWorkflowMock.mock.calls
+      .map((call) => call[1] as SpawnedAgentOptions)
+      .find((options) => options.taskId === laneBTaskId);
+    if (!laneASpawn || !laneBSpawn) {
+      throw new Error('Expected lane agent spawns before restart');
+    }
+    const laneAToken = (
+      await readFile(laneASpawn.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL ?? '', 'utf8')
+    ).match(/"token":"([^"]+)"/)?.[1];
+    const laneBOldCredentialPath = laneBSpawn.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL ?? '';
+    const laneBOldToken = (await readFile(laneBOldCredentialPath, 'utf8')).match(
+      /"token":"([^"]+)"/,
+    )?.[1];
+    if (!laneAToken || !laneBOldToken) {
+      throw new Error('Expected lane credentials before restart');
+    }
+
+    await firstHarness.callCoordinatorTool({
+      callId: 'lane-a-result',
+      runId: run.id,
+      taskId: laneATaskId,
+      token: laneAToken,
+      toolName: 'submit_result',
+      payload: {
+        status: 'completed',
+        summary: 'Lane A finished before the restart.',
+      },
+    });
+
+    await firstHarness.close();
+    forgetActiveHarness(firstHarness);
+    resetCoordinatorToolGatewayForTests();
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    resetTaskCommandLeasesForTest();
+    resetMockState();
+    const spawnCallCountBeforeResume = mocks.spawnTaskAgentWorkflowMock.mock.calls.length;
+
+    const restoredHarness = await createCoordinatorBrowserlessHarness({
+      userDataPath: path.join(persistedRoot, 'user-data'),
+    });
+    activeHarnesses.push(restoredHarness);
+    const bootstrap = await restoredHarness.ipc<ServerStateBootstrapSnapshot[]>(
+      IPC.GetServerStateBootstrap,
+      {},
+    );
+    const coordinatorSnapshot = bootstrap.find((entry) => entry.category === 'coordinator');
+    const restoredRun = coordinatorSnapshot?.payload.runs.find(
+      (candidate) => candidate.id === run.id,
+    );
+    expect(restoredRun).toMatchObject({ status: 'stale-after-restore' });
+    const restoredWorkflow = restoredRun?.workflows.find(
+      (workflow) => workflow.id === startedWorkflow.id,
+    );
+    const completedLaneBeforeResume = restoredWorkflow?.lanes.find(
+      (lane) => lane.taskId === laneATaskId,
+    );
+    const resultBeforeResume = restoredWorkflow?.results[0];
+    expect(completedLaneBeforeResume).toMatchObject({ status: 'completed' });
+    expect(restoredWorkflow?.lanes.find((lane) => lane.taskId === laneBTaskId)).toMatchObject({
+      status: 'stale-after-restore',
+    });
+
+    const noLeaseResume = await restoredHarness.ipcResponse(
+      IPC.CoordinatorUiToolCall,
+      {
+        coordinatorTaskId: run.coordinatorTaskId,
+        requestId: 'ui-resume-no-lease',
+        runId: run.id,
+        toolName: 'resume_run',
+      },
+      { clientId: 'resume-client' },
+    );
+    const noLeaseResumeBody = (await noLeaseResume.json()) as { error?: string };
+    expect(noLeaseResume.status).toBe(400);
+    expect(noLeaseResumeBody.error).toBe('Coordinator task command lease is required');
+
+    const leaseSocket = await restoredHarness.connectWebSocket('resume-client');
+    try {
+      const runningEvent = restoredHarness.waitForSocketMessage(
+        leaseSocket,
+        (message): message is SequencedRunUpsertedMessage =>
+          isSequencedRunUpsertedMessage(message) &&
+          getEventPayloadRecord(message).status === 'running',
+      );
+      await restoredHarness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'resume the coordinator run',
+        operation: 'acquire',
+        ownerId: 'resume-test',
+        requestId: 'resume-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+
+      const resumeRequest = {
+        controllerId: 'resume-client',
+        coordinatorTaskId: run.coordinatorTaskId,
+        requestId: 'resume-run-1',
+        runId: run.id,
+        toolName: 'resume_run',
+      };
+      const resumeResponse = await restoredHarness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        resumeRequest,
+        { clientId: 'resume-client' },
+      );
+      const resumeResult = getToolResult<{
+        failed: unknown[];
+        respawned: string[];
+        run: CoordinatorRunSnapshot;
+      }>(resumeResponse);
+
+      expect(resumeResult.failed).toEqual([]);
+      expect([...resumeResult.respawned].sort()).toEqual(['task-child-1', laneBTaskId].sort());
+      expect(resumeResult.run.status).toBe('running');
+      expect(
+        getEventPayloadRecord({ event: { payload: (await runningEvent).event.payload } }),
+      ).toMatchObject({ id: run.id, status: 'running' });
+
+      const respawnCalls = mocks.spawnTaskAgentWorkflowMock.mock.calls
+        .slice(spawnCallCountBeforeResume)
+        .map((call) => call[1] as SpawnedAgentOptions);
+      expect(respawnCalls).toHaveLength(2);
+      const laneBRespawn = respawnCalls.find((options) => options.taskId === laneBTaskId);
+      expect(laneBRespawn).toMatchObject({
+        agentId: laneBSpawn.agentId,
+        cwd: laneBSpawn.cwd,
+        taskId: laneBTaskId,
+      });
+      expect(laneBRespawn?.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL).toBeDefined();
+      expect(laneBRespawn?.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL).not.toBe(
+        laneBOldCredentialPath,
+      );
+
+      const resumedWorkflow = resumeResult.run.workflows.find(
+        (workflow) => workflow.id === startedWorkflow.id,
+      );
+      expect(resumedWorkflow?.lanes.find((lane) => lane.taskId === laneATaskId)).toEqual(
+        completedLaneBeforeResume,
+      );
+      expect(resumedWorkflow?.results[0]).toEqual(resultBeforeResume);
+      expect(resumedWorkflow?.lanes.find((lane) => lane.taskId === laneBTaskId)).toMatchObject({
+        status: 'waiting-for-result',
+      });
+      expect(
+        resumedWorkflow?.lanes.find((lane) => lane.taskId === laneBTaskId)?.timeoutAt ?? 0,
+      ).toBeGreaterThan(Date.now());
+
+      const oldTokenResponse = await restoredHarness.toolCallResponse({
+        callId: 'lane-b-old-token',
+        runId: run.id,
+        taskId: laneBTaskId,
+        token: laneBOldToken,
+        toolName: 'submit_result',
+        payload: { summary: 'Old token should be rejected.' },
+      });
+      expect(oldTokenResponse.status).toBe(400);
+      expect(((await oldTokenResponse.json()) as { error?: string }).error).toBe(
+        'Invalid coordinator tool token',
+      );
+
+      const replayResponse = await restoredHarness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        resumeRequest,
+        { clientId: 'resume-client' },
+      );
+      expect(replayResponse).toEqual(resumeResponse);
+      expect(mocks.spawnTaskAgentWorkflowMock.mock.calls.length).toBe(
+        spawnCallCountBeforeResume + 2,
+      );
+
+      const secondResumeResponse = await restoredHarness.ipcResponse(
+        IPC.CoordinatorUiToolCall,
+        { ...resumeRequest, requestId: 'resume-run-2' },
+        { clientId: 'resume-client' },
+      );
+      expect(secondResumeResponse.status).toBe(400);
+      expect(((await secondResumeResponse.json()) as { error?: string }).error).toBe(
+        'Coordinator run is running',
+      );
+
+      const laneBNewToken = (
+        await readFile(laneBRespawn?.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL ?? '', 'utf8')
+      ).match(/"token":"([^"]+)"/)?.[1];
+      if (!laneBNewToken) {
+        throw new Error('Expected rotated lane credential after resume');
+      }
+      const laneBResult = await restoredHarness.callCoordinatorTool({
+        callId: 'lane-b-result-after-resume',
+        runId: run.id,
+        taskId: laneBTaskId,
+        token: laneBNewToken,
+        toolName: 'submit_result',
+        payload: {
+          status: 'completed',
+          summary: 'Lane B finished after the resume.',
+        },
+      });
+      const advancedWorkflow = getToolResult<{
+        workflow: CoordinatorRunSnapshot['workflows'][number];
+      }>(laneBResult).workflow;
+      expect(advancedWorkflow.stages.find((stage) => stage.id === 'scan')).toMatchObject({
+        status: 'completed',
+      });
+      expect(advancedWorkflow.stages.find((stage) => stage.id === 'synthesize')).toMatchObject({
+        status: expect.stringMatching(/running|waiting-for-results/),
+      });
+      expect(advancedWorkflow.lanes.filter((lane) => lane.stageId === 'synthesize')).toHaveLength(
+        1,
+      );
+    } finally {
+      leaseSocket.close();
+    }
+  });
+
+  it('replays delivered readiness-gated startup prompts after resume on a fresh PTY', async () => {
+    const persistedRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'parallel-code-coordinator-resume-readiness-'),
+    );
+    tempDirs.push(persistedRoot);
+    const firstHarness = await createCoordinatorBrowserlessHarness({
+      userDataPath: path.join(persistedRoot, 'user-data'),
+    });
+    activeHarnesses.push(firstHarness);
+    const { credential, result } = await firstHarness.createCoordinatorRun();
+    const run = result.run;
+    const subtask = await spawnCoordinatorSubtask(
+      firstHarness,
+      run,
+      credential.token,
+      createCustomSpawnOverrides('spawn-resume-readiness', 'resume-readiness-child'),
+    );
+
+    const initialPrompts = getToolResult<CoordinatorRunSnapshot>(
+      await firstHarness.callCoordinatorTool({
+        callId: 'status-before-readiness-restart',
+        runId: run.id,
+        taskId: run.coordinatorTaskId,
+        token: credential.token,
+        toolName: 'get_task_status',
+      }),
+    ).promptQueue;
+    expect(initialPrompts[0]).toMatchObject({
+      kind: 'initial-assignment',
+      status: 'delivered',
+      targetTaskId: subtask.taskId,
+    });
+
+    await firstHarness.close();
+    forgetActiveHarness(firstHarness);
+    resetCoordinatorToolGatewayForTests();
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    resetTaskCommandLeasesForTest();
+    resetMockState();
+
+    const restoredHarness = await createCoordinatorBrowserlessHarness({
+      userDataPath: path.join(persistedRoot, 'user-data'),
+    });
+    activeHarnesses.push(restoredHarness);
+    const bootstrap = await restoredHarness.ipc<ServerStateBootstrapSnapshot[]>(
+      IPC.GetServerStateBootstrap,
+      {},
+    );
+    const coordinatorSnapshot = bootstrap.find((entry) => entry.category === 'coordinator');
+    const restoredRun = coordinatorSnapshot?.payload.runs.find(
+      (candidate) => candidate.id === run.id,
+    );
+    expect(restoredRun).toMatchObject({ status: 'stale-after-restore' });
+    expect(restoredRun?.promptQueue[0]).toMatchObject({
+      kind: 'initial-assignment',
+      status: 'delivered',
+      targetTaskId: subtask.taskId,
+    });
+
+    const leaseSocket = await restoredHarness.connectWebSocket('resume-readiness-client');
+    try {
+      await restoredHarness.sendTaskCommandLease(leaseSocket, {
+        type: 'task-command-lease',
+        action: 'resume the coordinator run',
+        operation: 'acquire',
+        ownerId: 'resume-readiness-test',
+        requestId: 'resume-readiness-lease',
+        taskId: run.coordinatorTaskId,
+        takeover: true,
+      });
+
+      const resumeResponse = await restoredHarness.ipc<CoordinatorToolCallResult>(
+        IPC.CoordinatorUiToolCall,
+        {
+          controllerId: 'resume-readiness-client',
+          coordinatorTaskId: run.coordinatorTaskId,
+          requestId: 'resume-readiness-run',
+          runId: run.id,
+          toolName: 'resume_run',
+        },
+        { clientId: 'resume-readiness-client' },
+      );
+      const resumeResult = getToolResult<{ respawned: string[]; run: CoordinatorRunSnapshot }>(
+        resumeResponse,
+      );
+      expect(resumeResult.respawned).toEqual([subtask.taskId]);
+
+      const resumedSubtask = resumeResult.run.subtasks.find(
+        (candidate) => candidate.taskId === subtask.taskId,
+      );
+      expect(resumedSubtask).toMatchObject({ status: 'running' });
+      expect(resumedSubtask?.interruptedByRestoreAt).toBeUndefined();
+      expect(resumedSubtask?.result).toBeUndefined();
+
+      const resumedPrompts = resumeResult.run.promptQueue.filter(
+        (prompt) => prompt.targetTaskId === subtask.taskId,
+      );
+      expect(resumedPrompts).toHaveLength(2);
+      expect(resumedPrompts[0]).toMatchObject({ status: 'delivered' });
+      expect(resumedPrompts[1]).toMatchObject({
+        dedupeKey: `resume:resume-readiness-run:${subtask.taskId}:initial`,
+        kind: 'initial-assignment',
+        status: 'delivered',
+      });
+
+      const writesAfterResume = mocks.writes.filter((write) =>
+        write.data.includes('Run the custom coordinator child.'),
+      ).length;
+      expect(writesAfterResume).toBe(1);
+    } finally {
+      leaseSocket.close();
+    }
   });
 
   it('replays coordinator events to reconnecting websocket clients using browser control sequence cursors', async () => {

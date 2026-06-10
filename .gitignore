@@ -6,6 +6,7 @@ release
 .worktrees
 .idea
 .claude
+.claude-plans/
 .codex
 .DS_Store
 docs/plans

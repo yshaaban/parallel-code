@@ -2,18 +2,34 @@ import { createHash } from 'node:crypto';
 
 import {
   COORDINATOR_LIMITS,
+  coordinatorRunAdmitsNewWork,
+  countCoordinatorWorkflowRetriesUsed,
+  createCoordinatorWorkflowBudgetSnapshot,
+  formatCoordinatorWorkflowBudgetExhaustedReason,
+  getCommittedWorkflowLaneCount,
+  getCoordinatorWorkflowBudgetLimits,
+  getCoordinatorWorkflowLaneRetryDedupeKey,
+  getCoordinatorWorkflowStageRequiredResultCount,
+  hasScheduledCoordinatorWorkflowLaneRetry,
   isCoordinatorTerminalWorkflowLaneStatus,
+  isCoordinatorTerminalWorkflowStatus,
+  isCoordinatorWorkflowStageDependencySatisfied,
   type CoordinatorSpawnManyLanePayload,
   type CoordinatorSpawnSubtaskPayload,
   type CoordinatorStartWorkflowLanePayload,
   type CoordinatorSubtaskSnapshot,
+  type CoordinatorWorkflowBudgetDimension,
+  type CoordinatorWorkflowBudgetLimits,
+  type CoordinatorWorkflowBudgetUsageSnapshot,
   type CoordinatorWorkflowExpansionActionSnapshot,
   type CoordinatorWorkflowExpansionSnapshot,
   type CoordinatorWorkflowExecutionSnapshot,
   type CoordinatorWorkflowFindingSnapshot,
+  type CoordinatorWorkflowPendingApprovalSnapshot,
   type CoordinatorWorkflowPolicyPayload,
   type CoordinatorWorkflowPolicySnapshot,
   type CoordinatorWorkflowResultSnapshot,
+  type CoordinatorWorkflowResultStatus,
   type CoordinatorWorkflowSnapshot,
   type CoordinatorWorkflowStageKind,
   type CoordinatorWorkflowStepAppendSnapshot,
@@ -22,11 +38,15 @@ import {
 } from '../../src/domain/coordinator.js';
 import {
   COORDINATOR_WORKFLOW_SPEC_VERSION,
+  countCoordinatorWorkflowSpecLanes,
+  countCoordinatorWorkflowSpecStepLanes,
   normalizeCoordinatorWorkflowDynamicActions,
   normalizeCoordinatorWorkflowSpec,
   normalizeCoordinatorWorkflowStepAppend,
   type CoordinatorWorkflowDynamicActionSnapshot,
+  type CoordinatorWorkflowDynamicBranchBundleActionSnapshot,
   type CoordinatorWorkflowSpecLaneSnapshot,
+  type CoordinatorWorkflowSpecStepJoinMode,
   type CoordinatorWorkflowSpecSnapshot,
   type CoordinatorWorkflowSpecStepSnapshot,
   type CoordinatorWorkflowSpecValidationLimits,
@@ -34,12 +54,16 @@ import {
 } from '../../src/domain/coordinator-workflow-spec.js';
 import { BadRequestError } from '../ipc/errors.js';
 import {
+  addCoordinatorWorkflowPendingApproval,
   appendCoordinatorWorkflowSteps,
   appendCoordinatorWorkflowJournal,
   cancelCoordinatorPromptsForTask,
+  cancelCoordinatorWorkflowPendingApprovals,
   createCoordinatorWorkflow,
   getCoordinatorRun,
+  getCoordinatorRunStatus,
   getCoordinatorWorkflow,
+  resolveCoordinatorWorkflowPendingApproval,
   updateCoordinatorWorkflow,
   updateCoordinatorWorkflowLane,
   updateCoordinatorWorkflowStage,
@@ -111,6 +135,65 @@ export interface TickCoordinatorWorkflowExecutionOptions {
   workflowId: string;
 }
 
+export type RespawnCoordinatorWorkflowLane = (
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+) => Promise<WorkflowSpawnedLane>;
+
+export interface ResumeCoordinatorWorkflowExecutionOptions {
+  now?: number;
+  respawnLane: RespawnCoordinatorWorkflowLane;
+  runId: string;
+  spawnLane: SpawnCoordinatorWorkflowLane;
+  workflowId: string;
+}
+
+export interface ResumeCoordinatorWorkflowExecutionResult {
+  failed: Array<{ laneId: string; reason: string; taskId?: string }>;
+  respawned: string[];
+  workflow: CoordinatorWorkflowSnapshot;
+}
+
+export interface RecordPendingWorkflowApprovalOptions {
+  actions: CoordinatorWorkflowDynamicActionSnapshot[];
+  laneId: string;
+  now?: number;
+  resultId: string;
+  runId: string;
+  stageId: string;
+  workflowId: string;
+}
+
+export interface ApproveCoordinatorWorkflowActionsOptions {
+  approvalId: string;
+  now?: number;
+  runId: string;
+  spawnLane: SpawnCoordinatorWorkflowLane;
+  workflowId: string;
+}
+
+export interface DenyCoordinatorWorkflowActionsOptions {
+  approvalId: string;
+  now?: number;
+  reason?: string;
+  runId: string;
+  spawnLane: SpawnCoordinatorWorkflowLane;
+  workflowId: string;
+}
+
+export interface RetryCoordinatorWorkflowLaneFromOperatorOptions {
+  laneId: string;
+  now?: number;
+  runId: string;
+  spawnLane: SpawnCoordinatorWorkflowLane;
+  workflowId: string;
+}
+
+export interface CoordinatorWorkflowApprovalResolutionResult {
+  approval: CoordinatorWorkflowPendingApprovalSnapshot;
+  workflow: CoordinatorWorkflowSnapshot;
+}
+
 interface ResolveOwnedWorkflowLaneOptions {
   actionName: string;
   requireActiveLane?: boolean;
@@ -124,6 +207,8 @@ interface ReconcileWorkflowOptions {
 }
 
 interface EffectiveStagePolicy {
+  joinMode: CoordinatorWorkflowSpecStepJoinMode;
+  quorumCount?: number;
   resultRequired: boolean;
   retryBackoffMs: number;
   retryCount: number;
@@ -134,9 +219,16 @@ interface DecisionAppendActionPlan {
   actionId: string;
   kind: Extract<
     CoordinatorWorkflowDynamicActionSnapshot['kind'],
-    'append_fanout' | 'append_synthesize' | 'append_verify' | 'append_worker'
+    | 'append_branch_bundle'
+    | 'append_fanout'
+    | 'append_synthesize'
+    | 'append_verify'
+    | 'append_worker'
   >;
-  step: CoordinatorWorkflowSpecStepSnapshot;
+  branchKey?: string;
+  bundleId?: string;
+  iteration?: number;
+  steps: CoordinatorWorkflowSpecStepSnapshot[];
 }
 
 function getNow(now: number | undefined): number {
@@ -165,6 +257,7 @@ function mergeWorkflowPolicyPayload(
 function getSpecNormalizationLimits(): CoordinatorWorkflowSpecValidationLimits {
   return {
     assignmentTextMaxChars: COORDINATOR_LIMITS.assignmentTextMaxChars,
+    maxWorkflowBranchIterations: COORDINATOR_LIMITS.maxWorkflowBranchIterations,
     maxWorkflowLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
     maxWorkflowMetadataBytes: COORDINATOR_LIMITS.maxWorkflowMetadataBytes,
     maxWorkflowShortTextChars: COORDINATOR_LIMITS.maxWorkflowShortTextChars,
@@ -285,6 +378,29 @@ function getDefaultWorkflowLanes(
         {
           assignment: `Analyze the validation/testing angle for: ${payload.problem}`,
           name: 'Validation',
+          role: 'map',
+        },
+      ];
+    case 'repo_review':
+      return [
+        {
+          assignment: `Review backend runtime and coordinator execution risks for: ${payload.problem}`,
+          name: 'Backend',
+          role: 'map',
+        },
+        {
+          assignment: `Review coordinator UI, operator clarity, and interaction risks for: ${payload.problem}`,
+          name: 'UI',
+          role: 'map',
+        },
+        {
+          assignment: `Review tests, proving gaps, and validation risks for: ${payload.problem}`,
+          name: 'Validation',
+          role: 'map',
+        },
+        {
+          assignment: `Review docs, ownership, and architecture alignment for: ${payload.problem}`,
+          name: 'Docs',
           role: 'map',
         },
       ];
@@ -413,6 +529,78 @@ function createTemplateWorkflowSpec(
         ],
         version: COORDINATOR_WORKFLOW_SPEC_VERSION,
       };
+    case 'repo_review':
+      return {
+        steps: [
+          {
+            dependsOn: [],
+            id: 'scan',
+            kind: 'fanout',
+            lanes,
+            name: 'Scan',
+            policy: {
+              joinMode: 'quorum',
+              quorumCount: 2,
+            },
+            resultSourceStepIds: [],
+            sourceStepIds: [],
+            verifiers: [],
+          },
+          {
+            dependsOn: ['scan'],
+            findingSourceStepId: 'scan',
+            id: 'verify',
+            kind: 'verify',
+            lanes: [],
+            name: 'Verify',
+            policy: {
+              joinMode: 'quorum',
+              quorumCount: 2,
+            },
+            resultSourceStepIds: ['scan'],
+            sourceStepIds: ['scan'],
+            verifiers: [
+              {
+                id: 'skeptic',
+                name: 'Skeptic',
+                role: 'verifier',
+              },
+              {
+                id: 'archivist',
+                name: 'Archivist',
+                role: 'verifier',
+              },
+            ],
+          },
+          {
+            dependsOn: ['verify'],
+            id: 'decide',
+            includeFindings: true,
+            includeVerdicts: true,
+            kind: 'decision',
+            lanes: [],
+            name: 'Decide',
+            prompt:
+              'Decide whether the repo review needs narrower follow-up work. Append only focused next steps or stop when the review is complete.',
+            resultSourceStepIds: ['scan', 'verify'],
+            sourceStepIds: ['scan', 'verify'],
+            verifiers: [],
+          },
+          {
+            dependsOn: ['decide'],
+            id: 'synthesize',
+            includeFindings: true,
+            includeVerdicts: true,
+            kind: 'synthesize',
+            lanes: [],
+            name: 'Synthesize',
+            resultSourceStepIds: ['scan', 'verify', 'decide'],
+            sourceStepIds: ['scan', 'verify', 'decide'],
+            verifiers: [],
+          },
+        ],
+        version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+      };
     case 'custom':
       return {
         steps: [
@@ -465,6 +653,8 @@ function getStageExecutionPolicy(
 ): EffectiveStagePolicy {
   const stepPolicy = getStep(workflow, stageId)?.policy;
   return {
+    joinMode: stepPolicy?.joinMode ?? 'all',
+    ...(stepPolicy?.quorumCount !== undefined ? { quorumCount: stepPolicy.quorumCount } : {}),
     resultRequired: stepPolicy?.resultRequired ?? workflow.policy.resultRequired,
     retryBackoffMs: stepPolicy?.retryBackoffMs ?? workflow.policy.retryBackoffMs,
     retryCount: stepPolicy?.retryCount ?? workflow.policy.retryCount,
@@ -623,7 +813,7 @@ function createDecisionAssignment(
       '',
       step.includeVerdicts === true ? summarizeWorkflowVerdicts(workflow) : '',
       '',
-      'If follow-up is needed, call submit_result with metadata.workflowActions using append_worker, append_fanout, append_verify, or append_synthesize.',
+      'If follow-up is needed, call submit_result with metadata.workflowActions using append_worker, append_fanout, append_verify, append_synthesize, or append_branch_bundle.',
       'Use mark_blocked only when progress needs user input. Use stop_workflow only when this lane is the only active work left and the workflow should end now.',
     ]
       .filter((part) => part.length > 0)
@@ -744,26 +934,7 @@ function createStageLanePayloads(
 }
 
 function countStepLanes(step: CoordinatorWorkflowSpecStepSnapshot | undefined): number {
-  if (step === undefined) {
-    return 0;
-  }
-
-  switch (step.kind) {
-    case 'decision':
-      return Math.max(1, step.lanes.length);
-    case 'fanout':
-      return step.lanes.length;
-    case 'synthesize':
-      return 1;
-    case 'verify':
-      return step.verifiers.length;
-    case 'worker':
-      return Math.max(1, step.lanes.length);
-  }
-}
-
-function countWorkflowSpecLanes(spec: CoordinatorWorkflowSpecSnapshot): number {
-  return spec.steps.reduce((count, step) => count + countStepLanes(step), 0);
+  return step === undefined ? 0 : countCoordinatorWorkflowSpecStepLanes(step);
 }
 
 function hashWorkflowAppendPayload(steps: unknown[]): string {
@@ -855,6 +1026,12 @@ function getWorkflowDecisionActionId(
   return action.actionId ?? `${resultId}:action:${index + 1}`;
 }
 
+function isWorkflowBranchBundleAction(
+  action: CoordinatorWorkflowDynamicActionSnapshot,
+): action is CoordinatorWorkflowDynamicBranchBundleActionSnapshot {
+  return action.kind === 'append_branch_bundle';
+}
+
 function isWorkflowAppendAction(
   action: CoordinatorWorkflowDynamicActionSnapshot,
 ): action is Extract<CoordinatorWorkflowDynamicActionSnapshot, { step: unknown }> {
@@ -870,13 +1047,132 @@ function isWorkflowTerminalAction(
   return action?.kind === 'mark_blocked' || action?.kind === 'stop_workflow';
 }
 
+function humanizeBundleName(bundleId: string): string {
+  return bundleId
+    .split(/[-_]+/u)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function getWorkflowBranchIterationCount(
+  workflow: CoordinatorWorkflowSnapshot,
+  branchKey: string,
+): number {
+  return (workflow.expansions ?? [])
+    .flatMap((expansion) => expansion.actions)
+    .filter((action) => action.branchKey === branchKey && action.iteration !== undefined).length;
+}
+
+function createBranchBundleSteps(
+  action: CoordinatorWorkflowDynamicBranchBundleActionSnapshot,
+): CoordinatorWorkflowSpecStepSnapshot[] {
+  const bundleName = action.name ?? humanizeBundleName(action.bundleId);
+  const fanoutStepId = `${action.bundleId}-fanout`;
+  const steps: CoordinatorWorkflowSpecStepSnapshot[] = [
+    {
+      dependsOn: action.dependsOn ?? [],
+      id: fanoutStepId,
+      kind: 'fanout',
+      lanes: action.lanes,
+      name: bundleName,
+      resultSourceStepIds: [],
+      sourceStepIds: [],
+      verifiers: [],
+    },
+  ];
+
+  let previousStepId = fanoutStepId;
+  if (action.verify !== undefined) {
+    const verifyStepId = action.verify.id ?? `${action.bundleId}-verify`;
+    steps.push({
+      ...(action.verify.agent !== undefined ? { agent: action.verify.agent } : {}),
+      dependsOn: [previousStepId],
+      findingSourceStepId: fanoutStepId,
+      id: verifyStepId,
+      ...(action.verify.includeEvidence !== undefined
+        ? { includeEvidence: action.verify.includeEvidence }
+        : {}),
+      ...(action.verify.includeFindings !== undefined
+        ? { includeFindings: action.verify.includeFindings }
+        : {}),
+      kind: 'verify',
+      lanes: [],
+      ...(action.verify.minimumVerifierCount !== undefined
+        ? { minimumVerifierCount: action.verify.minimumVerifierCount }
+        : {}),
+      name: action.verify.name ?? `${bundleName} Verify`,
+      policy: {
+        ...(action.verify.joinMode !== undefined ? { joinMode: action.verify.joinMode } : {}),
+        ...(action.verify.quorumCount !== undefined
+          ? { quorumCount: action.verify.quorumCount }
+          : {}),
+      },
+      resultSourceStepIds: [fanoutStepId],
+      sourceStepIds: [fanoutStepId],
+      verifiers: action.verify.verifiers,
+    });
+    previousStepId = verifyStepId;
+  }
+
+  if (action.reduce !== undefined) {
+    steps.push({
+      ...(action.reduce.agent !== undefined ? { agent: action.reduce.agent } : {}),
+      dependsOn: [previousStepId],
+      id: action.reduce.id ?? `${action.bundleId}-reduce`,
+      ...(action.reduce.includeFindings !== undefined
+        ? { includeFindings: action.reduce.includeFindings }
+        : { includeFindings: true }),
+      ...(action.reduce.includeVerdicts !== undefined
+        ? { includeVerdicts: action.reduce.includeVerdicts }
+        : action.verify !== undefined
+          ? { includeVerdicts: true }
+          : {}),
+      kind: 'synthesize',
+      lanes: [],
+      name: action.reduce.name ?? `${bundleName} Reduce`,
+      ...(action.reduce.prompt !== undefined ? { prompt: action.reduce.prompt } : {}),
+      resultSourceStepIds:
+        action.verify !== undefined ? [fanoutStepId, previousStepId] : [fanoutStepId],
+      ...(action.reduce.role !== undefined ? { role: action.reduce.role } : { role: 'reduce' }),
+      sourceStepIds: action.verify !== undefined ? [fanoutStepId, previousStepId] : [fanoutStepId],
+      verifiers: [],
+    });
+  }
+
+  return steps;
+}
+
 function getDecisionAppendActionPlans(
   actions: CoordinatorWorkflowDynamicActionSnapshot[],
+  workflow: CoordinatorWorkflowSnapshot,
   resultId: string,
   stageId: string,
 ): DecisionAppendActionPlan[] {
   const plans: DecisionAppendActionPlan[] = [];
   for (const [index, action] of actions.entries()) {
+    if (isWorkflowBranchBundleAction(action)) {
+      const branchKey = action.branchKey ?? action.bundleId;
+      const maxIterations = action.maxIterations ?? workflow.policy.maxIterationsPerBranch;
+      const nextIteration = getWorkflowBranchIterationCount(workflow, branchKey) + 1;
+      if (nextIteration > maxIterations) {
+        throw new BadRequestError(
+          `workflowActions branch ${branchKey} exceeds iteration limit ${maxIterations}`,
+        );
+      }
+      plans.push({
+        actionId: getWorkflowDecisionActionId(action, resultId, index),
+        branchKey,
+        bundleId: action.bundleId,
+        iteration: nextIteration,
+        kind: action.kind,
+        steps: createBranchBundleSteps({
+          ...action,
+          dependsOn: action.dependsOn?.length ? action.dependsOn : [stageId],
+        }),
+      });
+      continue;
+    }
     if (!isWorkflowAppendAction(action)) {
       continue;
     }
@@ -884,7 +1180,7 @@ function getDecisionAppendActionPlans(
     plans.push({
       actionId: getWorkflowDecisionActionId(action, resultId, index),
       kind: action.kind,
-      step: withDefaultDecisionDependency(action.step, stageId),
+      steps: [withDefaultDecisionDependency(action.step, stageId)],
     });
   }
 
@@ -910,6 +1206,10 @@ function validateDecisionAppendActionPlans(
   if (workflow.sourceSpec === undefined) {
     throw new BadRequestError('decision workflowActions require a sourceSpec-backed workflow');
   }
+  // The whole decision-action batch is applied as one append, so approve-time re-validation must
+  // reject here while the approval is still pending instead of resolving it and then failing
+  // inside the apply path.
+  assertWorkflowStepAppendCapacity(workflow, 'workflowActions');
 
   const seenActionIds = new Set<string>();
   for (const plan of plans) {
@@ -919,15 +1219,13 @@ function validateDecisionAppendActionPlans(
     seenActionIds.add(plan.actionId);
   }
 
+  const plannedSteps = plans.flatMap((plan) => plan.steps);
+
   let normalizedAppend: CoordinatorWorkflowStepAppendNormalizationResult;
   try {
-    normalizedAppend = normalizeCoordinatorWorkflowStepAppend(
-      workflow.sourceSpec,
-      plans.map((plan) => plan.step),
-      {
-        limits: getSpecNormalizationLimits(),
-      },
-    );
+    normalizedAppend = normalizeCoordinatorWorkflowStepAppend(workflow.sourceSpec, plannedSteps, {
+      limits: getSpecNormalizationLimits(),
+    });
   } catch (error) {
     if (error instanceof Error) {
       throw new BadRequestError(error.message);
@@ -937,15 +1235,12 @@ function validateDecisionAppendActionPlans(
   }
   const appendedSteps = normalizedAppend.appendedSteps;
 
-  const appendedLaneCount = countWorkflowSpecLanes({
-    steps: appendedSteps,
-    version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+  assertWorkflowWithinDeadline(workflow, Date.now());
+  assertWorkflowBudgetAdmits(workflow, {
+    addedLanes: countCoordinatorWorkflowSpecLanes(appendedSteps),
+    addedSteps: appendedSteps.length,
+    label: 'workflowActions',
   });
-  if (workflow.lanes.length + appendedLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
-    throw new BadRequestError(
-      `workflowActions would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
-    );
-  }
 
   const maxAppendedStageLaneCount = appendedSteps.reduce(
     (count, step) => Math.max(count, countStepLanes(step)),
@@ -991,7 +1286,9 @@ export function readWorkflowDecisionActions(
     );
   }
 
-  const appendActionCount = actions.filter(isWorkflowAppendAction).length;
+  const appendActionCount = actions.filter(
+    (action) => isWorkflowAppendAction(action) || isWorkflowBranchBundleAction(action),
+  ).length;
   if (
     (workflow.stepAppends?.length ?? 0) + appendActionCount >
     workflow.appendPolicy.maxStepAppends
@@ -1046,7 +1343,7 @@ export function validateWorkflowDecisionActionsForResult(
     return;
   }
 
-  const appendPlans = getDecisionAppendActionPlans(actions, resultId, lane.stageId);
+  const appendPlans = getDecisionAppendActionPlans(actions, workflow, resultId, lane.stageId);
   validateDecisionAppendActionPlans(workflow, appendPlans);
 
   const terminalAction = actions[actions.length - 1];
@@ -1104,6 +1401,149 @@ function skipWorkflowPendingStages(
   }
 
   return workflow;
+}
+
+interface CloseOutCoordinatorWorkflowWorkOptions {
+  blockedReason: string;
+  exhaustedBudgetDimension?: CoordinatorWorkflowBudgetDimension;
+  journalKind: string;
+  journalMessage: string;
+  laneFailure: string;
+  now: number;
+}
+
+function closeOutCoordinatorWorkflowWork(
+  runId: string,
+  workflowId: string,
+  options: CloseOutCoordinatorWorkflowWorkOptions,
+): CoordinatorWorkflowSnapshot {
+  cancelCoordinatorWorkflowPendingApprovals(runId, workflowId, {
+    now: options.now,
+    reason: options.laneFailure,
+  });
+  const workflow = getWorkflowOrThrow(runId, workflowId);
+  for (const lane of workflow.lanes) {
+    if (isCoordinatorTerminalWorkflowLaneStatus(lane.status)) {
+      continue;
+    }
+    if (lane.taskId !== undefined) {
+      cancelCoordinatorPromptsForTask(runId, lane.taskId, options.journalKind);
+    }
+    updateCoordinatorWorkflowLane(runId, workflowId, lane.id, {
+      completedAt: options.now,
+      failure: options.laneFailure,
+      now: options.now,
+      status: 'cancelled',
+    });
+  }
+
+  skipWorkflowPendingStages(runId, workflowId, options.laneFailure, options.now);
+  appendCoordinatorWorkflowJournal(runId, workflowId, {
+    at: options.now,
+    kind: options.journalKind,
+    message: options.journalMessage,
+  });
+  const latest = getWorkflowOrThrow(runId, workflowId);
+  const execution: CoordinatorWorkflowExecutionSnapshot = {
+    ...createExecutionSnapshot(latest, options.now),
+    blockedReason: options.blockedReason,
+    pendingRetryLaneIds: [],
+    readyStageIds: [],
+  };
+  if (options.exhaustedBudgetDimension !== undefined && execution.budget !== undefined) {
+    execution.budget = { ...execution.budget, exhausted: options.exhaustedBudgetDimension };
+  }
+
+  return updateCoordinatorWorkflow(runId, workflowId, {
+    completedAt: options.now,
+    execution,
+    now: options.now,
+    status: 'blocked',
+  });
+}
+
+export function tripCoordinatorWorkflowBudget(
+  runId: string,
+  workflowId: string,
+  dimension: CoordinatorWorkflowBudgetDimension,
+  usage: CoordinatorWorkflowBudgetUsageSnapshot,
+  now: number,
+): CoordinatorWorkflowSnapshot {
+  const blockedReason = formatCoordinatorWorkflowBudgetExhaustedReason(dimension, usage);
+  return closeOutCoordinatorWorkflowWork(runId, workflowId, {
+    blockedReason,
+    exhaustedBudgetDimension: dimension,
+    journalKind: 'workflow-budget-exhausted',
+    journalMessage: `Budget exhausted: ${dimension} (${usage.used}/${usage.limit}). Cancelled active lanes and skipped pending stages.`,
+    laneFailure: blockedReason,
+    now,
+  });
+}
+
+export function isWorkflowPastDeadline(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'execution'>,
+  now: number,
+): boolean {
+  return workflow.execution?.deadlineAt !== undefined && workflow.execution.deadlineAt <= now;
+}
+
+function getWorkflowWallClockExhaustedUsage(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'policy'>,
+): CoordinatorWorkflowBudgetUsageSnapshot {
+  const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
+  return { limit: limits.maxWallClockMs, used: limits.maxWallClockMs };
+}
+
+/**
+ * One wall-clock admission authority for mutation seams. With `tripUnlessCompleted`, a workflow
+ * that already finished its work before the deadline is rejected without tripping so the terminal
+ * completion is never rewritten to blocked.
+ */
+export function assertWorkflowWithinDeadline(
+  workflow: CoordinatorWorkflowSnapshot,
+  now: number,
+  options: { tripUnlessCompleted?: boolean } = {},
+): void {
+  if (!isWorkflowPastDeadline(workflow, now)) {
+    return;
+  }
+
+  const usage = getWorkflowWallClockExhaustedUsage(workflow);
+  if (options.tripUnlessCompleted === true && workflow.status !== 'completed') {
+    tripCoordinatorWorkflowBudget(workflow.runId, workflow.id, 'wall-clock', usage, now);
+  }
+  throw new BadRequestError(formatCoordinatorWorkflowBudgetExhaustedReason('wall-clock', usage));
+}
+
+function assertWorkflowStepAppendCapacity(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'appendPolicy' | 'stepAppends'>,
+  label: string,
+): void {
+  if ((workflow.stepAppends?.length ?? 0) >= workflow.appendPolicy.maxStepAppends) {
+    throw new BadRequestError(
+      `${label} would exceed append limit ${workflow.appendPolicy.maxStepAppends}`,
+    );
+  }
+}
+
+export function assertWorkflowBudgetAdmits(
+  workflow: CoordinatorWorkflowSnapshot,
+  options: { addedLanes: number; addedSteps?: number; label: string },
+): void {
+  const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
+  if (
+    options.addedSteps !== undefined &&
+    (workflow.sourceSpec?.steps.length ?? 0) + options.addedSteps > limits.maxTotalSteps
+  ) {
+    throw new BadRequestError(
+      `${options.label} would exceed workflow step budget ${limits.maxTotalSteps}`,
+    );
+  }
+  if (getCommittedWorkflowLaneCount(workflow) + options.addedLanes > limits.maxTotalLanes) {
+    throw new BadRequestError(
+      `${options.label} would exceed workflow lane limit ${limits.maxTotalLanes}`,
+    );
+  }
 }
 
 function blockWorkflowFromDecisionAction(
@@ -1193,31 +1633,40 @@ async function applyDecisionWorkflowActions(
   const now = options.result.createdAt;
   const appendPlans = getDecisionAppendActionPlans(
     actions,
+    workflow,
     options.result.id,
     options.lane.stageId,
   );
   const expansionActions: CoordinatorWorkflowExpansionActionSnapshot[] = [];
   if (appendPlans.length > 0) {
+    const appendedSteps = appendPlans.flatMap((plan) => plan.steps);
     const appendResult = await appendCoordinatorWorkflowExecutionSteps({
       appendId: `${options.result.id}:workflow-actions`,
       reason: createDecisionAppendBatchReason(
         options.lane.name,
-        appendPlans.map((plan) => plan.step.id),
+        appendedSteps.map((step) => step.id),
       ),
       runId: options.runId,
       sourceLaneId: options.lane.id,
       sourceTaskId: options.sourceTaskId,
       spawnLane: options.spawnLane,
-      steps: appendPlans.map((plan) => plan.step),
+      steps: appendedSteps,
       workflowId: options.workflowId,
     });
     workflow = appendResult.workflow;
     for (const plan of appendPlans) {
+      const stepIds = plan.steps.map((step) => step.id);
       expansionActions.push({
         actionId: plan.actionId,
+        ...(plan.branchKey !== undefined ? { branchKey: plan.branchKey } : {}),
+        ...(plan.bundleId !== undefined ? { bundleId: plan.bundleId } : {}),
+        ...(plan.iteration !== undefined ? { iteration: plan.iteration } : {}),
         kind: plan.kind,
-        reason: createDecisionAppendReason(options.lane.name, plan.step.id),
-        stepIds: [plan.step.id],
+        reason:
+          stepIds.length === 1
+            ? createDecisionAppendReason(options.lane.name, stepIds[0] ?? 'step')
+            : createDecisionAppendBatchReason(options.lane.name, stepIds),
+        stepIds,
       });
     }
   } else {
@@ -1267,13 +1716,47 @@ async function applyDecisionWorkflowActions(
   return workflow;
 }
 
+export function getWorkflowLaneStatusForResultStatus(
+  status: CoordinatorWorkflowResultStatus,
+): CoordinatorWorkflowSnapshot['lanes'][number]['status'] {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'blocked':
+    case 'needs-followup':
+      return 'blocked';
+    case 'failed':
+      return 'failed';
+  }
+}
+
+export function hasPendingWorkflowApprovalForLane(
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'pendingApprovals'>,
+  laneId: string,
+): boolean {
+  return (workflow.pendingApprovals ?? []).some(
+    (approval) => approval.laneId === laneId && approval.status === 'pending',
+  );
+}
+
+function isSupersededResumeReplacedLane(
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+): boolean {
+  return lane.status === 'cancelled' && lane.supersededByLaneId !== undefined;
+}
+
 function getCompletedStageStatus(
   workflow: CoordinatorWorkflowSnapshot,
   stageId: string,
 ): CoordinatorWorkflowSnapshot['stages'][number]['status'] {
+  const stage = getStage(workflow, stageId);
+  const step = getStep(workflow, stageId);
   const lanes = getStageLanes(workflow, stageId);
   const stagePolicy = getStageExecutionPolicy(workflow, stageId);
-  const hasCancelledLane = lanes.some((lane) => lane.status === 'cancelled');
+  const dependencySatisfied = isCoordinatorWorkflowStageDependencySatisfied(workflow, stage, step);
+  const hasCancelledLane = lanes.some(
+    (lane) => lane.status === 'cancelled' && !isSupersededResumeReplacedLane(lane),
+  );
   const hasHardFailure = lanes.some(
     (lane) =>
       lane.status === 'failed' ||
@@ -1281,10 +1764,15 @@ function getCompletedStageStatus(
       lane.status === 'stale-after-restore',
   );
   const hasBlockedLane = lanes.some(
-    (lane) => lane.status === 'blocked' || lane.status === 'cancelled',
+    (lane) =>
+      lane.status === 'blocked' ||
+      (lane.status === 'cancelled' && !isSupersededResumeReplacedLane(lane)),
   );
   const resultCount = lanes.filter((lane) => lane.resultId !== undefined).length;
-  const requiredResultCount = getRequiredStageResultCount(workflow, stageId);
+  const requiredResultCount = getCoordinatorWorkflowStageRequiredResultCount(step);
+  if (dependencySatisfied) {
+    return 'completed';
+  }
   if (hasCancelledLane) {
     return 'cancelled';
   }
@@ -1304,16 +1792,15 @@ function getCompletedStageStatus(
   return 'completed';
 }
 
-function getRequiredStageResultCount(
+function isStageDependencySatisfied(
   workflow: CoordinatorWorkflowSnapshot,
   stageId: string,
-): number {
-  const step = getStep(workflow, stageId);
-  if (step?.kind === 'verify' && step.minimumVerifierCount !== undefined) {
-    return step.minimumVerifierCount;
-  }
-
-  return 1;
+): boolean {
+  return isCoordinatorWorkflowStageDependencySatisfied(
+    workflow,
+    getStage(workflow, stageId),
+    getStep(workflow, stageId),
+  );
 }
 
 function getCompletedWorkflowStatus(
@@ -1344,8 +1831,7 @@ function isStageReady(
   }
 
   return stage.dependsOn.every((dependencyId) => {
-    const dependency = workflow.stages.find((candidate) => candidate.id === dependencyId);
-    return dependency?.status === 'completed';
+    return isStageDependencySatisfied(workflow, dependencyId);
   });
 }
 
@@ -1371,9 +1857,16 @@ function createExecutionSnapshot(
   const timedOutLaneCount = workflow.lanes.filter((lane) => lane.status === 'timed-out').length;
   return {
     activeLaneCount,
+    ...(workflow.execution?.blockedReason !== undefined
+      ? { blockedReason: workflow.execution.blockedReason }
+      : {}),
+    budget: createCoordinatorWorkflowBudgetSnapshot(workflow),
     completedStageCount,
     ...(workflow.execution?.completionReason !== undefined
       ? { completionReason: workflow.execution.completionReason }
+      : {}),
+    ...(workflow.execution?.deadlineAt !== undefined
+      ? { deadlineAt: workflow.execution.deadlineAt }
       : {}),
     expansionCount: workflow.expansions?.length ?? 0,
     failedLaneCount,
@@ -1383,8 +1876,7 @@ function createExecutionSnapshot(
     pendingRetryLaneIds: retryState.pendingLaneIds.filter((laneId) => {
       const lane = workflow.lanes.find((candidate) => candidate.id === laneId);
       return (
-        lane !== undefined &&
-        !laneDedupeKeys.has(`${lane.dedupeKey ?? lane.id}:retry:${lane.attempt + 1}`)
+        lane !== undefined && !laneDedupeKeys.has(getCoordinatorWorkflowLaneRetryDedupeKey(lane))
       );
     }),
     retryableLaneCount: retryState.pendingLaneIds.length,
@@ -1425,14 +1917,10 @@ function findRetryPayload(
     agent: basePayload?.agent ?? { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
     assignment: lane.assignment,
     attempt: nextAttempt,
-    dedupeKey: `${lane.dedupeKey ?? lane.id}:retry:${nextAttempt}`,
+    dedupeKey: getCoordinatorWorkflowLaneRetryDedupeKey(lane),
     name: lane.name,
     ...(lane.role !== undefined ? { role: lane.role } : {}),
   };
-}
-
-function getLaneRetryDedupeKey(lane: CoordinatorWorkflowSnapshot['lanes'][number]): string {
-  return `${lane.dedupeKey ?? lane.id}:retry:${lane.attempt + 1}`;
 }
 
 function getLaneRetryReadyAt(
@@ -1442,14 +1930,11 @@ function getLaneRetryReadyAt(
   return (lane.completedAt ?? lane.updatedAt) + stagePolicy.retryBackoffMs;
 }
 
-function canRetryLane(
+function isLaneRetryEligible(
   workflow: CoordinatorWorkflowSnapshot,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
 ): boolean {
   if ((lane.status !== 'failed' && lane.status !== 'timed-out') || lane.resultId !== undefined) {
-    return false;
-  }
-  if (workflow.lanes.length >= COORDINATOR_LIMITS.maxWorkflowLanes) {
     return false;
   }
 
@@ -1457,12 +1942,44 @@ function canRetryLane(
   return lane.attempt <= stagePolicy.retryCount;
 }
 
+interface WorkflowRetryBudgetContext {
+  committedLaneCount: number;
+  limits: CoordinatorWorkflowBudgetLimits;
+  retriesUsed: number;
+}
+
+function createWorkflowRetryBudgetContext(
+  workflow: CoordinatorWorkflowSnapshot,
+): WorkflowRetryBudgetContext {
+  return {
+    committedLaneCount: getCommittedWorkflowLaneCount(workflow),
+    limits: getCoordinatorWorkflowBudgetLimits(workflow.policy),
+    retriesUsed: countCoordinatorWorkflowRetriesUsed(workflow),
+  };
+}
+
+function canRetryLane(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  context: WorkflowRetryBudgetContext,
+): boolean {
+  if (!isLaneRetryEligible(workflow, lane)) {
+    return false;
+  }
+  if (context.committedLaneCount >= context.limits.maxTotalLanes) {
+    return false;
+  }
+
+  return context.retriesUsed < context.limits.maxTotalRetries;
+}
+
 function hasPendingRetryableLane(
   workflow: CoordinatorWorkflowSnapshot,
   lanes: Array<CoordinatorWorkflowSnapshot['lanes'][number]>,
 ): boolean {
+  const context = createWorkflowRetryBudgetContext(workflow);
   return lanes.some(
-    (lane) => canRetryLane(workflow, lane) && !hasScheduledRetryLane(workflow, lane),
+    (lane) => canRetryLane(workflow, lane, context) && !hasScheduledRetryLane(workflow, lane),
   );
 }
 
@@ -1470,8 +1987,7 @@ function hasScheduledRetryLane(
   workflow: CoordinatorWorkflowSnapshot,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
 ): boolean {
-  const retryDedupeKey = getLaneRetryDedupeKey(lane);
-  return workflow.lanes.some((candidate) => candidate.dedupeKey === retryDedupeKey);
+  return hasScheduledCoordinatorWorkflowLaneRetry(workflow, lane);
 }
 
 function getWorkflowRetryState(
@@ -1483,8 +1999,9 @@ function getWorkflowRetryState(
 } {
   let nextRetryAt: number | undefined;
   const pendingLaneIds: string[] = [];
+  const context = createWorkflowRetryBudgetContext(workflow);
   for (const lane of workflow.lanes) {
-    if (!canRetryLane(workflow, lane) || hasScheduledRetryLane(workflow, lane)) {
+    if (!canRetryLane(workflow, lane, context) || hasScheduledRetryLane(workflow, lane)) {
       continue;
     }
 
@@ -1502,27 +2019,71 @@ function getWorkflowRetryState(
   };
 }
 
+function journalWorkflowRetryBudgetExhausted(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  usage: CoordinatorWorkflowBudgetUsageSnapshot,
+  now: number,
+): void {
+  appendCoordinatorWorkflowJournal(workflow.runId, workflow.id, {
+    at: now,
+    kind: 'workflow-budget-exhausted',
+    laneId: lane.id,
+    message: `Budget exhausted: retries (${usage.used}/${usage.limit}). Retry for lane ${lane.name} was not admitted.`,
+    stageId: lane.stageId,
+  });
+  // The once-marker dedupes this journal entry across reconciles without re-reading the journal.
+  const latest = getWorkflowOrThrow(workflow.runId, workflow.id);
+  const execution = latest.execution ?? createExecutionSnapshot(latest, now);
+  updateCoordinatorWorkflow(workflow.runId, workflow.id, {
+    execution: {
+      ...execution,
+      budget: {
+        ...(execution.budget ?? createCoordinatorWorkflowBudgetSnapshot(latest)),
+        retriesExhaustedAt: now,
+      },
+    },
+    now,
+  });
+}
+
 async function scheduleLaneRetries(
   options: ReconcileWorkflowOptions,
   workflow: CoordinatorWorkflowSnapshot,
 ): Promise<WorkflowSpawnedLane[]> {
   const spawned: WorkflowSpawnedLane[] = [];
   const now = getNow(options.now);
+  const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
   let activeLaneCount = getActiveLaneCount(workflow);
+  let committedLaneCount = getCommittedWorkflowLaneCount(workflow);
+  let retriesUsed = countCoordinatorWorkflowRetriesUsed(workflow);
+  let retryBudgetExhaustedJournaled = workflow.execution?.budget?.retriesExhaustedAt !== undefined;
   for (const lane of workflow.lanes) {
-    if (!canRetryLane(workflow, lane) || hasScheduledRetryLane(workflow, lane)) {
+    if (!isLaneRetryEligible(workflow, lane) || hasScheduledRetryLane(workflow, lane)) {
       continue;
     }
 
     if (activeLaneCount >= workflow.policy.maxConcurrentLanes) {
       continue;
     }
-    if (workflow.lanes.length + spawned.length >= COORDINATOR_LIMITS.maxWorkflowLanes) {
+    if (committedLaneCount >= limits.maxTotalLanes) {
       continue;
     }
 
     const retryReadyAt = getLaneRetryReadyAt(lane, getStageExecutionPolicy(workflow, lane.stageId));
     if (retryReadyAt > now) {
+      continue;
+    }
+    if (retriesUsed >= limits.maxTotalRetries) {
+      if (!retryBudgetExhaustedJournaled) {
+        journalWorkflowRetryBudgetExhausted(
+          workflow,
+          lane,
+          { limit: limits.maxTotalRetries, used: retriesUsed },
+          now,
+        );
+        retryBudgetExhaustedJournaled = true;
+      }
       continue;
     }
 
@@ -1538,6 +2099,8 @@ async function scheduleLaneRetries(
       findRetryPayload(workflow, lane),
     );
     activeLaneCount += result.error === undefined ? 1 : 0;
+    committedLaneCount += 1;
+    retriesUsed += 1;
     spawned.push(result);
   }
 
@@ -1557,16 +2120,21 @@ async function spawnReadyStages(
     }
 
     const lanePayloads = createStageLanePayloads(latestWorkflow, latestStage.id);
-    if (latestWorkflow.lanes.length + lanePayloads.length > COORDINATOR_LIMITS.maxWorkflowLanes) {
-      updateCoordinatorWorkflowStage(latestWorkflow.runId, latestWorkflow.id, latestStage.id, {
-        completedAt: Date.now(),
-        failure: `Workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes} reached.`,
-        status: 'failed',
-      });
-      updateCoordinatorWorkflow(latestWorkflow.runId, latestWorkflow.id, {
-        completedAt: Date.now(),
-        status: 'failed',
-      });
+    const limits = getCoordinatorWorkflowBudgetLimits(latestWorkflow.policy);
+    const committedLaneCountExcludingStage =
+      getCommittedWorkflowLaneCount(latestWorkflow) -
+      countStepLanes(getStep(latestWorkflow, latestStage.id));
+    if (committedLaneCountExcludingStage + lanePayloads.length > limits.maxTotalLanes) {
+      tripCoordinatorWorkflowBudget(
+        latestWorkflow.runId,
+        latestWorkflow.id,
+        'lanes',
+        {
+          limit: limits.maxTotalLanes,
+          used: committedLaneCountExcludingStage + lanePayloads.length,
+        },
+        getNow(options.now),
+      );
       break;
     }
     let activeLaneCount = getActiveLaneCount(latestWorkflow);
@@ -1643,13 +2211,7 @@ function completeTerminalStages(
 
 function completeWorkflowIfDone(runId: string, workflowId: string): CoordinatorWorkflowSnapshot {
   const workflow = getWorkflowOrThrow(runId, workflowId);
-  if (
-    workflow.status === 'cancelled' ||
-    workflow.status === 'failed' ||
-    workflow.status === 'blocked' ||
-    workflow.status === 'completed' ||
-    workflow.status === 'stale-after-restore'
-  ) {
+  if (isCoordinatorTerminalWorkflowStatus(workflow.status)) {
     return workflow;
   }
   if (
@@ -1677,17 +2239,27 @@ async function reconcileCoordinatorWorkflowExecution(
   const spawned: WorkflowSpawnedLane[] = [];
   const now = getNow(options.now);
   let workflow = getWorkflowOrThrow(options.runId, options.workflowId);
-  if (workflow.status === 'stale-after-restore' || workflow.status === 'cancelled') {
+  // Blocked workflows are terminal (budget trips and decision blocks). Reconciling one again
+  // would let completeTerminalStages reinterpret the tripped stage's cancelled lanes and rewrite
+  // the typed blocked close-out, so it must stay a no-op.
+  if (
+    workflow.status === 'stale-after-restore' ||
+    workflow.status === 'cancelled' ||
+    workflow.status === 'blocked'
+  ) {
     return { lanes: spawned, workflow };
   }
 
+  // A paused run stops admitting new work: no retry spawns and no ready-stage spawns, while
+  // in-flight lanes still settle through completeTerminalStages/completeWorkflowIfDone.
+  const runPaused = !coordinatorRunAdmitsNewWork(getCoordinatorRunStatus(options.runId));
   for (let iteration = 0; iteration < COORDINATOR_LIMITS.maxWorkflowLanes + 2; iteration += 1) {
-    const retryLanes = await scheduleLaneRetries(options, workflow);
+    const retryLanes = runPaused ? [] : await scheduleLaneRetries(options, workflow);
     spawned.push(...retryLanes);
     workflow = getWorkflowOrThrow(options.runId, options.workflowId);
     const terminalResult = completeTerminalStages(options.runId, options.workflowId);
     workflow = terminalResult.workflow;
-    const readyLanes = await spawnReadyStages(options, workflow);
+    const readyLanes = runPaused ? [] : await spawnReadyStages(options, workflow);
     spawned.push(...readyLanes);
     workflow = completeWorkflowIfDone(options.runId, options.workflowId);
     if (!terminalResult.changed && retryLanes.length === 0 && readyLanes.length === 0) {
@@ -1710,10 +2282,16 @@ export async function startCoordinatorWorkflowExecution(
     options.spec !== undefined
       ? readSpec(options.spec, options)
       : createTemplateWorkflowSpec(options);
-  const totalLaneCount = countWorkflowSpecLanes(sourceSpec);
-  if (totalLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
+  const budgetLimits = getCoordinatorWorkflowBudgetLimits(options.policy);
+  if (sourceSpec.steps.length > budgetLimits.maxTotalSteps) {
     throw new BadRequestError(
-      `workflow spec creates ${totalLaneCount} lanes, above limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+      `workflow spec creates ${sourceSpec.steps.length} steps, above limit ${budgetLimits.maxTotalSteps}`,
+    );
+  }
+  const totalLaneCount = countCoordinatorWorkflowSpecLanes(sourceSpec.steps);
+  if (totalLaneCount > budgetLimits.maxTotalLanes) {
+    throw new BadRequestError(
+      `workflow spec creates ${totalLaneCount} lanes, above limit ${budgetLimits.maxTotalLanes}`,
     );
   }
 
@@ -1732,6 +2310,7 @@ export async function startCoordinatorWorkflowExecution(
   const workflow = createCoordinatorWorkflow({
     execution: {
       activeLaneCount: 0,
+      deadlineAt: now + budgetLimits.maxWallClockMs,
       lastTickAt: now,
       pendingRetryLaneIds: [],
       readyStageIds: sourceSpec.steps
@@ -1786,11 +2365,7 @@ export async function appendCoordinatorWorkflowExecutionSteps(
   if (workflow.sourceSpec === undefined) {
     throw new BadRequestError('append_workflow_steps requires a sourceSpec-backed workflow');
   }
-  if ((workflow.stepAppends?.length ?? 0) >= workflow.appendPolicy.maxStepAppends) {
-    throw new BadRequestError(
-      `append_workflow_steps would exceed append limit ${workflow.appendPolicy.maxStepAppends}`,
-    );
-  }
+  assertWorkflowStepAppendCapacity(workflow, 'append_workflow_steps');
 
   let normalizedAppend: CoordinatorWorkflowStepAppendNormalizationResult;
   try {
@@ -1806,15 +2381,12 @@ export async function appendCoordinatorWorkflowExecutionSteps(
   }
   const appendedSteps = normalizedAppend.appendedSteps;
 
-  const appendedLaneCount = countWorkflowSpecLanes({
-    steps: appendedSteps,
-    version: COORDINATOR_WORKFLOW_SPEC_VERSION,
+  assertWorkflowWithinDeadline(workflow, Date.now(), { tripUnlessCompleted: true });
+  assertWorkflowBudgetAdmits(workflow, {
+    addedLanes: countCoordinatorWorkflowSpecLanes(appendedSteps),
+    addedSteps: appendedSteps.length,
+    label: 'append_workflow_steps',
   });
-  if (workflow.lanes.length + appendedLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
-    throw new BadRequestError(
-      `append_workflow_steps would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
-    );
-  }
 
   const maxAppendedStageLaneCount = appendedSteps.reduce(
     (count, step) => Math.max(count, countStepLanes(step)),
@@ -1882,19 +2454,254 @@ export async function advanceCoordinatorWorkflowExecution(
       spawnLane: options.spawnLane,
       workflowId: options.workflowId,
     });
-    if (
-      workflow.status === 'blocked' ||
-      workflow.status === 'cancelled' ||
-      workflow.status === 'completed' ||
-      workflow.status === 'failed' ||
-      workflow.status === 'stale-after-restore'
-    ) {
+    if (isCoordinatorTerminalWorkflowStatus(workflow.status)) {
       return workflow;
     }
   }
 
   const result = await reconcileCoordinatorWorkflowExecution(options);
   return result.workflow;
+}
+
+export function recordPendingWorkflowApproval(
+  options: RecordPendingWorkflowApprovalOptions,
+): CoordinatorWorkflowPendingApprovalSnapshot {
+  const now = getNow(options.now);
+  const workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  const lane = workflow.lanes.find((candidate) => candidate.id === options.laneId);
+  if (!lane) {
+    throw new BadRequestError('Coordinator workflow lane not found');
+  }
+
+  const approval = addCoordinatorWorkflowPendingApproval({
+    actions: options.actions,
+    id: `${options.resultId}:approval`,
+    laneId: options.laneId,
+    now,
+    resultId: options.resultId,
+    runId: options.runId,
+    stageId: options.stageId,
+    workflowId: options.workflowId,
+  });
+  // The decision lane stays open without a resultId while the approval is pending, so stage
+  // completion and every join mode keep dependents blocked. Its timeout is cleared because the
+  // lane now waits on the operator, not on an agent.
+  updateCoordinatorWorkflowLane(options.runId, options.workflowId, options.laneId, {
+    now,
+    timeoutAt: undefined,
+  });
+  appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+    at: now,
+    kind: 'decision-approval-requested',
+    laneId: options.laneId,
+    message: `Decision lane ${lane.name} requested approval for ${options.actions.length} workflow action(s).`,
+    resultId: options.resultId,
+    stageId: options.stageId,
+  });
+  refreshExecutionSnapshot(options.runId, options.workflowId, now);
+  return approval;
+}
+
+function requireWorkflowApprovalContext(
+  runId: string,
+  workflowId: string,
+  approvalId: string,
+): {
+  approval: CoordinatorWorkflowPendingApprovalSnapshot;
+  lane: CoordinatorWorkflowSnapshot['lanes'][number];
+  result: CoordinatorWorkflowResultSnapshot;
+  workflow: CoordinatorWorkflowSnapshot;
+} {
+  const workflow = getWorkflowOrThrow(runId, workflowId);
+  const approval = (workflow.pendingApprovals ?? []).find(
+    (candidate) => candidate.id === approvalId,
+  );
+  if (!approval) {
+    throw new BadRequestError('Coordinator workflow approval not found');
+  }
+  const lane = workflow.lanes.find((candidate) => candidate.id === approval.laneId);
+  if (!lane) {
+    throw new BadRequestError('Coordinator workflow lane not found');
+  }
+  const result = workflow.results.find((candidate) => candidate.id === approval.resultId);
+  if (!result) {
+    throw new BadRequestError('Coordinator workflow result not found');
+  }
+
+  return { approval, lane, result, workflow };
+}
+
+function assertWorkflowAcceptsOperatorMutation(workflow: CoordinatorWorkflowSnapshot): void {
+  if (workflow.status !== 'running' && workflow.status !== 'waiting-for-results') {
+    throw new BadRequestError(`Coordinator workflow is ${workflow.status}`);
+  }
+}
+
+export async function approveCoordinatorWorkflowActions(
+  options: ApproveCoordinatorWorkflowActionsOptions,
+): Promise<CoordinatorWorkflowApprovalResolutionResult> {
+  const now = getNow(options.now);
+  const { approval, lane, result, workflow } = requireWorkflowApprovalContext(
+    options.runId,
+    options.workflowId,
+    options.approvalId,
+  );
+  if (approval.status === 'approved') {
+    return { approval, workflow };
+  }
+  if (approval.status !== 'pending') {
+    throw new BadRequestError(`Coordinator workflow approval is ${approval.status}`);
+  }
+  assertWorkflowAcceptsOperatorMutation(workflow);
+  // Budgets and caps may have changed since the approval was requested, so the stored actions are
+  // re-validated against the current graph before any state changes. A failed re-validation
+  // leaves the approval pending; deny stays the operator escape hatch.
+  validateWorkflowDecisionActionsForResult(workflow, lane, approval.resultId, approval.actions);
+
+  updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+    completedAt: now,
+    now,
+    resultId: result.id,
+    status: getWorkflowLaneStatusForResultStatus(result.status),
+  });
+  const resolved = resolveCoordinatorWorkflowPendingApproval(
+    options.runId,
+    options.workflowId,
+    approval.id,
+    'approved',
+    { now },
+  );
+  appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+    at: now,
+    kind: 'decision-approval-approved',
+    laneId: lane.id,
+    message: `Approved ${approval.actions.length} workflow action(s) from lane ${lane.name}.`,
+    resultId: result.id,
+    stageId: lane.stageId,
+  });
+  const applied = await applyDecisionWorkflowActions(approval.actions, {
+    lane,
+    result,
+    runId: options.runId,
+    sourceTaskId: result.taskId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+  if (isCoordinatorTerminalWorkflowStatus(applied.status)) {
+    return { approval: resolved, workflow: applied };
+  }
+
+  const reconciled = await reconcileCoordinatorWorkflowExecution({
+    now,
+    runId: options.runId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+  return { approval: resolved, workflow: reconciled.workflow };
+}
+
+export async function denyCoordinatorWorkflowActions(
+  options: DenyCoordinatorWorkflowActionsOptions,
+): Promise<CoordinatorWorkflowApprovalResolutionResult> {
+  const now = getNow(options.now);
+  const { approval, lane, result, workflow } = requireWorkflowApprovalContext(
+    options.runId,
+    options.workflowId,
+    options.approvalId,
+  );
+  if (approval.status === 'denied') {
+    return { approval, workflow };
+  }
+  if (approval.status !== 'pending') {
+    throw new BadRequestError(`Coordinator workflow approval is ${approval.status}`);
+  }
+  assertWorkflowAcceptsOperatorMutation(workflow);
+
+  updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+    completedAt: now,
+    now,
+    resultId: result.id,
+    status: getWorkflowLaneStatusForResultStatus(result.status),
+  });
+  const resolved = resolveCoordinatorWorkflowPendingApproval(
+    options.runId,
+    options.workflowId,
+    approval.id,
+    'denied',
+    { now, ...(options.reason !== undefined ? { reason: options.reason } : {}) },
+  );
+  appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+    at: now,
+    kind: 'decision-approval-denied',
+    laneId: lane.id,
+    message:
+      options.reason !== undefined
+        ? `Denied workflow action(s) from lane ${lane.name}: ${options.reason}`
+        : `Denied workflow action(s) from lane ${lane.name}.`,
+    resultId: result.id,
+    stageId: lane.stageId,
+  });
+  const reconciled = await reconcileCoordinatorWorkflowExecution({
+    now,
+    runId: options.runId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+  return { approval: resolved, workflow: reconciled.workflow };
+}
+
+export async function retryCoordinatorWorkflowLaneFromOperator(
+  options: RetryCoordinatorWorkflowLaneFromOperatorOptions,
+): Promise<{ lane: WorkflowSpawnedLane; workflow: CoordinatorWorkflowSnapshot }> {
+  const now = getNow(options.now);
+  const workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  assertWorkflowAcceptsOperatorMutation(workflow);
+  const lane = workflow.lanes.find((candidate) => candidate.id === options.laneId);
+  if (!lane) {
+    throw new BadRequestError('Coordinator workflow lane not found');
+  }
+  if ((lane.status !== 'failed' && lane.status !== 'timed-out') || lane.resultId !== undefined) {
+    throw new BadRequestError(
+      'retry_lane requires a failed or timed-out lane without a terminal result',
+    );
+  }
+  if (hasScheduledRetryLane(workflow, lane)) {
+    throw new BadRequestError('Lane retry was already scheduled');
+  }
+  // Manual retry is exempt from the auto-retry budget and per-stage retryCount, but it stays
+  // inside the same effective lane caps as every other admission site.
+  const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
+  const committedLaneCount = getCommittedWorkflowLaneCount(workflow);
+  if (committedLaneCount >= limits.maxTotalLanes) {
+    throw new BadRequestError(
+      formatCoordinatorWorkflowBudgetExhaustedReason('lanes', {
+        limit: limits.maxTotalLanes,
+        used: committedLaneCount,
+      }),
+    );
+  }
+  if (getActiveLaneCount(workflow) >= workflow.policy.maxConcurrentLanes) {
+    throw new BadRequestError('Workflow maxConcurrentLanes reached.');
+  }
+
+  appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+    at: now,
+    kind: 'lane-manual-retry',
+    laneId: lane.id,
+    message: `Operator retried lane ${lane.name}, attempt ${lane.attempt + 1}.`,
+    stageId: lane.stageId,
+  });
+  const spawned = await options.spawnLane(workflow, lane.stageId, {
+    ...findRetryPayload(workflow, lane),
+    spawnedBy: 'operator',
+  });
+  const reconciled = await reconcileCoordinatorWorkflowExecution({
+    now,
+    runId: options.runId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+  return { lane: spawned, workflow: reconciled.workflow };
 }
 
 export function normalizeWorkflowFindingsForResult(
@@ -1987,11 +2794,279 @@ export function recordWorkflowVerdictsFromResult(
   });
 }
 
+function refreshWorkflowExecutionClocksOnResume(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+  now: number,
+): { timeoutAt: number } {
+  return { timeoutAt: now + getStageExecutionPolicy(workflow, lane.stageId).timeoutMs };
+}
+
+function refreshWorkflowExecutionDeadlineOnResume(
+  workflow: CoordinatorWorkflowSnapshot,
+  now: number,
+): number {
+  const deadlineAt = workflow.execution?.deadlineAt;
+  if (deadlineAt === undefined) {
+    return now + getCoordinatorWorkflowBudgetLimits(workflow.policy).maxWallClockMs;
+  }
+
+  return deadlineAt + Math.max(0, now - workflow.updatedAt);
+}
+
+function getLaneResumeReplacementDedupeKey(
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+): string {
+  return `${lane.dedupeKey ?? lane.id}:resume:${lane.attempt + 1}`;
+}
+
+function findResumeReplacementPayload(
+  workflow: CoordinatorWorkflowSnapshot,
+  lane: CoordinatorWorkflowSnapshot['lanes'][number],
+): CoordinatorSpawnManyLanePayload {
+  const basePayload = createStageLanePayloads(workflow, lane.stageId).find(
+    (payload) => payload.name === lane.name && payload.role === lane.role,
+  );
+  return {
+    agent: basePayload?.agent ?? { command: DEFAULT_WORKFLOW_AGENT_COMMAND },
+    assignment: lane.assignment,
+    attempt: lane.attempt + 1,
+    dedupeKey: getLaneResumeReplacementDedupeKey(lane),
+    name: lane.name,
+    ...(lane.role !== undefined ? { role: lane.role } : {}),
+    spawnedBy: 'resume',
+  };
+}
+
+export async function resumeCoordinatorWorkflowExecution(
+  options: ResumeCoordinatorWorkflowExecutionOptions,
+): Promise<ResumeCoordinatorWorkflowExecutionResult> {
+  const now = getNow(options.now);
+  let workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  if (workflow.status !== 'stale-after-restore') {
+    throw new BadRequestError(`Coordinator workflow is ${workflow.status}`);
+  }
+
+  updateCoordinatorWorkflow(options.runId, options.workflowId, {
+    ...(workflow.execution !== undefined
+      ? {
+          execution: {
+            ...workflow.execution,
+            deadlineAt: refreshWorkflowExecutionDeadlineOnResume(workflow, now),
+          },
+        }
+      : {}),
+    now,
+    status: 'running',
+  });
+  appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+    at: now,
+    kind: 'workflow-resumed',
+    message: 'Resumed workflow after server restart.',
+  });
+
+  const failed: ResumeCoordinatorWorkflowExecutionResult['failed'] = [];
+  const respawned: string[] = [];
+  const replacementLanes: Array<CoordinatorWorkflowSnapshot['lanes'][number]> = [];
+  const recordLaneRespawnFailure = (
+    lane: CoordinatorWorkflowSnapshot['lanes'][number],
+    reason: string,
+  ): void => {
+    updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+      completedAt: now,
+      failure: reason,
+      now,
+      status: 'failed',
+    });
+    appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+      at: now,
+      kind: 'lane-respawn-failed',
+      laneId: lane.id,
+      message: reason,
+      stageId: lane.stageId,
+    });
+  };
+  workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  for (const lane of workflow.lanes) {
+    if (lane.status !== 'stale-after-restore') {
+      continue;
+    }
+
+    if (lane.resultId !== undefined) {
+      updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+        ...(lane.completedAt === undefined ? { completedAt: now } : {}),
+        failure: undefined,
+        now,
+        status: 'completed',
+      });
+      continue;
+    }
+    const restoreCancelledApproval = (workflow.pendingApprovals ?? []).find(
+      (approval) =>
+        approval.laneId === lane.id &&
+        workflow.results.some((candidate) => candidate.id === approval.resultId),
+    );
+    if (restoreCancelledApproval !== undefined) {
+      // The decision lane already submitted its gated result before the restart; its pending
+      // approval was cancelled by restore. Resume must never replay the gated actions as a
+      // cached fact or silently discard them, so the lane re-enters its awaiting state with a
+      // re-recorded pending approval for the operator to resolve.
+      const approvalCountForResult = (workflow.pendingApprovals ?? []).filter(
+        (candidate) => candidate.resultId === restoreCancelledApproval.resultId,
+      ).length;
+      addCoordinatorWorkflowPendingApproval({
+        actions: restoreCancelledApproval.actions,
+        id: `${restoreCancelledApproval.resultId}:approval:${approvalCountForResult + 1}`,
+        laneId: lane.id,
+        now,
+        resultId: restoreCancelledApproval.resultId,
+        runId: options.runId,
+        stageId: lane.stageId,
+        workflowId: options.workflowId,
+      });
+      updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+        failure: undefined,
+        now,
+        status: 'waiting-for-result',
+        timeoutAt: undefined,
+      });
+      appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+        at: now,
+        kind: 'decision-approval-requested',
+        laneId: lane.id,
+        message: `Re-recorded pending approval for lane ${lane.name} after restore.`,
+        resultId: restoreCancelledApproval.resultId,
+        stageId: lane.stageId,
+      });
+      continue;
+    }
+    if (lane.taskId !== undefined) {
+      try {
+        const currentWorkflow = getWorkflowOrThrow(options.runId, options.workflowId);
+        const spawnedLane = await options.respawnLane(currentWorkflow, lane);
+        if (spawnedLane.error !== undefined) {
+          throw new Error(spawnedLane.error);
+        }
+        updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+          failure: undefined,
+          now,
+          status: 'waiting-for-result',
+          ...refreshWorkflowExecutionClocksOnResume(currentWorkflow, lane, now),
+        });
+        appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+          at: now,
+          kind: 'lane-respawned',
+          laneId: lane.id,
+          message: `Respawned lane ${lane.name} after server restart.`,
+          stageId: lane.stageId,
+        });
+        respawned.push(lane.taskId);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        recordLaneRespawnFailure(lane, reason);
+        failed.push({ laneId: lane.id, reason, taskId: lane.taskId });
+      }
+      continue;
+    }
+
+    replacementLanes.push(lane);
+  }
+
+  workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  for (const stage of workflow.stages) {
+    if (stage.status !== 'stale-after-restore') {
+      continue;
+    }
+
+    updateCoordinatorWorkflowStage(options.runId, options.workflowId, stage.id, {
+      failure: undefined,
+      now,
+      status: stage.laneIds.length === 0 ? 'pending' : 'waiting-for-results',
+    });
+  }
+
+  for (const lane of replacementLanes) {
+    const currentWorkflow = getWorkflowOrThrow(options.runId, options.workflowId);
+    const limits = getCoordinatorWorkflowBudgetLimits(currentWorkflow.policy);
+    if (getCommittedWorkflowLaneCount(currentWorkflow) >= limits.maxTotalLanes) {
+      const reason = `Workflow lane limit ${limits.maxTotalLanes} reached.`;
+      recordLaneRespawnFailure(lane, reason);
+      failed.push({ laneId: lane.id, reason });
+      continue;
+    }
+    if (getActiveLaneCount(currentWorkflow) >= currentWorkflow.policy.maxConcurrentLanes) {
+      const reason = 'Workflow maxConcurrentLanes reached.';
+      recordLaneRespawnFailure(lane, reason);
+      failed.push({ laneId: lane.id, reason });
+      continue;
+    }
+
+    const replacement = await options.spawnLane(
+      currentWorkflow,
+      lane.stageId,
+      findResumeReplacementPayload(currentWorkflow, lane),
+    );
+    if (replacement.error !== undefined) {
+      recordLaneRespawnFailure(lane, replacement.error);
+      failed.push({
+        laneId: replacement.laneId,
+        reason: replacement.error,
+        ...(replacement.subtask !== undefined ? { taskId: replacement.subtask.taskId } : {}),
+      });
+      continue;
+    }
+
+    updateCoordinatorWorkflowLane(options.runId, options.workflowId, lane.id, {
+      completedAt: now,
+      failure: 'Lane was never spawned before the server restarted.',
+      now,
+      status: 'cancelled',
+      supersededByLaneId: replacement.laneId,
+    });
+    appendCoordinatorWorkflowJournal(options.runId, options.workflowId, {
+      at: now,
+      kind: 'lane-cancelled',
+      laneId: lane.id,
+      message: `Cancelled never-spawned lane ${lane.name} during resume.`,
+      stageId: lane.stageId,
+    });
+    if (replacement.subtask !== undefined) {
+      respawned.push(replacement.subtask.taskId);
+    }
+  }
+
+  const reconciled = await reconcileCoordinatorWorkflowExecution({
+    now,
+    runId: options.runId,
+    spawnLane: options.spawnLane,
+    workflowId: options.workflowId,
+  });
+
+  return {
+    failed,
+    respawned,
+    workflow: reconciled.workflow,
+  };
+}
+
 export async function tickCoordinatorWorkflowExecution(
   options: TickCoordinatorWorkflowExecutionOptions,
 ): Promise<CoordinatorWorkflowSnapshot> {
   const now = getNow(options.now);
   let workflow = getWorkflowOrThrow(options.runId, options.workflowId);
+  if (
+    !isCoordinatorTerminalWorkflowStatus(workflow.status) &&
+    isWorkflowPastDeadline(workflow, now)
+  ) {
+    return tripCoordinatorWorkflowBudget(
+      options.runId,
+      options.workflowId,
+      'wall-clock',
+      getWorkflowWallClockExhaustedUsage(workflow),
+      now,
+    );
+  }
+
   for (const lane of workflow.lanes) {
     if (
       isCoordinatorTerminalWorkflowLaneStatus(lane.status) ||
@@ -2028,13 +3103,7 @@ export function getCoordinatorWorkflowNextTickAt(
   workflow: CoordinatorWorkflowSnapshot,
   now = Date.now(),
 ): number | null {
-  if (
-    workflow.status === 'cancelled' ||
-    workflow.status === 'completed' ||
-    workflow.status === 'failed' ||
-    workflow.status === 'blocked' ||
-    workflow.status === 'stale-after-restore'
-  ) {
+  if (isCoordinatorTerminalWorkflowStatus(workflow.status)) {
     return null;
   }
 
@@ -2048,7 +3117,10 @@ export function getCoordinatorWorkflowNextTickAt(
   const retryState = getWorkflowRetryState(workflow, now);
   const activeLaneCount = getActiveLaneCount(workflow);
   const retryTimes: number[] = [];
-  if (activeLaneCount < workflow.policy.maxConcurrentLanes) {
+  // Retry admission is deferred while the run is paused, so retry wake-ups are skipped; lane
+  // timeout and wall-clock deadline ticks stay alive by design.
+  const runPaused = !coordinatorRunAdmitsNewWork(getCoordinatorRunStatus(workflow.runId));
+  if (!runPaused && activeLaneCount < workflow.policy.maxConcurrentLanes) {
     const pendingRetryLaneIds = new Set(retryState.pendingLaneIds);
     for (const lane of workflow.lanes) {
       if (!pendingRetryLaneIds.has(lane.id)) {
@@ -2058,6 +3130,9 @@ export function getCoordinatorWorkflowNextTickAt(
     }
   }
   const tickTimes = [...activeTimeouts, ...retryTimes];
+  if (workflow.execution?.deadlineAt !== undefined) {
+    tickTimes.push(workflow.execution.deadlineAt);
+  }
   if (tickTimes.length === 0) {
     return null;
   }
@@ -2070,8 +3145,9 @@ export function cancelCoordinatorWorkflowExecution(
   workflowId: string,
   reason: string,
 ): CoordinatorWorkflowSnapshot {
-  const workflow = getWorkflowOrThrow(runId, workflowId);
   const now = Date.now();
+  cancelCoordinatorWorkflowPendingApprovals(runId, workflowId, { now, reason });
+  const workflow = getWorkflowOrThrow(runId, workflowId);
   for (const lane of workflow.lanes) {
     if (isCoordinatorTerminalWorkflowLaneStatus(lane.status)) {
       continue;

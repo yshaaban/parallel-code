@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   COORDINATOR_LIMITS,
   COORDINATOR_WORKFLOW_PROGRAM_VERSION,
+  createCoordinatorWorkflowBudgetSnapshot,
   getCoordinatorSubtaskStartupSnapshot,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
@@ -15,13 +16,17 @@ import {
   type CoordinatorPromptRequestSnapshot,
   type CoordinatorPromptStatus,
   type CoordinatorRunLimits,
+  type CoordinatorRunResumeSnapshot,
   type CoordinatorRunSnapshot,
   type CoordinatorRunStatus,
+  type CoordinatorSubtaskLaunchSnapshot,
   type CoordinatorSubtaskSnapshot,
   type CoordinatorSubtaskStartupSnapshot,
   type CoordinatorSubtaskStatus,
   type CoordinatorWorkflowJournalEntrySnapshot,
   type CoordinatorWorkflowLaneSnapshot,
+  type CoordinatorWorkflowPendingApprovalSnapshot,
+  type CoordinatorWorkflowLaneSpawnSource,
   type CoordinatorWorkflowLaneStatus,
   type CoordinatorWorkflowAppendPolicySnapshot,
   type CoordinatorWorkflowPolicySnapshot,
@@ -40,6 +45,7 @@ import type { ProjectMode } from '../../src/store/types.js';
 export interface CoordinatorRuntimeState {
   runs: CoordinatorRunSnapshot[];
   stateVersion: number;
+  subtaskLaunches: CoordinatorSubtaskLaunchSnapshot[];
   toolCallResults: Array<{
     createdAt: number;
     key: string;
@@ -108,9 +114,21 @@ interface UpdateCoordinatorPromptPatch {
 }
 
 interface UpdateCoordinatorSubtaskPatch {
+  interruptedByRestoreAt?: number | undefined;
   now?: number;
-  result?: string;
+  result?: string | undefined;
   startup?: CoordinatorSubtaskStartupSnapshot;
+  toolTokenId?: string;
+}
+
+interface ResumeCoordinatorRunFromStaleOptions {
+  now?: number;
+  resumeId: string;
+}
+
+interface CoordinatorRunResumeOutcome {
+  failedTaskIds: string[];
+  respawnedTaskIds: string[];
 }
 
 interface CreateCoordinatorWorkflowOptions {
@@ -155,6 +173,7 @@ interface AddCoordinatorWorkflowLaneOptions {
   name: string;
   role?: string;
   runId: string;
+  spawnedBy?: CoordinatorWorkflowLaneSpawnSource;
   stageId: string;
   status?: CoordinatorWorkflowLaneStatus;
   taskId?: string;
@@ -167,18 +186,35 @@ interface AddCoordinatorWorkflowLaneOptions {
 interface UpdateCoordinatorWorkflowLanePatch {
   agentId?: string;
   completedAt?: number;
-  failure?: string;
+  failure?: string | undefined;
   resultId?: string;
   startedAt?: number;
   status?: CoordinatorWorkflowLaneStatus;
+  supersededByLaneId?: string;
   taskId?: string;
-  timeoutAt?: number;
+  timeoutAt?: number | undefined;
   now?: number;
+}
+
+interface AddCoordinatorWorkflowPendingApprovalOptions {
+  actions: CoordinatorWorkflowPendingApprovalSnapshot['actions'];
+  id: string;
+  laneId: string;
+  resultId: string;
+  runId: string;
+  stageId: string;
+  workflowId: string;
+  now?: number;
+}
+
+interface ResolveCoordinatorWorkflowPendingApprovalOptions {
+  now?: number;
+  reason?: string;
 }
 
 interface UpdateCoordinatorWorkflowStagePatch {
   completedAt?: number;
-  failure?: string;
+  failure?: string | undefined;
   laneIds?: string[];
   resultIds?: string[];
   startedAt?: number;
@@ -215,7 +251,12 @@ const DEFAULT_RUN_LIMITS: CoordinatorRunLimits = {
 const DEFAULT_WORKFLOW_POLICY: CoordinatorWorkflowPolicySnapshot = {
   continueOnFailure: true,
   maxConcurrentLanes: COORDINATOR_LIMITS.maxActiveSubtasksPerRun,
+  maxIterationsPerBranch: 3,
   maxOutputBytesPerLane: COORDINATOR_LIMITS.snapshotMaxBytes,
+  maxTotalLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
+  maxTotalRetries: COORDINATOR_LIMITS.maxWorkflowTotalRetries,
+  maxTotalSteps: COORDINATOR_LIMITS.maxWorkflowTotalSteps,
+  maxWallClockMs: COORDINATOR_LIMITS.workflowDefaultWallClockMs,
   resultRequired: true,
   retryBackoffMs: 1_000,
   retryCount: 0,
@@ -228,6 +269,7 @@ const DEFAULT_WORKFLOW_APPEND_POLICY: CoordinatorWorkflowAppendPolicySnapshot = 
 };
 
 let recordsByRunId = new Map<string, RunRecord>();
+const launchesByRunAndTask = new Map<string, CoordinatorSubtaskLaunchSnapshot>();
 let stateVersion = 0;
 const eventListeners = new Set<CoordinatorEventListener>();
 const toolCallResults = new Map<
@@ -338,6 +380,7 @@ function createLegacySubtaskStartupSnapshot(
 function normalizeRestoredSubtask(
   subtask: CoordinatorSubtaskSnapshot,
   prompts: readonly CoordinatorPromptRequestSnapshot[],
+  now: number,
 ): CoordinatorSubtaskSnapshot {
   const startup = subtask.startup ?? createLegacySubtaskStartupSnapshot(subtask, prompts);
   if (
@@ -347,6 +390,7 @@ function normalizeRestoredSubtask(
   ) {
     return {
       ...subtask,
+      interruptedByRestoreAt: subtask.interruptedByRestoreAt ?? now,
       result: 'Server restored coordinator state without the live PTY session.',
       startup,
       status: 'exited',
@@ -359,8 +403,13 @@ function normalizeRestoredSubtask(
   };
 }
 
-function normalizeRestoredRun(run: CoordinatorRunSnapshot): CoordinatorRunSnapshot {
-  const staleStatuses: CoordinatorRunStatus[] = ['draining', 'running', 'starting'];
+function normalizeRestoredRun(run: CoordinatorRunSnapshot, now: number): CoordinatorRunSnapshot {
+  const staleStatuses: CoordinatorRunStatus[] = [
+    'draining',
+    'paused-by-user',
+    'running',
+    'starting',
+  ];
   const stalePromptStatuses: CoordinatorPromptStatus[] = [
     'delivering',
     'queued',
@@ -385,7 +434,9 @@ function normalizeRestoredRun(run: CoordinatorRunSnapshot): CoordinatorRunSnapsh
     ...run,
     promptQueue: restoredPrompts,
     status: staleStatuses.includes(run.status) ? 'stale-after-restore' : run.status,
-    subtasks: run.subtasks.map((subtask) => normalizeRestoredSubtask(subtask, run.promptQueue)),
+    subtasks: run.subtasks.map((subtask) =>
+      normalizeRestoredSubtask(subtask, run.promptQueue, now),
+    ),
     workflows: (run.workflows ?? []).map(normalizeRestoredWorkflow),
   };
 }
@@ -409,13 +460,25 @@ function normalizeRestoredWorkflow(
     'running',
     'waiting-for-result',
   ];
+  const now = Date.now();
+  const workflowWithCancelledApprovals = cancelWorkflowPendingApprovalsOnSnapshot(
+    {
+      ...workflow,
+      journal: workflow.journal.map((entry, index) => ({
+        ...entry,
+        seq: entry.seq ?? index + 1,
+      })),
+    },
+    {
+      journalMessage: 'Cancelled pending approval: stale-after-restore.',
+      now,
+      reason: 'stale-after-restore',
+    },
+  );
   const restoredWorkflow: CoordinatorWorkflowSnapshot = {
-    ...workflow,
+    ...workflowWithCancelledApprovals,
     appendPolicy: mergeWorkflowAppendPolicy(workflow.appendPolicy),
-    journal: workflow.journal.map((entry, index) => ({
-      ...entry,
-      seq: entry.seq ?? index + 1,
-    })),
+    policy: mergeWorkflowPolicy(workflow.policy),
     lanes: workflow.lanes.map((lane) =>
       staleLaneStatuses.includes(lane.status)
         ? {
@@ -544,6 +607,133 @@ export function updateCoordinatorRunStatus(
   return clone(run);
 }
 
+export function setCoordinatorRunPaused(
+  runId: string,
+  paused: boolean,
+  now = Date.now(),
+): CoordinatorRunSnapshot {
+  const record = requireRunRecord(runId);
+  const version = nextVersion();
+  const run = materializeRun(record);
+  const nextRun: CoordinatorRunSnapshot = {
+    ...run,
+    eventVersion: version,
+    status: paused ? 'paused-by-user' : 'running',
+    updatedAt: now,
+    ...(paused ? { pausedAt: now } : {}),
+  };
+  if (!paused) {
+    delete nextRun.pausedAt;
+  }
+  replaceRun(record, nextRun);
+  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  return clone(materializeRun(record));
+}
+
+function getResumedRunStatus(run: CoordinatorRunSnapshot): CoordinatorRunStatus {
+  if (run.pausedAt !== undefined) {
+    return 'paused-by-user';
+  }
+
+  return 'running';
+}
+
+function appendCoordinatorRunResumeEntry(
+  resumes: CoordinatorRunResumeSnapshot[],
+  resumeId: string,
+  requestedAt: number,
+): CoordinatorRunResumeSnapshot[] {
+  if (resumes.some((entry) => entry.resumeId === resumeId)) {
+    return resumes;
+  }
+
+  return [
+    ...resumes,
+    {
+      failedTaskIds: [],
+      requestedAt,
+      respawnedTaskIds: [],
+      resumeId,
+    },
+  ];
+}
+
+export function resumeCoordinatorRunFromStale(
+  runId: string,
+  options: ResumeCoordinatorRunFromStaleOptions,
+): CoordinatorRunSnapshot {
+  const record = requireRunRecord(runId);
+  if (record.run.status !== 'stale-after-restore') {
+    throw new Error(`Coordinator run is ${record.run.status}`);
+  }
+
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const run = materializeRun(record);
+  const resumes = run.resumes ?? [];
+  const nextRun: CoordinatorRunSnapshot = {
+    ...run,
+    eventVersion: version,
+    resumes: appendCoordinatorRunResumeEntry(resumes, options.resumeId, now),
+    status: getResumedRunStatus(run),
+    updatedAt: now,
+  };
+  replaceRun(record, nextRun);
+  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  return clone(materializeRun(record));
+}
+
+export function recordCoordinatorRunResumeOutcome(
+  runId: string,
+  resumeId: string,
+  outcome: CoordinatorRunResumeOutcome,
+  now = Date.now(),
+): CoordinatorRunSnapshot {
+  const record = requireRunRecord(runId);
+  const version = nextVersion();
+  const run = materializeRun(record);
+  const resumes: CoordinatorRunResumeSnapshot[] = (run.resumes ?? []).map((entry) => {
+    if (entry.resumeId !== resumeId) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      failedTaskIds: [...outcome.failedTaskIds],
+      respawnedTaskIds: [...outcome.respawnedTaskIds],
+    };
+  });
+  const nextRun: CoordinatorRunSnapshot = {
+    ...run,
+    eventVersion: version,
+    resumes,
+    updatedAt: now,
+  };
+  replaceRun(record, nextRun);
+  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  return clone(materializeRun(record));
+}
+
+function getSubtaskLaunchKey(runId: string, taskId: string): string {
+  return `${runId}:${taskId}`;
+}
+
+export function recordCoordinatorSubtaskLaunch(launch: CoordinatorSubtaskLaunchSnapshot): void {
+  launchesByRunAndTask.set(getSubtaskLaunchKey(launch.runId, launch.taskId), clone(launch));
+}
+
+export function getCoordinatorSubtaskLaunch(
+  runId: string,
+  taskId: string,
+): CoordinatorSubtaskLaunchSnapshot | null {
+  const launch = launchesByRunAndTask.get(getSubtaskLaunchKey(runId, taskId));
+  return launch === undefined ? null : clone(launch);
+}
+
+export function removeCoordinatorSubtaskLaunch(runId: string, taskId: string): void {
+  launchesByRunAndTask.delete(getSubtaskLaunchKey(runId, taskId));
+}
+
 export function addCoordinatorSubtask(
   options: AddCoordinatorSubtaskOptions,
 ): CoordinatorSubtaskSnapshot {
@@ -599,13 +789,25 @@ export function updateCoordinatorSubtaskStatus(
 
   const now = getNow(options.now);
   const version = nextVersion();
-  const subtask: CoordinatorSubtaskSnapshot = {
+  const nextSubtask = {
     ...existing,
+    ...(options.interruptedByRestoreAt !== undefined
+      ? { interruptedByRestoreAt: options.interruptedByRestoreAt }
+      : {}),
     ...(options.result !== undefined ? { result: options.result } : {}),
     ...(options.startup !== undefined ? { startup: options.startup } : {}),
+    ...(options.toolTokenId !== undefined ? { toolTokenId: options.toolTokenId } : {}),
     status,
     updatedAt: now,
   };
+  if ('interruptedByRestoreAt' in options && options.interruptedByRestoreAt === undefined) {
+    delete nextSubtask.interruptedByRestoreAt;
+  }
+  if ('result' in options && options.result === undefined) {
+    delete nextSubtask.result;
+  }
+
+  const subtask = nextSubtask as CoordinatorSubtaskSnapshot;
   record.subtasksByTaskId.set(taskId, subtask);
   updateRunTimestamp(record, now);
   emitCoordinatorEvent(runId, 'subtask-upserted', `subtask:${taskId}`, version, subtask);
@@ -733,8 +935,18 @@ function mergeWorkflowPolicy(
     ...(policy?.maxConcurrentLanes !== undefined
       ? { maxConcurrentLanes: policy.maxConcurrentLanes }
       : {}),
+    ...(policy?.maxIterationsPerBranch !== undefined
+      ? { maxIterationsPerBranch: policy.maxIterationsPerBranch }
+      : {}),
     ...(policy?.maxOutputBytesPerLane !== undefined
       ? { maxOutputBytesPerLane: policy.maxOutputBytesPerLane }
+      : {}),
+    ...(policy?.maxTotalLanes !== undefined ? { maxTotalLanes: policy.maxTotalLanes } : {}),
+    ...(policy?.maxTotalRetries !== undefined ? { maxTotalRetries: policy.maxTotalRetries } : {}),
+    ...(policy?.maxTotalSteps !== undefined ? { maxTotalSteps: policy.maxTotalSteps } : {}),
+    ...(policy?.maxWallClockMs !== undefined ? { maxWallClockMs: policy.maxWallClockMs } : {}),
+    ...(policy?.requireDecisionApproval !== undefined
+      ? { requireDecisionApproval: policy.requireDecisionApproval }
       : {}),
     ...(policy?.resultRequired !== undefined ? { resultRequired: policy.resultRequired } : {}),
     ...(policy?.retryBackoffMs !== undefined ? { retryBackoffMs: policy.retryBackoffMs } : {}),
@@ -757,6 +969,59 @@ function mergeWorkflowAppendPolicy(
 
 function getNextWorkflowJournalSeq(workflow: Pick<CoordinatorWorkflowSnapshot, 'journal'>): number {
   return (workflow.journal[workflow.journal.length - 1]?.seq ?? 0) + 1;
+}
+
+interface CancelWorkflowPendingApprovalsOptions {
+  journalMessage?: string;
+  laneIds?: ReadonlySet<string>;
+  now: number;
+  reason: string;
+}
+
+/**
+ * One authority for resolving pending approvals as cancelled: the status patch and the
+ * `decision-approval-cancelled` journal entries always land together with continuous seqs. Used by
+ * the live mutation path, task-scoped lane cancellation, and the restore normalization path.
+ */
+function cancelWorkflowPendingApprovalsOnSnapshot(
+  workflow: CoordinatorWorkflowSnapshot,
+  options: CancelWorkflowPendingApprovalsOptions,
+): CoordinatorWorkflowSnapshot {
+  const shouldCancel = (approval: CoordinatorWorkflowPendingApprovalSnapshot): boolean =>
+    approval.status === 'pending' &&
+    (options.laneIds === undefined || options.laneIds.has(approval.laneId));
+  const cancelledApprovals = (workflow.pendingApprovals ?? []).filter(shouldCancel);
+  if (cancelledApprovals.length === 0) {
+    return workflow;
+  }
+
+  const message = options.journalMessage ?? `Cancelled pending approval: ${options.reason}`;
+  let nextJournalSeq = getNextWorkflowJournalSeq(workflow);
+  return {
+    ...workflow,
+    journal: [
+      ...workflow.journal,
+      ...cancelledApprovals.map((approval) => ({
+        at: options.now,
+        kind: 'decision-approval-cancelled',
+        laneId: approval.laneId,
+        message,
+        resultId: approval.resultId,
+        seq: nextJournalSeq++,
+        stageId: approval.stageId,
+      })),
+    ],
+    pendingApprovals: (workflow.pendingApprovals ?? []).map((approval) =>
+      shouldCancel(approval)
+        ? {
+            ...approval,
+            reason: options.reason,
+            resolvedAt: options.now,
+            status: 'cancelled' as const,
+          }
+        : approval,
+    ),
+  };
 }
 
 function getWorkflowOrThrow(record: RunRecord, workflowId: string): CoordinatorWorkflowSnapshot {
@@ -824,6 +1089,7 @@ function createRuntimeWorkflowExecutionSnapshot(
     ...(workflow.execution?.blockedReason !== undefined
       ? { blockedReason: workflow.execution.blockedReason }
       : {}),
+    budget: createCoordinatorWorkflowBudgetSnapshot(workflow),
     ...(workflow.execution?.cancelledAt !== undefined
       ? { cancelledAt: workflow.execution.cancelledAt }
       : {}),
@@ -1041,6 +1307,7 @@ export function addCoordinatorWorkflowLane(
     id: options.id ?? randomUUID(),
     name: options.name,
     ...(options.role !== undefined ? { role: options.role } : {}),
+    ...(options.spawnedBy !== undefined ? { spawnedBy: options.spawnedBy } : {}),
     stageId: options.stageId,
     status: options.status ?? 'pending',
     ...(options.taskId !== undefined ? { taskId: options.taskId } : {}),
@@ -1081,7 +1348,7 @@ export function updateCoordinatorWorkflowLane(
 
   const now = getNow(patch.now);
   const version = nextVersion();
-  const lane: CoordinatorWorkflowLaneSnapshot = {
+  const nextLane = {
     ...existing,
     ...(patch.agentId !== undefined ? { agentId: patch.agentId } : {}),
     ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
@@ -1089,10 +1356,21 @@ export function updateCoordinatorWorkflowLane(
     ...(patch.resultId !== undefined ? { resultId: patch.resultId } : {}),
     ...(patch.startedAt !== undefined ? { startedAt: patch.startedAt } : {}),
     ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.supersededByLaneId !== undefined
+      ? { supersededByLaneId: patch.supersededByLaneId }
+      : {}),
     ...(patch.taskId !== undefined ? { taskId: patch.taskId } : {}),
     ...(patch.timeoutAt !== undefined ? { timeoutAt: patch.timeoutAt } : {}),
     updatedAt: now,
   };
+  if ('failure' in patch && patch.failure === undefined) {
+    delete nextLane.failure;
+  }
+  if ('timeoutAt' in patch && patch.timeoutAt === undefined) {
+    delete nextLane.timeoutAt;
+  }
+
+  const lane = nextLane as CoordinatorWorkflowLaneSnapshot;
   const updatedWorkflow: CoordinatorWorkflowSnapshot = {
     ...workflow,
     eventVersion: version,
@@ -1118,7 +1396,7 @@ export function updateCoordinatorWorkflowStage(
 
   const now = getNow(patch.now);
   const version = nextVersion();
-  const stage: CoordinatorWorkflowStageSnapshot = {
+  const nextStage = {
     ...existing,
     ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
     ...(patch.failure !== undefined ? { failure: patch.failure } : {}),
@@ -1128,6 +1406,11 @@ export function updateCoordinatorWorkflowStage(
     ...(patch.status !== undefined ? { status: patch.status } : {}),
     updatedAt: now,
   };
+  if ('failure' in patch && patch.failure === undefined) {
+    delete nextStage.failure;
+  }
+
+  const stage = nextStage as CoordinatorWorkflowStageSnapshot;
   const updatedWorkflow: CoordinatorWorkflowSnapshot = {
     ...workflow,
     eventVersion: version,
@@ -1199,6 +1482,96 @@ export function addCoordinatorWorkflowResult(
   return clone(result);
 }
 
+export function addCoordinatorWorkflowPendingApproval(
+  options: AddCoordinatorWorkflowPendingApprovalOptions,
+): CoordinatorWorkflowPendingApprovalSnapshot {
+  const record = requireRunRecord(options.runId);
+  const workflow = getWorkflowOrThrow(record, options.workflowId);
+  const existing = workflow.pendingApprovals?.find((approval) => approval.id === options.id);
+  if (existing !== undefined) {
+    return clone(existing);
+  }
+
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const approval: CoordinatorWorkflowPendingApprovalSnapshot = {
+    actions: options.actions,
+    createdAt: now,
+    id: options.id,
+    laneId: options.laneId,
+    resultId: options.resultId,
+    stageId: options.stageId,
+    status: 'pending',
+  };
+  setWorkflow(
+    record,
+    {
+      ...workflow,
+      eventVersion: version,
+      pendingApprovals: [...(workflow.pendingApprovals ?? []), approval],
+      updatedAt: now,
+    },
+    now,
+    version,
+  );
+  return clone(approval);
+}
+
+export function resolveCoordinatorWorkflowPendingApproval(
+  runId: string,
+  workflowId: string,
+  approvalId: string,
+  resolution: Exclude<CoordinatorWorkflowPendingApprovalSnapshot['status'], 'pending'>,
+  options: ResolveCoordinatorWorkflowPendingApprovalOptions = {},
+): CoordinatorWorkflowPendingApprovalSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const existing = workflow.pendingApprovals?.find((approval) => approval.id === approvalId);
+  if (!existing) {
+    throw new Error(`Coordinator workflow approval not found: ${approvalId}`);
+  }
+
+  const now = getNow(options.now);
+  const version = nextVersion();
+  const resolved: CoordinatorWorkflowPendingApprovalSnapshot = {
+    ...existing,
+    ...(options.reason !== undefined ? { reason: options.reason } : {}),
+    resolvedAt: now,
+    status: resolution,
+  };
+  setWorkflow(
+    record,
+    {
+      ...workflow,
+      eventVersion: version,
+      pendingApprovals: (workflow.pendingApprovals ?? []).map((approval) =>
+        approval.id === approvalId ? resolved : approval,
+      ),
+      updatedAt: now,
+    },
+    now,
+    version,
+  );
+  return clone(resolved);
+}
+
+export function cancelCoordinatorWorkflowPendingApprovals(
+  runId: string,
+  workflowId: string,
+  options: { laneIds?: ReadonlySet<string>; now?: number; reason: string },
+): CoordinatorWorkflowSnapshot {
+  const record = requireRunRecord(runId);
+  const workflow = getWorkflowOrThrow(record, workflowId);
+  const now = getNow(options.now);
+  const cancelled = cancelWorkflowPendingApprovalsOnSnapshot(workflow, { ...options, now });
+  if (cancelled === workflow) {
+    return clone(workflow);
+  }
+
+  const version = nextVersion();
+  return setWorkflow(record, { ...cancelled, eventVersion: version, updatedAt: now }, now, version);
+}
+
 export function cancelCoordinatorWorkflowLanesForTask(
   runId: string,
   taskId: string,
@@ -1262,10 +1635,8 @@ export function cancelCoordinatorWorkflowLanesForTask(
     });
     const workflowCancelled = updatedStages.some((stage) => stage.status === 'cancelled');
     let nextJournalSeq = getNextWorkflowJournalSeq(workflow);
-    const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    const workflowWithCancelledLanes: CoordinatorWorkflowSnapshot = {
       ...workflow,
-      ...(workflowCancelled ? { completedAt: now } : {}),
-      eventVersion: version,
       journal: [
         ...workflow.journal,
         ...updatedLanes
@@ -1281,6 +1652,15 @@ export function cancelCoordinatorWorkflowLanesForTask(
       ],
       lanes: updatedLanes,
       stages: updatedStages,
+    };
+    const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+      ...cancelWorkflowPendingApprovalsOnSnapshot(workflowWithCancelledLanes, {
+        laneIds: matchingLaneIds,
+        now,
+        reason,
+      }),
+      ...(workflowCancelled ? { completedAt: now } : {}),
+      eventVersion: version,
       ...(workflowCancelled ? { status: 'cancelled' as const } : {}),
       updatedAt: now,
     };
@@ -1293,6 +1673,11 @@ export function cancelCoordinatorWorkflowLanesForTask(
 export function getCoordinatorRun(runId: string): CoordinatorRunSnapshot | null {
   const record = recordsByRunId.get(runId);
   return record ? clone(materializeRun(record)) : null;
+}
+
+/** Status-only read for hot paths that must not pay for the full-run clone `getCoordinatorRun` does. */
+export function getCoordinatorRunStatus(runId: string): CoordinatorRunStatus | null {
+  return recordsByRunId.get(runId)?.run.status ?? null;
 }
 
 export function getCoordinatorWorkflow(
@@ -1328,6 +1713,11 @@ export function removeCoordinatorRun(runId: string): void {
 
   const version = nextVersion();
   recordsByRunId.delete(runId);
+  for (const key of [...launchesByRunAndTask.keys()]) {
+    if (key.startsWith(`${runId}:`)) {
+      launchesByRunAndTask.delete(key);
+    }
+  }
   emitCoordinatorEvent(runId, 'run-removed', `run:${runId}`, version, null, {
     tombstone: true,
   });
@@ -1371,6 +1761,7 @@ export function getCoordinatorRuntimeState(): CoordinatorRuntimeState {
   return {
     runs: listCoordinatorRuns(),
     stateVersion,
+    subtaskLaunches: [...launchesByRunAndTask.values()].map((launch) => clone(launch)),
     toolCallResults: [...toolCallResults.entries()].map(([key, record]) => ({
       createdAt: record.createdAt,
       key,
@@ -1380,12 +1771,19 @@ export function getCoordinatorRuntimeState(): CoordinatorRuntimeState {
 }
 
 export function restoreCoordinatorRuntimeState(state: CoordinatorRuntimeState): void {
+  const now = Date.now();
   recordsByRunId = new Map(
     state.runs.map((run) => {
-      const restoredRun = normalizeRestoredRun(clone(run));
+      const restoredRun = normalizeRestoredRun(clone(run), now);
       return [restoredRun.id, createRunRecord(restoredRun)];
     }),
   );
+  launchesByRunAndTask.clear();
+  for (const launch of state.subtaskLaunches) {
+    if (recordsByRunId.has(launch.runId)) {
+      launchesByRunAndTask.set(getSubtaskLaunchKey(launch.runId, launch.taskId), clone(launch));
+    }
+  }
   stateVersion = state.stateVersion;
   toolCallResults.clear();
   for (const entry of state.toolCallResults) {
@@ -1434,6 +1832,7 @@ export function getCoordinatorDiagnostics(): CoordinatorDiagnosticsSnapshot {
 
 export function resetCoordinatorRuntimeForTests(): void {
   recordsByRunId.clear();
+  launchesByRunAndTask.clear();
   stateVersion = 0;
   eventListeners.clear();
   toolCallResults.clear();

@@ -5,22 +5,12 @@ import { IPC } from '../ipc/channels.js';
 import type { HandlerContext } from '../ipc/handler-context.js';
 import { BadRequestError } from '../ipc/errors.js';
 import { getAllFileDiffs, getProjectDiff, getWorktreeStatus, mergeTask } from '../ipc/git.js';
-import {
-  getAgentSupervisionSnapshot,
-  subscribeAgentSupervision,
-} from '../ipc/agent-supervision.js';
+import { getAgentSupervisionSnapshot } from '../ipc/agent-supervision.js';
 import { normalizeAgentRunnerProfileConfig } from '../ipc/agent-runner-handlers.js';
-import {
-  getAgentMeta,
-  getAgentScrollbackBuffer,
-  hasAgentSession,
-  writeToAgent,
-} from '../ipc/pty.js';
+import { getAgentScrollbackBuffer } from '../ipc/pty.js';
 import {
   acquireTaskCommandLease,
-  getTaskCommandControllerSnapshot,
   isTaskCommandLeaseHeld,
-  isTaskCommandLeaseGenerationHeld,
   releaseTaskCommandLease,
 } from '../ipc/task-command-leases.js';
 import {
@@ -31,14 +21,15 @@ import {
 } from '../ipc/task-workflows.js';
 import {
   COORDINATOR_LIMITS,
+  coordinatorRunAdmitsNewWork,
   createCoordinatorSubtaskStartupSnapshot,
-  getCoordinatorAgentFollowupPromptMode,
-  getCoordinatorAgentInitialAssignmentMode,
+  getCoordinatorRendererActionAllowedRunStatuses,
   getCoordinatorSubtaskStartupSnapshot,
-  isCodexCoordinatorAgentCommand,
+  isCoordinatorOperatorActionName,
   isCoordinatorPendingPromptStatus,
   isCoordinatorTerminalSubtaskStatus,
   isCoordinatorTerminalWorkflowLaneStatus,
+  isCoordinatorTerminalWorkflowStatus,
   isCoordinatorWorkflowResultConfidence,
   isCoordinatorWorkflowResultStatus,
   isCoordinatorWorkflowTemplate,
@@ -46,16 +37,20 @@ import {
   type CoordinatorAgentInitialAssignmentMode,
   type CoordinatorAgentReadinessPolicy,
   type CoordinatorAppendWorkflowStepsPayload,
+  type CoordinatorApproveWorkflowActionsPayload,
   type CoordinatorCloseTaskPayload,
+  type CoordinatorDenyWorkflowActionsPayload,
   type CoordinatorGetTaskDiffPayload,
   type CoordinatorGetTaskOutputPayload,
   type CoordinatorLandSelfPayload,
   type CoordinatorLandingStateSnapshot,
+  type CoordinatorOperatorActionName,
   type CoordinatorPromptKind,
   type CoordinatorPromptRequestSnapshot,
+  type CoordinatorRetryLanePayload,
+  type CoordinatorRunResumeResult,
   type CoordinatorRunSnapshot,
   type CoordinatorSendPromptPayload,
-  type CoordinatorSpawnAgentConfig,
   type CoordinatorSignalDonePayload,
   type CoordinatorSpawnManyLanePayload,
   type CoordinatorSpawnManyPayload,
@@ -63,6 +58,7 @@ import {
   type CoordinatorStartWorkflowLanePayload,
   type CoordinatorStartWorkflowPayload,
   type CoordinatorSubmitResultPayload,
+  type CoordinatorSubtaskLaunchSnapshot,
   type CoordinatorSubtaskSnapshot,
   type CoordinatorSubtaskStartupSnapshot,
   type CoordinatorTargetTaskPayload,
@@ -79,8 +75,6 @@ import {
 } from '../../src/domain/coordinator.js';
 import { buildCoordinatorSubtaskAssignment } from '../../src/domain/coordinator-instructions.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
-import { materializePromptDispatch } from '../../src/domain/task-prompt-materialization.js';
-import { hasCodexPromptInTail, hasShellPromptReadyInTail } from '../../src/lib/prompt-detection.js';
 import { isRecord, isStringArray } from '../../src/lib/type-guards.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import type { DeleteTaskCleanupWarning } from '../../src/domain/task-cleanup.js';
@@ -89,25 +83,48 @@ import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js
 import {
   cleanupCoordinatorStateForTask,
   createCoordinatorCredential,
-  getCoordinatorBlockingActivityHints,
   revokeCoordinatorTaskCredential,
   resolveCoordinatorToken,
 } from './service.js';
 import {
+  COORDINATOR_AUTOMATION_CLIENT_ID_PREFIX,
+  assertSupportedSeededInitialAssignment,
+  buildCoordinatorSeededLaunchArgs,
+  deliverCoordinatorPromptWithAdmission,
+  emitTaskCommandControllerChange,
+  mergeLaunchArgs,
+  queueCoordinatorPromptForDelivery,
+  resetCoordinatorPromptDeliveryForTests,
+  scheduleCoordinatorPromptDelivery,
+  startCoordinatorPromptDeliveryLoop,
+  stopCoordinatorPromptDeliveryLoop,
+  usesSeededInitialAssignment,
+} from './prompt-delivery.js';
+import {
   appendCoordinatorWorkflowExecutionSteps,
   type AppendCoordinatorWorkflowStepsExecutionResult,
   advanceCoordinatorWorkflowExecution,
+  approveCoordinatorWorkflowActions,
+  assertWorkflowBudgetAdmits,
+  assertWorkflowWithinDeadline,
   DEFAULT_WORKFLOW_AGENT_COMMAND,
   DEFAULT_WORKFLOW_CONCURRENCY,
+  denyCoordinatorWorkflowActions,
   getCoordinatorWorkflowNextTickAt,
+  getWorkflowLaneStatusForResultStatus,
   getWorkflowResultStatusForActions,
+  hasPendingWorkflowApprovalForLane,
   normalizeWorkflowFindingsForResult,
   readWorkflowDecisionActions,
+  recordPendingWorkflowApproval,
   recordWorkflowVerdictsFromResult,
   resolveOwnedWorkflowLane as resolveExecutorOwnedWorkflowLane,
+  resumeCoordinatorWorkflowExecution,
+  retryCoordinatorWorkflowLaneFromOperator,
   startCoordinatorWorkflowExecution,
   tickCoordinatorWorkflowExecution,
   validateWorkflowDecisionActionsForResult,
+  type SpawnCoordinatorWorkflowLane,
 } from './workflow-executor.js';
 import {
   addCoordinatorWorkflowLane,
@@ -120,12 +137,17 @@ import {
   enqueueCoordinatorPrompt,
   getCoordinatorRun,
   getCoordinatorRunByCoordinatorTaskId,
+  getCoordinatorSubtaskLaunch,
   getCoordinatorToolResult,
   getCoordinatorWorkflow,
   listCoordinatorRuns,
+  recordCoordinatorRunResumeOutcome,
+  recordCoordinatorSubtaskLaunch,
   rememberCoordinatorToolResult,
+  removeCoordinatorSubtaskLaunch,
+  resumeCoordinatorRunFromStale,
+  setCoordinatorRunPaused,
   subscribeCoordinatorEvents,
-  updateCoordinatorPrompt,
   updateCoordinatorSubtaskStatus,
   updateCoordinatorWorkflow,
   updateCoordinatorWorkflowLane,
@@ -133,12 +155,9 @@ import {
   upsertCoordinatorLanding,
 } from './runtime.js';
 
-const COORDINATOR_AUTOMATION_CLIENT_ID_PREFIX = 'coordinator:';
-const COORDINATOR_AUTOMATION_OWNER_ID = 'coordinator-prompt-delivery';
 const COORDINATOR_LANDING_OWNER_ID = 'coordinator-self-landing';
 const DEFAULT_TERMINAL_COLS = 80;
 const DEFAULT_TERMINAL_ROWS = 24;
-const PROMPT_DELIVERY_RETRY_DELAY_MS = 1_000;
 const WAIT_FOR_IDLE_MAX_TIMEOUT_MS = 60_000;
 const WAIT_FOR_IDLE_POLL_MS = 100;
 const TASK_OUTPUT_DEFAULT_MAX_BYTES = 64 * 1024;
@@ -165,19 +184,16 @@ interface WorkflowSpawnedLane {
   subtask?: CoordinatorSubtaskSnapshot;
 }
 
-let promptDeliveryCleanup: (() => void) | null = null;
-let promptDeliveryContext: HandlerContext | null = null;
-let promptDeliveryForce = false;
+let coordinatorSchedulerCleanup: (() => void) | null = null;
+let coordinatorSchedulerContext: HandlerContext | null = null;
+let coordinatorSchedulerTaskNames: Pick<
+  TaskNameRegistry,
+  'deleteTask' | 'registerCreatedTask'
+> | null = null;
 let promptDeliveryReferences = 0;
-let promptDeliveryTaskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> | null =
-  null;
-let promptDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 let workflowExecutionActive = false;
 let workflowExecutionTimer: ReturnType<typeof setTimeout> | null = null;
 let workflowExecutionTimerDueAt: number | null = null;
-const activePromptDeliveryKeys = new Set<string>();
-const scheduledPromptDeliveryKeys = new Set<string>();
-const promptDeliveryChainsByTargetKey = new Map<string, Promise<unknown>>();
 const activeSpawnSubtasksByDedupeKey = new Map<
   string,
   {
@@ -455,6 +471,22 @@ function readOptionalNonNegativeInt(value: unknown, label: string): number | und
   return value;
 }
 
+function readOptionalCappedInt(
+  value: unknown,
+  label: string,
+  cap: number,
+  options: { positive: boolean },
+): number | undefined {
+  const parsed = options.positive
+    ? readOptionalPositiveInt(value, label)
+    : readOptionalNonNegativeInt(value, label);
+  if (parsed !== undefined && parsed > cap) {
+    throw new BadRequestError(`${label} must be no greater than ${cap}`);
+  }
+
+  return parsed;
+}
+
 function readWorkflowPolicyPayload(
   payload: unknown,
 ): Partial<CoordinatorWorkflowPolicySnapshot> | undefined {
@@ -467,6 +499,12 @@ function readWorkflowPolicyPayload(
   if (payload.continueOnFailure !== undefined && typeof payload.continueOnFailure !== 'boolean') {
     throw new BadRequestError('policy.continueOnFailure must be a boolean when provided');
   }
+  if (
+    payload.requireDecisionApproval !== undefined &&
+    typeof payload.requireDecisionApproval !== 'boolean'
+  ) {
+    throw new BadRequestError('policy.requireDecisionApproval must be a boolean when provided');
+  }
   if (payload.resultRequired !== undefined && typeof payload.resultRequired !== 'boolean') {
     throw new BadRequestError('policy.resultRequired must be a boolean when provided');
   }
@@ -476,34 +514,57 @@ function readWorkflowPolicyPayload(
     COORDINATOR_LIMITS.maxWorkflowResultEntryChars,
   );
 
-  const maxConcurrentLanes = readOptionalPositiveInt(
+  const maxConcurrentLanes = readOptionalCappedInt(
     payload.maxConcurrentLanes,
     'policy.maxConcurrentLanes',
+    COORDINATOR_LIMITS.maxWorkflowLanes,
+    { positive: true },
   );
-  if (
-    maxConcurrentLanes !== undefined &&
-    maxConcurrentLanes > COORDINATOR_LIMITS.maxWorkflowLanes
-  ) {
-    throw new BadRequestError(
-      `policy.maxConcurrentLanes must be no greater than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
-    );
-  }
-
-  const timeoutMs = readOptionalNonNegativeInt(payload.timeoutMs, 'policy.timeoutMs');
-  if (timeoutMs !== undefined && timeoutMs > COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs) {
-    throw new BadRequestError(
-      `policy.timeoutMs must be no greater than ${COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs}`,
-    );
-  }
+  const timeoutMs = readOptionalCappedInt(
+    payload.timeoutMs,
+    'policy.timeoutMs',
+    COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+    { positive: false },
+  );
   const maxOutputBytesPerLane = readOptionalPositiveInt(
     payload.maxOutputBytesPerLane,
     'policy.maxOutputBytesPerLane',
+  );
+  const maxIterationsPerBranch = readOptionalCappedInt(
+    payload.maxIterationsPerBranch,
+    'policy.maxIterationsPerBranch',
+    COORDINATOR_LIMITS.maxWorkflowBranchIterations,
+    { positive: true },
   );
   const retryBackoffMs = readOptionalNonNegativeInt(
     payload.retryBackoffMs,
     'policy.retryBackoffMs',
   );
   const retryCount = readOptionalNonNegativeInt(payload.retryCount, 'policy.retryCount');
+  const maxTotalLanes = readOptionalCappedInt(
+    payload.maxTotalLanes,
+    'policy.maxTotalLanes',
+    COORDINATOR_LIMITS.maxWorkflowLanes,
+    { positive: true },
+  );
+  const maxTotalRetries = readOptionalCappedInt(
+    payload.maxTotalRetries,
+    'policy.maxTotalRetries',
+    COORDINATOR_LIMITS.maxWorkflowTotalRetries,
+    { positive: false },
+  );
+  const maxTotalSteps = readOptionalCappedInt(
+    payload.maxTotalSteps,
+    'policy.maxTotalSteps',
+    COORDINATOR_LIMITS.maxWorkflowTotalSteps,
+    { positive: true },
+  );
+  const maxWallClockMs = readOptionalCappedInt(
+    payload.maxWallClockMs,
+    'policy.maxWallClockMs',
+    COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs,
+    { positive: true },
+  );
 
   return {
     ...(payload.budgetHint !== undefined ? { budgetHint: payload.budgetHint } : {}),
@@ -511,7 +572,15 @@ function readWorkflowPolicyPayload(
       ? { continueOnFailure: payload.continueOnFailure }
       : {}),
     ...(maxConcurrentLanes !== undefined ? { maxConcurrentLanes } : {}),
+    ...(maxIterationsPerBranch !== undefined ? { maxIterationsPerBranch } : {}),
     ...(maxOutputBytesPerLane !== undefined ? { maxOutputBytesPerLane } : {}),
+    ...(maxTotalLanes !== undefined ? { maxTotalLanes } : {}),
+    ...(maxTotalRetries !== undefined ? { maxTotalRetries } : {}),
+    ...(maxTotalSteps !== undefined ? { maxTotalSteps } : {}),
+    ...(maxWallClockMs !== undefined ? { maxWallClockMs } : {}),
+    ...(payload.requireDecisionApproval !== undefined
+      ? { requireDecisionApproval: payload.requireDecisionApproval }
+      : {}),
     ...(payload.resultRequired !== undefined ? { resultRequired: payload.resultRequired } : {}),
     ...(retryBackoffMs !== undefined ? { retryBackoffMs } : {}),
     ...(retryCount !== undefined ? { retryCount } : {}),
@@ -1021,6 +1090,44 @@ function readWaitForIdlePayload(payload: unknown): CoordinatorWaitForIdlePayload
   };
 }
 
+function readApproveWorkflowActionsPayload(
+  payload: unknown,
+): CoordinatorApproveWorkflowActionsPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('approve_workflow_actions payload must be an object');
+  }
+  assertString(payload.approvalId, 'approvalId');
+  assertString(payload.workflowId, 'workflowId');
+
+  return { approvalId: payload.approvalId, workflowId: payload.workflowId };
+}
+
+function readDenyWorkflowActionsPayload(payload: unknown): CoordinatorDenyWorkflowActionsPayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('deny_workflow_actions payload must be an object');
+  }
+  assertString(payload.approvalId, 'approvalId');
+  assertString(payload.workflowId, 'workflowId');
+  assertOptionalString(payload.reason, 'reason');
+  assertOptionalStringSize(payload.reason, 'reason', COORDINATOR_LIMITS.maxWorkflowShortTextChars);
+
+  return {
+    approvalId: payload.approvalId,
+    ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+    workflowId: payload.workflowId,
+  };
+}
+
+function readRetryLanePayload(payload: unknown): CoordinatorRetryLanePayload {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('retry_lane payload must be an object');
+  }
+  assertString(payload.laneId, 'laneId');
+  assertString(payload.workflowId, 'workflowId');
+
+  return { laneId: payload.laneId, workflowId: payload.workflowId };
+}
+
 function readSignalDonePayload(payload: unknown): CoordinatorSignalDonePayload {
   if (payload === undefined) {
     return {};
@@ -1057,75 +1164,6 @@ function getToolCallKey(envelope: CoordinatorToolCallEnvelope): string {
   return `${tokenKey}:${envelope.callId}`;
 }
 
-function getAutomationClientId(runId: string): string {
-  return `${COORDINATOR_AUTOMATION_CLIENT_ID_PREFIX}${runId}`;
-}
-
-function getPromptDeliveryKey(
-  prompt: Pick<CoordinatorPromptRequestSnapshot, 'requestId' | 'runId'>,
-): string {
-  return `${prompt.runId}:${prompt.requestId}`;
-}
-
-function getPromptDeliveryTargetKey(
-  prompt: Pick<CoordinatorPromptRequestSnapshot, 'runId' | 'targetTaskId'>,
-): string {
-  return `${prompt.runId}:${prompt.targetTaskId}`;
-}
-
-function getLatestPromptSnapshot(
-  prompt: Pick<CoordinatorPromptRequestSnapshot, 'requestId' | 'runId'>,
-): CoordinatorPromptRequestSnapshot | null {
-  return (
-    getCoordinatorRun(prompt.runId)?.promptQueue.find(
-      (candidate) => candidate.requestId === prompt.requestId,
-    ) ?? null
-  );
-}
-
-function countReservedPromptDeliveryTargets(
-  keys: Iterable<string>,
-  runId: string | null = null,
-): number {
-  let count = 0;
-  for (const key of keys) {
-    if (runId === null || key.startsWith(`${runId}:`)) {
-      count += 1;
-    }
-  }
-
-  return count;
-}
-
-function getReservedPromptDeliveryTargetKeys(excludedTargetKey: string | null = null): Set<string> {
-  const reservedTargetKeys = new Set(promptDeliveryChainsByTargetKey.keys());
-  if (excludedTargetKey !== null) {
-    reservedTargetKeys.delete(excludedTargetKey);
-  }
-
-  return reservedTargetKeys;
-}
-
-function hasGlobalPromptDeliveryCapacity(): boolean {
-  return (
-    countReservedPromptDeliveryTargets(getReservedPromptDeliveryTargetKeys()) <
-    COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal
-  );
-}
-
-function hasPromptDeliveryCapacity(
-  runId: string,
-  excludedTargetKey: string | null = null,
-): boolean {
-  const reservedTargetKeys = getReservedPromptDeliveryTargetKeys(excludedTargetKey);
-  return (
-    countReservedPromptDeliveryTargets(reservedTargetKeys) <
-      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesGlobal &&
-    countReservedPromptDeliveryTargets(reservedTargetKeys, runId) <
-      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun
-  );
-}
-
 function getSpawnDedupeKey(
   runId: string,
   payload: Pick<CoordinatorSpawnSubtaskPayload, 'assignment' | 'dedupeKey' | 'name'>,
@@ -1159,135 +1197,8 @@ function getActiveSpawnCountForProject(projectId: string): number {
   return count;
 }
 
-function mergeLaunchArgs(
-  args: string[] | undefined,
-  skipPermissionsArgs: string[] | undefined,
-): string[] {
-  const mergedArgs = [...(args ?? [])];
-  for (const arg of skipPermissionsArgs ?? []) {
-    if (!mergedArgs.includes(arg)) {
-      mergedArgs.push(arg);
-    }
-  }
-
-  return mergedArgs;
-}
-
-function usesSeededInitialAssignment(agent: CoordinatorSpawnAgentConfig): boolean {
-  return getCoordinatorAgentInitialAssignmentMode(agent) !== 'post-ready-prompt';
-}
-
-function canSendFollowupPrompt(
-  agentOrMode: CoordinatorSpawnAgentConfig | CoordinatorAgentFollowupPromptMode,
-): boolean {
-  return (
-    (typeof agentOrMode === 'string'
-      ? agentOrMode
-      : getCoordinatorAgentFollowupPromptMode(agentOrMode)) === 'post-ready-prompt'
-  );
-}
-
-function buildCoordinatorSeededLaunchArgs(
-  agent: CoordinatorSpawnAgentConfig,
-  assignment: string,
-  toolCommand: string | undefined,
-): string[] {
-  const prompt = buildCoordinatorSubtaskAssignment(assignment, {
-    ...(toolCommand !== undefined ? { toolCommand } : {}),
-  });
-  return [...mergeLaunchArgs(agent.args, agent.skipPermissionsArgs), prompt];
-}
-
-function assertSupportedSeededInitialAssignment(agent: CoordinatorSpawnAgentConfig): void {
-  if (!usesSeededInitialAssignment(agent)) {
-    return;
-  }
-  if (!isCodexCoordinatorAgentCommand(agent.command)) {
-    throw new BadRequestError(
-      'Seeded initial assignment modes are currently supported only for codex agents',
-    );
-  }
-}
-
 function shouldCleanupCoordinatorSubtask(status: CoordinatorSubtaskSnapshot['status']): boolean {
   return status !== 'cancelled' && status !== 'landed';
-}
-
-function isStartupSubtaskStatus(status: CoordinatorSubtaskSnapshot['status']): boolean {
-  return status === 'spawning' || status === 'waiting-for-agent-ready' || status === 'running';
-}
-
-function isPromptTargetActive(prompt: CoordinatorPromptRequestSnapshot): boolean {
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
-  return subtask !== undefined && !isCoordinatorTerminalSubtaskStatus(subtask.status);
-}
-
-function updateInitialPromptSubtaskStatus(prompt: CoordinatorPromptRequestSnapshot): void {
-  if (prompt.kind !== 'initial-assignment') {
-    return;
-  }
-
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
-  if (!subtask || !isStartupSubtaskStatus(subtask.status)) {
-    return;
-  }
-  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
-
-  if (prompt.status === 'delivered') {
-    updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'running', {
-      startup: {
-        ...startup,
-        initialAssignmentStatus: 'delivered',
-        ...(prompt.deliveredAt !== undefined ? { deliveredAt: prompt.deliveredAt } : {}),
-      },
-    });
-    return;
-  }
-  if (prompt.status === 'failed') {
-    updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'failed', {
-      result: prompt.waitingReason ?? 'Initial assignment delivery failed.',
-      startup: {
-        ...startup,
-        initialAssignmentStatus: 'failed',
-      },
-    });
-    return;
-  }
-  if (prompt.status === 'blocked-by-question') {
-    updateCoordinatorSubtaskStatus(prompt.runId, prompt.targetTaskId, 'waiting-for-user', {
-      startup: {
-        ...startup,
-        initialAssignmentStatus: 'blocked-by-question',
-      },
-      ...(prompt.waitingReason !== undefined ? { result: prompt.waitingReason } : {}),
-    });
-  }
-}
-
-function updateCoordinatorPromptDeliveryState(
-  runId: string,
-  requestId: string,
-  patch: Parameters<typeof updateCoordinatorPrompt>[2],
-): CoordinatorPromptRequestSnapshot {
-  const prompt = updateCoordinatorPrompt(runId, requestId, patch);
-  updateInitialPromptSubtaskStatus(prompt);
-  return prompt;
-}
-
-function isPromptReadyForReadinessPolicy(
-  readinessPolicy: CoordinatorAgentReadinessPolicy,
-  scrollback: string,
-): boolean {
-  switch (readinessPolicy) {
-    case 'codex':
-      return hasCodexPromptInTail(scrollback);
-    case 'shell':
-      return hasShellPromptReadyInTail(scrollback);
-    case 'terminal-generic':
-      return true;
-  }
 }
 
 function assertCoordinatorTaskCaller(envelope: CoordinatorToolInvocation): void {
@@ -1376,78 +1287,8 @@ function trimUtf8Text(
   return trimUtf8BufferTail(buffer, maxBytes);
 }
 
-function scheduleCoordinatorPromptDelivery(delayMs = 0, force = false): void {
-  if (force) {
-    promptDeliveryForce = true;
-  }
-  if (promptDeliveryContext === null) {
-    return;
-  }
-  if (promptDeliveryTimer !== null) {
-    if (force && delayMs === 0) {
-      clearTimeout(promptDeliveryTimer);
-      promptDeliveryTimer = null;
-    } else {
-      return;
-    }
-  }
-
-  promptDeliveryTimer = setTimeout(() => {
-    const forceDelivery = promptDeliveryForce;
-    promptDeliveryForce = false;
-    promptDeliveryTimer = null;
-    void processCoordinatorPromptQueue(forceDelivery);
-  }, delayMs);
-}
-
-function isDeliverablePromptStatus(status: CoordinatorPromptRequestSnapshot['status']): boolean {
-  return (
-    status === 'queued' ||
-    status === 'waiting-for-agent-session' ||
-    status === 'waiting-for-terminal-prompt' ||
-    status === 'waiting-for-user-idle' ||
-    status === 'waiting-for-terminal-input-clear' ||
-    status === 'waiting-for-command-lease'
-  );
-}
-
-async function processCoordinatorPromptQueue(force = false): Promise<void> {
-  const context = promptDeliveryContext;
-  if (!context) {
-    return;
-  }
-
-  const now = Date.now();
-  let nextRetryAt: number | null = null;
-  for (const run of listCoordinatorRuns()) {
-    for (const prompt of run.promptQueue) {
-      if (!isDeliverablePromptStatus(prompt.status)) {
-        continue;
-      }
-      if (!force && prompt.earliestDeliveryAt > now) {
-        if (nextRetryAt === null) {
-          nextRetryAt = prompt.earliestDeliveryAt;
-        } else {
-          nextRetryAt = Math.min(nextRetryAt, prompt.earliestDeliveryAt);
-        }
-        continue;
-      }
-
-      void deliverCoordinatorPromptWithAdmission(context, prompt);
-
-      if (!hasGlobalPromptDeliveryCapacity()) {
-        return;
-      }
-    }
-  }
-
-  if (nextRetryAt !== null) {
-    scheduleCoordinatorPromptDelivery(Math.max(0, nextRetryAt - now));
-  }
-}
-
 function scheduleCoordinatorWorkflowExecution(delayMs = 0): void {
-  if (promptDeliveryContext === null) {
+  if (coordinatorSchedulerContext === null) {
     return;
   }
 
@@ -1561,8 +1402,8 @@ function failWorkflowAfterSchedulerError(
 }
 
 async function processCoordinatorWorkflowExecutionQueue(): Promise<void> {
-  const context = promptDeliveryContext;
-  const taskNames = promptDeliveryTaskNames;
+  const context = coordinatorSchedulerContext;
+  const taskNames = coordinatorSchedulerTaskNames;
   if (context === null || taskNames === null || workflowExecutionActive) {
     return;
   }
@@ -1618,9 +1459,10 @@ export function startCoordinatorPromptDeliveryRuntime(
   context: HandlerContext,
   taskNames?: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
 ): () => void {
-  promptDeliveryContext = context;
-  promptDeliveryTaskNames = taskNames ?? promptDeliveryTaskNames;
+  coordinatorSchedulerContext = context;
+  coordinatorSchedulerTaskNames = taskNames ?? coordinatorSchedulerTaskNames;
   promptDeliveryReferences += 1;
+  startCoordinatorPromptDeliveryLoop(context);
 
   function stopCoordinatorPromptDeliveryRuntime(): void {
     promptDeliveryReferences = Math.max(0, promptDeliveryReferences - 1);
@@ -1628,82 +1470,52 @@ export function startCoordinatorPromptDeliveryRuntime(
       return;
     }
 
-    promptDeliveryCleanup?.();
+    stopCoordinatorPromptDeliveryLoop();
+    coordinatorSchedulerCleanup?.();
   }
 
-  if (promptDeliveryCleanup !== null) {
-    scheduleCoordinatorPromptDelivery();
+  if (coordinatorSchedulerCleanup !== null) {
     scheduleNextCoordinatorWorkflowExecution();
     return stopCoordinatorPromptDeliveryRuntime;
   }
 
   const cleanupCoordinatorEvents = subscribeCoordinatorEvents((event) => {
-    if (event.eventType === 'prompt-upserted' || event.eventType === 'subtask-upserted') {
-      scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-    }
     if (event.eventType === 'run-upserted') {
       scheduleNextCoordinatorWorkflowExecution();
     }
   });
-  const cleanupSupervisionEvents = subscribeAgentSupervision(() => {
-    scheduleCoordinatorPromptDelivery(0, true);
-  });
-  promptDeliveryCleanup = () => {
+  coordinatorSchedulerCleanup = () => {
     cleanupCoordinatorEvents();
-    cleanupSupervisionEvents();
-    if (promptDeliveryTimer !== null) {
-      clearTimeout(promptDeliveryTimer);
-      promptDeliveryTimer = null;
-    }
     if (workflowExecutionTimer !== null) {
       clearTimeout(workflowExecutionTimer);
       workflowExecutionTimer = null;
     }
-    activePromptDeliveryKeys.clear();
-    scheduledPromptDeliveryKeys.clear();
-    promptDeliveryChainsByTargetKey.clear();
-    promptDeliveryForce = false;
     promptDeliveryReferences = 0;
     workflowExecutionActive = false;
     workflowExecutionTimerDueAt = null;
-    promptDeliveryCleanup = null;
-    promptDeliveryContext = null;
-    promptDeliveryTaskNames = null;
+    coordinatorSchedulerCleanup = null;
+    coordinatorSchedulerContext = null;
+    coordinatorSchedulerTaskNames = null;
   };
-  scheduleCoordinatorPromptDelivery();
   scheduleNextCoordinatorWorkflowExecution();
 
   return stopCoordinatorPromptDeliveryRuntime;
 }
 
 export function resetCoordinatorToolGatewayForTests(): void {
-  promptDeliveryCleanup?.();
-  promptDeliveryCleanup = null;
-  promptDeliveryContext = null;
-  promptDeliveryForce = false;
-  promptDeliveryTaskNames = null;
+  resetCoordinatorPromptDeliveryForTests();
+  coordinatorSchedulerCleanup?.();
+  coordinatorSchedulerCleanup = null;
+  coordinatorSchedulerContext = null;
+  coordinatorSchedulerTaskNames = null;
   promptDeliveryReferences = 0;
-  if (promptDeliveryTimer !== null) {
-    clearTimeout(promptDeliveryTimer);
-    promptDeliveryTimer = null;
-  }
   if (workflowExecutionTimer !== null) {
     clearTimeout(workflowExecutionTimer);
     workflowExecutionTimer = null;
   }
-  activePromptDeliveryKeys.clear();
-  scheduledPromptDeliveryKeys.clear();
-  promptDeliveryChainsByTargetKey.clear();
   workflowExecutionActive = false;
   workflowExecutionTimerDueAt = null;
   activeSpawnSubtasksByDedupeKey.clear();
-}
-
-function emitTaskCommandControllerChange(context: HandlerContext, taskId: string): void {
-  context.emitIpcEvent?.(
-    IPC.TaskCommandControllerChanged,
-    getTaskCommandControllerSnapshot(taskId),
-  );
 }
 
 function emitReleasedTaskCommandController(
@@ -1878,6 +1690,13 @@ function createWorkflowStageDefinitions(template: CoordinatorWorkflowTemplate): 
         { id: 'map', kind: 'map', name: 'Map' },
         { id: 'reduce', kind: 'reduce', name: 'Reduce', dependsOn: ['map'] },
       ];
+    case 'repo_review':
+      return [
+        { id: 'scan', kind: 'find', name: 'Scan' },
+        { id: 'verify', kind: 'verify', name: 'Verify', dependsOn: ['scan'] },
+        { id: 'decide', kind: 'decision', name: 'Decide', dependsOn: ['verify'] },
+        { id: 'synthesize', kind: 'synthesize', name: 'Synthesize', dependsOn: ['decide'] },
+      ];
     case 'custom':
       return [{ id: 'fan-out', kind: 'fan-out', name: 'Fan-out' }];
   }
@@ -1938,6 +1757,7 @@ async function spawnWorkflowLane(
     name: lanePayload.name,
     ...(lanePayload.role !== undefined ? { role: lanePayload.role } : {}),
     runId: workflow.runId,
+    spawnedBy: lanePayload.spawnedBy ?? 'scheduler',
     stageId,
     status: 'spawning',
     timeoutAt: Date.now() + getWorkflowStageTimeoutMs(workflow, stageId),
@@ -2054,11 +1874,8 @@ async function spawnCoordinatorLanes(
     assignment: trimWorkflowAssignment(buildLaneAssignment(workflow, lane, lane.assignment)),
   }));
   const newLaneCount = countNewWorkflowLanePayloads(workflow, lanesToSpawn);
-  if (workflow.lanes.length + newLaneCount > COORDINATOR_LIMITS.maxWorkflowLanes) {
-    throw new BadRequestError(
-      `spawn_many would exceed workflow lane limit ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
-    );
-  }
+  assertWorkflowWithinDeadline(workflow, Date.now());
+  assertWorkflowBudgetAdmits(workflow, { addedLanes: newLaneCount, label: 'spawn_many' });
   const activeLaneCount = workflow.lanes.filter(
     (lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status),
   ).length;
@@ -2192,20 +2009,6 @@ async function appendCoordinatorWorkflowStepsFromTool(
   });
 }
 
-function getLaneStatusForResult(
-  status: CoordinatorWorkflowResultStatus,
-): CoordinatorWorkflowSnapshot['lanes'][number]['status'] {
-  switch (status) {
-    case 'completed':
-      return 'completed';
-    case 'blocked':
-    case 'needs-followup':
-      return 'blocked';
-    case 'failed':
-      return 'failed';
-  }
-}
-
 function getSubtaskStatusForResult(
   status: CoordinatorWorkflowResultStatus,
 ): CoordinatorSubtaskSnapshot['status'] {
@@ -2242,11 +2045,16 @@ async function submitCoordinatorWorkflowResult(
   if (isCoordinatorTerminalWorkflowLaneStatus(lane.status) && lane.resultId !== undefined) {
     throw new BadRequestError('workflow lane already has a terminal result');
   }
+  if (hasPendingWorkflowApprovalForLane(workflow, lane.id)) {
+    throw new BadRequestError('workflow lane already has a result pending approval');
+  }
   if (workflow.results.length >= COORDINATOR_LIMITS.maxWorkflowResults) {
     throw new BadRequestError('Coordinator workflow result limit reached');
   }
   const workflowActions = readWorkflowDecisionActions(workflow, lane, payload.metadata);
   const resultStatus = getWorkflowResultStatusForActions(workflowActions, payload.status);
+  const requiresApproval =
+    workflow.policy.requireDecisionApproval === true && workflowActions.length > 0;
 
   const now = Date.now();
   const resultId = randomUUID();
@@ -2279,11 +2087,13 @@ async function submitCoordinatorWorkflowResult(
     workflowId: workflow.id,
     now,
   });
-  updateCoordinatorWorkflowLane(run.id, workflow.id, lane.id, {
-    completedAt: now,
-    resultId: result.id,
-    status: getLaneStatusForResult(result.status),
-  });
+  if (!requiresApproval) {
+    updateCoordinatorWorkflowLane(run.id, workflow.id, lane.id, {
+      completedAt: now,
+      resultId: result.id,
+      status: getWorkflowLaneStatusForResultStatus(result.status),
+    });
+  }
   appendCoordinatorWorkflowJournal(run.id, workflow.id, {
     kind: 'lane-result',
     laneId: lane.id,
@@ -2291,6 +2101,16 @@ async function submitCoordinatorWorkflowResult(
     resultId: result.id,
     stageId: lane.stageId,
   });
+  if (requiresApproval) {
+    recordPendingWorkflowApproval({
+      actions: workflowActions,
+      laneId: lane.id,
+      resultId: result.id,
+      runId: run.id,
+      stageId: lane.stageId,
+      workflowId: workflow.id,
+    });
+  }
   updateCoordinatorSubtaskStatus(run.id, subtask.taskId, getSubtaskStatusForResult(result.status), {
     result: result.summary,
   });
@@ -2314,10 +2134,90 @@ async function submitCoordinatorWorkflowResult(
           stageId,
           lanePayload,
         ),
-      workflowActions,
+      ...(requiresApproval ? {} : { workflowActions }),
       workflowId: workflow.id,
     }),
   };
+}
+
+interface CoordinatorSubtaskAgentLaunchOptions {
+  agent: CoordinatorSpawnSubtaskPayload['agent'];
+  agentId: string;
+  assignment: string;
+  branchName: string;
+  name: string;
+  onTaskRegistered?: () => void;
+  run: Pick<CoordinatorRunSnapshot, 'id' | 'projectMode'>;
+  taskId: string;
+  taskMetadata: ReturnType<typeof getCreatedTaskMetadata>;
+  worktreePath: string;
+}
+
+/**
+ * Shared subtask-agent launch path for first spawns and respawns: task-name registration,
+ * credential creation, seeded/merged launch args, PARALLEL_CODE_* env, and the agent spawn itself.
+ * Per-path work (dedupe registration, credential rotation, prompt queueing) stays at the call
+ * sites; `spawnAgent` is deferred so callers can record run state between credential creation and
+ * the spawn.
+ */
+function prepareCoordinatorSubtaskAgentLaunch(
+  gateway: CoordinatorToolGatewayContext,
+  options: CoordinatorSubtaskAgentLaunchOptions,
+): {
+  credential: ReturnType<typeof createCoordinatorCredential>;
+  spawnAgent: () => void;
+  usesSeededStartup: boolean;
+} {
+  gateway.taskNames.registerCreatedTask(options.taskId, {
+    agentDefId: `coordinator-custom:${options.agent.command}`,
+    agentDefName: options.agent.name ?? options.agent.command,
+    branchName: options.branchName,
+    gitIsolation: options.taskMetadata.gitIsolation,
+    projectMode: options.taskMetadata.projectMode,
+    taskName: options.name,
+    worktreePath: options.worktreePath,
+    worktreeOwnership: options.taskMetadata.worktreeOwnership,
+  });
+  options.onTaskRegistered?.();
+
+  const credential = createCoordinatorCredential(gateway.context, {
+    agentId: options.agentId,
+    runId: options.run.id,
+    taskId: options.taskId,
+    ...(gateway.context.coordinatorToolCallUrl !== undefined
+      ? { toolCallUrl: gateway.context.coordinatorToolCallUrl }
+      : {}),
+  });
+  const usesSeededStartup = usesSeededInitialAssignment(options.agent);
+  const launchArgs = usesSeededStartup
+    ? buildCoordinatorSeededLaunchArgs(options.agent, options.assignment, credential.toolCommand)
+    : mergeLaunchArgs(options.agent.args, options.agent.skipPermissionsArgs);
+  const env = {
+    ...(options.agent.env ?? {}),
+    PARALLEL_CODE_COORDINATOR_CREDENTIAL: credential.credentialPath,
+    PARALLEL_CODE_COORDINATOR_RUN_ID: options.run.id,
+    ...(credential.toolCommand !== undefined
+      ? { PARALLEL_CODE_COORDINATOR_TOOL: credential.toolCommand }
+      : {}),
+  };
+  const runnerProfile = normalizeAgentRunnerProfileConfig(undefined);
+  const spawnAgent = (): void => {
+    spawnTaskAgentWorkflow(gateway.context, {
+      agentId: options.agentId,
+      args: launchArgs,
+      command: options.agent.command,
+      cols: DEFAULT_TERMINAL_COLS,
+      cwd: options.worktreePath,
+      env,
+      isShell: false,
+      projectMode: options.run.projectMode,
+      rows: DEFAULT_TERMINAL_ROWS,
+      taskId: options.taskId,
+      ...(runnerProfile !== undefined ? { runnerProfile } : {}),
+    });
+  };
+
+  return { credential, spawnAgent, usesSeededStartup };
 }
 
 async function createHiddenSubtaskAfterDedupe(
@@ -2343,31 +2243,34 @@ async function createHiddenSubtaskAfterDedupe(
   const taskMetadata = getCreatedTaskMetadata(result, run.projectMode);
   let taskRegistryUpdated = false;
   try {
-    gateway.taskNames.registerCreatedTask(result.id, {
-      agentDefId: `coordinator-custom:${payload.agent.command}`,
-      agentDefName: payload.agent.name ?? payload.agent.command,
-      branchName: result.branch_name,
-      gitIsolation: taskMetadata.gitIsolation,
-      projectMode: taskMetadata.projectMode,
-      taskName: payload.name,
-      worktreePath: result.worktree_path,
-      worktreeOwnership: taskMetadata.worktreeOwnership,
-    });
-    taskRegistryUpdated = true;
-
-    const credential = createCoordinatorCredential(gateway.context, {
-      agentId,
+    const { credential, spawnAgent, usesSeededStartup } = prepareCoordinatorSubtaskAgentLaunch(
+      gateway,
+      {
+        agent: payload.agent,
+        agentId,
+        assignment: payload.assignment,
+        branchName: result.branch_name,
+        name: payload.name,
+        onTaskRegistered: () => {
+          taskRegistryUpdated = true;
+        },
+        run,
+        taskId: result.id,
+        taskMetadata,
+        worktreePath: result.worktree_path,
+      },
+    );
+    recordCoordinatorSubtaskLaunch({
+      agent: payload.agent,
+      assignment: payload.assignment,
+      ...(payload.baseBranch !== undefined ? { baseBranch: payload.baseBranch } : {}),
+      ...(payload.branchPrefix !== undefined ? { branchPrefix: payload.branchPrefix } : {}),
+      dedupeKey,
+      name: payload.name,
+      recordedAt: Date.now(),
       runId: run.id,
       taskId: result.id,
-      ...(gateway.context.coordinatorToolCallUrl !== undefined
-        ? { toolCallUrl: gateway.context.coordinatorToolCallUrl }
-        : {}),
     });
-    const initialAssignmentMode = getCoordinatorAgentInitialAssignmentMode(payload.agent);
-    const usesSeededStartup = initialAssignmentMode !== 'post-ready-prompt';
-    const launchArgs = usesSeededStartup
-      ? buildCoordinatorSeededLaunchArgs(payload.agent, payload.assignment, credential.toolCommand)
-      : mergeLaunchArgs(payload.agent.args, payload.agent.skipPermissionsArgs);
     addCoordinatorSubtask({
       agentId,
       assignment: payload.assignment,
@@ -2385,28 +2288,7 @@ async function createHiddenSubtaskAfterDedupe(
       worktreePath: result.worktree_path,
     });
 
-    const env = {
-      ...(payload.agent.env ?? {}),
-      PARALLEL_CODE_COORDINATOR_CREDENTIAL: credential.credentialPath,
-      PARALLEL_CODE_COORDINATOR_RUN_ID: run.id,
-      ...(credential.toolCommand !== undefined
-        ? { PARALLEL_CODE_COORDINATOR_TOOL: credential.toolCommand }
-        : {}),
-    };
-    const runnerProfile = normalizeAgentRunnerProfileConfig(undefined);
-    spawnTaskAgentWorkflow(gateway.context, {
-      agentId,
-      args: launchArgs,
-      command: payload.agent.command,
-      cols: DEFAULT_TERMINAL_COLS,
-      cwd: result.worktree_path,
-      env,
-      isShell: false,
-      projectMode: run.projectMode,
-      rows: DEFAULT_TERMINAL_ROWS,
-      taskId: result.id,
-      ...(runnerProfile !== undefined ? { runnerProfile } : {}),
-    });
+    spawnAgent();
 
     if (usesSeededStartup) {
       updateCoordinatorSubtaskStatus(run.id, result.id, 'running');
@@ -2438,6 +2320,7 @@ async function createHiddenSubtaskAfterDedupe(
     if (taskRegistryUpdated) {
       gateway.taskNames.deleteTask(result.id);
     }
+    removeCoordinatorSubtaskLaunch(run.id, result.id);
     revokeCoordinatorTaskCredential(gateway.context, result.id);
     await deleteCreatedCoordinatorTask(gateway.context, result, run, [agentId]);
     if (!getCoordinatorRun(run.id)?.subtasks.some((subtask) => subtask.taskId === result.id)) {
@@ -2481,6 +2364,304 @@ async function deleteCreatedCoordinatorTask(
   }
 }
 
+interface CoordinatorSubtaskRespawnOptions {
+  launch: CoordinatorSubtaskLaunchSnapshot;
+  resumeId: string;
+  run: CoordinatorRunSnapshot;
+  subtask: CoordinatorSubtaskSnapshot;
+}
+
+async function respawnCoordinatorSubtaskAgent(
+  gateway: CoordinatorToolGatewayContext,
+  options: CoordinatorSubtaskRespawnOptions,
+): Promise<CoordinatorSubtaskSnapshot> {
+  const { launch, resumeId, run, subtask } = options;
+  assertSupportedSeededInitialAssignment(launch.agent);
+  // Respawn rotates the task credential before the shared launch path mints a fresh one.
+  revokeCoordinatorTaskCredential(gateway.context, subtask.taskId);
+  const { credential, spawnAgent, usesSeededStartup } = prepareCoordinatorSubtaskAgentLaunch(
+    gateway,
+    {
+      agent: launch.agent,
+      agentId: subtask.agentId,
+      assignment: launch.assignment,
+      branchName: subtask.branchName ?? '',
+      name: launch.name,
+      run,
+      taskId: subtask.taskId,
+      taskMetadata: getCreatedTaskMetadata(
+        { git_isolation: 'worktree' } as CreateTaskResult,
+        run.projectMode,
+      ),
+      worktreePath: subtask.worktreePath,
+    },
+  );
+  spawnAgent();
+
+  const startup = getCoordinatorSubtaskStartupSnapshot(subtask.startup);
+  if (usesSeededStartup) {
+    return updateCoordinatorSubtaskStatus(run.id, subtask.taskId, 'running', {
+      interruptedByRestoreAt: undefined,
+      result: undefined,
+      startup: {
+        ...startup,
+        initialAssignmentStatus: 'seeded-at-spawn',
+        seededAt: Date.now(),
+      },
+      toolTokenId: credential.tokenId,
+    });
+  }
+
+  // A readiness-gated respawn always needs a fresh initial assignment because any earlier prompt
+  // targeted the pre-restore PTY that no longer exists.
+  const updated = updateCoordinatorSubtaskStatus(
+    run.id,
+    subtask.taskId,
+    'waiting-for-agent-ready',
+    {
+      interruptedByRestoreAt: undefined,
+      result: undefined,
+      startup: {
+        ...startup,
+        initialAssignmentStatus: 'pending-prompt',
+      },
+      toolTokenId: credential.tokenId,
+    },
+  );
+  const currentRun = getCoordinatorRun(run.id);
+  await queueCoordinatorPromptForDelivery(gateway.context, {
+    dedupeKey: `resume:${resumeId}:${subtask.taskId}:initial`,
+    kind: 'initial-assignment',
+    run: currentRun ?? run,
+    sourceTaskId: run.coordinatorTaskId,
+    subtask: updated,
+    text: buildCoordinatorSubtaskAssignment(launch.assignment, {
+      ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
+    }),
+  });
+  return (
+    getCoordinatorRun(run.id)?.subtasks.find((candidate) => candidate.taskId === subtask.taskId) ??
+    updated
+  );
+}
+
+async function resumeCoordinatorRun(
+  gateway: CoordinatorToolGatewayContext,
+  request: Extract<CoordinatorUiToolCallRequest, { toolName: 'resume_run' }>,
+): Promise<CoordinatorRunResumeResult> {
+  const resumeId = request.requestId;
+  const run = resumeCoordinatorRunFromStale(request.runId, { resumeId });
+  const failed: CoordinatorRunResumeResult['failed'] = [];
+  const respawned: string[] = [];
+  const laneTaskIds = new Set(
+    run.workflows.flatMap((workflow) =>
+      workflow.lanes.flatMap((lane) => (lane.taskId !== undefined ? [lane.taskId] : [])),
+    ),
+  );
+
+  for (const subtask of run.subtasks) {
+    if (subtask.interruptedByRestoreAt === undefined || laneTaskIds.has(subtask.taskId)) {
+      continue;
+    }
+
+    const launch = getCoordinatorSubtaskLaunch(run.id, subtask.taskId);
+    if (launch === null) {
+      const reason =
+        'Coordinator subtask has no recorded launch payload, so it cannot be respawned.';
+      updateCoordinatorSubtaskStatus(run.id, subtask.taskId, 'failed', {
+        interruptedByRestoreAt: undefined,
+        result: reason,
+      });
+      failed.push({ reason, taskId: subtask.taskId });
+      continue;
+    }
+
+    try {
+      await respawnCoordinatorSubtaskAgent(gateway, { launch, resumeId, run, subtask });
+      respawned.push(subtask.taskId);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      updateCoordinatorSubtaskStatus(run.id, subtask.taskId, 'failed', {
+        interruptedByRestoreAt: undefined,
+        result: reason,
+      });
+      failed.push({ reason, taskId: subtask.taskId });
+    }
+  }
+
+  for (const workflow of run.workflows) {
+    if (workflow.status !== 'stale-after-restore') {
+      continue;
+    }
+
+    let workflowOutcome: Awaited<ReturnType<typeof resumeCoordinatorWorkflowExecution>>;
+    try {
+      workflowOutcome = await resumeCoordinatorWorkflowExecution({
+        respawnLane: async (_workflow, lane) => {
+          if (lane.taskId === undefined) {
+            throw new Error('Workflow lane has no task to respawn.');
+          }
+          const currentRun = requireCoordinatorRun(run.id);
+          const laneSubtask = currentRun.subtasks.find(
+            (candidate) => candidate.taskId === lane.taskId,
+          );
+          if (!laneSubtask) {
+            throw new Error(`Coordinator subtask not found for lane task ${lane.taskId}.`);
+          }
+          const launch = getCoordinatorSubtaskLaunch(run.id, lane.taskId);
+          if (launch === null) {
+            throw new Error(
+              'Coordinator subtask has no recorded launch payload, so it cannot be respawned.',
+            );
+          }
+
+          const subtask = await respawnCoordinatorSubtaskAgent(gateway, {
+            launch,
+            resumeId,
+            run: currentRun,
+            subtask: laneSubtask,
+          });
+          return { laneId: lane.id, subtask };
+        },
+        runId: run.id,
+        spawnLane: (currentWorkflow, stageId, lanePayload) =>
+          spawnWorkflowLane(
+            gateway,
+            {
+              callId: `resume:${resumeId}:${currentWorkflow.id}`,
+              runId: run.id,
+              taskId: run.coordinatorTaskId,
+              toolName: 'start_workflow',
+            },
+            currentWorkflow,
+            stageId,
+            lanePayload,
+          ),
+        workflowId: workflow.id,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      failed.push({
+        reason: `Coordinator workflow ${workflow.id} resume failed: ${reason}`,
+      });
+      continue;
+    }
+    respawned.push(...workflowOutcome.respawned);
+    failed.push(...workflowOutcome.failed);
+    for (const laneFailure of workflowOutcome.failed) {
+      if (laneFailure.taskId === undefined) {
+        continue;
+      }
+      const failedSubtask = getCoordinatorRun(run.id)?.subtasks.find(
+        (candidate) => candidate.taskId === laneFailure.taskId,
+      );
+      if (failedSubtask?.interruptedByRestoreAt !== undefined) {
+        updateCoordinatorSubtaskStatus(run.id, laneFailure.taskId, 'failed', {
+          interruptedByRestoreAt: undefined,
+          result: laneFailure.reason,
+        });
+      }
+    }
+  }
+
+  const updatedRun = recordCoordinatorRunResumeOutcome(run.id, resumeId, {
+    failedTaskIds: failed.flatMap((entry) => (entry.taskId !== undefined ? [entry.taskId] : [])),
+    respawnedTaskIds: respawned,
+  });
+  scheduleCoordinatorPromptDelivery();
+  scheduleNextCoordinatorWorkflowExecution();
+
+  return {
+    failed,
+    respawned,
+    resumeId,
+    run: updatedRun,
+  };
+}
+
+function isActiveCoordinatorWorkflowStatus(status: CoordinatorWorkflowSnapshot['status']): boolean {
+  return !isCoordinatorTerminalWorkflowStatus(status);
+}
+
+function pauseCoordinatorRun(
+  request: Extract<CoordinatorUiToolCallRequest, { toolName: 'pause_run' }>,
+): CoordinatorRunSnapshot {
+  const now = Date.now();
+  const run = setCoordinatorRunPaused(request.runId, true, now);
+  for (const workflow of run.workflows) {
+    if (!isActiveCoordinatorWorkflowStatus(workflow.status)) {
+      continue;
+    }
+    appendCoordinatorWorkflowJournal(run.id, workflow.id, {
+      at: now,
+      kind: 'run-paused',
+      message: 'Operator paused the coordinator run; new work is deferred.',
+    });
+  }
+
+  return getCoordinatorRun(request.runId) ?? run;
+}
+
+async function unpauseCoordinatorRun(
+  gateway: CoordinatorToolGatewayContext,
+  request: Extract<CoordinatorUiToolCallRequest, { toolName: 'unpause_run' }>,
+): Promise<CoordinatorRunSnapshot> {
+  const now = Date.now();
+  const run = setCoordinatorRunPaused(request.runId, false, now);
+  for (const workflow of run.workflows) {
+    if (!isActiveCoordinatorWorkflowStatus(workflow.status)) {
+      continue;
+    }
+    appendCoordinatorWorkflowJournal(run.id, workflow.id, {
+      at: now,
+      kind: 'run-unpaused',
+      message: 'Operator unpaused the coordinator run; deferred work is admitted again.',
+    });
+    await tickCoordinatorWorkflowExecution({
+      runId: run.id,
+      spawnLane: (currentWorkflow, stageId, lanePayload) =>
+        spawnWorkflowLane(
+          gateway,
+          {
+            callId: `unpause:${request.requestId}:${currentWorkflow.id}`,
+            runId: run.id,
+            taskId: run.coordinatorTaskId,
+            toolName: 'start_workflow',
+          },
+          currentWorkflow,
+          stageId,
+          lanePayload,
+        ),
+      workflowId: workflow.id,
+    });
+  }
+  scheduleCoordinatorPromptDelivery(0, true);
+  scheduleNextCoordinatorWorkflowExecution();
+
+  return getCoordinatorRun(request.runId) ?? run;
+}
+
+function createOperatorWorkflowSpawnLane(
+  gateway: CoordinatorToolGatewayContext,
+  request: CoordinatorUiToolCallRequest,
+): SpawnCoordinatorWorkflowLane {
+  return (currentWorkflow, stageId, lanePayload) => {
+    const run = requireCoordinatorRun(request.runId);
+    return spawnWorkflowLane(
+      gateway,
+      {
+        callId: `${request.toolName}:${request.requestId}:${currentWorkflow.id}`,
+        runId: request.runId,
+        taskId: run.coordinatorTaskId,
+        toolName: 'start_workflow',
+      },
+      currentWorkflow,
+      stageId,
+      lanePayload,
+    );
+  };
+}
+
 function toCoordinatorSubtaskCleanupWarning(
   subtask: CoordinatorSubtaskSnapshot,
   message: string,
@@ -2502,6 +2683,7 @@ async function cleanupCoordinatorSubtaskRuntime(
 
   cancelCoordinatorPromptsForTask(run.id, subtask.taskId, 'subtask-cleaned-up');
   cancelCoordinatorWorkflowLanesForTask(run.id, subtask.taskId, 'subtask-cleaned-up');
+  removeCoordinatorSubtaskLaunch(run.id, subtask.taskId);
 
   try {
     if (run.projectMode === 'git' && subtask.branchName) {
@@ -2566,276 +2748,6 @@ export async function cleanupCoordinatorTaskStateAndOwnedSubtasks(
   return warnings;
 }
 
-async function deliverCoordinatorPromptSerialized(
-  context: HandlerContext,
-  prompt: CoordinatorPromptRequestSnapshot,
-): Promise<CoordinatorPromptRequestSnapshot> {
-  const targetKey = getPromptDeliveryTargetKey(prompt);
-  const previousDelivery = promptDeliveryChainsByTargetKey.get(targetKey) ?? Promise.resolve();
-  const delivery = previousDelivery
-    .catch(() => undefined)
-    .then(async () => {
-      const latestPrompt = getLatestPromptSnapshot(prompt);
-      if (!latestPrompt) {
-        return prompt;
-      }
-      if (!isDeliverablePromptStatus(latestPrompt.status)) {
-        return latestPrompt;
-      }
-
-      return deliverCoordinatorPrompt(context, latestPrompt);
-    });
-  const trackedDelivery = delivery.finally(() => {
-    if (promptDeliveryChainsByTargetKey.get(targetKey) === trackedDelivery) {
-      promptDeliveryChainsByTargetKey.delete(targetKey);
-    }
-  });
-  promptDeliveryChainsByTargetKey.set(targetKey, trackedDelivery);
-  return delivery;
-}
-
-async function deliverCoordinatorPromptWithAdmission(
-  context: HandlerContext,
-  prompt: CoordinatorPromptRequestSnapshot,
-): Promise<CoordinatorPromptRequestSnapshot> {
-  const latestPrompt = getLatestPromptSnapshot(prompt);
-  if (!latestPrompt) {
-    return prompt;
-  }
-  if (!isDeliverablePromptStatus(latestPrompt.status)) {
-    return latestPrompt;
-  }
-
-  const key = getPromptDeliveryKey(latestPrompt);
-  if (scheduledPromptDeliveryKeys.has(key) || activePromptDeliveryKeys.has(key)) {
-    return latestPrompt;
-  }
-  if (!hasPromptDeliveryCapacity(latestPrompt.runId)) {
-    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-    return latestPrompt;
-  }
-
-  scheduledPromptDeliveryKeys.add(key);
-  try {
-    return await deliverCoordinatorPromptSerialized(context, latestPrompt);
-  } finally {
-    scheduledPromptDeliveryKeys.delete(key);
-    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-  }
-}
-
-function canCompletePromptDelivery(prompt: CoordinatorPromptRequestSnapshot): boolean {
-  const latestPrompt = getLatestPromptSnapshot(prompt);
-  if (!latestPrompt || latestPrompt.status !== 'delivering') {
-    return false;
-  }
-
-  return isPromptTargetActive(latestPrompt);
-}
-
-async function deliverCoordinatorPrompt(
-  context: HandlerContext,
-  prompt: CoordinatorPromptRequestSnapshot,
-): Promise<CoordinatorPromptRequestSnapshot> {
-  const nextRetryAt = Date.now() + PROMPT_DELIVERY_RETRY_DELAY_MS;
-  if (!isPromptTargetActive(prompt)) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      status: 'cancelled',
-      waitingReason: 'target-task-not-active',
-    });
-  }
-
-  const blockingHints = getCoordinatorBlockingActivityHints(prompt.targetTaskId);
-  if (blockingHints.length > 0) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-user-idle',
-      waitingReason: blockingHints[0]?.kind ?? 'user-activity',
-    });
-  }
-
-  if (!hasAgentSession(prompt.targetAgentId)) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-agent-session',
-      waitingReason: 'agent-session-missing',
-    });
-  }
-
-  const agentMeta = getAgentMeta(prompt.targetAgentId);
-  if (!agentMeta || agentMeta.taskId !== prompt.targetTaskId) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      failedAt: Date.now(),
-      status: 'failed',
-      waitingReason: 'agent-task-mismatch',
-    });
-  }
-
-  const supervision = getAgentSupervisionSnapshot(prompt.targetAgentId);
-  if (!supervision || supervision.taskId !== prompt.targetTaskId) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-agent-session',
-      waitingReason: 'agent-supervision-missing',
-    });
-  }
-  if (supervision.state === 'awaiting-input') {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      status: 'blocked-by-question',
-      waitingReason: 'agent-awaiting-input',
-    });
-  }
-  if (supervision.state !== 'idle-at-prompt') {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-terminal-prompt',
-      waitingReason: `agent-${supervision.state}`,
-    });
-  }
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
-  const startup = getCoordinatorSubtaskStartupSnapshot(subtask?.startup);
-  const scrollback = getAgentScrollbackBuffer(prompt.targetAgentId)?.toString('utf8') ?? '';
-  if (!isPromptReadyForReadinessPolicy(startup.readinessPolicy, scrollback)) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'waiting-for-terminal-prompt',
-      waitingReason: 'agent-quiet',
-    });
-  }
-
-  const automationClientId = getAutomationClientId(prompt.runId);
-  const key = getPromptDeliveryKey(prompt);
-  if (activePromptDeliveryKeys.has(key)) {
-    return prompt;
-  }
-  if (!hasPromptDeliveryCapacity(prompt.runId, getPromptDeliveryTargetKey(prompt))) {
-    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      earliestDeliveryAt: nextRetryAt,
-      status: 'queued',
-      waitingReason: undefined,
-    });
-  }
-
-  activePromptDeliveryKeys.add(key);
-  let acquiredLeaseGeneration: number | null = null;
-  try {
-    const lease = acquireTaskCommandLease(
-      prompt.targetTaskId,
-      automationClientId,
-      COORDINATOR_AUTOMATION_OWNER_ID,
-      'send a coordinator prompt',
-    );
-    if (!lease.acquired) {
-      return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-        earliestDeliveryAt: nextRetryAt,
-        status: 'waiting-for-command-lease',
-        waitingReason: 'task-command-lease-held',
-      });
-    }
-    acquiredLeaseGeneration = lease.leaseGeneration;
-    if (lease.changed) {
-      emitTaskCommandControllerChange(context, prompt.targetTaskId);
-    }
-
-    const deliveryAttemptId = randomUUID();
-    const journal = [
-      ...prompt.deliveryJournal,
-      {
-        agentGeneration: agentMeta.generation,
-        deliveryAttemptId,
-        ptySessionId: `${prompt.targetAgentId}:${agentMeta.generation}`,
-        requestId: prompt.requestId,
-        writePreparedAt: Date.now(),
-      },
-    ];
-    let updatedPrompt = updateCoordinatorPrompt(prompt.runId, prompt.requestId, {
-      attempts: prompt.attempts + 1,
-      deliveryJournal: journal,
-      status: 'delivering',
-      waitingReason: undefined,
-    });
-
-    const dispatch = materializePromptDispatch(prompt.text);
-    for (const write of dispatch.writes) {
-      if (!isPromptTargetActive(prompt)) {
-        return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-          status: 'cancelled',
-          waitingReason: 'target-task-not-active',
-        });
-      }
-      if (!hasAgentSession(prompt.targetAgentId)) {
-        throw new Error('Agent session disappeared during prompt delivery');
-      }
-      const currentMeta = getAgentMeta(prompt.targetAgentId);
-      if (!currentMeta || currentMeta.generation !== agentMeta.generation) {
-        throw new Error('Agent generation changed during prompt delivery');
-      }
-      if (
-        !isTaskCommandLeaseGenerationHeld(
-          prompt.targetTaskId,
-          automationClientId,
-          COORDINATOR_AUTOMATION_OWNER_ID,
-          acquiredLeaseGeneration,
-        )
-      ) {
-        throw new Error('Task command lease was lost during prompt delivery');
-      }
-      writeToAgent(prompt.targetAgentId, write.data);
-      if (write.delayAfterMs > 0) {
-        await sleep(write.delayAfterMs);
-      }
-    }
-
-    if (!canCompletePromptDelivery(prompt)) {
-      const latestPrompt = getLatestPromptSnapshot(prompt);
-      if (latestPrompt) {
-        return latestPrompt;
-      }
-
-      return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-        status: 'cancelled',
-        waitingReason: 'prompt-no-longer-active',
-      });
-    }
-
-    const latestDeliveryPrompt = getLatestPromptSnapshot(prompt) ?? updatedPrompt;
-    const acceptedJournal = latestDeliveryPrompt.deliveryJournal.map((entry) =>
-      entry.deliveryAttemptId === deliveryAttemptId
-        ? { ...entry, writeAcceptedAt: Date.now() }
-        : entry,
-    );
-    updatedPrompt = updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      deliveredAt: Date.now(),
-      deliveryJournal: acceptedJournal,
-      status: 'delivered',
-    });
-    return updatedPrompt;
-  } catch (error) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      failedAt: Date.now(),
-      status: 'failed',
-      waitingReason: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    activePromptDeliveryKeys.delete(key);
-    if (acquiredLeaseGeneration !== null) {
-      const release = releaseTaskCommandLease(
-        prompt.targetTaskId,
-        automationClientId,
-        COORDINATOR_AUTOMATION_OWNER_ID,
-        Date.now(),
-        acquiredLeaseGeneration,
-      );
-      if (release.changed) {
-        context.emitIpcEvent?.(IPC.TaskCommandControllerChanged, release.snapshot);
-      }
-    }
-    scheduleCoordinatorPromptDelivery(PROMPT_DELIVERY_RETRY_DELAY_MS);
-  }
-}
-
 async function sendCoordinatorPrompt(
   context: HandlerContext,
   envelope: CoordinatorToolInvocation,
@@ -2850,44 +2762,15 @@ async function sendCoordinatorPrompt(
   if (isCoordinatorTerminalSubtaskStatus(subtask.status)) {
     throw new BadRequestError('targetTaskId is no longer active');
   }
-  if (
-    payload.kind !== 'initial-assignment' &&
-    !canSendFollowupPrompt(getCoordinatorSubtaskStartupSnapshot(subtask.startup).followupPromptMode)
-  ) {
-    throw new BadRequestError('targetTaskId does not accept follow-up prompts');
-  }
 
-  if (payload.dedupeKey !== undefined) {
-    const existingPrompt = run.promptQueue.find(
-      (prompt) =>
-        prompt.dedupeKey === payload.dedupeKey &&
-        prompt.sourceTaskId === envelope.taskId &&
-        prompt.targetTaskId === payload.targetTaskId,
-    );
-    if (existingPrompt) {
-      return existingPrompt;
-    }
-  }
-
-  const pendingPromptsForTarget = run.promptQueue.filter(
-    (prompt) =>
-      prompt.targetTaskId === payload.targetTaskId &&
-      isCoordinatorPendingPromptStatus(prompt.status),
-  );
-  if (pendingPromptsForTarget.length >= run.limits.maxPendingPromptsPerTarget) {
-    throw new BadRequestError('Coordinator prompt limit reached for target task');
-  }
-
-  const prompt = enqueueCoordinatorPrompt({
-    kind: payload.kind ?? 'follow-up',
-    runId: run.id,
-    sourceTaskId: envelope.taskId,
-    targetAgentId: subtask.agentId,
-    targetTaskId: subtask.taskId,
-    text: payload.text,
+  return queueCoordinatorPromptForDelivery(context, {
     ...(payload.dedupeKey !== undefined ? { dedupeKey: payload.dedupeKey } : {}),
+    ...(payload.kind !== undefined ? { kind: payload.kind } : {}),
+    run,
+    sourceTaskId: envelope.taskId,
+    subtask,
+    text: payload.text,
   });
-  return deliverCoordinatorPromptWithAdmission(context, prompt);
 }
 
 function listCoordinatorTasks(envelope: CoordinatorToolInvocation): Array<{
@@ -3193,6 +3076,7 @@ async function landCoordinatorSubtask(
     emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
     gateway.taskNames.deleteTask(subtask.taskId);
     revokeCoordinatorTaskCredential(context, subtask.taskId);
+    removeCoordinatorSubtaskLaunch(run.id, subtask.taskId);
     if (cleanupResult.cleanupWarnings.length > 0) {
       const cleanupFailed = {
         ...cleanup,
@@ -3244,9 +3128,10 @@ function assertAuthorized(envelope: CoordinatorToolCallEnvelope): void {
   if (!run) {
     throw new BadRequestError('Coordinator run is no longer active');
   }
-  if (run.status !== 'running' && run.status !== 'draining') {
+  if (run.status !== 'running' && run.status !== 'draining' && run.status !== 'paused-by-user') {
     throw new BadRequestError(`Coordinator run is ${run.status}`);
   }
+  assertCoordinatorRunAdmitsAgentTool(run, envelope.toolName);
   if (envelope.taskId === run.coordinatorTaskId) {
     return;
   }
@@ -3265,20 +3150,33 @@ function assertAuthorized(envelope: CoordinatorToolCallEnvelope): void {
   }
 }
 
-function isCoordinatorRendererMutationTool(
-  toolName: CoordinatorToolInvocation['toolName'],
-): boolean {
-  return (
-    toolName === 'close_task' ||
-    toolName === 'send_prompt' ||
-    toolName === 'spawn_many' ||
-    toolName === 'spawn_subtask' ||
-    toolName === 'start_workflow'
-  );
+/**
+ * Pause stops admission of NEW work on the agent tool path. In-flight lanes may still report
+ * (`submit_result`, `signal_done`), land, and be inspected, but spawning, prompting, and graph
+ * growth are rejected until the operator unpauses the run.
+ */
+const COORDINATOR_PAUSED_REJECTED_AGENT_TOOLS = new Set<CoordinatorToolCallEnvelope['toolName']>([
+  'append_workflow_steps',
+  'send_prompt',
+  'spawn_many',
+  'spawn_subtask',
+  'start_workflow',
+]);
+
+function assertCoordinatorRunAdmitsAgentTool(
+  run: Pick<CoordinatorRunSnapshot, 'status'>,
+  toolName: CoordinatorToolCallEnvelope['toolName'],
+): void {
+  if (
+    !coordinatorRunAdmitsNewWork(run.status) &&
+    COORDINATOR_PAUSED_REJECTED_AGENT_TOOLS.has(toolName)
+  ) {
+    throw new BadRequestError('Coordinator run is paused-by-user');
+  }
 }
 
 function assertCoordinatorRendererToolAllowed(
-  toolName: CoordinatorToolInvocation['toolName'],
+  toolName: CoordinatorToolInvocation['toolName'] | CoordinatorOperatorActionName,
 ): void {
   if (
     toolName === 'append_workflow_steps' ||
@@ -3290,27 +3188,10 @@ function assertCoordinatorRendererToolAllowed(
   }
 }
 
-function assertRendererRunAcceptsMutation(
+function assertRendererActionAuthorized(
   request: CoordinatorUiToolCallRequest,
-  run: CoordinatorRunSnapshot,
+  options: { replayOfRememberedResult?: boolean } = {},
 ): void {
-  if (
-    request.toolName === 'spawn_many' ||
-    request.toolName === 'spawn_subtask' ||
-    request.toolName === 'start_workflow'
-  ) {
-    if (run.status !== 'running') {
-      throw new BadRequestError(`Coordinator run is ${run.status}`);
-    }
-    return;
-  }
-
-  if (run.status !== 'running' && run.status !== 'draining') {
-    throw new BadRequestError(`Coordinator run is ${run.status}`);
-  }
-}
-
-function assertRendererActionAuthorized(request: CoordinatorUiToolCallRequest): void {
   const run = getCoordinatorRun(request.runId);
   if (!run) {
     throw new BadRequestError('Coordinator run is no longer active');
@@ -3319,10 +3200,13 @@ function assertRendererActionAuthorized(request: CoordinatorUiToolCallRequest): 
     throw new BadRequestError('coordinatorTaskId must own the coordinator run');
   }
   assertCoordinatorRendererToolAllowed(request.toolName);
-  if (!isCoordinatorRendererMutationTool(request.toolName)) {
+  const allowedRunStatuses = getCoordinatorRendererActionAllowedRunStatuses(request.toolName);
+  if (allowedRunStatuses === undefined) {
     return;
   }
-  assertRendererRunAcceptsMutation(request, run);
+  if (options.replayOfRememberedResult !== true && !allowedRunStatuses.includes(run.status)) {
+    throw new BadRequestError(`Coordinator run is ${run.status}`);
+  }
   if (!request.controllerId) {
     throw new BadRequestError('controllerId is required for coordinator mutations');
   }
@@ -3454,6 +3338,54 @@ export async function executeCoordinatorToolCall(
   return response;
 }
 
+function isCoordinatorOperatorActionRequest(
+  request: CoordinatorUiToolCallRequest,
+): request is Extract<CoordinatorUiToolCallRequest, { toolName: CoordinatorOperatorActionName }> {
+  return isCoordinatorOperatorActionName(request.toolName);
+}
+
+async function dispatchCoordinatorOperatorAction(
+  gateway: CoordinatorToolGatewayContext,
+  request: Extract<CoordinatorUiToolCallRequest, { toolName: CoordinatorOperatorActionName }>,
+): Promise<unknown> {
+  switch (request.toolName) {
+    case 'approve_workflow_actions': {
+      const payload = readApproveWorkflowActionsPayload(request.payload);
+      return approveCoordinatorWorkflowActions({
+        approvalId: payload.approvalId,
+        runId: request.runId,
+        spawnLane: createOperatorWorkflowSpawnLane(gateway, request),
+        workflowId: payload.workflowId,
+      });
+    }
+    case 'deny_workflow_actions': {
+      const payload = readDenyWorkflowActionsPayload(request.payload);
+      return denyCoordinatorWorkflowActions({
+        approvalId: payload.approvalId,
+        ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+        runId: request.runId,
+        spawnLane: createOperatorWorkflowSpawnLane(gateway, request),
+        workflowId: payload.workflowId,
+      });
+    }
+    case 'pause_run':
+      return pauseCoordinatorRun(request);
+    case 'resume_run':
+      return resumeCoordinatorRun(gateway, request);
+    case 'retry_lane': {
+      const payload = readRetryLanePayload(request.payload);
+      return retryCoordinatorWorkflowLaneFromOperator({
+        laneId: payload.laneId,
+        runId: request.runId,
+        spawnLane: createOperatorWorkflowSpawnLane(gateway, request),
+        workflowId: payload.workflowId,
+      });
+    }
+    case 'unpause_run':
+      return unpauseCoordinatorRun(gateway, request);
+  }
+}
+
 export async function executeCoordinatorRendererAction(
   gateway: CoordinatorToolGatewayContext,
   request: CoordinatorUiToolCallRequest,
@@ -3461,21 +3393,24 @@ export async function executeCoordinatorRendererAction(
   assertString(request.requestId, 'requestId');
   assertString(request.runId, 'runId');
   assertString(request.coordinatorTaskId, 'coordinatorTaskId');
-  assertRendererActionAuthorized(request);
-
   const toolCallKey = `renderer:${request.runId}:${request.coordinatorTaskId}:${request.requestId}`;
   const previousResult = getCoordinatorToolResult(toolCallKey);
+  assertRendererActionAuthorized(request, {
+    replayOfRememberedResult: previousResult !== undefined,
+  });
   if (previousResult !== undefined) {
     return previousResult as CoordinatorToolCallResult;
   }
 
-  const result = await dispatchCoordinatorToolInvocation(gateway, {
-    callId: request.requestId,
-    runId: request.runId,
-    taskId: request.coordinatorTaskId,
-    toolName: request.toolName,
-    ...(request.payload !== undefined ? { payload: request.payload } : {}),
-  });
+  const result = isCoordinatorOperatorActionRequest(request)
+    ? await dispatchCoordinatorOperatorAction(gateway, request)
+    : await dispatchCoordinatorToolInvocation(gateway, {
+        callId: request.requestId,
+        runId: request.runId,
+        taskId: request.coordinatorTaskId,
+        toolName: request.toolName,
+        ...(request.payload !== undefined ? { payload: request.payload } : {}),
+      });
   const response: CoordinatorToolCallResult = {
     accepted: true,
     callId: request.requestId,

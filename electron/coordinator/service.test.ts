@@ -13,19 +13,23 @@ import {
   getCoordinatorBlockingActivityHints,
   resetCoordinatorServiceForTests,
   resolveCoordinatorToken,
+  startCoordinatorRuntimePersistence,
 } from './service.js';
 import {
   addCoordinatorSubtask,
   getCoordinatorBootstrapSnapshot,
+  getCoordinatorSubtaskLaunch,
+  recordCoordinatorSubtaskLaunch,
   resetCoordinatorRuntimeForTests,
+  updateCoordinatorSubtaskStatus,
 } from './runtime.js';
+import {
+  createStorageEnv as createCoordinatorTestStorageEnv,
+  removeStorageEnv,
+} from './test-helpers.js';
 
 function createStorageEnv(): StorageEnv {
-  return {
-    isPackaged: false,
-    coordinatorToolCallUrl: 'http://127.0.0.1:43117/api/coordinator/tool-call',
-    userDataPath: fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-coordinator-service-')),
-  } as StorageEnv & { coordinatorToolCallUrl: string };
+  return createCoordinatorTestStorageEnv('parallel-code-coordinator-service-');
 }
 
 function createStorageEnvWithoutToolGateway(): StorageEnv {
@@ -33,11 +37,6 @@ function createStorageEnvWithoutToolGateway(): StorageEnv {
     isPackaged: false,
     userDataPath: fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-coordinator-service-')),
   };
-}
-
-function removeStorageEnv(env: StorageEnv): void {
-  fs.rmSync(env.userDataPath, { force: true, recursive: true });
-  fs.rmSync(`${env.userDataPath}-dev`, { force: true, recursive: true });
 }
 
 function readCredential(pathname: string): {
@@ -230,6 +229,135 @@ describe('coordinator service', () => {
     });
     expect(resolveCoordinatorToken(childCredential.token)).toBeNull();
     expect(fs.existsSync(childCredential.credentialPath)).toBe(false);
+  });
+
+  it('clears launch payloads and restore markers when generic task cleanup removes a hidden subtask', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    recordCoordinatorSubtaskLaunch({
+      agent: { command: 'custom-agent', env: { CUSTOM_SECRET: '1' } },
+      assignment: 'Do the work',
+      name: 'Child',
+      recordedAt: 1_000,
+      runId: result.run.id,
+      taskId: 'task-child',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'child-token-id',
+      worktreePath: '/repo/task-child',
+    });
+    updateCoordinatorSubtaskStatus(result.run.id, 'task-child', 'exited', {
+      interruptedByRestoreAt: 2_000,
+    });
+
+    cleanupCoordinatorStateForTask(env, 'task-child');
+
+    const subtask = getCoordinatorBootstrapSnapshot().runs[0]?.subtasks[0];
+    expect(subtask).toMatchObject({
+      status: 'cancelled',
+      taskId: 'task-child',
+    });
+    expect(subtask?.interruptedByRestoreAt).toBeUndefined();
+    expect(getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toBeNull();
+  });
+
+  it('persists coordinator state with owner-only file permissions', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+
+    const statePath = path.join(getStateDirForEnv(env), 'coordinator-state.json');
+    expect(fs.existsSync(statePath)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(statePath).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('persists subtask launch payloads and restores launch lookups after reload', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const stopPersistence = startCoordinatorRuntimePersistence(env);
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    recordCoordinatorSubtaskLaunch({
+      agent: { args: ['--profile', 'fast'], command: 'custom-agent', env: { CUSTOM: '1' } },
+      assignment: 'Do the work',
+      dedupeKey: 'launch-child',
+      name: 'Child',
+      recordedAt: 1_000,
+      runId: result.run.id,
+      taskId: 'task-child',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'child-token-id',
+      worktreePath: '/repo/task-child',
+    });
+    stopPersistence();
+
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    ensureCoordinatorServiceLoaded(env);
+
+    expect(getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toMatchObject({
+      agent: { args: ['--profile', 'fast'], command: 'custom-agent', env: { CUSTOM: '1' } },
+      dedupeKey: 'launch-child',
+      taskId: 'task-child',
+    });
+  });
+
+  it('loads legacy coordinator state files without subtask launch payloads', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const statePath = path.join(getStateDirForEnv(env), 'coordinator-state.json');
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    delete persisted.subtaskLaunches;
+    fs.writeFileSync(statePath, JSON.stringify(persisted));
+
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    ensureCoordinatorServiceLoaded(env);
+
+    expect(getCoordinatorBootstrapSnapshot().runs.map((run) => run.id)).toEqual([result.run.id]);
+    expect(getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toBeNull();
   });
 
   it('removes coordinator activity hints when the renderer sends an unblock update', () => {

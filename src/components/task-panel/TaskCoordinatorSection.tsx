@@ -204,8 +204,14 @@ function createToolRequest(
         },
         toolName: 'wait_for_idle',
       };
+    case 'approve-actions':
     case 'copy-debug-command':
+    case 'deny-actions':
+    case 'pause-run':
+    case 'resume-run':
+    case 'retry-lane':
     case 'spawn-subtask':
+    case 'unpause-run':
       return null;
   }
 }
@@ -296,6 +302,8 @@ function getWorkflowLabel(workflow: CoordinatorWorkflowTimelineView): string {
       return 'Flow';
     case 'map_reduce':
       return 'Map';
+    case 'repo_review':
+      return 'Repo';
   }
 }
 
@@ -324,7 +332,10 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   const [actionError, setActionError] = createSignal<string | null>(null);
   const [actionStatus, setActionStatus] = createSignal<string | null>(null);
   const [busyAction, setBusyAction] = createSignal<string | null>(null);
+  const [resumeError, setResumeError] = createSignal<string | null>(null);
+  const [pauseError, setPauseError] = createSignal<string | null>(null);
   const [closeConfirmTaskId, setCloseConfirmTaskId] = createSignal<string | null>(null);
+  const [denyConfirmApprovalId, setDenyConfirmApprovalId] = createSignal<string | null>(null);
   const [diffResult, setDiffResult] = createSignal<CoordinatorDiffResult | null>(null);
   const [followUpText, setFollowUpText] = createSignal('');
   const [outputResult, setOutputResult] = createSignal<CoordinatorOutputResult | null>(null);
@@ -400,6 +411,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     setActionError(null);
     setActionStatus(null);
     setCloseConfirmTaskId(null);
+    setDenyConfirmApprovalId(null);
     setDiffResult(null);
     setFollowUpText('');
     setOutputResult(null);
@@ -419,6 +431,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     setActionError(null);
     setActionStatus(null);
     setCloseConfirmTaskId(null);
+    setDenyConfirmApprovalId(null);
   }
 
   function openChip(event: MouseEvent, chip: CoordinatorSubtaskChipView): void {
@@ -537,6 +550,120 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     } finally {
       setBusyAction(null);
     }
+  }
+
+  async function runOperatorAction(options: {
+    busyId: CoordinatorUiActionId;
+    onSuccess?: () => void;
+    rejectionMessage: string;
+    request:
+      | { payload?: undefined; toolName: 'pause_run' | 'resume_run' | 'unpause_run' }
+      | {
+          payload: { approvalId: string; workflowId: string };
+          toolName: 'approve_workflow_actions' | 'deny_workflow_actions';
+        }
+      | { payload: { laneId: string; workflowId: string }; toolName: 'retry_lane' };
+    setError: (message: string | null) => void;
+  }): Promise<void> {
+    const view = runView();
+    if (!view) {
+      return;
+    }
+
+    setBusyAction(options.busyId);
+    options.setError(null);
+    try {
+      const response = await callCoordinatorUiTool({
+        controllerId: getRuntimeClientId(),
+        coordinatorTaskId: view.run.coordinatorTaskId,
+        requestId: createRequestId(),
+        runId: view.run.id,
+        ...options.request,
+      });
+      if (!response.accepted) {
+        throw new Error(response.error ?? options.rejectionMessage);
+      }
+
+      options.onSuccess?.();
+    } catch (error) {
+      options.setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function resumeRun(): Promise<void> {
+    const view = runView();
+    if (!view || view.resumeAction.disabled || busyAction() === 'resume-run') {
+      return;
+    }
+
+    await runOperatorAction({
+      busyId: 'resume-run',
+      rejectionMessage: 'Coordinator resume was rejected.',
+      request: { toolName: 'resume_run' },
+      setError: setResumeError,
+    });
+  }
+
+  async function toggleRunPaused(): Promise<void> {
+    const view = runView();
+    if (!view || view.pauseAction.disabled || busyAction() === view.pauseAction.id) {
+      return;
+    }
+
+    await runOperatorAction({
+      busyId: view.pauseAction.id,
+      rejectionMessage: 'Coordinator pause change was rejected.',
+      request: { toolName: view.pauseAction.id === 'unpause-run' ? 'unpause_run' : 'pause_run' },
+      setError: setPauseError,
+    });
+  }
+
+  async function resolveWorkflowApproval(
+    workflowId: string,
+    approvalId: string,
+    approve: boolean,
+  ): Promise<void> {
+    const view = runView();
+    if (!view) {
+      return;
+    }
+    if (!approve && denyConfirmApprovalId() !== approvalId) {
+      setDenyConfirmApprovalId(approvalId);
+      setActionStatus('Click Deny again to confirm.');
+      return;
+    }
+
+    setActionStatus(null);
+    await runOperatorAction({
+      busyId: approve ? 'approve-actions' : 'deny-actions',
+      onSuccess: () => {
+        setDenyConfirmApprovalId(null);
+        setActionStatus(approve ? 'Workflow actions approved.' : 'Workflow actions denied.');
+      },
+      rejectionMessage: 'Coordinator approval action was rejected.',
+      request: {
+        payload: { approvalId, workflowId },
+        toolName: approve ? 'approve_workflow_actions' : 'deny_workflow_actions',
+      },
+      setError: setActionError,
+    });
+  }
+
+  async function retryWorkflowLane(workflowId: string, laneId: string): Promise<void> {
+    if (!runView() || busyAction() === 'retry-lane') {
+      return;
+    }
+
+    setActionStatus(null);
+    await runOperatorAction({
+      busyId: 'retry-lane',
+      onSuccess: () => setActionStatus('Lane retry requested.'),
+      rejectionMessage: 'Coordinator lane retry was rejected.',
+      request: { payload: { laneId, workflowId }, toolName: 'retry_lane' },
+      setError: setActionError,
+    });
   }
 
   async function spawnSubtask(): Promise<void> {
@@ -685,6 +812,95 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                 </Show>
               </div>
 
+              <Show when={!view().resumeAction.disabled}>
+                <button
+                  aria-label="Resume coordinator run"
+                  disabled={busyAction() === 'resume-run'}
+                  title={view().resumeAction.reason ?? 'Respawn unfinished coordinator work'}
+                  onClick={() => void resumeRun()}
+                  style={{
+                    height: '24px',
+                    padding: '0 8px',
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '8px',
+                    background: 'transparent',
+                    color: busyAction() === 'resume-run' ? theme.fgSubtle : theme.accent,
+                    cursor: busyAction() === 'resume-run' ? 'not-allowed' : 'pointer',
+                    'font-size': sf(11),
+                    'flex-shrink': '0',
+                  }}
+                >
+                  Resume
+                </button>
+                <Show when={resumeError()}>
+                  {(error) => (
+                    <span
+                      title={error()}
+                      style={{
+                        color: theme.error,
+                        'font-size': sf(10),
+                        'max-width': '160px',
+                        overflow: 'hidden',
+                        'text-overflow': 'ellipsis',
+                        'white-space': 'nowrap',
+                        'flex-shrink': '0',
+                      }}
+                    >
+                      {error()}
+                    </span>
+                  )}
+                </Show>
+              </Show>
+
+              <Show when={!view().pauseAction.disabled}>
+                <button
+                  aria-label={
+                    view().pauseAction.id === 'unpause-run'
+                      ? 'Unpause coordinator run'
+                      : 'Pause coordinator run'
+                  }
+                  disabled={busyAction() === view().pauseAction.id}
+                  title={
+                    view().pauseAction.reason ??
+                    (view().pauseAction.id === 'unpause-run'
+                      ? 'Admit deferred coordinator work again'
+                      : 'Stop admitting new coordinator work')
+                  }
+                  onClick={() => void toggleRunPaused()}
+                  style={{
+                    height: '24px',
+                    padding: '0 8px',
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '8px',
+                    background: 'transparent',
+                    color: busyAction() === view().pauseAction.id ? theme.fgSubtle : theme.warning,
+                    cursor: busyAction() === view().pauseAction.id ? 'not-allowed' : 'pointer',
+                    'font-size': sf(11),
+                    'flex-shrink': '0',
+                  }}
+                >
+                  {view().pauseAction.label}
+                </button>
+                <Show when={pauseError()}>
+                  {(error) => (
+                    <span
+                      title={error()}
+                      style={{
+                        color: theme.error,
+                        'font-size': sf(10),
+                        'max-width': '160px',
+                        overflow: 'hidden',
+                        'text-overflow': 'ellipsis',
+                        'white-space': 'nowrap',
+                        'flex-shrink': '0',
+                      }}
+                    >
+                      {error()}
+                    </span>
+                  )}
+                </Show>
+              </Show>
+
               <Show when={view().workflows.length > 0}>
                 <div
                   aria-label="Coordinator workflows"
@@ -732,6 +948,21 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                             style={{ color: theme.warning }}
                           >{`!${workflow.findingCount}`}</span>
                         </Show>
+                        <Show when={workflow.blockedStageCount > 0}>
+                          <span
+                            style={{ color: theme.warning }}
+                          >{`B${workflow.blockedStageCount}`}</span>
+                        </Show>
+                        <Show when={workflow.pendingApprovals.length > 0}>
+                          <span
+                            style={{ color: theme.warning }}
+                          >{`A${workflow.pendingApprovals.length}`}</span>
+                        </Show>
+                        <Show when={workflow.branchIterationCount > 0}>
+                          <span
+                            style={{ color: theme.accent }}
+                          >{`↻${workflow.branchIterationCount}`}</span>
+                        </Show>
                         <Show when={workflow.appendCount > 0}>
                           <span style={{ color: theme.accent }}>{`+${workflow.appendCount}`}</span>
                         </Show>
@@ -747,6 +978,9 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                                 height: '14px',
                                 border: `1px solid ${toneColor(stage.tone)}`,
                                 'border-radius': '999px',
+                                background: stage.dependencySatisfied
+                                  ? `color-mix(in srgb, ${toneColor(stage.tone)} 14%, transparent)`
+                                  : 'transparent',
                                 color: toneColor(stage.tone),
                                 'font-size': sf(9),
                                 'font-weight': 700,
@@ -957,25 +1191,105 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     )}
                   </Show>
 
-                  <div style={{ display: 'flex', gap: '5px', 'flex-wrap': 'wrap' }}>
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
                     <For each={workflow().stages}>
                       {(stage) => (
-                        <span
-                          title={stage.title}
+                        <div
                           style={{
-                            display: 'inline-flex',
+                            display: 'grid',
+                            'grid-template-columns': 'auto minmax(0, 1fr) auto',
                             'align-items': 'center',
-                            gap: '4px',
-                            border: `1px solid ${toneColor(stage.tone)}`,
+                            gap: '8px',
+                            border: `1px solid color-mix(in srgb, ${toneColor(stage.tone)} 38%, ${theme.border})`,
                             'border-radius': '6px',
-                            color: toneColor(stage.tone),
-                            padding: '3px 6px',
+                            padding: '6px',
                             'font-size': sf(10),
                           }}
                         >
-                          <strong>{stage.label}</strong>
-                          <span>{`${stage.completedLaneCount}/${stage.laneCount}`}</span>
-                        </span>
+                          <span
+                            title={stage.title}
+                            style={{
+                              display: 'inline-flex',
+                              'align-items': 'center',
+                              'justify-content': 'center',
+                              width: '18px',
+                              height: '18px',
+                              border: `1px solid ${toneColor(stage.tone)}`,
+                              'border-radius': '999px',
+                              background: stage.dependencySatisfied
+                                ? `color-mix(in srgb, ${toneColor(stage.tone)} 14%, transparent)`
+                                : 'transparent',
+                              color: toneColor(stage.tone),
+                              'font-weight': 700,
+                            }}
+                          >
+                            {stage.label}
+                          </span>
+                          <div
+                            style={{
+                              'min-width': '0',
+                              display: 'flex',
+                              'flex-direction': 'column',
+                              gap: '2px',
+                            }}
+                          >
+                            <div
+                              style={{
+                                color: theme.fg,
+                                'font-size': sf(11),
+                                'font-weight': 700,
+                                overflow: 'hidden',
+                                'text-overflow': 'ellipsis',
+                                'white-space': 'nowrap',
+                              }}
+                            >
+                              {stage.name}
+                            </div>
+                            <div
+                              style={{
+                                color: stage.dependencySatisfied ? theme.accent : theme.fgSubtle,
+                                'font-size': sf(10),
+                                overflow: 'hidden',
+                                'text-overflow': 'ellipsis',
+                                'white-space': 'nowrap',
+                              }}
+                            >
+                              {`${stage.joinLabel} · ${stage.dependencyStatusLabel}`}
+                            </div>
+                            <Show when={stage.failure}>
+                              {(failure) => (
+                                <div
+                                  style={{
+                                    color: theme.warning,
+                                    'font-size': sf(10),
+                                    overflow: 'hidden',
+                                    'text-overflow': 'ellipsis',
+                                    'white-space': 'nowrap',
+                                  }}
+                                >
+                                  {failure()}
+                                </div>
+                              )}
+                            </Show>
+                          </div>
+                          <div
+                            style={{
+                              display: 'flex',
+                              'flex-direction': 'column',
+                              'align-items': 'flex-end',
+                              gap: '2px',
+                              color: theme.fgMuted,
+                            }}
+                          >
+                            <span>{`${stage.completedLaneCount}/${stage.laneCount}`}</span>
+                            <span>{`${stage.resultCount} results`}</span>
+                            <Show when={stage.failedLaneCount > 0 || stage.blockedLaneCount > 0}>
+                              <span style={{ color: theme.warning }}>
+                                {`F${stage.failedLaneCount} B${stage.blockedLaneCount}`}
+                              </span>
+                            </Show>
+                          </div>
+                        </div>
                       )}
                     </For>
                   </div>
@@ -991,9 +1305,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     <span>{`Steps ${workflow().stepCount}`}</span>
                     <span>{`Appends ${workflow().appendCount}`}</span>
                     <span>{`Expand ${workflow().expansionCount}`}</span>
+                    <span>{`Iterate ${workflow().branchIterationCount}`}</span>
                     <span>{`Done ${workflow().completedStageCount}`}</span>
+                    <span>{`Ready ${workflow().dependencySatisfiedStageCount}`}</span>
                     <span>{`Results ${workflow().resultCount}`}</span>
                     <span>{`Findings ${workflow().findingCount}`}</span>
+                    <span>{`Blocked ${workflow().blockedStageCount}`}</span>
                     <span>{`Failed ${workflow().failedLaneCount}`}</span>
                     <span>{`Retry ${workflow().retryableLaneCount}`}</span>
                     <span>{`Skip ${workflow().skippedStageCount}`}</span>
@@ -1004,6 +1321,148 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                       workflow().verdictSummary.needsMoreEvidence
                     }`}</span>
                   </div>
+
+                  <Show when={workflow().budget}>
+                    {(budget) => (
+                      <div
+                        style={{
+                          color:
+                            budget().pressure === 'exhausted'
+                              ? toneColor('danger')
+                              : budget().pressure === 'high'
+                                ? toneColor('warning')
+                                : theme.fgMuted,
+                          'font-size': sf(11),
+                        }}
+                      >
+                        {`Budget · Steps ${budget().steps.used}/${budget().steps.limit} · Lanes ${budget().lanes.used}/${budget().lanes.limit} · Retries ${budget().retries.used}/${budget().retries.limit}`}
+                      </div>
+                    )}
+                  </Show>
+
+                  <Show when={workflow().pendingApprovals.length > 0}>
+                    <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                      <div
+                        style={{ color: theme.warning, 'font-size': sf(11), 'font-weight': 700 }}
+                      >
+                        Pending approvals
+                      </div>
+                      <For each={workflow().pendingApprovals}>
+                        {(approval) => (
+                          <div
+                            style={{
+                              border: `1px solid ${toneColor('warning')}`,
+                              'border-radius': '6px',
+                              padding: '6px',
+                              display: 'flex',
+                              'flex-direction': 'column',
+                              gap: '4px',
+                              'font-size': sf(11),
+                            }}
+                          >
+                            <div style={{ color: theme.fgMuted }}>
+                              {`${approval.stageLabel} · ${approval.laneLabel}`}
+                            </div>
+                            <div style={{ color: theme.fg }}>{approval.actionSummary}</div>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <button
+                                class="btn-secondary"
+                                disabled={
+                                  approval.approvalGateReason !== undefined ||
+                                  busyAction() === 'approve-actions'
+                                }
+                                title={approval.approvalGateReason}
+                                onClick={() =>
+                                  void resolveWorkflowApproval(workflow().id, approval.id, true)
+                                }
+                                style={{ 'font-size': sf(11), padding: '4px 8px' }}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                class="btn-danger"
+                                disabled={
+                                  approval.approvalGateReason !== undefined ||
+                                  busyAction() === 'deny-actions'
+                                }
+                                title={approval.approvalGateReason}
+                                onClick={() =>
+                                  void resolveWorkflowApproval(workflow().id, approval.id, false)
+                                }
+                                style={{ 'font-size': sf(11), padding: '4px 8px' }}
+                              >
+                                {denyConfirmApprovalId() === approval.id ? 'Confirm deny' : 'Deny'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+
+                  <Show when={workflow().retryableManualLanes.length > 0}>
+                    <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                      <div
+                        style={{ color: theme.fgMuted, 'font-size': sf(11), 'font-weight': 700 }}
+                      >
+                        Failed lanes
+                      </div>
+                      <For each={workflow().retryableManualLanes}>
+                        {(lane) => (
+                          <div
+                            style={{
+                              display: 'grid',
+                              'grid-template-columns': 'minmax(0, 1fr) auto',
+                              'align-items': 'center',
+                              gap: '8px',
+                              border: `1px solid ${theme.border}`,
+                              'border-radius': '6px',
+                              padding: '6px',
+                              'font-size': sf(11),
+                            }}
+                          >
+                            <div
+                              style={{
+                                'min-width': '0',
+                                display: 'flex',
+                                'flex-direction': 'column',
+                                gap: '2px',
+                              }}
+                            >
+                              <div style={{ color: theme.fg, 'font-weight': 700 }}>
+                                {`${lane.name} · ${lane.status}`}
+                              </div>
+                              <Show when={lane.failure}>
+                                {(failure) => (
+                                  <div
+                                    style={{
+                                      color: theme.fgMuted,
+                                      overflow: 'hidden',
+                                      'text-overflow': 'ellipsis',
+                                      'white-space': 'nowrap',
+                                    }}
+                                  >
+                                    {failure()}
+                                  </div>
+                                )}
+                              </Show>
+                            </div>
+                            <button
+                              class="btn-secondary"
+                              disabled={
+                                lane.retryGateReason !== undefined || busyAction() === 'retry-lane'
+                              }
+                              title={lane.retryGateReason}
+                              onClick={() => void retryWorkflowLane(workflow().id, lane.laneId)}
+                              style={{ 'font-size': sf(11), padding: '4px 8px' }}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
 
                   <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
                     <div style={{ color: theme.fgMuted, 'font-size': sf(11), 'font-weight': 700 }}>

@@ -4,7 +4,12 @@ import { BadRequestError } from '../ipc/errors.js';
 import { defineIpcHandler } from '../ipc/typed-handler.js';
 import { assertBoolean, assertOptionalNonNegativeInt, assertString } from '../ipc/validate.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
-import { isCoordinatorToolName, type CoordinatorToolName } from '../../src/domain/coordinator.js';
+import {
+  isCoordinatorOperatorActionName,
+  isCoordinatorToolName,
+  type CoordinatorOperatorActionName,
+  type CoordinatorToolName,
+} from '../../src/domain/coordinator.js';
 import { isNonNegativeInteger } from '../../src/lib/type-guards.js';
 import type { ProjectMode } from '../../src/store/types.js';
 import {
@@ -51,6 +56,14 @@ function assertActivityHintKind(
 function assertCoordinatorToolName(value: unknown): asserts value is CoordinatorToolName {
   if (!isCoordinatorToolName(value)) {
     throw new BadRequestError('toolName must be a coordinator tool name');
+  }
+}
+
+function assertCoordinatorUiActionName(
+  value: unknown,
+): asserts value is CoordinatorToolName | CoordinatorOperatorActionName {
+  if (!isCoordinatorToolName(value) && !isCoordinatorOperatorActionName(value)) {
+    throw new BadRequestError('toolName must be a coordinator tool or operator action name');
   }
 }
 
@@ -124,7 +137,7 @@ export function createCoordinatorIpcHandlers(
         assertString(request.requestId, 'requestId');
         assertString(request.coordinatorTaskId, 'coordinatorTaskId');
         assertString(request.runId, 'runId');
-        assertCoordinatorToolName(request.toolName);
+        assertCoordinatorUiActionName(request.toolName);
 
         return executeCoordinatorRendererAction({ context, taskNames }, request);
       },

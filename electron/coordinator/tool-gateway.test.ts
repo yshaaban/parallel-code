@@ -1,6 +1,4 @@
 import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import {
@@ -8,7 +6,6 @@ import {
   type CoordinatorSubtaskStatus,
   type CoordinatorUiToolCallRequest,
 } from '../../src/domain/coordinator.js';
-import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
 import type { HandlerContext } from '../ipc/handler-context.js';
 import type { StorageEnv } from '../ipc/storage.js';
 
@@ -75,11 +72,11 @@ import {
 } from '../ipc/task-command-leases.js';
 import {
   addCoordinatorSubtask,
-  enqueueCoordinatorPrompt,
   getCoordinatorRun,
   resetCoordinatorRuntimeForTests,
   updateCoordinatorRunStatus,
   updateCoordinatorSubtaskStatus,
+  updateCoordinatorWorkflow,
 } from './runtime.js';
 import * as coordinatorRuntime from './runtime.js';
 import {
@@ -97,30 +94,19 @@ import {
   resetCoordinatorToolGatewayForTests,
   startCoordinatorPromptDeliveryRuntime,
 } from './tool-gateway.js';
+import {
+  createContext,
+  createStorageEnv as createCoordinatorTestStorageEnv,
+  createSupervisionSnapshot,
+  removeStorageEnv,
+} from './test-helpers.js';
 
 function createStorageEnv(): StorageEnv {
-  return {
-    isPackaged: false,
-    coordinatorToolCallUrl: 'http://127.0.0.1:43117/api/coordinator/tool-call',
-    userDataPath: fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-coordinator-gateway-')),
-  } as StorageEnv & { coordinatorToolCallUrl: string };
-}
-
-function removeStorageEnv(env: StorageEnv): void {
-  fs.rmSync(env.userDataPath, { force: true, recursive: true });
-  fs.rmSync(`${env.userDataPath}-dev`, { force: true, recursive: true });
+  return createCoordinatorTestStorageEnv('parallel-code-coordinator-gateway-');
 }
 
 function readCredentialToken(credentialPath: string): string {
   return (JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as { token: string }).token;
-}
-
-function createContext(env: StorageEnv): HandlerContext {
-  return {
-    ...env,
-    emitIpcEvent: vi.fn(),
-    sendToChannel: vi.fn(),
-  };
 }
 
 function createTaskRegistry(): Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> {
@@ -146,24 +132,6 @@ function createDeferredPromise<T>(): {
     reject = nextReject;
   });
   return { promise, reject, resolve };
-}
-
-function createSupervisionSnapshot(
-  state: AgentSupervisionSnapshot['state'],
-  overrides: Partial<Pick<AgentSupervisionSnapshot, 'agentId' | 'taskId'>> = {},
-): AgentSupervisionSnapshot {
-  const agentId = overrides.agentId ?? 'agent-child';
-  const taskId = overrides.taskId ?? 'task-child';
-  return {
-    agentId,
-    attentionReason: state === 'idle-at-prompt' ? 'ready-for-next-step' : null,
-    isShell: false,
-    lastOutputAt: 1_000,
-    preview: '',
-    state,
-    taskId,
-    updatedAt: 1_000,
-  };
 }
 
 function mockCreatedTaskResult(): void {
@@ -198,6 +166,12 @@ function readTaskCredentialToken(taskId: string): string {
   }
 
   return readCredentialToken(credentialPath);
+}
+
+function restartCoordinatorRuntime(): void {
+  const persisted = coordinatorRuntime.getCoordinatorRuntimeState();
+  resetCoordinatorRuntimeForTests();
+  coordinatorRuntime.restoreCoordinatorRuntimeState(persisted);
 }
 
 function addExitedCoordinatorOwnedSubtask(
@@ -328,565 +302,6 @@ describe('coordinator tool gateway', () => {
     expect(mocks.writeToAgentMock).toHaveBeenCalled();
     expect(getCoordinatorRun(result.run.id)?.promptQueue[0]?.status).toBe('delivered');
     expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.status).toBe('running');
-  });
-
-  it('serializes concurrent prompt writes to the same target terminal', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockReturnValue({
-      agentId: 'agent-child',
-      generation: 1,
-      isShell: false,
-      taskId: 'task-child',
-    });
-    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
-      createSupervisionSnapshot('idle-at-prompt'),
-    );
-
-    const first = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-1',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
-
-    const second = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-2',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'Follow up',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
-    await vi.runAllTimersAsync();
-    await Promise.all([first, second]);
-
-    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toEqual([
-      '\x1B[200~First line\nSecond line\x1B[201~',
-      '\r',
-      'Follow up\r',
-    ]);
-  });
-
-  it('does not spend prompt delivery capacity while a prompt waits behind the same target', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    addCoordinatorSubtask({
-      agentId: 'agent-sibling',
-      assignment: 'Do sibling work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-sibling',
-      toolTokenId: 'token-sibling',
-      worktreePath: '/repo/task-sibling',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
-      agentId,
-      generation: 1,
-      isShell: false,
-      taskId: agentId === 'agent-sibling' ? 'task-sibling' : 'task-child',
-    }));
-    mocks.getAgentSupervisionSnapshotMock.mockImplementation((agentId: string) =>
-      createSupervisionSnapshot('idle-at-prompt', {
-        agentId,
-        taskId: agentId === 'agent-sibling' ? 'task-sibling' : 'task-child',
-      }),
-    );
-
-    const first = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-1',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
-
-    const sameTarget = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-2',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'Follow up',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
-
-    const sibling = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-3',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-sibling',
-          text: 'Sibling prompt',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toEqual([
-      '\x1B[200~First line\nSecond line\x1B[201~',
-      'Sibling prompt\r',
-    ]);
-
-    await vi.runAllTimersAsync();
-    await Promise.all([first, sameTarget, sibling]);
-
-    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toEqual([
-      '\x1B[200~First line\nSecond line\x1B[201~',
-      'Sibling prompt\r',
-      '\r',
-      'Follow up\r',
-    ]);
-  });
-
-  it('applies prompt delivery admission caps to direct multi-target sends', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    for (let index = 0; index < 3; index += 1) {
-      addCoordinatorSubtask({
-        agentId: `agent-child-${index}`,
-        assignment: `Do the work ${index}`,
-        parentCoordinatorTaskId: 'task-coordinator',
-        runId: result.run.id,
-        status: 'running',
-        taskId: `task-child-${index}`,
-        toolTokenId: `token-child-${index}`,
-        worktreePath: `/repo/task-child-${index}`,
-      });
-    }
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
-      agentId,
-      generation: 1,
-      isShell: false,
-      taskId: agentId.replace('agent-', 'task-'),
-    }));
-    mocks.getAgentSupervisionSnapshotMock.mockImplementation((agentId: string) =>
-      createSupervisionSnapshot('idle-at-prompt', {
-        agentId,
-        taskId: agentId.replace('agent-', 'task-'),
-      }),
-    );
-    startCoordinatorPromptDeliveryRuntime(context);
-
-    const first = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-1',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child-0',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-    const second = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-2',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child-1',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const third = await executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-3',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child-2',
-          text: 'Third prompt',
-        },
-      },
-    );
-
-    expect(third.result).toMatchObject({
-      status: 'queued',
-      targetTaskId: 'task-child-2',
-    });
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(
-      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun,
-    );
-
-    await vi.runAllTimersAsync();
-    await Promise.all([first, second]);
-
-    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toContain('Third prompt\r');
-  });
-
-  it('applies prompt delivery admission caps during queued prompt sweeps', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const multilinePrompt = 'First line\nSecond line';
-    startCoordinatorPromptDeliveryRuntime(context);
-    for (let index = 0; index < 3; index += 1) {
-      addCoordinatorSubtask({
-        agentId: `agent-child-${index}`,
-        assignment: `Do the work ${index}`,
-        parentCoordinatorTaskId: 'task-coordinator',
-        runId: result.run.id,
-        status: 'running',
-        taskId: `task-child-${index}`,
-        toolTokenId: `token-child-${index}`,
-        worktreePath: `/repo/task-child-${index}`,
-      });
-      enqueueCoordinatorPrompt({
-        kind: 'follow-up',
-        runId: result.run.id,
-        sourceTaskId: 'task-coordinator',
-        targetAgentId: `agent-child-${index}`,
-        targetTaskId: `task-child-${index}`,
-        text: multilinePrompt,
-      });
-    }
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
-      agentId,
-      generation: 1,
-      isShell: false,
-      taskId: agentId.replace('agent-', 'task-'),
-    }));
-    mocks.getAgentSupervisionSnapshotMock.mockImplementation((agentId: string) =>
-      createSupervisionSnapshot('idle-at-prompt', {
-        agentId,
-        taskId: agentId.replace('agent-', 'task-'),
-      }),
-    );
-
-    for (const listener of mocks.supervisionListeners) {
-      listener({ kind: 'snapshot' });
-    }
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(
-      COORDINATOR_LIMITS.maxConcurrentPromptDeliveriesPerRun,
-    );
-    expect(getCoordinatorRun(result.run.id)?.promptQueue).toEqual([
-      expect.objectContaining({ status: 'delivering', targetTaskId: 'task-child-0' }),
-      expect.objectContaining({ status: 'delivering', targetTaskId: 'task-child-1' }),
-      expect.objectContaining({ status: 'queued', targetTaskId: 'task-child-2' }),
-    ]);
-
-    await vi.runAllTimersAsync();
-
-    expect(mocks.writeToAgentMock.mock.calls.map((call) => call[1])).toContain(
-      '\x1B[200~First line\nSecond line\x1B[201~',
-    );
-    expect(getCoordinatorRun(result.run.id)?.promptQueue).toEqual([
-      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-0' }),
-      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-1' }),
-      expect.objectContaining({ status: 'delivered', targetTaskId: 'task-child-2' }),
-    ]);
-  });
-
-  it('blocks prompt delivery while the target agent is awaiting input', async () => {
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockReturnValue({
-      agentId: 'agent-child',
-      generation: 1,
-      isShell: false,
-      taskId: 'task-child',
-    });
-    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
-      createSupervisionSnapshot('awaiting-input'),
-    );
-
-    const response = await executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-awaiting-input',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'Please continue',
-        },
-      },
-    );
-
-    expect(response.result).toMatchObject({
-      status: 'blocked-by-question',
-      waitingReason: 'agent-awaiting-input',
-    });
-    expect(mocks.writeToAgentMock).not.toHaveBeenCalled();
-  });
-
-  it('fails prompt delivery when the task command lease is lost mid-write', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockReturnValue({
-      agentId: 'agent-child',
-      generation: 1,
-      isShell: false,
-      taskId: 'task-child',
-    });
-    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
-      createSupervisionSnapshot('idle-at-prompt'),
-    );
-    let didStealLease = false;
-    mocks.writeToAgentMock.mockImplementation(() => {
-      if (didStealLease) {
-        return;
-      }
-      didStealLease = true;
-      acquireTaskCommandLease(
-        'task-child',
-        'intruder-client',
-        'intruder-owner',
-        'interrupt prompt delivery',
-        true,
-      );
-    });
-
-    const responsePromise = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-lose-lease',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-
-    await Promise.resolve();
-    await vi.runAllTimersAsync();
-    const response = await responsePromise;
-
-    expect(response.result).toMatchObject({
-      status: 'failed',
-      waitingReason: 'Task command lease was lost during prompt delivery',
-    });
-    expect(mocks.writeToAgentMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not overwrite prompt cancellation after an in-flight write finishes', async () => {
-    vi.useFakeTimers();
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(true);
-    mocks.getAgentMetaMock.mockReturnValue({
-      agentId: 'agent-child',
-      generation: 1,
-      isShell: false,
-      taskId: 'task-child',
-    });
-    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
-      createSupervisionSnapshot('idle-at-prompt'),
-    );
-
-    const delivery = executeCoordinatorToolCall(
-      { context, taskNames: createTaskRegistry() },
-      {
-        callId: 'call-1',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          targetTaskId: 'task-child',
-          text: 'First line\nSecond line',
-        },
-      },
-    );
-    await Promise.resolve();
-
-    cleanupCoordinatorStateForTask(context, 'task-child');
-    await vi.runAllTimersAsync();
-    await delivery;
-
-    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
-      status: 'cancelled',
-      waitingReason: 'task-cleaned-up',
-    });
   });
 
   it('cancels queued prompts and rejects child credentials after subtask cleanup', async () => {
@@ -1107,109 +522,6 @@ describe('coordinator tool gateway', () => {
       status: 'cancelled',
       taskId: 'task-child',
     });
-  });
-
-  it('deduplicates and bounds pending coordinator prompts per target', async () => {
-    const env = createStorageEnv();
-    envs.push(env);
-    const context = createContext(env);
-    const result = createCoordinatorRunForTask(context, {
-      coordinatorAgentId: 'agent-coordinator',
-      coordinatorTaskId: 'task-coordinator',
-      projectId: 'project-1',
-      projectMode: 'git',
-      projectRoot: '/repo',
-    });
-    const token = readCredentialToken(result.credentialPath);
-    addCoordinatorSubtask({
-      agentId: 'agent-child',
-      assignment: 'Do the work',
-      parentCoordinatorTaskId: 'task-coordinator',
-      runId: result.run.id,
-      status: 'running',
-      taskId: 'task-child',
-      toolTokenId: 'token-child',
-      worktreePath: '/repo/task-child',
-    });
-    mocks.hasAgentSessionMock.mockReturnValue(false);
-
-    const first = await executeCoordinatorToolCall(
-      {
-        context,
-        taskNames: createTaskRegistry(),
-      },
-      {
-        callId: 'call-1',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          dedupeKey: 'stable-prompt',
-          targetTaskId: 'task-child',
-          text: 'Continue now',
-        },
-      },
-    );
-    const second = await executeCoordinatorToolCall(
-      {
-        context,
-        taskNames: createTaskRegistry(),
-      },
-      {
-        callId: 'call-2',
-        runId: result.run.id,
-        taskId: 'task-coordinator',
-        token,
-        toolName: 'send_prompt',
-        payload: {
-          dedupeKey: 'stable-prompt',
-          targetTaskId: 'task-child',
-          text: 'Continue now',
-        },
-      },
-    );
-
-    expect(second.result).toEqual(first.result);
-    for (let index = 0; index < result.run.limits.maxPendingPromptsPerTarget - 1; index += 1) {
-      await executeCoordinatorToolCall(
-        {
-          context,
-          taskNames: createTaskRegistry(),
-        },
-        {
-          callId: `call-extra-${index}`,
-          runId: result.run.id,
-          taskId: 'task-coordinator',
-          token,
-          toolName: 'send_prompt',
-          payload: {
-            targetTaskId: 'task-child',
-            text: `Prompt ${index}`,
-          },
-        },
-      );
-    }
-
-    await expect(
-      executeCoordinatorToolCall(
-        {
-          context,
-          taskNames: createTaskRegistry(),
-        },
-        {
-          callId: 'call-over-limit',
-          runId: result.run.id,
-          taskId: 'task-coordinator',
-          token,
-          toolName: 'send_prompt',
-          payload: {
-            targetTaskId: 'task-child',
-            text: 'One too many',
-          },
-        },
-      ),
-    ).rejects.toThrow('Coordinator prompt limit reached for target task');
   });
 
   it('rejects subtask tokens for coordinator-only inspection and wait tools', async () => {
@@ -2836,7 +2148,7 @@ describe('coordinator tool gateway', () => {
 
     let workflow = getCoordinatorRun(result.run.id)?.workflows[0];
     expect(workflow).toMatchObject({
-      sourceSpec: expect.objectContaining({ version: 1 }),
+      sourceSpec: expect.objectContaining({ version: 2 }),
       stages: [
         expect.objectContaining({ id: 'find', status: 'waiting-for-results' }),
         expect.objectContaining({ id: 'verify', status: 'pending' }),
@@ -3366,6 +2678,357 @@ describe('coordinator tool gateway', () => {
       ],
     });
     expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toHaveLength(1);
+  });
+
+  it('rejects workflow budget policies above server caps before any workflow state exists', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    const overCapPolicies: Array<{ message: string; policy: Record<string, number> }> = [
+      {
+        message: `policy.maxTotalSteps must be no greater than ${COORDINATOR_LIMITS.maxWorkflowTotalSteps}`,
+        policy: { maxTotalSteps: COORDINATOR_LIMITS.maxWorkflowTotalSteps + 1 },
+      },
+      {
+        message: `policy.maxTotalLanes must be no greater than ${COORDINATOR_LIMITS.maxWorkflowLanes}`,
+        policy: { maxTotalLanes: COORDINATOR_LIMITS.maxWorkflowLanes + 1 },
+      },
+      {
+        message: `policy.maxTotalRetries must be no greater than ${COORDINATOR_LIMITS.maxWorkflowTotalRetries}`,
+        policy: { maxTotalRetries: COORDINATOR_LIMITS.maxWorkflowTotalRetries + 1 },
+      },
+      {
+        message: `policy.maxWallClockMs must be no greater than ${COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs}`,
+        policy: { maxWallClockMs: COORDINATOR_LIMITS.workflowMaxLaneTimeoutMs + 1 },
+      },
+    ];
+
+    for (const [index, overCap] of overCapPolicies.entries()) {
+      await expect(
+        executeCoordinatorToolCall(
+          { context, taskNames: createTaskRegistry() },
+          {
+            callId: `workflow-budget-over-cap-${index}`,
+            runId: result.run.id,
+            taskId: 'task-coordinator',
+            token,
+            toolName: 'start_workflow',
+            payload: {
+              policy: overCap.policy,
+              problem: 'Review budget caps.',
+              spec: { steps: [{ id: 'worker', kind: 'worker' }] },
+              template: 'custom',
+            },
+          },
+        ),
+      ).rejects.toThrow(overCap.message);
+    }
+    expect(getCoordinatorRun(result.run.id)?.workflows).toHaveLength(0);
+  });
+
+  it('applies lowered budget policies to the workflow snapshot and execution budget', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-worker']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-budget-lowered',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: {
+            maxTotalLanes: 4,
+            maxTotalRetries: 1,
+            maxTotalSteps: 6,
+            maxWallClockMs: 120_000,
+          },
+          problem: 'Review lowered budgets.',
+          spec: { steps: [{ id: 'worker', kind: 'worker' }] },
+          template: 'custom',
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.policy).toMatchObject({
+      maxTotalLanes: 4,
+      maxTotalRetries: 1,
+      maxTotalSteps: 6,
+      maxWallClockMs: 120_000,
+    });
+    expect(workflow?.execution?.deadlineAt).toEqual(expect.any(Number));
+    expect(workflow?.execution?.budget).toMatchObject({
+      lanes: { limit: 4, used: 1 },
+      retries: { limit: 1, used: 0 },
+      steps: { limit: 6, used: 1 },
+    });
+  });
+
+  it('rejects decision workflowActions above the step budget without recording the result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-decide']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'budget-decision-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { maxTotalSteps: 2 },
+          problem: 'Decide within a step budget.',
+          spec: {
+            steps: [
+              { id: 'scout', kind: 'worker', name: 'Scout' },
+              {
+                dependsOn: ['scout'],
+                id: 'decide',
+                kind: 'decision',
+                name: 'Decide',
+                sourceStepIds: ['scout'],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Budget decision workflow',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected budget decision workflow id');
+    }
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'budget-decision-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: readTaskCredentialToken('task-scout'),
+        toolName: 'submit_result',
+        payload: {
+          summary: 'Scout completed.',
+          workflowId,
+        },
+      },
+    );
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'budget-decision-result',
+          runId: result.run.id,
+          taskId: 'task-decide',
+          token: readTaskCredentialToken('task-decide'),
+          toolName: 'submit_result',
+          payload: {
+            metadata: {
+              workflowActions: [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+            },
+            summary: 'Decision wants one more step.',
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('workflowActions would exceed workflow step budget 2');
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.results.map((entry) => entry.summary)).toEqual(['Scout completed.']);
+    expect(workflow?.lanes.find((lane) => lane.taskId === 'task-decide')?.resultId).toBeUndefined();
+    expect(workflow?.expansions).toBeUndefined();
+    expect(workflow?.stages.map((stage) => stage.id)).toEqual(['scout', 'decide']);
+  });
+
+  it('enforces a lowered total-lane budget when spawn_many extends an existing workflow', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-one', 'task-two']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-many-budget-create',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_many',
+        payload: {
+          lanes: [{ assignment: 'Map backend risks.', name: 'Backend' }],
+          policy: { maxTotalLanes: 1 },
+          title: 'Lane budget fan out',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'spawn-many-budget-extend',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_many',
+          payload: {
+            lanes: [{ assignment: 'Map UI risks.', name: 'UI' }],
+            workflowId,
+          },
+        },
+      ),
+    ).rejects.toThrow('spawn_many would exceed workflow lane limit 1');
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toHaveLength(1);
+  });
+
+  it('rejects spawn_many extensions once the workflow wall-clock deadline has passed', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-one']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-many-deadline-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { maxWallClockMs: 60_000 },
+          problem: 'Review deadline gating for spawn_many.',
+          spec: {
+            steps: [
+              {
+                id: 'fan',
+                kind: 'fanout',
+                lanes: [{ assignment: 'Map backend risks.', id: 'backend', name: 'Backend' }],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Deadline-gated fan out',
+        },
+      },
+    );
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    if (workflow?.execution === undefined) {
+      throw new Error('Expected workflow execution state');
+    }
+    updateCoordinatorWorkflow(result.run.id, workflow.id, {
+      execution: { ...workflow.execution, deadlineAt: 1 },
+    });
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'spawn-many-deadline-extend',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_many',
+          payload: {
+            lanes: [{ assignment: 'Map UI risks.', name: 'UI' }],
+            workflowId: workflow.id,
+          },
+        },
+      ),
+    ).rejects.toThrow('budget-exhausted: wall-clock (60000/60000)');
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.lanes).toHaveLength(1);
+  });
+
+  it('accepts a zero retry budget policy and records it on the workflow snapshot', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-worker']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'workflow-zero-retry-budget',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { maxTotalRetries: 0 },
+          problem: 'Review a zero retry budget.',
+          spec: { steps: [{ id: 'worker', kind: 'worker' }] },
+          template: 'custom',
+        },
+      },
+    );
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.policy).toMatchObject({ maxTotalRetries: 0 });
+    expect(workflow?.execution?.budget).toMatchObject({ retries: { limit: 0, used: 0 } });
   });
 
   it('blocks workflow advancement when a lane submits a needs-followup result', async () => {
@@ -3928,6 +3591,7 @@ describe('coordinator tool gateway', () => {
       status: 'failed',
       taskId: 'task-child',
     });
+    expect(coordinatorRuntime.getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toBeNull();
     const childTokenId = getCoordinatorRun(result.run.id)?.subtasks[0]?.toolTokenId;
     expect(childTokenId).toEqual(expect.any(String));
   });
@@ -3959,6 +3623,15 @@ describe('coordinator tool gateway', () => {
       runId: result.run.id,
       taskId: 'task-child',
       toolCallUrl: context.coordinatorToolCallUrl,
+    });
+    coordinatorRuntime.recordCoordinatorSubtaskLaunch({
+      agent: { command: 'custom-agent', env: { CUSTOM_FLAG: '1' } },
+      assignment: 'Do the work',
+      dedupeKey: 'launch-task-child',
+      name: 'Child Task',
+      recordedAt: Date.now(),
+      runId: result.run.id,
+      taskId: 'task-child',
     });
     const taskNames = createTaskRegistry();
     mocks.getWorktreeStatusMock.mockResolvedValue({ has_uncommitted_changes: false });
@@ -3997,6 +3670,7 @@ describe('coordinator tool gateway', () => {
     );
     expect(taskNames.deleteTask).toHaveBeenCalledWith('task-child');
     expect(resolveCoordinatorToken(childCredential.token)).toBeNull();
+    expect(coordinatorRuntime.getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toBeNull();
     expect(response.result).toMatchObject({
       status: 'landed',
       taskId: 'task-child',
@@ -4579,5 +4253,1151 @@ describe('coordinator tool gateway', () => {
 
     expect(second).toEqual(first);
     expect(getCoordinatorRun(result.run.id)?.promptQueue).toHaveLength(1);
+  });
+
+  it('records durable launch payloads at spawn and removes them on subtask cleanup', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-launch-payload',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: {
+            args: ['--model', 'fast'],
+            command: 'custom-agent',
+            env: { CUSTOM_FLAG: '1' },
+            skipPermissionsArgs: ['--unsafe'],
+          },
+          assignment: 'Build the slice',
+          name: 'Child Task',
+        },
+      },
+    );
+
+    expect(
+      coordinatorRuntime.getCoordinatorSubtaskLaunch(result.run.id, 'task-child'),
+    ).toMatchObject({
+      agent: {
+        args: ['--model', 'fast'],
+        command: 'custom-agent',
+        env: { CUSTOM_FLAG: '1' },
+        skipPermissionsArgs: ['--unsafe'],
+      },
+      assignment: 'Build the slice',
+      name: 'Child Task',
+      runId: result.run.id,
+      taskId: 'task-child',
+    });
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'close-launch-payload',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'close_task',
+        payload: { targetTaskId: 'task-child' },
+      },
+    );
+
+    expect(coordinatorRuntime.getCoordinatorSubtaskLaunch(result.run.id, 'task-child')).toBeNull();
+  });
+
+  it('authorizes resume_run only for lease-held renderer calls on stale runs', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        unsafeRendererRequest({
+          callId: 'agent-resume',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'resume_run',
+        }) as never,
+      ),
+    ).rejects.toThrow('Unknown coordinator tool');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'resume-running',
+          runId: result.run.id,
+          toolName: 'resume_run',
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is running');
+
+    restartCoordinatorRuntime();
+    resetTaskCommandLeasesForTest();
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'resume-no-controller',
+          runId: result.run.id,
+          toolName: 'resume_run',
+        },
+      ),
+    ).rejects.toThrow('controllerId is required for coordinator mutations');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'resume-no-lease',
+          runId: result.run.id,
+          toolName: 'resume_run',
+        },
+      ),
+    ).rejects.toThrow('Coordinator task command lease is required');
+  });
+
+  it('pauses run admission for new work while accepting in-flight completions', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'pause-spawn-before',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: { command: 'codex' },
+          assignment: 'Work before the pause.',
+          name: 'Child',
+        },
+      },
+    );
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        unsafeRendererRequest({
+          callId: 'agent-pause',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'pause_run',
+        }) as never,
+      ),
+    ).rejects.toThrow('Unknown coordinator tool');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'pause the run');
+    await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'pause-run',
+        runId: result.run.id,
+        toolName: 'pause_run',
+      },
+    );
+    expect(getCoordinatorRun(result.run.id)).toMatchObject({ status: 'paused-by-user' });
+    expect(getCoordinatorRun(result.run.id)?.pausedAt).toBeGreaterThan(0);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'paused-spawn',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'spawn_subtask',
+          payload: {
+            agent: { command: 'codex' },
+            assignment: 'Work during the pause.',
+            name: 'Deferred child',
+          },
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is paused-by-user');
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'paused-prompt',
+          runId: result.run.id,
+          taskId: 'task-coordinator',
+          token,
+          toolName: 'send_prompt',
+          payload: { targetTaskId: 'task-child', text: 'Keep going' },
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is paused-by-user');
+
+    const listed = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'paused-list',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'list_tasks',
+      },
+    );
+    expect(listed.accepted).toBe(true);
+
+    const signalled = await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'paused-signal-done',
+        runId: result.run.id,
+        taskId: 'task-child',
+        token: readTaskCredentialToken('task-child'),
+        toolName: 'signal_done',
+        payload: { result: 'Finished during the pause.' },
+      },
+    );
+    expect(signalled.accepted).toBe(true);
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.status).toBe('ready-for-review');
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'paused-renderer-spawn',
+          runId: result.run.id,
+          toolName: 'spawn_subtask',
+          payload: {
+            agent: { command: 'codex' },
+            assignment: 'Renderer spawn during pause.',
+            name: 'Renderer child',
+          },
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is paused-by-user');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'pause-while-paused',
+          runId: result.run.id,
+          toolName: 'pause_run',
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is paused-by-user');
+
+    await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'unpause-run',
+        runId: result.run.id,
+        toolName: 'unpause_run',
+      },
+    );
+    expect(getCoordinatorRun(result.run.id)).toMatchObject({ status: 'running' });
+    expect(getCoordinatorRun(result.run.id)?.pausedAt).toBeUndefined();
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'unpause-running',
+          runId: result.run.id,
+          toolName: 'unpause_run',
+        },
+      ),
+    ).rejects.toThrow('Coordinator run is running');
+  });
+
+  it('holds gated decision actions for approval and applies them through approve_workflow_actions', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-decide', 'task-follow']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'gated-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { requireDecisionApproval: true },
+          problem: 'Decide with operator approval.',
+          spec: {
+            steps: [
+              { id: 'scout', kind: 'worker', name: 'Scout' },
+              {
+                dependsOn: ['scout'],
+                id: 'decide',
+                kind: 'decision',
+                name: 'Decide',
+                sourceStepIds: ['scout'],
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Gated decision workflow',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected gated workflow id');
+    }
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'gated-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: readTaskCredentialToken('task-scout'),
+        toolName: 'submit_result',
+        payload: { summary: 'Scout completed.', workflowId },
+      },
+    );
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'gated-decide-result',
+        runId: result.run.id,
+        taskId: 'task-decide',
+        token: readTaskCredentialToken('task-decide'),
+        toolName: 'submit_result',
+        payload: {
+          metadata: {
+            workflowActions: [{ id: 'followup', kind: 'append_worker', name: 'Followup' }],
+          },
+          summary: 'Decision wants a follow-up step.',
+          workflowId,
+        },
+      },
+    );
+
+    const held = getCoordinatorRun(result.run.id)?.workflows[0];
+    const approvalId = held?.pendingApprovals?.[0]?.id;
+    if (approvalId === undefined) {
+      throw new Error('Expected pending approval id');
+    }
+    expect(held?.pendingApprovals).toEqual([expect.objectContaining({ status: 'pending' })]);
+    expect(held?.lanes.find((lane) => lane.taskId === 'task-decide')).toMatchObject({
+      status: 'waiting-for-result',
+    });
+    expect(held?.lanes.find((lane) => lane.taskId === 'task-decide')?.resultId).toBeUndefined();
+    expect(held?.stages.map((stage) => stage.id)).toEqual(['scout', 'decide']);
+    expect(held?.journal.some((entry) => entry.kind === 'decision-approval-requested')).toBe(true);
+
+    await expect(
+      executeCoordinatorToolCall(
+        { context, taskNames: createTaskRegistry() },
+        {
+          callId: 'gated-decide-second-result',
+          runId: result.run.id,
+          taskId: 'task-decide',
+          token: readTaskCredentialToken('task-decide'),
+          toolName: 'submit_result',
+          payload: { summary: 'Second decision result.', workflowId },
+        },
+      ),
+    ).rejects.toThrow('workflow lane already has a result pending approval');
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'approve-no-lease',
+          runId: result.run.id,
+          toolName: 'approve_workflow_actions',
+          payload: { approvalId, workflowId },
+        },
+      ),
+    ).rejects.toThrow('Coordinator task command lease is required');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'approve actions');
+    const approveRequest = {
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      requestId: 'approve-actions',
+      runId: result.run.id,
+      toolName: 'approve_workflow_actions' as const,
+      payload: { approvalId, workflowId },
+    };
+    const approved = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      approveRequest,
+    );
+    expect(approved.accepted).toBe(true);
+
+    const applied = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(applied?.pendingApprovals).toEqual([expect.objectContaining({ status: 'approved' })]);
+    expect(applied?.stages.map((stage) => stage.id)).toEqual(['scout', 'decide', 'followup']);
+    expect(applied?.lanes.find((lane) => lane.taskId === 'task-decide')).toMatchObject({
+      status: 'completed',
+    });
+    expect(applied?.lanes.find((lane) => lane.taskId === 'task-follow')).toMatchObject({
+      stageId: 'followup',
+    });
+    expect(applied?.stepAppends).toHaveLength(1);
+    expect(applied?.journal.some((entry) => entry.kind === 'decision-approval-approved')).toBe(
+      true,
+    );
+
+    const replayed = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      approveRequest,
+    );
+    expect(replayed).toEqual(approved);
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]?.stepAppends).toHaveLength(1);
+  });
+
+  it('discards gated decision actions through deny_workflow_actions with a journaled reason', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-scout', 'task-decide', 'task-report']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'deny-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { requireDecisionApproval: true },
+          problem: 'Decide with operator approval.',
+          spec: {
+            steps: [
+              { id: 'scout', kind: 'worker', name: 'Scout' },
+              {
+                dependsOn: ['scout'],
+                id: 'decide',
+                kind: 'decision',
+                name: 'Decide',
+                sourceStepIds: ['scout'],
+              },
+              { dependsOn: ['decide'], id: 'report', kind: 'worker', name: 'Report' },
+            ],
+          },
+          template: 'custom',
+          title: 'Denied decision workflow',
+        },
+      },
+    );
+    const workflowId = getCoordinatorRun(result.run.id)?.workflows[0]?.id;
+    if (workflowId === undefined) {
+      throw new Error('Expected denied workflow id');
+    }
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'deny-scout-result',
+        runId: result.run.id,
+        taskId: 'task-scout',
+        token: readTaskCredentialToken('task-scout'),
+        toolName: 'submit_result',
+        payload: { summary: 'Scout completed.', workflowId },
+      },
+    );
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'deny-decide-result',
+        runId: result.run.id,
+        taskId: 'task-decide',
+        token: readTaskCredentialToken('task-decide'),
+        toolName: 'submit_result',
+        payload: {
+          metadata: {
+            workflowActions: [{ kind: 'stop_workflow', reason: 'No more work needed.' }],
+          },
+          summary: 'Decision wants to stop early.',
+          workflowId,
+        },
+      },
+    );
+    const approvalId = getCoordinatorRun(result.run.id)?.workflows[0]?.pendingApprovals?.[0]?.id;
+    if (approvalId === undefined) {
+      throw new Error('Expected pending approval id');
+    }
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'deny-no-lease',
+          runId: result.run.id,
+          toolName: 'deny_workflow_actions',
+          payload: { approvalId, reason: 'Keep the planned report stage.', workflowId },
+        },
+      ),
+    ).rejects.toThrow('Coordinator task command lease is required');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'deny actions');
+    const denied = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'deny-actions',
+        runId: result.run.id,
+        toolName: 'deny_workflow_actions',
+        payload: { approvalId, reason: 'Keep the planned report stage.', workflowId },
+      },
+    );
+    expect(denied.accepted).toBe(true);
+
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    expect(workflow?.pendingApprovals).toEqual([
+      expect.objectContaining({
+        reason: 'Keep the planned report stage.',
+        status: 'denied',
+      }),
+    ]);
+    expect(workflow?.lanes.find((lane) => lane.taskId === 'task-decide')).toMatchObject({
+      status: 'completed',
+    });
+    expect(workflow?.lanes.find((lane) => lane.taskId === 'task-report')).toMatchObject({
+      stageId: 'report',
+    });
+    expect(workflow?.status).not.toBe('completed');
+    expect(workflow?.expansions).toBeUndefined();
+    expect(
+      workflow?.journal.some(
+        (entry) =>
+          entry.kind === 'decision-approval-denied' &&
+          entry.message.includes('Keep the planned report stage.'),
+      ),
+    ).toBe(true);
+  });
+
+  it('retries failed lanes through the lease-gated retry_lane operator action', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskSequence(['task-a', 'task-b', 'task-a-retry']);
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'retry-start',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'start_workflow',
+        payload: {
+          policy: { retryCount: 0 },
+          problem: 'Scan both halves.',
+          spec: {
+            steps: [
+              {
+                id: 'scan',
+                kind: 'fanout',
+                lanes: [
+                  { assignment: 'Scan the backend.', id: 'lane-a', name: 'Backend' },
+                  { assignment: 'Scan the frontend.', id: 'lane-b', name: 'Frontend' },
+                ],
+                name: 'Scan',
+              },
+            ],
+          },
+          template: 'custom',
+          title: 'Manual retry workflow',
+        },
+      },
+    );
+    const workflow = getCoordinatorRun(result.run.id)?.workflows[0];
+    const failedLane = workflow?.lanes.find((lane) => lane.taskId === 'task-a');
+    if (!workflow || !failedLane) {
+      throw new Error('Expected backend lane');
+    }
+    coordinatorRuntime.updateCoordinatorWorkflowLane(result.run.id, workflow.id, failedLane.id, {
+      completedAt: Date.now(),
+      failure: 'agent crashed',
+      status: 'failed',
+    });
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'retry-no-lease',
+          runId: result.run.id,
+          toolName: 'retry_lane',
+          payload: { laneId: failedLane.id, workflowId: workflow.id },
+        },
+      ),
+    ).rejects.toThrow('Coordinator task command lease is required');
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'retry the lane');
+    const retried = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'retry-lane',
+        runId: result.run.id,
+        toolName: 'retry_lane',
+        payload: { laneId: failedLane.id, workflowId: workflow.id },
+      },
+    );
+    expect(retried.accepted).toBe(true);
+
+    const updated = getCoordinatorRun(result.run.id)?.workflows[0];
+    const retryLane = updated?.lanes.find(
+      (lane) => lane.dedupeKey === `${failedLane.dedupeKey ?? failedLane.id}:retry:2`,
+    );
+    expect(retryLane).toMatchObject({
+      attempt: 2,
+      spawnedBy: 'operator',
+      taskId: 'task-a-retry',
+    });
+    expect(updated?.journal.some((entry) => entry.kind === 'lane-manual-retry')).toBe(true);
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames: createTaskRegistry() },
+        {
+          controllerId: 'browser-client-1',
+          coordinatorTaskId: 'task-coordinator',
+          requestId: 'retry-lane-again',
+          runId: result.run.id,
+          toolName: 'retry_lane',
+          payload: { laneId: failedLane.id, workflowId: workflow.id },
+        },
+      ),
+    ).rejects.toThrow('Lane retry was already scheduled');
+  });
+
+  it('respawns interrupted seeded subtasks with rotated credentials and rebuilt launch args', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-seeded-codex',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: {
+            args: ['--model', 'gpt-5.5'],
+            command: 'codex',
+            env: { CODEX_FLAG: '1' },
+          },
+          assignment: 'Review the coordinator startup path.',
+          name: 'Codex child',
+        },
+      },
+    );
+    const oldChildToken = readTaskCredentialToken('task-child');
+    const originalSpawn = mocks.spawnTaskAgentWorkflowMock.mock.calls[0]?.[1] as {
+      agentId: string;
+      env: Record<string, string>;
+    };
+
+    restartCoordinatorRuntime();
+    expect(getCoordinatorRun(result.run.id)).toMatchObject({ status: 'stale-after-restore' });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]).toMatchObject({
+      interruptedByRestoreAt: expect.any(Number),
+      status: 'exited',
+    });
+
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+    const taskNames = createTaskRegistry();
+    const resumeRequest = {
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      requestId: 'resume-1',
+      runId: result.run.id,
+      toolName: 'resume_run' as const,
+    };
+    const response = await executeCoordinatorRendererAction({ context, taskNames }, resumeRequest);
+
+    expect(response.result).toMatchObject({
+      failed: [],
+      respawned: ['task-child'],
+      resumeId: 'resume-1',
+      run: expect.objectContaining({
+        resumes: [
+          expect.objectContaining({
+            failedTaskIds: [],
+            respawnedTaskIds: ['task-child'],
+            resumeId: 'resume-1',
+          }),
+        ],
+        status: 'running',
+      }),
+    });
+    expect(taskNames.registerCreatedTask).toHaveBeenCalledWith(
+      'task-child',
+      expect.objectContaining({
+        agentDefName: 'codex',
+        taskName: 'Codex child',
+        worktreePath: '/repo/task-child',
+      }),
+    );
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(2);
+    const respawn = mocks.spawnTaskAgentWorkflowMock.mock.calls[1]?.[1] as {
+      agentId: string;
+      args: string[];
+      command: string;
+      cwd: string;
+      env: Record<string, string>;
+      taskId: string;
+    };
+    expect(respawn).toMatchObject({
+      agentId: originalSpawn.agentId,
+      command: 'codex',
+      cwd: '/repo/task-child',
+      taskId: 'task-child',
+    });
+    expect(respawn.args).toEqual([
+      '--model',
+      'gpt-5.5',
+      expect.stringContaining('Review the coordinator startup path.'),
+    ]);
+    expect(respawn.env).toMatchObject({
+      CODEX_FLAG: '1',
+      PARALLEL_CODE_COORDINATOR_RUN_ID: result.run.id,
+    });
+    expect(respawn.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL).not.toBe(
+      originalSpawn.env.PARALLEL_CODE_COORDINATOR_CREDENTIAL,
+    );
+
+    expect(resolveCoordinatorToken(oldChildToken)).toBeNull();
+    const newChildToken = readTaskCredentialToken('task-child');
+    expect(newChildToken).not.toBe(oldChildToken);
+    expect(resolveCoordinatorToken(newChildToken)).toMatchObject({
+      agentId: originalSpawn.agentId,
+      taskId: 'task-child',
+    });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]).toMatchObject({
+      status: 'running',
+      toolTokenId: resolveCoordinatorToken(newChildToken)?.tokenId,
+    });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.result).toBeUndefined();
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.interruptedByRestoreAt).toBeUndefined();
+
+    const replayed = await executeCoordinatorRendererAction({ context, taskNames }, resumeRequest);
+    expect(replayed).toEqual(response);
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(2);
+
+    await expect(
+      executeCoordinatorRendererAction(
+        { context, taskNames },
+        { ...resumeRequest, requestId: 'resume-2' },
+      ),
+    ).rejects.toThrow('Coordinator run is running');
+
+    resetTaskCommandLeasesForTest();
+    await expect(
+      executeCoordinatorRendererAction({ context, taskNames }, resumeRequest),
+    ).rejects.toThrow('Coordinator task command lease is required');
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates a workflow resume failure, records the resume outcome, and keeps the replay result', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-seeded-codex',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: { command: 'codex' },
+          assignment: 'Review the coordinator startup path.',
+          name: 'Codex child',
+        },
+      },
+    );
+    const workflow = coordinatorRuntime.createCoordinatorWorkflow({
+      runId: result.run.id,
+      stages: [{ id: 'worker', kind: 'worker', name: 'Worker' }],
+      template: 'custom',
+      title: 'Stale workflow',
+    });
+
+    restartCoordinatorRuntime();
+    expect(getCoordinatorRun(result.run.id)?.workflows[0]).toMatchObject({
+      status: 'stale-after-restore',
+    });
+    // The stale workflow status changes between the resume snapshot and the workflow
+    // loop; the per-workflow failure must stay isolated instead of stranding the run.
+    mocks.spawnTaskAgentWorkflowMock.mockImplementation(() => {
+      coordinatorRuntime.updateCoordinatorWorkflow(result.run.id, workflow.id, {
+        status: 'cancelled',
+      });
+      return false;
+    });
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+    const taskNames = createTaskRegistry();
+    const resumeRequest = {
+      controllerId: 'browser-client-1',
+      coordinatorTaskId: 'task-coordinator',
+      requestId: 'resume-workflow-failure',
+      runId: result.run.id,
+      toolName: 'resume_run' as const,
+    };
+
+    const response = await executeCoordinatorRendererAction({ context, taskNames }, resumeRequest);
+
+    expect(response.result).toMatchObject({
+      failed: [
+        expect.objectContaining({
+          reason: expect.stringContaining(
+            `Coordinator workflow ${workflow.id} resume failed: Coordinator workflow is cancelled`,
+          ),
+        }),
+      ],
+      respawned: ['task-child'],
+    });
+    expect(getCoordinatorRun(result.run.id)).toMatchObject({
+      resumes: [
+        expect.objectContaining({
+          respawnedTaskIds: ['task-child'],
+          resumeId: 'resume-workflow-failure',
+        }),
+      ],
+      status: 'running',
+    });
+
+    const replayed = await executeCoordinatorRendererAction({ context, taskNames }, resumeRequest);
+    expect(replayed).toEqual(response);
+  });
+
+  it('re-establishes undelivered initial assignments once without redelivering write-unknown prompts', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    mocks.hasAgentSessionMock.mockReturnValue(false);
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-readiness-gated',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: { command: 'custom-agent' },
+          assignment: 'Build the slice',
+          name: 'Child Task',
+        },
+      },
+    );
+    const subtask = getCoordinatorRun(result.run.id)?.subtasks[0];
+    if (!subtask) {
+      throw new Error('Missing spawned subtask fixture');
+    }
+
+    restartCoordinatorRuntime();
+    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
+      kind: 'initial-assignment',
+      status: 'write-unknown-after-restore',
+    });
+
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 2,
+      isShell: false,
+      taskId: 'task-child',
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt', { agentId: subtask.agentId }),
+    );
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+
+    const response = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'resume-prompted',
+        runId: result.run.id,
+        toolName: 'resume_run',
+      },
+    );
+
+    expect(response.result).toMatchObject({ respawned: ['task-child'] });
+    const prompts = getCoordinatorRun(result.run.id)?.promptQueue ?? [];
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toMatchObject({ status: 'write-unknown-after-restore' });
+    expect(prompts[1]).toMatchObject({
+      dedupeKey: 'resume:resume-prompted:task-child:initial',
+      kind: 'initial-assignment',
+      status: 'delivered',
+    });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]).toMatchObject({ status: 'running' });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.result).toBeUndefined();
+    const writtenPrompts = mocks.writeToAgentMock.mock.calls.filter(
+      (call) => typeof call[1] === 'string' && call[1].includes('Build the slice'),
+    );
+    expect(writtenPrompts).toHaveLength(1);
+  });
+
+  it('replays delivered readiness-gated initial assignments after respawn because the old PTY is gone', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const token = readCredentialToken(result.credentialPath);
+    mockCreatedTaskResult();
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt', { agentId: 'agent-child' }),
+    );
+
+    await executeCoordinatorToolCall(
+      { context, taskNames: createTaskRegistry() },
+      {
+        callId: 'spawn-readiness-gated-delivered',
+        runId: result.run.id,
+        taskId: 'task-coordinator',
+        token,
+        toolName: 'spawn_subtask',
+        payload: {
+          agent: { command: 'custom-agent' },
+          assignment: 'Rebuild the dead PTY context.',
+          name: 'Child Task',
+        },
+      },
+    );
+    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
+      kind: 'initial-assignment',
+      status: 'delivered',
+    });
+
+    restartCoordinatorRuntime();
+    expect(getCoordinatorRun(result.run.id)?.promptQueue[0]).toMatchObject({
+      kind: 'initial-assignment',
+      status: 'delivered',
+    });
+
+    mocks.getAgentMetaMock.mockImplementation((agentId: string) => ({
+      agentId,
+      generation: 2,
+      isShell: false,
+      taskId: 'task-child',
+    }));
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt', { agentId: 'agent-child' }),
+    );
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+
+    const response = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'resume-redelivered-initial',
+        runId: result.run.id,
+        toolName: 'resume_run',
+      },
+    );
+
+    expect(response.result).toMatchObject({ respawned: ['task-child'] });
+    const prompts = getCoordinatorRun(result.run.id)?.promptQueue ?? [];
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toMatchObject({ status: 'delivered' });
+    expect(prompts[1]).toMatchObject({
+      dedupeKey: 'resume:resume-redelivered-initial:task-child:initial',
+      kind: 'initial-assignment',
+      status: 'delivered',
+    });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]).toMatchObject({ status: 'running' });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.interruptedByRestoreAt).toBeUndefined();
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]?.result).toBeUndefined();
+    const writtenPrompts = mocks.writeToAgentMock.mock.calls.filter(
+      (call) => typeof call[1] === 'string' && call[1].includes('Rebuild the dead PTY context.'),
+    );
+    expect(writtenPrompts).toHaveLength(2);
+  });
+
+  it('marks interrupted subtasks failed when no launch payload is recorded', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const result = createCoordinatorRunForTask(context, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-legacy',
+      assignment: 'Legacy work without a launch payload',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: result.run.id,
+      status: 'running',
+      taskId: 'task-legacy',
+      toolTokenId: 'token-legacy',
+      worktreePath: '/repo/task-legacy',
+    });
+
+    restartCoordinatorRuntime();
+    acquireTaskCommandLease('task-coordinator', 'browser-client-1', 'user', 'resume the run');
+
+    const response = await executeCoordinatorRendererAction(
+      { context, taskNames: createTaskRegistry() },
+      {
+        controllerId: 'browser-client-1',
+        coordinatorTaskId: 'task-coordinator',
+        requestId: 'resume-legacy',
+        runId: result.run.id,
+        toolName: 'resume_run',
+      },
+    );
+
+    expect(response.result).toMatchObject({
+      failed: [
+        expect.objectContaining({
+          reason: expect.stringContaining('no recorded launch payload'),
+          taskId: 'task-legacy',
+        }),
+      ],
+      respawned: [],
+    });
+    expect(mocks.spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+    expect(getCoordinatorRun(result.run.id)).toMatchObject({ status: 'running' });
+    expect(getCoordinatorRun(result.run.id)?.subtasks[0]).toMatchObject({
+      result: expect.stringContaining('no recorded launch payload'),
+      status: 'failed',
+    });
   });
 });

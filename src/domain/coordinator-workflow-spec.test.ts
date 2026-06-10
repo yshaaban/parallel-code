@@ -9,6 +9,7 @@ import {
 
 const limits: CoordinatorWorkflowSpecValidationLimits = {
   assignmentTextMaxChars: 16_000,
+  maxWorkflowBranchIterations: 8,
   maxWorkflowLanes: 12,
   maxWorkflowMetadataBytes: 16 * 1024,
   maxWorkflowShortTextChars: 512,
@@ -59,7 +60,7 @@ describe('coordinator workflow spec validation', () => {
         }),
         expect.objectContaining({ dependsOn: ['verify'], id: 'synthesize' }),
       ],
-      version: 1,
+      version: 2,
     });
   });
 
@@ -98,6 +99,96 @@ describe('coordinator workflow spec validation', () => {
         { limits },
       ),
     ).toThrow('dependency cycle');
+  });
+
+  it('rejects source references that are outside the dependency ancestry', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              id: 'decide',
+              kind: 'decision',
+              sourceStepIds: ['scan'],
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('step decide must depend on source step scan');
+
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              id: 'verify',
+              kind: 'verify',
+              resultSourceStepIds: ['scan'],
+              verifiers: [{ id: 'skeptic', name: 'Skeptic' }],
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('step verify must depend on result source step scan');
+  });
+
+  it('rejects verify steps with impossible minimum verifier thresholds', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              dependsOn: ['scan'],
+              findingSourceStepId: 'scan',
+              id: 'verify',
+              kind: 'verify',
+              minimumVerifierCount: 2,
+              policy: {
+                joinMode: 'first-success',
+              },
+              verifiers: [
+                { id: 'skeptic', name: 'Skeptic' },
+                { id: 'archivist', name: 'Archivist' },
+              ],
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow(
+      'step verify.minimumVerifierCount must be 1 when step verify.joinMode is first-success',
+    );
+
+    expect(() =>
+      normalizeCoordinatorWorkflowSpec(
+        {
+          steps: [
+            { id: 'scan', kind: 'worker' },
+            {
+              dependsOn: ['scan'],
+              findingSourceStepId: 'scan',
+              id: 'verify',
+              kind: 'verify',
+              minimumVerifierCount: 2,
+              policy: {
+                joinMode: 'quorum',
+                quorumCount: 1,
+              },
+              verifiers: [
+                { id: 'skeptic', name: 'Skeptic' },
+                { id: 'archivist', name: 'Archivist' },
+              ],
+            },
+          ],
+        },
+        { limits },
+      ),
+    ).toThrow('step verify.minimumVerifierCount must be no greater than step verify.quorumCount');
   });
 
   it('rejects over-cap fanout before execution', () => {
@@ -158,6 +249,43 @@ describe('coordinator workflow spec validation', () => {
       id: 'decide',
       kind: 'decision',
       sourceStepIds: ['find'],
+    });
+  });
+
+  it('normalizes stage join policy for quorum fan-in workflows', () => {
+    const spec = normalizeCoordinatorWorkflowSpec(
+      {
+        steps: [
+          {
+            id: 'scan',
+            kind: 'fanout',
+            lanes: [
+              { assignment: 'Scan backend.', id: 'backend', name: 'Backend' },
+              { assignment: 'Scan UI.', id: 'ui', name: 'UI' },
+              { assignment: 'Scan docs.', id: 'docs', name: 'Docs' },
+            ],
+            policy: {
+              joinMode: 'quorum',
+              quorumCount: 2,
+            },
+          },
+          {
+            dependsOn: ['scan'],
+            id: 'synthesize',
+            kind: 'synthesize',
+            sourceStepIds: ['scan'],
+          },
+        ],
+      },
+      { limits },
+    );
+
+    expect(spec.steps[0]).toMatchObject({
+      id: 'scan',
+      policy: {
+        joinMode: 'quorum',
+        quorumCount: 2,
+      },
     });
   });
 
@@ -340,5 +468,81 @@ describe('coordinator workflow spec validation', () => {
         { limits },
       ),
     ).toThrow('workflowActions reuse actionId stable-action');
+  });
+
+  it('normalizes append_branch_bundle workflow actions', () => {
+    const actions = normalizeCoordinatorWorkflowDynamicActions(
+      [
+        {
+          branchKey: 'high-risk-followup',
+          bundleId: 'deep-dive',
+          kind: 'append_branch_bundle',
+          lanes: [
+            { assignment: 'Deep dive backend queue handling.', id: 'backend', name: 'Backend' },
+            { assignment: 'Deep dive UI blockers.', id: 'ui', name: 'UI' },
+          ],
+          maxIterations: 2,
+          name: 'Deep dive',
+          reduce: {
+            includeFindings: true,
+            name: 'Reduce',
+            prompt: 'Summarize the focused follow-up work.',
+          },
+          verify: {
+            joinMode: 'quorum',
+            quorumCount: 1,
+            verifiers: [
+              { id: 'skeptic', name: 'Skeptic' },
+              { id: 'archivist', name: 'Archivist' },
+            ],
+          },
+        },
+      ],
+      { limits },
+    );
+
+    expect(actions).toMatchObject([
+      {
+        branchKey: 'high-risk-followup',
+        bundleId: 'deep-dive',
+        kind: 'append_branch_bundle',
+        lanes: expect.arrayContaining([expect.objectContaining({ id: 'backend' })]),
+        maxIterations: 2,
+        reduce: expect.objectContaining({ name: 'Reduce' }),
+        verify: expect.objectContaining({
+          joinMode: 'quorum',
+          quorumCount: 1,
+          verifiers: expect.arrayContaining([expect.objectContaining({ id: 'skeptic' })]),
+        }),
+      },
+    ]);
+  });
+
+  it('rejects append_branch_bundle verifier thresholds that cannot satisfy their join policy', () => {
+    expect(() =>
+      normalizeCoordinatorWorkflowDynamicActions(
+        [
+          {
+            bundleId: 'deep-dive',
+            kind: 'append_branch_bundle',
+            lanes: [
+              { assignment: 'Deep dive backend queue handling.', id: 'backend', name: 'Backend' },
+            ],
+            verify: {
+              joinMode: 'quorum',
+              minimumVerifierCount: 2,
+              quorumCount: 1,
+              verifiers: [
+                { id: 'skeptic', name: 'Skeptic' },
+                { id: 'archivist', name: 'Archivist' },
+              ],
+            },
+          },
+        ],
+        { limits },
+      ),
+    ).toThrow(
+      'workflowActions[0].verify.minimumVerifierCount must be no greater than workflowActions[0].verify.quorumCount',
+    );
   });
 });

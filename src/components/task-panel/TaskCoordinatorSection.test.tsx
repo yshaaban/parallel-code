@@ -85,6 +85,115 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
   };
 }
 
+function createOperatorWorkflow(): NonNullable<CoordinatorRunSnapshot['workflows']>[number] {
+  return {
+    appendPolicy: {
+      maxActionsPerDecision: 8,
+      maxStepAppends: 24,
+    },
+    createdAt: 1_000,
+    eventVersion: 2,
+    id: 'workflow-1',
+    journal: [],
+    lanes: [
+      {
+        agentId: 'agent-scan',
+        assignment: 'Scan the backend.',
+        attempt: 1,
+        createdAt: 1_000,
+        dedupeKey: 'lane-failed',
+        failure: 'agent crashed',
+        id: 'lane-failed',
+        name: 'Scan',
+        stageId: 'scan',
+        status: 'failed',
+        updatedAt: 1_100,
+      },
+      {
+        agentId: 'agent-decide',
+        assignment: 'Decide next steps.',
+        attempt: 1,
+        createdAt: 1_000,
+        id: 'lane-decide',
+        name: 'Decide',
+        stageId: 'decide',
+        status: 'waiting-for-result',
+        taskId: 'task-decide',
+        updatedAt: 1_100,
+      },
+    ],
+    pendingApprovals: [
+      {
+        actions: [
+          {
+            kind: 'append_worker',
+            step: {
+              assignment: 'Follow up.',
+              dependsOn: ['decide'],
+              id: 'followup',
+              kind: 'worker',
+              lanes: [{ assignment: 'Follow up.', id: 'followup-lane', name: 'Followup' }],
+              name: 'Followup',
+              resultSourceStepIds: [],
+              sourceStepIds: [],
+              verifiers: [],
+            },
+          },
+        ],
+        createdAt: 1_100,
+        id: 'result-1:approval',
+        laneId: 'lane-decide',
+        resultId: 'result-1',
+        stageId: 'decide',
+        status: 'pending',
+      },
+    ],
+    policy: {
+      continueOnFailure: true,
+      maxConcurrentLanes: 3,
+      maxIterationsPerBranch: 3,
+      maxOutputBytesPerLane: 65_536,
+      requireDecisionApproval: true,
+      resultRequired: true,
+      retryBackoffMs: 1_000,
+      retryCount: 0,
+      timeoutMs: 900_000,
+    },
+    programVersion: 2,
+    results: [],
+    runId: 'run-1',
+    stages: [
+      {
+        createdAt: 1_000,
+        dependsOn: [],
+        id: 'scan',
+        kind: 'fan-out',
+        laneIds: ['lane-failed'],
+        name: 'Scan',
+        resultIds: [],
+        status: 'waiting-for-results',
+        updatedAt: 1_100,
+      },
+      {
+        createdAt: 1_000,
+        dependsOn: ['scan'],
+        id: 'decide',
+        kind: 'decision',
+        laneIds: ['lane-decide'],
+        name: 'Decide',
+        resultIds: ['result-1'],
+        status: 'waiting-for-results',
+        updatedAt: 1_100,
+      },
+    ],
+    startedAt: 1_000,
+    status: 'waiting-for-results',
+    template: 'custom',
+    title: 'Gated review',
+    updatedAt: 1_100,
+  };
+}
+
 function createTask(): Task {
   return {
     agentIds: ['agent-coordinator'],
@@ -220,6 +329,7 @@ describe('TaskCoordinatorSection', () => {
           policy: {
             continueOnFailure: true,
             maxConcurrentLanes: 3,
+            maxIterationsPerBranch: 3,
             maxOutputBytesPerLane: 65_536,
             resultRequired: true,
             retryBackoffMs: 1_000,
@@ -300,9 +410,106 @@ describe('TaskCoordinatorSection', () => {
 
     expect(screen.getByText('Activity')).toBeDefined();
     expect(screen.getByText('Results')).toBeDefined();
+    expect(screen.getAllByText(/Join all/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText('Mapped risk.').length).toBeGreaterThan(0);
     expect(screen.getByText(/Risk found/)).toBeDefined();
     expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the workflow budget counters line in the drilldown', () => {
+    coordinatorRunRef.current = createRun({
+      workflows: [
+        {
+          appendPolicy: {
+            maxActionsPerDecision: 8,
+            maxStepAppends: 24,
+          },
+          createdAt: 1_000,
+          eventVersion: 2,
+          execution: {
+            activeLaneCount: 0,
+            blockedReason: 'budget-exhausted: wall-clock (60000/60000)',
+            budget: {
+              deadlineAt: 61_000,
+              exhausted: 'wall-clock',
+              lanes: { limit: 12, used: 1 },
+              retries: { limit: 8, used: 0 },
+              steps: { limit: 24, used: 1 },
+            },
+            deadlineAt: 61_000,
+            lastTickAt: 61_001,
+            pendingRetryLaneIds: [],
+            readyStageIds: [],
+          },
+          id: 'workflow-budget',
+          journal: [
+            {
+              at: 61_001,
+              kind: 'workflow-budget-exhausted',
+              message: 'Budget exhausted: wall-clock (60000/60000).',
+              seq: 1,
+            },
+          ],
+          lanes: [
+            {
+              agentId: 'agent-map',
+              assignment: 'Map backend risks.',
+              attempt: 1,
+              createdAt: 1_000,
+              failure: 'budget-exhausted: wall-clock (60000/60000)',
+              id: 'lane-map',
+              name: 'Backend',
+              role: 'map',
+              stageId: 'map',
+              status: 'cancelled',
+              taskId: 'task-map',
+              updatedAt: 61_001,
+            },
+          ],
+          policy: {
+            continueOnFailure: true,
+            maxConcurrentLanes: 3,
+            maxIterationsPerBranch: 3,
+            maxOutputBytesPerLane: 65_536,
+            maxWallClockMs: 60_000,
+            resultRequired: true,
+            retryBackoffMs: 1_000,
+            retryCount: 0,
+            timeoutMs: 900_000,
+          },
+          programVersion: 2,
+          results: [],
+          runId: 'run-1',
+          stages: [
+            {
+              createdAt: 1_000,
+              dependsOn: [],
+              id: 'map',
+              kind: 'map',
+              laneIds: ['lane-map'],
+              name: 'Map',
+              resultIds: [],
+              status: 'waiting-for-results',
+              updatedAt: 61_001,
+            },
+          ],
+          startedAt: 1_000,
+          status: 'blocked',
+          template: 'map_reduce',
+          title: 'Budget review',
+          updatedAt: 61_001,
+        },
+      ],
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open workflow Budget review'));
+
+    expect(screen.getByText('Budget · Steps 1/24 · Lanes 1/12 · Retries 0/8')).toBeDefined();
+    expect(
+      screen.getAllByText(/budget-exhausted: wall-clock \(60000\/60000\)/).length,
+    ).toBeGreaterThan(0);
   });
 
   it('opens the peek lens and fetches output through the coordinator UI action channel', async () => {
@@ -504,5 +711,117 @@ describe('TaskCoordinatorSection', () => {
 
     await screen.findByText('Command has an unterminated quote or escape.');
     expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
+  });
+
+  it('resumes a stale run through the coordinator UI action channel', async () => {
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore' });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Resume coordinator run'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith({
+        controllerId: expect.any(String),
+        coordinatorTaskId: 'task-coordinator',
+        requestId: expect.any(String),
+        runId: 'run-1',
+        toolName: 'resume_run',
+      });
+    });
+  });
+
+  it('hides the resume control for non-stale runs', () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    expect(screen.queryByLabelText('Resume coordinator run')).toBeNull();
+  });
+
+  it('pauses and unpauses the run through the coordinator UI action channel', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Pause coordinator run'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith({
+        controllerId: expect.any(String),
+        coordinatorTaskId: 'task-coordinator',
+        requestId: expect.any(String),
+        runId: 'run-1',
+        toolName: 'pause_run',
+      });
+    });
+
+    coordinatorRunRef.current = createRun({ status: 'paused-by-user' });
+    callCoordinatorUiToolMock.mockClear();
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Unpause coordinator run'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'unpause_run' }),
+      );
+    });
+  });
+
+  it('approves, denies, and retries through workflow drilldown operator controls', async () => {
+    coordinatorRunRef.current = createRun({
+      workflows: [createOperatorWorkflow()],
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Open workflow Gated review'));
+    expect(screen.getByText('A1')).toBeDefined();
+    expect(screen.getByText('Pending approvals')).toBeDefined();
+    expect(screen.getByText('append_worker followup')).toBeDefined();
+
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          controllerId: expect.any(String),
+          payload: { approvalId: 'result-1:approval', workflowId: 'workflow-1' },
+          toolName: 'approve_workflow_actions',
+        }),
+      );
+    });
+
+    callCoordinatorUiToolMock.mockClear();
+    fireEvent.click(screen.getByText('Deny'));
+    expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Confirm deny'));
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { approvalId: 'result-1:approval', workflowId: 'workflow-1' },
+          toolName: 'deny_workflow_actions',
+        }),
+      );
+    });
+
+    callCoordinatorUiToolMock.mockClear();
+    expect(screen.getByText('Failed lanes')).toBeDefined();
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { laneId: 'lane-failed', workflowId: 'workflow-1' },
+          toolName: 'retry_lane',
+        }),
+      );
+    });
+  });
+
+  it('surfaces operator action rejections through the action error line', async () => {
+    coordinatorRunRef.current = createRun({
+      workflows: [createOperatorWorkflow()],
+    });
+    callCoordinatorUiToolMock.mockResolvedValue({
+      accepted: false,
+      callId: 'request-1',
+      error: 'Coordinator task command lease is required',
+    });
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Open workflow Gated review'));
+    fireEvent.click(screen.getByText('Approve'));
+
+    await screen.findByText('Coordinator task command lease is required');
   });
 });
