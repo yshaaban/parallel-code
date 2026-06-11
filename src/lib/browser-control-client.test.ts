@@ -38,6 +38,7 @@ vi.mock('./websocket-client', () => ({
         getState: () => 'disconnected',
         hasPendingConnection: () => false,
         isOpen: () => false,
+        probeLiveness: vi.fn(),
         resetForTests: vi.fn(),
         send: vi.fn(async () => {}),
         sendIfOpen: vi.fn(() => true),
@@ -135,6 +136,44 @@ describe('browser control client', () => {
 
     cleanupStream();
     cleanupRecovery();
+  });
+
+  // Client half of the resync wire seam: the reconnect socket URL must carry
+  // the exact query params the server parser (parseSocketResyncRequest in
+  // server/browser-websocket.ts) expects, and only after a state-bootstrap
+  // taught the client which server instance its cached versions belong to.
+  it('serializes resync state into the reconnect socket URL after learning the server instance', async () => {
+    const { client, options } = await loadBrowserControlClient();
+    client.setResyncStateProvider(() => ({
+      categoryVersions: { coordinator: 3, 'git-status': 2 },
+    }));
+
+    // No known server instance yet: cold connects present no resync params.
+    const coldUrl = new URL(
+      options.getSocketUrl({ clientId: 'browser-client-1', lastSeq: -1, token: null }),
+    );
+    expect(coldUrl.searchParams.get('categoryVersions')).toBeNull();
+    expect(coldUrl.searchParams.get('serverInstanceId')).toBeNull();
+    expect(coldUrl.searchParams.get('agentsVersion')).toBeNull();
+
+    options.onMessage({
+      type: 'state-bootstrap',
+      snapshots: [],
+      serverInstanceId: 'instance-a',
+    });
+    options.onMessage({ type: 'agents', list: [], version: 4 });
+
+    const url = new URL(
+      options.getSocketUrl({ clientId: 'browser-client-1', lastSeq: 7, token: null }),
+    );
+    expect(url.searchParams.get('clientId')).toBe('browser-client-1');
+    expect(url.searchParams.get('lastSeq')).toBe('7');
+    expect(JSON.parse(url.searchParams.get('categoryVersions') ?? 'null')).toEqual({
+      coordinator: 3,
+      'git-status': 2,
+    });
+    expect(url.searchParams.get('serverInstanceId')).toBe('instance-a');
+    expect(url.searchParams.get('agentsVersion')).toBe('4');
   });
 
   it('emits coordinator events to persistent browser message listeners', async () => {

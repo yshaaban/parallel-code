@@ -7,7 +7,8 @@ import type {
   TaskReviewSnapshot,
   TaskReviewSource,
 } from '../../src/domain/task-review.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { enqueueBackendWork, type BackendWorkPriorityClass } from './backend-work-queue.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 
 interface TaskReviewMetadata {
   baseBranch?: string;
@@ -236,8 +237,10 @@ function removeTaskReviewSnapshot(taskId: string): void {
   emitTaskReviewEvent(createRemovedTaskReviewEvent(taskId));
 }
 
-function collectTaskReviewMetadataFromSavedState(savedJson: string): TaskReviewMetadata[] {
-  const parsed = parsePersistedTaskLookupState(savedJson);
+function collectTaskReviewMetadataFromSavedState(
+  savedState: string | SavedStateDocument,
+): TaskReviewMetadata[] {
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   const projectsById = new Map<string, string>();
   for (const project of parsed.projects) {
     if (!project.id || !project.path) {
@@ -309,12 +312,14 @@ export function registerTaskReviewTask(metadata: TaskReviewMetadata): void {
 
   if (metadataChanged) {
     removeTaskReviewSnapshot(metadata.taskId);
-    void refreshTaskReview(metadata.taskId);
+    // Queue-routed (interactive) so save/load/reconnect identity changes stay
+    // inside the global concurrency cap and dedupe keys.
+    scheduleTaskReviewRefresh(metadata.taskId, 'interactive');
   }
 }
 
-export function syncTaskReviewFromSavedState(savedJson: string): void {
-  const nextMetadata = collectTaskReviewMetadataFromSavedState(savedJson);
+export function syncTaskReviewFromSavedState(savedState: string | SavedStateDocument): void {
+  const nextMetadata = collectTaskReviewMetadataFromSavedState(savedState);
   const nextTaskIds = new Set(nextMetadata.map((metadata) => metadata.taskId));
 
   for (const taskId of taskReviewMetadata.keys()) {
@@ -331,11 +336,29 @@ export function syncTaskReviewFromSavedState(savedJson: string): void {
   }
 }
 
-export function restoreSavedTaskReview(savedJson: string): void {
-  syncTaskReviewFromSavedState(savedJson);
+export function restoreSavedTaskReview(savedState: string | SavedStateDocument): void {
+  syncTaskReviewFromSavedState(savedState);
+}
 
-  for (const metadata of collectTaskReviewMetadataFromSavedState(savedJson)) {
-    void refreshTaskReview(metadata.taskId);
+export function hydrateTaskReviewSnapshots(snapshots: ReadonlyArray<TaskReviewSnapshot>): void {
+  let hydrated = false;
+  for (const snapshot of snapshots) {
+    const metadata = taskReviewMetadata.get(snapshot.taskId);
+    if (
+      !metadata ||
+      metadata.worktreePath !== snapshot.worktreePath ||
+      metadata.branchName !== snapshot.branchName ||
+      metadata.projectId !== snapshot.projectId
+    ) {
+      continue;
+    }
+
+    taskReviewSnapshots.set(snapshot.taskId, snapshot);
+    hydrated = true;
+  }
+
+  if (hydrated) {
+    bumpTaskReviewStateVersion();
   }
 }
 
@@ -350,17 +373,30 @@ export async function refreshTaskReview(taskId: string): Promise<void> {
   );
 }
 
-export function scheduleTaskReviewRefresh(taskId: string): void {
-  void refreshTaskReview(taskId);
+export function scheduleTaskReviewRefresh(
+  taskId: string,
+  priority?: BackendWorkPriorityClass,
+): void {
+  void enqueueBackendWork(
+    {
+      key: `review:${taskId}`,
+      ...(priority !== undefined ? { priority } : {}),
+      taskId,
+    },
+    () => refreshTaskReview(taskId),
+  ).catch(() => {});
 }
 
-export function scheduleTaskReviewRefreshForWorktree(worktreePath: string): void {
+export function scheduleTaskReviewRefreshForWorktree(
+  worktreePath: string,
+  priority?: BackendWorkPriorityClass,
+): void {
   for (const metadata of taskReviewMetadata.values()) {
     if (metadata.worktreePath !== worktreePath) {
       continue;
     }
 
-    scheduleTaskReviewRefresh(metadata.taskId);
+    scheduleTaskReviewRefresh(metadata.taskId, priority);
   }
 }
 

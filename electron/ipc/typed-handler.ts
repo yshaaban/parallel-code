@@ -19,7 +19,9 @@ type RequestChannel = {
 
 const OPTIONAL_REQUEST_CHANNELS: ReadonlySet<RequestChannel> = new Set([
   IPC.DialogOpen,
+  IPC.GetBrowserReconnectSnapshot,
   IPC.ListAgents,
+  IPC.RefreshAgentAvailability,
   IPC.StartRemoteServer,
 ]);
 

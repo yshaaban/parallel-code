@@ -35,7 +35,7 @@ import {
   removeTaskContainerPreviewTargets,
 } from './task-containers.js';
 import { clearTaskCommandLeaseForTask } from './task-command-leases.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 import {
   createCurrentBranchTask,
   createNonGitTask,
@@ -188,11 +188,13 @@ export function clearTaskWorkflowWorktreeRegistryForTests(): void {
   worktreeIdentityByTaskId.clear();
 }
 
-export function syncTaskWorkflowWorktreesFromSavedState(savedJson: string): void {
+export function syncTaskWorkflowWorktreesFromSavedState(
+  savedState: string | SavedStateDocument,
+): void {
   taskIdByWorktreeIdentity.clear();
   worktreeIdentityByTaskId.clear();
 
-  const parsed = parsePersistedTaskLookupState(savedJson);
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   for (const task of Object.values(parsed.tasks)) {
     if (task.projectMode === 'non-git') {
       continue;

@@ -46,6 +46,7 @@ import {
   getCoordinatorRun,
   resetCoordinatorRuntimeForTests,
   setCoordinatorRunPaused,
+  updateCoordinatorPrompt,
 } from './runtime.js';
 import {
   cleanupCoordinatorStateForTask,
@@ -59,6 +60,7 @@ import {
   resetCoordinatorPromptDeliveryForTests,
   scheduleCoordinatorPromptDelivery,
   startCoordinatorPromptDeliveryLoop,
+  STALE_DELIVERING_REQUEUE_MS,
   stopCoordinatorPromptDeliveryLoop,
 } from './prompt-delivery.js';
 import {
@@ -700,6 +702,103 @@ describe('coordinator prompt delivery', () => {
       startup: expect.objectContaining({ initialAssignmentStatus: 'blocked-by-question' }),
       status: 'waiting-for-user',
     });
+  });
+
+  it('requeues a stale delivering prompt with no live delivery owner and delivers it', async () => {
+    vi.useFakeTimers();
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const runId = createRunForCoordinatorTask(context);
+    addRunningSubtask(runId, 'child');
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-child',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    });
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+
+    // A crash between the 'delivering' transition and the terminal status
+    // update used to wedge the prompt forever: 'delivering' is not a
+    // deliverable status, so no retry sweep would pick it up.
+    const prompt = enqueueCoordinatorPrompt({
+      kind: 'follow-up',
+      runId,
+      sourceTaskId: 'task-coordinator',
+      targetAgentId: 'agent-child',
+      targetTaskId: 'task-child',
+      text: 'Continue the work',
+    });
+    updateCoordinatorPrompt(runId, prompt.requestId, {
+      deliveryJournal: [
+        {
+          agentGeneration: 1,
+          deliveryAttemptId: 'wedged-attempt',
+          ptySessionId: 'agent-child:1',
+          requestId: prompt.requestId,
+          writePreparedAt: Date.now(),
+        },
+      ],
+      status: 'delivering',
+    });
+
+    startCoordinatorPromptDeliveryLoop(context);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(
+      getCoordinatorRun(runId)?.promptQueue.find(
+        (candidate) => candidate.requestId === prompt.requestId,
+      )?.status,
+    ).toBe('delivering');
+
+    await vi.advanceTimersByTimeAsync(STALE_DELIVERING_REQUEUE_MS);
+    scheduleCoordinatorPromptDelivery(0, true);
+    await vi.runAllTimersAsync();
+
+    const settledPrompt = getCoordinatorRun(runId)?.promptQueue.find(
+      (candidate) => candidate.requestId === prompt.requestId,
+    );
+    expect(settledPrompt?.status).toBe('delivered');
+    expect(mocks.writeToAgentMock).toHaveBeenCalled();
+    stopCoordinatorPromptDeliveryLoop();
+  });
+
+  it('keeps an actively delivering prompt out of the stale requeue sweep', async () => {
+    vi.useFakeTimers();
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const runId = createRunForCoordinatorTask(context);
+    addRunningSubtask(runId, 'child');
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-child',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    });
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+    // The multi-write dispatch keeps the prompt in an ACTIVE delivery chain
+    // (mid-write delay timers pending) that the sweep must never touch.
+    mocks.writeToAgentMock.mockImplementation(() => {});
+    const deliveryPromise = queuePrompt(context, runId, 'task-child', `slow\n${'y'.repeat(10)}`);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const inFlight = getCoordinatorRun(runId)?.promptQueue[0];
+    expect(inFlight?.status).toBe('delivering');
+
+    // The active delivery key keeps the sweep away even past the deadline.
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.runAllTimersAsync();
+    await deliveryPromise;
+    expect(getCoordinatorRun(runId)?.promptQueue[0]?.status).toBe('delivered');
+    stopCoordinatorPromptDeliveryLoop();
   });
 
   it('no-ops scheduled sweeps while detached and clears subscriptions across start/stop cycles', async () => {

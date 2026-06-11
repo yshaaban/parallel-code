@@ -2,7 +2,6 @@ import { execFile, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { promisify } from 'util';
 
 import {
   getChangedFileStatusCategory,
@@ -14,16 +13,16 @@ import { detectMainBranch } from './git-branch.js';
 import { looksBinaryBuffer } from './git-binary.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
+import { execGit } from './git-exec.js';
 import { normalizeStatusPath, parseDiffRawNumstat } from './git-status-parser.js';
 import { worktreeExists } from './git-worktree.js';
+import { recordGitSubprocessStarted } from './runtime-diagnostics.js';
 import type { FileDiffResult, GitChangedFile, ProjectDiffResult } from './git-types.js';
-
-const exec = promisify(execFile);
 const EMPTY_TREE_HASH_FALLBACK = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 async function pinHead(worktreePath: string): Promise<string> {
   try {
-    const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath });
+    const { stdout } = await execGit(['rev-parse', 'HEAD'], { cwd: worktreePath });
     return stdout.trim();
   } catch {
     return 'HEAD';
@@ -32,7 +31,7 @@ async function pinHead(worktreePath: string): Promise<string> {
 
 async function resolveRevisionHash(cwd: string, revision: string): Promise<string> {
   try {
-    const { stdout } = await exec('git', ['rev-parse', revision], { cwd });
+    const { stdout } = await execGit(['rev-parse', revision], { cwd });
     return stdout.trim() || revision;
   } catch {
     return revision;
@@ -77,7 +76,7 @@ function hashCacheToken(value: string): string {
 
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
   try {
-    await exec('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd });
+    await execGit(['merge-base', '--is-ancestor', ancestor, descendant], { cwd });
     return true;
   } catch {
     return false;
@@ -168,7 +167,7 @@ async function filesDifferingBetween(
       args.push(refB);
     }
 
-    const { stdout } = await exec('git', args, {
+    const { stdout } = await execGit(args, {
       cwd: repoRoot,
       maxBuffer: MAX_BUFFER,
     });
@@ -271,7 +270,7 @@ function buildPseudoDiff(
 
 async function execGitStdout(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await exec('git', args, {
+    const { stdout } = await execGit(args, {
       cwd,
       maxBuffer: MAX_BUFFER,
     });
@@ -293,7 +292,7 @@ async function readGitTextFile(
   filePath: string,
 ): Promise<{ content: string; exists: boolean }> {
   try {
-    const { stdout } = await exec('git', ['show', `${revision}:${filePath}`], {
+    const { stdout } = await execGit(['show', `${revision}:${filePath}`], {
       cwd,
       maxBuffer: MAX_BUFFER,
     });
@@ -316,6 +315,7 @@ async function readGitFileIfSafe(
 ): Promise<GitSafeFileReadResult> {
   try {
     const stdout = await new Promise<Buffer>((resolve, reject) => {
+      recordGitSubprocessStarted();
       execFile(
         'git',
         ['show', `${revision}:${filePath}`],
@@ -437,6 +437,7 @@ async function readGitFilesIfSafe(
   const maxBytes = MAX_BUFFER * requests.length;
 
   return new Promise((resolve) => {
+    recordGitSubprocessStarted();
     const child = spawn('git', ['cat-file', '--batch'], {
       cwd,
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -1068,6 +1069,7 @@ async function getFirstParentCommit(
 
 async function getEmptyTreeHash(projectRoot: string): Promise<string> {
   return new Promise((resolve) => {
+    recordGitSubprocessStarted();
     const child = execFile(
       'git',
       ['hash-object', '-t', 'tree', '--stdin'],
@@ -1278,8 +1280,7 @@ export async function getChangedFilesFromBranchWithRevision(
     async () => {
       let diffStr = '';
       try {
-        const { stdout } = await exec(
-          'git',
+        const { stdout } = await execGit(
           ['diff', '--raw', '--numstat', branchContext.mergeBase, branchContext.branchHead],
           { cwd: projectRoot, maxBuffer: MAX_BUFFER },
         );
@@ -1543,7 +1544,7 @@ export async function getProjectDiff(
       break;
     }
     case 'staged': {
-      const { stdout } = await exec('git', ['diff', '--cached', '--raw', '--numstat'], {
+      const { stdout } = await execGit(['diff', '--cached', '--raw', '--numstat'], {
         cwd: worktreePath,
         maxBuffer: MAX_BUFFER,
       });
@@ -1552,7 +1553,7 @@ export async function getProjectDiff(
     }
     case 'unstaged': {
       const [diffResult, untrackedFiles] = await Promise.all([
-        exec('git', ['diff', '--raw', '--numstat'], {
+        execGit(['diff', '--raw', '--numstat'], {
           cwd: worktreePath,
           maxBuffer: MAX_BUFFER,
         }),
@@ -1566,8 +1567,7 @@ export async function getProjectDiff(
       const headHash = await pinHead(worktreePath);
       const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash, baseBranch);
       revisionId = createDiffRevisionId(worktreeContext.mergeBase, headHash);
-      const { stdout } = await exec(
-        'git',
+      const { stdout } = await execGit(
         ['diff', '--raw', '--numstat', worktreeContext.mergeBase, headHash],
         {
           cwd: worktreePath,

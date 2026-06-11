@@ -1,7 +1,8 @@
 import { IPC } from './channels.js';
-import { createCoordinatorIpcHandlers } from '../coordinator/handlers.js';
+import { COORDINATOR_IPC_CHANNELS } from '../coordinator/channel-list.js';
 import { createAgentIpcHandlers } from './agent-handlers.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
+import { createLazyIpcHandlerGroup } from './lazy-handler-group.js';
 import { createServerStateIpcHandlers } from './server-state-handlers.js';
 import { createSystemIpcHandlers } from './system-handlers.js';
 import { createNotificationIpcHandlers } from './notification-handlers.js';
@@ -19,7 +20,8 @@ import { syncTaskStepsFromSavedState } from './task-steps.js';
 import { syncTaskWorkflowWorktreesFromSavedState } from './task-workflows.js';
 import { createTaskPortIpcHandlers } from './task-port-handlers.js';
 import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
-import { loadTaskRegistryStateForEnv } from './storage.js';
+import type { SavedStateDocument } from './saved-state-document.js';
+import { loadTaskRegistryStateDocumentForEnv } from './storage.js';
 import { createTaskNameRegistry } from '../../server/task-names.js';
 export { BadRequestError } from './errors.js';
 export type {
@@ -37,22 +39,32 @@ export type IpcHandlerMap = Partial<Record<IPC, IpcHandler>>;
 export function createIpcHandlers(
   context: HandlerContext,
   taskRegistry = createTaskNameRegistry(),
+  savedRegistryState?: SavedStateDocument | null,
 ): IpcHandlerMap {
-  const savedTaskRegistryState = loadTaskRegistryStateForEnv(context);
+  const savedTaskRegistryState =
+    savedRegistryState !== undefined
+      ? savedRegistryState
+      : loadTaskRegistryStateDocumentForEnv(context);
 
   if (savedTaskRegistryState) {
     taskRegistry.syncFromSavedState(savedTaskRegistryState);
     syncTaskWorkflowWorktreesFromSavedState(savedTaskRegistryState);
   }
 
-  function syncTaskNamesFromJson(json: string): void {
-    taskRegistry.syncFromSavedState(json);
+  function syncTaskNamesFromJson(state: SavedStateDocument): void {
+    taskRegistry.syncFromSavedState(state);
   }
+
+  const coordinatorHandlers = createLazyIpcHandlerGroup(COORDINATOR_IPC_CHANNELS, async () => {
+    await context.awaitCoordinatorRuntimeReady?.();
+    const { createCoordinatorIpcHandlers } = await import('../coordinator/handlers.js');
+    return createCoordinatorIpcHandlers(context, taskRegistry);
+  });
 
   return {
     ...createAgentIpcHandlers(context),
     ...createServerStateIpcHandlers(context),
-    ...createCoordinatorIpcHandlers(context, taskRegistry),
+    ...coordinatorHandlers,
     ...createTaskAiIpcHandlers(context),
     ...createTaskAndGitIpcHandlers(context, taskRegistry),
     ...createTaskCommandLeaseIpcHandlers(context),

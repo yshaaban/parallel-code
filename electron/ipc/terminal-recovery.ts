@@ -55,6 +55,13 @@ export function serializeTerminalRecoveryEntry(
           kind: 'snapshot',
         },
       };
+    case 'tail-needed':
+      return {
+        ...baseEntry,
+        recovery: {
+          kind: 'tail-needed',
+        },
+      };
     case 'terminal-state':
       return {
         ...baseEntry,

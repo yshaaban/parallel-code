@@ -9,9 +9,13 @@ import {
   type TaskStepsSnapshot,
   type TaskStepsSummarySnapshot,
 } from '../../src/domain/task-steps.js';
-import { parseSavedStateTasksRecord } from '../../src/domain/saved-state-tasks.js';
+import {
+  parseSavedStateTasksRecord,
+  parseSavedStateTasksRecordFromRoot,
+} from '../../src/domain/saved-state-tasks.js';
 import { assertNever } from '../../src/lib/assert-never.js';
 import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
+import type { SavedStateDocument } from './saved-state-document.js';
 
 interface TaskStepsMetadata {
   taskId: string;
@@ -636,8 +640,13 @@ function parseTaskStepsMetadataEntry(task: unknown): TaskStepsMetadata | null | 
   };
 }
 
-function collectTaskStepsMetadataFromSavedState(savedJson: string): ParsedTaskStepsMetadata {
-  const parsed = parseSavedStateTasksRecord(savedJson);
+function collectTaskStepsMetadataFromSavedState(
+  savedState: string | SavedStateDocument,
+): ParsedTaskStepsMetadata {
+  const parsed =
+    typeof savedState === 'string'
+      ? parseSavedStateTasksRecord(savedState)
+      : parseSavedStateTasksRecordFromRoot(savedState.root);
   if (parsed.kind === 'invalid') {
     return { kind: 'invalid' };
   }
@@ -744,8 +753,8 @@ function syncTaskStepsMetadata(
   return uniqueMetadata;
 }
 
-export function syncTaskStepsFromSavedState(savedJson: string): void {
-  const parsed = collectTaskStepsMetadataFromSavedState(savedJson);
+export function syncTaskStepsFromSavedState(savedState: string | SavedStateDocument): void {
+  const parsed = collectTaskStepsMetadataFromSavedState(savedState);
   if (parsed.kind === 'invalid') {
     return;
   }
@@ -753,8 +762,8 @@ export function syncTaskStepsFromSavedState(savedJson: string): void {
   syncTaskStepsMetadata(parsed.metadata);
 }
 
-export function restoreSavedTaskSteps(savedJson: string): void {
-  const parsed = collectTaskStepsMetadataFromSavedState(savedJson);
+export function restoreSavedTaskSteps(savedState: string | SavedStateDocument): void {
+  const parsed = collectTaskStepsMetadataFromSavedState(savedState);
   if (parsed.kind === 'invalid') {
     return;
   }
@@ -762,6 +771,27 @@ export function restoreSavedTaskSteps(savedJson: string): void {
   const syncedMetadata = syncTaskStepsMetadata(parsed.metadata);
   for (const metadata of syncedMetadata) {
     refreshTaskSteps(metadata.taskId);
+  }
+}
+
+export function hydrateTaskStepsSummarySnapshots(
+  snapshots: ReadonlyArray<TaskStepsSummarySnapshot>,
+): void {
+  let hydrated = false;
+  for (const snapshot of snapshots) {
+    if (!metadataByTaskId.has(snapshot.taskId)) {
+      continue;
+    }
+    if (summarySnapshotsByTaskId.has(snapshot.taskId)) {
+      continue;
+    }
+
+    summarySnapshotsByTaskId.set(snapshot.taskId, snapshot);
+    hydrated = true;
+  }
+
+  if (hydrated) {
+    bumpTaskStepsStateVersion();
   }
 }
 

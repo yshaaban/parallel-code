@@ -367,10 +367,18 @@ export function getTaskCommandOwnerStatus(taskId: string): TaskCommandOwnerStatu
   });
 }
 
-export function resetTaskCommandControllerStateForTests(): void {
-  taskCommandControllerUpdateCount = 0;
+// Controller versions are per-boot backend counters; a new server instance
+// restarts them, so the resync applier resets the version guards (store data
+// stays: the new instance's bootstrap replacement reconciles it) before
+// hydrating the full bootstrap.
+export function resetTaskCommandControllerVersionTracking(): void {
   taskCommandControllerVersion = 0;
   taskCommandControllerVersionByTaskId.clear();
+}
+
+export function resetTaskCommandControllerStateForTests(): void {
+  taskCommandControllerUpdateCount = 0;
+  resetTaskCommandControllerVersionTracking();
   taskCommandControllerChangeListeners.clear();
 }
 

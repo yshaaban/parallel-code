@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  beginAppStartupPresentation,
   clearAppStartupStatus,
+  completeAppStartupPresentation,
   getAppStartupSummary,
+  isAppStartupPresentationPending,
   resetAppStartupStatusForTests,
   setAppStartupStatus,
 } from './app-startup-status';
@@ -49,5 +52,41 @@ describe('app-startup-status', () => {
       detail: '1 connecting',
       label: 'Preparing terminal…',
     });
+  });
+
+  it('tracks the startup presentation pending window from begin to complete', () => {
+    expect(isAppStartupPresentationPending()).toBe(false);
+
+    beginAppStartupPresentation();
+    expect(isAppStartupPresentationPending()).toBe(true);
+
+    completeAppStartupPresentation();
+    expect(isAppStartupPresentationPending()).toBe(false);
+  });
+
+  it('completes presentation pending when the startup status clears', () => {
+    beginAppStartupPresentation();
+    setAppStartupStatus('bootstrapping', 'Loading workspace');
+
+    clearAppStartupStatus();
+
+    expect(isAppStartupPresentationPending()).toBe(false);
+  });
+
+  it('survives repeated begin/complete churn deterministically', () => {
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      beginAppStartupPresentation();
+      expect(isAppStartupPresentationPending()).toBe(true);
+      completeAppStartupPresentation();
+      expect(isAppStartupPresentationPending()).toBe(false);
+    }
+  });
+
+  it('reset seam clears presentation pending', () => {
+    beginAppStartupPresentation();
+
+    resetAppStartupStatusForTests();
+
+    expect(isAppStartupPresentationPending()).toBe(false);
   });
 });

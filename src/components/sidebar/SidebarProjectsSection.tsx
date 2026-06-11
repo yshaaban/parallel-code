@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
+import { isAppStartupPresentationPending } from '../../app/app-startup-status';
 import { IconButton } from '../IconButton';
 import { theme } from '../../lib/theme';
 import { typography } from '../../lib/typography';
@@ -155,7 +156,7 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
             }}
           </For>
 
-          <Show when={store.projects.length === 0}>
+          <Show when={store.projects.length === 0 && !isAppStartupPresentationPending()}>
             <span
               style={{
                 color: theme.fgSubtle,

@@ -1,8 +1,7 @@
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 
-const execFileAsync = promisify(execFile);
+import { execGit } from './git-exec.js';
+
 const DEBOUNCE_MS = 500;
 
 interface GitWatcher {
@@ -13,7 +12,7 @@ interface GitWatcher {
 const watchers = new Map<string, GitWatcher>();
 
 async function resolveGitDir(worktreePath: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', ['rev-parse', '--git-dir'], {
+  const { stdout } = await execGit(['rev-parse', '--git-dir'], {
     cwd: worktreePath,
     timeout: 5_000,
   });

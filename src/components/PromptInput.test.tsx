@@ -232,6 +232,71 @@ describe('PromptInput', () => {
     ).toBeTruthy();
   });
 
+  it('disables and spins the send control while a send is in flight and dims the draft', async () => {
+    let resolveSend: (value: boolean) => void = () => {};
+    sendPromptMock.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByPlaceholderText(
+      'Send a prompt... (Enter to send, Shift+Enter for newline)',
+    ) as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'Ship it' },
+      target: { value: 'Ship it' },
+    });
+    const sendButton = result.getByTitle('Send prompt') as HTMLButtonElement;
+    sendButton.click();
+
+    expect(result.getByTitle('Sending prompt…')).toBe(sendButton);
+    expect(sendButton.disabled).toBe(true);
+    expect(sendButton.getAttribute('aria-busy')).toBe('true');
+    expect(sendButton.querySelector('.inline-spinner')).not.toBeNull();
+    expect(textarea.style.opacity).toBe('0.6');
+    expect(textarea.value).toBe('Ship it');
+
+    resolveSend(true);
+    await vi.waitFor(() => {
+      expect(textarea.value).toBe('');
+    });
+    expect((result.getByTitle('Send prompt') as HTMLButtonElement).getAttribute('aria-busy')).toBe(
+      null,
+    );
+    expect(textarea.style.opacity).toBe('1');
+  });
+
+  it('restores the draft at full strength when an in-flight send fails', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let rejectSend: (error: unknown) => void = () => {};
+    sendPromptMock.mockImplementation(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          rejectSend = reject;
+        }),
+    );
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByPlaceholderText(
+      'Send a prompt... (Enter to send, Shift+Enter for newline)',
+    ) as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'Ship it' },
+      target: { value: 'Ship it' },
+    });
+    result.getByTitle('Send prompt').click();
+    expect(textarea.style.opacity).toBe('0.6');
+
+    rejectSend(new Error('socket unavailable'));
+    expect(await result.findByText('Prompt send failed: socket unavailable')).toBeTruthy();
+    expect(textarea.value).toBe('Ship it');
+    expect(textarea.style.opacity).toBe('1');
+    consoleErrorSpy.mockRestore();
+  });
+
   it('shows send failures without clearing the draft prompt and clears them on retry', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     sendPromptMock.mockRejectedValueOnce(new Error('socket unavailable'));

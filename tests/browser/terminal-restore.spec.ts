@@ -133,7 +133,9 @@ async function installStartupRecoveryFetchHold(
 
       return originalFetch(input, init);
     };
-  }, IPC.GetTerminalStartupRecoveryBatch);
+    // Reload reattach carries its initial recovery inside the pipelined
+    // AttachTerminalSession RPC, so the restore hold targets that channel.
+  }, IPC.AttachTerminalSession);
 }
 
 async function waitForStartupRecoveryFetchHold(

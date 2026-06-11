@@ -1,9 +1,5 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
 import { MAX_BUFFER } from './git-cache.js';
-
-const exec = promisify(execFile);
+import { execGit } from './git-exec.js';
 
 export interface PickedDiffBase {
   ref: string;
@@ -12,7 +8,7 @@ export interface PickedDiffBase {
 
 async function gitRefExists(cwd: string, ref: string): Promise<boolean> {
   try {
-    await exec('git', ['rev-parse', '--verify', ref], { cwd });
+    await execGit(['rev-parse', '--verify', ref], { cwd });
     return true;
   } catch {
     return false;
@@ -25,7 +21,7 @@ async function getMergeBase(
   rightRef: string,
 ): Promise<string | null> {
   try {
-    const { stdout } = await exec('git', ['merge-base', leftRef, rightRef], { cwd });
+    const { stdout } = await execGit(['merge-base', leftRef, rightRef], { cwd });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -47,7 +43,7 @@ async function getMergeBaseForExistingRef(
 
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
   try {
-    await exec('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd });
+    await execGit(['merge-base', '--is-ancestor', ancestor, descendant], { cwd });
     return true;
   } catch {
     return false;
@@ -104,8 +100,7 @@ async function refineDiffBaseWithCherryPick(
   headRef: string,
 ): Promise<PickedDiffBase> {
   try {
-    const { stdout } = await exec(
-      'git',
+    const { stdout } = await execGit(
       [
         'log',
         '--cherry-pick',
@@ -132,8 +127,7 @@ async function refineDiffBaseWithCherryPick(
       return base;
     }
 
-    const { stdout: countStdout } = await exec(
-      'git',
+    const { stdout: countStdout } = await execGit(
       ['rev-list', '--count', '--no-merges', `${oldestUniqueCommitParent}..${headRef}`],
       { cwd: repoRoot },
     );

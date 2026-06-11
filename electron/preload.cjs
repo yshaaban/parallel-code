@@ -6,6 +6,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const ALLOWED_CHANNELS = new Set([
   // Agent/PTY
   'spawn_agent',
+  'attach_terminal_session',
+  'release_terminal_recovery_pause',
   'ensure_agent_sessions_batch',
   'detach_agent_output',
   'write_to_agent',
@@ -20,6 +22,8 @@ const ALLOWED_CHANNELS = new Set([
   'count_running_agents',
   'kill_all_agents',
   'list_agents',
+  'refresh_agent_availability',
+  'agent_availability_changed',
   'get_agent_supervision',
   'get_server_state_bootstrap',
   'agent_supervision_changed',
@@ -29,6 +33,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_browser_cold_bootstrap',
   'get_browser_reconnect_status',
   'get_browser_reconnect_snapshot',
+  'report_client_task_focus',
   'coordinator_activity_hint',
   'coordinator_changed',
   'coordinator_create_run',

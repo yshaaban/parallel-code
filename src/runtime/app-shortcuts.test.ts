@@ -36,6 +36,7 @@ const {
       showHelpDialog: false,
       showNewTaskDialog: false,
       showSettingsDialog: false,
+      taskOrder: ['task-1'],
       tasks: {
         'task-1': {
           shellAgentIds: ['shell-1'],
@@ -53,6 +54,7 @@ vi.mock('../lib/shortcuts', () => ({
 
 vi.mock('../store/focus', () => ({
   getTaskFocusedPanel: getTaskFocusedPanelMock,
+  hasBlockingDialog: vi.fn(() => false),
   navigateColumn: vi.fn(),
   navigateRow: vi.fn(),
   navigateTask: navigateTaskMock,
@@ -224,7 +226,9 @@ describe('registerAppShortcuts', () => {
     handlers.get('task.close-focused-terminal')?.();
     await Promise.resolve();
 
-    expect(showNotificationMock).toHaveBeenCalledWith('Failed to close terminal');
+    expect(showNotificationMock).toHaveBeenCalledWith('Failed to close terminal', {
+      kind: 'error',
+    });
     expect(warnSpy).toHaveBeenCalledWith('Failed to close terminal:', expect.any(Error));
 
     warnSpy.mockRestore();

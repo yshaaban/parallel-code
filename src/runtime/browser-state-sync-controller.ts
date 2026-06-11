@@ -256,7 +256,20 @@ export function createBrowserStateSync(electronRuntime: boolean): {
         async () => {
           const workspaceStateJson = snapshot.workspaceStateJson ?? snapshot.appStateJson;
           if (!workspaceStateJson) {
-            return false;
+            if (
+              snapshot.workspaceRevision !== undefined &&
+              snapshot.workspaceRevision === getLoadedWorkspaceRevision()
+            ) {
+              // Verified no-change: the server skipped the saved-state payload
+              // because our loaded revision is current. Reconciliation side
+              // effects below still run.
+              return false;
+            }
+
+            // Defensive: a missing payload with a different (or unknown)
+            // revision falls back to an explicit workspace load instead of
+            // silently skipping.
+            return loadWorkspaceState();
           }
 
           if (

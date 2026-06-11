@@ -1,4 +1,5 @@
-import { Show, createMemo, type JSX } from 'solid-js';
+import { Show, createMemo, createSignal, type JSX } from 'solid-js';
+import { runCoordinatorOperatorAction } from '../app/coordinator-operator-actions';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
 import { TaskActivityBadge, TaskActivityIndicator } from './TaskActivityIndicator';
@@ -9,6 +10,8 @@ import {
   isExistingWorktreeTask,
   normalizeTaskBaseBranch,
 } from '../store/task-git-isolation';
+import { getCoordinatorRunForTask } from '../store/coordinator';
+import { showNotification } from '../store/notification';
 import { isNonGitProject } from '../store/project-mode';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
@@ -50,9 +53,61 @@ function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boole
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
+  const [resumingCoordinatorRun, setResumingCoordinatorRun] = createSignal(false);
+  // An accepted resume keeps the button disabled until a newer run snapshot
+  // lands (which normally removes the button), so a fast double-click cannot
+  // send a duplicate resume_run that surfaces a spurious failure toast.
+  const [acceptedResume, setAcceptedResume] = createSignal<{ updatedAt: number } | null>(null);
   const mergeTargetLabel = createMemo(
     () => normalizeTaskBaseBranch(props.task) ?? getProject(props.task.projectId)?.baseBranch,
   );
+  // Stale-after-restore is operator-actionable from outside the rail: the
+  // title bar offers the same one-click resume through the shared
+  // operator-action workflow as the coordinator rail.
+  const hasStaleCoordinatorRun = createMemo(() => {
+    if (props.task.coordinatorRole !== 'coordinator') {
+      return false;
+    }
+
+    return getCoordinatorRunForTask(props.task.id)?.status === 'stale-after-restore';
+  });
+  const resumeAwaitingSnapshot = createMemo(() => {
+    const ack = acceptedResume();
+    if (!ack) {
+      return false;
+    }
+
+    const run = getCoordinatorRunForTask(props.task.id);
+    return run !== null && run !== undefined && run.updatedAt === ack.updatedAt;
+  });
+  const resumeDisabled = createMemo(() => resumingCoordinatorRun() || resumeAwaitingSnapshot());
+
+  async function resumeStaleCoordinatorRun(): Promise<void> {
+    if (resumeDisabled()) {
+      return;
+    }
+
+    const runAtRequest = getCoordinatorRunForTask(props.task.id);
+    setResumingCoordinatorRun(true);
+    try {
+      const result = await runCoordinatorOperatorAction({
+        request: { toolName: 'resume_run' },
+        taskId: props.task.id,
+      });
+      if (!result.accepted) {
+        showNotification(`Failed to resume coordinator run: ${result.message}`, {
+          kind: 'error',
+        });
+        return;
+      }
+
+      if (runAtRequest) {
+        setAcceptedResume({ updatedAt: runAtRequest.updatedAt });
+      }
+    } finally {
+      setResumingCoordinatorRun(false);
+    }
+  }
   const mergeButtonTitle = createMemo(() => {
     const target = mergeTargetLabel();
     return target ? `Merge into ${target}` : 'Merge';
@@ -101,6 +156,46 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
       >
         <TaskActivityIndicator status={props.taskActivityStatus} size="md" />
         <TaskActivityBadge status={props.taskActivityStatus} showIcon={false} />
+        <Show when={hasStaleCoordinatorRun()}>
+          <button
+            aria-label="Resume coordinator run"
+            data-coordinator-title-resume="true"
+            disabled={resumeDisabled()}
+            title={
+              resumeAwaitingSnapshot()
+                ? 'Resume accepted — syncing with the coordinator…'
+                : 'The coordinator run is stale after a restart. Resume to respawn unfinished work.'
+            }
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              void resumeStaleCoordinatorRun();
+            }}
+            style={{
+              ...typography.metaStrong,
+              display: 'inline-flex',
+              'align-items': 'center',
+              gap: '5px',
+              padding: '2px 8px',
+              'border-radius': '999px',
+              background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
+              color: resumeDisabled() ? theme.fgSubtle : theme.accent,
+              border: `1px solid color-mix(in srgb, ${theme.accent} 24%, transparent)`,
+              cursor: resumeDisabled() ? 'not-allowed' : 'pointer',
+              'flex-shrink': '0',
+              'white-space': 'nowrap',
+            }}
+          >
+            <Show when={resumingCoordinatorRun()}>
+              <span
+                class="inline-spinner"
+                aria-hidden="true"
+                style={{ width: '10px', height: '10px' }}
+              />
+            </Show>
+            Resume
+          </button>
+        </Show>
         <Show when={isCurrentBranchTask(props.task)}>
           <span
             style={{

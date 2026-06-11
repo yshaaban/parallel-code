@@ -841,3 +841,217 @@ describe('createWebSocketClientCore', () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 });
+
+describe('wake liveness probe and control-replay-batch', () => {
+  const originalWebSocket = globalThis.WebSocket;
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    FakeWebSocket.reset();
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: originalWebSocket,
+    });
+  });
+
+  async function createConnectedProbeClient(
+    options: {
+      onDisconnect?: (event: { reason: string }) => void;
+      onReconnectScheduled?: (event: { attempt: number; delayMs: number }) => void;
+      reconnectDelayMs?: () => number;
+    } = {},
+  ): Promise<{
+    client: ReturnType<typeof createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>>;
+    socket: FakeWebSocket;
+  }> {
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createPingMessage: () => ({ type: 'ping' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      isPongMessage: (message) => message.type === 'pong',
+      onMessage: () => {},
+      ...(options.onDisconnect ? { onDisconnect: options.onDisconnect } : {}),
+      ...(options.onReconnectScheduled
+        ? { onReconnectScheduled: options.onReconnectScheduled }
+        : {}),
+      ...(options.reconnectDelayMs ? { reconnectDelayMs: options.reconnectDelayMs } : {}),
+      shouldReconnect: () => true,
+    });
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    if (!socket) {
+      throw new Error('Expected a socket instance');
+    }
+    socket.open();
+    await connectPromise;
+    return { client, socket };
+  }
+
+  it('keeps a live socket open when the probe pong arrives within the deadline', async () => {
+    vi.useFakeTimers();
+    const { client, socket } = await createConnectedProbeClient();
+
+    client.probeLiveness(2_000);
+    expect(socket.sent[socket.sent.length - 1]).toEqual({ type: 'ping' });
+    socket.receive({ type: 'pong' });
+    vi.advanceTimersByTime(2_500);
+
+    expect(client.getState()).toBe('connected');
+    expect(client.isOpen()).toBe(true);
+  });
+
+  it('treats any incoming traffic as probe liveness, not only pongs', async () => {
+    vi.useFakeTimers();
+    const { client, socket } = await createConnectedProbeClient();
+
+    client.probeLiveness(2_000);
+    socket.receive({ type: 'agents', seq: 1 });
+    vi.advanceTimersByTime(2_500);
+
+    expect(client.getState()).toBe('connected');
+  });
+
+  it('force-closes a zombie-OPEN socket on probe miss and schedules a fast reconnect', async () => {
+    vi.useFakeTimers();
+    const disconnects: string[] = [];
+    const scheduled: Array<{ attempt: number; delayMs: number }> = [];
+    const { client, socket } = await createConnectedProbeClient({
+      onDisconnect: (event) => disconnects.push(event.reason),
+      onReconnectScheduled: (event) =>
+        scheduled.push({ attempt: event.attempt, delayMs: event.delayMs }),
+      reconnectDelayMs: () => 0,
+    });
+
+    client.probeLiveness(2_000);
+    // The zombie socket never answers; the deadline force-closes it.
+    vi.advanceTimersByTime(2_000);
+
+    expect(disconnects).toContain('missed-pong');
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(scheduled[0]).toEqual({ attempt: 0, delayMs: 0 });
+  });
+
+  it('no-ops probeLiveness when the socket is not open', () => {
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createPingMessage: () => ({ type: 'ping' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: () => {},
+      shouldReconnect: () => false,
+    });
+
+    expect(() => client.probeLiveness(2_000)).not.toThrow();
+    expect(client.getState()).toBe('disconnected');
+  });
+
+  it('adopts control-replay-batch toSeq wholesale and dispatches inner events without gap flags', async () => {
+    const received: TestIncomingMessage[] = [];
+    const gaps: unknown[] = [];
+    const batches: Array<{ eventCount: number; toSeq: number }> = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: (message) => received.push(message),
+      onReplayBatch: (event) => batches.push(event),
+      onSequenceGap: (event) => gaps.push(event),
+      shouldReconnect: () => true,
+    });
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    // Compaction makes inner seqs non-contiguous (3 then 7): no gap callback
+    // may fire, and lastSeq lands on toSeq.
+    socket?.receiveRaw(
+      JSON.stringify({
+        type: 'control-replay-batch',
+        toSeq: 9,
+        events: [
+          { type: 'agents', seq: 3 },
+          { type: 'status', seq: 7 },
+        ],
+      }),
+    );
+
+    expect(batches).toEqual([{ eventCount: 2, toSeq: 9 }]);
+    expect(received).toEqual([
+      { type: 'agents', seq: 3 },
+      { type: 'status', seq: 7 },
+    ]);
+    expect(gaps).toEqual([]);
+    expect(client.getLastSeq()).toBe(9);
+
+    // The next live event at toSeq + 1 is contiguous, not a gap.
+    socket?.receive({ type: 'agents', seq: 10 });
+    expect(gaps).toEqual([]);
+    expect(client.getLastSeq()).toBe(10);
+  });
+
+  it('adopts the replay-truncated latestSeq so the following live stream is not a gap', async () => {
+    const received: TestIncomingMessage[] = [];
+    const gaps: unknown[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: (message) => received.push(message),
+      onSequenceGap: (event) => gaps.push(event),
+      shouldReconnect: () => true,
+    });
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+    socket?.receive({ type: 'agents', seq: 2 });
+    expect(client.getLastSeq()).toBe(2);
+
+    // A compacted/evicted window cannot be per-event replayed; the server
+    // degrades to replay-truncated and the core adopts latestSeq wholesale —
+    // otherwise the first live event after the handshake would misfire gap
+    // detection (the remote shell answers gaps with a hard reconnect, and its
+    // own churn re-compacts the window, looping forever).
+    socket?.receiveRaw(
+      JSON.stringify({
+        type: 'replay-truncated',
+        lastSeq: 2,
+        latestSeq: 9,
+        oldestAvailableSeq: 5,
+      }),
+    );
+    expect(client.getLastSeq()).toBe(9);
+    // The message still reaches transport consumers for truncation tracking.
+    expect(received.some((message) => message.type === 'replay-truncated')).toBe(true);
+
+    socket?.receive({ type: 'agents', seq: 10 });
+    expect(gaps).toEqual([]);
+    expect(client.getLastSeq()).toBe(10);
+  });
+
+  it('marks the connection sequenced from an empty batch frame', async () => {
+    const batches: Array<{ eventCount: number; toSeq: number }> = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      onMessage: () => {},
+      onReplayBatch: (event) => batches.push(event),
+      shouldReconnect: () => true,
+    });
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    socket?.receiveRaw(JSON.stringify({ type: 'control-replay-batch', toSeq: 4, events: [] }));
+
+    expect(batches).toEqual([{ eventCount: 0, toSeq: 4 }]);
+    expect(client.getLastSeq()).toBe(4);
+  });
+});

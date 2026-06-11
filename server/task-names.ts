@@ -1,6 +1,10 @@
 import path from 'path';
+import type { SavedStateDocument } from '../electron/ipc/saved-state-document.js';
 import type { RemoteAgentTaskMeta } from '../src/domain/server-state.js';
-import { parseSavedStateTasksRecord } from '../src/domain/saved-state-tasks.js';
+import {
+  parseSavedStateTasksRecord,
+  parseSavedStateTasksRecordFromRoot,
+} from '../src/domain/saved-state-tasks.js';
 import { isRecord } from '../src/lib/type-guards.js';
 
 type RemoteWorktreeOwnership = NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>;
@@ -16,7 +20,7 @@ export interface TaskNameRegistry {
   registerCreatedTask: (taskId: string, task: CreatedTaskRegistryEntry) => void;
   setTaskName: (taskId: string, taskName: string) => void;
   setTaskMetadata: (taskId: string, meta: RemoteAgentTaskMeta) => void;
-  syncFromSavedState: (json: string) => void;
+  syncFromSavedState: (savedState: string | SavedStateDocument) => void;
 }
 
 const LAST_PROMPT_LIMIT = 120;
@@ -196,8 +200,11 @@ function parseSavedStateTask(value: unknown): SavedStateTask | null {
   };
 }
 
-function parseSavedStateTasks(json: string): SavedStateTask[] | null {
-  const state = parseSavedStateTasksRecord(json);
+function parseSavedStateTasks(savedState: string | SavedStateDocument): SavedStateTask[] | null {
+  const state =
+    typeof savedState === 'string'
+      ? parseSavedStateTasksRecord(savedState)
+      : parseSavedStateTasksRecordFromRoot(savedState.root);
   if (state.kind === 'invalid' && state.reason === 'json') {
     throw new Error('Malformed saved state JSON');
   }
@@ -278,9 +285,9 @@ export function createTaskNameRegistry(): TaskNameRegistry {
   const taskMetadata = new Map<string, RemoteAgentTaskMeta>();
   const agentMetadata = new Map<string, AgentMetadataRecord>();
 
-  function syncFromSavedState(json: string): void {
+  function syncFromSavedState(savedState: string | SavedStateDocument): void {
     try {
-      const tasks = parseSavedStateTasks(json);
+      const tasks = parseSavedStateTasks(savedState);
       if (!tasks) {
         return;
       }

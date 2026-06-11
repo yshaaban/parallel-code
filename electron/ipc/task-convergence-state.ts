@@ -15,7 +15,8 @@ import type {
   TaskOverlapWarning,
   TaskReviewState,
 } from '../../src/domain/task-convergence.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { enqueueBackendWork, type BackendWorkPriorityClass } from './backend-work-queue.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 
 interface TaskConvergenceMetadata {
   baseBranch?: string;
@@ -394,8 +395,10 @@ function removeTaskConvergenceSnapshot(taskId: string): void {
   emitTaskConvergenceEvent(createRemovedTaskConvergenceEvent(taskId));
 }
 
-function collectTaskMetadataFromSavedState(savedJson: string): TaskConvergenceMetadata[] {
-  const parsed = parsePersistedTaskLookupState(savedJson);
+function collectTaskMetadataFromSavedState(
+  savedState: string | SavedStateDocument,
+): TaskConvergenceMetadata[] {
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   const projectsById = new Map<string, string>();
   for (const project of parsed.projects) {
     if (!project.id || !project.path) {
@@ -474,7 +477,10 @@ export function registerTaskConvergenceTask(metadata: TaskConvergenceMetadata): 
   if (metadataChanged) {
     removeTaskConvergenceSnapshot(metadata.taskId);
     recomputeProjectOverlap(previous.projectId);
-    void refreshTaskConvergence(metadata.taskId);
+    // Identity changes arrive through client-driven save/load/reconnect syncs,
+    // so the follow-up refresh routes through the backend work queue at
+    // 'interactive' instead of fanning out direct parallel refreshes.
+    scheduleTaskConvergenceRefresh(metadata.taskId, 'interactive');
     return;
   }
 
@@ -483,8 +489,8 @@ export function registerTaskConvergenceTask(metadata: TaskConvergenceMetadata): 
   }
 }
 
-export function syncTaskConvergenceFromSavedState(savedJson: string): void {
-  const nextMetadata = collectTaskMetadataFromSavedState(savedJson);
+export function syncTaskConvergenceFromSavedState(savedState: string | SavedStateDocument): void {
+  const nextMetadata = collectTaskMetadataFromSavedState(savedState);
   const nextTaskIds = new Set(nextMetadata.map((metadata) => metadata.taskId));
 
   for (const [taskId, metadata] of taskMetadata) {
@@ -502,11 +508,31 @@ export function syncTaskConvergenceFromSavedState(savedJson: string): void {
   }
 }
 
-export function restoreSavedTaskConvergence(savedJson: string): void {
-  syncTaskConvergenceFromSavedState(savedJson);
+export function restoreSavedTaskConvergence(savedState: string | SavedStateDocument): void {
+  syncTaskConvergenceFromSavedState(savedState);
+}
 
-  for (const metadata of collectTaskMetadataFromSavedState(savedJson)) {
-    void refreshTaskConvergence(metadata.taskId);
+export function hydrateTaskConvergenceSnapshots(
+  snapshots: ReadonlyArray<TaskConvergenceSnapshot>,
+): void {
+  let hydrated = false;
+  for (const snapshot of snapshots) {
+    const metadata = taskMetadata.get(snapshot.taskId);
+    if (
+      !metadata ||
+      metadata.worktreePath !== snapshot.worktreePath ||
+      metadata.branchName !== snapshot.branchName ||
+      metadata.projectId !== snapshot.projectId
+    ) {
+      continue;
+    }
+
+    taskSnapshots.set(snapshot.taskId, snapshot);
+    hydrated = true;
+  }
+
+  if (hydrated) {
+    bumpTaskConvergenceStateVersion();
   }
 }
 
@@ -525,17 +551,30 @@ export async function refreshTaskConvergence(taskId: string): Promise<void> {
   );
 }
 
-export function scheduleTaskConvergenceRefresh(taskId: string): void {
-  void refreshTaskConvergence(taskId);
+export function scheduleTaskConvergenceRefresh(
+  taskId: string,
+  priority?: BackendWorkPriorityClass,
+): void {
+  void enqueueBackendWork(
+    {
+      key: `convergence:${taskId}`,
+      ...(priority !== undefined ? { priority } : {}),
+      taskId,
+    },
+    () => refreshTaskConvergence(taskId),
+  ).catch(() => {});
 }
 
-export function scheduleTaskConvergenceRefreshForWorktree(worktreePath: string): void {
+export function scheduleTaskConvergenceRefreshForWorktree(
+  worktreePath: string,
+  priority?: BackendWorkPriorityClass,
+): void {
   for (const metadata of taskMetadata.values()) {
     if (metadata.worktreePath !== worktreePath) {
       continue;
     }
 
-    scheduleTaskConvergenceRefresh(metadata.taskId);
+    scheduleTaskConvergenceRefresh(metadata.taskId, priority);
   }
 }
 

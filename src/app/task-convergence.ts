@@ -33,6 +33,10 @@ import { store } from '../store/state';
 
 const taskConvergenceVersionTracker = createServerStateVersionTracker();
 
+export function getTaskConvergenceHighestAppliedVersion(): number {
+  return taskConvergenceVersionTracker.highestVersion;
+}
+
 function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -195,6 +199,12 @@ export function getTaskReviewQueueEntries(): TaskReviewQueueEntry[] {
   return entries.sort(compareQueueEntries);
 }
 
-export function resetTaskConvergenceProjectionStateForTests(): void {
+// Per-boot version tracking is reset when the server instance changes; see
+// resetServerStateVersionTrackingForInstanceChange.
+export function resetTaskConvergenceVersionTracking(): void {
   resetServerStateVersionTracker(taskConvergenceVersionTracker);
+}
+
+export function resetTaskConvergenceProjectionStateForTests(): void {
+  resetTaskConvergenceVersionTracking();
 }

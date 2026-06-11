@@ -36,6 +36,21 @@ export interface SerializedTerminalState {
   rows: number;
 }
 
+export interface SerializedLatestTerminalState extends SerializedTerminalState {
+  // Byte cursor of the last APPLIED mirror write. Callers compose the
+  // remaining ring-buffer delta (appliedCursor -> outputCursor) on top of the
+  // serialized state instead of awaiting the live write backlog.
+  appliedCursor: number;
+}
+
+interface PendingMirrorOperation {
+  endCursor: number | null;
+  queuedAt: number;
+  run: () => Promise<void> | void;
+  sequence: number;
+  resolveSerialize?: (state: SerializedLatestTerminalState | null) => void;
+}
+
 function updateDecPrivateModes(
   modes: DecPrivateModeRestoreState,
   params: CsiParams,
@@ -68,10 +83,12 @@ export class TerminalStateMirror {
     bracketedPasteTouched: false,
     cursorVisible: null,
   };
-  private pendingOperation: Promise<void> = Promise.resolve();
+  private readonly pendingOperations: PendingMirrorOperation[] = [];
+  private currentOperation: Promise<void> | null = null;
   private pendingOperationCount = 0;
   private queuedSequence = 0;
   private completedSequence = 0;
+  private appliedEndCursor = 0;
   private cachedState: SerializedTerminalState | null = null;
   private cachedSequence = 0;
   private disposed = false;
@@ -92,25 +109,28 @@ export class TerminalStateMirror {
 
   dispose(): void {
     this.disposed = true;
+    this.flushPendingSerializeResolvers();
     for (const disposable of this.parserDisposables) {
       disposable.dispose();
     }
     this.terminal.dispose();
   }
 
-  enqueueOutput(data: Uint8Array): void {
+  enqueueOutput(data: Uint8Array, endCursor: number | null = null): void {
     if (this.disposed || this.failed) {
       return;
     }
 
     const sequence = this.nextSequence();
-    this.enqueueOperation(
-      () =>
+    this.enqueueOperation({
+      endCursor,
+      queuedAt: performance.now(),
+      run: () =>
         new Promise<void>((resolve) => {
           this.terminal.write(data, resolve);
         }),
       sequence,
-    );
+    });
     recordTerminalStateMirrorOutputEnqueue(data.length, this.pendingOperationCount);
   }
 
@@ -120,9 +140,14 @@ export class TerminalStateMirror {
     }
 
     const sequence = this.nextSequence();
-    this.enqueueOperation(() => {
-      this.terminal.resize(cols, rows);
-    }, sequence);
+    this.enqueueOperation({
+      endCursor: null,
+      queuedAt: performance.now(),
+      run: () => {
+        this.terminal.resize(cols, rows);
+      },
+      sequence,
+    });
     recordTerminalStateMirrorResizeEnqueue(this.pendingOperationCount);
   }
 
@@ -160,27 +185,61 @@ export class TerminalStateMirror {
     return cached;
   }
 
-  private enqueueOperation(operation: () => Promise<void> | void, sequence: number): void {
+  private flushPendingSerializeResolvers(): void {
+    const pending = this.pendingOperations.splice(0, this.pendingOperations.length);
+    this.pendingOperationCount = 0;
+    for (const operation of pending) {
+      operation.resolveSerialize?.(null);
+    }
+  }
+
+  private enqueueOperation(operation: PendingMirrorOperation): void {
     if (this.disposed || this.failed) {
+      operation.resolveSerialize?.(null);
       return;
     }
 
     this.pendingOperationCount += 1;
-    const queuedAt = performance.now();
-    this.pendingOperation = this.pendingOperation
+    this.pendingOperations.push(operation);
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.currentOperation) {
+      return;
+    }
+
+    if (this.disposed || this.failed) {
+      this.flushPendingSerializeResolvers();
+      return;
+    }
+
+    const next = this.pendingOperations.shift();
+    if (!next) {
+      return;
+    }
+
+    this.currentOperation = Promise.resolve()
       .then(async () => {
         if (this.disposed || this.failed) {
+          next.resolveSerialize?.(null);
           return;
         }
-        await operation();
-        this.completedSequence = Math.max(this.completedSequence, sequence);
+        await next.run();
+        this.completedSequence = Math.max(this.completedSequence, next.sequence);
+        if (next.endCursor !== null) {
+          this.appliedEndCursor = next.endCursor;
+        }
       })
       .catch(() => {
         this.failed = true;
+        next.resolveSerialize?.(null);
       })
       .finally(() => {
         this.pendingOperationCount = Math.max(0, this.pendingOperationCount - 1);
-        recordTerminalStateMirrorOperationDrain(performance.now() - queuedAt);
+        recordTerminalStateMirrorOperationDrain(performance.now() - next.queuedAt);
+        this.currentOperation = null;
+        this.pump();
       });
   }
 
@@ -231,6 +290,66 @@ export class TerminalStateMirror {
     );
   }
 
+  private captureSerializedState(startedAt: number): SerializedTerminalState {
+    const state = {
+      cols: this.terminal.cols,
+      data: this.serializeTerminalStateData(),
+      rows: this.terminal.rows,
+    };
+    this.cachedState = this.cloneSerializedState(state);
+    this.cachedSequence = this.completedSequence;
+    recordTerminalStateMirrorSerialize({
+      bytes: state.data.length,
+      cacheHit: false,
+      durationMs: performance.now() - startedAt,
+    });
+    return state;
+  }
+
+  /**
+   * Serialize against the last APPLIED write without awaiting the queued
+   * backlog. The serialize runs between operation boundaries (bounded by the
+   * one in-flight operation), so the returned appliedCursor is exactly
+   * consistent with the serialized grid; callers append the retained
+   * ring-buffer delta appliedCursor -> outputCursor for full continuity.
+   */
+  serializeLatest(): Promise<SerializedLatestTerminalState | null> {
+    if (this.disposed || this.failed) {
+      return Promise.resolve(null);
+    }
+
+    const startedAt = performance.now();
+    return new Promise<SerializedLatestTerminalState | null>((resolve) => {
+      const operation: PendingMirrorOperation = {
+        endCursor: null,
+        queuedAt: startedAt,
+        resolveSerialize: resolve,
+        run: () => {
+          if (this.disposed || this.failed) {
+            resolve(null);
+            return;
+          }
+
+          try {
+            resolve({
+              ...this.captureSerializedState(startedAt),
+              appliedCursor: this.appliedEndCursor,
+            });
+          } catch {
+            this.failed = true;
+            resolve(null);
+          }
+        },
+        sequence: this.completedSequence,
+      };
+      // Jump the queued backlog: serialize right after the in-flight
+      // operation completes instead of waiting for every queued write.
+      this.pendingOperationCount += 1;
+      this.pendingOperations.unshift(operation);
+      this.pump();
+    });
+  }
+
   async serialize(): Promise<SerializedTerminalState | null> {
     if (this.disposed || this.failed) {
       return null;
@@ -244,8 +363,16 @@ export class TerminalStateMirror {
         return readyCachedState;
       }
 
-      const pendingOperation = this.pendingOperation;
-      await pendingOperation;
+      while (
+        (this.currentOperation !== null || this.pendingOperations.length > 0) &&
+        !this.disposed &&
+        !this.failed
+      ) {
+        await (this.currentOperation ?? Promise.resolve());
+        if (this.currentOperation === null && this.pendingOperations.length > 0) {
+          this.pump();
+        }
+      }
       if (this.disposed || this.failed) {
         return null;
       }
@@ -255,20 +382,7 @@ export class TerminalStateMirror {
         return completedCachedState;
       }
 
-      const state = {
-        cols: this.terminal.cols,
-        data: this.serializeTerminalStateData(),
-        rows: this.terminal.rows,
-      };
-      this.cachedState = this.cloneSerializedState(state);
-      this.cachedSequence = this.completedSequence;
-      recordTerminalStateMirrorSerialize({
-        bytes: state.data.length,
-        cacheHit: false,
-        durationMs: performance.now() - startedAt,
-      });
-
-      return state;
+      return this.captureSerializedState(startedAt);
     } catch {
       this.failed = true;
       return null;

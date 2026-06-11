@@ -22,8 +22,11 @@ const INTERACTIVE_CHOICE_PROMPT_PATTERN =
 const SHORTCUT_HINT_PATTERN =
   /\bbypass permissions?\b|\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b/i;
 
+// The final alternative also strips ESC= / ESC> (DECKPAM/DECKPNM keypad modes,
+// emitted by zsh's zle at every prompt) so they cannot leave literal '='/'>'
+// residue as the last visible detection line.
 const ANSI_ESCAPE_PATTERN = new RegExp(
-  String.raw`\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u009b[0-?]*[ -/]*[@-~]|\u001b[@-_]`,
+  String.raw`\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u009b[0-?]*[ -/]*[@-~]|\u001b[=>@-_]`,
   'g',
 );
 const TERMINAL_REDRAW_BOUNDARY_PATTERN = new RegExp(

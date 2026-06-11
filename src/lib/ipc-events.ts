@@ -23,6 +23,12 @@ export function listenNotificationClicked(
   return listenRendererEvent(IPC.NotificationClicked, listener);
 }
 
+export function listenAgentAvailabilityChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.AgentAvailabilityChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.AgentAvailabilityChanged, listener);
+}
+
 export function listenAgentSupervisionChanged(
   listener: (payload: RendererIpcEventPayloads[IPC.AgentSupervisionChanged]) => void,
 ): () => void {

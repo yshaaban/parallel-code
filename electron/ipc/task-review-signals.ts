@@ -10,8 +10,9 @@ import type {
   TaskReviewSignalsSnapshot,
 } from '../../src/domain/task-review-signals.js';
 import { parseGitHubUrl } from '../../src/lib/github-url.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { enqueueBackendWork, type BackendWorkPriorityClass } from './backend-work-queue.js';
 import { runQueuedRefresh } from './queued-refresh.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 
 interface TaskReviewSignalsMetadata {
   githubUrl?: string;
@@ -615,9 +616,9 @@ function removeTaskReviewSignalsSnapshot(taskId: string): void {
 }
 
 function collectTaskReviewSignalsMetadataFromSavedState(
-  savedJson: string,
+  savedState: string | SavedStateDocument,
 ): TaskReviewSignalsMetadata[] {
-  const parsed = parsePersistedTaskLookupState(savedJson);
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   const metadata: TaskReviewSignalsMetadata[] = [];
   for (const task of Object.values(parsed.tasks)) {
     if (!task.id || !task.worktreePath) {
@@ -673,11 +674,13 @@ export function registerTaskReviewSignalsTask(metadata: TaskReviewSignalsMetadat
   }
 
   removeTaskReviewSignalsSnapshot(metadata.taskId);
-  void refreshTaskReviewSignals(metadata.taskId);
+  // Queue-routed (interactive) so save/load/reconnect identity changes stay
+  // inside the global concurrency cap and dedupe keys.
+  scheduleTaskReviewSignalsRefresh(metadata.taskId, 'interactive');
 }
 
-export function syncTaskReviewSignalsFromSavedState(savedJson: string): void {
-  const nextMetadata = collectTaskReviewSignalsMetadataFromSavedState(savedJson);
+export function syncTaskReviewSignalsFromSavedState(savedState: string | SavedStateDocument): void {
+  const nextMetadata = collectTaskReviewSignalsMetadataFromSavedState(savedState);
   const nextTaskIds = new Set(nextMetadata.map((metadata) => metadata.taskId));
 
   for (const taskId of taskReviewSignalsMetadata.keys()) {
@@ -694,11 +697,25 @@ export function syncTaskReviewSignalsFromSavedState(savedJson: string): void {
   }
 }
 
-export function restoreSavedTaskReviewSignals(savedJson: string): void {
-  syncTaskReviewSignalsFromSavedState(savedJson);
+export function restoreSavedTaskReviewSignals(savedState: string | SavedStateDocument): void {
+  syncTaskReviewSignalsFromSavedState(savedState);
+}
 
-  for (const metadata of collectTaskReviewSignalsMetadataFromSavedState(savedJson)) {
-    void refreshTaskReviewSignals(metadata.taskId);
+export function hydrateTaskReviewSignalsSnapshots(
+  snapshots: ReadonlyArray<TaskReviewSignalsSnapshot>,
+): void {
+  let hydrated = false;
+  for (const snapshot of snapshots) {
+    if (!taskReviewSignalsMetadata.has(snapshot.taskId)) {
+      continue;
+    }
+
+    taskReviewSignalsSnapshots.set(snapshot.taskId, snapshot);
+    hydrated = true;
+  }
+
+  if (hydrated) {
+    bumpTaskReviewSignalsStateVersion();
   }
 }
 
@@ -713,17 +730,30 @@ export async function refreshTaskReviewSignals(taskId: string): Promise<void> {
   );
 }
 
-export function scheduleTaskReviewSignalsRefresh(taskId: string): void {
-  void refreshTaskReviewSignals(taskId);
+export function scheduleTaskReviewSignalsRefresh(
+  taskId: string,
+  priority?: BackendWorkPriorityClass,
+): void {
+  void enqueueBackendWork(
+    {
+      key: `review-signals:${taskId}`,
+      ...(priority !== undefined ? { priority } : {}),
+      taskId,
+    },
+    () => refreshTaskReviewSignals(taskId),
+  ).catch(() => {});
 }
 
-export function scheduleTaskReviewSignalsRefreshForWorktree(worktreePath: string): void {
+export function scheduleTaskReviewSignalsRefreshForWorktree(
+  worktreePath: string,
+  priority?: BackendWorkPriorityClass,
+): void {
   for (const metadata of taskReviewSignalsMetadata.values()) {
     if (metadata.worktreePath !== worktreePath) {
       continue;
     }
 
-    scheduleTaskReviewSignalsRefresh(metadata.taskId);
+    scheduleTaskReviewSignalsRefresh(metadata.taskId, priority);
   }
 }
 

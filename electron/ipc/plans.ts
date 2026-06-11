@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -31,6 +32,43 @@ const DIR_POLL_INTERVAL_MS = 3_000;
 const PLAN_DIRS = ['.claude/plans', 'docs/plans'] as const;
 const watchers = new Map<string, PlanWatcher>();
 
+const PLAN_SETTINGS_EXCLUDE_ENTRY = '.claude/settings.local.json';
+
+/**
+ * Marks the app-managed `.claude/settings.local.json` as ignored in the
+ * repo-local git exclude file. The backend writes this file into every task
+ * worktree, and Claude Code's own convention keeps `settings.local.json`
+ * local-only (the claude CLI gitignores it on creation too). Without the
+ * exclude, the app's own bookkeeping write shows up in `git status` and the
+ * review unstaged list as a phantom user change. Tracked copies are
+ * unaffected: git excludes only apply to untracked files. Best-effort: no-op
+ * for non-git worktrees or unwritable `.git` dirs.
+ */
+function ensurePlanSettingsGitExclude(worktreePath: string): void {
+  try {
+    const gitExcludePath = execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+      { cwd: worktreePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    let existing = '';
+    try {
+      existing = fs.readFileSync(gitExcludePath, 'utf-8');
+    } catch {
+      // Exclude file does not exist yet.
+    }
+    if (existing.split('\n').includes(PLAN_SETTINGS_EXCLUDE_ENTRY)) {
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(gitExcludePath), { recursive: true });
+    const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
+    fs.appendFileSync(gitExcludePath, `${separator}${PLAN_SETTINGS_EXCLUDE_ENTRY}\n`);
+  } catch {
+    // Non-git worktree or read-only .git; the settings write still works.
+  }
+}
+
 /**
  * Reads and merges `.claude/settings.local.json` in the worktree to set
  * `plansDirectory: "./.claude/plans"`. Creates the plans dir if needed.
@@ -39,6 +77,7 @@ const watchers = new Map<string, PlanWatcher>();
 export function ensurePlansDirectory(worktreePath: string): void {
   const settingsPath = path.join(worktreePath, '.claude', 'settings.local.json');
   const plansDir = path.join(worktreePath, '.claude', 'plans');
+  ensurePlanSettingsGitExclude(worktreePath);
 
   let settings: Record<string, unknown> = {};
   try {

@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { IPC } from './channels.js';
 import { normalizeAgentRunnerProfileConfig } from './agent-runner-handlers.js';
 import { listAgentSupervisionSnapshots } from './agent-supervision.js';
-import { listAgents } from './agents.js';
+import { listAgents, requestAgentCatalogAvailabilityRevalidation } from './agents.js';
 import {
   assertOptionalPauseReason,
   type HandlerContext,
@@ -15,7 +15,6 @@ import {
   getActiveAgentIds,
   getAgentCols,
   getAgentMeta,
-  getAgentPauseState,
   getAgentRows,
   getAgentScrollback,
   getAgentTerminalRecovery,
@@ -280,6 +279,50 @@ function resumeRestorePausedAgents(pausedIds: string[]): void {
   }
 }
 
+// Server-owned recovery batch pauses: the batch fetch keeps the 'restore'
+// pause alive after responding so live Data frames cannot race the client's
+// apply. The client releases the pause (ReleaseTerminalRecoveryPause) after
+// applying the entry; the timer auto-resumes as a safety net if the release
+// message is lost.
+const RECOVERY_BATCH_PAUSE_TTL_MS = 5_000;
+const heldRecoveryBatchPauses = new Map<
+  string,
+  { agentId: string; timer: ReturnType<typeof setTimeout> }
+>();
+let recoveryBatchPauseSequence = 0;
+
+function releaseHeldTerminalRecoveryBatchPause(batchPauseId: string): void {
+  const held = heldRecoveryBatchPauses.get(batchPauseId);
+  if (!held) {
+    return;
+  }
+
+  heldRecoveryBatchPauses.delete(batchPauseId);
+  clearTimeout(held.timer);
+  try {
+    resumeAgent(held.agentId, 'restore');
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+function holdTerminalRecoveryBatchPause(agentId: string): string {
+  recoveryBatchPauseSequence += 1;
+  const batchPauseId = `recovery-pause-${recoveryBatchPauseSequence}`;
+  const timer = setTimeout(() => {
+    releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+  }, RECOVERY_BATCH_PAUSE_TTL_MS);
+  timer.unref?.();
+  heldRecoveryBatchPauses.set(batchPauseId, { agentId, timer });
+  return batchPauseId;
+}
+
+export function releaseAllHeldTerminalRecoveryBatchPausesForTests(): void {
+  for (const batchPauseId of [...heldRecoveryBatchPauses.keys()]) {
+    releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+  }
+}
+
 function normalizeStartupVisibleTerminalCount(
   value: unknown,
   fallbackCount: number,
@@ -350,17 +393,21 @@ async function fetchTerminalRecoveryBatch(
   requests: TerminalRecoveryRequestEntry[],
 ): Promise<TerminalRecoveryBatchEntry[]> {
   const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
-  const pausedIds: string[] = [];
+  const pauseIdByAgentId = new Map<string, string>();
   const startedAt = performance.now();
 
   try {
     for (const agentId of uniqueAgentIds) {
-      if (!hasAgentSession(agentId) || getAgentPauseState(agentId) !== null) {
+      if (!hasAgentSession(agentId)) {
         continue;
       }
 
+      // Always hold a request-scoped pause, even when the agent is already
+      // paused: restore pause leases stack, so this request's pre-apply
+      // window stays covered when a concurrent client's pause is released
+      // (or its auto-resume timer fires) first.
       pauseAgent(agentId, 'restore');
-      pausedIds.push(agentId);
+      pauseIdByAgentId.set(agentId, holdTerminalRecoveryBatchPause(agentId));
     }
 
     const results: TerminalRecoveryBatchEntry[] = requests.map((request) => {
@@ -370,12 +417,17 @@ async function fetchTerminalRecoveryBatch(
         request.outputCursor ?? null,
         request.snapshotByteLimit ?? null,
       );
-      return serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
+      const entry = serializeTerminalRecoveryEntry(request.agentId, request.requestId, recovery);
+      const batchPauseId = pauseIdByAgentId.get(request.agentId);
+      return batchPauseId === undefined ? entry : { ...entry, batchPauseId };
     });
     recordTerminalRecoveryBatch(results, performance.now() - startedAt);
     return results;
-  } finally {
-    resumeRestorePausedAgents(pausedIds);
+  } catch (error) {
+    for (const batchPauseId of pauseIdByAgentId.values()) {
+      releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+    }
+    throw error;
   }
 }
 
@@ -396,9 +448,13 @@ async function fetchTerminalStartupRecoveryBatch(
   }
 
   for (const [agentId, entries] of requestsByAgent) {
-    const shouldPause = hasAgentSession(agentId) && getAgentPauseState(agentId) === null;
+    // Always hold a request-scoped pause for live sessions (leases stack);
+    // see fetchTerminalRecoveryBatch for the concurrent-client rationale.
+    const shouldPause = hasAgentSession(agentId);
+    let batchPauseId: string | undefined;
     if (shouldPause) {
       pauseAgent(agentId, 'restore');
+      batchPauseId = holdTerminalRecoveryBatchPause(agentId);
     }
 
     try {
@@ -411,17 +467,19 @@ async function fetchTerminalStartupRecoveryBatch(
             request.role,
             request.visibleTerminalCount,
           );
-          results[index] = serializeTerminalRecoveryEntry(
+          const entry = serializeTerminalRecoveryEntry(
             request.agentId,
             request.requestId,
             recovery,
           );
+          results[index] = batchPauseId === undefined ? entry : { ...entry, batchPauseId };
         }),
       );
-    } finally {
-      if (shouldPause) {
-        resumeRestorePausedAgents([agentId]);
+    } catch (error) {
+      if (batchPauseId !== undefined) {
+        releaseHeldTerminalRecoveryBatchPause(batchPauseId);
       }
+      throw error;
     }
   }
 
@@ -514,77 +572,276 @@ function assertEnsureAgentSessionsBatchReason(
   throw new BadRequestError('reason must be one of: startup-restore, dispatch-storm, user-action');
 }
 
+interface AgentSpawnRequestFields {
+  adapter?: 'hydra';
+  agentId: string;
+  args: string[];
+  baseBranch?: string;
+  cols?: number;
+  command?: string;
+  controllerId?: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  isShell?: boolean;
+  onOutput: unknown;
+  projectMode?: ProjectMode;
+  replaceExistingSession?: boolean;
+  resumeOnStart?: boolean;
+  runnerProfile?: unknown;
+  rows?: number;
+  taskId: string;
+}
+
+interface NormalizedAgentSpawnRequest {
+  channelId: string;
+  hasExistingSession: boolean;
+  replaceExistingSession: boolean;
+  requestedCols: number;
+  requestedRows: number;
+}
+
+function assertAgentSpawnRequestFields(
+  request: AgentSpawnRequestFields,
+): NormalizedAgentSpawnRequest {
+  assertString(request.taskId, 'taskId');
+  assertString(request.agentId, 'agentId');
+  assertStringArray(request.args, 'args');
+  if (request.adapter !== undefined && request.adapter !== 'hydra') {
+    throw new BadRequestError('adapter must be hydra when provided');
+  }
+  if (request.cwd !== undefined) {
+    assertString(request.cwd, 'cwd');
+  }
+  if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
+    throw new BadRequestError('resumeOnStart must be a boolean when provided');
+  }
+  if (
+    request.replaceExistingSession !== undefined &&
+    typeof request.replaceExistingSession !== 'boolean'
+  ) {
+    throw new BadRequestError('replaceExistingSession must be a boolean when provided');
+  }
+  validateOptionalBranchName(request.baseBranch, 'baseBranch');
+  assertOptionalProjectMode(request.projectMode);
+  assertOptionalString(request.controllerId, 'controllerId');
+
+  return {
+    channelId: getRequiredChannelId(request.onOutput),
+    hasExistingSession: hasAgentSession(request.agentId),
+    replaceExistingSession: request.replaceExistingSession === true,
+    requestedCols: normalizeTerminalDimension(request.cols, 80, 'cols'),
+    requestedRows: normalizeTerminalDimension(request.rows, 24, 'rows'),
+  };
+}
+
+async function runAgentSpawnRequest(
+  context: HandlerContext,
+  request: AgentSpawnRequestFields,
+  normalized: NormalizedAgentSpawnRequest,
+): Promise<boolean> {
+  const { channelId, replaceExistingSession, requestedCols, requestedRows } = normalized;
+
+  function spawnWorkflow(): boolean {
+    const hasSessionAtSpawn = hasAgentSession(request.agentId);
+    const shouldAttachExistingSession = hasSessionAtSpawn && !replaceExistingSession;
+    const runnerProfile = shouldAttachExistingSession
+      ? undefined
+      : normalizeAgentRunnerProfileConfig(request.runnerProfile);
+    // Attach-to-existing never resizes: the backend session geometry stays
+    // authoritative regardless of the optimistic geometry on the request.
+    const cols = shouldAttachExistingSession ? getAgentCols(request.agentId) : requestedCols;
+    const rows = shouldAttachExistingSession ? getAgentRows(request.agentId) : requestedRows;
+
+    return spawnTaskAgentWorkflow(context, {
+      taskId: request.taskId,
+      ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+      agentId: request.agentId,
+      command: typeof request.command === 'string' ? request.command : '',
+      args: request.args,
+      cwd: typeof request.cwd === 'string' ? request.cwd : '',
+      env: request.env,
+      cols,
+      rows,
+      isShell: request.isShell === true,
+      replaceExistingSession,
+      resumeOnStart: request.resumeOnStart === true,
+      onOutput: { __CHANNEL_ID__: channelId },
+      ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+      ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
+      ...(runnerProfile !== undefined ? { runnerProfile } : {}),
+    });
+  }
+
+  if (normalized.hasExistingSession && !replaceExistingSession) {
+    return spawnWorkflow();
+  }
+
+  return runNewAgentSessionSpawn(spawnWorkflow);
+}
+
+interface NormalizedInitialAttachRecoveryRequest {
+  outputCursor: number | null;
+  role: 'selected' | 'visible-sibling' | null;
+  snapshotByteLimit: number | null;
+  visibleTerminalCount: number;
+}
+
+function assertInitialAttachRecoveryRequest(
+  value: unknown,
+): NormalizedInitialAttachRecoveryRequest {
+  if (!value || typeof value !== 'object') {
+    throw new BadRequestError('initialRecovery is required');
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.role !== null &&
+    candidate.role !== 'selected' &&
+    candidate.role !== 'visible-sibling'
+  ) {
+    throw new BadRequestError('initialRecovery.role must be a startup recovery role or null');
+  }
+  if (candidate.outputCursor !== null && candidate.outputCursor !== undefined) {
+    assertInt(candidate.outputCursor, 'initialRecovery.outputCursor');
+    if (candidate.outputCursor < 0) {
+      throw new BadRequestError('initialRecovery.outputCursor must be >= 0');
+    }
+  }
+  if (candidate.snapshotByteLimit !== null && candidate.snapshotByteLimit !== undefined) {
+    assertInt(candidate.snapshotByteLimit, 'initialRecovery.snapshotByteLimit');
+    if (candidate.snapshotByteLimit < 0) {
+      throw new BadRequestError('initialRecovery.snapshotByteLimit must be >= 0');
+    }
+  }
+  const visibleTerminalCount = normalizeStartupVisibleTerminalCount(
+    candidate.visibleTerminalCount,
+    1,
+    'initialRecovery.visibleTerminalCount',
+  );
+
+  return {
+    outputCursor: typeof candidate.outputCursor === 'number' ? candidate.outputCursor : null,
+    role: candidate.role as NormalizedInitialAttachRecoveryRequest['role'],
+    snapshotByteLimit:
+      typeof candidate.snapshotByteLimit === 'number' ? candidate.snapshotByteLimit : null,
+    visibleTerminalCount,
+  };
+}
+
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
       const request = args;
-      assertString(request.taskId, 'taskId');
-      assertString(request.agentId, 'agentId');
-      assertStringArray(request.args, 'args');
-      if (request.adapter !== undefined && request.adapter !== 'hydra') {
-        throw new BadRequestError('adapter must be hydra when provided');
-      }
-      if (request.cwd !== undefined) {
-        assertString(request.cwd, 'cwd');
-      }
-      if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
-        throw new BadRequestError('resumeOnStart must be a boolean when provided');
-      }
-      if (
-        request.replaceExistingSession !== undefined &&
-        typeof request.replaceExistingSession !== 'boolean'
-      ) {
-        throw new BadRequestError('replaceExistingSession must be a boolean when provided');
-      }
-      validateOptionalBranchName(request.baseBranch, 'baseBranch');
-      assertOptionalProjectMode(request.projectMode);
-      assertOptionalString(request.controllerId, 'controllerId');
-      const channelId = getRequiredChannelId(request.onOutput);
-      const requestedCols = normalizeTerminalDimension(request.cols, 80, 'cols');
-      const requestedRows = normalizeTerminalDimension(request.rows, 24, 'rows');
-      const hasExistingSession = hasAgentSession(request.agentId);
-      const replaceExistingSession = request.replaceExistingSession === true;
-
-      function spawnWorkflow(): boolean {
-        const hasSessionAtSpawn = hasAgentSession(request.agentId);
-        const shouldAttachExistingSession = hasSessionAtSpawn && !replaceExistingSession;
-        const runnerProfile = shouldAttachExistingSession
-          ? undefined
-          : normalizeAgentRunnerProfileConfig(request.runnerProfile);
-        const cols = shouldAttachExistingSession ? getAgentCols(request.agentId) : requestedCols;
-        const rows = shouldAttachExistingSession ? getAgentRows(request.agentId) : requestedRows;
-
-        return spawnTaskAgentWorkflow(context, {
-          taskId: request.taskId,
-          ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
-          agentId: request.agentId,
-          command: typeof request.command === 'string' ? request.command : '',
-          args: request.args,
-          cwd: typeof request.cwd === 'string' ? request.cwd : '',
-          env: request.env,
-          cols,
-          rows,
-          isShell: request.isShell === true,
-          replaceExistingSession,
-          resumeOnStart: request.resumeOnStart === true,
-          onOutput: { __CHANNEL_ID__: channelId },
-          ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-          ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
-          ...(runnerProfile !== undefined ? { runnerProfile } : {}),
-        });
-      }
-
-      let attachedExistingSession: boolean;
-      if (hasExistingSession && !replaceExistingSession) {
-        attachedExistingSession = spawnWorkflow();
-      } else {
-        attachedExistingSession = await runNewAgentSessionSpawn(spawnWorkflow);
-      }
+      const normalized = assertAgentSpawnRequestFields(request);
+      const attachedExistingSession = await runAgentSpawnRequest(context, request, normalized);
 
       return {
         attachedExistingSession,
       };
     }),
+
+    [IPC.AttachTerminalSession]: defineIpcHandler<IPC.AttachTerminalSession>(
+      IPC.AttachTerminalSession,
+      async (args) => {
+        const request = args;
+        const normalized = assertAgentSpawnRequestFields(request);
+        const initialRecovery = assertInitialAttachRecoveryRequest(request.initialRecovery);
+        assertOptionalString(request.clientId, 'clientId');
+        const clientId = typeof request.clientId === 'string' ? request.clientId : null;
+
+        // Bind the output channel for the requesting client before the spawn
+        // workflow so the attach path's pending-batch flush goes to the OLD
+        // channels and every Data frame on the new channel strictly follows
+        // the captured recovery cursor.
+        const channelBound = context.bindChannelForClient?.(clientId, normalized.channelId) ?? true;
+        const attachedExistingSession = await runAgentSpawnRequest(context, request, normalized);
+        if (!attachedExistingSession) {
+          return {
+            attachedExistingSession,
+            channelBound,
+            recovery: null,
+          };
+        }
+
+        const agentId = request.agentId;
+        // Always hold a request-scoped pause for live sessions (leases
+        // stack); see fetchTerminalRecoveryBatch for the concurrent-client
+        // rationale.
+        const shouldPause = hasAgentSession(agentId);
+        let batchPauseId: string | undefined;
+        if (shouldPause) {
+          pauseAgent(agentId, 'restore');
+          batchPauseId = holdTerminalRecoveryBatchPause(agentId);
+        }
+
+        try {
+          let recovery =
+            initialRecovery.role === null
+              ? getAgentTerminalRecovery(
+                  agentId,
+                  null,
+                  initialRecovery.outputCursor,
+                  initialRecovery.snapshotByteLimit,
+                )
+              : await getAgentTerminalStartupRecovery(
+                  agentId,
+                  null,
+                  null,
+                  initialRecovery.role,
+                  initialRecovery.visibleTerminalCount,
+                );
+          if (recovery.kind === 'tail-needed') {
+            // A fresh attach has no rendered tail to offer in a phase-two
+            // request, so a cursor miss resolves to the capped snapshot here.
+            recovery = getAgentTerminalRecovery(
+              agentId,
+              null,
+              null,
+              initialRecovery.snapshotByteLimit,
+            );
+          } else if (
+            recovery.kind === 'delta' &&
+            initialRecovery.outputCursor === 0 &&
+            initialRecovery.snapshotByteLimit !== null &&
+            recovery.data.length > initialRecovery.snapshotByteLimit
+          ) {
+            // Cursor-hit deltas are uncapped by design (live continuity must
+            // not be truncated), but a fresh-mount cursor-0 claim has no
+            // rendered history to preserve: a delta from byte 0 is a
+            // full-state transfer in disguise, so it must honor the attach
+            // snapshot byte budget instead of shipping the whole retained
+            // ring inline.
+            recovery = getAgentTerminalRecovery(
+              agentId,
+              null,
+              null,
+              initialRecovery.snapshotByteLimit,
+            );
+          }
+          const entry = serializeTerminalRecoveryEntry(agentId, 'attach-initial', recovery);
+          return {
+            attachedExistingSession,
+            channelBound,
+            recovery: batchPauseId === undefined ? entry : { ...entry, batchPauseId },
+          };
+        } catch (error) {
+          if (batchPauseId !== undefined) {
+            releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+          }
+          throw error;
+        }
+      },
+    ),
+
+    [IPC.ReleaseTerminalRecoveryPause]: defineIpcHandler<IPC.ReleaseTerminalRecoveryPause>(
+      IPC.ReleaseTerminalRecoveryPause,
+      (args) => {
+        const request = args;
+        assertString(request.batchPauseId, 'batchPauseId');
+        releaseHeldTerminalRecoveryBatchPause(request.batchPauseId);
+        return undefined;
+      },
+    ),
 
     [IPC.EnsureAgentSessionsBatch]: defineIpcHandler<IPC.EnsureAgentSessionsBatch>(
       IPC.EnsureAgentSessionsBatch,
@@ -930,6 +1187,15 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertOptionalString(request.hydraCommand, 'hydraCommand');
       return listAgents(request.hydraCommand);
     }),
+    [IPC.RefreshAgentAvailability]: defineIpcHandler<IPC.RefreshAgentAvailability>(
+      IPC.RefreshAgentAvailability,
+      (args) => {
+        const request = args;
+        assertOptionalString(request.hydraCommand, 'hydraCommand');
+        requestAgentCatalogAvailabilityRevalidation('dialog-open', request.hydraCommand);
+        return undefined;
+      },
+    ),
     [IPC.GetAgentSupervision]: () => listAgentSupervisionSnapshots(),
     [IPC.ListRunningAgentIds]: () => getActiveAgentIds(),
   };

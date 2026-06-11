@@ -19,7 +19,10 @@ import {
   type CreateWebSocketTransportOptions,
   type SendTextResult,
 } from '../../electron/remote/ws-transport.js';
-import { createBrowserControlPlane } from '../../server/browser-control-plane.js';
+import {
+  createBrowserControlPlane,
+  type BrowserControlResyncRequest,
+} from '../../server/browser-control-plane.js';
 
 type ContractMessage = Record<string, unknown>;
 
@@ -53,6 +56,7 @@ export interface WebSocketContractHarness {
     client: FakeWebSocketClient,
     clientId?: string,
     lastSeq?: number,
+    resync?: BrowserControlResyncRequest,
   ) => boolean;
   broadcastControl: (message: ServerMessage) => void;
   claimAgentControl: (client: FakeWebSocketClient, agentId: string) => ClaimAgentControlResult;
@@ -65,6 +69,8 @@ export interface WebSocketContractHarness {
   name: string;
   removeGitStatus?: (worktreePath: string) => void;
   replayControlEvents: (client: FakeWebSocketClient, lastSeq?: number) => void;
+  /** Starts the heartbeat + lease prune interval (browser control plane only). */
+  startHeartbeat?: () => void;
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
   requestTaskCommandTakeover: (
     client: FakeWebSocketClient,
@@ -264,8 +270,8 @@ export function createBrowserControlPlaneContractHarness(
   });
 
   return {
-    authenticateConnection: (client, clientId, lastSeq) =>
-      controlPlane.authenticateConnection(client, clientId, lastSeq),
+    authenticateConnection: (client, clientId, lastSeq, resync) =>
+      controlPlane.authenticateConnection(client, clientId, lastSeq, resync),
     broadcastControl: (message) => {
       if (message.type === 'git-status-changed' && isGitStatusSyncSnapshotEvent(message)) {
         recordGitStatusSnapshot(message);
@@ -305,6 +311,9 @@ export function createBrowserControlPlaneContractHarness(
     remoteStatus: () => controlPlane.getRemoteStatus(),
     replayControlEvents: (client, lastSeq) => {
       controlPlane.transport.replayControlEvents(client, lastSeq);
+    },
+    startHeartbeat: () => {
+      controlPlane.startHeartbeat();
     },
     requestTaskCommandTakeover: (client, message) => {
       controlPlane.requestTaskCommandTakeover(client, message);

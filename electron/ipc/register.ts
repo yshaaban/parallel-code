@@ -14,7 +14,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
 import { subscribeCoordinatorEvents } from '../coordinator/runtime.js';
+import { ensureCoordinatorServiceLoaded } from '../coordinator/service.js';
+import { subscribeAgentAvailability } from './agent-availability-state.js';
 import { subscribeAgentSupervision } from './agent-supervision.js';
+import { requestAgentCatalogAvailabilityRevalidation } from './agents.js';
 import {
   createIpcHandlers,
   type ClipboardController,
@@ -332,6 +335,15 @@ export function registerAllHandlers(win: BrowserWindow): void {
       emitRendererEvent(win.webContents, IPC.AgentSupervisionChanged, event);
     }
   });
+  const stopAgentAvailabilitySubscription = subscribeAgentAvailability((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.AgentAvailabilityChanged, event);
+    }
+  });
+  // The boot probe round is queued at 'background' priority and stays gated
+  // until releaseBackendBackgroundWork() runs after window load; the work queue
+  // is the single post-listen scheduler.
+  requestAgentCatalogAvailabilityRevalidation('boot');
   const stopCoordinatorSubscription = subscribeCoordinatorEvents((event) => {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.CoordinatorChanged, event);
@@ -366,6 +378,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.TaskStepsChanged, event);
     }
+  });
+  // The coordinator IPC handlers bind lazily (createLazyIpcHandlerGroup), but the
+  // Electron shell still hydrates persisted coordinator state eagerly at boot so the
+  // renderer's first GetServerStateBootstrap (and task-deletion cleanup paths that
+  // read coordinator runtime state) see restored runs, exactly as before the lazy
+  // group existed. The browser server owns the equivalent post-listen load through
+  // server/coordinator-runtime-loader.ts.
+  ensureCoordinatorServiceLoaded({
+    userDataPath: app.getPath('userData'),
+    isPackaged: app.isPackaged,
   });
   const handlers = createIpcHandlers({
     userDataPath: app.getPath('userData'),
@@ -410,6 +432,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
   win.on('closed', () => {
     clearCloseFallbackTimer();
+    stopAgentAvailabilitySubscription();
     stopAgentSupervisionSubscription();
     stopCoordinatorSubscription();
     stopRemoteStatusSubscription();

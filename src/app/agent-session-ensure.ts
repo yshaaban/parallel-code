@@ -241,6 +241,61 @@ async function ensureAgentSessionsForStartupRestore(
   );
 }
 
+const inFlightDeferredEnsureAgentIds = new Set<string>();
+const ensuredDeferredAgentTaskIds = new Map<string, string>();
+
+// Cold-hidden non-shell terminals defer their renderer attach until
+// visibility/prewarm intent; this keeps the backend session (and with it
+// supervision/attention) live for them through the existing
+// EnsureAgentSessionsBatch path, deduped per agent.
+export function ensureAgentSessionForDeferredTerminal(taskId: string, agentId: string): void {
+  if (inFlightDeferredEnsureAgentIds.has(agentId) || ensuredDeferredAgentTaskIds.has(agentId)) {
+    return;
+  }
+
+  const task = store.tasks[taskId];
+  const agent = store.agents[agentId];
+  if (!task || !agent) {
+    return;
+  }
+
+  inFlightDeferredEnsureAgentIds.add(agentId);
+  void invoke(IPC.EnsureAgentSessionsBatch, {
+    reason: 'startup-restore',
+    requests: [createEnsureAgentSessionRequest(task, agent)],
+  })
+    .then((response) => {
+      if (getBatchEnsureFailures(response).length === 0) {
+        ensuredDeferredAgentTaskIds.set(agentId, taskId);
+      }
+    })
+    .catch((error: unknown) => {
+      console.warn('[terminal] Failed to ensure deferred terminal session:', error);
+    })
+    .finally(() => {
+      inFlightDeferredEnsureAgentIds.delete(agentId);
+    });
+}
+
+// A full reconnect restore means the backend may have lost its PTY sessions
+// (for example a browser-mode server restart), so previously ensured deferred
+// sessions can no longer be assumed live. Invalidate the dedupe and re-issue
+// the ensure for the affected terminals: agents or tasks removed by the
+// restore reconciliation are skipped by the store lookups, and terminals that
+// attached in the meantime treat the ensure as a backend no-op.
+export function reEnsureDeferredAgentSessionsAfterReconnectRestore(): void {
+  const previouslyEnsured = [...ensuredDeferredAgentTaskIds.entries()];
+  ensuredDeferredAgentTaskIds.clear();
+  for (const [agentId, taskId] of previouslyEnsured) {
+    ensureAgentSessionForDeferredTerminal(taskId, agentId);
+  }
+}
+
+export function resetDeferredAgentSessionEnsureForTests(): void {
+  inFlightDeferredEnsureAgentIds.clear();
+  ensuredDeferredAgentTaskIds.clear();
+}
+
 function shouldWaitForSelectedPaintBeforeStartupRestoreBackgroundEnsure(): boolean {
   if (!getActiveStartupRestoreSelectedAgentId()) {
     return false;

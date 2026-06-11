@@ -15,6 +15,22 @@ interface AppStartupState {
 }
 
 const [appStartupState, setAppStartupState] = createSignal<AppStartupState | null>(null);
+// Presentation pending is the coarse "the workspace shape is not trustworthy
+// yet" window: it begins at desktop session entry and ends with startup
+// completion, failure, or session dispose (all of which clear startup status).
+const [appStartupPresentationPending, setAppStartupPresentationPending] = createSignal(false);
+
+export function beginAppStartupPresentation(): void {
+  setAppStartupPresentationPending(true);
+}
+
+export function completeAppStartupPresentation(): void {
+  setAppStartupPresentationPending(false);
+}
+
+export function isAppStartupPresentationPending(): boolean {
+  return appStartupPresentationPending();
+}
 
 function getAppStartupLabel(phase: AppStartupPhase): string {
   switch (phase) {
@@ -58,6 +74,7 @@ export function setAppStartupStatus(phase: AppStartupPhase, detail: string | nul
 }
 
 export function clearAppStartupStatus(): void {
+  completeAppStartupPresentation();
   setAppStartupState((previousState) => {
     if (!previousState) {
       return previousState;

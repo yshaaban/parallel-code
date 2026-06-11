@@ -295,14 +295,12 @@ describe('task-review-state', () => {
     });
   });
 
-  it('restores review metadata from saved state even when the task name is missing', async () => {
+  it('restores review metadata without scheduling a blanket refresh', async () => {
     getProjectDiffMock.mockResolvedValue({
       files: [createChangedFile({ path: 'src/restored.ts' })],
       totalAdded: 3,
       totalRemoved: 1,
     });
-
-    const restoredSnapshot = waitForTaskReviewSnapshot('task-from-key');
 
     restoreSavedTaskReview(
       JSON.stringify({
@@ -317,6 +315,13 @@ describe('task-review-state', () => {
       }),
     );
 
+    await Promise.resolve();
+
+    expect(getProjectDiffMock).not.toHaveBeenCalled();
+    expect(getTaskReviewSnapshot('task-from-key')).toBeUndefined();
+
+    const restoredSnapshot = waitForTaskReviewSnapshot('task-from-key');
+    await refreshTaskReview('task-from-key');
     await restoredSnapshot;
 
     expect(getTaskReviewSnapshot('task-from-key')).toMatchObject({

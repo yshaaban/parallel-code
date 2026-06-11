@@ -11,6 +11,10 @@ import {
 
 function createBootstrapDescriptors(): ServerStateBootstrapCategoryDescriptors {
   return {
+    'agent-availability': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
     'agent-supervision': {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),

@@ -114,6 +114,7 @@ function createMockTransport(
     getAgentControllerId: vi.fn(() => null),
     getAuthenticatedClientCount: vi.fn(() => 1),
     getClientId: vi.fn(() => 'client-1'),
+    getClientsById: vi.fn(() => []),
     getLatestControlEventSeq: vi.fn(() => -1),
     hasClientId: vi.fn(() => true),
     isAuthenticated: vi.fn(() => true),
@@ -622,6 +623,74 @@ describe('registerRemoteWebSocketServer', () => {
           kind: 'snapshot',
         },
         requestId: 'recovery-1',
+        rows: 32,
+      },
+    });
+  });
+
+  it('resolves tail-needed recovery to a capped snapshot for remote clients', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    // The remote protocol has no phase-two tail flow and rejects
+    // 'tail-needed' payloads, so the server must resolve a cursor miss to the
+    // capped snapshot before responding.
+    getAgentTerminalRecoveryMock
+      .mockReturnValueOnce({
+        cols: 120,
+        kind: 'tail-needed',
+        outputCursor: 500,
+        rows: 32,
+      })
+      .mockReturnValueOnce({
+        cols: 120,
+        data: Buffer.from('capped-snapshot', 'utf8'),
+        kind: 'snapshot',
+        outputCursor: 500,
+        rows: 32,
+      });
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'terminal-recovery-request',
+        agentId: 'agent-1',
+        outputCursor: 12,
+        renderedTail: null,
+        requestId: 'recovery-tail-needed',
+        snapshotByteLimit: 64,
+      }),
+    );
+
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    expect(getAgentTerminalRecoveryMock).toHaveBeenNthCalledWith(1, 'agent-1', null, 12, 64);
+    expect(getAgentTerminalRecoveryMock).toHaveBeenNthCalledWith(2, 'agent-1', null, null, 64);
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'terminal-recovery-result',
+      entry: {
+        agentId: 'agent-1',
+        cols: 120,
+        outputCursor: 500,
+        recovery: {
+          data: Buffer.from('capped-snapshot', 'utf8').toString('base64'),
+          kind: 'snapshot',
+        },
+        requestId: 'recovery-tail-needed',
         rows: 32,
       },
     });

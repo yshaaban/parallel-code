@@ -76,6 +76,12 @@ export interface UpdateController {
 
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
+  awaitCoordinatorRuntimeReady?: () => Promise<void>;
+  // Binds the output channel for the requesting client as part of the
+  // single-round-trip AttachTerminalSession RPC. Browser mode implements it
+  // via the channel manager plus the control-plane clientId lookup; Electron
+  // leaves it undefined (channel binding is implicit in the IPC bridge).
+  bindChannelForClient?: (clientId: string | null, channelId: string) => boolean;
   coordinatorToolCallUrl?: string | (() => string);
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
   emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;

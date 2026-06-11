@@ -116,6 +116,7 @@ function createTestTransport(
     getAgentControllerId: vi.fn(() => null),
     getAuthenticatedClientCount: vi.fn(() => 1),
     getClientId: vi.fn(() => 'client-1'),
+    getClientsById: vi.fn(() => []),
     getLatestControlEventSeq: vi.fn(() => 0),
     hasClientId: vi.fn(() => true),
     isAuthenticated: vi.fn(() => true),
@@ -139,6 +140,7 @@ function createTestChannels(): RegisterBrowserWebSocketServerOptions['channels']
     cleanupClient: vi.fn(),
     hasActiveSubscriber: vi.fn(() => true),
     sendChannelMessage: vi.fn(),
+    setFocusedChannelIds: vi.fn(),
     unbindChannel: vi.fn(),
   };
 }
@@ -149,6 +151,7 @@ function createRegisterOptions(
 ): RegisterBrowserWebSocketServerOptions {
   return {
     authenticateConnection: vi.fn(() => true),
+    sendStateBootstrap: vi.fn(),
     broadcastRemoteStatus: vi.fn(),
     channels: createTestChannels(),
     cleanupClientState: vi.fn(),
@@ -526,7 +529,91 @@ describe('registerBrowserWebSocketServer', () => {
       url: '/?token=good&clientId=client-1&lastSeq=-2',
     });
 
-    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-1', undefined);
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-1', undefined, undefined);
+  });
+
+  // Positive-path wire-seam lock: the resync query params a reconnecting
+  // client serializes (src/lib/browser-control-client.ts getBrowserSocketUrl)
+  // must reach authenticateConnection as the parsed resync request. A silent
+  // rename or shape drift on either side would degrade every reconnect back to
+  // the full bootstrap with zero failing tests otherwise.
+  it('parses resync query params into the authenticateConnection resync request', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const authenticateConnection = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection,
+        wss,
+      }),
+    );
+
+    const categoryVersions = { coordinator: 3, 'git-status': 2 };
+    const query = new URLSearchParams({
+      agentsVersion: '4',
+      categoryVersions: JSON.stringify(categoryVersions),
+      clientId: 'client-1',
+      lastSeq: '7',
+      serverInstanceId: 'instance-a',
+      token: 'good',
+    });
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: `/?${query.toString()}`,
+    });
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-1', 7, {
+      agentsVersion: 4,
+      categoryVersions,
+      serverInstanceId: 'instance-a',
+    });
+  });
+
+  it('parses in-band auth resync fields into the authenticateConnection resync request', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const authenticateConnection = vi.fn(() => true);
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        authenticateConnection,
+        isAuthorizedRequest: vi.fn(() => false),
+        transport: createTestTransport({
+          isAuthenticated: vi.fn(() => false),
+        }),
+        wss,
+      }),
+    );
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/socket',
+    });
+
+    const categoryVersions = { coordinator: 3, 'task-ports': 5 };
+    client.emit(
+      'message',
+      JSON.stringify({
+        agentsVersion: 4,
+        categoryVersions,
+        clientId: 'client-from-auth',
+        lastSeq: 7,
+        serverInstanceId: 'instance-a',
+        token: 'good',
+        type: 'auth',
+      }),
+    );
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', 7, {
+      agentsVersion: 4,
+      categoryVersions,
+      serverInstanceId: 'instance-a',
+    });
   });
 
   it('serves terminal recovery requests over the browser websocket control plane', async () => {
@@ -759,7 +846,7 @@ describe('registerBrowserWebSocketServer', () => {
       }),
     );
 
-    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', -1);
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', -1, undefined);
     expect(recordBrowserControlSimulatedDropMock).not.toHaveBeenCalled();
   });
 
@@ -798,7 +885,12 @@ describe('registerBrowserWebSocketServer', () => {
         }),
       );
 
-      expect(authenticateConnection).toHaveBeenCalledWith(client, 'client-from-auth', -1);
+      expect(authenticateConnection).toHaveBeenCalledWith(
+        client,
+        'client-from-auth',
+        -1,
+        undefined,
+      );
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -824,7 +916,7 @@ describe('registerBrowserWebSocketServer', () => {
       url: 'http://%',
     });
 
-    expect(authenticateConnection).toHaveBeenCalledWith(client, undefined, undefined);
+    expect(authenticateConnection).toHaveBeenCalledWith(client, undefined, undefined, undefined);
   });
 
   it('dedupes cached agent command results across reconnect with the same client id', async () => {

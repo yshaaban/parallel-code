@@ -52,6 +52,11 @@ import {
 export const COORDINATOR_AUTOMATION_CLIENT_ID_PREFIX = 'coordinator:';
 const COORDINATOR_AUTOMATION_OWNER_ID = 'coordinator-prompt-delivery';
 export const PROMPT_DELIVERY_RETRY_DELAY_MS = 1_000;
+// A prompt stuck in 'delivering' with no live delivery owner is a wedge (the
+// status is not deliverable, so no retry sweep would ever pick it up again).
+// The deadline comfortably exceeds the longest legitimate materialized
+// dispatch write sequence.
+export const STALE_DELIVERING_REQUEUE_MS = 60_000;
 
 export interface QueueCoordinatorPromptOptions {
   dedupeKey?: string;
@@ -311,6 +316,32 @@ export function coordinatorRunAdmitsPromptDelivery(
   return coordinatorRunAdmitsNewWork(run.status);
 }
 
+function isStaleDeliveringPrompt(prompt: CoordinatorPromptRequestSnapshot, now: number): boolean {
+  if (prompt.status !== 'delivering') {
+    return false;
+  }
+  if (activePromptDeliveryKeys.has(getPromptDeliveryKey(prompt))) {
+    return false;
+  }
+
+  const newestJournalEntry = prompt.deliveryJournal[prompt.deliveryJournal.length - 1];
+  const deliveringSince = newestJournalEntry?.writePreparedAt ?? prompt.createdAt;
+  return now - deliveringSince >= STALE_DELIVERING_REQUEUE_MS;
+}
+
+function requeueStaleDeliveringPrompts(run: CoordinatorRunSnapshot, now: number): void {
+  for (const prompt of run.promptQueue) {
+    if (!isStaleDeliveringPrompt(prompt, now)) {
+      continue;
+    }
+
+    updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
+      status: 'queued',
+      waitingReason: 'stale-delivering-requeued',
+    });
+  }
+}
+
 async function processCoordinatorPromptQueue(force = false): Promise<void> {
   const context = promptDeliveryContext;
   if (!context) {
@@ -323,7 +354,8 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
     if (!coordinatorRunAdmitsPromptDelivery(run)) {
       continue;
     }
-    for (const prompt of run.promptQueue) {
+    requeueStaleDeliveringPrompts(run, now);
+    for (const prompt of getCoordinatorRun(run.id)?.promptQueue ?? run.promptQueue) {
       if (!isDeliverablePromptStatus(prompt.status)) {
         continue;
       }
@@ -657,11 +689,19 @@ async function deliverCoordinatorPrompt(
     });
     return updatedPrompt;
   } catch (error) {
-    return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
-      failedAt: Date.now(),
-      status: 'failed',
-      waitingReason: error instanceof Error ? error.message : String(error),
-    });
+    try {
+      return updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
+        failedAt: Date.now(),
+        status: 'failed',
+        waitingReason: error instanceof Error ? error.message : String(error),
+      });
+    } catch (stateUpdateError) {
+      // A secondary throw here used to wedge the prompt in 'delivering' forever.
+      // Listener isolation in emitCoordinatorEvent makes this unlikely; the
+      // stale-'delivering' sweep is the backstop that requeues it.
+      console.error('Failed to record coordinator prompt delivery failure:', stateUpdateError);
+      return getLatestPromptSnapshot(prompt) ?? prompt;
+    }
   } finally {
     activePromptDeliveryKeys.delete(key);
     if (acquiredLeaseGeneration !== null) {

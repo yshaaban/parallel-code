@@ -23,6 +23,7 @@ import {
 } from '../store/task-command-controllers';
 import {
   assertTaskCommandLeaseRuntimeStateStoreClean,
+  clearAllSuspendedTaskCommandLeaseMarks,
   clearAllTaskCommandLeaseRenewals,
   clearTaskCommandLeaseRenewal,
   hasLocalTaskCommandLeases,
@@ -30,15 +31,56 @@ import {
   invalidateAllTaskCommandLeaseSessions,
   invalidateTaskCommandLeaseSessions,
   resetTaskCommandLeaseRuntimeStateStore,
+  suspendAllTaskCommandLeaseRenewals,
 } from './task-command-lease-runtime-state';
+
+// If the transport stays unavailable past this deadline, the suspended leases
+// fall back to today's full invalidation (the server-side reconnect grace has
+// the same horizon).
+export const SUSPENDED_TASK_COMMAND_LEASE_DEADLINE_MS = 30_000;
 
 const taskCommandLeaseRuntimeSubscriptions = {
   controllerRefreshTimeouts: new Set<ReturnType<typeof globalThis.setTimeout>>(),
   removeTaskCommandControllerSubscription: null as (() => void) | null,
   removeTaskCommandLeaseTransportSubscription: null as (() => void) | null,
+  suspendedLeaseDeadlineTimer: null as ReturnType<typeof globalThis.setTimeout> | null,
+  reclaimSuspendedLeases: null as (() => void) | null,
   taskCommandLeaseTransportGeneration: 0,
   taskCommandLeaseTransportUnavailable: false,
 };
+
+/**
+ * Injection seam for the reconnect re-claim workflow: the runtime facade owns
+ * acquisition, this module owns transport subscriptions, and the registration
+ * avoids an import cycle between them.
+ */
+export function registerSuspendedTaskCommandLeaseReclaim(handler: (() => void) | null): void {
+  taskCommandLeaseRuntimeSubscriptions.reclaimSuspendedLeases = handler;
+}
+
+function clearSuspendedLeaseDeadline(): void {
+  if (taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer !== null) {
+    globalThis.clearTimeout(taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer);
+    taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer = null;
+  }
+}
+
+function armSuspendedLeaseDeadline(): void {
+  if (taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer !== null) {
+    return;
+  }
+
+  taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer = globalThis.setTimeout(() => {
+    taskCommandLeaseRuntimeSubscriptions.suspendedLeaseDeadlineTimer = null;
+    if (!taskCommandLeaseRuntimeSubscriptions.taskCommandLeaseTransportUnavailable) {
+      return;
+    }
+
+    clearAllSuspendedTaskCommandLeaseMarks();
+    clearAllTaskCommandLeaseRenewals();
+    invalidateAllTaskCommandLeaseSessions();
+  }, SUSPENDED_TASK_COMMAND_LEASE_DEADLINE_MS);
+}
 
 function clearPendingTaskCommandControllerRefreshes(): void {
   for (const timeout of taskCommandLeaseRuntimeSubscriptions.controllerRefreshTimeouts) {
@@ -137,8 +179,12 @@ function handleTaskCommandLeaseTransportUnavailable(): void {
   taskCommandLeaseRuntimeSubscriptions.taskCommandLeaseTransportGeneration += 1;
   resolveAllPendingTaskCommandTakeovers('transport-unavailable');
   clearIncomingTaskTakeoverRequestsAndCleanup();
-  clearAllTaskCommandLeaseRenewals();
-  invalidateAllTaskCommandLeaseSessions();
+  // Suspend-and-reclaim instead of immediate invalidation: a short blip keeps
+  // lease records (and queued terminal input) alive, the reconnect path
+  // re-acquires with a NEW generation, and the deadline below performs the
+  // old full invalidation if the transport never comes back.
+  suspendAllTaskCommandLeaseRenewals();
+  armSuspendedLeaseDeadline();
 }
 
 function isTaskCommandLeaseTransportUnavailableState(
@@ -193,6 +239,8 @@ function ensureTaskCommandLeaseTransportSubscription(): void {
 
       if (event.state === 'connected') {
         taskCommandLeaseRuntimeSubscriptions.taskCommandLeaseTransportUnavailable = false;
+        clearSuspendedLeaseDeadline();
+        taskCommandLeaseRuntimeSubscriptions.reclaimSuspendedLeases?.();
       }
     });
 }
@@ -211,6 +259,7 @@ export function expireIncomingTaskCommandTakeoverRequest(requestId: string): voi
 
 export function resetTaskCommandLeaseRuntimeSubscriptionsForTests(): void {
   clearTaskCommandLeaseSubscriptions();
+  clearSuspendedLeaseDeadline();
   resetTaskCommandLeaseRuntimeStateStore();
   resetTaskCommandTakeoverStateForTests();
   taskCommandLeaseRuntimeSubscriptions.taskCommandLeaseTransportUnavailable = false;

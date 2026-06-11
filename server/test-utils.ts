@@ -821,12 +821,16 @@ async function acquireTaskControlForTest(
 export async function acquireTaskControlViaHttp(
   taskId: string,
   controllerId = TEST_CLIENT_ID,
+  options: { takeover?: boolean } = {},
 ): Promise<void> {
-  await acquireTaskControlForTest({
-    controllerId,
-    ownerId: getTaskControlOwnerId(controllerId),
-    taskId,
-  });
+  await acquireTaskControlForTest(
+    {
+      controllerId,
+      ownerId: getTaskControlOwnerId(controllerId),
+      taskId,
+    },
+    options.takeover === true,
+  );
 }
 
 export async function acquireAgentTaskControlViaHttp(agentId: string): Promise<void> {

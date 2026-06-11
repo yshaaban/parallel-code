@@ -99,6 +99,49 @@ describe('server-state bootstrap domain helpers', () => {
     ]);
   });
 
+  it('normalizes agent-availability snapshots and filters malformed entries', () => {
+    const validEntry = {
+      agentId: 'codex',
+      available: false,
+      availabilityReason: "Command 'codex' was not found on PATH.",
+      availabilitySource: 'unavailable',
+      probedAt: 1_000,
+      status: 'known',
+    };
+    const snapshot = {
+      category: 'agent-availability',
+      mode: 'replace',
+      payload: [validEntry],
+      version: 2,
+    };
+
+    expect(isServerStateBootstrapSnapshot(snapshot)).toBe(true);
+    expect(
+      filterServerStateBootstrapSnapshots([
+        snapshot,
+        {
+          ...snapshot,
+          payload: [{ ...validEntry, status: 'unknown-status' }],
+        },
+        {
+          ...snapshot,
+          payload: [validEntry, { ...validEntry, availabilitySource: 'somewhere-else' }],
+          version: 3,
+        },
+      ]),
+    ).toEqual([snapshot, { ...snapshot, payload: [validEntry], version: 3 }]);
+    // Live availability events are versioned envelopes so the renderer can
+    // order them against bootstrap snapshots; bare arrays are rejected.
+    expect(
+      isServerStateEventPayload('agent-availability', { snapshots: [validEntry], version: 4 }),
+    ).toBe(true);
+    expect(isServerStateEventPayload('agent-availability', { snapshots: [validEntry] })).toBe(
+      false,
+    );
+    expect(isServerStateEventPayload('agent-availability', [validEntry])).toBe(false);
+    expect(isServerStateEventPayload('agent-availability', validEntry)).toBe(false);
+  });
+
   it('validates live event payloads through their owning domain guards', () => {
     const coordinatorRun = createCoordinatorRunSnapshot();
 

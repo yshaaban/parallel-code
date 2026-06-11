@@ -317,6 +317,13 @@ export interface PendingAction {
   taskId: string;
 }
 
+// Transient app toast. `info` notifications auto-dismiss; `error`
+// notifications persist until explicitly dismissed so failures are not lost.
+export interface AppNotification {
+  kind: 'error' | 'info';
+  message: string;
+}
+
 export type RemoteAccess = RemoteAccessStatus;
 
 // --- Permission approval types ---
@@ -430,7 +437,7 @@ export interface AppStore {
   markdownViewer: MarkdownViewerState | null;
   hasSeenDesktopIntro: boolean;
   pendingAction: PendingAction | null;
-  notification: string | null;
+  notification: AppNotification | null;
   completedTaskDate: string;
   completedTaskCount: number;
   mergedLinesAdded: number;

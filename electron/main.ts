@@ -8,15 +8,17 @@ import {
 } from '../src/domain/server-state.js';
 import { registerAllHandlers } from './ipc/register.js';
 import { emitRendererEvent } from './ipc/renderer-events.js';
-import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.js';
+import { releaseBackendBackgroundWork } from './ipc/backend-work-queue.js';
+import {
+  loadPersistedDerivedState,
+  startDerivedStatePersistence,
+} from './ipc/derived-state-persistence.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
-import { restoreSavedTaskConvergence } from './ipc/task-convergence-state.js';
-import { restoreSavedTaskReview } from './ipc/task-review-state.js';
-import { restoreSavedTaskReviewSignals } from './ipc/task-review-signals.js';
 import { restoreSavedTaskPorts } from './ipc/task-ports.js';
+import { restoreBackendDerivedState } from './ipc/saved-state-restore.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
-import { loadAppStateForEnv } from './ipc/storage.js';
+import { loadAppStateDocumentForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
 import { installStdioEpipeGuard } from './stdio.js';
@@ -114,20 +116,22 @@ function createWindow(): void {
 
   // Restore git watchers for all existing tasks so inactive tasks have
   // immediate fs.watch coverage (instead of relying solely on polling).
+  // Derived snapshots hydrate from derived-state.json; recomputation stays
+  // demand-driven through the backend work queue.
   const userDataPath = app.getPath('userData');
-  const savedJson = loadAppStateForEnv({ userDataPath, isPackaged: app.isPackaged });
-  if (savedJson) {
-    restoreSavedTaskGitStatusMonitoring(
-      {
+  const storageEnv = { userDataPath, isPackaged: app.isPackaged } as const;
+  const savedState = loadAppStateDocumentForEnv(storageEnv);
+  if (savedState) {
+    restoreBackendDerivedState({
+      context: {
         emitGitStatusChanged: sendGitStatusPayload,
       },
-      savedJson,
-    );
-    restoreSavedTaskConvergence(savedJson);
-    restoreSavedTaskReview(savedJson);
-    restoreSavedTaskReviewSignals(savedJson);
-    restoreSavedTaskPorts(savedJson);
+      derivedState: loadPersistedDerivedState(storageEnv),
+      document: savedState,
+    });
+    restoreSavedTaskPorts(savedState.json);
   }
+  startDerivedStatePersistence(storageEnv);
 
   // Open links in external browser instead of inside Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -162,6 +166,7 @@ function createWindow(): void {
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindowLoaded = true;
     flushPendingGitStatusPayloads();
+    releaseBackendBackgroundWork();
     mainWindow?.webContents.insertCSS(`
       [data-tauri-drag-region] { -webkit-app-region: drag; }
       [data-tauri-drag-region] button,

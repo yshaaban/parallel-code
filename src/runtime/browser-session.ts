@@ -20,6 +20,7 @@ import {
   onBrowserHttpStateChange,
   onBrowserTransportEvent,
 } from '../lib/ipc';
+import { reEnsureDeferredAgentSessionsAfterReconnectRestore } from '../app/agent-session-ensure';
 import {
   beginBrowserReconnectRestore,
   cancelBrowserReconnectRestore,
@@ -28,7 +29,6 @@ import {
 } from '../app/browser-startup';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
-import { isWarmReconnectWindow } from '../lib/weak-connectivity-policy';
 import {
   recordBrowserReconnectDisconnect,
   recordBrowserReconnectDisconnectedDuration,
@@ -409,10 +409,14 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.setConnectionBanner(deriveConnectionBanner(lifecycleState));
   }
 
+  // Only a mid-stream sequence gap forces a full restore. replay-truncated is
+  // no longer fatal: stale categories arrive through the version-gated
+  // reconnect handshake, and the status-check mismatch path below stays the
+  // recovery backstop.
   function hasReconnectReplayDiscontinuity(
     continuity: ReturnType<typeof getBrowserReconnectContinuity>,
   ): boolean {
-    return continuity.hasReplayTruncatedSinceDisconnect || continuity.hasSequenceGapSinceDisconnect;
+    return continuity.hasSequenceGapSinceDisconnect;
   }
 
   function invalidateRestoreGeneration(
@@ -467,11 +471,11 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       }
 
       recordBrowserReconnectDisconnectedDuration(continuity.disconnectedDurationMs);
-      if (
-        isWarmReconnectWindow(continuity.disconnectedDurationMs) &&
-        continuity.hasSequencedMessageSinceDisconnect &&
-        !reconnectFullRestoreRequired
-      ) {
+      // Content-based skip: the cheap status check compares revisions and
+      // generations whenever sequenced traffic confirmed the reconnect, with
+      // no wall-clock gate — a long laptop sleep with no server-side changes
+      // resolves without a full restore.
+      if (continuity.hasSequencedMessageSinceDisconnect && !reconnectFullRestoreRequired) {
         try {
           const reconnectStatus = await invoke(IPC.GetBrowserReconnectStatus);
           if (generation !== restoreGeneration) {
@@ -536,7 +540,18 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           recordBrowserReconnectFullRestoreDeferred(Date.now() - restoreStartedAt);
           beginBrowserReconnectRestore();
           options.onTaskNotificationRestoreStarted?.();
-          const reconnectSnapshot = await invoke(IPC.GetBrowserReconnectSnapshot);
+          // The server omits the saved-state JSON payloads when the loaded
+          // workspace revision is already current (revision-keyed reconnect).
+          // Revision 0 means this tab loaded unversioned legacy state (no
+          // workspace-state file), which mutates without revision bumps, so it
+          // is never claimed as a known revision.
+          const loadedWorkspaceRevision = options.getLoadedWorkspaceRevision();
+          const reconnectSnapshot = await invoke(
+            IPC.GetBrowserReconnectSnapshot,
+            loadedWorkspaceRevision > 0
+              ? { knownWorkspaceRevision: loadedWorkspaceRevision }
+              : undefined,
+          );
           if (generation !== restoreGeneration) {
             return;
           }
@@ -560,6 +575,10 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           if (generation !== restoreGeneration) {
             return;
           }
+          // A full restore can follow backend session loss (server restart),
+          // so deferred cold-hidden terminals must re-issue their backend
+          // session ensure instead of trusting the pre-disconnect dedupe.
+          reEnsureDeferredAgentSessionsAfterReconnectRestore();
           restoreCompleted = true;
           restoreOutcome = 'full-restore';
           reconnectFullRestoreRequired = false;

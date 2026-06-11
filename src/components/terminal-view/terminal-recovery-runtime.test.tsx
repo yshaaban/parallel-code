@@ -9,6 +9,7 @@ import { resetTerminalPerformanceExperimentConfigForTests } from '../../lib/term
 import type { TerminalRecoveryBatchEntry } from '../../ipc/types';
 
 const {
+  fireAndForgetMock,
   invokeMock,
   requestAttachTerminalRecoveryMock,
   requestReconnectTerminalRecoveryMock,
@@ -16,6 +17,7 @@ const {
   requestTerminalRecoveryMock,
   switchWindowState,
 } = vi.hoisted(() => ({
+  fireAndForgetMock: vi.fn(),
   invokeMock: vi.fn(),
   requestAttachTerminalRecoveryMock: vi.fn(),
   requestReconnectTerminalRecoveryMock: vi.fn(),
@@ -43,6 +45,7 @@ const {
 }));
 
 vi.mock('../../lib/ipc', () => ({
+  fireAndForget: fireAndForgetMock,
   invoke: invokeMock,
 }));
 
@@ -251,17 +254,29 @@ function createRecoveryRuntimeFixture(
     },
     appendRenderedOutputHistoryMock,
     dropQueuedOutputForRecovery: vi.fn(),
-    getRecoveryRequestState: vi.fn(() => {
+    getRecoveryRequestState: vi.fn((maxTailBytes?: number) => {
+      function capTail(tail: Uint8Array | null): Uint8Array | null {
+        if (tail === null || maxTailBytes === undefined) {
+          return tail;
+        }
+
+        if (maxTailBytes <= 0) {
+          return null;
+        }
+
+        return tail.length > maxTailBytes ? tail.slice(tail.length - maxTailBytes) : tail;
+      }
+
       if (options.recoveryRequestState) {
         return {
           outputCursor: options.recoveryRequestState.outputCursor,
-          renderedTail: options.recoveryRequestState.renderedTail?.slice() ?? null,
+          renderedTail: capTail(options.recoveryRequestState.renderedTail?.slice() ?? null),
         };
       }
 
       return {
         outputCursor: options.renderedOutputCursor ?? 0,
-        renderedTail: (options.renderedOutputHistory ?? new Uint8Array(0)).slice(),
+        renderedTail: capTail((options.renderedOutputHistory ?? new Uint8Array(0)).slice()),
       };
     }),
     getRenderedOutputCursor: vi.fn(() => options.renderedOutputCursor ?? 0),
@@ -434,6 +449,7 @@ describe('createTerminalRecoveryRuntime', () => {
       callback(0);
       return 0;
     });
+    fireAndForgetMock.mockReset();
     invokeMock.mockReset();
     requestAttachTerminalRecoveryMock.mockReset();
     requestReconnectTerminalRecoveryMock.mockReset();
@@ -489,62 +505,43 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
-    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.PauseAgent, {
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: expect.any(String),
-    });
-    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.ResumeAgent, {
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: expect.any(String),
-    });
+    // The backend owns the restore pause lifetime for batched recoveries:
+    // batched restores carry zero per-terminal PauseAgent/ResumeAgent invokes.
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.PauseAgent, expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.ResumeAgent, expect.anything());
   });
 
-  it('renews the backend restore pause with the same restore lease id during slow restores', async () => {
-    vi.useFakeTimers();
-    const recoveryDeferred = createDeferredPromise<TerminalRecoveryBatchEntry>();
-    requestStartupTerminalRecoveryMock.mockImplementationOnce(() => recoveryDeferred.promise);
+  it('releases the server-held batch pause after applying the recovery entry', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue({
+      ...createSnapshotRecoveryEntry('agent-1', 32),
+      batchPauseId: 'recovery-pause-7',
+    });
+    const { markTerminalReadyMock, runtime } = createRecoveryRuntimeFixture();
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    // The release is fire-and-forget: the server auto-resume timer is the
+    // safety net when the message is lost in transit.
+    expect(fireAndForgetMock).toHaveBeenCalledTimes(1);
+    expect(fireAndForgetMock).toHaveBeenCalledWith(
+      IPC.ReleaseTerminalRecoveryPause,
+      { batchPauseId: 'recovery-pause-7' },
+      expect.any(Function),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.PauseAgent, expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.ResumeAgent, expect.anything());
+  });
+
+  it('does not send a pause release when the entry carries no batch pause id', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     const { runtime } = createRecoveryRuntimeFixture();
 
-    const restorePromise = runtime.restoreTerminalOutput('attach');
-    await flushRecoveryRuntimeMicrotasks();
+    await runtime.restoreTerminalOutput('attach');
 
-    const firstPauseCall = invokeMock.mock.calls.find((call) => call[0] === IPC.PauseAgent);
-    if (!firstPauseCall) {
-      throw new Error('Expected initial restore pause');
-    }
-    const firstPauseArgs = firstPauseCall[1] as { restoreLeaseId?: string } | undefined;
-    const firstRestoreLeaseId = firstPauseArgs?.restoreLeaseId;
-    if (!firstRestoreLeaseId) {
-      throw new Error('Expected restore lease id');
-    }
-
-    await vi.advanceTimersByTimeAsync(10_000);
-    await flushRecoveryRuntimeMicrotasks();
-
-    const pauseCalls = invokeMock.mock.calls.filter((call) => call[0] === IPC.PauseAgent);
-    expect(pauseCalls).toHaveLength(2);
-    expect(pauseCalls[1]?.[1]).toEqual({
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: firstRestoreLeaseId,
-    });
-
-    recoveryDeferred.resolve(createRecoveryEntry('agent-1'));
-    await vi.advanceTimersByTimeAsync(1_000);
-    await restorePromise;
-
-    const resumeCall = invokeMock.mock.calls.find((call) => call[0] === IPC.ResumeAgent);
-    expect(resumeCall?.[1]).toEqual({
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: firstRestoreLeaseId,
-    });
+    expect(fireAndForgetMock).not.toHaveBeenCalled();
   });
 
   it('keeps visible shell attach restores on the ordinary attach helper without local tail replay', async () => {
@@ -572,7 +569,7 @@ describe('createTerminalRecoveryRuntime', () => {
       ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 0,
       renderedTail: null,
-      snapshotByteLimit: null,
+      snapshotByteLimit: 512 * 1024,
     });
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
@@ -589,7 +586,7 @@ describe('createTerminalRecoveryRuntime', () => {
         ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
-        snapshotByteLimit: null,
+        snapshotByteLimit: 512 * 1024,
       },
       { immediate: true },
     );
@@ -611,7 +608,7 @@ describe('createTerminalRecoveryRuntime', () => {
         ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
-        snapshotByteLimit: null,
+        snapshotByteLimit: 512 * 1024,
       },
       { immediate: true },
     );
@@ -631,7 +628,7 @@ describe('createTerminalRecoveryRuntime', () => {
         ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 7,
         renderedTail: null,
-        snapshotByteLimit: null,
+        snapshotByteLimit: 512 * 1024,
       },
       { immediate: true },
     );
@@ -662,19 +659,21 @@ describe('createTerminalRecoveryRuntime', () => {
       'selected',
       expect.objectContaining(DEFAULT_FALLBACK_GEOMETRY),
     );
+    // Non-attach recoveries are cursor-first: zero rendered-tail bytes ride
+    // the request even when local rendered history exists.
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 33,
-      renderedTail: renderedOutputHistory.toString('base64'),
-      snapshotByteLimit: null,
+      renderedTail: null,
+      snapshotByteLimit: 512 * 1024,
     });
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
       'agent-1',
       {
         ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 33,
-        renderedTail: renderedOutputHistory.toString('base64'),
-        snapshotByteLimit: null,
+        renderedTail: null,
+        snapshotByteLimit: 512 * 1024,
       },
       { immediate: true },
     );
@@ -735,14 +734,14 @@ describe('createTerminalRecoveryRuntime', () => {
     );
   });
 
-  it('requests backpressure recovery against the local buffered tail, not only painted bytes', async () => {
+  it('requests backpressure recovery against the local buffered cursor, not only painted bytes', async () => {
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       renderedOutputCursor: 12,
       renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
     });
     outputPipelineMock.getRecoveryRequestState.mockReturnValue({
       outputCursor: 20,
-      renderedTail: Buffer.from('painted-tailqueued', 'utf8'),
+      renderedTail: null,
     });
 
     await runtime.restoreTerminalOutput('backpressure');
@@ -750,8 +749,8 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       ...DEFAULT_FALLBACK_GEOMETRY,
       outputCursor: 20,
-      renderedTail: Buffer.from('painted-tailqueued', 'utf8').toString('base64'),
-      snapshotByteLimit: null,
+      renderedTail: null,
+      snapshotByteLimit: 512 * 1024,
     });
     expect(outputPipelineMock.dropQueuedOutputForRecovery).not.toHaveBeenCalled();
   });
@@ -977,7 +976,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('uses a bounded fallback when reveal double-RAF callbacks do not fire', async () => {
-    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(
       () => 10 as unknown as ReturnType<typeof window.requestAnimationFrame>,
     );
@@ -1578,7 +1579,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestAnimationFrameMock).toHaveBeenCalled();
   });
 
-  it('replays reconnect restores with the live rendered tail and priority-sized delta chunks', async () => {
+  it('replays reconnect restores with the cursor-only request and priority-sized delta chunks', async () => {
     const renderedOutputHistory = Buffer.from('restore-tail', 'utf8');
     requestReconnectTerminalRecoveryMock.mockResolvedValue(
       createDeltaRecoveryEntry('agent-1', LARGE_FOCUSED_RECONNECT_RECOVERY_BYTES),
@@ -1609,8 +1610,8 @@ describe('createTerminalRecoveryRuntime', () => {
       {
         ...DEFAULT_FALLBACK_GEOMETRY,
         outputCursor: 12,
-        renderedTail: renderedOutputHistory.toString('base64'),
-        snapshotByteLimit: null,
+        renderedTail: null,
+        snapshotByteLimit: 512 * 1024,
       },
       { immediate: true },
     );
@@ -2365,41 +2366,21 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(setStatusMock).toHaveBeenCalledWith('restoring');
   });
 
-  it('surfaces an error and unblocks output when backend resume fails after recovery', async () => {
+  it('settles batched restores without any per-terminal pause or resume invokes', async () => {
     requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', 32),
     );
-    invokeMock.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('resume failed'));
-    const {
-      markTerminalReadyMock,
-      onRestoreBlockedChangeMock,
-      onRestoreSettledMock,
-      runtime,
-      setStatusMock,
-    } = createRecoveryRuntimeFixture({
+    const { markTerminalReadyMock, onRestoreSettledMock, runtime } = createRecoveryRuntimeFixture({
       currentStatus: 'ready',
     });
 
     await runtime.restoreTerminalOutput('attach');
 
     expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.PauseAgent, {
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: expect.any(String),
-    });
-    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.ResumeAgent, {
-      agentId: 'agent-1',
-      channelId: 'channel-1',
-      reason: 'restore',
-      restoreLeaseId: expect.any(String),
-    });
-    expect(markTerminalReadyMock).not.toHaveBeenCalled();
-    expect(onRestoreSettledMock).not.toHaveBeenCalled();
-    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false]]);
-    expect(setStatusMock).toHaveBeenCalledWith('restoring');
-    expect(setStatusMock).toHaveBeenCalledWith('error');
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.PauseAgent, expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.ResumeAgent, expect.anything());
+    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
     expect(runtime.isRestoreBlocked()).toBe(false);
     expect(runtime.isOutputFlushBlocked()).toBe(false);
   });
@@ -2483,39 +2464,214 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(queuedRafCallbacks).toHaveLength(0);
   });
 
-  it('retries a restore after resume failure and clears the block once resume succeeds', async () => {
-    requestStartupTerminalRecoveryMock.mockResolvedValue(
-      createSnapshotRecoveryEntry('agent-1', 32),
-    );
-    invokeMock
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('resume failed'))
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-    const { markTerminalReadyMock, onRestoreBlockedChangeMock, onRestoreSettledMock, runtime } =
-      createRecoveryRuntimeFixture({
-        currentStatus: 'ready',
+  it('releases each batch pause exactly once across repeated restores', async () => {
+    requestStartupTerminalRecoveryMock
+      .mockResolvedValueOnce({
+        ...createSnapshotRecoveryEntry('agent-1', 32),
+        batchPauseId: 'recovery-pause-1',
+      })
+      .mockResolvedValueOnce({
+        ...createSnapshotRecoveryEntry('agent-1', 32),
+        batchPauseId: 'recovery-pause-2',
       });
+    const { runtime } = createRecoveryRuntimeFixture({
+      currentStatus: 'ready',
+    });
 
     await runtime.restoreTerminalOutput('attach');
-    expect(runtime.isRestoreBlocked()).toBe(false);
-
     await runtime.restoreTerminalOutput('attach');
 
-    const pauseRestoreLeaseIds = invokeMock.mock.calls
-      .filter((call) => call[0] === IPC.PauseAgent)
-      .map((call) => (call[1] as { restoreLeaseId?: string }).restoreLeaseId);
-    const resumeRestoreLeaseIds = invokeMock.mock.calls
-      .filter((call) => call[0] === IPC.ResumeAgent)
-      .map((call) => (call[1] as { restoreLeaseId?: string }).restoreLeaseId);
-    expect(pauseRestoreLeaseIds[0]).toEqual(expect.any(String));
-    expect(pauseRestoreLeaseIds).toEqual([pauseRestoreLeaseIds[0], pauseRestoreLeaseIds[0]]);
-    expect(resumeRestoreLeaseIds).toEqual([pauseRestoreLeaseIds[0], pauseRestoreLeaseIds[0]]);
-    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
-    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
-    expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
-    expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false], [true], [false]]);
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-1' },
+      { batchPauseId: 'recovery-pause-2' },
+    ]);
     expect(runtime.isRestoreBlocked()).toBe(false);
+  });
+
+  it('skips the reveal settle wait for noop and delta recoveries', async () => {
+    requestTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    const setTimeoutMock = vi.mocked(window.setTimeout);
+    setTimeoutMock.mockClear();
+    const { runtime } = createRecoveryRuntimeFixture({
+      currentStatus: 'ready',
+      outputPriority: 'visible-background',
+    });
+
+    await runtime.restoreTerminalOutput('backpressure');
+
+    // Non-destructive continuity recoveries (noop/delta) never reset the
+    // terminal, so the fixed 32ms reveal settle is skipped entirely.
+    expect(setTimeoutMock.mock.calls.some(([, delay]) => Number(delay) === 32)).toBe(false);
+  });
+
+  it('answers tail-needed with exactly one bounded phase-two tail request', async () => {
+    const renderedOutputHistory = Buffer.alloc(128 * 1024, 120);
+    requestReconnectTerminalRecoveryMock
+      .mockResolvedValueOnce({
+        agentId: 'agent-1',
+        batchPauseId: 'recovery-pause-9',
+        cols: 80,
+        outputCursor: 4096,
+        recovery: { kind: 'tail-needed' },
+        requestId: 'req-tail-needed',
+        rows: 24,
+      })
+      .mockResolvedValueOnce(createSnapshotRecoveryEntry('agent-1', 32));
+    const { runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      renderedOutputCursor: 12,
+      renderedOutputHistory,
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    const phaseOneState = requestReconnectTerminalRecoveryMock.mock.calls[0]?.[1] as {
+      outputCursor: number | null;
+      renderedTail: string | null;
+    };
+    expect(phaseOneState.renderedTail).toBeNull();
+    expect(phaseOneState.outputCursor).toBe(12);
+    const phaseTwoState = requestReconnectTerminalRecoveryMock.mock.calls[1]?.[1] as {
+      outputCursor: number | null;
+      renderedTail: string | null;
+    };
+    // Phase two drops the cursor claim and uploads one bounded (<=64KB) tail.
+    expect(phaseTwoState.outputCursor).toBeNull();
+    expect(phaseTwoState.renderedTail).not.toBeNull();
+    expect(Buffer.from(phaseTwoState.renderedTail ?? '', 'base64').length).toBeLessThanOrEqual(
+      64 * 1024,
+    );
+    // The phase-one pause is carried into the final apply and released once.
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([{ batchPauseId: 'recovery-pause-9' }]);
+  });
+
+  it('releases every batch pause held across geometry-mismatch re-fetches', async () => {
+    let recoveryCols = 80;
+    let fetchCount = 0;
+    requestReconnectTerminalRecoveryMock.mockImplementation(async () => {
+      fetchCount += 1;
+      return {
+        ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
+        // The first fetch mints a pause; the aligned re-fetch holds its own
+        // request-scoped pause too (restore pause leases stack server-side).
+        batchPauseId: `recovery-pause-geometry-${fetchCount}`,
+        cols: recoveryCols,
+      };
+    });
+    const { inputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      termCols: 120,
+    });
+    inputPipelineMock.flushPendingResizeForRecoveryAlignment.mockImplementation(async () => {
+      recoveryCols = 120;
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    // Both held pauses are released after apply; the mismatched first fetch
+    // must not leave its pause to the server auto-resume timer.
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-geometry-1' },
+      { batchPauseId: 'recovery-pause-geometry-2' },
+    ]);
+  });
+
+  it('releases the mismatched-fetch batch pause when the aligned re-fetch holds none', async () => {
+    let recoveryCols = 80;
+    let fetchCount = 0;
+    requestReconnectTerminalRecoveryMock.mockImplementation(async () => {
+      fetchCount += 1;
+      return {
+        ...createTerminalStateRecoveryEntry('agent-1', 'input>'),
+        ...(fetchCount === 1 ? { batchPauseId: 'recovery-pause-first-fetch' } : {}),
+        cols: recoveryCols,
+      };
+    });
+    const { inputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      termCols: 120,
+    });
+    inputPipelineMock.flushPendingResizeForRecoveryAlignment.mockImplementation(async () => {
+      recoveryCols = 120;
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-first-fetch' },
+    ]);
+  });
+
+  it('releases the initial attach batch pause when geometry adoption fails', async () => {
+    const { runtime, term } = createRecoveryRuntimeFixture({
+      termCols: 80,
+      termRows: 24,
+    });
+    // Simulate a disposed/degenerate terminal whose resize does not take
+    // effect, so adoptAttachRecoveryGeometry fails and the restore exits
+    // before applying the entry.
+    term.resize = vi.fn();
+
+    await runtime.applyInitialAttachRecoveryEntry({
+      ...createSnapshotRecoveryEntry('agent-1', 32),
+      batchPauseId: 'recovery-pause-attach-adopt',
+      cols: 100,
+      rows: 30,
+    });
+
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-attach-adopt' },
+    ]);
+  });
+
+  it('keeps queued post-cursor output when applying the initial attach entry', async () => {
+    const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      hasQueuedOutput: true,
+      outputPriority: 'focused',
+    });
+
+    await runtime.applyInitialAttachRecoveryEntry(createSnapshotRecoveryEntry('agent-1', 32));
+
+    // The attach RPC captures the recovery cursor before any Data frame is
+    // sent on the new channel, so queued output here is strictly post-cursor
+    // continuity (possible only when the server-held pause expired during
+    // long pre-apply waits). It must be flushed after apply, never dropped.
+    expect(outputPipelineMock.dropQueuedOutputForRecovery).not.toHaveBeenCalled();
+    expect(outputPipelineMock.scheduleOutputFlush).toHaveBeenCalled();
+  });
+
+  it('claims the rendered cursor and a snapshot byte limit on the initial attach descriptor', () => {
+    // Cursor 0 on a fresh mount is a true claim ("rendered nothing") that
+    // keeps reload reattach on the non-destructive delta path; the byte
+    // budget is enforced backend-side, where a fresh-mount delta exceeding
+    // snapshotByteLimit resolves to the capped snapshot instead.
+    const { runtime: freshRuntime } = createRecoveryRuntimeFixture();
+    const freshDescriptor = freshRuntime.getInitialAttachRecoveryDescriptor();
+    expect(freshDescriptor.outputCursor).toBe(0);
+    expect(freshDescriptor.snapshotByteLimit).toBeGreaterThan(0);
+
+    const { runtime: continuityRuntime } = createRecoveryRuntimeFixture({
+      renderedOutputCursor: 12,
+    });
+    expect(continuityRuntime.getInitialAttachRecoveryDescriptor().outputCursor).toBe(12);
   });
 
   it('keeps the frozen handoff visible for hibernate snapshot restores', async () => {

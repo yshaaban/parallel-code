@@ -27,6 +27,10 @@ export interface GitStatusSyncTarget {
 
 const recentTaskGitStatusPollAt = new Map<string, number>();
 const gitStatusVersionTracker = createServerStateVersionTracker();
+
+export function getGitStatusHighestAppliedVersion(): number {
+  return gitStatusVersionTracker.highestVersion;
+}
 const gitStatusRefreshGenerationByTaskId = new Map<string, number>();
 const GENERIC_GIT_STATUS_ERROR = 'Unable to verify current git status.';
 
@@ -97,10 +101,16 @@ export function clearRecentTaskGitStatusPollAge(worktreePath: string): void {
   recentTaskGitStatusPollAt.delete(normalizeWorktreePath(worktreePath));
 }
 
+// Per-boot version tracking is reset when the server instance changes; see
+// resetServerStateVersionTrackingForInstanceChange.
+export function resetGitStatusVersionTracking(): void {
+  resetServerStateVersionTracker(gitStatusVersionTracker);
+}
+
 export function resetTaskGitStatusRuntimeState(): void {
   recentTaskGitStatusPollAt.clear();
   gitStatusRefreshGenerationByTaskId.clear();
-  resetServerStateVersionTracker(gitStatusVersionTracker);
+  resetGitStatusVersionTracking();
 }
 
 export function getTaskGitStatus(taskId: string): WorktreeStatus | undefined {

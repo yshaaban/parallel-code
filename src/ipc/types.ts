@@ -40,6 +40,7 @@ export interface AgentDef {
   available?: boolean;
   availabilityReason?: string;
   availabilitySource?: 'path' | 'bundled' | 'override' | 'unavailable';
+  availabilityStatus?: 'probing' | 'known';
 }
 
 export interface CreateTaskResult {
@@ -154,12 +155,22 @@ export type TerminalRecoveryPayload =
       data: string | null;
     }
   | {
+      // Cursor miss where a capped snapshot would destroy renderer history the
+      // backend cannot prove. The client may answer with one bounded rendered
+      // tail (phase two) so the backend can return a delta instead.
+      kind: 'tail-needed';
+    }
+  | {
       kind: 'terminal-state';
       data: string;
     };
 
 export interface TerminalRecoveryBatchEntry {
   agentId: string;
+  // Present when the backend kept the restore pause alive after responding;
+  // the client releases it (ReleaseTerminalRecoveryPause) after applying the
+  // entry, with a server-side auto-resume timer as the safety net.
+  batchPauseId?: string;
   cols: number;
   outputCursor: number;
   recovery: TerminalRecoveryPayload;

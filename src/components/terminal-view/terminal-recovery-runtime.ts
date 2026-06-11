@@ -4,7 +4,7 @@ import { IPC } from '../../../electron/ipc/channels';
 import { assertNever } from '../../lib/assert-never';
 import { decodeBase64ToUint8Array } from '../../lib/base64';
 import type { BrowserControlConnectionState } from '../../lib/browser-control-client';
-import { invoke } from '../../lib/ipc';
+import { fireAndForget } from '../../lib/ipc';
 import {
   recordTerminalRecoveryApply,
   recordTerminalRecoveryGeometryAlignmentFallback,
@@ -32,7 +32,6 @@ import {
   requestStartupTerminalRecovery,
   requestTerminalRecovery,
 } from '../../lib/scrollbackRestore';
-import { createRandomId } from '../../lib/random-id';
 import {
   getTerminalExperimentStartupAttachChunkByteOverride,
   getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride,
@@ -50,7 +49,10 @@ import type { TerminalInputPipeline } from './terminal-input-pipeline';
 
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS = 500;
-const RESTORE_PAUSE_RENEW_INTERVAL_MS = 10_000;
+// Bounded phase-two tail for 'tail-needed' recoveries: enough rendered
+// history for backend overlap matching without the historical multi-MB
+// rendered-tail upload.
+const TAIL_NEEDED_REQUEST_TAIL_BYTES = 64 * 1024;
 // Larger replay chunks materially reduce startup replay/apply time without changing recovery truth.
 const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'active-visible': 256 * 1024,
@@ -161,8 +163,17 @@ function roundMilliseconds(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+export interface InitialAttachRecoveryDescriptor {
+  outputCursor: number | null;
+  role: TerminalStartupRecoveryRole | null;
+  snapshotByteLimit: number | null;
+  visibleTerminalCount: number;
+}
+
 export interface TerminalRecoveryRuntime {
+  applyInitialAttachRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void>;
   dispose(): void;
+  getInitialAttachRecoveryDescriptor(): InitialAttachRecoveryDescriptor;
   handleBrowserControlAuthenticated(): void;
   handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
   isOutputFlushBlocked(): boolean;
@@ -226,10 +237,8 @@ type TerminalRecoveryPhase =
   | 'applying-recovery'
   | 'ensure-fit-ready'
   | 'marking-ready'
-  | 'pausing-agent'
   | 'renderer-refresh'
   | 'requesting-recovery'
-  | 'resuming-agent'
   | 'waiting-output-idle'
   | 'waiting-post-drain'
   | 'waiting-post-reveal';
@@ -238,17 +247,9 @@ type TerminalRecoveryState =
   | { kind: 'idle' }
   | {
       generation: number;
-      kind: 'resume-failed';
-      reason: TerminalRecoveryReason;
-      restoreLeaseId: string;
-    }
-  | {
-      generation: number;
       kind: 'restoring';
-      pauseApplied: boolean;
       phase: TerminalRecoveryPhase;
       reason: TerminalRecoveryReason;
-      restoreLeaseId: string;
       selectedRecoveryStarted: boolean;
     };
 
@@ -480,10 +481,8 @@ export function createTerminalRecoveryRuntime(
       case 'applying-recovery':
       case 'ensure-fit-ready':
       case 'marking-ready':
-      case 'pausing-agent':
       case 'renderer-refresh':
       case 'requesting-recovery':
-      case 'resuming-agent':
       case 'waiting-post-reveal':
         return true;
     }
@@ -500,25 +499,6 @@ export function createTerminalRecoveryRuntime(
       ...recoveryState,
       phase,
     };
-  }
-
-  function setRecoveryPauseApplied(generation: number, pauseApplied: boolean): void {
-    if (recoveryState.kind !== 'restoring' || recoveryState.generation !== generation) {
-      return;
-    }
-
-    recoveryState = {
-      ...recoveryState,
-      pauseApplied,
-    };
-  }
-
-  function getRestoreLeaseIdForNextRestore(generation: number): string {
-    if (recoveryState.kind === 'resume-failed') {
-      return recoveryState.restoreLeaseId;
-    }
-
-    return `restore-${generation}-${createRandomId()}`;
   }
 
   function markSelectedRecoveryStarted(generation: number): void {
@@ -694,7 +674,14 @@ export function createTerminalRecoveryRuntime(
 
   async function waitForPostRecoveryRevealSettle(
     reason: TerminalRecoveryReason | null,
+    recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'] | null = null,
   ): Promise<number> {
+    if (recoveryKind === 'noop' || recoveryKind === 'delta') {
+      // Non-destructive continuity paths never reset the terminal, so there
+      // is no reveal transition to settle.
+      return 0;
+    }
+
     const revealSettleStartedAtMs = performance.now();
     const revealSettleDelayMs = getPostRecoveryRevealSettleDelayMs();
     if (revealSettleDelayMs > 0) {
@@ -1156,13 +1143,13 @@ export function createTerminalRecoveryRuntime(
   } {
     const isAttachRecovery =
       recoveryState.kind === 'restoring' && recoveryState.reason === 'attach';
+    const outputPriority = options.getOutputPriority();
     let requestTailBytes: number | undefined;
-    let snapshotByteLimit: number | null = null;
+    let snapshotByteLimit: number | null = getAttachRecoverySnapshotByteLimit(outputPriority);
+    let suppressTail = suppressRenderedTail;
 
     if (isAttachRecovery) {
-      const outputPriority = options.getOutputPriority();
       requestTailBytes = getAttachRecoveryRequestTailByteLimit(outputPriority);
-      snapshotByteLimit = getAttachRecoverySnapshotByteLimit(outputPriority);
 
       if (isDenseVisibleStartupAttach()) {
         requestTailBytes = Math.min(
@@ -1174,15 +1161,18 @@ export function createTerminalRecoveryRuntime(
           DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[outputPriority],
         );
       }
+    } else {
+      // Non-attach recoveries are cursor-first: they carry outputCursor only
+      // and a snapshot cap. On a cursor miss the backend answers with a
+      // capped snapshot or 'tail-needed', which triggers one bounded
+      // phase-two tail request instead of a multi-MB rendered-tail upload.
+      requestTailBytes = 0;
+      suppressTail = true;
     }
 
     const requestState = outputPipeline.getRecoveryRequestState(requestTailBytes);
     let renderedTail: string | null = null;
-    if (
-      !suppressRenderedTail &&
-      requestState.renderedTail &&
-      requestState.renderedTail.length > 0
-    ) {
+    if (!suppressTail && requestState.renderedTail && requestState.renderedTail.length > 0) {
       renderedTail = uint8ArrayToBase64(requestState.renderedTail);
     }
 
@@ -1190,6 +1180,25 @@ export function createTerminalRecoveryRuntime(
       outputCursor: requestState.outputCursor,
       renderedTail,
       snapshotByteLimit,
+    };
+  }
+
+  function getTailNeededRecoveryRequestState(): {
+    outputCursor: null;
+    renderedTail: string | null;
+    snapshotByteLimit: number | null;
+  } {
+    const requestState = outputPipeline.getRecoveryRequestState(TAIL_NEEDED_REQUEST_TAIL_BYTES);
+    return {
+      // No cursor claim on phase two: the cursor already missed, and a null
+      // cursor guarantees the backend resolves to delta-by-overlap or a
+      // capped snapshot instead of another 'tail-needed'.
+      outputCursor: null,
+      renderedTail:
+        requestState.renderedTail && requestState.renderedTail.length > 0
+          ? uint8ArrayToBase64(requestState.renderedTail)
+          : null,
+      snapshotByteLimit: getAttachRecoverySnapshotByteLimit(options.getOutputPriority()),
     };
   }
 
@@ -1238,7 +1247,22 @@ export function createTerminalRecoveryRuntime(
   function shouldDropQueuedOutputBeforeRecoveryApply(
     reason: TerminalRecoveryReason,
     entry: TerminalRecoveryBatchEntry,
+    isInitialAttachEntry: boolean,
   ): boolean {
+    if (isInitialAttachEntry) {
+      // The attach RPC captures the recovery cursor before any Data frame is
+      // sent on the newly bound channel, so any output queued here is
+      // strictly post-cursor live continuity (it can only exist when the
+      // server-held attach pause expired during long pre-apply waits, e.g.
+      // hidden/sibling startup defers). Dropping it would silently lose
+      // those bytes and desync cursor accounting; keep it and let the
+      // post-restore flush apply it after the entry.
+      return false;
+    }
+
+    // Fetched recoveries claim a cursor that already counts queued bytes, so
+    // everything queued before the fetch is covered by the returned entry and
+    // must be dropped to avoid double-applying it.
     return reason === 'attach' ? entry.recovery.kind !== 'noop' : isFullStateRecovery(entry);
   }
 
@@ -1271,7 +1295,11 @@ export function createTerminalRecoveryRuntime(
 
   async function requestRecoveryEntry(
     reason: TerminalRecoveryReason,
-    requestState: ReturnType<typeof getTerminalRecoveryRequestState> | null,
+    requestState: {
+      outputCursor: number | null;
+      renderedTail: string | null;
+      snapshotByteLimit: number | null;
+    } | null,
   ): Promise<TerminalRecoveryBatchEntry> {
     const fallbackOptions = getTerminalRecoveryFallbackOptions();
     if (
@@ -1333,8 +1361,13 @@ export function createTerminalRecoveryRuntime(
   async function requestGeometryAlignedRecoveryEntry(
     generation: number,
     reason: TerminalRecoveryReason,
-    requestState: ReturnType<typeof getTerminalRecoveryRequestState> | null,
+    requestState: {
+      outputCursor: number | null;
+      renderedTail: string | null;
+      snapshotByteLimit: number | null;
+    } | null,
     requestStateBytes: number,
+    onBatchPauseHeld: (batchPauseId: string) => void,
   ): Promise<TerminalRecoveryBatchEntry | null> {
     const startupRecoveryRole = getVisibleStartupRecoveryRole(
       reason,
@@ -1345,20 +1378,53 @@ export function createTerminalRecoveryRuntime(
     const alignmentDeadlineAtMs = performance.now() + MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS;
     let lastMismatchedRecoveryEntry: TerminalRecoveryBatchEntry | null = null;
     let stableGeometryMismatchCount = 0;
+    let tailNeededPhaseTwoUsed = false;
 
     while (performance.now() < alignmentDeadlineAtMs) {
       const requestedCols = term.cols;
       recordTerminalRecoveryRequest(reason, requestStateBytes);
       setRecoveryPhase(generation, 'requesting-recovery');
-      const recoveryEntry =
+      let recoveryEntry =
         startupRecoveryRole === null
           ? await requestRecoveryEntry(reason, requestState)
           : await requestStartupTerminalRecovery(agentId, startupRecoveryRole, {
               ...getTerminalRecoveryFallbackOptions(),
               visibleTerminalCount: getStartupVisibleTerminalCount(),
             });
+      // Claim every server-held batch pause as soon as the response arrives —
+      // before generation checks and before any geometry re-fetch — so the
+      // restore's release path frees each held pause on every exit, instead of
+      // leaving an intermediate fetch's pause to stall the PTY until the
+      // server auto-resume timer fires.
+      if (recoveryEntry.batchPauseId !== undefined) {
+        onBatchPauseHeld(recoveryEntry.batchPauseId);
+      }
       if (!isActiveRestoreGeneration(generation)) {
         return null;
+      }
+
+      if (recoveryEntry.recovery.kind === 'tail-needed' && !tailNeededPhaseTwoUsed) {
+        // Phase two: answer the cursor miss with one bounded rendered tail so
+        // the backend can prove a delta instead of a truncated snapshot. The
+        // batch pause from phase one stays held until the final apply.
+        tailNeededPhaseTwoUsed = true;
+        const phaseOneBatchPauseId = recoveryEntry.batchPauseId;
+        setRecoveryPhase(generation, 'requesting-recovery');
+        const phaseTwoEntry = await requestRecoveryEntry(
+          reason,
+          getTailNeededRecoveryRequestState(),
+        );
+        if (phaseTwoEntry.batchPauseId !== undefined) {
+          onBatchPauseHeld(phaseTwoEntry.batchPauseId);
+        }
+        if (!isActiveRestoreGeneration(generation)) {
+          return null;
+        }
+
+        recoveryEntry =
+          phaseOneBatchPauseId !== undefined && phaseTwoEntry.batchPauseId === undefined
+            ? { ...phaseTwoEntry, batchPauseId: phaseOneBatchPauseId }
+            : phaseTwoEntry;
       }
 
       if (
@@ -1470,6 +1536,11 @@ export function createTerminalRecoveryRuntime(
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
         return true;
       }
+      case 'tail-needed':
+        // Resolved during the fetch phase (phase-two tail request); reaching
+        // apply means the backend response was not resolved, so the restore
+        // exits without claiming the cursor.
+        return false;
       case 'terminal-state': {
         const terminalState = decodeBase64ToUint8Array(entry.recovery.data);
         if (reason === 'renderer-loss') {
@@ -1504,6 +1575,7 @@ export function createTerminalRecoveryRuntime(
       case 'delta':
         return entry.recovery.source !== 'cursor';
       case 'snapshot':
+      case 'tail-needed':
       case 'terminal-state':
         return false;
     }
@@ -1513,42 +1585,46 @@ export function createTerminalRecoveryRuntime(
 
   async function restoreTerminalOutput(
     reason: TerminalRecoveryReason = 'renderer-loss',
+    initialAttachEntry: TerminalRecoveryBatchEntry | null = null,
   ): Promise<void> {
     if (isRuntimeDisposed() || isRecoveryInFlight()) {
       return;
     }
 
     const generation = ++restoreGeneration;
-    const restoreLeaseId = getRestoreLeaseIdForNextRestore(generation);
     recoveryState = {
       generation,
       kind: 'restoring',
-      pauseApplied: false,
       phase: reason === 'renderer-loss' ? 'renderer-refresh' : 'ensure-fit-ready',
       reason,
-      restoreLeaseId,
       selectedRecoveryStarted: false,
     };
     const restoreStartedAtMs = performance.now();
     const outputPriority = options.getOutputPriority();
     let waitForOutputIdleMs = 0;
-    let pauseMs = 0;
+    // The backend owns the batched-restore pause lifetime, so the client-side
+    // pause/resume phases are always 0 in replay traces (kept for trace shape).
+    const pauseMs = 0;
     let recoveryFetchMs = 0;
     let applyMs = 0;
     let postApplyFitMs = 0;
     let preRecoveryFitMs = 0;
     let primaryReadinessWaitMs = 0;
     let revealSettleMs = 0;
-    let resumeMs = 0;
+    const resumeMs = 0;
     let recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'] = 'noop';
     let requestStateBytes = 0;
     let visiblePaintWaitMs = 0;
     let terminalMarkedReady = false;
     let shouldRestartQueuedRestore = false;
     let shouldExitAfterFinally = false;
-    let resumeSucceeded = true;
     let blockingRecoveryStarted = false;
-    let restorePauseRenewTimer: ReturnType<typeof setInterval> | undefined;
+    // A single restore can observe more than one server-held batch pause id
+    // (geometry-aligned re-fetches and tail-needed phase two each mint their
+    // own pause when the server is not already restore-paused); every claimed
+    // id must be released after apply or the PTY stalls until the server
+    // auto-resume timer fires.
+    const pendingBatchPauseIds = new Set<string>();
     const selectedRecoveryProtected = options.isSelectedRecoveryProtected();
     const startupRecoveryRole = getVisibleStartupRecoveryRole(
       reason,
@@ -1573,32 +1649,17 @@ export function createTerminalRecoveryRuntime(
       restoreWrittenBytes = 0;
     }
 
-    function clearRestorePauseRenewTimer(): void {
-      if (restorePauseRenewTimer === undefined) {
-        return;
-      }
-
-      clearInterval(restorePauseRenewTimer);
-      restorePauseRenewTimer = undefined;
+    function claimBatchPauseId(batchPauseId: string): void {
+      pendingBatchPauseIds.add(batchPauseId);
     }
 
-    function startRestorePauseRenewal(): void {
-      clearRestorePauseRenewTimer();
-      restorePauseRenewTimer = setInterval(() => {
-        if (!isActiveRestoreGeneration(generation)) {
-          clearRestorePauseRenewTimer();
-          return;
-        }
-
-        void invoke(IPC.PauseAgent, {
-          agentId,
-          channelId: options.channelId,
-          reason: 'restore',
-          restoreLeaseId,
-        }).catch(() => {
-          clearRestorePauseRenewTimer();
-        });
-      }, RESTORE_PAUSE_RENEW_INTERVAL_MS);
+    function releasePendingBatchPauses(): void {
+      for (const batchPauseId of pendingBatchPauseIds) {
+        // Fire-and-forget: the backend auto-resume timer is the safety net if
+        // this release is lost in transit.
+        fireAndForget(IPC.ReleaseTerminalRecoveryPause, { batchPauseId }, () => {});
+      }
+      pendingBatchPauseIds.clear();
     }
 
     try {
@@ -1651,33 +1712,46 @@ export function createTerminalRecoveryRuntime(
         return;
       }
 
-      setRecoveryPhase(generation, 'pausing-agent');
-      const pauseStartedAtMs = performance.now();
-      await invoke(IPC.PauseAgent, {
-        agentId,
-        reason: 'restore',
-        channelId: options.channelId,
-        restoreLeaseId,
-      });
-      pauseMs = performance.now() - pauseStartedAtMs;
-      setRecoveryPauseApplied(generation, true);
-      startRestorePauseRenewal();
-      const requestState =
-        startupRecoveryRole === null
-          ? getTerminalRecoveryRequestState(suppressRenderedTailForAttachRecovery)
-          : null;
-      requestStateBytes =
-        requestState === null || requestState.renderedTail === null
-          ? 0
-          : Math.floor((requestState.renderedTail.length * 3) / 4);
-      const recoveryFetchStartedAtMs = performance.now();
-      const recoveryEntry = await requestGeometryAlignedRecoveryEntry(
-        generation,
-        reason,
-        requestState,
-        requestStateBytes,
-      );
-      recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
+      let recoveryEntry: TerminalRecoveryBatchEntry | null;
+      if (initialAttachEntry !== null) {
+        // The entry was captured server-side inside the AttachTerminalSession
+        // RPC; no pause or fetch round trips remain on the client. Claim the
+        // server-held pause before the geometry decision so every exit path
+        // (including a failed geometry adoption) releases it instead of
+        // stalling the PTY until the server auto-resume timer.
+        if (initialAttachEntry.batchPauseId !== undefined) {
+          claimBatchPauseId(initialAttachEntry.batchPauseId);
+        }
+        // Geometry mismatches adopt the backend geometry (reattach never
+        // resizes the shared PTY).
+        recoveryEntry =
+          !shouldAlignRecoveryGeometry(reason) || isRecoveryGeometryAligned(initialAttachEntry)
+            ? initialAttachEntry
+            : adoptAttachRecoveryGeometry(initialAttachEntry)
+              ? initialAttachEntry
+              : null;
+      } else {
+        const requestState =
+          startupRecoveryRole === null
+            ? getTerminalRecoveryRequestState(suppressRenderedTailForAttachRecovery)
+            : null;
+        requestStateBytes =
+          requestState === null || requestState.renderedTail === null
+            ? 0
+            : Math.floor((requestState.renderedTail.length * 3) / 4);
+        const recoveryFetchStartedAtMs = performance.now();
+        recoveryEntry = await requestGeometryAlignedRecoveryEntry(
+          generation,
+          reason,
+          requestState,
+          requestStateBytes,
+          claimBatchPauseId,
+        );
+        recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
+      }
+      if (recoveryEntry?.batchPauseId !== undefined) {
+        claimBatchPauseId(recoveryEntry.batchPauseId);
+      }
       if (!recoveryEntry || !isActiveRestoreGeneration(generation)) {
         return;
       }
@@ -1691,7 +1765,13 @@ export function createTerminalRecoveryRuntime(
         recordTerminalRecoveryVisibleSteadyStateSnapshot(reason);
       }
 
-      if (shouldDropQueuedOutputBeforeRecoveryApply(reason, recoveryEntry)) {
+      if (
+        shouldDropQueuedOutputBeforeRecoveryApply(
+          reason,
+          recoveryEntry,
+          initialAttachEntry !== null,
+        )
+      ) {
         outputPipeline.dropQueuedOutputForRecovery();
       }
       setRecoveryPhase(generation, 'applying-recovery');
@@ -1718,7 +1798,7 @@ export function createTerminalRecoveryRuntime(
         refreshTerminalViewport();
       }
       setRecoveryPhase(generation, 'waiting-post-reveal');
-      revealSettleMs += await waitForPostRecoveryRevealSettle(reason);
+      revealSettleMs += await waitForPostRecoveryRevealSettle(reason, recoveryKind);
       if (generation !== restoreGeneration || isRuntimeDisposed()) {
         return;
       }
@@ -1742,31 +1822,10 @@ export function createTerminalRecoveryRuntime(
         selectedRecoverySettled = true;
         options.onSelectedRecoverySettle?.();
       };
-      clearRestorePauseRenewTimer();
-      if (
-        recoveryState.kind === 'restoring' &&
-        recoveryState.generation === generation &&
-        recoveryState.pauseApplied
-      ) {
-        try {
-          setRecoveryPhase(generation, 'resuming-agent');
-          const resumeStartedAtMs = performance.now();
-          await invoke(IPC.ResumeAgent, {
-            agentId,
-            reason: 'restore',
-            channelId: options.channelId,
-            restoreLeaseId,
-          });
-          resumeMs = performance.now() - resumeStartedAtMs;
-        } catch (error) {
-          resumeSucceeded = false;
-          console.warn('[terminal] Failed to resume after scrollback restore', error);
-        } finally {
-          if (resumeSucceeded) {
-            setRecoveryPauseApplied(generation, false);
-          }
-        }
-      }
+      // The backend owns the restore pause lifetime for batched recoveries;
+      // release every claimed pause after apply instead of a per-terminal
+      // ResumeAgent round trip.
+      releasePendingBatchPauses();
 
       recordTerminalReplayTrace({
         agentId,
@@ -1791,88 +1850,68 @@ export function createTerminalRecoveryRuntime(
         waitForOutputIdleMs: roundMilliseconds(waitForOutputIdleMs),
         writtenBytes: restoreWrittenBytes,
       });
-      if (!resumeSucceeded) {
-        recoveryState = {
-          generation,
-          kind: 'resume-failed',
-          reason,
-          restoreLeaseId,
-        };
-        setRestoreBlocked(false);
+      options.onRestoreSettled();
+      const restoreStaleOrDisposed = restoreGeneration !== generation || isRuntimeDisposed();
+      if (restoreStaleOrDisposed && !isRuntimeDisposed()) {
         settleSelectedRecoveryIfNeeded(true);
-        outputPipeline.recoverFlowControlIfIdle();
-        options.setStatus('error');
+      }
+      if (pendingReconnectRestoreState === 'queued') {
+        clearRecoveryStateIfActive(generation);
+      }
+      if (pendingReconnectRestoreState === 'queued' && startReconnectRestoreIfReady()) {
+        shouldRestartQueuedRestore = true;
+      } else if (restoreStaleOrDisposed) {
+        clearRecoveryStateIfActive(generation);
         shouldExitAfterFinally = true;
-      } else {
-        options.onRestoreSettled();
-        const restoreStaleOrDisposed = restoreGeneration !== generation || isRuntimeDisposed();
-        if (restoreStaleOrDisposed && !isRuntimeDisposed()) {
-          settleSelectedRecoveryIfNeeded(true);
+      } else if (outputPipeline.hasQueuedOutput()) {
+        outputPipeline.scheduleOutputFlush();
+      }
+      if (
+        !shouldRestartQueuedRestore &&
+        !terminalMarkedReady &&
+        !isRuntimeDisposed() &&
+        !options.isSpawnFailed()
+      ) {
+        if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
+          recoveryState = {
+            generation,
+            kind: 'restoring',
+            phase: 'waiting-post-drain',
+            reason,
+            selectedRecoveryStarted,
+          };
+          await waitForPostRecoveryOutputDrain();
         }
-        if (pendingReconnectRestoreState === 'queued') {
-          clearRecoveryStateIfActive(generation);
-        }
-        if (pendingReconnectRestoreState === 'queued' && startReconnectRestoreIfReady()) {
-          shouldRestartQueuedRestore = true;
-        } else if (restoreStaleOrDisposed) {
-          clearRecoveryStateIfActive(generation);
+        if (restoreGeneration !== generation || isRuntimeDisposed() || options.isSpawnFailed()) {
           shouldExitAfterFinally = true;
-        } else if (outputPipeline.hasQueuedOutput()) {
-          outputPipeline.scheduleOutputFlush();
-        }
-        if (
-          !shouldRestartQueuedRestore &&
-          !terminalMarkedReady &&
-          !isRuntimeDisposed() &&
-          !options.isSpawnFailed()
-        ) {
-          if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
-            recoveryState = {
-              generation,
-              kind: 'restoring',
-              pauseApplied: false,
-              phase: 'waiting-post-drain',
-              reason,
-              restoreLeaseId,
-              selectedRecoveryStarted,
-            };
-            await waitForPostRecoveryOutputDrain();
+        } else {
+          if (shouldDrainQueuedOutputBeforeRecovery(reason)) {
+            setRecoveryPhase(generation, 'waiting-post-reveal');
+            revealSettleMs += await waitForPostRecoveryRevealSettle(reason, recoveryKind);
           }
           if (restoreGeneration !== generation || isRuntimeDisposed() || options.isSpawnFailed()) {
             shouldExitAfterFinally = true;
           } else {
-            if (shouldDrainQueuedOutputBeforeRecovery(reason)) {
-              setRecoveryPhase(generation, 'waiting-post-reveal');
-              revealSettleMs += await waitForPostRecoveryRevealSettle(reason);
-            }
-            if (
-              restoreGeneration !== generation ||
-              isRuntimeDisposed() ||
-              options.isSpawnFailed()
-            ) {
-              shouldExitAfterFinally = true;
-            } else {
-              setRecoveryPhase(generation, 'marking-ready');
-              options.markTerminalReady();
-              terminalMarkedReady = true;
-              void inputPipeline.flushPendingResize();
-              inputPipeline.flushPendingInput();
-              inputPipeline.drainInputQueue();
-            }
+            setRecoveryPhase(generation, 'marking-ready');
+            options.markTerminalReady();
+            terminalMarkedReady = true;
+            void inputPipeline.flushPendingResize();
+            inputPipeline.flushPendingInput();
+            inputPipeline.drainInputQueue();
           }
         }
-        if (
-          selectedRecoveryStarted &&
-          !shouldRestartQueuedRestore &&
-          terminalMarkedReady &&
-          isActiveRestoreGeneration(generation)
-        ) {
-          settleSelectedRecoveryIfNeeded();
-        }
-        if (!shouldExitAfterFinally && !shouldRestartQueuedRestore) {
-          clearRecoveryStateIfActive(generation);
-          outputPipeline.recoverFlowControlIfIdle();
-        }
+      }
+      if (
+        selectedRecoveryStarted &&
+        !shouldRestartQueuedRestore &&
+        terminalMarkedReady &&
+        isActiveRestoreGeneration(generation)
+      ) {
+        settleSelectedRecoveryIfNeeded();
+      }
+      if (!shouldExitAfterFinally && !shouldRestartQueuedRestore) {
+        clearRecoveryStateIfActive(generation);
+        outputPipeline.recoverFlowControlIfIdle();
       }
     }
 
@@ -1884,8 +1923,43 @@ export function createTerminalRecoveryRuntime(
     }
   }
 
+  function getInitialAttachRecoveryDescriptor(): InitialAttachRecoveryDescriptor {
+    const outputPriority = options.getOutputPriority();
+    const role = getVisibleStartupRecoveryRole(
+      'attach',
+      options.isShell,
+      options.isSelectedRecoveryProtected(),
+      outputPriority,
+    );
+    let snapshotByteLimit = getAttachRecoverySnapshotByteLimit(outputPriority);
+    if (getStartupVisibleTerminalCount() >= DENSE_STARTUP_VISIBLE_TERMINAL_THRESHOLD) {
+      snapshotByteLimit = Math.min(
+        snapshotByteLimit,
+        DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[outputPriority],
+      );
+    }
+
+    return {
+      // The local rendered cursor is a true continuity claim even on a fresh
+      // mount (cursor 0 = "I have rendered nothing"), which keeps reload
+      // shell reattach on the non-destructive delta-from-cursor path instead
+      // of a snapshot reset. The backend treats a fresh-mount (cursor 0)
+      // delta that exceeds snapshotByteLimit as a full-state transfer and
+      // resolves it to the capped snapshot, so this claim cannot bypass the
+      // attach byte budgets.
+      outputCursor: outputPipeline.getRecoveryRequestState(0).outputCursor,
+      role,
+      snapshotByteLimit,
+      visibleTerminalCount: getStartupVisibleTerminalCount(),
+    };
+  }
+
   return {
+    applyInitialAttachRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void> {
+      return restoreTerminalOutput('attach', entry);
+    },
     dispose,
+    getInitialAttachRecoveryDescriptor,
     handleBrowserControlAuthenticated(): void {
       hasEverAuthenticatedBrowserControl = true;
       hasCurrentBrowserControlAuth = true;

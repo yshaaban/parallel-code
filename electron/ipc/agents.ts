@@ -1,6 +1,11 @@
 import type { AgentDef } from '../../src/ipc/types.js';
-import { isCommandAvailable } from './command-resolver.js';
-import { getHydraRuntimeAvailability } from './hydra-adapter.js';
+import type { AgentAvailabilitySnapshot } from '../../src/domain/agent-availability.js';
+import {
+  getAgentAvailabilitySnapshot,
+  requestAgentAvailabilityRevalidation,
+  type AgentAvailabilityProbeTarget,
+  type AgentAvailabilityRevalidationReason,
+} from './agent-availability-state.js';
 
 const DEFAULT_AGENTS: AgentDef[] = [
   {
@@ -67,12 +72,6 @@ const DEFAULT_AGENTS: AgentDef[] = [
   },
 ];
 
-let cachedAgents: AgentDef[] | null = null;
-let cacheTime = 0;
-let cacheKey = '';
-const AVAILABLE_AGENT_CACHE_TTL_MS = 30_000;
-const UNAVAILABLE_AGENT_CACHE_TTL_MS = 5_000;
-
 function cloneAgentDef(agent: AgentDef): AgentDef {
   return {
     ...agent,
@@ -80,64 +79,6 @@ function cloneAgentDef(agent: AgentDef): AgentDef {
     ...(agent.env !== undefined ? { env: { ...agent.env } } : {}),
     resume_args: [...agent.resume_args],
     skip_permissions_args: [...agent.skip_permissions_args],
-  };
-}
-
-function getAgentCacheTtlMs(agents: AgentDef[]): number {
-  if (agents.some((agent) => agent.available === false)) {
-    return UNAVAILABLE_AGENT_CACHE_TTL_MS;
-  }
-
-  return AVAILABLE_AGENT_CACHE_TTL_MS;
-}
-
-function hasFreshAgentCache(now: number, nextCacheKey: string): boolean {
-  if (cachedAgents === null || cacheKey !== nextCacheKey) {
-    return false;
-  }
-
-  return now - cacheTime < getAgentCacheTtlMs(cachedAgents);
-}
-
-function getPathAvailabilityDetails(agent: AgentDef, available: boolean): Partial<AgentDef> {
-  const command = agent.command.trim();
-  if (!command) {
-    return {};
-  }
-
-  if (available) {
-    return {
-      availabilityReason: `Using ${command} from PATH.`,
-      availabilitySource: 'path',
-    };
-  }
-
-  return {
-    availabilityReason: `Command '${command}' was not found on PATH.`,
-    availabilitySource: 'unavailable',
-  };
-}
-
-async function withAvailability(agent: AgentDef): Promise<AgentDef> {
-  if (agent.adapter === 'hydra') {
-    const availability = await getHydraRuntimeAvailability(agent.command, {
-      resolveBareCommandPath: true,
-    });
-
-    return {
-      ...cloneAgentDef(agent),
-      available: availability.available,
-      availabilityReason: availability.detail,
-      availabilitySource: availability.source,
-    };
-  }
-
-  const available = await isCommandAvailable(agent.command);
-
-  return {
-    ...cloneAgentDef(agent),
-    available,
-    ...getPathAvailabilityDetails(agent, available),
   };
 }
 
@@ -152,21 +93,71 @@ function applyHydraCommandOverride(agent: AgentDef, command: string): AgentDef {
   };
 }
 
-export async function listAgents(hydraCommandOverride = ''): Promise<AgentDef[]> {
-  const now = Date.now();
-  const normalizedHydraCommand = hydraCommandOverride.trim();
-  const nextCacheKey = normalizedHydraCommand || 'hydra';
-
-  if (cachedAgents && hasFreshAgentCache(now, nextCacheKey)) {
-    return cachedAgents.map(cloneAgentDef);
+function withLastKnownAvailability(
+  agent: AgentDef,
+  snapshot: AgentAvailabilitySnapshot | null,
+): AgentDef {
+  if (!snapshot || snapshot.status !== 'known') {
+    return {
+      ...agent,
+      availabilityStatus: 'probing',
+    };
   }
 
-  cachedAgents = await Promise.all(
-    DEFAULT_AGENTS.map((agent) =>
-      withAvailability(applyHydraCommandOverride(agent, normalizedHydraCommand)),
+  return {
+    ...agent,
+    availabilityStatus: 'known',
+    ...(snapshot.available !== undefined ? { available: snapshot.available } : {}),
+    ...(snapshot.availabilityReason !== undefined
+      ? { availabilityReason: snapshot.availabilityReason }
+      : {}),
+    ...(snapshot.availabilitySource !== undefined
+      ? { availabilitySource: snapshot.availabilitySource }
+      : {}),
+  };
+}
+
+// Pure synchronous read for the cold-bootstrap handler and ListAgents: default
+// defs merged with last-known sticky availability, never probing inline.
+export function getAgentDefsWithLastKnownAvailability(hydraCommandOverride = ''): AgentDef[] {
+  const normalizedHydraCommand = hydraCommandOverride.trim();
+  return DEFAULT_AGENTS.map((agent) =>
+    withLastKnownAvailability(
+      cloneAgentDef(applyHydraCommandOverride(agent, normalizedHydraCommand)),
+      getAgentAvailabilitySnapshot(agent.id),
     ),
   );
-  cacheKey = nextCacheKey;
-  cacheTime = now;
-  return cachedAgents.map(cloneAgentDef);
+}
+
+function getAgentAvailabilityProbeTargets(
+  hydraCommandOverride = '',
+): AgentAvailabilityProbeTarget[] {
+  const normalizedHydraCommand = hydraCommandOverride.trim();
+  return DEFAULT_AGENTS.map((agent) => {
+    const effective = applyHydraCommandOverride(agent, normalizedHydraCommand);
+    return {
+      agentId: agent.id,
+      command: effective.command,
+      ...(agent.adapter === 'hydra' ? { adapter: 'hydra' as const } : {}),
+    };
+  });
+}
+
+export function requestAgentCatalogAvailabilityRevalidation(
+  reason: AgentAvailabilityRevalidationReason,
+  hydraCommandOverride = '',
+): void {
+  requestAgentAvailabilityRevalidation({
+    reason,
+    targets: getAgentAvailabilityProbeTargets(hydraCommandOverride),
+  });
+}
+
+export function listAgents(hydraCommandOverride = ''): AgentDef[] {
+  const agents = getAgentDefsWithLastKnownAvailability(hydraCommandOverride);
+  // Background revalidation keeps sticky results honest without ever probing on
+  // this read path; the state owner throttles repeat requests and bypasses the
+  // throttle when the hydra command key changes.
+  requestAgentCatalogAvailabilityRevalidation('boot', hydraCommandOverride);
+  return agents;
 }

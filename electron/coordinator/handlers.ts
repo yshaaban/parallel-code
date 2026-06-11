@@ -16,6 +16,7 @@ import {
   applyCoordinatorActivityHint,
   createCoordinatorRunForTask,
   ensureCoordinatorServiceLoaded,
+  getCoordinatorPersistenceHealth,
 } from './service.js';
 import { getCoordinatorDiagnostics } from './runtime.js';
 import { executeCoordinatorRendererAction, executeCoordinatorToolCall } from './tool-gateway.js';
@@ -115,7 +116,13 @@ export function createCoordinatorIpcHandlers(
       },
     ),
 
-    [IPC.CoordinatorGetDiagnostics]: () => getCoordinatorDiagnostics(),
+    [IPC.CoordinatorGetDiagnostics]: () => {
+      const persistence = getCoordinatorPersistenceHealth();
+      return {
+        ...getCoordinatorDiagnostics(),
+        ...(persistence !== null ? { persistence } : {}),
+      };
+    },
 
     [IPC.CoordinatorToolCall]: defineIpcHandler<IPC.CoordinatorToolCall>(
       IPC.CoordinatorToolCall,

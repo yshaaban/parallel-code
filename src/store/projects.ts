@@ -236,6 +236,22 @@ export async function validateProjectPaths(): Promise<void> {
   setStore('missingProjectIds', missing);
 }
 
+// Apply a backend-prevalidated existence record (from the cold-bootstrap
+// payload) without an invoke round trip. Bumps the validation generation so an
+// older in-flight validateProjectPaths result cannot clobber this newer truth;
+// paths absent from the record stay unmarked until background validation runs.
+export function applyProjectPathExistence(existingPaths: Record<string, boolean>): void {
+  projectPathValidationGeneration += 1;
+  const missing: Record<string, true> = {};
+  for (const project of store.projects) {
+    if (existingPaths[project.path] === false) {
+      missing[project.id] = true;
+    }
+  }
+
+  setStore('missingProjectIds', missing);
+}
+
 export function isProjectMissing(projectId: string): boolean {
   return projectId in store.missingProjectIds;
 }

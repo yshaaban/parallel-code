@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getWeakConnectivityReconnectDelayMs,
-  isWarmReconnectWindow,
+  WAKE_LIVENESS_PROBE,
 } from './weak-connectivity-policy';
 
 describe('weak connectivity reconnect policy', () => {
@@ -25,9 +25,8 @@ describe('weak connectivity reconnect policy', () => {
     ).toBe(0);
   });
 
-  it('requires a measured disconnected duration for warm restore skips', () => {
-    expect(isWarmReconnectWindow(null)).toBe(false);
-    expect(isWarmReconnectWindow(30_000)).toBe(true);
-    expect(isWarmReconnectWindow(30_001)).toBe(false);
+  it('bounds wake-time zombie-socket detection with an explicit probe policy', () => {
+    expect(WAKE_LIVENESS_PROBE.minHiddenGapMs).toBe(5_000);
+    expect(WAKE_LIVENESS_PROBE.probeDeadlineMs).toBe(2_000);
   });
 });

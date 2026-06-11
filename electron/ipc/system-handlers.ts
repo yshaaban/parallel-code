@@ -5,10 +5,12 @@ import path from 'path';
 import { promisify } from 'util';
 
 import type {
+  BrowserColdBootstrapPlanContent,
   BrowserColdBootstrapSnapshot,
   BrowserReconnectStatus,
   BrowserReconnectSnapshot,
 } from '../../src/domain/renderer-invoke.js';
+import type { BrowserColdBootstrapProjection } from '../../src/domain/browser-cold-bootstrap.js';
 import { buildBrowserColdBootstrapProjectionFromJson } from '../../src/domain/browser-cold-bootstrap-projection-builder.js';
 import {
   deriveRepoNameFromSshUrl,
@@ -17,7 +19,7 @@ import {
 } from '../../src/lib/git-ssh-url.js';
 import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
 import { IPC } from './channels.js';
-import { listAgents } from './agents.js';
+import { getAgentDefsWithLastKnownAvailability } from './agents.js';
 import { BadRequestError } from './errors.js';
 import type { IpcHandlerMap } from './handlers.js';
 import type { HandlerContext } from './handler-context.js';
@@ -37,12 +39,21 @@ import {
   recordReconnectSnapshotCacheHit,
   recordReconnectSnapshotCacheMiss,
   recordReconnectSnapshotInvalidation,
+  recordReconnectSnapshotRevisionSkip,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 import { getActiveAgentIds, getAgentMeta } from './pty.js';
+import { getServerInstanceId } from './server-instance.js';
+import { getBackendClientSelectedTaskId, setBackendClientFocus } from './backend-work-queue.js';
 import {
-  loadAppStateForEnv,
+  findRegisteredGitWatcherRequestForTask,
+  scheduleGitStatusRefresh,
+} from './git-status-workflows.js';
+import { createSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
+import {
+  loadAppStateDocumentForEnv,
   loadArenaDataForEnv,
+  loadWorkspaceStateDocumentForEnv,
   loadWorkspaceStateForEnv,
   saveAppStateForEnv,
   saveArenaDataForEnv,
@@ -82,10 +93,14 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const RECONNECT_SNAPSHOT_CACHE_TTL_MS = 5_000;
+const ELECTRON_FOCUS_CLIENT_ID = 'electron-renderer';
+const COLD_BOOTSTRAP_PLAN_CONTENT_MAX_TASKS = 30;
+const COLD_BOOTSTRAP_PLAN_CONTENT_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
 
+// Revision-keyed reconnect saved-state cache: entries have no TTL because every
+// save path in this process invalidates them; the cached snapshot carries the
+// workspaceRevision used for the reconnect revision-skip comparison.
 interface CachedReconnectSnapshot {
-  expiresAt: number;
   promise: Promise<ReconnectSavedStateSnapshot>;
 }
 
@@ -94,13 +109,13 @@ type ReconnectSavedStateSnapshot = Pick<
   'appStateJson' | 'workspaceRevision' | 'workspaceStateJson'
 >;
 
-interface SavedStateSyncOptions {
-  syncProjectBaseBranchesFromJson: (json: string) => void;
-  syncTaskConvergenceFromJson: (json: string) => void;
-  syncTaskNamesFromJson: (json: string) => void;
-  syncTaskReviewSignalsFromJson: (json: string) => void;
-  syncTaskStepsFromJson: (json: string) => void;
-  syncTaskWorkflowWorktreesFromJson: (json: string) => void;
+export interface SavedStateSyncOptions {
+  syncProjectBaseBranchesFromJson: (state: SavedStateDocument) => void;
+  syncTaskConvergenceFromJson: (state: SavedStateDocument) => void;
+  syncTaskNamesFromJson: (state: SavedStateDocument) => void;
+  syncTaskReviewSignalsFromJson: (state: SavedStateDocument) => void;
+  syncTaskStepsFromJson: (state: SavedStateDocument) => void;
+  syncTaskWorkflowWorktreesFromJson: (state: SavedStateDocument) => void;
 }
 
 interface LoadedWorkspaceState {
@@ -116,19 +131,6 @@ function clearReconnectSnapshotCache(
     recordReconnectSnapshotInvalidation();
   }
   cache.delete(userDataPath);
-}
-
-function clearExpiredReconnectSnapshotCacheEntries(
-  cache: Map<string, CachedReconnectSnapshot>,
-  now: number,
-): void {
-  for (const [userDataPath, entry] of cache) {
-    if (entry.expiresAt > now) {
-      continue;
-    }
-
-    cache.delete(userDataPath);
-  }
 }
 
 function assertOptionalChoiceIndex(
@@ -150,10 +152,8 @@ function cacheReconnectSnapshot(
   cache: Map<string, CachedReconnectSnapshot>,
   userDataPath: string,
   promise: Promise<ReconnectSavedStateSnapshot>,
-  expiresAt: number,
 ): void {
   cache.set(userDataPath, {
-    expiresAt,
     promise,
   });
 }
@@ -172,9 +172,10 @@ function clearReconnectSnapshotIfCurrent(
 function cloneReconnectSavedStateSnapshot(
   snapshot: ReconnectSavedStateSnapshot,
 ): ReconnectSavedStateSnapshot {
-  const clone: ReconnectSavedStateSnapshot = {
-    appStateJson: snapshot.appStateJson,
-  };
+  const clone: ReconnectSavedStateSnapshot = {};
+  if (snapshot.appStateJson !== undefined) {
+    clone.appStateJson = snapshot.appStateJson;
+  }
   if (snapshot.workspaceRevision !== undefined) {
     clone.workspaceRevision = snapshot.workspaceRevision;
   }
@@ -189,7 +190,7 @@ function cloneBrowserReconnectSnapshot(
 ): BrowserReconnectSnapshot {
   return {
     ...(snapshot.agentGenerations ? { agentGenerations: { ...snapshot.agentGenerations } } : {}),
-    appStateJson: snapshot.appStateJson,
+    ...(snapshot.appStateJson !== undefined ? { appStateJson: snapshot.appStateJson } : {}),
     runningAgentIds: [...snapshot.runningAgentIds],
     taskCommandControllers: snapshot.taskCommandControllers
       ? snapshot.taskCommandControllers.map((controller) => ({ ...controller }))
@@ -210,23 +211,26 @@ function loadSavedAppStateJson(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): string | null {
-  const json = loadAppStateForEnv(context);
-  if (!json) {
+  const document = loadAppStateDocumentForEnv(context);
+  if (!document) {
     return null;
   }
 
-  syncSavedStateJson(json, options);
-  return json;
+  syncSavedStateDocument(document, options);
+  return document.json;
 }
 
 function loadSavedWorkspaceState(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): LoadedWorkspaceState {
-  const savedWorkspace = loadWorkspaceStateForEnv(context);
+  const savedWorkspace = loadWorkspaceStateDocumentForEnv(context);
   if (savedWorkspace) {
-    syncSavedStateJson(savedWorkspace.json, options);
-    return savedWorkspace;
+    syncSavedStateDocument(savedWorkspace.document, options);
+    return {
+      json: savedWorkspace.document.json,
+      revision: savedWorkspace.revision,
+    };
   }
 
   const legacyJson = loadSavedAppStateJson(context, options);
@@ -237,42 +241,63 @@ function loadSavedWorkspaceState(
 }
 
 function syncSavedStateJson(json: string, options: SavedStateSyncOptions): void {
-  options.syncTaskNamesFromJson(json);
-  options.syncTaskConvergenceFromJson(json);
-  options.syncTaskReviewSignalsFromJson(json);
-  options.syncTaskStepsFromJson(json);
-  options.syncTaskWorkflowWorktreesFromJson(json);
-  options.syncProjectBaseBranchesFromJson(json);
+  syncSavedStateDocument(createSavedStateDocument(json), options);
+}
+
+function syncSavedStateDocument(state: SavedStateDocument, options: SavedStateSyncOptions): void {
+  options.syncTaskNamesFromJson(state);
+  options.syncTaskConvergenceFromJson(state);
+  options.syncTaskReviewSignalsFromJson(state);
+  options.syncTaskStepsFromJson(state);
+  options.syncTaskWorkflowWorktreesFromJson(state);
+  options.syncProjectBaseBranchesFromJson(state);
 }
 
 function createBrowserReconnectSavedStateSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): ReconnectSavedStateSnapshot {
-  const appStateJson = loadSavedAppStateJson(context, options);
-  const savedWorkspace = loadWorkspaceStateForEnv(context);
+  const savedWorkspace = loadWorkspaceStateDocumentForEnv(context);
   if (savedWorkspace) {
-    syncSavedStateJson(savedWorkspace.json, options);
+    syncSavedStateDocument(savedWorkspace.document, options);
+    return {
+      workspaceRevision: savedWorkspace.revision,
+      workspaceStateJson: savedWorkspace.document.json,
+    };
   }
 
-  const workspace = savedWorkspace ?? {
-    json: appStateJson,
-    revision: 0,
-  };
-
+  // Legacy fallback: appStateJson is shipped only when no workspace-state file
+  // exists, so reconnect no longer carries two full serialized state copies.
+  // workspaceRevision 0 is not a real revision: legacy app-state saves mutate
+  // the file without bumping it, so revision 0 must never satisfy the
+  // revision-keyed skip below.
+  const appStateJson = loadSavedAppStateJson(context, options);
   return {
     appStateJson,
-    workspaceRevision: workspace.revision,
-    workspaceStateJson: workspace.json,
+    workspaceRevision: 0,
   };
 }
 
 function createBrowserReconnectSnapshot(
   savedState: ReconnectSavedStateSnapshot,
+  knownWorkspaceRevision: number | undefined,
 ): BrowserReconnectSnapshot {
   const runningAgentIds = getActiveAgentIds();
+  // The skip requires a real versioned workspace file: SaveWorkspaceState mints
+  // revisions starting at 1, so revision 0 means the unversioned legacy
+  // app-state fallback, which can change without a revision bump and therefore
+  // never proves no-change.
+  const skipSavedStatePayload =
+    knownWorkspaceRevision !== undefined &&
+    savedState.workspaceRevision !== undefined &&
+    savedState.workspaceRevision > 0 &&
+    savedState.workspaceRevision === knownWorkspaceRevision;
+  if (skipSavedStatePayload) {
+    recordReconnectSnapshotRevisionSkip();
+  }
+
   return {
-    ...savedState,
+    ...(skipSavedStatePayload ? { workspaceRevision: knownWorkspaceRevision } : savedState),
     agentGenerations: getAgentGenerationMap(runningAgentIds),
     runningAgentIds,
     taskCommandControllers: getTaskCommandControllers(),
@@ -292,18 +317,88 @@ function getBrowserReconnectStatus(context: HandlerContext): BrowserReconnectSta
   return {
     agentGenerations: getAgentGenerationMap(runningAgentIds),
     runningAgentIds,
+    serverInstanceId: getServerInstanceId(),
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
     workspaceRevision: workspace?.revision ?? 0,
   };
 }
 
-async function createBrowserColdBootstrapSnapshot(
+// Bounded synchronous plan-content fold for the cold-bootstrap payload: exact
+// persisted planRelativePath reads only, visible (taskOrder) tasks only, capped
+// by task count and total bytes, per-file errors swallowed.
+function collectColdBootstrapPlanContents(
+  projection: BrowserColdBootstrapProjection,
+): BrowserColdBootstrapPlanContent[] {
+  const planContents: BrowserColdBootstrapPlanContent[] = [];
+  let totalBytes = 0;
+
+  for (const taskId of projection.taskOrder) {
+    if (planContents.length >= COLD_BOOTSTRAP_PLAN_CONTENT_MAX_TASKS) {
+      break;
+    }
+
+    const task = projection.tasks[taskId];
+    if (!task?.worktreePath || !task.planRelativePath) {
+      continue;
+    }
+    if (!isPlanRelativePath(task.planRelativePath)) {
+      continue;
+    }
+
+    try {
+      const plan = readPlanForWorktree(task.worktreePath, task.planRelativePath);
+      if (!plan) {
+        continue;
+      }
+
+      const contentBytes = Buffer.byteLength(plan.content, 'utf8');
+      if (totalBytes + contentBytes > COLD_BOOTSTRAP_PLAN_CONTENT_MAX_TOTAL_BYTES) {
+        break;
+      }
+
+      totalBytes += contentBytes;
+      planContents.push({
+        content: plan.content,
+        fileName: plan.fileName,
+        relativePath: plan.relativePath,
+        taskId,
+      });
+    } catch {
+      // Over-cap or unreadable plans stay on the lazy ReadPlanContent path.
+    }
+  }
+
+  return planContents;
+}
+
+function collectColdBootstrapProjectPathsExist(
+  projection: BrowserColdBootstrapProjection,
+): Record<string, boolean> {
+  const projectPathsExist: Record<string, boolean> = {};
+  for (const project of projection.projects) {
+    if (project.path in projectPathsExist) {
+      continue;
+    }
+
+    try {
+      projectPathsExist[project.path] = fs.existsSync(project.path);
+    } catch {
+      projectPathsExist[project.path] = false;
+    }
+  }
+
+  return projectPathsExist;
+}
+
+// Synchronous by design: the cold-bootstrap handler must stay free of process
+// spawns and probing. Agent defs ship with last-known sticky availability.
+function createBrowserColdBootstrapSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
-): Promise<BrowserColdBootstrapSnapshot> {
+): BrowserColdBootstrapSnapshot {
   const workspace = loadSavedWorkspaceState(context, options);
   const remoteAccess = requireRemoteAccess(context);
-  const availableAgents = await listAgents();
+  const availableAgents = getAgentDefsWithLastKnownAvailability();
   const bootstrapContext = {
     getRemoteStatus: () => remoteAccess.status(),
   };
@@ -314,16 +409,19 @@ async function createBrowserColdBootstrapSnapshot(
           getRemoteStatusVersion: () => remoteAccess.getStatusVersion(),
         })
       : getServerStateBootstrap(bootstrapContext);
+  const workspaceProjection = buildBrowserColdBootstrapProjectionFromJson(workspace.json, {
+    currentAvailableAgents: availableAgents,
+    currentCustomAgents: [],
+  });
 
   return {
+    planContents: collectColdBootstrapPlanContents(workspaceProjection),
+    projectPathsExist: collectColdBootstrapProjectPathsExist(workspaceProjection),
     serverStateBootstrap: serverStateBootstrap.filter(
       (snapshot) => snapshot.category !== 'peer-presence',
     ),
     workspaceRevision: workspace.revision,
-    workspaceProjection: buildBrowserColdBootstrapProjectionFromJson(workspace.json, {
-      currentAvailableAgents: availableAgents,
-      currentCustomAgents: [],
-    }),
+    workspaceProjection,
   };
 }
 
@@ -331,14 +429,15 @@ function getBrowserReconnectSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
   cache: Map<string, CachedReconnectSnapshot>,
+  knownWorkspaceRevision: number | undefined,
 ): Promise<BrowserReconnectSnapshot> {
-  const now = Date.now();
-  clearExpiredReconnectSnapshotCacheEntries(cache, now);
   const cached = cache.get(context.userDataPath);
-  if (cached && cached.expiresAt > now) {
+  if (cached) {
     recordReconnectSnapshotCacheHit();
     return cached.promise.then((snapshot) =>
-      cloneBrowserReconnectSnapshot(createBrowserReconnectSnapshot(snapshot)),
+      cloneBrowserReconnectSnapshot(
+        createBrowserReconnectSnapshot(snapshot, knownWorkspaceRevision),
+      ),
     );
   }
 
@@ -346,19 +445,18 @@ function getBrowserReconnectSnapshot(
   const promise = Promise.resolve(createBrowserReconnectSavedStateSnapshot(context, options)).then(
     (snapshot) => cloneReconnectSavedStateSnapshot(snapshot),
   );
-  cacheReconnectSnapshot(
-    cache,
-    context.userDataPath,
-    promise,
-    now + RECONNECT_SNAPSHOT_CACHE_TTL_MS,
-  );
+  cacheReconnectSnapshot(cache, context.userDataPath, promise);
 
   return promise
     .catch((error) => {
       clearReconnectSnapshotIfCurrent(cache, context.userDataPath, promise);
       throw error;
     })
-    .then((snapshot) => cloneBrowserReconnectSnapshot(createBrowserReconnectSnapshot(snapshot)));
+    .then((snapshot) =>
+      cloneBrowserReconnectSnapshot(
+        createBrowserReconnectSnapshot(snapshot, knownWorkspaceRevision),
+      ),
+    );
 }
 
 const HOST_KEY_FAILURE_PATTERN = /Host key verification failed/i;
@@ -625,9 +723,64 @@ export function createSystemIpcHandlers(
       return loadSavedWorkspaceState(context, options);
     },
 
+    [IPC.ReportClientTaskFocus]: defineIpcHandler<IPC.ReportClientTaskFocus>(
+      IPC.ReportClientTaskFocus,
+      (request) => {
+        if (request.selectedTaskId !== null) {
+          assertString(request.selectedTaskId, 'selectedTaskId');
+        }
+        assertStringArray(request.visibleTaskIds, 'visibleTaskIds');
+        if (request.focusedChannelIds !== undefined) {
+          assertStringArray(request.focusedChannelIds, 'focusedChannelIds');
+        }
+
+        const transportClientId = (request as { clientId?: unknown }).clientId;
+        const clientId =
+          typeof transportClientId === 'string' && transportClientId.length > 0
+            ? transportClientId
+            : ELECTRON_FOCUS_CLIENT_ID;
+        // The focus registry is the single owner of per-client focus state
+        // (TTL pruning plus disconnect cleanup), so the previous selection is
+        // read from it instead of a handler-local map that nothing prunes.
+        const previousSelectedTaskId = getBackendClientSelectedTaskId(clientId);
+        setBackendClientFocus(clientId, {
+          selectedTaskId: request.selectedTaskId,
+          visibleTaskIds: request.visibleTaskIds,
+          ...(request.focusedChannelIds !== undefined
+            ? { focusedChannelIds: request.focusedChannelIds }
+            : {}),
+        });
+
+        if (request.selectedTaskId && request.selectedTaskId !== previousSelectedTaskId) {
+          const watcher = findRegisteredGitWatcherRequestForTask(request.selectedTaskId);
+          if (watcher) {
+            scheduleGitStatusRefresh(context, watcher.worktreePath, watcher.baseBranch, 'selected');
+          }
+        }
+
+        return null;
+      },
+    ),
+
     [IPC.GetBrowserReconnectStatus]: () => getBrowserReconnectStatus(context),
-    [IPC.GetBrowserReconnectSnapshot]: () =>
-      getBrowserReconnectSnapshot(context, options, reconnectSnapshotCacheByUserDataPath),
+    [IPC.GetBrowserReconnectSnapshot]: defineIpcHandler<IPC.GetBrowserReconnectSnapshot>(
+      IPC.GetBrowserReconnectSnapshot,
+      (args) => {
+        const request = args;
+        if (request.knownWorkspaceRevision !== undefined) {
+          if (!isFiniteNumber(request.knownWorkspaceRevision)) {
+            throw new BadRequestError('knownWorkspaceRevision must be a finite number');
+          }
+        }
+
+        return getBrowserReconnectSnapshot(
+          context,
+          options,
+          reconnectSnapshotCacheByUserDataPath,
+          request.knownWorkspaceRevision,
+        );
+      },
+    ),
     [IPC.GetBrowserColdBootstrap]: () => createBrowserColdBootstrapSnapshot(context, options),
 
     [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {

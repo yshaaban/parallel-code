@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { CoordinatorRunSnapshot, CoordinatorWorkflowSnapshot } from '../domain/coordinator';
 import { markTaskPromptDispatch } from './task-prompt-dispatch';
 import { markAgentOutput } from '../store/taskStatus';
 import { noteTerminalFocusedInput } from './terminal-focused-input';
@@ -987,5 +988,207 @@ describe('task presentation status', () => {
         reason: 'waiting-input',
       }),
     );
+  });
+
+  function setCoordinatorRunForTest(overrides: Partial<CoordinatorRunSnapshot> = {}): void {
+    setStore('coordinator', 'runs', 'run-1', {
+      coordinatorTaskId: 'task-1',
+      createdAt: 1_000,
+      eventVersion: 1,
+      id: 'run-1',
+      landing: [],
+      limits: {
+        maxActiveSubtasks: 5,
+        maxPendingPromptsPerTarget: 3,
+        maxQueuedSubtasks: 20,
+      },
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+      promptQueue: [],
+      status: 'running',
+      subtasks: [],
+      updatedAt: 3_000,
+      workflows: [],
+      ...overrides,
+    });
+  }
+
+  function createWorkflowSnapshotForTest(
+    overrides: Partial<CoordinatorWorkflowSnapshot> = {},
+  ): CoordinatorWorkflowSnapshot {
+    return {
+      appendPolicy: { maxActionsPerDecision: 8, maxStepAppends: 24 },
+      createdAt: 1_000,
+      eventVersion: 2,
+      id: 'workflow-1',
+      journal: [],
+      lanes: [],
+      policy: {
+        continueOnFailure: true,
+        maxConcurrentLanes: 3,
+        maxIterationsPerBranch: 3,
+        maxOutputBytesPerLane: 65_536,
+        resultRequired: true,
+        retryBackoffMs: 1_000,
+        retryCount: 0,
+        timeoutMs: 900_000,
+      },
+      programVersion: 2,
+      results: [],
+      runId: 'run-1',
+      stages: [],
+      startedAt: 1_000,
+      status: 'waiting-for-results',
+      template: 'custom',
+      title: 'Workflow',
+      updatedAt: 1_100,
+      ...overrides,
+    };
+  }
+
+  it('surfaces a stale-after-restore coordinator run as coordinator-stale attention', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setCoordinatorRunForTest({ status: 'stale-after-restore' });
+
+    expect(getTaskAttentionEntry('task-1')).toEqual(
+      expect.objectContaining({
+        focusPanel: 'coordinator',
+        group: 'needs-action',
+        label: 'Resume',
+        reason: 'coordinator-stale',
+      }),
+    );
+  });
+
+  it('surfaces pending workflow approvals as coordinator-approval attention', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setCoordinatorRunForTest({
+      workflows: [
+        createWorkflowSnapshotForTest({
+          pendingApprovals: [
+            {
+              actions: [],
+              createdAt: 1_100,
+              id: 'result-1:approval',
+              laneId: 'lane-1',
+              resultId: 'result-1',
+              stageId: 'stage-1',
+              status: 'pending',
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(getTaskAttentionEntry('task-1')).toEqual(
+      expect.objectContaining({
+        focusPanel: 'coordinator',
+        label: 'Approve',
+        preview: '1 workflow action awaiting approval.',
+        reason: 'coordinator-approval',
+      }),
+    );
+  });
+
+  it('surfaces budget-exhausted workflows as coordinator-budget attention', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setCoordinatorRunForTest({
+      workflows: [
+        createWorkflowSnapshotForTest({
+          execution: {
+            activeLaneCount: 0,
+            budget: {
+              deadlineAt: 61_000,
+              exhausted: 'wall-clock',
+              lanes: { limit: 12, used: 1 },
+              retries: { limit: 8, used: 0 },
+              steps: { limit: 24, used: 1 },
+            },
+            deadlineAt: 61_000,
+            lastTickAt: 61_001,
+            pendingRetryLaneIds: [],
+            readyStageIds: [],
+          },
+          status: 'blocked',
+        }),
+      ],
+    });
+
+    expect(getTaskAttentionEntry('task-1')).toEqual(
+      expect.objectContaining({
+        label: 'Budget',
+        reason: 'coordinator-budget',
+      }),
+    );
+  });
+
+  it('does not produce coordinator attention for non-coordinator tasks', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'] }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setCoordinatorRunForTest({ status: 'stale-after-restore' });
+
+    expect(getTaskAttentionEntry('task-1')).toBeNull();
+  });
+
+  it('keeps failed supervision above coordinator-stale attention', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: 'failed',
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'crashed',
+        state: 'exited-error',
+        taskId: 'task-1',
+        updatedAt: 5_000,
+      },
+    });
+    setCoordinatorRunForTest({ status: 'stale-after-restore' });
+
+    expect(getTaskAttentionEntry('task-1')?.reason).toBe('failed');
+  });
+
+  it('prefers coordinator-stale over a concurrent waiting-input snapshot', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('agents', { 'agent-1': createTestAgent() });
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'Continue? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: 5_000,
+      },
+    });
+    setCoordinatorRunForTest({ status: 'stale-after-restore' });
+
+    expect(getTaskAttentionEntry('task-1')?.reason).toBe('coordinator-stale');
   });
 });

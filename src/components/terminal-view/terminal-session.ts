@@ -3,6 +3,7 @@ import { Terminal, type ITerminalAddon } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
 import { openMarkdownViewer } from '../../app/markdown-viewer';
+import { isFailedProcessExit } from '../../domain/process-exit';
 import {
   Channel,
   fireAndForget,
@@ -11,6 +12,7 @@ import {
   isBrowserControlAuthenticated,
   isElectronRuntime,
   listenServerMessage,
+  markBrowserChannelBound,
   onBrowserAuthenticated,
   onBrowserTransportEvent,
   sendPagehideInvoke,
@@ -77,6 +79,7 @@ import {
   shouldYieldToTerminalInteractivity,
   subscribeTerminalInteractivityChanges,
 } from '../../app/terminal-interactivity-governor';
+import { setTerminalFocusedChannel } from '../../app/terminal-focused-channels';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import {
@@ -137,6 +140,12 @@ function loadTerminalWebLinksAddonConstructor(): Promise<TerminalWebLinksAddonCo
   return terminalWebLinksAddonLoadPromise;
 }
 
+if (typeof window !== 'undefined') {
+  // Preload at module load so terminal attach never awaits the dynamic
+  // web-links addon import on its critical path.
+  void loadTerminalWebLinksAddonConstructor().catch(() => {});
+}
+
 function getInitialRecoveryTransportState(
   browserMode: boolean,
 ): 'connected' | 'disconnected' | 'reconnecting' {
@@ -160,6 +169,26 @@ function getReadyFallbackDelayMs(
   }
 
   return DEFAULT_READY_FALLBACK_DELAY_MS;
+}
+
+// Exit lines carry the real exit metadata: failed exits (shared
+// isFailedProcessExit semantics) render red with the code or signal, clean
+// exits and synthetic server_unavailable exits stay on the plain gray line.
+export function formatTerminalExitLine(payload: PtyExitData): string {
+  const failed = isFailedProcessExit(payload.exit_code, payload.signal);
+  const color = failed ? '\x1b[31m' : '\x1b[90m';
+  let detail = '';
+  if (typeof payload.exit_code === 'number' && payload.exit_code !== 0) {
+    detail = `: code ${payload.exit_code}`;
+  } else if (
+    typeof payload.signal === 'string' &&
+    payload.signal.length > 0 &&
+    payload.signal !== 'server_unavailable'
+  ) {
+    detail = `: signal ${payload.signal}`;
+  }
+
+  return `\r\n${color}[Process exited${detail}]\x1b[0m\r\n`;
 }
 
 function decodeTerminalOutputData(
@@ -488,6 +517,7 @@ export interface TerminalSession {
   flushPendingResize(): Promise<void>;
   handleTerminalData(data: string): void;
   isRestoreBlocked(): boolean;
+  prefetchInputLease(): void;
   prewarmRenderHibernation(): void;
   requestInputTakeover(): Promise<boolean>;
   term: Terminal;
@@ -520,6 +550,10 @@ export interface StartTerminalSessionOptions {
   };
   isSelectedRecoveryProtected?: () => boolean;
   onAttachBound?: () => void;
+  // Fires when the attach RPC has been DISPATCHED (not resolved); the attach
+  // scheduler releases its slot here so slots only guard CPU phases, never
+  // network waits.
+  onAttachDispatched?: () => void;
   onAttachMilestone?: (milestone: TerminalAttachMilestone) => void;
   onBlockedInputAttempt?: () => void;
   onInputAccepted?: () => void;
@@ -735,6 +769,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function getOutputPriority(): TerminalOutputPriority {
     return options.getOutputPriority();
+  }
+
+  function syncFocusedChannelRegistration(): void {
+    const outputPriority = getOutputPriority();
+    setTerminalFocusedChannel(
+      agentId,
+      outputChannel.id,
+      outputPriority === 'focused' || outputPriority === 'switch-target-visible',
+    );
   }
 
   function getRenderHibernationDelayMs(): number | null {
@@ -1141,7 +1184,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function emitExit(payload: PtyExitData): void {
     processExited = true;
-    term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
+    term.write(formatTerminalExitLine(payload));
     props.onExit?.(payload);
   }
 
@@ -1549,6 +1592,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   });
   alignTerminalDomRendererWidthMetricsWithWebgl(term);
   setStatus('binding');
+  syncFocusedChannelRegistration();
   props.onReady?.(() => term.focus());
   props.onBufferReady?.(() => {
     const buffer = term.buffer.active;
@@ -1753,20 +1797,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   void (async () => {
     try {
-      await outputChannel.ready;
-      if (disposed) {
-        return;
-      }
-
-      options.onAttachMilestone?.('channel-ready');
+      // Single-round-trip attach: bind + spawn/attach + initial recovery in
+      // one RPC, dispatched immediately with optimistic geometry (last-known
+      // or the 80x24 xterm default). Fit gates paint via the recovery-apply
+      // path, never spawn, and the scheduler slot is released at dispatch.
       setStatus('attaching');
-      const attachFitReady = await waitForTerminalFitReady('attach');
-      if (!attachFitReady || disposed) {
-        return;
-      }
-      options.onAttachMilestone?.('attach-fit-ready');
       options.onAttachMilestone?.('spawn-requested');
-      const spawnResult = await invoke(IPC.SpawnAgent, {
+      const attachPromise = invoke(IPC.AttachTerminalSession, {
         adapter: props.adapter,
         agentId,
         args: props.args,
@@ -1776,6 +1813,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         controllerId: runtimeClientId,
         cwd: props.cwd,
         env: props.env ?? {},
+        initialRecovery: recoveryRuntime.getInitialAttachRecoveryDescriptor(),
         isShell: props.isShell,
         onOutput: outputChannel,
         projectMode: props.projectMode,
@@ -1785,16 +1823,31 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         runnerProfile: props.runnerProfile,
         taskId,
       });
+      options.onAttachDispatched?.();
+      const attachResult = await attachPromise;
       props.onSpawnResolved?.();
       if (disposed) {
         return;
       }
 
+      if (browserMode && attachResult.channelBound) {
+        markBrowserChannelBound(outputChannel.id);
+      }
+      options.onAttachMilestone?.('channel-ready');
       options.onAttachMilestone?.('spawn-resolved');
       spawnReady = true;
       markAttachBound();
-      void waitForTerminalFitReady('spawn-ready');
-      if (spawnResult.attachedExistingSession) {
+      void waitForTerminalFitReady('spawn-ready').then((fitBecameReady) => {
+        if (fitBecameReady && !disposed) {
+          options.onAttachMilestone?.('attach-fit-ready');
+          // The spawn no longer waits behind the fit gate, so the session
+          // stabilization that used to ride the post-fit-ready 'spawn-ready'
+          // ensure is scheduled here once fit actually becomes ready (it
+          // defers itself until the terminal is ready/paint-coordinated).
+          scheduleTerminalFitStabilization('spawn-ready');
+        }
+      });
+      if (attachResult.attachedExistingSession && attachResult.recovery) {
         const shouldPrioritizeSelectedAttachRecovery =
           options.isSelectedRecoveryProtected?.() === true;
         if (shouldPrioritizeSelectedAttachRecovery) {
@@ -1802,7 +1855,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         }
         try {
           options.onAttachMilestone?.('attach-recovery-started');
-          await recoveryRuntime.restoreTerminalOutput('attach');
+          await recoveryRuntime.applyInitialAttachRecoveryEntry(attachResult.recovery);
         } finally {
           options.onAttachMilestone?.('attach-recovery-settled');
           if (shouldPrioritizeSelectedAttachRecovery && !disposed) {
@@ -1843,6 +1896,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     cleanup(): void {
       clearInitialCommandTimer();
       resetPaintReady();
+      setTerminalFocusedChannel(agentId, outputChannel.id, false);
       options.onRestoreBlockedChange?.(false);
       renderHibernation.cleanup();
       disposed = true;
@@ -1888,6 +1942,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isRestoreBlocked(): boolean {
       return recoveryRuntime?.isRestoreBlocked() ?? false;
     },
+    prefetchInputLease(): void {
+      inputPipeline.prefetchInputLease();
+    },
     prewarmRenderHibernation(): void {
       void renderHibernation.prewarm();
     },
@@ -1897,6 +1954,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     term,
     updateOutputPriority(): void {
       outputPipeline.updateOutputPriority();
+      syncFocusedChannelRegistration();
       syncWebglRendererPolicy();
       renderHibernation.sync();
       scheduleFitIfDirty(agentId);

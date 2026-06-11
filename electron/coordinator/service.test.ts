@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StorageEnv } from '../ipc/storage.js';
 import { getStateDirForEnv } from '../ipc/storage.js';
 import {
@@ -10,7 +10,9 @@ import {
   createCoordinatorCredential,
   createCoordinatorRunForTask,
   ensureCoordinatorServiceLoaded,
+  flushCoordinatorRuntimeState,
   getCoordinatorBlockingActivityHints,
+  getCoordinatorPersistenceHealth,
   resetCoordinatorServiceForTests,
   resolveCoordinatorToken,
   startCoordinatorRuntimePersistence,
@@ -294,7 +296,7 @@ describe('coordinator service', () => {
     }
   });
 
-  it('persists subtask launch payloads and restores launch lookups after reload', () => {
+  it('persists subtask launch payloads and restores launch lookups after reload', async () => {
     const env = createStorageEnv();
     envs.push(env);
     const stopPersistence = startCoordinatorRuntimePersistence(env);
@@ -324,7 +326,7 @@ describe('coordinator service', () => {
       toolTokenId: 'child-token-id',
       worktreePath: '/repo/task-child',
     });
-    stopPersistence();
+    await stopPersistence();
 
     resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
@@ -380,5 +382,171 @@ describe('coordinator service', () => {
     });
 
     expect(getCoordinatorBlockingActivityHints('task-child')).toEqual([]);
+  });
+});
+
+describe('coordinator service persistence overhaul', () => {
+  const envs: StorageEnv[] = [];
+
+  afterEach(async () => {
+    // Deterministic teardown: the reset drains the persistence scheduler's
+    // save chain, so any in-flight async save lands before temp dirs are
+    // removed (no wall-clock sleep).
+    await resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    for (const env of envs) {
+      removeStorageEnv(env);
+    }
+    envs.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function createLargeFixtureState(env: StorageEnv): { runId: string } {
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const bigAssignment = 'x'.repeat(64_000);
+    for (let index = 0; index < 40; index += 1) {
+      addCoordinatorSubtask({
+        agentId: `agent-${index}`,
+        assignment: bigAssignment,
+        parentCoordinatorTaskId: 'task-coordinator',
+        runId: result.run.id,
+        status: 'running',
+        taskId: `task-child-${index}`,
+        toolTokenId: `token-${index}`,
+        worktreePath: `/repo/task-child-${index}`,
+      });
+    }
+    return { runId: result.run.id };
+  }
+
+  it('performs no synchronous fs write per emitted event during a mutation burst', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const stopPersistence = startCoordinatorRuntimePersistence(env);
+    const { runId } = createLargeFixtureState(env);
+
+    const writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync');
+    for (let index = 0; index < 50; index += 1) {
+      updateCoordinatorSubtaskStatus(runId, `task-child-${index % 40}`, 'running');
+    }
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+    writeFileSyncSpy.mockRestore();
+    await stopPersistence();
+  });
+
+  it('keeps per-event emit latency under 5ms with a multi-MB state fixture', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const stopPersistence = startCoordinatorRuntimePersistence(env);
+    const { runId } = createLargeFixtureState(env);
+    expect(JSON.stringify(getCoordinatorBootstrapSnapshot()).length).toBeGreaterThan(2_000_000);
+
+    const emitLatenciesMs: number[] = [];
+    for (let index = 0; index < 50; index += 1) {
+      const startedAt = process.hrtime.bigint();
+      updateCoordinatorSubtaskStatus(runId, `task-child-${index % 40}`, 'running');
+      emitLatenciesMs.push(Number(process.hrtime.bigint() - startedAt) / 1_000_000);
+    }
+
+    // Acceptance: a 50-mutation burst causes zero synchronous persist stalls
+    // > 5ms on the event loop (baseline: 59ms synchronous persist per event).
+    // The deterministic proof that no synchronous persist exists at all is the
+    // fs.writeFileSync spy above; the latency budget here is asserted at p90
+    // so loaded parallel test workers cannot flake it with scheduler noise —
+    // the old per-event persist stalled EVERY event by ~59ms.
+    const sortedLatencies = [...emitLatenciesMs].sort((left, right) => left - right);
+    const p90LatencyMs = sortedLatencies[Math.floor(sortedLatencies.length * 0.9)] ?? 0;
+    const maxLatencyMs = sortedLatencies[sortedLatencies.length - 1] ?? 0;
+    expect(p90LatencyMs).toBeLessThan(5);
+    process.stdout.write(
+      `[delta-resync] 50-mutation burst emit latency p90=${p90LatencyMs.toFixed(3)}ms max=${maxLatencyMs.toFixed(3)}ms (multi-MB fixture)\n`,
+    );
+    await stopPersistence();
+  });
+
+  it('never deletes credential files when the coordinator state load failed', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const credentialPath = result.credentialPath;
+    expect(fs.existsSync(credentialPath)).toBe(true);
+
+    // Corrupt both the state file and its backup: the load reports 'failed'.
+    const statePath = path.join(getStateDirForEnv(env), 'coordinator-state.json');
+    fs.writeFileSync(statePath, 'garbage');
+    fs.rmSync(`${statePath}.bak`, { force: true });
+    fs.writeFileSync(`${statePath}.bak`, 'garbage');
+
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    ensureCoordinatorServiceLoaded(env);
+
+    // The run could not be restored, but the credential file survives.
+    expect(getCoordinatorBootstrapSnapshot().runs).toEqual([]);
+    expect(fs.existsSync(credentialPath)).toBe(true);
+  });
+
+  it('keeps credentials for runs dropped by per-run salvage', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+
+    const result = createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const credentialPath = result.credentialPath;
+    const statePath = path.join(getStateDirForEnv(env), 'coordinator-state.json');
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { runs: unknown[] };
+    persisted.runs[0] = { id: result.run.id, status: 'broken' };
+    fs.writeFileSync(statePath, JSON.stringify(persisted));
+    fs.rmSync(`${statePath}.bak`, { force: true });
+
+    resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    ensureCoordinatorServiceLoaded(env);
+
+    expect(getCoordinatorBootstrapSnapshot().runs).toEqual([]);
+    expect(fs.existsSync(credentialPath)).toBe(true);
+  });
+
+  it('surfaces persistence health while the scheduler runtime is active', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    expect(getCoordinatorPersistenceHealth()).toBeNull();
+
+    const stopPersistence = startCoordinatorRuntimePersistence(env);
+    expect(getCoordinatorPersistenceHealth()).toMatchObject({
+      degraded: false,
+      pendingFlush: false,
+    });
+
+    createCoordinatorRunForTask(env, {
+      coordinatorAgentId: 'agent-coordinator',
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    await flushCoordinatorRuntimeState(env);
+    expect(getCoordinatorPersistenceHealth()).toMatchObject({ degraded: false });
+    expect(getCoordinatorPersistenceHealth()?.lastSuccessAt).not.toBeNull();
+    await stopPersistence();
+    expect(getCoordinatorPersistenceHealth()).toBeNull();
   });
 });

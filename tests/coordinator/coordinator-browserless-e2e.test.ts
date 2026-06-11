@@ -271,6 +271,28 @@ function isSequencedRunUpsertedMessage(message: unknown): message is SequencedRu
   );
 }
 
+interface SequencedRunMetaUpsertedMessage {
+  event: {
+    eventType: 'run-meta-upserted';
+    payload: Record<string, unknown>;
+    runId: string;
+  };
+  seq: number;
+  type: 'coordinator-event';
+}
+
+// Run scalar mutations (status/pause/resume) now emit run-meta-upserted
+// instead of full-run snapshots; scenario semantics are unchanged.
+function isSequencedRunMetaUpsertedMessage(
+  message: unknown,
+): message is SequencedRunMetaUpsertedMessage {
+  return (
+    isCoordinatorEventMessage(message) &&
+    message.event.eventType === 'run-meta-upserted' &&
+    hasNumericSeq(message)
+  );
+}
+
 function isSubtaskUpsertedMessage(message: unknown): message is SubtaskUpsertedMessage {
   return isCoordinatorEventMessage(message) && message.event.eventType === 'subtask-upserted';
 }
@@ -279,17 +301,50 @@ function isRunningSubtaskUpsertedMessage(message: unknown): message is SubtaskUp
   return isSubtaskUpsertedMessage(message) && getEventPayloadRecord(message).status === 'running';
 }
 
-function createSequencedSubtaskUpsertedPredicate(
-  taskId: string,
-): (message: unknown) => message is SubtaskUpsertedMessage & { seq: number } {
-  return function isSequencedSubtaskUpsertedMessage(
+interface CoordinatorStateBootstrapMessage {
+  snapshots: Array<{
+    category: string;
+    payload: {
+      runs: Array<{ id: string; subtasks: Array<{ taskId: string }> }>;
+    };
+  }>;
+  type: 'state-bootstrap';
+}
+
+function isCoordinatorStateBootstrapMessage(
+  message: unknown,
+): message is CoordinatorStateBootstrapMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { type?: unknown }).type === 'state-bootstrap' &&
+    Array.isArray((message as { snapshots?: unknown }).snapshots)
+  );
+}
+
+function getCoordinatorBootstrapSnapshotPayload(message: CoordinatorStateBootstrapMessage): {
+  runs: Array<{ id: string; subtasks: Array<{ taskId: string }> }>;
+} {
+  const snapshot = message.snapshots.find((entry) => entry.category === 'coordinator');
+  if (!snapshot) {
+    throw new Error('Expected a coordinator snapshot in the state-bootstrap message');
+  }
+
+  return snapshot.payload;
+}
+
+function createCoordinatorStateBootstrapPredicate(
+  runId: string,
+): (message: unknown) => message is CoordinatorStateBootstrapMessage {
+  return function isCoordinatorStateBootstrapWithRun(
     message: unknown,
-  ): message is SubtaskUpsertedMessage & { seq: number } {
-    return (
-      isSubtaskUpsertedMessage(message) &&
-      getEventPayloadRecord(message).taskId === taskId &&
-      hasNumericSeq(message)
-    );
+  ): message is CoordinatorStateBootstrapMessage {
+    if (!isCoordinatorStateBootstrapMessage(message)) {
+      return false;
+    }
+
+    const snapshot = message.snapshots.find((entry) => entry.category === 'coordinator');
+    return snapshot !== undefined && snapshot.payload.runs.some((run) => run.id === runId);
   };
 }
 
@@ -3029,8 +3084,8 @@ describe('browser-less coordinator E2E', () => {
     try {
       const runningEvent = restoredHarness.waitForSocketMessage(
         leaseSocket,
-        (message): message is SequencedRunUpsertedMessage =>
-          isSequencedRunUpsertedMessage(message) &&
+        (message): message is SequencedRunMetaUpsertedMessage =>
+          isSequencedRunMetaUpsertedMessage(message) &&
           getEventPayloadRecord(message).status === 'running',
       );
       await restoredHarness.sendTaskCommandLease(leaseSocket, {
@@ -3279,7 +3334,7 @@ describe('browser-less coordinator E2E', () => {
     }
   });
 
-  it('replays coordinator events to reconnecting websocket clients using browser control sequence cursors', async () => {
+  it('recovers coordinator state for reconnecting websocket clients across a compacted blip window', async () => {
     const { credential, harness, run } = await createHarnessWithRun();
     const { message: runEvent, socket: firstSocket } = await harness.connectWebSocketAndWait(
       'replay-client',
@@ -3288,15 +3343,23 @@ describe('browser-less coordinator E2E', () => {
     );
     firstSocket.close();
 
+    // The spawn mutates the same compaction keys repeatedly inside the blip
+    // (subtask status transitions, presence churn), so the legacy per-event
+    // replay window is non-contiguous. Changed by design with the delta-resync
+    // item: such a window degrades to the replay-truncated signal instead of
+    // a holey per-event replay (gap-detecting legacy consumers would misfire
+    // and the remote shell would hard-reconnect in a loop); the handshake
+    // state-bootstrap carries the missed coordinator state.
     const subtask = await spawnCoordinatorSubtask(harness, run, credential.token);
-    const { message: replayedSubtaskEvent, socket: replaySocket } =
-      await harness.connectWebSocketAndWait(
-        'replay-client',
-        runEvent.seq,
-        createSequencedSubtaskUpsertedPredicate(subtask.taskId),
-      );
+    const { message: bootstrap, socket: replaySocket } = await harness.connectWebSocketAndWait(
+      'replay-client',
+      runEvent.seq,
+      createCoordinatorStateBootstrapPredicate(run.id),
+    );
 
-    expect(replayedSubtaskEvent.seq).toBeGreaterThan(runEvent.seq);
+    const coordinatorSnapshot = getCoordinatorBootstrapSnapshotPayload(bootstrap);
+    const bootstrapRun = coordinatorSnapshot.runs.find((entry) => entry.id === run.id);
+    expect(bootstrapRun?.subtasks.map((entry) => entry.taskId)).toContain(subtask.taskId);
     replaySocket.close();
   });
 });

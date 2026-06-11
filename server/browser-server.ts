@@ -2,39 +2,54 @@ import express from 'express';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { subscribeCoordinatorEvents } from '../electron/coordinator/runtime.js';
-import {
-  ensureCoordinatorServiceLoaded,
-  startCoordinatorRuntimePersistence,
-} from '../electron/coordinator/service.js';
-import { startCoordinatorPromptDeliveryRuntime } from '../electron/coordinator/tool-gateway.js';
+import { subscribeAgentAvailability } from '../electron/ipc/agent-availability-state.js';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
+import { requestAgentCatalogAvailabilityRevalidation } from '../electron/ipc/agents.js';
+import {
+  cancelBackendBackgroundReconciliation,
+  clearBackendClientFocus,
+  getAllBackendFocusedChannelIds,
+  releaseBackendBackgroundWork,
+  subscribeBackendClientFocusedChannels,
+} from '../electron/ipc/backend-work-queue.js';
 import { IPC } from '../electron/ipc/channels.js';
+import {
+  loadPersistedDerivedState,
+  startDerivedStatePersistence,
+} from '../electron/ipc/derived-state-persistence.js';
 import type { HandlerContext } from '../electron/ipc/handler-context.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import { restoreBackendDerivedState } from '../electron/ipc/saved-state-restore.js';
 import {
   getTaskConvergenceSnapshots,
   getTaskConvergenceStateVersion,
-  restoreSavedTaskConvergence,
   subscribeTaskConvergence,
 } from '../electron/ipc/task-convergence-state.js';
-import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/task-review-state.js';
+import {
+  getTaskReviewStateVersion,
+  listTaskReviewSnapshots,
+  subscribeTaskReview,
+} from '../electron/ipc/task-review-state.js';
 import {
   getTaskReviewSignalsStateVersion,
   listTaskReviewSignalsSnapshots,
-  restoreSavedTaskReviewSignals,
   subscribeTaskReviewSignals,
 } from '../electron/ipc/task-review-signals.js';
 import {
   getTaskStepsStateVersion,
   listTaskStepsSummarySnapshots,
-  restoreSavedTaskSteps,
   subscribeTaskSteps,
 } from '../electron/ipc/task-steps.js';
-import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
+import {
+  getGitStatusStateVersion,
+  listGitStatusSnapshots,
+} from '../electron/ipc/git-status-state.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
-import { loadAppStateForEnv, loadTaskRegistryStateForEnv } from '../electron/ipc/storage.js';
+import {
+  loadAppStateDocumentForEnv,
+  loadTaskRegistryStateDocumentForEnv,
+} from '../electron/ipc/storage.js';
 import {
   clearTaskContainerPreviewTargets,
   hasTaskContainerPreviewTarget,
@@ -65,6 +80,10 @@ import {
   registerBrowserWebSocketServer,
   type BrowserWebSocketServer,
 } from './browser-websocket.js';
+import {
+  startCoordinatorRuntimeLoad,
+  type CoordinatorRuntimeLoader,
+} from './coordinator-runtime-loader.js';
 import { createTaskNameRegistry } from './task-names.js';
 
 type BrowserServerLifecycle =
@@ -99,6 +118,12 @@ export interface StartBrowserServerOptions {
 export interface BrowserServerController {
   cleanup: () => void;
   shutdown: () => void;
+  /**
+   * Resolves once the coordinator runtime cleanup (including its async
+   * persistence flush) has settled after cleanup()/shutdown(). Test harnesses
+   * must await this before removing the state directory.
+   */
+  whenCoordinatorRuntimeStopped: () => Promise<void>;
 }
 
 function getUpgradePathname(req: IncomingMessage): string | null {
@@ -163,8 +188,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   };
   const taskNames = createTaskNameRegistry();
   const storageEnv = { userDataPath: options.userDataPath, isPackaged: false } as const;
-  const savedAppState = loadAppStateForEnv(storageEnv);
-  const savedTaskRegistryState = loadTaskRegistryStateForEnv(storageEnv);
+  const savedAppState = loadAppStateDocumentForEnv(storageEnv);
+  const savedTaskRegistryState = loadTaskRegistryStateDocumentForEnv(storageEnv);
   const browserAuth = createBrowserAuthController({
     token: options.token,
   });
@@ -174,7 +199,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   }
 
   if (savedAppState) {
-    restoreSavedTaskPorts(savedAppState);
+    restoreSavedTaskPorts(savedAppState.json);
   }
 
   let browserSocketServer: BrowserWebSocketServer | null = null;
@@ -257,8 +282,15 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     ...(options.browserChannelCoalescedDataMaxBytes !== undefined
       ? { coalescedChannelDataMaxBytes: options.browserChannelCoalescedDataMaxBytes }
       : {}),
+    getClientBufferedAmount: (client) => client.bufferedAmount,
     getPendingChannelSendState: (client) => controlPlane.getPendingChannelSendState(client),
     send: (client, data) => controlPlane.sendChannelData(client, data),
+  });
+  // Focused-channel lane priority is derived from the single focus signal
+  // (ReportClientTaskFocus.focusedChannelIds); the channel manager consumes
+  // the merged focused set whenever any client's focus changes.
+  const cleanupFocusedChannelConsumer = subscribeBackendClientFocusedChannels(() => {
+    channelManager.setFocusedChannelIds(getAllBackendFocusedChannelIds());
   });
 
   const taskPortsStateVersion = getTaskPortsStateVersion();
@@ -268,9 +300,37 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       stateVersion: taskPortsStateVersion,
     });
   }
+  let coordinatorRuntimeLoader: CoordinatorRuntimeLoader | null = null;
+  let coordinatorRuntimeCleanupDone: Promise<void> | null = null;
+  let resolveCoordinatorRuntimeStarted: (loader: CoordinatorRuntimeLoader) => void = () => {};
+  const coordinatorRuntimeStarted = new Promise<CoordinatorRuntimeLoader>((resolve) => {
+    resolveCoordinatorRuntimeStarted = resolve;
+  });
+
+  async function awaitCoordinatorRuntimeReady(): Promise<void> {
+    const loader = await coordinatorRuntimeStarted;
+    await loader.ready;
+  }
+
   const handlerContext: HandlerContext = {
     userDataPath: options.userDataPath,
     isPackaged: false,
+    awaitCoordinatorRuntimeReady,
+    bindChannelForClient: (clientId, channelId) => {
+      if (!clientId) {
+        return false;
+      }
+
+      const clients = controlPlane.transport.getClientsById(clientId);
+      if (clients.length === 0) {
+        return false;
+      }
+
+      for (const client of clients) {
+        channelManager.bindChannel(client, channelId);
+      }
+      return true;
+    },
     coordinatorToolCallUrl: () => getCoordinatorToolCallUrl(controlPlane.getServerInfo().port),
     sendToChannel: (channelId, message) => {
       channelManager.sendChannelMessage(channelId, message);
@@ -280,30 +340,35 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
   };
-  ensureCoordinatorServiceLoaded(handlerContext);
-  const cleanupCoordinatorPersistence = startCoordinatorRuntimePersistence(handlerContext);
-  const cleanupCoordinatorPromptDelivery = startCoordinatorPromptDeliveryRuntime(
-    handlerContext,
-    taskNames,
-  );
-  const handlers = createIpcHandlers(handlerContext, taskNames);
+  const handlers = createIpcHandlers(handlerContext, taskNames, savedTaskRegistryState);
 
   if (savedAppState) {
-    restoreSavedTaskGitStatusMonitoring(
-      {
+    restoreBackendDerivedState({
+      context: {
         emitGitStatusChanged: controlPlane.emitGitStatusChanged,
       },
-      savedAppState,
-    );
-    restoreSavedTaskConvergence(savedAppState);
-    restoreSavedTaskReview(savedAppState);
-    restoreSavedTaskReviewSignals(savedAppState);
-    restoreSavedTaskSteps(savedAppState);
+      derivedState: loadPersistedDerivedState(storageEnv),
+      document: savedAppState,
+    });
+    const gitStatusStateVersion = getGitStatusStateVersion();
+    for (const snapshot of listGitStatusSnapshots()) {
+      controlPlane.emitGitStatusChanged({
+        ...snapshot,
+        stateVersion: gitStatusStateVersion,
+      });
+    }
     const taskConvergenceStateVersion = getTaskConvergenceStateVersion();
     for (const snapshot of getTaskConvergenceSnapshots()) {
       controlPlane.emitTaskConvergenceChanged({
         ...snapshot,
         stateVersion: taskConvergenceStateVersion,
+      });
+    }
+    const taskReviewStateVersion = getTaskReviewStateVersion();
+    for (const snapshot of listTaskReviewSnapshots()) {
+      controlPlane.emitTaskReviewChanged({
+        ...snapshot,
+        stateVersion: taskReviewStateVersion,
       });
     }
     const taskStepsStateVersion = getTaskStepsStateVersion();
@@ -321,6 +386,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       });
     }
   }
+  const cleanupDerivedStatePersistence = startDerivedStatePersistence(storageEnv);
 
   app.use((req, res, next) => {
     if (browserAuth.handleBootstrapIfPresent(req, res)) {
@@ -401,9 +467,13 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const cleanupAgentSupervision = subscribeAgentSupervision((event) => {
     controlPlane.emitAgentSupervisionChanged(event);
   });
-  const cleanupCoordinatorEvents = subscribeCoordinatorEvents((event) => {
-    controlPlane.emitCoordinatorChanged(event);
+  const cleanupAgentAvailability = subscribeAgentAvailability((event) => {
+    controlPlane.emitIpcEvent(IPC.AgentAvailabilityChanged, event);
   });
+  // The boot probe round is queued at 'background' priority and stays gated
+  // until releaseBackendBackgroundWork() runs in the listen callback; the work
+  // queue is the single post-listen scheduler.
+  requestAgentCatalogAvailabilityRevalidation('boot');
   const cleanupTaskConvergence = subscribeTaskConvergence((event) => {
     controlPlane.emitTaskConvergenceChanged(event);
   });
@@ -431,6 +501,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     browserSocketServer?.cleanupClient(client);
     controlPlane.cleanupClient(client);
     if (clientId && !controlPlane.transport.hasClientId(clientId)) {
+      clearBackendClientFocus(clientId);
       browserSocketServer?.pruneDisconnectedAgentCommandResults();
     }
   }
@@ -473,6 +544,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
   browserSocketServer = registerBrowserWebSocketServer({
     authenticateConnection: controlPlane.authenticateConnection,
+    sendStateBootstrap: controlPlane.sendStateBootstrap,
     broadcastRemoteStatus: controlPlane.broadcastRemoteStatus,
     channels: channelManager,
     cleanupClientState,
@@ -510,6 +582,15 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       process.stdout.write(`Tailscale: ${info.tailscaleUrl}\n`);
     }
     controlPlane.startHeartbeat();
+    coordinatorRuntimeLoader = startCoordinatorRuntimeLoad({
+      emitCoordinatorChanged: (event) => {
+        controlPlane.emitCoordinatorChanged(event);
+      },
+      handlerContext,
+      taskNames,
+    });
+    resolveCoordinatorRuntimeStarted(coordinatorRuntimeLoader);
+    releaseBackendBackgroundWork();
   });
 
   server.on('close', () => {
@@ -523,7 +604,14 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     closeCallbacks.clear();
 
     if (shouldExit) {
-      process.exit(0);
+      // Await the coordinator runtime cleanup before exiting so an async
+      // persistence flush behind the loader handle cannot be dropped at
+      // shutdown.
+      void (coordinatorRuntimeCleanupDone ?? Promise.resolve())
+        .catch(() => {})
+        .finally(() => {
+          process.exit(0);
+        });
     }
   });
 
@@ -555,10 +643,16 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
     removeProcessHandlers();
     cleanupAgentLifecycleBroadcasts();
+    cleanupAgentAvailability();
     cleanupAgentSupervision();
-    cleanupCoordinatorEvents();
-    cleanupCoordinatorPersistence();
-    cleanupCoordinatorPromptDelivery();
+    cleanupFocusedChannelConsumer();
+    // cleanup() stays synchronous for its callers, but the coordinator runtime
+    // cleanup is async by contract (CoordinatorRuntimeHandle.cleanup() awaits
+    // future persistence flushes); keep the promise so the exit-on-close path
+    // can wait for the flush instead of dropping it.
+    coordinatorRuntimeCleanupDone = coordinatorRuntimeLoader?.cleanup() ?? null;
+    cancelBackendBackgroundReconciliation();
+    cleanupDerivedStatePersistence();
     cleanupTaskConvergence();
     cleanupTaskReview();
     cleanupTaskReviewSignals();
@@ -597,5 +691,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   return {
     cleanup,
     shutdown,
+    whenCoordinatorRuntimeStopped: async () => {
+      await (coordinatorRuntimeCleanupDone ?? Promise.resolve()).catch(() => {});
+    },
   };
 }

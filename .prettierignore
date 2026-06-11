@@ -1,5 +1,7 @@
 dist/
+dist-browser-dev/
 dist-electron/
+dist-remote-dev/
 dist-remote/
 release/
 node_modules/

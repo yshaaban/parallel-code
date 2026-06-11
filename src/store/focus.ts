@@ -129,7 +129,7 @@ function defaultPanelFor(panelId: string): string {
   return store.tasks[panelId] ? 'ai-terminal' : 'terminal';
 }
 
-function hasBlockingDialog(): boolean {
+export function hasBlockingDialog(): boolean {
   return (
     store.showNewTaskDialog ||
     store.showAddProjectDialog ||

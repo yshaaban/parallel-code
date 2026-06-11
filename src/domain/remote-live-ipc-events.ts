@@ -3,7 +3,6 @@ import { isStringTupleMember } from '../lib/type-guards.js';
 
 export const REMOTE_LIVE_IPC_EVENT_CHANNELS = [
   IPC.AgentSupervisionChanged,
-  IPC.CoordinatorChanged,
   IPC.GitStatusChanged,
   IPC.TaskCommandControllerChanged,
   IPC.TaskConvergenceChanged,

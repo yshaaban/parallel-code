@@ -1,6 +1,8 @@
 export enum IPC {
   // Agent/PTY
   SpawnAgent = 'spawn_agent',
+  AttachTerminalSession = 'attach_terminal_session',
+  ReleaseTerminalRecoveryPause = 'release_terminal_recovery_pause',
   EnsureAgentSessionsBatch = 'ensure_agent_sessions_batch',
   DetachAgentOutput = 'detach_agent_output',
   WriteToAgent = 'write_to_agent',
@@ -15,6 +17,8 @@ export enum IPC {
   CountRunningAgents = 'count_running_agents',
   KillAllAgents = 'kill_all_agents',
   ListAgents = 'list_agents',
+  RefreshAgentAvailability = 'refresh_agent_availability',
+  AgentAvailabilityChanged = 'agent_availability_changed',
   GetAgentSupervision = 'get_agent_supervision',
   AgentSupervisionChanged = 'agent_supervision_changed',
   ListRunningAgentIds = 'list_running_agent_ids',
@@ -23,6 +27,7 @@ export enum IPC {
   GetBrowserColdBootstrap = 'get_browser_cold_bootstrap',
   GetBrowserReconnectStatus = 'get_browser_reconnect_status',
   GetBrowserReconnectSnapshot = 'get_browser_reconnect_snapshot',
+  ReportClientTaskFocus = 'report_client_task_focus',
 
   // Task
   CreateTask = 'create_task',

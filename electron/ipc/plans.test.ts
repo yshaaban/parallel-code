@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -49,6 +50,42 @@ describe('plans', () => {
     ensurePlansDirectory(worktreePath);
 
     expect(fs.existsSync(path.join(worktreePath, '.claude', 'plans'))).toBe(true);
+  });
+
+  it('excludes the app-managed settings file from git status in git worktrees', () => {
+    const worktreePath = createWorktree();
+    worktrees.push(worktreePath);
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: worktreePath });
+
+    ensurePlansDirectory(worktreePath);
+    // Idempotent: a second ensure must not duplicate the exclude entry.
+    ensurePlansDirectory(worktreePath);
+
+    const excludeContent = fs.readFileSync(
+      path.join(worktreePath, '.git', 'info', 'exclude'),
+      'utf-8',
+    );
+    const excludeEntries = excludeContent
+      .split('\n')
+      .filter((line) => line === '.claude/settings.local.json');
+    expect(excludeEntries).toHaveLength(1);
+
+    // The app-managed write must not surface as an untracked user change.
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+    });
+    expect(status).not.toContain('.claude');
+  });
+
+  it('still writes plan settings for non-git worktrees without an exclude', () => {
+    const worktreePath = createWorktree();
+    worktrees.push(worktreePath);
+
+    ensurePlansDirectory(worktreePath);
+
+    expect(fs.existsSync(path.join(worktreePath, '.claude', 'settings.local.json'))).toBe(true);
+    expect(fs.existsSync(path.join(worktreePath, '.git'))).toBe(false);
   });
 
   it('reads the newest plan across both plan directories', () => {

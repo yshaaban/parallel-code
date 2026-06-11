@@ -170,3 +170,44 @@ describe('TerminalStateMirror', () => {
     expect(serialized.endsWith('\x1b[?2004l\x1b[?25h')).toBe(true);
   });
 });
+
+describe('TerminalStateMirror.serializeLatest', () => {
+  it('jumps the queued backlog and reports the applied cursor', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('one'), 3);
+    mirror.enqueueOutput(Buffer.from('two'), 6);
+    mirror.enqueueOutput(Buffer.from('three'), 11);
+
+    // serializeLatest waits only for the single in-flight write, never the
+    // queued backlog, so callers compose the rest from the ring buffer.
+    const latest = await mirror.serializeLatest();
+    expect(latest).not.toBeNull();
+    expect(latest?.appliedCursor).toBe(3);
+    expect(latest?.data.toString('utf8')).toContain('one');
+    expect(latest?.data.toString('utf8')).not.toContain('two');
+
+    const full = await mirror.serialize();
+    expect(full?.data.toString('utf8')).toContain('onetwothree');
+  });
+
+  it('reports the final cursor once the backlog has drained', async () => {
+    const mirror = createMirror();
+
+    mirror.enqueueOutput(Buffer.from('alpha'), 5);
+    mirror.enqueueOutput(Buffer.from('beta'), 9);
+    await mirror.serialize();
+
+    const latest = await mirror.serializeLatest();
+    expect(latest?.appliedCursor).toBe(9);
+    expect(latest?.data.toString('utf8')).toContain('alphabeta');
+  });
+
+  it('returns null after dispose', async () => {
+    const mirror = createMirror();
+    mirror.enqueueOutput(Buffer.from('bytes'), 5);
+    mirror.dispose();
+
+    await expect(mirror.serializeLatest()).resolves.toBeNull();
+  });
+});

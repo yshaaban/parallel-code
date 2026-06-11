@@ -11,6 +11,10 @@ import {
 import { Portal } from 'solid-js/web';
 import { callCoordinatorUiTool } from '../../app/coordinator';
 import {
+  runCoordinatorOperatorAction,
+  type CoordinatorOperatorActionRequest,
+} from '../../app/coordinator-operator-actions';
+import {
   createCoordinatorRunView,
   getCoordinatorSubtaskActions,
   type CoordinatorAttentionLevel,
@@ -20,6 +24,7 @@ import {
   type CoordinatorWorkflowTimelineView,
 } from '../../app/coordinator-ui-model';
 import type {
+  CoordinatorRunStatus,
   CoordinatorSpawnSubtaskPayload,
   CoordinatorUiToolCallRequest,
 } from '../../domain/coordinator';
@@ -30,6 +35,7 @@ import { theme } from '../../lib/theme';
 import { getCoordinatorRunForTask } from '../../store/coordinator';
 import type { Task } from '../../store/types';
 import type { PanelChild } from '../ResizablePanel';
+import { CoordinatorRailAlert } from './CoordinatorRailAlert';
 import { ScalablePanel } from '../ScalablePanel';
 
 interface TaskCoordinatorSectionProps {
@@ -69,6 +75,8 @@ type CoordinatorSpawnPayloadParseResult =
       error: string;
       ok: false;
     };
+
+const SPAWN_ACK_TIMEOUT_MS = 5_000;
 
 const TONE_COLOR: Record<CoordinatorAttentionLevel, string> = {
   danger: theme.error,
@@ -332,8 +340,32 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   const [actionError, setActionError] = createSignal<string | null>(null);
   const [actionStatus, setActionStatus] = createSignal<string | null>(null);
   const [busyAction, setBusyAction] = createSignal<string | null>(null);
-  const [resumeError, setResumeError] = createSignal<string | null>(null);
-  const [pauseError, setPauseError] = createSignal<string | null>(null);
+  const [railAlert, setRailAlert] = createSignal<{
+    message: string;
+    retry: (() => void) | null;
+  } | null>(null);
+  // Optimistic pause/unpause: the rail flips immediately and any newer run
+  // snapshot (or a rejection) clears the flip, so replayed stale snapshots
+  // cannot pin the optimistic label.
+  const [optimisticPauseFlip, setOptimisticPauseFlip] = createSignal<{
+    baseStatus: CoordinatorRunStatus;
+    baseUpdatedAt: number;
+    target: 'paused' | 'running';
+  } | null>(null);
+  // An accepted resume keeps the control disabled until a newer run snapshot
+  // lands, so a fast second click cannot send a duplicate resume_run that the
+  // backend would reject into a spurious rail alert.
+  const [acceptedResumeAck, setAcceptedResumeAck] = createSignal<{
+    baseStatus: CoordinatorRunStatus;
+    baseUpdatedAt: number;
+  } | null>(null);
+  // Spawn acknowledgment outlives the popover: the ghost chip stays until the
+  // spawned subtask lands in a run snapshot or the ack window times out.
+  const [pendingSpawnAck, setPendingSpawnAck] = createSignal<{
+    assignment: string;
+    name: string;
+  } | null>(null);
+  let spawnAckTimer: ReturnType<typeof setTimeout> | undefined;
   const [closeConfirmTaskId, setCloseConfirmTaskId] = createSignal<string | null>(null);
   const [denyConfirmApprovalId, setDenyConfirmApprovalId] = createSignal<string | null>(null);
   const [diffResult, setDiffResult] = createSignal<CoordinatorDiffResult | null>(null);
@@ -416,6 +448,91 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     setFollowUpText('');
     setOutputResult(null);
     setTab('tail');
+  });
+
+  createEffect(() => {
+    const flip = optimisticPauseFlip();
+    if (!flip) {
+      return;
+    }
+
+    const snapshot = run();
+    if (
+      !snapshot ||
+      snapshot.updatedAt !== flip.baseUpdatedAt ||
+      snapshot.status !== flip.baseStatus
+    ) {
+      setOptimisticPauseFlip(null);
+    }
+  });
+
+  createEffect(() => {
+    const ack = acceptedResumeAck();
+    if (!ack) {
+      return;
+    }
+
+    const snapshot = run();
+    if (
+      !snapshot ||
+      snapshot.updatedAt !== ack.baseUpdatedAt ||
+      snapshot.status !== ack.baseStatus
+    ) {
+      setAcceptedResumeAck(null);
+    }
+  });
+
+  // While the optimistic pause flip is active (accepted action, run snapshot
+  // not landed yet) the rendered label comes from the flip target — so the
+  // click intent, labels, and busy id must derive from the flip too, or an
+  // "Unpause" label could silently send pause_run again.
+  const pauseIntentIsUnpause = createMemo(() => {
+    const flip = optimisticPauseFlip();
+    if (flip) {
+      return flip.target === 'paused';
+    }
+
+    return runView()?.pauseAction.id === 'unpause-run';
+  });
+  const pauseIntentBusyId = (): string => (pauseIntentIsUnpause() ? 'unpause-run' : 'pause-run');
+
+  function clearSpawnAck(): void {
+    if (spawnAckTimer !== undefined) {
+      clearTimeout(spawnAckTimer);
+      spawnAckTimer = undefined;
+    }
+
+    setPendingSpawnAck(null);
+  }
+
+  function acknowledgeSpawn(name: string, assignment: string): void {
+    if (spawnAckTimer !== undefined) {
+      clearTimeout(spawnAckTimer);
+    }
+
+    setPendingSpawnAck({ assignment, name });
+    spawnAckTimer = setTimeout(() => {
+      spawnAckTimer = undefined;
+      setPendingSpawnAck(null);
+    }, SPAWN_ACK_TIMEOUT_MS);
+  }
+
+  createEffect(() => {
+    const ack = pendingSpawnAck();
+    if (!ack) {
+      return;
+    }
+
+    if (run()?.subtasks.some((subtask) => subtask.assignment === ack.assignment)) {
+      clearSpawnAck();
+    }
+  });
+
+  onCleanup(() => {
+    if (spawnAckTimer !== undefined) {
+      clearTimeout(spawnAckTimer);
+      spawnAckTimer = undefined;
+    }
   });
 
   function closePopover(): void {
@@ -552,41 +669,31 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     }
   }
 
+  // All operator actions go through the shared app-layer workflow so the
+  // rail, title bar, and any future surface keep one request shape and one
+  // rejection mapping; this component only owns presentation routing.
   async function runOperatorAction(options: {
     busyId: CoordinatorUiActionId;
+    onRejected: (message: string) => void;
     onSuccess?: () => void;
-    rejectionMessage: string;
-    request:
-      | { payload?: undefined; toolName: 'pause_run' | 'resume_run' | 'unpause_run' }
-      | {
-          payload: { approvalId: string; workflowId: string };
-          toolName: 'approve_workflow_actions' | 'deny_workflow_actions';
-        }
-      | { payload: { laneId: string; workflowId: string }; toolName: 'retry_lane' };
-    setError: (message: string | null) => void;
+    request: CoordinatorOperatorActionRequest;
   }): Promise<void> {
-    const view = runView();
-    if (!view) {
+    if (!runView()) {
       return;
     }
 
     setBusyAction(options.busyId);
-    options.setError(null);
     try {
-      const response = await callCoordinatorUiTool({
-        controllerId: getRuntimeClientId(),
-        coordinatorTaskId: view.run.coordinatorTaskId,
-        requestId: createRequestId(),
-        runId: view.run.id,
-        ...options.request,
+      const result = await runCoordinatorOperatorAction({
+        request: options.request,
+        taskId: props.task().id,
       });
-      if (!response.accepted) {
-        throw new Error(response.error ?? options.rejectionMessage);
+      if (result.accepted) {
+        options.onSuccess?.();
+        return;
       }
 
-      options.onSuccess?.();
-    } catch (error) {
-      options.setError(error instanceof Error ? error.message : String(error));
+      options.onRejected(result.message);
     } finally {
       setBusyAction(null);
     }
@@ -594,29 +701,49 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
 
   async function resumeRun(): Promise<void> {
     const view = runView();
-    if (!view || view.resumeAction.disabled || busyAction() === 'resume-run') {
+    if (
+      !view ||
+      view.resumeAction.disabled ||
+      busyAction() === 'resume-run' ||
+      acceptedResumeAck() !== null
+    ) {
       return;
     }
 
+    setRailAlert(null);
     await runOperatorAction({
       busyId: 'resume-run',
-      rejectionMessage: 'Coordinator resume was rejected.',
+      onRejected: (message) => setRailAlert({ message, retry: () => void resumeRun() }),
+      onSuccess: () =>
+        setAcceptedResumeAck({
+          baseStatus: view.run.status,
+          baseUpdatedAt: view.run.updatedAt,
+        }),
       request: { toolName: 'resume_run' },
-      setError: setResumeError,
     });
   }
 
   async function toggleRunPaused(): Promise<void> {
     const view = runView();
-    if (!view || view.pauseAction.disabled || busyAction() === view.pauseAction.id) {
+    const unpause = pauseIntentIsUnpause();
+    const busyId = unpause ? 'unpause-run' : 'pause-run';
+    if (!view || view.pauseAction.disabled || busyAction() === busyId) {
       return;
     }
 
+    setRailAlert(null);
+    setOptimisticPauseFlip({
+      baseStatus: view.run.status,
+      baseUpdatedAt: view.run.updatedAt,
+      target: unpause ? 'running' : 'paused',
+    });
     await runOperatorAction({
-      busyId: view.pauseAction.id,
-      rejectionMessage: 'Coordinator pause change was rejected.',
-      request: { toolName: view.pauseAction.id === 'unpause-run' ? 'unpause_run' : 'pause_run' },
-      setError: setPauseError,
+      busyId,
+      onRejected: (message) => {
+        setOptimisticPauseFlip(null);
+        setRailAlert({ message, retry: () => void toggleRunPaused() });
+      },
+      request: { toolName: unpause ? 'unpause_run' : 'pause_run' },
     });
   }
 
@@ -636,18 +763,18 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     }
 
     setActionStatus(null);
+    setActionError(null);
     await runOperatorAction({
       busyId: approve ? 'approve-actions' : 'deny-actions',
+      onRejected: setActionError,
       onSuccess: () => {
         setDenyConfirmApprovalId(null);
         setActionStatus(approve ? 'Workflow actions approved.' : 'Workflow actions denied.');
       },
-      rejectionMessage: 'Coordinator approval action was rejected.',
       request: {
         payload: { approvalId, workflowId },
         toolName: approve ? 'approve_workflow_actions' : 'deny_workflow_actions',
       },
-      setError: setActionError,
     });
   }
 
@@ -657,12 +784,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     }
 
     setActionStatus(null);
+    setActionError(null);
     await runOperatorAction({
       busyId: 'retry-lane',
+      onRejected: setActionError,
       onSuccess: () => setActionStatus('Lane retry requested.'),
-      rejectionMessage: 'Coordinator lane retry was rejected.',
       request: { payload: { laneId, workflowId }, toolName: 'retry_lane' },
-      setError: setActionError,
     });
   }
 
@@ -702,6 +829,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       setSpawnAssignment('');
       setSpawnName('');
       setActionStatus('Subtask queued.');
+      acknowledgeSpawn(name, assignment);
       setShowSpawn(false);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -764,6 +892,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     <ScalablePanel panelId={`${props.task().id}:coordinator`}>
       <div
         style={{
+          position: 'relative',
           height: '100%',
           display: 'flex',
           'align-items': 'center',
@@ -774,6 +903,15 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
           overflow: 'hidden',
         }}
       >
+        <Show when={railAlert()}>
+          {(alert) => (
+            <CoordinatorRailAlert
+              message={alert().message}
+              onDismiss={() => setRailAlert(null)}
+              onRetry={alert().retry ?? undefined}
+            />
+          )}
+        </Show>
         <Show
           when={runView()}
           fallback={
@@ -796,9 +934,24 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                   'flex-shrink': '0',
                 }}
               >
-                <span style={{ color: toneColor(view().summary.runTone), 'font-weight': 700 }}>
-                  {view().summary.runStatus === 'running' ? 'RUN' : view().summary.statusLabel}
-                </span>
+                <Show
+                  when={optimisticPauseFlip()}
+                  fallback={
+                    <span style={{ color: toneColor(view().summary.runTone), 'font-weight': 700 }}>
+                      {view().summary.runStatus === 'running' ? 'RUN' : view().summary.statusLabel}
+                    </span>
+                  }
+                >
+                  {(flip) => (
+                    <span
+                      data-coordinator-status-syncing="true"
+                      title="Syncing with the coordinator…"
+                      style={{ color: theme.accent, 'font-weight': 700 }}
+                    >
+                      {flip().target === 'paused' ? 'Paused' : 'RUN'}
+                    </span>
+                  )}
+                </Show>
                 <span>{`${view().summary.activeCount}/${view().summary.subtaskLimit}`}</span>
                 <Show when={view().summary.pendingPromptCount > 0}>
                   <span
@@ -815,90 +968,82 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
               <Show when={!view().resumeAction.disabled}>
                 <button
                   aria-label="Resume coordinator run"
-                  disabled={busyAction() === 'resume-run'}
-                  title={view().resumeAction.reason ?? 'Respawn unfinished coordinator work'}
+                  disabled={busyAction() === 'resume-run' || acceptedResumeAck() !== null}
+                  title={
+                    acceptedResumeAck() !== null
+                      ? 'Resume accepted — syncing with the coordinator…'
+                      : (view().resumeAction.reason ?? 'Respawn unfinished coordinator work')
+                  }
                   onClick={() => void resumeRun()}
                   style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    gap: '5px',
                     height: '24px',
                     padding: '0 8px',
                     border: `1px solid ${theme.border}`,
                     'border-radius': '8px',
                     background: 'transparent',
-                    color: busyAction() === 'resume-run' ? theme.fgSubtle : theme.accent,
-                    cursor: busyAction() === 'resume-run' ? 'not-allowed' : 'pointer',
+                    color:
+                      busyAction() === 'resume-run' || acceptedResumeAck() !== null
+                        ? theme.fgSubtle
+                        : theme.accent,
+                    cursor:
+                      busyAction() === 'resume-run' || acceptedResumeAck() !== null
+                        ? 'not-allowed'
+                        : 'pointer',
                     'font-size': sf(11),
                     'flex-shrink': '0',
                   }}
                 >
+                  <Show when={busyAction() === 'resume-run'}>
+                    <span
+                      class="inline-spinner"
+                      aria-hidden="true"
+                      style={{ width: '10px', height: '10px' }}
+                    />
+                  </Show>
                   Resume
                 </button>
-                <Show when={resumeError()}>
-                  {(error) => (
-                    <span
-                      title={error()}
-                      style={{
-                        color: theme.error,
-                        'font-size': sf(10),
-                        'max-width': '160px',
-                        overflow: 'hidden',
-                        'text-overflow': 'ellipsis',
-                        'white-space': 'nowrap',
-                        'flex-shrink': '0',
-                      }}
-                    >
-                      {error()}
-                    </span>
-                  )}
-                </Show>
               </Show>
 
               <Show when={!view().pauseAction.disabled}>
                 <button
                   aria-label={
-                    view().pauseAction.id === 'unpause-run'
-                      ? 'Unpause coordinator run'
-                      : 'Pause coordinator run'
+                    pauseIntentIsUnpause() ? 'Unpause coordinator run' : 'Pause coordinator run'
                   }
-                  disabled={busyAction() === view().pauseAction.id}
+                  disabled={busyAction() === pauseIntentBusyId()}
                   title={
                     view().pauseAction.reason ??
-                    (view().pauseAction.id === 'unpause-run'
+                    (pauseIntentIsUnpause()
                       ? 'Admit deferred coordinator work again'
                       : 'Stop admitting new coordinator work')
                   }
                   onClick={() => void toggleRunPaused()}
                   style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    gap: '5px',
                     height: '24px',
                     padding: '0 8px',
                     border: `1px solid ${theme.border}`,
                     'border-radius': '8px',
                     background: 'transparent',
-                    color: busyAction() === view().pauseAction.id ? theme.fgSubtle : theme.warning,
-                    cursor: busyAction() === view().pauseAction.id ? 'not-allowed' : 'pointer',
+                    color: busyAction() === pauseIntentBusyId() ? theme.fgSubtle : theme.warning,
+                    cursor: busyAction() === pauseIntentBusyId() ? 'not-allowed' : 'pointer',
                     'font-size': sf(11),
                     'flex-shrink': '0',
                   }}
                 >
-                  {view().pauseAction.label}
-                </button>
-                <Show when={pauseError()}>
-                  {(error) => (
+                  <Show when={busyAction() === pauseIntentBusyId()}>
                     <span
-                      title={error()}
-                      style={{
-                        color: theme.error,
-                        'font-size': sf(10),
-                        'max-width': '160px',
-                        overflow: 'hidden',
-                        'text-overflow': 'ellipsis',
-                        'white-space': 'nowrap',
-                        'flex-shrink': '0',
-                      }}
-                    >
-                      {error()}
-                    </span>
-                  )}
-                </Show>
+                      class="inline-spinner"
+                      aria-hidden="true"
+                      style={{ width: '10px', height: '10px' }}
+                    />
+                  </Show>
+                  {pauseIntentIsUnpause() ? 'Unpause' : 'Pause'}
+                </button>
               </Show>
 
               <Show when={view().workflows.length > 0}>
@@ -1063,6 +1208,42 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                       </button>
                     )}
                   </For>
+                </Show>
+                <Show when={pendingSpawnAck()}>
+                  {(ack) => (
+                    <span
+                      data-coordinator-spawn-ack="true"
+                      title={`${ack().name} — spawn queued, waiting for the run snapshot`}
+                      style={{
+                        display: 'inline-flex',
+                        'align-items': 'center',
+                        gap: '4px',
+                        height: '24px',
+                        'max-width': '124px',
+                        padding: '0 7px',
+                        border: `1px dashed color-mix(in srgb, ${theme.accent} 38%, ${theme.border})`,
+                        'border-radius': '8px',
+                        background: 'transparent',
+                        color: theme.fgMuted,
+                        'font-size': sf(11),
+                        'line-height': '1',
+                        overflow: 'hidden',
+                        'white-space': 'nowrap',
+                        'flex-shrink': '0',
+                        opacity: '0.75',
+                      }}
+                    >
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          'text-overflow': 'ellipsis',
+                        }}
+                      >
+                        {ack().name}
+                      </span>
+                      <span style={{ color: theme.accent }}>queued</span>
+                    </span>
+                  )}
                 </Show>
               </div>
 
@@ -1377,6 +1558,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                                 }
                                 style={{ 'font-size': sf(11), padding: '4px 8px' }}
                               >
+                                <Show when={busyAction() === 'approve-actions'}>
+                                  <span
+                                    class="inline-spinner"
+                                    aria-hidden="true"
+                                    style={{ width: '10px', height: '10px' }}
+                                  />
+                                </Show>
                                 Approve
                               </button>
                               <button
@@ -1456,6 +1644,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                               onClick={() => void retryWorkflowLane(workflow().id, lane.laneId)}
                               style={{ 'font-size': sf(11), padding: '4px 8px' }}
                             >
+                              <Show when={busyAction() === 'retry-lane'}>
+                                <span
+                                  class="inline-spinner"
+                                  aria-hidden="true"
+                                  style={{ width: '10px', height: '10px' }}
+                                />
+                              </Show>
                               Retry
                             </button>
                           </div>
@@ -1862,6 +2057,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     disabled={busyAction() === 'spawn-subtask'}
                     onClick={() => void spawnSubtask()}
                   >
+                    <Show when={busyAction() === 'spawn-subtask'}>
+                      <span
+                        class="inline-spinner"
+                        aria-hidden="true"
+                        style={{ width: '10px', height: '10px' }}
+                      />
+                    </Show>
                     Spawn
                   </button>
                 </div>

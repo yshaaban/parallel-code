@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setStore } from '../store/core';
+import { setStore, store } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const { beginPanelResizeDragMock, endPanelResizeDragMock } = vi.hoisted(() => ({
@@ -154,6 +154,44 @@ describe('ResizablePanel', () => {
     await waitFor(() => {
       expect(screen.getByText('Left').parentElement?.style.width).toBe('120px');
     });
+  });
+
+  it('never persists sizes for transient panels on drag end', async () => {
+    render(() => (
+      <ResizablePanel
+        direction="horizontal"
+        fitContent
+        persistKey="layout"
+        children={[
+          {
+            id: 'left',
+            initialSize: 120,
+            content: () => <div>Left</div>,
+          },
+          {
+            id: 'pending-task:abc',
+            initialSize: 120,
+            transient: true,
+            content: () => <div>Pending</div>,
+          },
+        ]}
+      />
+    ));
+
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (!(resizeHandle instanceof HTMLElement)) {
+      throw new Error('Expected panel resize handle');
+    }
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 120 });
+    fireEvent.mouseMove(window, { clientX: 160 });
+    fireEvent.mouseUp(window);
+
+    await waitFor(() => {
+      expect(store.panelSizes['layout:left']).toBe(160);
+    });
+    // Provisional ids must never reach persisted panel sizes.
+    expect(Object.keys(store.panelSizes)).not.toContain('layout:pending-task:abc');
   });
 
   it('caps request-sized panels to leave room for neighboring panel minimums', async () => {

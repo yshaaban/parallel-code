@@ -44,6 +44,9 @@ vi.mock('../lib/ipc-events', () => {
   }
 
   return {
+    listenAgentAvailabilityChanged: vi.fn((listener: (payload: unknown) => void) =>
+      listenIpcEvent('agent-availability-changed', listener),
+    ),
     listenAgentSupervisionChanged: vi.fn((listener: (payload: unknown) => void) =>
       listenIpcEvent('agent-supervision-changed', listener),
     ),
@@ -82,7 +85,13 @@ import {
   createServerStateEventListeners,
   getServerStateBootstrapRegistryCategories,
   getServerStateListenerScope,
+  resetServerStateBootstrapInstanceTrackingForTests,
 } from './server-state-bootstrap-registry';
+import { replaceServerStateSnapshot } from './server-state-bootstrap';
+import {
+  getTaskReviewHighestAppliedVersion,
+  resetTaskReviewProjectionStateForTests,
+} from './task-review-state';
 
 function sortCategories(
   categories: ReadonlyArray<ServerStateBootstrapCategory>,
@@ -111,6 +120,8 @@ describe('server state bootstrap registry guardrails', () => {
 
   afterEach(() => {
     clearListenerState();
+    resetServerStateBootstrapInstanceTrackingForTests();
+    resetTaskReviewProjectionStateForTests();
   });
 
   it('registers every bootstrap category exactly once', () => {
@@ -131,6 +142,7 @@ describe('server state bootstrap registry guardrails', () => {
 
   it('defines explicit listener scopes for browser and electron runtimes', () => {
     const expectedScopes = {
+      'agent-availability': { browser: 'persistent', electron: 'persistent' },
       'agent-supervision': { browser: 'persistent', electron: 'persistent' },
       coordinator: { browser: 'persistent', electron: 'persistent' },
       'git-status': { browser: 'persistent', electron: 'persistent' },
@@ -338,6 +350,38 @@ describe('server state bootstrap registry guardrails', () => {
 
     expect(startupGate.handle).not.toHaveBeenCalled();
     expect(startupGate.hydrate).not.toHaveBeenCalled();
+
+    listeners.cleanupPersistentListeners();
+  });
+
+  // All category versions are per-boot, so a restarted server serves a full
+  // bootstrap whose versions are LOWER than the surviving tab's tracked ones.
+  // The instance change must reset the version tracking before hydrating, or
+  // the replacement appliers silently drop the new instance's truth and the
+  // categories wedge until a page reload.
+  it('resets per-category version tracking when the bootstrap server instance changes', () => {
+    const startupGate = createStartupGate();
+    const listeners = createServerStateEventListeners(false, startupGate);
+
+    // Old-instance state: tracker pinned at a high per-boot version.
+    replaceServerStateSnapshot('task-review', [], 100);
+    expect(getTaskReviewHighestAppliedVersion()).toBe(100);
+
+    // First observed instance id never resets (fresh trackers / same boot).
+    emitServerMessage('state-bootstrap', { serverInstanceId: 'instance-a', snapshots: [] });
+    expect(getTaskReviewHighestAppliedVersion()).toBe(100);
+
+    // Same instance keeps the tracking.
+    emitServerMessage('state-bootstrap', { serverInstanceId: 'instance-a', snapshots: [] });
+    expect(getTaskReviewHighestAppliedVersion()).toBe(100);
+
+    // Restarted server: new instance id resets the tracking, so its lower
+    // per-boot bootstrap versions are accepted again.
+    emitServerMessage('state-bootstrap', { serverInstanceId: 'instance-b', snapshots: [] });
+    expect(getTaskReviewHighestAppliedVersion()).toBe(-1);
+
+    replaceServerStateSnapshot('task-review', [], 1);
+    expect(getTaskReviewHighestAppliedVersion()).toBe(1);
 
     listeners.cleanupPersistentListeners();
   });

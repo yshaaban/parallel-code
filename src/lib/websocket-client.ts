@@ -115,6 +115,7 @@ export interface CreateWebSocketClientCoreOptions<
   onMissingToken?: (error: Error) => void;
   onPong?: (rttMs: number | null) => void;
   onReconnectScheduled?: (event: WebSocketReconnectScheduledEvent) => void;
+  onReplayBatch?: (event: { eventCount: number; toSeq: number }) => void;
   onSequenceGap?: (event: WebSocketSequenceGapEvent) => void;
   onStateChange?: (state: WebSocketConnectionState) => void;
   onBinaryMessage?: (buffer: ArrayBuffer) => void | Promise<void>;
@@ -133,6 +134,13 @@ export interface WebSocketClientCore<OutgoingMessage> {
   getState: () => WebSocketConnectionState;
   hasPendingConnection: () => boolean;
   isOpen: () => boolean;
+  /**
+   * Wake-time zombie-socket detection: sends a ping and force-closes the
+   * socket if no traffic arrives before the deadline, so the fast-reconnect
+   * table takes over instead of waiting out heartbeat timeouts. No-op when the
+   * socket is not open, not ping-capable, or a probe is already armed.
+   */
+  probeLiveness: (deadlineMs: number) => void;
   resetForTests: () => void;
   send: (message: OutgoingMessage) => Promise<void>;
   sendIfOpen: (message: OutgoingMessage) => boolean;
@@ -197,6 +205,7 @@ export function createWebSocketClientCore<
   let lastRttMs: number | null = null;
   let heartbeatInterval: IntervalHandle | null = null;
   let pongTimeout: TimerHandle | null = null;
+  let livenessProbeTimeout: TimerHandle | null = null;
   let missedPongs = 0;
 
   const pingIntervalMs = options.pingIntervalMs ?? 30_000;
@@ -220,15 +229,22 @@ export function createWebSocketClientCore<
     pongTimeout = null;
   }
 
+  function clearLivenessProbe(): void {
+    clearTimeoutHandle(livenessProbeTimeout);
+    livenessProbeTimeout = null;
+  }
+
   function clearHeartbeat(): void {
     clearIntervalHandle(heartbeatInterval);
     heartbeatInterval = null;
     clearPongTimeout();
+    clearLivenessProbe();
     missedPongs = 0;
   }
 
   function recordPong(): void {
     clearPongTimeout();
+    clearLivenessProbe();
     missedPongs = 0;
     lastRttMs = lastPingAt > 0 ? Date.now() - lastPingAt : null;
     options.onPong?.(lastRttMs);
@@ -336,6 +352,27 @@ export function createWebSocketClientCore<
     }, pongTimeoutMs);
   }
 
+  function probeLiveness(deadlineMs: number): void {
+    const createPingMessage = options.createPingMessage;
+    if (!createPingMessage) return;
+    if (connection.kind !== 'connected' || connection.socket.readyState !== WebSocket.OPEN) return;
+    if (livenessProbeTimeout !== null) return;
+
+    const target = connection.socket;
+    lastPingAt = Date.now();
+    if (!sendSerializedMessage(target, createPingMessage())) {
+      return;
+    }
+
+    livenessProbeTimeout = scheduleTimeout(() => {
+      livenessProbeTimeout = null;
+      if (isCurrentConnection(target) && target.readyState === WebSocket.OPEN) {
+        recordDisconnect('missed-pong');
+        target.close();
+      }
+    }, deadlineMs);
+  }
+
   function startHeartbeat(target: WebSocket): void {
     const createPingMessage = options.createPingMessage;
     if (!createPingMessage) return;
@@ -351,9 +388,27 @@ export function createWebSocketClientCore<
     }, pingIntervalMs);
   }
 
+  function isControlReplayBatchFrame(
+    value: unknown,
+  ): value is { events: unknown[]; toSeq: number } {
+    return (
+      isRecord(value) &&
+      value.type === 'control-replay-batch' &&
+      isInteger(value.toSeq) &&
+      value.toSeq >= -1 &&
+      Array.isArray(value.events)
+    );
+  }
+
+  function isReplayTruncatedFrame(value: unknown): value is { latestSeq: number } {
+    return isRecord(value) && value.type === 'replay-truncated' && isInteger(value.latestSeq);
+  }
+
   async function handleIncomingMessage(
     event: MessageEvent<string | ArrayBuffer | Blob>,
   ): Promise<void> {
+    // Any incoming traffic proves the socket is live.
+    clearLivenessProbe();
     if (event.data instanceof ArrayBuffer) {
       await options.onBinaryMessage?.(event.data);
       return;
@@ -374,6 +429,36 @@ export function createWebSocketClientCore<
     }
 
     const isIncomingMessage = options.isIncomingMessage ?? isDefaultIncomingMessage;
+
+    if (isControlReplayBatchFrame(parsed)) {
+      // Batched control replay: adopt toSeq wholesale instead of running
+      // per-event gap detection — ring compaction makes the replayed inner
+      // seqs legitimately non-contiguous.
+      if (parsed.toSeq > lastSeq) {
+        lastSeq = parsed.toSeq;
+      }
+      sequencedMessageSeenOnConnection = true;
+      options.onReplayBatch?.({ eventCount: parsed.events.length, toSeq: parsed.toSeq });
+      for (const innerEvent of parsed.events) {
+        if (isIncomingMessage(innerEvent)) {
+          options.onMessage(innerEvent);
+        }
+      }
+      return;
+    }
+
+    if (isReplayTruncatedFrame(parsed)) {
+      // The server could not faithfully per-event replay the missed window
+      // (ring eviction or compaction holes). Adopt the server's latest seq
+      // wholesale so the live stream that follows does not misfire gap
+      // detection — the handshake bootstrap (and, for legacy consumers, a
+      // full restore) repairs the missed state. The message still flows to
+      // onMessage so transport consumers can record the truncation.
+      if (parsed.latestSeq > lastSeq) {
+        lastSeq = parsed.latestSeq;
+      }
+    }
+
     if (!isIncomingMessage(parsed)) {
       return;
     }
@@ -668,6 +753,7 @@ export function createWebSocketClientCore<
     getState,
     hasPendingConnection,
     isOpen,
+    probeLiveness,
     resetForTests,
     send,
     sendIfOpen,

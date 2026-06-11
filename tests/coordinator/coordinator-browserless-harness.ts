@@ -120,6 +120,9 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
 
 async function waitForServerControllerClose(controller: BrowserServerController): Promise<void> {
   controller.cleanup();
+  // The coordinator runtime cleanup flushes pending persistence
+  // asynchronously; the temp state dir must not be removed underneath it.
+  await controller.whenCoordinatorRuntimeStopped();
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
   });

@@ -75,6 +75,8 @@ const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
   [IPC.PauseAgent]: true,
   [IPC.PushTask]: true,
   [IPC.RebaseTask]: true,
+  [IPC.RefreshAgentAvailability]: true,
+  [IPC.ReleaseTerminalRecoveryPause]: true,
   [IPC.RemoveArenaWorktree]: true,
   [IPC.ResetBackendRuntimeDiagnostics]: true,
   [IPC.ResizeAgent]: true,

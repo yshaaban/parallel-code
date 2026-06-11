@@ -12,12 +12,16 @@ import {
 } from './websocket-client';
 import {
   getWeakConnectivityReconnectDelayMs,
+  WAKE_LIVENESS_PROBE,
   WEAK_CONNECTIVITY_CLIENT_HEARTBEAT,
 } from './weak-connectivity-policy';
 
 export type BrowserServerMessage = Exclude<
   ServerMessage,
-  { type: 'channel' } | { type: 'ipc-event' } | { type: 'replay-truncated' }
+  | { type: 'channel' }
+  | { type: 'ipc-event' }
+  | { type: 'replay-truncated' }
+  | { type: 'control-replay-batch' }
 >;
 export type BrowserServerMessageType = BrowserServerMessage['type'];
 export type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
@@ -71,7 +75,13 @@ export type BrowserControlConnectionState = Extract<
   BrowserTransportEvent,
   { kind: 'connection' }
 >['state'];
-type BrowserServerDispatchMessage = Exclude<ServerMessage, { type: 'replay-truncated' }>;
+// 'control-replay-batch' frames are unwrapped inside the websocket client
+// core (per-event dispatch with wholesale toSeq adoption), so they never reach
+// the dispatch map.
+type BrowserServerDispatchMessage = Exclude<
+  ServerMessage,
+  { type: 'replay-truncated' } | { type: 'control-replay-batch' }
+>;
 type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<BrowserServerDispatchMessage>;
 type BrowserControlIncomingMessage = ServerMessage;
 
@@ -105,6 +115,7 @@ export interface BrowserControlClient {
   send: (message: ClientMessage) => Promise<void>;
   sendIfOpen: (message: ClientMessage) => boolean;
   setAuthExpired: (message: string) => void;
+  setResyncStateProvider: (provider: BrowserResyncStateProvider | null) => void;
   setChannelHandlers: (handlers: {
     onBinaryMessage: ChannelBinaryHandler;
     onChannelBound: ChannelBoundHandler;
@@ -118,11 +129,37 @@ export interface CreateBrowserControlClientOptions {
   onAuthExpired: (error: Error) => void;
 }
 
-function getBrowserSocketUrl(context: { clientId: string; lastSeq: number }): string {
+export interface BrowserResyncState {
+  categoryVersions: Record<string, number>;
+}
+
+export type BrowserResyncStateProvider = () => BrowserResyncState | null;
+
+const MAX_RESYNC_CATEGORY_VERSIONS_PARAM_LENGTH = 2_048;
+
+function getBrowserSocketUrl(context: {
+  clientId: string;
+  lastSeq: number;
+  resync: {
+    agentsVersion: number | null;
+    categoryVersions: Record<string, number>;
+    serverInstanceId: string;
+  } | null;
+}): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${window.location.host}/ws`);
   url.searchParams.set('clientId', context.clientId);
   url.searchParams.set('lastSeq', String(context.lastSeq));
+  if (context.resync !== null) {
+    const categoryVersionsJson = JSON.stringify(context.resync.categoryVersions);
+    if (categoryVersionsJson.length <= MAX_RESYNC_CATEGORY_VERSIONS_PARAM_LENGTH) {
+      url.searchParams.set('categoryVersions', categoryVersionsJson);
+      url.searchParams.set('serverInstanceId', context.resync.serverInstanceId);
+      if (context.resync.agentsVersion !== null) {
+        url.searchParams.set('agentsVersion', String(context.resync.agentsVersion));
+      }
+    }
+  }
   return url.toString();
 }
 
@@ -164,6 +201,13 @@ export function createBrowserControlClient(
   let sequenceGapSinceDisconnect = false;
   let sequencedMessageSinceDisconnect = false;
   let hasConfirmedAuthenticatedSession = false;
+  let resyncStateProvider: BrowserResyncStateProvider | null = null;
+  // Per-boot category versions and lastSeq are only comparable within one
+  // server instance: the id is learned from each state-bootstrap message, and
+  // cached versions are only presented back to the same instance.
+  let knownServerInstanceId: string | null = null;
+  let lastKnownAgentsVersion: number | null = null;
+  let documentHiddenAt: number | null = null;
   let channelHandlers: {
     onBinaryMessage: ChannelBinaryHandler;
     onChannelBound: ChannelBoundHandler;
@@ -264,6 +308,17 @@ export function createBrowserControlClient(
       confirmAuthenticatedSession();
       return;
     }
+    if (message.type === 'control-replay-batch') {
+      // Unwrapped by the websocket client core; never dispatched whole.
+      return;
+    }
+
+    if (message.type === 'state-bootstrap' && message.serverInstanceId !== undefined) {
+      knownServerInstanceId = message.serverInstanceId;
+    }
+    if (message.type === 'agents' && message.version !== undefined) {
+      lastKnownAgentsVersion = message.version;
+    }
 
     if (isSequencedServerMessage(message)) {
       sequencedMessageSinceDisconnect = true;
@@ -333,7 +388,19 @@ export function createBrowserControlClient(
     createPingMessage: () => ({ type: 'ping' }),
     getClientId: options.getClientId,
     getSocketUrl: ({ clientId, lastSeq }) => {
-      return getBrowserSocketUrl({ clientId, lastSeq });
+      const resyncState = knownServerInstanceId === null ? null : (resyncStateProvider?.() ?? null);
+      return getBrowserSocketUrl({
+        clientId,
+        lastSeq,
+        resync:
+          resyncState === null || knownServerInstanceId === null
+            ? null
+            : {
+                agentsVersion: lastKnownAgentsVersion,
+                categoryVersions: resyncState.categoryVersions,
+                serverInstanceId: knownServerInstanceId,
+              },
+      });
     },
     isPongMessage: (message) => message.type === 'pong',
     isIncomingMessage: isBrowserControlIncomingMessage,
@@ -357,6 +424,11 @@ export function createBrowserControlClient(
       });
     },
     onMessage: handleBrowserServerMessage,
+    onReplayBatch: () => {
+      // The batch frame is the sequenced replay confirmation even when it
+      // carries zero events (nothing missed during the blip).
+      sequencedMessageSinceDisconnect = true;
+    },
     onPong: (rttMs) => {
       emitTransportEvent({
         kind: 'metrics',
@@ -405,29 +477,51 @@ export function createBrowserControlClient(
 
     browserSocketLifecycleBound = true;
 
-    const reconnect = () => {
+    const handleWakeEvent = (eventKind: 'online' | 'pageshow' | 'visible') => {
       if (!shouldKeepSocketAlive()) {
         return;
       }
-      if (browserSocketClient.isOpen() || browserSocketClient.hasPendingConnection()) {
+
+      if (browserSocketClient.isOpen()) {
+        // After a sleep/wake the dead TCP socket can still report OPEN and
+        // silently swallow input. Probe it with a short deadline instead of
+        // trusting it; a miss force-closes and the fast-reconnect table
+        // takes over.
+        const hiddenGapMs = documentHiddenAt === null ? null : Date.now() - documentHiddenAt;
+        if (
+          eventKind === 'online' ||
+          (hiddenGapMs !== null && hiddenGapMs > WAKE_LIVENESS_PROBE.minHiddenGapMs)
+        ) {
+          browserSocketClient.probeLiveness(WAKE_LIVENESS_PROBE.probeDeadlineMs);
+        }
+        return;
+      }
+
+      if (browserSocketClient.hasPendingConnection()) {
         return;
       }
 
       ignoreErrorAsync(browserSocketClient.ensureConnected());
     };
 
-    window.addEventListener('online', reconnect);
-    window.addEventListener('pageshow', reconnect);
-    const reconnectWhenVisible = () => {
-      if (!document.hidden) {
-        reconnect();
+    const handleOnline = () => handleWakeEvent('online');
+    const handlePageShow = () => handleWakeEvent('pageshow');
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('pageshow', handlePageShow);
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        documentHiddenAt = Date.now();
+        return;
       }
+
+      handleWakeEvent('visible');
+      documentHiddenAt = null;
     };
-    document.addEventListener('visibilitychange', reconnectWhenVisible);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     cleanupBrowserSocketLifecycle = () => {
-      window.removeEventListener?.('online', reconnect);
-      window.removeEventListener?.('pageshow', reconnect);
-      document.removeEventListener?.('visibilitychange', reconnectWhenVisible);
+      window.removeEventListener?.('online', handleOnline);
+      window.removeEventListener?.('pageshow', handlePageShow);
+      document.removeEventListener?.('visibilitychange', handleVisibilityChange);
     };
   }
 
@@ -543,6 +637,10 @@ export function createBrowserControlClient(
     replayTruncatedSinceDisconnect = false;
     sequenceGapSinceDisconnect = false;
     sequencedMessageSinceDisconnect = false;
+    resyncStateProvider = null;
+    knownServerInstanceId = null;
+    lastKnownAgentsVersion = null;
+    documentHiddenAt = null;
   }
 
   function setChannelHandlers(handlers: {
@@ -576,6 +674,9 @@ export function createBrowserControlClient(
     send,
     sendIfOpen,
     setAuthExpired,
+    setResyncStateProvider: (provider) => {
+      resyncStateProvider = provider;
+    },
     setChannelHandlers,
   };
 }

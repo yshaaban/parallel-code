@@ -9,9 +9,11 @@ import {
   cancelCoordinatorWorkflowLanesForTask,
   createCoordinatorWorkflow,
   createCoordinatorRun,
+  emitCoordinatorRunRepairEvents,
   enqueueCoordinatorPrompt,
   getCoordinatorBootstrapSnapshot,
   getCoordinatorDiagnostics,
+  getCoordinatorStateVersion,
   getCoordinatorRun,
   getCoordinatorRuntimeState,
   getCoordinatorSubtaskLaunch,
@@ -106,6 +108,37 @@ describe('coordinator runtime', () => {
     removeCoordinatorRun(run.id);
 
     expect(getCoordinatorRun(run.id)).toBeNull();
+  });
+
+  it('re-emits restored runs as run-upserted repair events without bumping state version', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const persisted = getCoordinatorRuntimeState();
+
+    resetCoordinatorRuntimeForTests();
+    restoreCoordinatorRuntimeState(persisted);
+    const restoredStateVersion = getCoordinatorStateVersion();
+
+    const events: Array<{ eventType: string; runId: string; categorySeq: number }> = [];
+    const cleanup = subscribeCoordinatorEvents((event) =>
+      events.push({
+        categorySeq: event.categorySeq,
+        eventType: event.eventType,
+        runId: event.runId,
+      }),
+    );
+    emitCoordinatorRunRepairEvents();
+    cleanup();
+
+    expect(events).toEqual([
+      { categorySeq: restoredStateVersion, eventType: 'run-upserted', runId: run.id },
+    ]);
+    expect(getCoordinatorStateVersion()).toBe(restoredStateVersion);
   });
 
   it('normalizes restored active runs and in-flight prompts to stale recovery states', () => {
@@ -753,8 +786,8 @@ describe('coordinator runtime', () => {
     expect(unpaused.pausedAt).toBeUndefined();
     expect(unpaused.eventVersion).toBeGreaterThan(paused.eventVersion);
     expect(events.map((event) => (event as { eventType: string }).eventType)).toEqual([
-      'run-upserted',
-      'run-upserted',
+      'run-meta-upserted',
+      'run-meta-upserted',
     ]);
 
     cleanup();
@@ -1017,5 +1050,161 @@ describe('coordinator runtime', () => {
     updateCoordinatorPrompt(run.id, failed.requestId, { status: 'failed' });
 
     expect(getCoordinatorDiagnostics().promptQueueDepth).toBe(1);
+  });
+});
+
+describe('coordinator runtime granular events', () => {
+  afterEach(() => {
+    resetCoordinatorRuntimeForTests();
+    vi.useRealTimers();
+  });
+
+  function createRunWithListener(): {
+    events: Array<{ entityKey: string; eventType: string; payload: unknown }>;
+    run: ReturnType<typeof createCoordinatorRun>;
+    cleanup: () => void;
+  } {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const events: Array<{ entityKey: string; eventType: string; payload: unknown }> = [];
+    const cleanup = subscribeCoordinatorEvents((event) => {
+      events.push({
+        entityKey: event.entityKey,
+        eventType: event.eventType,
+        payload: event.payload,
+      });
+    });
+    return { cleanup, events, run };
+  }
+
+  it('emits exactly one granular event per mutation instead of full-run snapshots', () => {
+    const { cleanup, events, run } = createRunWithListener();
+
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: run.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-id',
+      worktreePath: '/repo/task-child',
+    });
+    expect(events.map((event) => event.eventType)).toEqual(['subtask-upserted']);
+
+    events.length = 0;
+    updateCoordinatorRunStatus(run.id, 'draining');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      entityKey: `run:${run.id}`,
+      eventType: 'run-meta-upserted',
+    });
+    const metaPayload = events[0]?.payload as Record<string, unknown>;
+    expect(metaPayload.status).toBe('draining');
+    expect('subtasks' in metaPayload).toBe(false);
+    expect('promptQueue' in metaPayload).toBe(false);
+    expect('workflows' in metaPayload).toBe(false);
+    expect('landing' in metaPayload).toBe(false);
+
+    events.length = 0;
+    const workflow = createCoordinatorWorkflow({
+      runId: run.id,
+      stages: [{ kind: 'map', name: 'Scan' }],
+      template: 'custom',
+      title: 'Scan workflow',
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      entityKey: `workflow:${workflow.id}`,
+      eventType: 'workflow-upserted',
+    });
+    expect((events[0]?.payload as { id?: string }).id).toBe(workflow.id);
+
+    cleanup();
+  });
+
+  it('emits run-meta-upserted for pause, resume, and resume-outcome mutations', () => {
+    const { cleanup, events, run } = createRunWithListener();
+
+    setCoordinatorRunPaused(run.id, true, 2_000);
+    updateCoordinatorRunStatus(run.id, 'stale-after-restore');
+    resumeCoordinatorRunFromStale(run.id, { now: 3_000, resumeId: 'resume-1' });
+    recordCoordinatorRunResumeOutcome(run.id, 'resume-1', {
+      failedTaskIds: [],
+      respawnedTaskIds: ['task-child'],
+    });
+
+    expect(events.map((event) => event.eventType)).toEqual([
+      'run-meta-upserted',
+      'run-meta-upserted',
+      'run-meta-upserted',
+      'run-meta-upserted',
+    ]);
+
+    cleanup();
+  });
+
+  it('isolates a throwing listener from later listeners and keeps the mutation applied', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const received: string[] = [];
+    const cleanupThrowing = subscribeCoordinatorEvents(() => {
+      throw new Error('listener exploded');
+    });
+    const cleanupSecond = subscribeCoordinatorEvents((event) => {
+      received.push(event.eventType);
+    });
+
+    const updated = updateCoordinatorRunStatus(run.id, 'draining');
+
+    expect(updated.status).toBe('draining');
+    expect(getCoordinatorRun(run.id)?.status).toBe('draining');
+    expect(received).toEqual(['run-meta-upserted']);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    cleanupThrowing();
+    cleanupSecond();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('shares one deep-frozen clone across listeners', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const seen: unknown[] = [];
+    const cleanupFirst = subscribeCoordinatorEvents((event) => {
+      seen.push(event);
+      expect(Object.isFrozen(event)).toBe(true);
+      expect(Object.isFrozen(event.payload)).toBe(true);
+      expect(() => {
+        (event as { runId: string }).runId = 'tampered';
+      }).toThrow();
+    });
+    const cleanupSecond = subscribeCoordinatorEvents((event) => {
+      seen.push(event);
+    });
+
+    updateCoordinatorRunStatus(run.id, 'draining');
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]);
+
+    cleanupFirst();
+    cleanupSecond();
   });
 });

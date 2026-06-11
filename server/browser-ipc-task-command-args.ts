@@ -15,6 +15,7 @@ type BrowserIpcTaskMutationArgChannel =
 type BrowserIpcTaskCommandArgChannel =
   | BrowserIpcTaskMutationArgChannel
   | IPC.AcquireTaskCommandLease
+  | IPC.AttachTerminalSession
   | IPC.CommitAll
   | IPC.ContainersDestroyTask
   | IPC.ContainersStartTask
@@ -25,6 +26,7 @@ type BrowserIpcTaskCommandArgChannel =
   | IPC.MergeArenaWorktree
   | IPC.ReleaseTaskCommandLease
   | IPC.RenewTaskCommandLease
+  | IPC.ReportClientTaskFocus
   | IPC.ResizeAgent
   | IPC.SpawnAgent
   | IPC.WriteToAgent;
@@ -71,6 +73,20 @@ function normalizeEnsureAgentSessionsBatchArgs(
   return {
     ...args,
     clientId: browserClientId,
+  };
+}
+
+function normalizeAttachTerminalSessionArgs(
+  args: Record<string, unknown>,
+  browserClientId: string,
+): Record<string, unknown> {
+  // The attach RPC needs both the task-command controller identity and the
+  // transport client identity (for channel binding); both come from the
+  // authenticated browser client-id header, never request JSON.
+  return {
+    ...args,
+    clientId: browserClientId,
+    controllerId: browserClientId,
   };
 }
 
@@ -175,6 +191,7 @@ const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
 const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   ...BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS,
   [IPC.AcquireTaskCommandLease]: normalizeTaskCommandLeaseArgs,
+  [IPC.AttachTerminalSession]: normalizeAttachTerminalSessionArgs,
   [IPC.CommitAll]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.ContainersDestroyTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.ContainersStartTask]: normalizeBrowserOwnedTaskArgs,
@@ -185,6 +202,7 @@ const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   [IPC.MergeArenaWorktree]: normalizeRegisteredWorktreeMutationArgs,
   [IPC.ReleaseTaskCommandLease]: normalizeTaskCommandLeaseArgs,
   [IPC.RenewTaskCommandLease]: normalizeTaskCommandLeaseArgs,
+  [IPC.ReportClientTaskFocus]: normalizeTaskCommandLeaseArgs,
   [IPC.ResizeAgent]: normalizeTerminalCommandArgs,
   [IPC.SpawnAgent]: normalizeBrowserOwnedTaskArgs,
   [IPC.WriteToAgent]: normalizeTerminalCommandArgs,
@@ -212,10 +230,17 @@ export function normalizeBrowserIpcTaskCommandArgs(
       return stripEnsureAgentSessionsBatchIdentity(args);
     }
 
+    if (channel === IPC.AttachTerminalSession) {
+      const rest = stripTaskCommandIdentity(args);
+      delete rest.clientId;
+      return rest;
+    }
+
     if (
       channel === IPC.AcquireTaskCommandLease ||
       channel === IPC.RenewTaskCommandLease ||
-      channel === IPC.ReleaseTaskCommandLease
+      channel === IPC.ReleaseTaskCommandLease ||
+      channel === IPC.ReportClientTaskFocus
     ) {
       return stripTaskCommandLeaseIdentity(args);
     }

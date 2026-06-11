@@ -8,10 +8,16 @@ import type {
   TerminalInputTraceSummary,
 } from '../../src/domain/terminal-input-tracing.js';
 import { stripAnsi } from '../../src/lib/prompt-detection.js';
+import {
+  getBackendWorkQueueDiagnostics,
+  type BackendWorkQueueDiagnostics,
+} from './backend-work-queue.js';
 
 export type PreviewProbeFailureReason = 'connection-error' | 'timeout';
 
 export interface BackendRuntimeDiagnosticsSnapshot {
+  backendWorkQueue?: BackendWorkQueueDiagnostics;
+  gitSubprocessCount: number;
   browserChannels: {
     coalescedBytesSaved: number;
     coalescedMessages: number;
@@ -74,6 +80,7 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     cacheHits: number;
     cacheInvalidations: number;
     cacheMisses: number;
+    revisionSkips: number;
   };
   terminalScrollback: {
     growAllocatedBytes: number;
@@ -104,6 +111,7 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     returnedBytes: number;
     snapshotResponses: number;
     tailDeltaResponses: number;
+    tailNeededResponses: number;
     terminalStateFallbacks: number;
     terminalStateResponses: number;
   };
@@ -401,6 +409,7 @@ function buildTerminalInputTraceSummary(
 
 function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
   return {
+    gitSubprocessCount: 0,
     browserChannels: {
       coalescedBytesSaved: 0,
       coalescedMessages: 0,
@@ -463,6 +472,7 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       cacheHits: 0,
       cacheInvalidations: 0,
       cacheMisses: 0,
+      revisionSkips: 0,
     },
     terminalScrollback: {
       growAllocatedBytes: 0,
@@ -493,6 +503,7 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       returnedBytes: 0,
       snapshotResponses: 0,
       tailDeltaResponses: 0,
+      tailNeededResponses: 0,
       terminalStateFallbacks: 0,
       terminalStateResponses: 0,
     },
@@ -542,6 +553,8 @@ export function getBackendRuntimeDiagnosticsSnapshot(): BackendRuntimeDiagnostic
   }));
 
   return {
+    backendWorkQueue: getBackendWorkQueueDiagnostics(),
+    gitSubprocessCount: backendRuntimeDiagnostics.gitSubprocessCount,
     browserChannels: { ...backendRuntimeDiagnostics.browserChannels },
     browserControl: { ...backendRuntimeDiagnostics.browserControl },
     agentSessionStartup: { ...backendRuntimeDiagnostics.agentSessionStartup },
@@ -750,6 +763,14 @@ export function recordTerminalInputTraceClientUpdate(update: TerminalInputTraceC
   }));
 }
 
+export function recordGitSubprocessStarted(): void {
+  backendRuntimeDiagnostics.gitSubprocessCount += 1;
+}
+
+export function getGitSubprocessCount(): number {
+  return backendRuntimeDiagnostics.gitSubprocessCount;
+}
+
 export function recordBrowserChannelCoalesced(savedBytes: number): void {
   backendRuntimeDiagnostics.browserChannels.coalescedMessages += 1;
   backendRuntimeDiagnostics.browserChannels.coalescedBytesSaved += savedBytes;
@@ -849,6 +870,10 @@ export function recordReconnectSnapshotCacheMiss(): void {
   backendRuntimeDiagnostics.reconnectSnapshots.cacheMisses += 1;
 }
 
+export function recordReconnectSnapshotRevisionSkip(): void {
+  backendRuntimeDiagnostics.reconnectSnapshots.revisionSkips += 1;
+}
+
 export function recordReconnectSnapshotInvalidation(): void {
   backendRuntimeDiagnostics.reconnectSnapshots.cacheInvalidations += 1;
 }
@@ -881,6 +906,7 @@ export function recordTerminalRecoveryBatch(
       | { kind: 'delta'; data: string; source: 'cursor' | 'tail' }
       | { kind: 'noop' }
       | { kind: 'snapshot'; data: string | null }
+      | { kind: 'tail-needed' }
       | { kind: 'terminal-state'; data: string };
   }>,
   durationMs: number,
@@ -910,6 +936,9 @@ export function recordTerminalRecoveryBatch(
       case 'snapshot':
         backendRuntimeDiagnostics.terminalRecovery.snapshotResponses += 1;
         returnedBytes += Buffer.byteLength(entry.recovery.data ?? '', 'base64');
+        break;
+      case 'tail-needed':
+        backendRuntimeDiagnostics.terminalRecovery.tailNeededResponses += 1;
         break;
       case 'terminal-state':
         backendRuntimeDiagnostics.terminalRecovery.terminalStateResponses += 1;

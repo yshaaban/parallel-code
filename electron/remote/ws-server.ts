@@ -457,12 +457,24 @@ export function registerRemoteWebSocketServer(
       },
       'terminal-recovery-request': (currentMessage) => {
         void runWithTerminalRestorePause(currentMessage.agentId, () => {
-          const recovery = getAgentTerminalRecovery(
+          let recovery = getAgentTerminalRecovery(
             currentMessage.agentId,
             decodeTerminalRenderedTail(currentMessage.renderedTail),
             currentMessage.outputCursor,
             currentMessage.snapshotByteLimit,
           );
+          if (recovery.kind === 'tail-needed') {
+            // The remote protocol has no phase-two tail flow and its payload
+            // guard rejects 'tail-needed'; resolve a cursor miss to the
+            // capped snapshot here so remote recovery cannot wedge if remote
+            // clients ever start sending a snapshotByteLimit.
+            recovery = getAgentTerminalRecovery(
+              currentMessage.agentId,
+              null,
+              null,
+              currentMessage.snapshotByteLimit,
+            );
+          }
           sendTerminalRecoveryEntry(
             client,
             serializeTerminalRecoveryEntry(
@@ -497,6 +509,9 @@ export function registerRemoteWebSocketServer(
         });
       },
       'update-presence': () => {},
+      // Targeted degraded-category retry is a browser control-plane concern;
+      // the remote shell replays through its full bootstrap path instead.
+      'request-state-bootstrap': () => {},
     } satisfies RemoteClientMessageHandlerMap;
   }
 

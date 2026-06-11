@@ -9,7 +9,7 @@
  * Run with: npx vitest run server/terminal-latency.test.ts
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
@@ -676,14 +676,17 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         ws1.close();
         await ws1Closed;
         await releasedControl;
-        await vi.waitFor(async () => {
-          const result = await invokeIpcViaHttp<{
-            controllers: Array<{ controllerId: string | null; taskId: string }>;
-          }>(IPC.GetTaskCommandControllers, {});
-          expect(
-            result.controllers.find((controller) => controller.taskId === taskId),
-          ).toBeUndefined();
-        });
+        // Reconnect grace: the disconnect alone no longer releases the
+        // task-command lease (a blip must not drop ownership); the observer
+        // takes control through the explicit takeover path below, exactly as
+        // a real peer would.
+        const controllersAfterDisconnect = await invokeIpcViaHttp<{
+          controllers: Array<{ controllerId: string | null; taskId: string }>;
+        }>(IPC.GetTaskCommandControllers, {});
+        expect(
+          controllersAfterDisconnect.controllers.find((controller) => controller.taskId === taskId)
+            ?.controllerId,
+        ).toBe(ownerClientId);
 
         const claimedControl = waitForMessage(
           ws2,
@@ -698,7 +701,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           (msg) => channelMessageContains(msg, channelId, secondMarker),
           10_000,
         );
-        await acquireTaskControlViaHttp(taskId, observerClientId);
+        await acquireTaskControlViaHttp(taskId, observerClientId, { takeover: true });
         sendJson(ws2, { type: 'input', agentId, data: `echo ${secondMarker}\n` });
         await claimedControl;
         await secondOutput;

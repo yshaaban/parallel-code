@@ -231,6 +231,15 @@ export type AgentTerminalRecovery =
       rows: number;
     }
   | {
+      // Cursor miss with no rendered tail where a capped snapshot would lose
+      // retained history: ask the client for one bounded tail (phase two)
+      // before falling back to a destructive truncated snapshot.
+      cols: number;
+      kind: 'tail-needed';
+      outputCursor: number;
+      rows: number;
+    }
+  | {
       cols: number;
       data: Buffer;
       kind: 'terminal-state';
@@ -332,14 +341,24 @@ function flushSessionBatch(session: PtySession): void {
     return;
   }
 
+  const batch = session.batchBuf.subarray(0, session.batchOffset);
+  // Flush-time scans run on the already-batched buffer (one utf8 decode per
+  // flush instead of per PTY chunk) and MUST run before the no-subscriber
+  // early return so unattached agents keep supervision, port observation,
+  // and the terminal-state mirror live.
+  const batchText = batch.toString('utf8');
+  recordAgentOutput(session.agentId, batchText);
+  observeTaskPortsFromOutput(session.taskId, batchText);
+  recordTerminalInputTracePtyOutput(session.agentId, batchText);
+  session.terminalStateMirror.enqueueOutput(Buffer.from(batch), session.outputCursor);
+
   if (session.channelIds.size === 0 && session.subscribers.size === 0) {
     session.batchOffset = 0;
     clearFlushTimer(session);
     return;
   }
 
-  const batch = session.batchBuf.subarray(0, session.batchOffset);
-  recordTerminalInputTraceBackendOutputFlushed(session.agentId, batch.toString('utf8'));
+  recordTerminalInputTraceBackendOutputFlushed(session.agentId, batchText);
   const encoded = batch.toString('base64');
   sendToAttachedChannels(session, { type: 'Data', data: encoded });
   for (const sub of session.subscribers) {
@@ -357,6 +376,9 @@ function appendToBatchBuffer(session: PtySession, chunk: Buffer): void {
     const toCopy = Math.min(writable, chunk.length - readOffset);
     chunk.copy(session.batchBuf, session.batchOffset, readOffset, readOffset + toCopy);
     session.batchOffset += toCopy;
+    // The byte cursor advances with the batch buffer so a flush always sees
+    // outputCursor as the cursor of the batch's final byte.
+    session.outputCursor += toCopy;
     readOffset += toCopy;
     if (session.batchOffset === BATCH_MAX) flushSessionBatch(session);
   }
@@ -382,15 +404,8 @@ function appendToTailBuffer(session: PtySession, chunk: Buffer): void {
   session.tailOffset += chunk.length;
 }
 
-function normalizePtyOutputChunk(data: string | Uint8Array): {
-  bytes: Buffer;
-  text: string;
-} {
-  const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
-  return {
-    bytes,
-    text: bytes.toString('utf8'),
-  };
+function normalizePtyOutputBytes(data: string | Uint8Array): Buffer {
+  return typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
 }
 
 function getSessionOrThrow(agentId: string): PtySession {
@@ -504,6 +519,23 @@ function buildAgentTerminalRecovery(
   }
 
   if (!renderedTail || renderedTail.length === 0) {
+    // A request that claimed cursor continuity but missed the retained window
+    // has renderer history worth overlap-matching. When the capped snapshot
+    // would truncate retained scrollback, ask for one bounded tail first
+    // instead of destroying that history with a truncated reset.
+    if (
+      requestedOutputCursor !== null &&
+      snapshotByteLimit !== null &&
+      scrollback.length > snapshotByteLimit
+    ) {
+      return {
+        cols,
+        kind: 'tail-needed',
+        outputCursor,
+        rows,
+      };
+    }
+
     return {
       cols,
       data: snapshotScrollback,
@@ -1254,13 +1286,11 @@ export function spawnAgent(
       return;
     }
 
-    const { bytes: chunk, text } = normalizePtyOutputChunk(data);
+    // The per-byte hot loop only records bytes (scrollback, tail, batch).
+    // Decoding plus supervision/port/trace scans and mirror writes happen at
+    // flush time in flushSessionBatch so they cannot stall input serving.
+    const chunk = normalizePtyOutputBytes(data);
     session.scrollback.write(chunk);
-    session.terminalStateMirror.enqueueOutput(chunk);
-    session.outputCursor += chunk.length;
-    recordAgentOutput(args.agentId, text);
-    observeTaskPortsFromOutput(session.taskId, text);
-    recordTerminalInputTracePtyOutput(args.agentId, text);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);
@@ -1378,6 +1408,9 @@ function applyTerminalResizeRequest(
 }
 
 function applyTerminalResize(session: PtySession, cols: number, rows: number): void {
+  // Forward the pending batch to the mirror first so mirror writes and the
+  // resize keep the same relative order as the real PTY byte stream.
+  flushSessionBatch(session);
   session.proc.resize(cols, rows);
   session.terminalStateMirror.enqueueResize(cols, rows);
 }
@@ -1650,20 +1683,42 @@ export async function getAgentTerminalStartupRecovery(
     };
   }
 
-  const terminalState = await session?.terminalStateMirror.serialize();
-  if (terminalState) {
-    if (terminalState.data.length <= snapshotByteLimit) {
-      return {
-        cols: terminalState.cols,
-        data: terminalState.data,
-        kind: 'terminal-state',
-        outputCursor,
-        rows: terminalState.rows,
-      };
+  // serializeLatest responds against the last applied mirror write (bounded
+  // by one in-flight write, never the whole backlog); the remaining bytes are
+  // composed from the retained ring buffer so a noisy mirror cannot stall the
+  // selected terminal's startup recovery.
+  const terminalState = await session?.terminalStateMirror.serializeLatest();
+  if (terminalState && session) {
+    const currentOutputCursor = session.outputCursor;
+    const currentScrollback = session.scrollback.read() ?? Buffer.alloc(0);
+    const retainedStartCursor = currentOutputCursor - currentScrollback.length;
+    const deltaBytes = currentOutputCursor - terminalState.appliedCursor;
+    if (deltaBytes >= 0 && terminalState.appliedCursor >= retainedStartCursor) {
+      const delta =
+        deltaBytes === 0
+          ? Buffer.alloc(0)
+          : currentScrollback.subarray(currentScrollback.length - deltaBytes);
+      const data =
+        delta.length === 0 ? terminalState.data : Buffer.concat([terminalState.data, delta]);
+      if (data.length <= snapshotByteLimit) {
+        return {
+          cols: terminalState.cols,
+          data,
+          kind: 'terminal-state',
+          outputCursor: currentOutputCursor,
+          rows: terminalState.rows,
+        };
+      }
     }
 
     recordTerminalStateRecoveryFallback();
-    return buildStartupSnapshotRecovery(scrollback, cols, rows, outputCursor, snapshotByteLimit);
+    return buildStartupSnapshotRecovery(
+      currentScrollback,
+      cols,
+      rows,
+      currentOutputCursor,
+      snapshotByteLimit,
+    );
   }
   if (session) {
     recordTerminalStateRecoveryFallback();

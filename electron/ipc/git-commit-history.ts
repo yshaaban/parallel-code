@@ -1,6 +1,3 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
 import { normalizeRawChangedFileStatus } from '../../src/domain/git-status.js';
 import type {
   BranchCommitHistoryResult,
@@ -9,9 +6,8 @@ import type {
 } from '../../src/domain/review-commit-history.js';
 import { MAX_BUFFER } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
+import { execGit } from './git-exec.js';
 import { getMainBranch } from './git.js';
-
-const exec = promisify(execFile);
 const FIELD_SEPARATOR = '\x1f';
 
 interface CommitHeader {
@@ -120,7 +116,7 @@ function getCommitNameStatusArgs(hash: string, firstParent: string | undefined):
 }
 
 async function getRevisionHash(projectRoot: string, revision: string): Promise<string> {
-  const { stdout } = await exec('git', ['rev-parse', revision], {
+  const { stdout } = await execGit(['rev-parse', revision], {
     cwd: projectRoot,
     maxBuffer: MAX_BUFFER,
   });
@@ -132,8 +128,7 @@ async function getCommitHeaders(
   baseHash: string,
   branchName: string,
 ): Promise<CommitHeader[]> {
-  const { stdout } = await exec(
-    'git',
+  const { stdout } = await execGit(
     [
       'log',
       '--reverse',
@@ -161,11 +156,11 @@ async function getCommitFileStats(
   const numstatArgs = getCommitNumstatArgs(hash, firstParent);
   const nameStatusArgs = getCommitNameStatusArgs(hash, firstParent);
   const [numstatResult, nameStatusResult] = await Promise.all([
-    exec('git', numstatArgs, {
+    execGit(numstatArgs, {
       cwd: projectRoot,
       maxBuffer: MAX_BUFFER,
     }),
-    exec('git', nameStatusArgs, {
+    execGit(nameStatusArgs, {
       cwd: projectRoot,
       maxBuffer: MAX_BUFFER,
     }),

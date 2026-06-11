@@ -8,13 +8,18 @@ import {
   type JSX,
 } from 'solid-js';
 import { store, closeTerminal, toggleAddProjectDialog } from '../store/store';
+import { isAppStartupPresentationPending } from '../app/app-startup-status';
+import { listPendingTaskCreations } from '../app/task-creation-optimism';
 import { closeTask } from '../app/task-workflows';
+import { getCachedWorkspaceShape } from '../app/workspace-shape-cache';
 import { isNonGitProject } from '../store/project-mode';
 import { isCurrentBranchTask } from '../store/task-git-isolation';
 import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
+import { PendingTaskColumn } from './PendingTaskColumn';
 import { TaskPanel } from './TaskPanel';
 import { TerminalPanel } from './TerminalPanel';
 import { NewTaskPlaceholder } from './NewTaskPlaceholder';
+import { WorkspaceStartupSkeleton } from './WorkspaceStartupSkeleton';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
@@ -42,12 +47,31 @@ export function TilingLayout(): JSX.Element {
     const el = containerRef.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(activeId)}"]`);
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   });
+  // Startup skeleton: a returning user (cached workspace shape) never sees
+  // first-run onboarding while startup presentation is still pending; the
+  // skeleton self-exits the moment real workspace shape lands.
+  const startupSkeletonShape = createMemo(() => {
+    if (
+      !isAppStartupPresentationPending() ||
+      store.taskOrder.length > 0 ||
+      store.collapsedTaskOrder.length > 0
+    ) {
+      return null;
+    }
+
+    return getCachedWorkspaceShape();
+  });
+
   // Cache PanelChild objects by ID so <For> sees stable references
   // and doesn't unmount/remount panels when taskOrder changes.
   const panelCache = new Map<string, PanelChild>();
 
   const panelChildren = createMemo((): PanelChild[] => {
+    const pendingCreations = listPendingTaskCreations();
     const currentIds = new Set<string>(store.taskOrder);
+    for (const pending of pendingCreations) {
+      currentIds.add(pending.pendingId);
+    }
     currentIds.add('__placeholder');
 
     // Remove stale entries for deleted tasks
@@ -183,6 +207,32 @@ export function TilingLayout(): JSX.Element {
       return cached;
     });
 
+    // Provisional creation ghosts render between real tasks and the
+    // placeholder; they never enter store.taskOrder.
+    for (const pending of pendingCreations) {
+      let cached = panelCache.get(pending.pendingId);
+      if (!cached) {
+        const pendingId = pending.pendingId;
+        cached = {
+          id: pendingId,
+          initialSize: 520,
+          minSize: 300,
+          // Provisional ids never reach persisted panel sizes.
+          transient: true,
+          content: () => {
+            const currentPending = listPendingTaskCreations().find(
+              (entry) => entry.pendingId === pendingId,
+            );
+            // eslint-disable-next-line solid/components-return-once
+            if (!currentPending) return <div />;
+            return <PendingTaskColumn pending={currentPending} />;
+          },
+        };
+        panelCache.set(pending.pendingId, cached);
+      }
+      panels.push(cached);
+    }
+
     let placeholder = panelCache.get('__placeholder');
     if (!placeholder) {
       placeholder = {
@@ -210,164 +260,169 @@ export function TilingLayout(): JSX.Element {
       }}
     >
       <Show
-        when={store.taskOrder.length > 0}
-        fallback={
-          <div
-            class="empty-state"
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'center',
-              width: '100%',
-              height: '100%',
-              'flex-direction': 'column',
-              gap: 'var(--space-xl)',
-            }}
-          >
-            <Show
-              when={store.collapsedTaskOrder.length === 0}
-              fallback={
-                <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
-                  <div
-                    style={{
-                      color: theme.fgMuted,
-                      ...typography.title,
-                    }}
-                  >
-                    All tasks are collapsed
-                  </div>
-                  <div style={{ color: theme.fgSubtle, ...typography.meta }}>
-                    Click a task in the sidebar to restore it
-                  </div>
-                </div>
-              }
+        when={!startupSkeletonShape()}
+        fallback={<WorkspaceStartupSkeleton shape={startupSkeletonShape()} />}
+      >
+        <Show
+          when={store.taskOrder.length > 0 || listPendingTaskCreations().length > 0}
+          fallback={
+            <div
+              class="empty-state"
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'center',
+                width: '100%',
+                height: '100%',
+                'flex-direction': 'column',
+                gap: 'var(--space-xl)',
+              }}
             >
               <Show
-                when={store.projects.length > 0}
+                when={store.collapsedTaskOrder.length === 0}
                 fallback={
-                  <>
+                  <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
                     <div
                       style={{
-                        width: '56px',
-                        height: '56px',
-                        'border-radius': '16px',
-                        background: theme.islandBg,
-                        border: `1px solid ${theme.border}`,
-                        display: 'flex',
-                        'align-items': 'center',
-                        'justify-content': 'center',
-                        color: theme.fgSubtle,
+                        color: theme.fgMuted,
+                        ...typography.title,
                       }}
                     >
-                      <svg
-                        width="24"
-                        height="24"
-                        viewBox="0 0 16 16"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
-                      </svg>
+                      All tasks are collapsed
                     </div>
-                    <div
-                      style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}
-                    >
-                      <div
-                        style={{
-                          color: theme.fgMuted,
-                          ...typography.title,
-                        }}
-                      >
-                        Link your first project to get started
-                      </div>
-                      <div style={{ color: theme.fgSubtle, ...typography.meta }}>
-                        A project is a local folder with your code
-                      </div>
+                    <div style={{ color: theme.fgSubtle, ...typography.meta }}>
+                      Click a task in the sidebar to restore it
                     </div>
-                    <button
-                      onClick={() => toggleAddProjectDialog(true)}
-                      style={{
-                        background: theme.bgElevated,
-                        border: `1px solid ${theme.border}`,
-                        'border-radius': '8px',
-                        padding: 'var(--space-sm) var(--space-lg)',
-                        color: theme.fg,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        'align-items': 'center',
-                        gap: 'var(--space-xs)',
-                        ...typography.uiStrong,
-                      }}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 16 16"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
-                      </svg>
-                      Link Project
-                    </button>
-                  </>
+                  </div>
                 }
               >
-                <div
-                  style={{
-                    width: '56px',
-                    height: '56px',
-                    'border-radius': '16px',
-                    background: theme.islandBg,
-                    border: `1px solid ${theme.border}`,
-                    display: 'flex',
-                    'align-items': 'center',
-                    'justify-content': 'center',
-                    'font-size': '24px',
-                    color: theme.fgSubtle,
-                  }}
+                <Show
+                  when={store.projects.length > 0}
+                  fallback={
+                    <>
+                      <div
+                        style={{
+                          width: '56px',
+                          height: '56px',
+                          'border-radius': '16px',
+                          background: theme.islandBg,
+                          border: `1px solid ${theme.border}`,
+                          display: 'flex',
+                          'align-items': 'center',
+                          'justify-content': 'center',
+                          color: theme.fgSubtle,
+                        }}
+                      >
+                        <svg
+                          width="24"
+                          height="24"
+                          viewBox="0 0 16 16"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
+                        </svg>
+                      </div>
+                      <div
+                        style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}
+                      >
+                        <div
+                          style={{
+                            color: theme.fgMuted,
+                            ...typography.title,
+                          }}
+                        >
+                          Link your first project to get started
+                        </div>
+                        <div style={{ color: theme.fgSubtle, ...typography.meta }}>
+                          A project is a local folder with your code
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => toggleAddProjectDialog(true)}
+                        style={{
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '8px',
+                          padding: 'var(--space-sm) var(--space-lg)',
+                          color: theme.fg,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          'align-items': 'center',
+                          gap: 'var(--space-xs)',
+                          ...typography.uiStrong,
+                        }}
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 16 16"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
+                        </svg>
+                        Link Project
+                      </button>
+                    </>
+                  }
                 >
-                  +
-                </div>
-                <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
                   <div
                     style={{
-                      color: theme.fgMuted,
-                      ...typography.title,
+                      width: '56px',
+                      height: '56px',
+                      'border-radius': '16px',
+                      background: theme.islandBg,
+                      border: `1px solid ${theme.border}`,
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'center',
+                      'font-size': '24px',
+                      color: theme.fgSubtle,
                     }}
                   >
-                    No tasks yet
+                    +
                   </div>
-                  <div style={{ color: theme.fgSubtle, ...typography.meta }}>
-                    Press{' '}
-                    <kbd
+                  <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
+                    <div
                       style={{
-                        background: theme.bgElevated,
-                        border: `1px solid ${theme.border}`,
-                        'border-radius': '4px',
-                        padding: '2px var(--space-xs)',
-                        ...typography.monoMeta,
+                        color: theme.fgMuted,
+                        ...typography.title,
                       }}
                     >
-                      {mod}+N
-                    </kbd>{' '}
-                    to create a new task
+                      No tasks yet
+                    </div>
+                    <div style={{ color: theme.fgSubtle, ...typography.meta }}>
+                      Press{' '}
+                      <kbd
+                        style={{
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '4px',
+                          padding: '2px var(--space-xs)',
+                          ...typography.monoMeta,
+                        }}
+                      >
+                        {mod}+N
+                      </kbd>{' '}
+                      to create a new task
+                    </div>
                   </div>
-                </div>
+                </Show>
               </Show>
-            </Show>
-          </div>
-        }
-      >
-        <ResizablePanel
-          direction="horizontal"
-          children={panelChildren()}
-          fitContent
-          persistKey="tiling"
-          onHandle={(handle) => {
-            panelHandle = handle;
-          }}
-        />
+            </div>
+          }
+        >
+          <ResizablePanel
+            direction="horizontal"
+            children={panelChildren()}
+            fitContent
+            persistKey="tiling"
+            onHandle={(handle) => {
+              panelHandle = handle;
+            }}
+          />
+        </Show>
       </Show>
     </div>
   );

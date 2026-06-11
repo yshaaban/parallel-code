@@ -365,4 +365,37 @@ describe('agent supervision', () => {
       state: 'idle-at-prompt',
     });
   });
+
+  it('classifies flush-fed batches identically to chunk-fed output', () => {
+    const controller = createAgentSupervisionController({
+      now: () => currentTime,
+    });
+
+    const samples = [
+      'Proceed with deployment? [Y/n]',
+      '\nhydra[dispatch]> ',
+      'building target one\nbuilding target two\n$ ',
+    ];
+
+    for (const [index, sample] of samples.entries()) {
+      const chunkAgentId = `agent-chunked-${index}`;
+      const flushAgentId = `agent-flushed-${index}`;
+      controller.recordSpawn({ agentId: chunkAgentId, isShell: false, taskId: 'task-1' });
+      controller.recordSpawn({ agentId: flushAgentId, isShell: false, taskId: 'task-1' });
+
+      // Chunk-fed: one byte at a time (the old per-PTY-chunk path).
+      for (const char of sample) {
+        controller.recordOutput(chunkAgentId, char);
+      }
+      // Flush-fed: the whole batch in one scan (the new flush-time path).
+      controller.recordOutput(flushAgentId, sample);
+
+      const chunked = controller.getSnapshot(chunkAgentId);
+      const flushed = controller.getSnapshot(flushAgentId);
+      // rawTail concat+slice is associative, so the end-state classification
+      // the coordinator prompt-delivery loop consumes must be identical.
+      expect(flushed?.state).toBe(chunked?.state);
+      expect(flushed?.attentionReason).toBe(chunked?.attentionReason);
+    }
+  });
 });

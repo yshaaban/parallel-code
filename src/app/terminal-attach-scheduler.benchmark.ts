@@ -18,6 +18,7 @@ interface AttachScenario {
   holdMs: number;
   name: string;
   getPriority: (terminalIndex: number, terminalCount: number) => number;
+  releaseAtDispatch?: boolean;
   reprioritize?: (
     priorities: number[],
     registrations: Array<TerminalAttachRegistration | undefined>,
@@ -59,17 +60,12 @@ const ATTACH_SCENARIOS: readonly AttachScenario[] = [
     name: 'background-two-slot',
   },
   {
-    getPriority: (terminalIndex, terminalCount) => {
-      if (terminalIndex === terminalCount - 1) {
-        return 2;
-      }
-
-      if (terminalIndex < Math.ceil(terminalCount / 3)) {
-        return 0;
-      }
-
-      return 1;
-    },
+    // Reconnect re-attach shape: one selected terminal, a background fleet,
+    // and one background terminal promoted to foreground while the selected
+    // attach is still holding the foreground slot. The promoted candidate
+    // stays pending behind the foreground cap; background slots must keep
+    // draining (the old drain-loop break collapsed maxActive to 1 here).
+    getPriority: (terminalIndex) => (terminalIndex === 0 ? 0 : 2),
     holdMs: 8,
     name: 'reprioritized-pending',
     reprioritize: (priorities, registrations, terminalCount) => {
@@ -81,6 +77,18 @@ const ATTACH_SCENARIOS: readonly AttachScenario[] = [
       priorities[targetIndex] = 0;
       registrations[targetIndex]?.updatePriority();
     },
+  },
+  {
+    getPriority: (terminalIndex, terminalCount) => {
+      if (terminalIndex < Math.ceil(terminalCount / 3)) {
+        return 0;
+      }
+
+      return 2;
+    },
+    holdMs: 8,
+    name: 'dispatch-release',
+    releaseAtDispatch: true,
   },
 ];
 
@@ -173,6 +181,10 @@ describe('terminal-attach-scheduler benchmark', () => {
               activeForegroundAttaches,
             );
             attachOrder.push(key);
+
+            if (scenario.releaseAtDispatch) {
+              registration.release();
+            }
 
             setTimeout(() => {
               const currentState = terminalStates[terminalIndex];
@@ -280,5 +292,18 @@ describe('terminal-attach-scheduler benchmark', () => {
     });
 
     expect(results.length).toBe(terminalCounts.length * ATTACH_SCENARIOS.length);
+
+    // Serial-collapse regression bars: a pending foreground candidate used to
+    // break the drain loop and pin reconnect re-attach at maxActive=1
+    // (baseline 24-terminal queue span: 96-184ms with synthetic 8ms holds).
+    for (const result of results) {
+      if (result.scenario === 'reprioritized-pending' && result.terminals >= 2) {
+        expect(result.maxConcurrentAttaches).toBeGreaterThanOrEqual(2);
+      }
+
+      if (result.scenario === 'dispatch-release' && result.terminals === 24) {
+        expect(result.queueSpanMs).toBeLessThan(60);
+      }
+    }
   });
 });

@@ -259,7 +259,9 @@ describe('browser runtime restore generation', () => {
     emitBrowserReconnectAndAuthenticate();
     await Promise.resolve();
 
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
 
     emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
@@ -400,7 +402,9 @@ describe('browser runtime restore generation', () => {
     });
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
         agentGenerations: { 'agent-snapshot': 4 },
@@ -479,7 +483,64 @@ describe('browser runtime restore generation', () => {
 
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
+
+    cleanup();
+  });
+
+  it('passes the loaded workspace revision into the full reconnect snapshot request', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: true,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        getLoadedWorkspaceRevision: vi.fn(() => 12),
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await flushResolvedPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, {
+      knownWorkspaceRevision: 12,
+    });
+
+    cleanup();
+  });
+
+  it('omits knownWorkspaceRevision when the loaded revision is the unversioned legacy 0', async () => {
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 1_000,
+      hasReplayTruncatedSinceDisconnect: true,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        getLoadedWorkspaceRevision: vi.fn(() => 0),
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await flushResolvedPromises();
+
+    // Revision 0 means this tab loaded unversioned legacy state that mutates
+    // without revision bumps, so the server must keep shipping the full
+    // payload instead of treating 0 === 0 as verified no-change.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
 
     cleanup();
   });
@@ -506,22 +567,40 @@ describe('browser runtime restore generation', () => {
     });
 
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
 
     cleanup();
   });
 
-  it('uses a full reconnect snapshot when warm replay was truncated', async () => {
+  it('no longer forces a full restore on replay truncation alone (versions current)', async () => {
+    // replay-truncated is downgraded: stale categories arrive through the
+    // version-gated reconnect handshake, so a truncated replay with current
+    // status versions resolves through the status check only.
     getBrowserReconnectContinuityMock.mockReturnValue({
       disconnectedDurationMs: 1_000,
       hasReplayTruncatedSinceDisconnect: true,
       hasSequenceGapSinceDisconnect: false,
       hasSequencedMessageSinceDisconnect: true,
     });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          agentGenerations: { 'agent-1': 9 },
+          runningAgentIds: ['agent-1'],
+          taskCommandControllerVersion: 0,
+          workspaceRevision: 0,
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
     const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
 
     const cleanup = registerBrowserAppRuntime(
       createBrowserRuntimeOptions({
+        reconcileRunningAgentIds,
         syncBrowserStateFromReconnectSnapshot,
       }),
     );
@@ -529,11 +608,60 @@ describe('browser runtime restore generation', () => {
     emitBrowserReconnectAndAuthenticate();
 
     await vi.waitFor(() => {
-      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
     });
 
-    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+
+    cleanup();
+  });
+
+  it('resolves a long no-change disconnect with the status check only (no wall-clock gate)', async () => {
+    // A 2-minute laptop-sleep style disconnect with zero server-side changes:
+    // content checks decide, not the old 30s warm window.
+    getBrowserReconnectContinuityMock.mockReturnValue({
+      disconnectedDurationMs: 120_000,
+      hasReplayTruncatedSinceDisconnect: false,
+      hasSequenceGapSinceDisconnect: false,
+      hasSequencedMessageSinceDisconnect: true,
+    });
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetBrowserReconnectStatus) {
+        return {
+          agentGenerations: { 'agent-1': 9 },
+          runningAgentIds: ['agent-1'],
+          taskCommandControllerVersion: 0,
+          workspaceRevision: 0,
+        };
+      }
+      throw new Error(`Unexpected invoke: ${channel}`);
+    });
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    emitBrowserReconnectAndAuthenticate();
+
+    await vi.waitFor(() => {
+      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+    });
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.GetBrowserReconnectStatus),
+    ).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().browserStartup.modeStartCounts['reconnect-restore'],
+    ).toBe(0);
 
     cleanup();
   });
@@ -592,7 +720,9 @@ describe('browser runtime restore generation', () => {
       });
     });
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
 
     warnSpy.mockRestore();
     cleanup();
@@ -654,7 +784,9 @@ describe('browser runtime restore generation', () => {
     });
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectStatus);
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, {
+      knownWorkspaceRevision: 2,
+    });
     expect(replaceTaskCommandControllers).toHaveBeenCalledWith(
       [
         {
@@ -1109,7 +1241,9 @@ describe('browser runtime restore generation', () => {
     await Promise.resolve();
 
     expect(showNotification).toHaveBeenCalledWith('Reconnected to the server');
-    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    // The default loaded workspace revision is the unversioned legacy 0, so
+    // the client must not claim it as a known revision.
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot, undefined);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
     expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
 

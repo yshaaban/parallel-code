@@ -39,6 +39,8 @@ import {
 import { resetTerminalPerformanceExperimentConfigForTests } from '../lib/terminal-performance-experiments';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { setStore } from '../store/core';
+import { resetTaskTerminalSlateCacheForTests } from '../store/task-terminal-slate';
+import { resetPendingSessionInputForTests } from './terminal-view/terminal-pending-session-input';
 import {
   getTerminalStartupSummary,
   registerTerminalStartupCandidate,
@@ -160,6 +162,7 @@ type MockSessionOptions = Pick<
   | 'getRenderHibernationDelayMs'
   | 'isSelectedRecoveryProtected'
   | 'onAttachBound'
+  | 'onAttachDispatched'
   | 'onAttachMilestone'
   | 'onBlockedInputAttempt'
   | 'onInputAccepted'
@@ -192,6 +195,7 @@ interface MockTerminalSession {
   flushPendingResize: () => Promise<void>;
   handleTerminalData: (data: string) => void;
   isRestoreBlocked: () => boolean;
+  prefetchInputLease: () => void;
   prewarmRenderHibernation: () => void;
   requestInputTakeover: () => Promise<boolean>;
   term: MockTerminalSurface;
@@ -206,6 +210,7 @@ function createMockTerminalSession(
     flushPendingResize: vi.fn(async () => undefined),
     handleTerminalData: vi.fn(),
     isRestoreBlocked: vi.fn(() => false),
+    prefetchInputLease: vi.fn(),
     prewarmRenderHibernation: vi.fn(),
     requestInputTakeover: requestInputTakeoverMock,
     term: {
@@ -236,6 +241,10 @@ function getLastStatusChangeHandler(): ((status: SessionStatus) => void) | undef
 
 function getLastAttachBoundHandler(): (() => void) | undefined {
   return getLastSessionOptions()?.onAttachBound;
+}
+
+function getLastAttachDispatchedHandler(): (() => void) | undefined {
+  return getLastSessionOptions()?.onAttachDispatched;
 }
 
 function getLastRenderHibernationHandler(): ((isHibernating: boolean) => void) | undefined {
@@ -864,6 +873,172 @@ describe('TerminalView', () => {
     expect(session.handleTerminalData).toHaveBeenCalledWith('\x1b[Z');
   });
 
+  it('buffers keystrokes typed before the session exists and flushes them in order at session start', () => {
+    resetPendingSessionInputForTests();
+    setStore('activeTaskId', 'task-1');
+    let pendingAttach: (() => void) | undefined;
+    registerTerminalAttachCandidateMock.mockImplementationOnce(
+      (options: { attach: () => void; getPriority: () => number }) => {
+        pendingAttach = options.attach;
+        return {
+          release: vi.fn(),
+          unregister: vi.fn(),
+          updatePriority: vi.fn(),
+        };
+      },
+    );
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    fireEvent.keyDown(terminalRoot as Element, { key: 'a' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'b' });
+    fireEvent.keyDown(terminalRoot as Element, { key: 'Enter' });
+
+    const queuedIndicator = result.container.querySelector('[data-terminal-queued-input-count]');
+    expect(queuedIndicator?.getAttribute('data-terminal-queued-input-count')).toBe('3');
+    expect(queuedIndicator?.textContent).toContain('3 keys queued');
+
+    pendingAttach?.();
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const handleTerminalDataMock = vi.mocked(session.handleTerminalData);
+    expect(handleTerminalDataMock.mock.calls[0]?.[0]).toBe('ab\r');
+
+    fireEvent.keyDown(terminalRoot as Element, { key: 'c' });
+    expect(handleTerminalDataMock.mock.calls[1]?.[0]).toBe('c');
+
+    expect(result.container.querySelector('[data-terminal-queued-input-count]')).toBeNull();
+  });
+
+  it('shows a single queued key with singular copy while waiting for the session', () => {
+    resetPendingSessionInputForTests();
+    setStore('activeTaskId', 'task-1');
+    registerTerminalAttachCandidateMock.mockImplementationOnce(() => ({
+      release: vi.fn(),
+      unregister: vi.fn(),
+      updatePriority: vi.fn(),
+    }));
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    fireEvent.keyDown(
+      result.container.querySelector('[data-terminal-agent-id="agent-1"]') as Element,
+      { key: 'x' },
+    );
+
+    const queuedIndicator = result.container.querySelector('[data-terminal-queued-input-count]');
+    expect(queuedIndicator?.textContent).toContain('1 key queued');
+    resetPendingSessionInputForTests();
+  });
+
+  it('renders the cached last-known screen under the loading overlay and drops it at live render ready', () => {
+    resetTaskTerminalSlateCacheForTests();
+    setStore('activeTaskId', 'task-1');
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: null,
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'npm run build — done in 4.2s',
+        state: 'active',
+        taskId: 'task-1',
+        updatedAt: 1_000,
+      },
+    });
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    expect(result.container.querySelector('[data-terminal-loading-overlay="true"]')).not.toBeNull();
+    const placeholder = result.container.querySelector('[data-terminal-placeholder-tail="true"]');
+    expect(placeholder?.textContent).toBe('npm run build — done in 4.2s');
+    expect(
+      result.container.querySelector('[data-terminal-loading-label="true"]')?.textContent,
+    ).toBe('Preparing terminal…');
+
+    getLastStatusChangeHandler()?.('ready');
+
+    expect(result.container.querySelector('[data-terminal-placeholder-tail="true"]')).toBeNull();
+    expect(result.container.querySelector('[data-terminal-loading-overlay="true"]')).toBeNull();
+  });
+
+  it('keeps the loading overlay free of placeholder markup when no last-known screen exists', () => {
+    resetTaskTerminalSlateCacheForTests();
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    expect(result.container.querySelector('[data-terminal-loading-overlay="true"]')).not.toBeNull();
+    expect(result.container.querySelector('[data-terminal-placeholder-tail="true"]')).toBeNull();
+  });
+
+  it('fills an empty placeholder when the supervision preview hydrates during cold-start loading', () => {
+    resetTaskTerminalSlateCacheForTests();
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    expect(result.container.querySelector('[data-terminal-placeholder-tail="true"]')).toBeNull();
+
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: null,
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'hydrated preview line',
+        state: 'active',
+        taskId: 'task-1',
+        updatedAt: 1_000,
+      },
+    });
+
+    expect(
+      result.container.querySelector('[data-terminal-placeholder-tail="true"]')?.textContent,
+    ).toBe('hydrated preview line');
+  });
+
   it('keeps buffering restore input when terminal focus briefly falls back to the document', () => {
     setStore('activeTaskId', 'task-1');
     render(() => (
@@ -1436,7 +1611,9 @@ describe('TerminalView', () => {
     expect(label).toBeTruthy();
     expect(overlay?.style.justifyContent).toBe('flex-start');
     expect(overlay?.style.alignItems).toBe('flex-start');
-    expect(card?.style.width).toBe('32ch');
+    // The compact chip is content-sized; width stability across phases comes
+    // from the stable loading copy instead of a fixed ch width.
+    expect(card?.style.width).toBe('');
     expect(label?.style.textAlign).toBe('left');
     expect(label?.textContent).toBe('Preparing terminal…');
 
@@ -1457,7 +1634,7 @@ describe('TerminalView', () => {
     const restoringLabel = result.container.querySelector(
       '[data-terminal-loading-label="true"]',
     ) as HTMLSpanElement | null;
-    expect(restoringCard?.style.width).toBe('32ch');
+    expect(restoringCard?.style.width).toBe('');
     expect(restoringLabel?.textContent).toBe('Preparing terminal…');
     expect(restoringLabel?.style.textAlign).toBe('left');
   });
@@ -1749,6 +1926,15 @@ describe('TerminalView', () => {
       />
     ));
 
+    // Cold-hidden non-shell terminals defer their renderer attach until
+    // visibility, so the session starts on the first visibility confirmation.
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
+    intersectionCallback?.([{ isIntersecting: true }]);
+    await Promise.resolve();
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+
+    intersectionCallback?.([{ isIntersecting: false }]);
+    await Promise.resolve();
     getLastStatusChangeHandler()?.('ready');
     await Promise.resolve();
     expect(flushPendingResizeMock).toHaveBeenCalledTimes(0);
@@ -1806,30 +1992,27 @@ describe('TerminalView', () => {
     ));
 
     const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
-    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
-    expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(200);
+    // Never-viewed cold-hidden non-shell terminals defer their first renderer
+    // attach entirely (the backend session stays live via the ensure path).
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
     expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
-    expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
-    expect(unregisterMock).toHaveBeenCalledTimes(1);
 
     setStore('activeTaskId', 'task-1');
     intersectionCallback?.([{ isIntersecting: true }]);
-    expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
 
     setStore('activeTaskId', 'task-2');
     intersectionCallback?.([{ isIntersecting: false }]);
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(sessionCleanupMock).toHaveBeenCalledTimes(2);
-    expect(unregisterMock).toHaveBeenCalledTimes(2);
+    expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
+    expect(unregisterMock).toHaveBeenCalledTimes(1);
     expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
 
     setStore('activeTaskId', 'task-1');
     intersectionCallback?.([{ isIntersecting: true }]);
-    expect(startTerminalSessionMock).toHaveBeenCalledTimes(3);
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
   });
 
@@ -1911,6 +2094,10 @@ describe('TerminalView', () => {
         cwd="/tmp/project"
       />
     ));
+    // The session has to attach once (deferred cold-hidden terminals never
+    // start a renderer session) before going hidden again.
+    intersectionCallback?.([{ isIntersecting: true }]);
+    await Promise.resolve();
     intersectionCallback?.([{ isIntersecting: false }]);
     await Promise.resolve();
 
@@ -1956,13 +2143,14 @@ describe('TerminalView', () => {
     intersectionCallback?.([{ isIntersecting: false }]);
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+    // Never-viewed cold-hidden terminals defer the renderer attach entirely.
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
     expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
 
     requestTerminalPrewarm('task-1', 'pointer-intent');
 
     expect(armFocusedTerminalOutputPreemptionMock).toHaveBeenCalledTimes(1);
-    expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
   });
 
@@ -2205,6 +2393,7 @@ describe('TerminalView', () => {
         return {
           cleanup: sessionCleanupMock,
           isRestoreBlocked: vi.fn(() => false),
+          prefetchInputLease: vi.fn(),
           prewarmRenderHibernation: vi.fn(),
           requestInputTakeover: requestInputTakeoverMock,
           term: {
@@ -3642,10 +3831,14 @@ describe('TerminalView', () => {
       />
     ));
 
+    // Start the session once via visibility (deferred cold-hidden terminals
+    // never attach before first visibility), then hide it again.
+    intersectionCallback?.([{ isIntersecting: true }]);
     const session = startTerminalSessionMock.mock.results[0]?.value as {
       prewarmRenderHibernation: ReturnType<typeof vi.fn>;
     };
     intersectionCallback?.([{ isIntersecting: false }]);
+    armFocusedTerminalOutputPreemptionMock.mockClear();
 
     requestTerminalPrewarm('task-1');
 
@@ -3874,7 +4067,7 @@ describe('TerminalView', () => {
     expect(getTerminalStartupSummary()).toBeNull();
   });
 
-  it('releases the attach slot as soon as the terminal bind completes', () => {
+  it('releases the attach slot as soon as the attach RPC is dispatched', () => {
     const releaseMock = vi.fn();
 
     registerTerminalAttachCandidateMock.mockImplementationOnce(
@@ -3901,8 +4094,12 @@ describe('TerminalView', () => {
 
     expect(releaseMock).not.toHaveBeenCalled();
 
-    getLastAttachBoundHandler()?.();
+    // The slot guards renderer CPU phases only: it releases when the attach
+    // RPC dispatches, not when the backend bind resolves.
+    getLastAttachDispatchedHandler()?.();
+    expect(releaseMock).toHaveBeenCalledTimes(1);
 
+    getLastAttachBoundHandler()?.();
     expect(releaseMock).toHaveBeenCalledTimes(1);
   });
 

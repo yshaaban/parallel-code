@@ -1,7 +1,4 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const exec = promisify(execFile);
+import { execGit } from './git-exec.js';
 
 export async function getMergeBaseOrFallback(
   repoPath: string,
@@ -10,7 +7,7 @@ export async function getMergeBaseOrFallback(
   fallbackRef: string,
 ): Promise<string> {
   try {
-    const { stdout } = await exec('git', ['merge-base', leftRef, rightRef], {
+    const { stdout } = await execGit(['merge-base', leftRef, rightRef], {
       cwd: repoPath,
     });
     const mergeBase = stdout.trim();

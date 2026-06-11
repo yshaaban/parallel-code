@@ -18,7 +18,8 @@ import {
   type UpdatePresenceCommand,
 } from '../electron/remote/protocol.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
-import { createBrowserControlPlane } from './browser-control-plane.js';
+import { SERVER_STATE_BOOTSTRAP_CATEGORIES } from '../src/domain/server-state-bootstrap.js';
+import { createBrowserControlPlane, getStaleBootstrapCategories } from './browser-control-plane.js';
 
 type FakeWebSocketClient = WebSocket & {
   bufferedAmount: number;
@@ -224,6 +225,7 @@ describe('browser control plane', () => {
     expect(sent).toContainEqual({
       type: 'agents',
       list: [],
+      version: expect.any(Number),
     });
     expect(getStateBootstrapSnapshots(sent)).toContainEqual({
       category: 'git-status',
@@ -901,7 +903,15 @@ describe('browser control plane', () => {
     ]);
 
     controlPlane.cleanupClient(replacementSocket.client);
+    // Reconnect grace: a full disconnect no longer releases the lease
+    // immediately; natural lease expiry still governs a non-renewing holder.
     expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-a',
+      taskId: 'task-1',
+      version: expect.any(Number),
+    });
+    expect(getTaskCommandControllerSnapshot('task-1', Date.now() + 16_000)).toEqual({
       action: null,
       controllerId: null,
       taskId: 'task-1',
@@ -971,7 +981,15 @@ describe('browser control plane', () => {
     }
 
     controlPlane.cleanupClient(activeSocket.client);
+    // Reconnect grace: the lease survives the disconnect window; the
+    // non-renewing holder still loses it through natural expiry.
     expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-a',
+      taskId: 'task-1',
+      version: expect.any(Number),
+    });
+    expect(getTaskCommandControllerSnapshot('task-1', Date.now() + 16_000)).toEqual({
       action: null,
       controllerId: null,
       taskId: 'task-1',
@@ -1271,6 +1289,7 @@ describe('browser control plane', () => {
     expect(reconnectSession.sent).toContainEqual({
       list: [],
       type: 'agents',
+      version: expect.any(Number),
     });
     expect(reconnectSession.sent).toContainEqual(
       expect.objectContaining({
@@ -2148,5 +2167,54 @@ describe('browser control plane', () => {
     expect(cleanupSocketClient).toHaveBeenCalledWith(client);
     expect(transportClientIdDuringSocketCleanup).toBe(authenticatedClientId);
     expect(controlPlane.transport.getClientId(client)).toBeNull();
+  });
+});
+
+describe('getStaleBootstrapCategories', () => {
+  function buildCurrentVersions(): Record<string, number> {
+    const versions: Record<string, number> = {};
+    for (const [index, category] of SERVER_STATE_BOOTSTRAP_CATEGORIES.entries()) {
+      versions[category] = index + 1;
+    }
+    return versions;
+  }
+
+  it('resends only the ephemeral connection-scoped categories when everything is current', () => {
+    const versions = buildCurrentVersions();
+
+    expect(getStaleBootstrapCategories(versions, versions).sort()).toEqual([
+      'peer-presence',
+      'remote-status',
+    ]);
+  });
+
+  it('marks mismatched and unpresented categories stale', () => {
+    const serverVersions = buildCurrentVersions();
+    const presented = { ...serverVersions };
+    presented.coordinator = (serverVersions.coordinator ?? 0) - 1;
+    delete presented['task-ports'];
+
+    expect(getStaleBootstrapCategories(serverVersions, presented).sort()).toEqual([
+      'coordinator',
+      'peer-presence',
+      'remote-status',
+      'task-ports',
+    ]);
+  });
+
+  // A throwing version getter omits the category from the server version map
+  // (getServerStateBootstrapVersions); the handshake must still visit it and
+  // rebuild it instead of silently dropping it from the resend set.
+  it('treats a category missing from the server version map as stale', () => {
+    const serverVersions = buildCurrentVersions();
+    const presented = { ...serverVersions };
+    delete serverVersions.coordinator;
+
+    expect(getStaleBootstrapCategories(serverVersions, presented)).toContain('coordinator');
+    expect(getStaleBootstrapCategories(serverVersions, presented).sort()).toEqual([
+      'coordinator',
+      'peer-presence',
+      'remote-status',
+    ]);
   });
 });

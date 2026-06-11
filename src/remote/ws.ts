@@ -122,6 +122,7 @@ const REMOTE_IGNORED_SERVER_MESSAGE_TYPES = {
   'agent-lifecycle': true,
   channel: true,
   'channel-bound': true,
+  'control-replay-batch': true,
   'coordinator-event': true,
   'git-status-changed': true,
   'permission-request': true,

@@ -23,6 +23,10 @@ import {
 
 const taskReviewVersionTracker = createServerStateVersionTracker();
 
+export function getTaskReviewHighestAppliedVersion(): number {
+  return taskReviewVersionTracker.highestVersion;
+}
+
 export function applyTaskReviewEvent(event: TaskReviewEvent): void {
   const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskReviewEvent(event)) {
@@ -75,6 +79,12 @@ export function getTaskReviewSnapshot(taskId: string): TaskReviewSnapshot | unde
   return getKeyedSnapshotRecordEntry('taskReview', taskId);
 }
 
-export function resetTaskReviewProjectionStateForTests(): void {
+// Per-boot version tracking is reset when the server instance changes; see
+// resetServerStateVersionTrackingForInstanceChange.
+export function resetTaskReviewVersionTracking(): void {
   resetServerStateVersionTracker(taskReviewVersionTracker);
+}
+
+export function resetTaskReviewProjectionStateForTests(): void {
+  resetTaskReviewVersionTracking();
 }

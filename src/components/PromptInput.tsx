@@ -603,13 +603,16 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
             'font-family': "'JetBrains Mono', monospace",
             resize: 'none',
             outline: 'none',
-            opacity: isPromptDisabled() ? '0.5' : '1',
+            // The draft dims while a send is in flight but is only cleared on
+            // success, so a failed send restores the text at full strength.
+            opacity: isPromptDisabled() ? '0.5' : sending() ? '0.6' : '1',
           }}
         />
         <button
           class="prompt-send-btn"
           type="button"
-          disabled={!text().trim() || isPromptDisabled()}
+          aria-busy={sending() ? 'true' : undefined}
+          disabled={!text().trim() || isPromptDisabled() || sending()}
           onClick={() => handleSend()}
           style={{
             position: 'absolute',
@@ -621,24 +624,35 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
             border: 'none',
             background: text().trim() ? theme.accent : theme.bgHover,
             color: text().trim() ? theme.accentText : theme.fgSubtle,
-            cursor: text().trim() ? 'pointer' : 'default',
+            cursor: text().trim() && !sending() ? 'pointer' : 'default',
             display: 'flex',
             'align-items': 'center',
             'justify-content': 'center',
             padding: '0',
             transition: 'background 0.15s, color 0.15s',
           }}
-          title="Send prompt"
+          title={sending() ? 'Sending prompt…' : 'Send prompt'}
         >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path
-              d="M7 12V2M7 2L3 6M7 2l4 4"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <Show
+            when={!sending()}
+            fallback={
+              <span
+                class="inline-spinner"
+                aria-hidden="true"
+                style={{ width: '12px', height: '12px' }}
+              />
+            }
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path
+                d="M7 12V2M7 2L3 6M7 2l4 4"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </Show>
         </button>
       </div>
     </div>

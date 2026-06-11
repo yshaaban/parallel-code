@@ -18,13 +18,14 @@ import type {
   TerminalRecoveryBatchEntry,
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
+  TerminalStartupRecoveryRole,
 } from '../ipc/types.js';
 import type { ProjectMode, ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
 import type { AskAboutCodeMessage, AskAboutCodeProviderId } from './ask-about-code.js';
 import type { AppUpdateStatus } from './app-update.js';
 import type { AgentRunnerProfileConfig } from './agent-runners.js';
 import type { BranchCommitHistoryResult } from './review-commit-history.js';
-import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
+import type { ServerStateBootstrapResultSnapshot } from './server-state-bootstrap.js';
 import type {
   CoordinatorActivityHintRequest,
   CoordinatorCreateRunRequest,
@@ -75,7 +76,7 @@ export interface RemoteAccessStartResult {
 
 export interface BrowserReconnectSnapshot {
   agentGenerations?: Record<string, number>;
-  appStateJson: string | null;
+  appStateJson?: string | null;
   taskCommandControllers?: TaskCommandControllerSnapshot[];
   taskCommandControllerVersion?: number;
   workspaceRevision?: number;
@@ -86,12 +87,23 @@ export interface BrowserReconnectSnapshot {
 export interface BrowserReconnectStatus {
   agentGenerations: Record<string, number>;
   runningAgentIds: string[];
+  /** Per-process server identity; a change voids every per-boot version. */
+  serverInstanceId?: string;
   taskCommandControllerVersion?: number;
   workspaceRevision?: number;
 }
 
+export interface BrowserColdBootstrapPlanContent {
+  content: string;
+  fileName: string;
+  relativePath: string;
+  taskId: string;
+}
+
 export interface BrowserColdBootstrapSnapshot {
-  serverStateBootstrap: AnyServerStateBootstrapSnapshot[];
+  planContents?: BrowserColdBootstrapPlanContent[];
+  projectPathsExist?: Record<string, boolean>;
+  serverStateBootstrap: ServerStateBootstrapResultSnapshot[];
   workspaceRevision?: number;
   workspaceProjection: BrowserColdBootstrapProjection;
 }
@@ -132,6 +144,37 @@ export interface RendererInvokeRequestMap {
     runnerProfile?: AgentRunnerProfileConfig;
     rows?: number;
     taskId: string;
+  };
+  [IPC.AttachTerminalSession]: {
+    adapter?: 'hydra';
+    agentId: string;
+    args: string[];
+    baseBranch?: string;
+    // Injected server-side from the authenticated browser client-id header so
+    // the handler can bind the output channel for the requesting client.
+    clientId?: string;
+    cols?: number;
+    command?: string;
+    controllerId?: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    initialRecovery: {
+      outputCursor: number | null;
+      role: TerminalStartupRecoveryRole | null;
+      snapshotByteLimit: number | null;
+      visibleTerminalCount: number;
+    };
+    isShell?: boolean;
+    onOutput: ChannelRefLike<string>;
+    projectMode?: ProjectMode;
+    replaceExistingSession?: boolean;
+    resumeOnStart?: boolean;
+    runnerProfile?: AgentRunnerProfileConfig;
+    rows?: number;
+    taskId: string;
+  };
+  [IPC.ReleaseTerminalRecoveryPause]: {
+    batchPauseId: string;
   };
   [IPC.EnsureAgentSessionsBatch]: {
     clientId?: string;
@@ -211,13 +254,27 @@ export interface RendererInvokeRequestMap {
         hydraCommand?: string;
       }
     | undefined;
+  [IPC.RefreshAgentAvailability]:
+    | {
+        hydraCommand?: string;
+      }
+    | undefined;
   [IPC.GetAgentSupervision]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.GetBackendRuntimeDiagnostics]: undefined;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
   [IPC.GetBrowserColdBootstrap]: undefined;
   [IPC.GetBrowserReconnectStatus]: undefined;
-  [IPC.GetBrowserReconnectSnapshot]: undefined;
+  [IPC.GetBrowserReconnectSnapshot]:
+    | {
+        knownWorkspaceRevision?: number;
+      }
+    | undefined;
+  [IPC.ReportClientTaskFocus]: {
+    focusedChannelIds?: string[];
+    selectedTaskId: string | null;
+    visibleTaskIds: string[];
+  };
   [IPC.GetNotificationCapability]: undefined;
   [IPC.ShowNotification]: TaskNotificationRequest;
 
@@ -610,6 +667,12 @@ export interface RendererInvokeResponseMap {
   [IPC.SpawnAgent]: {
     attachedExistingSession: boolean;
   };
+  [IPC.AttachTerminalSession]: {
+    attachedExistingSession: boolean;
+    channelBound: boolean;
+    recovery: TerminalRecoveryBatchEntry | null;
+  };
+  [IPC.ReleaseTerminalRecoveryPause]: undefined;
   [IPC.EnsureAgentSessionsBatch]: {
     results: Array<{
       agentId: string;
@@ -634,6 +697,7 @@ export interface RendererInvokeResponseMap {
   [IPC.CountRunningAgents]: number;
   [IPC.KillAllAgents]: undefined;
   [IPC.ListAgents]: AgentDef[];
+  [IPC.RefreshAgentAvailability]: undefined;
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
   [IPC.GetBackendRuntimeDiagnostics]: BackendRuntimeDiagnosticsSnapshot;
@@ -641,6 +705,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetBrowserColdBootstrap]: BrowserColdBootstrapSnapshot;
   [IPC.GetBrowserReconnectStatus]: BrowserReconnectStatus;
   [IPC.GetBrowserReconnectSnapshot]: BrowserReconnectSnapshot;
+  [IPC.ReportClientTaskFocus]: null;
 
   [IPC.CreateTask]: CreateTaskResult;
   [IPC.DeleteTask]: DeleteTaskResult;
@@ -665,7 +730,7 @@ export interface RendererInvokeResponseMap {
   [IPC.ContainersStopTask]: TaskContainerInspectResult;
   [IPC.ContainersDestroyTask]: TaskContainerInspectResult;
   [IPC.ContainersGetTaskLogs]: TaskContainerLogsResult;
-  [IPC.GetServerStateBootstrap]: AnyServerStateBootstrapSnapshot[];
+  [IPC.GetServerStateBootstrap]: ServerStateBootstrapResultSnapshot[];
   [IPC.CoordinatorActivityHint]: undefined;
   [IPC.CoordinatorCreateRun]: CoordinatorCreateRunResult;
   [IPC.CoordinatorGetDiagnostics]: CoordinatorDiagnosticsSnapshot;

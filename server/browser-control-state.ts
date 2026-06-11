@@ -1,6 +1,14 @@
-import { getServerStateBootstrap } from '../electron/ipc/server-state-bootstrap.js';
+import {
+  getServerStateBootstrap,
+  getServerStateBootstrapVersions,
+} from '../electron/ipc/server-state-bootstrap.js';
+import { getServerInstanceId } from '../electron/ipc/server-instance.js';
 import { removeGitStatusSnapshot } from '../electron/ipc/git-status-state.js';
 import type { StateBootstrapMessage } from '../electron/remote/protocol.js';
+import type {
+  ResyncVersionMap,
+  ServerStateBootstrapCategory,
+} from '../src/domain/server-state-bootstrap.js';
 import type { PeerPresenceSnapshot, RemotePresence } from '../src/domain/server-state.js';
 import {
   createBrowserServerInfo,
@@ -8,8 +16,15 @@ import {
   type BrowserServerInfo,
 } from './browser-server-info.js';
 
+export interface CreateStateBootstrapMessageOptions {
+  categories?: ReadonlyArray<ServerStateBootstrapCategory>;
+}
+
 export interface BrowserControlState {
-  createStateBootstrapMessage: () => StateBootstrapMessage;
+  createStateBootstrapMessage: (
+    options?: CreateStateBootstrapMessageOptions,
+  ) => StateBootstrapMessage;
+  getServerStateVersions: () => ResyncVersionMap;
   getRemoteStatus: () => BrowserRemoteStatus;
   getRemoteStatusVersion: () => number;
   getServerInfo: () => BrowserServerInfo;
@@ -37,16 +52,25 @@ export function createBrowserControlState(
   });
   let remoteStatusVersion = 0;
 
+  function getBootstrapContext(): Parameters<typeof getServerStateBootstrap>[0] {
+    return {
+      getPeerPresenceSnapshots: options.getPeerPresenceSnapshots,
+      getPeerPresenceVersion: options.getPeerPresenceVersion,
+      getRemoteStatus: serverInfo.getRemoteStatus,
+      getRemoteStatusVersion: () => remoteStatusVersion,
+    };
+  }
+
   return {
-    createStateBootstrapMessage: () => ({
+    createStateBootstrapMessage: (messageOptions = {}) => ({
       type: 'state-bootstrap',
-      snapshots: getServerStateBootstrap({
-        getPeerPresenceSnapshots: options.getPeerPresenceSnapshots,
-        getPeerPresenceVersion: options.getPeerPresenceVersion,
-        getRemoteStatus: serverInfo.getRemoteStatus,
-        getRemoteStatusVersion: () => remoteStatusVersion,
-      }),
+      snapshots: getServerStateBootstrap(
+        getBootstrapContext(),
+        messageOptions.categories === undefined ? {} : { categories: messageOptions.categories },
+      ),
+      serverInstanceId: getServerInstanceId(),
     }),
+    getServerStateVersions: () => getServerStateBootstrapVersions(getBootstrapContext()),
     getRemoteStatus: serverInfo.getRemoteStatus,
     getRemoteStatusVersion: () => remoteStatusVersion,
     getServerInfo: serverInfo.getServerInfo,

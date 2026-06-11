@@ -1,7 +1,5 @@
-import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { promisify } from 'util';
 
 import {
   findBranchRefPrefixConflict,
@@ -9,8 +7,7 @@ import {
 } from '../../src/lib/branch-name.js';
 import { BadRequestError } from './errors.js';
 import { invalidateGitQueryCacheForPath } from './git-cache.js';
-
-const exec = promisify(execFile);
+import { execGit } from './git-exec.js';
 
 const SYMLINK_CANDIDATES = [
   '.claude',
@@ -101,20 +98,16 @@ function parseGitWorktreeList(output: string): GitWorktreeListEntry[] {
 }
 
 export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeListEntry[]> {
-  const { stdout } = await exec('git', ['worktree', 'list', '--porcelain'], {
+  const { stdout } = await execGit(['worktree', 'list', '--porcelain'], {
     cwd: repoRoot,
   });
   return parseGitWorktreeList(stdout);
 }
 
 async function listLocalBranchNames(repoRoot: string): Promise<string[]> {
-  const { stdout } = await exec(
-    'git',
-    ['for-each-ref', '--format=%(refname:strip=2)', 'refs/heads'],
-    {
-      cwd: repoRoot,
-    },
-  );
+  const { stdout } = await execGit(['for-each-ref', '--format=%(refname:strip=2)', 'refs/heads'], {
+    cwd: repoRoot,
+  });
   return stdout
     .split('\n')
     .map((line) => line.trim())
@@ -131,7 +124,7 @@ async function assertBranchRefPrefixAvailable(repoRoot: string, branchName: stri
 
 async function gitRefExists(repoRoot: string, refName: string): Promise<boolean> {
   try {
-    await exec('git', ['rev-parse', '--verify', refName], { cwd: repoRoot });
+    await execGit(['rev-parse', '--verify', refName], { cwd: repoRoot });
     return true;
   } catch {
     return false;
@@ -198,18 +191,18 @@ export async function createWorktree(
     // Clean up stale worktree/branch from a previous session that wasn't properly removed
     if (fs.existsSync(worktreePath)) {
       try {
-        await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+        await execGit(['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
       } catch {
         fs.rmSync(worktreePath, { recursive: true, force: true });
       }
-      await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch((e) =>
+      await execGit(['worktree', 'prune'], { cwd: repoRoot }).catch((e) =>
         console.warn('git worktree prune failed:', e),
       );
     }
 
     // Delete stale branch ref if it still exists
     try {
-      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot });
+      await execGit(['branch', '-D', branchName], { cwd: repoRoot });
     } catch {
       // Branch doesn't exist — fine
     }
@@ -217,7 +210,7 @@ export async function createWorktree(
 
   const startRef = await resolveWorktreeStartRef(repoRoot, baseBranch);
   if (!startRef.exists) {
-    const isEmptyRepo = await exec('git', ['rev-list', '-n1', '--all'], { cwd: repoRoot })
+    const isEmptyRepo = await execGit(['rev-list', '-n1', '--all'], { cwd: repoRoot })
       .then(({ stdout }) => !stdout.trim())
       .catch(() => true);
     if (isEmptyRepo) {
@@ -238,7 +231,7 @@ export async function createWorktree(
   if (baseBranch) {
     worktreeArgs.push(startRef.refName);
   }
-  await exec('git', worktreeArgs, { cwd: repoRoot });
+  await execGit(worktreeArgs, { cwd: repoRoot });
 
   // Symlink selected directories
   for (const name of symlinkDirs) {
@@ -276,7 +269,7 @@ export async function removeWorktree(
 
   if (fs.existsSync(worktreePath)) {
     try {
-      await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+      await execGit(['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
     } catch {
       // Fallback: direct directory removal
       fs.rmSync(worktreePath, { recursive: true, force: true });
@@ -285,14 +278,14 @@ export async function removeWorktree(
 
   // Prune stale worktree entries
   try {
-    await exec('git', ['worktree', 'prune'], { cwd: repoRoot });
+    await execGit(['worktree', 'prune'], { cwd: repoRoot });
   } catch {
     /* ignore */
   }
 
   if (deleteBranch) {
     try {
-      await exec('git', ['branch', '-D', '--', branchName], { cwd: repoRoot });
+      await execGit(['branch', '-D', '--', branchName], { cwd: repoRoot });
     } catch (e: unknown) {
       const msg = String(e);
       if (!msg.toLowerCase().includes('not found')) throw e;

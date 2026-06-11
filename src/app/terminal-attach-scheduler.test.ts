@@ -28,7 +28,7 @@ describe('terminal-attach-scheduler', () => {
     resetTerminalAttachSchedulerForTests();
   });
 
-  it('serializes foreground attaches ahead of background work', async () => {
+  it('attaches the foreground candidate first without starving background slots', async () => {
     const attachOrder: string[] = [];
 
     registerTerminalAttachCandidate({
@@ -58,10 +58,13 @@ describe('terminal-attach-scheduler', () => {
 
     await Promise.resolve();
 
-    expect(attachOrder).toEqual(['active']);
+    // The foreground cap holds 'visible' back, but a pending foreground
+    // candidate no longer collapses background concurrency to one: the
+    // remaining slot goes to background work in the same drain pass.
+    expect(attachOrder).toEqual(['active', 'background']);
   });
 
-  it('starts the next foreground attach after release and only then resumes background work', async () => {
+  it('starts the next foreground attach after release while background slots stay busy', async () => {
     const attachOrder: string[] = [];
 
     const active = registerTerminalAttachCandidate({
@@ -90,19 +93,70 @@ describe('terminal-attach-scheduler', () => {
     });
 
     await Promise.resolve();
-    expect(attachOrder).toEqual(['active']);
+    expect(attachOrder).toEqual(['active', 'background']);
 
     active.release();
     await Promise.resolve();
-    expect(attachOrder).toEqual(['active', 'visible']);
-
-    visible.release();
-    await Promise.resolve();
-    expect(attachOrder).toEqual(['active', 'visible', 'background']);
+    expect(attachOrder).toEqual(['active', 'background', 'visible']);
 
     active.unregister();
     visible.unregister();
     background.unregister();
+  });
+
+  it('keeps background concurrency above one while a foreground candidate stays pending', async () => {
+    const attachOrder: string[] = [];
+
+    const active = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('active');
+      },
+      getPriority: () => 0,
+      key: 'active-terminal',
+      taskId: 'task-active',
+    });
+    // A second pending foreground candidate (over the foreground cap) used to
+    // break the whole drain and serialize every reconnect re-attach.
+    const pendingForeground = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('pending-foreground');
+      },
+      getPriority: () => 0,
+      key: 'pending-foreground-terminal',
+      taskId: 'task-pending-foreground',
+    });
+    const backgroundA = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-a');
+      },
+      getPriority: () => 2,
+      key: 'u-background-a',
+      taskId: 'task-background-a',
+    });
+    const backgroundB = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('background-b');
+      },
+      getPriority: () => 2,
+      key: 'v-background-b',
+      taskId: 'task-background-b',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['active', 'background-a']);
+
+    backgroundA.release();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['active', 'background-a', 'background-b']);
+
+    active.release();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['active', 'background-a', 'background-b', 'pending-foreground']);
+
+    active.unregister();
+    pendingForeground.unregister();
+    backgroundA.unregister();
+    backgroundB.unregister();
   });
 
   it('ignores stale release and unregister calls after the same key is re-registered', async () => {

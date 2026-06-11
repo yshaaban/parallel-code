@@ -13,26 +13,44 @@ vi.mock('./hydra-adapter.js', () => ({
   getHydraRuntimeAvailability: getHydraRuntimeAvailabilityMock,
 }));
 
-import { listAgents } from './agents.js';
+import {
+  releaseBackendBackgroundWork,
+  resetBackendWorkQueueForTests,
+} from './backend-work-queue.js';
+import { resetAgentAvailabilityStateForTests } from './agent-availability-state.js';
+import {
+  getAgentDefsWithLastKnownAvailability,
+  listAgents,
+  requestAgentCatalogAvailabilityRevalidation,
+} from './agents.js';
+
+async function flushAsyncWork(iterations = 10): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function runProbeRound(): Promise<void> {
+  requestAgentCatalogAvailabilityRevalidation('settings-change');
+  releaseBackendBackgroundWork();
+  await flushAsyncWork();
+}
 
 describe('listAgents', () => {
   afterEach(() => {
+    resetAgentAvailabilityStateForTests();
+    resetBackendWorkQueueForTests();
     vi.useRealTimers();
+    isCommandAvailableMock.mockReset();
+    getHydraRuntimeAvailabilityMock.mockReset();
   });
 
-  it('returns defensive copies of default skip-permission args', async () => {
-    isCommandAvailableMock.mockResolvedValue(true);
-    getHydraRuntimeAvailabilityMock.mockResolvedValue({
-      available: true,
-      detail: 'Using hydra from PATH.',
-      source: 'path',
-    });
-
-    const firstAgents = await listAgents();
+  it('returns defensive copies of default skip-permission args', () => {
+    const firstAgents = listAgents();
     firstAgents[0]?.skip_permissions_args.push('--mutated');
     firstAgents[1]?.args.push('--mutated');
 
-    const secondAgents = await listAgents();
+    const secondAgents = listAgents();
 
     expect(secondAgents.find((agent) => agent.id === 'claude-code')?.skip_permissions_args).toEqual(
       ['--dangerously-skip-permissions'],
@@ -43,80 +61,79 @@ describe('listAgents', () => {
     expect(secondAgents[0]?.skip_permissions_args).not.toBe(firstAgents[0]?.skip_permissions_args);
   });
 
-  it('includes Antigravity as a CLI-args built-in agent', async () => {
-    isCommandAvailableMock.mockResolvedValue(true);
-    getHydraRuntimeAvailabilityMock.mockResolvedValue({
-      available: true,
-      detail: 'Using hydra from PATH.',
-      source: 'path',
-    });
-
-    const agents = await listAgents('antigravity-catalog-test');
+  it('includes Antigravity as a CLI-args built-in agent', () => {
+    const agents = listAgents();
 
     expect(agents.find((agent) => agent.id === 'antigravity')).toMatchObject({
-      available: true,
       command: 'agy',
       resume_args: ['-c'],
       resume_strategy: 'cli-args',
       skip_permissions_args: ['--dangerously-skip-permissions'],
     });
-    expect(isCommandAvailableMock).toHaveBeenCalledWith('agy');
   });
 
-  it('briefly caches unavailable agents before rechecking newly installed CLIs', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    isCommandAvailableMock.mockClear();
-    getHydraRuntimeAvailabilityMock.mockClear();
+  it('returns synchronously with probing status before any probe completes', () => {
+    isCommandAvailableMock.mockReturnValue(new Promise<boolean>(() => {}));
+    getHydraRuntimeAvailabilityMock.mockReturnValue(new Promise(() => {}));
+
+    const agents = listAgents();
+
+    expect(agents.length).toBeGreaterThan(0);
+    expect(agents.every((agent) => agent.availabilityStatus === 'probing')).toBe(true);
+    expect(agents.every((agent) => agent.available === undefined)).toBe(true);
+  });
+
+  it('merges last-known sticky availability after a probe round completes', async () => {
     isCommandAvailableMock.mockImplementation(async (command: string) => command !== 'codex');
     getHydraRuntimeAvailabilityMock.mockResolvedValue({
       available: true,
       detail: 'Using hydra from PATH.',
+      resolvedCommand: 'hydra',
       source: 'path',
     });
 
-    const firstAgents = await listAgents('hydra-cache-test');
+    await runProbeRound();
 
-    expect(firstAgents.find((agent) => agent.id === 'codex')?.available).toBe(false);
-
-    isCommandAvailableMock.mockResolvedValue(true);
-    const secondAgents = await listAgents('hydra-cache-test');
-
-    expect(secondAgents.find((agent) => agent.id === 'codex')?.available).toBe(false);
-    expect(
-      isCommandAvailableMock.mock.calls.filter(([command]) => command === 'codex'),
-    ).toHaveLength(1);
-
-    vi.setSystemTime(5_001);
-    const thirdAgents = await listAgents('hydra-cache-test');
-
-    expect(thirdAgents.find((agent) => agent.id === 'codex')?.available).toBe(true);
-    expect(isCommandAvailableMock).toHaveBeenCalledWith('codex');
-    expect(
-      isCommandAvailableMock.mock.calls.filter(([command]) => command === 'codex'),
-    ).toHaveLength(2);
+    const agents = listAgents();
+    expect(agents.find((agent) => agent.id === 'codex')).toMatchObject({
+      availabilityStatus: 'known',
+      available: false,
+      availabilitySource: 'unavailable',
+    });
+    expect(agents.find((agent) => agent.id === 'claude-code')).toMatchObject({
+      availabilityStatus: 'known',
+      available: true,
+      availabilitySource: 'path',
+    });
+    expect(agents.find((agent) => agent.id === 'hydra')).toMatchObject({
+      availabilityStatus: 'known',
+      available: true,
+      availabilityReason: 'Using hydra from PATH.',
+    });
   });
 
-  it('keeps fully available agent catalogs cached longer', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    isCommandAvailableMock.mockClear();
-    getHydraRuntimeAvailabilityMock.mockClear();
-    isCommandAvailableMock.mockResolvedValue(true);
+  it('keeps unavailable results sticky on repeated reads instead of re-probing', async () => {
+    isCommandAvailableMock.mockImplementation(async (command: string) => command !== 'codex');
     getHydraRuntimeAvailabilityMock.mockResolvedValue({
       available: true,
       detail: 'Using hydra from PATH.',
+      resolvedCommand: 'hydra',
       source: 'path',
     });
 
-    await listAgents('available-cache-test');
-    vi.setSystemTime(5_001);
-    const secondAgents = await listAgents('available-cache-test');
+    await runProbeRound();
+    const probeCallsAfterRound = isCommandAvailableMock.mock.calls.length;
 
-    expect(secondAgents.find((agent) => agent.id === 'codex')?.available).toBe(true);
-    expect(isCommandAvailableMock).toHaveBeenCalledWith('codex');
-    expect(
-      isCommandAvailableMock.mock.calls.filter(([command]) => command === 'codex'),
-    ).toHaveLength(1);
+    isCommandAvailableMock.mockResolvedValue(true);
+    for (let index = 0; index < 5; index += 1) {
+      const agents = listAgents();
+      expect(agents.find((agent) => agent.id === 'codex')?.available).toBe(false);
+      expect(
+        getAgentDefsWithLastKnownAvailability().find((agent) => agent.id === 'codex')?.available,
+      ).toBe(false);
+    }
+    await flushAsyncWork();
+
+    expect(isCommandAvailableMock.mock.calls.length).toBe(probeCallsAfterRound);
   });
 });

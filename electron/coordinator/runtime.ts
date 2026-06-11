@@ -16,6 +16,7 @@ import {
   type CoordinatorPromptRequestSnapshot,
   type CoordinatorPromptStatus,
   type CoordinatorRunLimits,
+  type CoordinatorRunMetaSnapshot,
   type CoordinatorRunResumeSnapshot,
   type CoordinatorRunSnapshot,
   type CoordinatorRunStatus,
@@ -268,6 +269,40 @@ const DEFAULT_WORKFLOW_APPEND_POLICY: CoordinatorWorkflowAppendPolicySnapshot = 
   maxStepAppends: COORDINATOR_LIMITS.maxWorkflowStepAppends,
 };
 
+const RESTORED_RUN_STATUSES: readonly CoordinatorRunStatus[] = [
+  'draining',
+  'paused-by-user',
+  'running',
+  'starting',
+];
+const RESTORED_PROMPT_STATUSES: readonly CoordinatorPromptStatus[] = [
+  'delivering',
+  'queued',
+  'waiting-for-agent-session',
+  'waiting-for-command-lease',
+  'waiting-for-terminal-input-clear',
+  'waiting-for-terminal-prompt',
+  'waiting-for-user-idle',
+];
+const RESTORED_WORKFLOW_STATUSES: readonly CoordinatorWorkflowStatus[] = [
+  'pending',
+  'running',
+  'waiting-for-results',
+];
+const RESTORED_WORKFLOW_STAGE_STATUSES: readonly CoordinatorWorkflowStageStatus[] = [
+  'pending',
+  'running',
+  'waiting-for-results',
+];
+const RESTORED_WORKFLOW_LANE_STATUSES: readonly CoordinatorWorkflowLaneStatus[] = [
+  'pending',
+  'spawning',
+  'running',
+  'waiting-for-result',
+];
+const RESTORED_WORKFLOW_FAILURE =
+  'Server restored coordinator workflow state without the live PTY session.';
+
 let recordsByRunId = new Map<string, RunRecord>();
 const launchesByRunAndTask = new Map<string, CoordinatorSubtaskLaunchSnapshot>();
 let stateVersion = 0;
@@ -282,6 +317,17 @@ const toolCallResults = new Map<
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const entry of Object.values(value)) {
+      deepFreeze(entry);
+    }
+  }
+
+  return value;
 }
 
 function nextVersion(): number {
@@ -314,6 +360,15 @@ function materializeRun(record: RunRecord): CoordinatorRunSnapshot {
     subtasks: [...record.subtasksByTaskId.values()],
     workflows: [...record.workflowsById.values()],
   };
+}
+
+function materializeRunMeta(record: RunRecord): CoordinatorRunMetaSnapshot {
+  const { landing, promptQueue, subtasks, workflows, ...meta } = record.run;
+  void landing;
+  void promptQueue;
+  void subtasks;
+  void workflows;
+  return meta;
 }
 
 function replaceRun(record: RunRecord, run: CoordinatorRunSnapshot): void {
@@ -404,23 +459,8 @@ function normalizeRestoredSubtask(
 }
 
 function normalizeRestoredRun(run: CoordinatorRunSnapshot, now: number): CoordinatorRunSnapshot {
-  const staleStatuses: CoordinatorRunStatus[] = [
-    'draining',
-    'paused-by-user',
-    'running',
-    'starting',
-  ];
-  const stalePromptStatuses: CoordinatorPromptStatus[] = [
-    'delivering',
-    'queued',
-    'waiting-for-agent-session',
-    'waiting-for-command-lease',
-    'waiting-for-terminal-input-clear',
-    'waiting-for-terminal-prompt',
-    'waiting-for-user-idle',
-  ];
   const restoredPrompts: CoordinatorPromptRequestSnapshot[] = run.promptQueue.map((prompt) => {
-    if (!stalePromptStatuses.includes(prompt.status)) {
+    if (!RESTORED_PROMPT_STATUSES.includes(prompt.status)) {
       return prompt;
     }
 
@@ -433,7 +473,7 @@ function normalizeRestoredRun(run: CoordinatorRunSnapshot, now: number): Coordin
   return {
     ...run,
     promptQueue: restoredPrompts,
-    status: staleStatuses.includes(run.status) ? 'stale-after-restore' : run.status,
+    status: RESTORED_RUN_STATUSES.includes(run.status) ? 'stale-after-restore' : run.status,
     subtasks: run.subtasks.map((subtask) =>
       normalizeRestoredSubtask(subtask, run.promptQueue, now),
     ),
@@ -441,25 +481,37 @@ function normalizeRestoredRun(run: CoordinatorRunSnapshot, now: number): Coordin
   };
 }
 
+function restoreWorkflowLaneAfterRestart(
+  lane: CoordinatorWorkflowLaneSnapshot,
+): CoordinatorWorkflowLaneSnapshot {
+  if (!RESTORED_WORKFLOW_LANE_STATUSES.includes(lane.status)) {
+    return lane;
+  }
+
+  return {
+    ...lane,
+    failure: RESTORED_WORKFLOW_FAILURE,
+    status: 'stale-after-restore',
+  };
+}
+
+function restoreWorkflowStageAfterRestart(
+  stage: CoordinatorWorkflowStageSnapshot,
+): CoordinatorWorkflowStageSnapshot {
+  if (!RESTORED_WORKFLOW_STAGE_STATUSES.includes(stage.status)) {
+    return stage;
+  }
+
+  return {
+    ...stage,
+    failure: RESTORED_WORKFLOW_FAILURE,
+    status: 'stale-after-restore',
+  };
+}
+
 function normalizeRestoredWorkflow(
   workflow: CoordinatorWorkflowSnapshot,
 ): CoordinatorWorkflowSnapshot {
-  const staleWorkflowStatuses: CoordinatorWorkflowStatus[] = [
-    'pending',
-    'running',
-    'waiting-for-results',
-  ];
-  const staleStageStatuses: CoordinatorWorkflowStageStatus[] = [
-    'pending',
-    'running',
-    'waiting-for-results',
-  ];
-  const staleLaneStatuses: CoordinatorWorkflowLaneStatus[] = [
-    'pending',
-    'spawning',
-    'running',
-    'waiting-for-result',
-  ];
   const now = Date.now();
   const workflowWithCancelledApprovals = cancelWorkflowPendingApprovalsOnSnapshot(
     {
@@ -479,26 +531,10 @@ function normalizeRestoredWorkflow(
     ...workflowWithCancelledApprovals,
     appendPolicy: mergeWorkflowAppendPolicy(workflow.appendPolicy),
     policy: mergeWorkflowPolicy(workflow.policy),
-    lanes: workflow.lanes.map((lane) =>
-      staleLaneStatuses.includes(lane.status)
-        ? {
-            ...lane,
-            failure: 'Server restored coordinator workflow state without the live PTY session.',
-            status: 'stale-after-restore',
-          }
-        : lane,
-    ),
-    stages: workflow.stages.map((stage) =>
-      staleStageStatuses.includes(stage.status)
-        ? {
-            ...stage,
-            failure: 'Server restored coordinator workflow state without the live PTY session.',
-            status: 'stale-after-restore',
-          }
-        : stage,
-    ),
+    lanes: workflow.lanes.map(restoreWorkflowLaneAfterRestart),
+    stages: workflow.stages.map(restoreWorkflowStageAfterRestart),
     programVersion: workflow.programVersion ?? COORDINATOR_WORKFLOW_PROGRAM_VERSION,
-    status: staleWorkflowStatuses.includes(workflow.status)
+    status: RESTORED_WORKFLOW_STATUSES.includes(workflow.status)
       ? 'stale-after-restore'
       : workflow.status,
   };
@@ -543,8 +579,16 @@ function emitCoordinatorEvent(
     ...(options.tombstone !== undefined ? { tombstone: options.tombstone } : {}),
   };
 
+  // One clone shared by every listener: the envelope is deep-frozen so a
+  // listener cannot mutate what later listeners (or the transport) observe,
+  // and a throwing listener must never block the listeners after it.
+  const sharedEvent = deepFreeze(clone(event));
   for (const listener of eventListeners) {
-    listener(clone(event));
+    try {
+      listener(sharedEvent);
+    } catch (error) {
+      console.error('Coordinator event listener failed:', error);
+    }
   }
 
   return event;
@@ -603,7 +647,13 @@ export function updateCoordinatorRunStatus(
     updatedAt: now,
   };
   replaceRun(record, run);
-  emitCoordinatorEvent(run.id, 'run-upserted', `run:${run.id}`, version, run);
+  emitCoordinatorEvent(
+    run.id,
+    'run-meta-upserted',
+    `run:${run.id}`,
+    version,
+    materializeRunMeta(record),
+  );
   return clone(run);
 }
 
@@ -626,7 +676,13 @@ export function setCoordinatorRunPaused(
     delete nextRun.pausedAt;
   }
   replaceRun(record, nextRun);
-  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  emitCoordinatorEvent(
+    runId,
+    'run-meta-upserted',
+    `run:${runId}`,
+    version,
+    materializeRunMeta(record),
+  );
   return clone(materializeRun(record));
 }
 
@@ -679,7 +735,13 @@ export function resumeCoordinatorRunFromStale(
     updatedAt: now,
   };
   replaceRun(record, nextRun);
-  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  emitCoordinatorEvent(
+    runId,
+    'run-meta-upserted',
+    `run:${runId}`,
+    version,
+    materializeRunMeta(record),
+  );
   return clone(materializeRun(record));
 }
 
@@ -710,7 +772,13 @@ export function recordCoordinatorRunResumeOutcome(
     updatedAt: now,
   };
   replaceRun(record, nextRun);
-  emitCoordinatorEvent(runId, 'run-upserted', `run:${runId}`, version, materializeRun(record));
+  emitCoordinatorEvent(
+    runId,
+    'run-meta-upserted',
+    `run:${runId}`,
+    version,
+    materializeRunMeta(record),
+  );
   return clone(materializeRun(record));
 }
 
@@ -764,13 +832,6 @@ export function addCoordinatorSubtask(
     `subtask:${subtask.taskId}`,
     version,
     subtask,
-  );
-  emitCoordinatorEvent(
-    options.runId,
-    'run-upserted',
-    `run:${record.run.id}`,
-    version,
-    materializeRun(record),
   );
   return clone(subtask);
 }
@@ -1043,10 +1104,10 @@ function setWorkflow(
   updateRunTimestamp(record, now);
   emitCoordinatorEvent(
     workflow.runId,
-    'run-upserted',
-    `run:${workflow.runId}`,
+    'workflow-upserted',
+    `workflow:${workflow.id}`,
     version,
-    materializeRun(record),
+    workflow,
   );
   return clone(workflow);
 }
@@ -1733,6 +1794,19 @@ export function getCoordinatorBootstrapSnapshot(): CoordinatorBootstrapSnapshot 
 
 export function getCoordinatorStateVersion(): number {
   return stateVersion;
+}
+
+// Re-emits every current run snapshot as a run-upserted event without bumping
+// stateVersion. The post-listen coordinator runtime loader calls this once after
+// hydration so clients that received a server-state bootstrap before
+// coordinator-state.json was restored (WS auth or cold bootstrap inside the load
+// window) are repaired through the ordinary event path instead of keeping empty
+// coordinator state until the next real mutation.
+export function emitCoordinatorRunRepairEvents(): void {
+  for (const record of recordsByRunId.values()) {
+    const run = materializeRun(record);
+    emitCoordinatorEvent(run.id, 'run-upserted', `run:${run.id}`, run.eventVersion, run);
+  }
 }
 
 export function rememberCoordinatorToolResult(key: string, result: unknown): void {

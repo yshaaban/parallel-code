@@ -9,6 +9,12 @@ export interface PanelChild {
   fixed?: boolean;
   /** Keep pixel size on window resize, but still allow manual drag resizing. */
   stable?: boolean;
+  /**
+   * Excluded from size persistence: provisional panels (e.g. pending task
+   * creation ghosts) carry renderer-local ids that must never reach
+   * `store.panelSizes` or persisted/synced state.
+   */
+  transient?: boolean;
   minSize?: number;
   maxSize?: number;
   /** Reactive getter — when the returned value changes, the panel resizes to it. */
@@ -310,7 +316,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     const entries: Record<string, number> = {};
     for (let i = 0; i < props.children.length; i++) {
       const child = props.children[i];
-      if (!child.fixed) {
+      if (!child.fixed && !child.transient) {
         entries[`${props.persistKey}:${child.id}`] = clampPanelSize(child, current[i]);
       }
     }

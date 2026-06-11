@@ -172,6 +172,37 @@ describe('SidebarTaskRow', () => {
     expect(screen.queryByText('Quiet')).toBeNull();
   });
 
+  it('renders coordinator-stale attention as a Resume badge', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], coordinatorRole: 'coordinator' }),
+    });
+    setStore('coordinator', 'runs', 'run-1', {
+      coordinatorTaskId: 'task-1',
+      createdAt: 1_000,
+      eventVersion: 1,
+      id: 'run-1',
+      landing: [],
+      limits: {
+        maxActiveSubtasks: 5,
+        maxPendingPromptsPerTarget: 3,
+        maxQueuedSubtasks: 20,
+      },
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+      promptQueue: [],
+      status: 'stale-after-restore',
+      subtasks: [],
+      updatedAt: 2_000,
+      workflows: [],
+    });
+
+    renderSidebarTaskRow();
+
+    expect(screen.getAllByLabelText('Resume').length).toBeGreaterThan(0);
+    expect(screen.getByText('↻')).toBeDefined();
+  });
+
   it('keeps lifecycle fallback attention visible when no reliable duration exists yet', () => {
     setStore('agentSupervision', {});
     setStore('agents', {

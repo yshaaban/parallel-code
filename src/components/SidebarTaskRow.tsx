@@ -70,6 +70,9 @@ interface TaskTerminalStartupBadgeState {
 type AttentionReason = NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'];
 
 const ATTENTION_COLORS: Record<AttentionReason, string> = {
+  'coordinator-approval': theme.warning,
+  'coordinator-budget': theme.warning,
+  'coordinator-stale': theme.accent,
   failed: theme.error,
   'flow-controlled': theme.accent,
   paused: theme.warning,
@@ -80,6 +83,9 @@ const ATTENTION_COLORS: Record<AttentionReason, string> = {
 };
 
 const ATTENTION_ICONS: Record<AttentionReason, string> = {
+  'coordinator-approval': '✓',
+  'coordinator-budget': '◷',
+  'coordinator-stale': '↻',
   failed: '!',
   'flow-controlled': '⇣',
   paused: '⏸',

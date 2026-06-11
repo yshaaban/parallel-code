@@ -22,23 +22,73 @@ import {
   handleIncomingTaskCommandTakeoverRequest,
   handleTaskCommandTakeoverResult,
   hasTaskCommandLeaseTransportAvailability,
+  registerSuspendedTaskCommandLeaseReclaim,
   resetTaskCommandLeaseRuntimeSubscriptionsForTests,
 } from './task-command-lease-runtime-subscriptions';
 import {
   addTaskCommandLeaseSessionInvalidator as addTaskCommandLeaseSessionInvalidatorState,
   cleanupReleasedTaskCommandLease as cleanupReleasedTaskCommandLeaseState,
+  clearSuspendedTaskCommandLeaseMark,
   clearTaskCommandLeaseRenewal,
   decrementTaskCommandLeaseHold,
   getLocalTaskCommandLease,
   getLocalTaskCommandLeaseEntries,
   getOrCreateLocalTaskCommandLease,
+  getSuspendedTaskCommandLeases,
   invalidateTaskCommandLeaseSessions,
+  resumeTaskCommandLease,
   updateLocalTaskCommandLeaseGeneration,
   updateLocalTaskCommandLeaseAction,
   type LocalTaskCommandLease,
 } from './task-command-lease-runtime-state';
 
 const TASK_COMMAND_LEASE_RENEW_MS = 5_000;
+
+// Suspend-and-reclaim: when the transport recovers, every suspended lease the
+// client still believes it holds is re-acquired through the ordinary
+// (non-takeover) acquire path. Success adopts the backend's NEW lease
+// generation; denial means a peer legitimately took over during the blip, so
+// that task's retained sessions are invalidated instead of fought over.
+registerSuspendedTaskCommandLeaseReclaim(() => {
+  for (const [taskId, lease] of getSuspendedTaskCommandLeases()) {
+    if (lease.removed || lease.holdCount === 0) {
+      clearSuspendedTaskCommandLeaseMark(taskId);
+      continue;
+    }
+
+    void reclaimSuspendedTaskCommandLease(taskId, lease);
+  }
+});
+
+async function reclaimSuspendedTaskCommandLease(
+  taskId: string,
+  lease: LocalTaskCommandLease,
+): Promise<void> {
+  const clientId = getRuntimeClientId();
+  const ownerId = getRuntimeLeaseOwnerId();
+  try {
+    const result = await acquireTaskCommandLease(
+      taskId,
+      clientId,
+      ownerId,
+      lease.actionDescription,
+      false,
+    );
+    if (result.acquired && result.controllerId === clientId) {
+      resumeTaskCommandLease(taskId, result.leaseGeneration);
+      if (!lease.renewTimer && !lease.removed) {
+        lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
+      }
+      return;
+    }
+  } catch {
+    // Re-claim failed; fall through to invalidation below.
+  }
+
+  clearSuspendedTaskCommandLeaseMark(taskId);
+  clearTaskCommandLeaseRenewal(taskId);
+  invalidateTaskCommandLeaseSessions(taskId);
+}
 
 export interface TaskCommandLeaseOptions {
   confirmTakeover?: boolean;

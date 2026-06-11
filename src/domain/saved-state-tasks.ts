@@ -5,6 +5,22 @@ export type SavedStateTasksRecordParseResult =
   | { kind: 'missing' }
   | { kind: 'valid'; tasks: Record<string, unknown> };
 
+export function parseSavedStateTasksRecordFromRoot(
+  root: Record<string, unknown> | null,
+): SavedStateTasksRecordParseResult {
+  if (!root) {
+    return { kind: 'invalid', reason: 'json' };
+  }
+
+  if (root.tasks === undefined) {
+    return { kind: 'missing' };
+  }
+
+  return isRecord(root.tasks)
+    ? { kind: 'valid', tasks: root.tasks }
+    : { kind: 'invalid', reason: 'shape' };
+}
+
 export function parseSavedStateTasksRecord(json: string): SavedStateTasksRecordParseResult {
   try {
     const parsed: unknown = JSON.parse(json);
@@ -12,13 +28,7 @@ export function parseSavedStateTasksRecord(json: string): SavedStateTasksRecordP
       return { kind: 'invalid', reason: 'shape' };
     }
 
-    if (parsed.tasks === undefined) {
-      return { kind: 'missing' };
-    }
-
-    return isRecord(parsed.tasks)
-      ? { kind: 'valid', tasks: parsed.tasks }
-      : { kind: 'invalid', reason: 'shape' };
+    return parseSavedStateTasksRecordFromRoot(parsed);
   } catch {
     return { kind: 'invalid', reason: 'json' };
   }

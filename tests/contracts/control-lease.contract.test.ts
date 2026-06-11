@@ -116,3 +116,149 @@ describe.each(leaseContractHarnesses)('%s control-lease contract', (_name, creat
     });
   });
 });
+
+import {
+  acquireTaskCommandLease,
+  getTaskCommandControllerSnapshot,
+  renewTaskCommandLease,
+  resetTaskCommandLeasesForTest,
+} from '../../electron/ipc/task-command-leases';
+import { TASK_COMMAND_LEASE_RECONNECT_GRACE_MS } from '../../server/browser-control-plane';
+
+describe('task-command lease reconnect grace contract', () => {
+  let harness: WebSocketContractHarness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    resetTaskCommandLeasesForTest();
+    harness = createBrowserControlPlaneContractHarness();
+    harness.startHeartbeat?.();
+  });
+
+  afterEach(() => {
+    harness.dispose();
+    resetTaskCommandLeasesForTest();
+    vi.useRealTimers();
+  });
+
+  async function renewHeldLease(taskId: string, clientId: string, ownerId: string): Promise<void> {
+    renewTaskCommandLease(taskId, clientId, ownerId);
+    await vi.advanceTimersByTimeAsync(5_000);
+  }
+
+  it('retains the lease through a blip for the same clientId without a controller-null snapshot', async () => {
+    const holder = harness.createClient();
+    const observer = harness.createClient();
+    expect(harness.authenticateConnection(holder, 'holder-client')).toBe(true);
+    expect(harness.authenticateConnection(observer, 'observer-client')).toBe(true);
+    await harness.flush();
+
+    expect(
+      acquireTaskCommandLease('task-1', 'holder-client', 'owner-a', 'type in the terminal')
+        .acquired,
+    ).toBe(true);
+    harness.clearMessages(observer);
+
+    harness.cleanupClient(holder);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    // The lease is still held through the blip and no controller-null
+    // snapshot was broadcast to the observer.
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBe('holder-client');
+    const controllerEvents = harness
+      .getMessages(observer)
+      .filter(
+        (message): message is { channel: string; payload: { controllerId: unknown } } =>
+          typeof message === 'object' &&
+          message !== null &&
+          (message as { type?: unknown }).type === 'ipc-event' &&
+          (message as { channel?: unknown }).channel === 'task_command_controller_changed',
+      );
+    expect(controllerEvents.filter((event) => event.payload.controllerId === null)).toHaveLength(0);
+
+    // Same clientId reconnects within the grace window and keeps renewing.
+    const reconnected = harness.createClient();
+    expect(harness.authenticateConnection(reconnected, 'holder-client', -1)).toBe(true);
+    for (
+      let elapsed = 0;
+      elapsed < TASK_COMMAND_LEASE_RECONNECT_GRACE_MS + 5_000;
+      elapsed += 5_000
+    ) {
+      await renewHeldLease('task-1', 'holder-client', 'owner-a');
+    }
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBe('holder-client');
+  });
+
+  it('still releases a non-renewing disconnected holder through natural lease expiry', async () => {
+    const holder = harness.createClient();
+    expect(harness.authenticateConnection(holder, 'holder-client')).toBe(true);
+    await harness.flush();
+    acquireTaskCommandLease('task-1', 'holder-client', 'owner-a', 'type in the terminal');
+
+    harness.cleanupClient(holder);
+    // 16s > the 15s natural lease TTL but < the 30s reconnect grace.
+    await vi.advanceTimersByTimeAsync(16_000);
+
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBeNull();
+  });
+
+  it('lets a peer takeover during the grace window win and never resurrects the old holder', async () => {
+    const holder = harness.createClient();
+    const peer = harness.createClient();
+    expect(harness.authenticateConnection(holder, 'holder-client')).toBe(true);
+    expect(harness.authenticateConnection(peer, 'peer-client')).toBe(true);
+    await harness.flush();
+    acquireTaskCommandLease('task-1', 'holder-client', 'owner-a', 'type in the terminal');
+
+    harness.cleanupClient(holder);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const takeover = acquireTaskCommandLease(
+      'task-1',
+      'peer-client',
+      'owner-b',
+      'type in the terminal',
+      true,
+    );
+    expect(takeover.acquired).toBe(true);
+    expect(takeover.controllerId).toBe('peer-client');
+
+    // The old holder's grace expiry must not release the peer's lease, and a
+    // late non-takeover re-claim by the old holder is denied.
+    for (
+      let elapsed = 0;
+      elapsed < TASK_COMMAND_LEASE_RECONNECT_GRACE_MS + 2_000;
+      elapsed += 5_000
+    ) {
+      await renewHeldLease('task-1', 'peer-client', 'owner-b');
+    }
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBe('peer-client');
+
+    const reconnected = harness.createClient();
+    expect(harness.authenticateConnection(reconnected, 'holder-client', -1)).toBe(true);
+    const reclaim = acquireTaskCommandLease(
+      'task-1',
+      'holder-client',
+      'owner-a',
+      'type in the terminal',
+    );
+    expect(reclaim.acquired).toBe(false);
+    expect(reclaim.controllerId).toBe('peer-client');
+  });
+
+  it('keeps immediate prune semantics for never-connected automation clientIds', async () => {
+    acquireTaskCommandLease(
+      'task-1',
+      'coordinator:run-1',
+      'coordinator-prompt-delivery',
+      'send a coordinator prompt',
+    );
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBe('coordinator:run-1');
+
+    // The automation clientId never had a socket: the 1s prune sweep releases
+    // it immediately instead of granting reconnect grace.
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(getTaskCommandControllerSnapshot('task-1').controllerId).toBeNull();
+  });
+});

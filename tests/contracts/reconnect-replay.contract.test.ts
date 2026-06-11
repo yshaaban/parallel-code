@@ -141,10 +141,15 @@ describe.each(replayContractHarnesses)('%s replay contract', (_name, createHarne
         type: 'replay-truncated',
       }),
     ]);
-    expect(replayed.map((message) => message.type)).toEqual(['agent-controller', 'task-event']);
-    expect(replayTruncatedMessages[0]?.oldestAvailableSeq).toBe(replayed[0]?.seq);
-    expect(replayTruncatedMessages[0]?.latestSeq).toBeGreaterThanOrEqual(
-      replayed[replayed.length - 1]?.seq ?? -1,
-    );
+    // Changed by design with the delta-resync item: an evicted window is
+    // non-contiguous, so no per-event replay follows the truncation signal —
+    // gap-detecting legacy consumers would misfire on the seq jump (the
+    // remote shell answers gaps with a hard reconnect that loops on its own
+    // reconnect churn). Old clients answer replay-truncated with a full
+    // restore; the current client core adopts latestSeq from the signal and
+    // the handshake bootstrap repairs state.
+    expect(replayed).toEqual([]);
+    expect(replayTruncatedMessages[0]?.oldestAvailableSeq).toBeGreaterThan(baselineSeq + 1);
+    expect(replayTruncatedMessages[0]?.latestSeq).toBeGreaterThan(baselineSeq);
   });
 });

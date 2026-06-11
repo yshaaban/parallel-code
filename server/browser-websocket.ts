@@ -4,10 +4,12 @@ import { onPtyEvent } from '../electron/ipc/pty.js';
 import {
   isAutomaticPauseReason,
   parseClientMessage,
+  parseResyncCategoryVersions,
   type ClientMessage,
   type PauseReason,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import type { BrowserControlResyncRequest } from './browser-control-plane.js';
 import type { WebSocketTransport } from '../electron/remote/ws-transport.js';
 import type { BrowserChannelManager } from './browser-channels.js';
 import {
@@ -50,7 +52,13 @@ import { dispatchByType, type DispatchByTypeHandlerMap } from '../src/lib/dispat
 // sessions, control commands, and sequenced control-event delivery.
 
 export interface RegisterBrowserWebSocketServerOptions {
-  authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
+  authenticateConnection: (
+    client: WebSocket,
+    clientId?: string,
+    lastSeq?: number,
+    resync?: BrowserControlResyncRequest,
+  ) => boolean;
+  sendStateBootstrap: (client: WebSocket, categories: string[]) => void;
   broadcastRemoteStatus: () => void;
   channels: BrowserChannelManager;
   cleanupClientState: (client: WebSocket) => void;
@@ -104,6 +112,43 @@ type BrowserClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClie
 interface BrowserSocketAuthContext {
   clientId?: string;
   lastSeq?: number;
+  resync?: BrowserControlResyncRequest;
+}
+
+const MAX_RESYNC_QUERY_PARAM_LENGTH = 2_048;
+
+function parseSocketResyncRequest(url: URL): BrowserControlResyncRequest | undefined {
+  const rawCategoryVersions = url.searchParams.get('categoryVersions');
+  if (rawCategoryVersions === null || rawCategoryVersions.length > MAX_RESYNC_QUERY_PARAM_LENGTH) {
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawCategoryVersions);
+  } catch {
+    return undefined;
+  }
+
+  const categoryVersions = parseResyncCategoryVersions(parsed);
+  if (categoryVersions === null || categoryVersions === undefined) {
+    return undefined;
+  }
+
+  const rawAgentsVersion = url.searchParams.get('agentsVersion');
+  const agentsVersion =
+    rawAgentsVersion !== null && /^\d+$/u.test(rawAgentsVersion)
+      ? Number(rawAgentsVersion)
+      : undefined;
+  const serverInstanceId = url.searchParams.get('serverInstanceId');
+
+  return {
+    categoryVersions,
+    ...(agentsVersion !== undefined && Number.isSafeInteger(agentsVersion)
+      ? { agentsVersion }
+      : {}),
+    ...(serverInstanceId !== null && serverInstanceId.length <= 64 ? { serverInstanceId } : {}),
+  };
 }
 
 function enableSocketNoDelay(client: WebSocket): void {
@@ -129,10 +174,12 @@ function parseSocketAuthContext(request: Pick<IncomingMessage, 'url'>): BrowserS
   const url = new URL(request.url, 'http://localhost');
   const clientId = url.searchParams.get('clientId');
   const lastSeq = parseSocketAuthLastSeq(url.searchParams.get('lastSeq'));
+  const resync = parseSocketResyncRequest(url);
 
   return {
     ...(clientId ? { clientId } : {}),
     ...(lastSeq !== undefined ? { lastSeq } : {}),
+    ...(resync !== undefined ? { resync } : {}),
   };
 }
 
@@ -557,6 +604,9 @@ export function registerBrowserWebSocketServer(
       'update-presence': (currentMessage) => {
         options.updatePeerPresence(client, currentMessage);
       },
+      'request-state-bootstrap': (currentMessage) => {
+        options.sendStateBootstrap(client, currentMessage.categories);
+      },
       'request-task-command-takeover': (currentMessage) => {
         options.requestTaskCommandTakeover(client, currentMessage);
       },
@@ -600,7 +650,22 @@ export function registerBrowserWebSocketServer(
         client.close(4001, 'Unauthorized');
         return;
       }
-      options.authenticateConnection(client, message.clientId, message.lastSeq ?? -1);
+      options.authenticateConnection(
+        client,
+        message.clientId,
+        message.lastSeq ?? -1,
+        message.categoryVersions === undefined
+          ? undefined
+          : {
+              categoryVersions: message.categoryVersions,
+              ...(message.agentsVersion !== undefined
+                ? { agentsVersion: message.agentsVersion }
+                : {}),
+              ...(message.serverInstanceId !== undefined
+                ? { serverInstanceId: message.serverInstanceId }
+                : {}),
+            },
+      );
       return;
     }
 
@@ -660,7 +725,14 @@ export function registerBrowserWebSocketServer(
     }
 
     if (options.isAuthorizedRequest(req)) {
-      if (!options.authenticateConnection(client, authContext.clientId, authContext.lastSeq)) {
+      if (
+        !options.authenticateConnection(
+          client,
+          authContext.clientId,
+          authContext.lastSeq,
+          authContext.resync,
+        )
+      ) {
         return;
       }
     } else {

@@ -29,6 +29,10 @@ import { store } from '../store/state';
 
 const taskPortsVersionTracker = createServerStateVersionTracker();
 
+export function getTaskPortsHighestAppliedVersion(): number {
+  return taskPortsVersionTracker.highestVersion;
+}
+
 function normalizePreviewHost(host: string | null | undefined): string {
   const normalizedHost = normalizeTaskPreviewHost(host);
   if (!normalizedHost || !isLoopbackTaskPreviewHost(normalizedHost)) {
@@ -93,8 +97,14 @@ export function replaceTaskPortSnapshots(
   );
 }
 
-export function resetTaskPortsProjectionStateForTests(): void {
+// Per-boot version tracking is reset when the server instance changes; see
+// resetServerStateVersionTrackingForInstanceChange.
+export function resetTaskPortsVersionTracking(): void {
   resetServerStateVersionTracker(taskPortsVersionTracker);
+}
+
+export function resetTaskPortsProjectionStateForTests(): void {
+  resetTaskPortsVersionTracking();
 }
 
 export function getTaskPortSnapshot(taskId: string): TaskPortSnapshot | undefined {

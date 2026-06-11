@@ -4,20 +4,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordinatorRunSnapshot } from '../../domain/coordinator';
 import type { Task } from '../../store/types';
 
-const { callCoordinatorUiToolMock, coordinatorRunRef } = vi.hoisted(() => ({
-  callCoordinatorUiToolMock: vi.fn(),
-  coordinatorRunRef: {
-    current: null as CoordinatorRunSnapshot | null,
-  },
-}));
+const { callCoordinatorUiToolMock, coordinatorRunRef, coordinatorRunReactivity } = vi.hoisted(
+  () => ({
+    callCoordinatorUiToolMock: vi.fn(),
+    coordinatorRunRef: {
+      current: null as CoordinatorRunSnapshot | null,
+    },
+    coordinatorRunReactivity: {
+      bump: () => {},
+    },
+  }),
+);
 
 vi.mock('../../app/coordinator', () => ({
   callCoordinatorUiTool: callCoordinatorUiToolMock,
 }));
 
-vi.mock('../../store/coordinator', () => ({
-  getCoordinatorRunForTask: vi.fn(() => coordinatorRunRef.current),
-}));
+vi.mock('../../store/coordinator', async () => {
+  const { createSignal } = await import('solid-js');
+  const [runVersion, setRunVersion] = createSignal(0);
+  coordinatorRunReactivity.bump = () => setRunVersion((version) => version + 1);
+  return {
+    getCoordinatorRunForTask: vi.fn(() => {
+      runVersion();
+      return coordinatorRunRef.current;
+    }),
+  };
+});
 
 vi.mock('../ScalablePanel', () => ({
   ScalablePanel: (props: { children: JSX.Element }) => <div>{props.children}</div>,
@@ -80,7 +93,7 @@ function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): Coordinator
         worktreePath: '/repo/.worktrees/task-child',
       },
     ],
-    updatedAt: 1_200,
+    updatedAt: overrides.updatedAt ?? 1_200,
     workflows: overrides.workflows ?? [],
   };
 }
@@ -737,7 +750,7 @@ describe('TaskCoordinatorSection', () => {
   });
 
   it('pauses and unpauses the run through the coordinator UI action channel', async () => {
-    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const firstRender = render(() => <TaskCoordinatorSection task={() => createTask()} />);
     fireEvent.click(screen.getByLabelText('Pause coordinator run'));
 
     await waitFor(() => {
@@ -749,6 +762,7 @@ describe('TaskCoordinatorSection', () => {
         toolName: 'pause_run',
       });
     });
+    firstRender.unmount();
 
     coordinatorRunRef.current = createRun({ status: 'paused-by-user' });
     callCoordinatorUiToolMock.mockClear();
@@ -759,6 +773,65 @@ describe('TaskCoordinatorSection', () => {
       expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
         expect.objectContaining({ toolName: 'unpause_run' }),
       );
+    });
+  });
+
+  it('derives the click intent from the optimistic flip so an "Unpause" label never re-sends pause_run', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const pauseButton = screen.getByLabelText('Pause coordinator run');
+    fireEvent.click(pauseButton);
+
+    // Pause accepted (mock resolves accepted: true) but the updated run
+    // snapshot has not landed yet: the flip keeps the label on "Unpause".
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'pause_run' }),
+      );
+    });
+    await waitFor(() => {
+      expect(pauseButton).toHaveProperty('disabled', false);
+    });
+    expect(pauseButton.textContent).toContain('Unpause');
+
+    // Clicking the "Unpause" label must send unpause_run, not pause_run again.
+    callCoordinatorUiToolMock.mockClear();
+    fireEvent.click(pauseButton);
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'unpause_run' }),
+      );
+    });
+    expect(callCoordinatorUiToolMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'pause_run' }),
+    );
+  });
+
+  it('keeps the resume control disabled after an accepted resume until a newer snapshot lands', async () => {
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore' });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const resumeButton = screen.getByLabelText('Resume coordinator run');
+    fireEvent.click(resumeButton);
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'resume_run' }),
+      );
+    });
+
+    // Accepted but the updated run snapshot has not landed: a fast second
+    // click must not send a duplicate resume_run.
+    expect(resumeButton).toHaveProperty('disabled', true);
+    callCoordinatorUiToolMock.mockClear();
+    fireEvent.click(resumeButton);
+    expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
+
+    // A newer snapshot releases the guard (here the run is still stale, so
+    // the control becomes actionable again instead of wedging).
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore', updatedAt: 2_400 });
+    coordinatorRunReactivity.bump();
+    await waitFor(() => {
+      expect(resumeButton).toHaveProperty('disabled', false);
     });
   });
 
@@ -823,5 +896,189 @@ describe('TaskCoordinatorSection', () => {
     fireEvent.click(screen.getByText('Approve'));
 
     await screen.findByText('Coordinator task command lease is required');
+  });
+
+  it('renders a rejected resume as a full-width rail alert with the full message and a working Retry', async () => {
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore' });
+    const rejection =
+      'Coordinator resume was rejected because the task command lease is held by another session.';
+    callCoordinatorUiToolMock.mockResolvedValue({
+      accepted: false,
+      callId: 'request-1',
+      error: rejection,
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Resume coordinator run'));
+
+    await screen.findByText(rejection);
+    const alert = document.querySelector('[data-coordinator-rail-alert="true"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.getAttribute('title')).toBe(rejection);
+
+    callCoordinatorUiToolMock.mockClear();
+    callCoordinatorUiToolMock.mockResolvedValue({
+      accepted: true,
+      callId: 'request-2',
+      result: null,
+    });
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'resume_run' }),
+      );
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-coordinator-rail-alert="true"]')).toBeNull();
+    });
+  });
+
+  it('dismisses the rail alert explicitly', async () => {
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore' });
+    callCoordinatorUiToolMock.mockResolvedValue({
+      accepted: false,
+      callId: 'request-1',
+      error: 'Resume rejected.',
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Resume coordinator run'));
+    await screen.findByText('Resume rejected.');
+
+    fireEvent.click(screen.getByLabelText('Dismiss coordinator alert'));
+    expect(document.querySelector('[data-coordinator-rail-alert="true"]')).toBeNull();
+  });
+
+  it('shows a busy spinner inside the resume button while the action is in flight', async () => {
+    coordinatorRunRef.current = createRun({ status: 'stale-after-restore' });
+    let resolveCall: (value: unknown) => void = () => {};
+    callCoordinatorUiToolMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCall = resolve;
+        }),
+    );
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const resumeButton = screen.getByLabelText('Resume coordinator run');
+    fireEvent.click(resumeButton);
+
+    expect(resumeButton.querySelector('.inline-spinner')).not.toBeNull();
+    expect(resumeButton).toHaveProperty('disabled', true);
+
+    resolveCall({ accepted: true, callId: 'request-1', result: null });
+    await waitFor(() => {
+      expect(resumeButton.querySelector('.inline-spinner')).toBeNull();
+    });
+  });
+
+  it('flips the pause control optimistically and reverts with a rail alert on rejection', async () => {
+    let rejectCall: (value: unknown) => void = () => {};
+    callCoordinatorUiToolMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          rejectCall = resolve;
+        }),
+    );
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const pauseButton = screen.getByLabelText('Pause coordinator run');
+    expect(pauseButton.textContent).toContain('Pause');
+    fireEvent.click(pauseButton);
+
+    expect(pauseButton.textContent).toContain('Unpause');
+    const syncing = document.querySelector('[data-coordinator-status-syncing="true"]');
+    expect(syncing?.textContent).toBe('Paused');
+
+    rejectCall({ accepted: false, callId: 'request-1', error: 'Pause rejected.' });
+    await screen.findByText('Pause rejected.');
+    expect(document.querySelector('[data-coordinator-status-syncing="true"]')).toBeNull();
+    expect(screen.getByText('RUN')).toBeDefined();
+    expect(pauseButton.textContent).not.toContain('Unpause');
+  });
+
+  it('clears the optimistic pause flip when a newer run snapshot lands', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    fireEvent.click(screen.getByLabelText('Pause coordinator run'));
+
+    await waitFor(() => {
+      expect(callCoordinatorUiToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'pause_run' }),
+      );
+    });
+    expect(document.querySelector('[data-coordinator-status-syncing="true"]')).not.toBeNull();
+
+    coordinatorRunRef.current = createRun({ status: 'paused-by-user' });
+    coordinatorRunReactivity.bump();
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-coordinator-status-syncing="true"]')).toBeNull();
+    });
+    expect(screen.getByLabelText('Unpause coordinator run')).toBeDefined();
+  });
+
+  async function flushSpawnResolution(): Promise<void> {
+    for (let index = 0; index < 5; index += 1) {
+      await Promise.resolve();
+    }
+  }
+
+  it('keeps the spawn acknowledgment visible after the popover closes and expires it after 5s', async () => {
+    vi.useFakeTimers();
+    try {
+      render(() => <TaskCoordinatorSection task={() => createTask()} />);
+      openSpawnForm();
+      fillSpawnForm();
+      fireEvent.click(screen.getByText('Spawn'));
+      await flushSpawnResolution();
+
+      expect(screen.queryByLabelText('Subtask name')).toBeNull();
+      const ack = document.querySelector('[data-coordinator-spawn-ack="true"]');
+      expect(ack).not.toBeNull();
+      expect(ack?.textContent).toContain('Parser fix');
+      expect(ack?.textContent).toContain('queued');
+
+      vi.advanceTimersByTime(4_999);
+      expect(document.querySelector('[data-coordinator-spawn-ack="true"]')).not.toBeNull();
+
+      vi.advanceTimersByTime(1);
+      expect(document.querySelector('[data-coordinator-spawn-ack="true"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the spawn acknowledgment when the spawned subtask lands in a run snapshot', async () => {
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    openSpawnForm();
+    fillSpawnForm();
+    fireEvent.click(screen.getByText('Spawn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-coordinator-spawn-ack="true"]')).not.toBeNull();
+    });
+
+    const baseRun = createRun();
+    coordinatorRunRef.current = createRun({
+      subtasks: [
+        ...baseRun.subtasks,
+        {
+          agentId: 'agent-spawned',
+          assignment: 'Fix parser edge cases.',
+          createdAt: 2_000,
+          parentCoordinatorTaskId: 'task-coordinator',
+          status: 'spawning',
+          taskId: 'task-spawned',
+          toolTokenId: 'token-spawned',
+          updatedAt: 2_000,
+          worktreePath: '/repo/.worktrees/task-spawned',
+        },
+      ],
+    });
+    coordinatorRunReactivity.bump();
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-coordinator-spawn-ack="true"]')).toBeNull();
+    });
   });
 });

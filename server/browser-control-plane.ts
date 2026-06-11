@@ -25,6 +25,13 @@ import type {
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
 import type { CoordinatorEventEnvelope } from '../src/domain/coordinator.js';
+import {
+  isServerStateBootstrapCategory,
+  SERVER_STATE_BOOTSTRAP_CATEGORIES,
+  type ResyncVersionMap,
+  type ServerStateBootstrapCategory,
+} from '../src/domain/server-state-bootstrap.js';
+import { getServerInstanceId } from '../electron/ipc/server-instance.js';
 import { classifyGitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { RemoteLiveIpcEventChannel } from '../src/domain/remote-live-ipc-events.js';
 import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
@@ -49,9 +56,27 @@ const MICRO_BATCH_INTERVAL_MS = 1;
 const TASK_COMMAND_TAKEOVER_TIMEOUT_MS = 8_000;
 const TASK_COMMAND_TAKEOVER_IDLE_MS = 15_000;
 const TASK_COMMAND_LEASE_PRUNE_INTERVAL_MS = 1_000;
+// A short blip must not release a connected client's task-command leases: the
+// lease release on disconnect is deferred for the SAME clientId for this grace
+// window. Natural lease expiry (15s, non-renewing holder) still governs, and
+// never-connected automation clientIds keep immediate-prune semantics.
+export const TASK_COMMAND_LEASE_RECONNECT_GRACE_MS = 30_000;
+
+/** Resync state presented by a reconnecting client (version-gated bootstrap). */
+export interface BrowserControlResyncRequest {
+  agentsVersion?: number;
+  categoryVersions: Record<string, number>;
+  serverInstanceId?: string;
+}
 
 export interface BrowserControlPlane {
-  authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
+  authenticateConnection: (
+    client: WebSocket,
+    clientId?: string,
+    lastSeq?: number,
+    resync?: BrowserControlResyncRequest,
+  ) => boolean;
+  sendStateBootstrap: (client: WebSocket, categories: string[]) => void;
   broadcastAgentList: () => void;
   broadcastControl: (message: ServerMessage) => void;
   broadcastRemoteStatus: () => void;
@@ -176,6 +201,66 @@ function createTransportTuningOptions(
   };
 }
 
+// Replay-ring compaction keys. Only message classes whose payloads are
+// full-replace snapshots per key may compact (latest-wins); everything else
+// returns null and is never compacted. run-removed tombstones share the run's
+// entityKey, so they supersede the run's earlier upsert.
+//
+// run-meta-upserted carries only the run's scalar meta (no collections), so it
+// is a full replacement of the meta but NOT of the run entity. It compacts on
+// its own per-run slot instead of the run's entityKey: otherwise a meta
+// mutation during a blip would supersede the run-upserted creation snapshot in
+// the ring, and the replayed meta would seed the run with empty collections on
+// clients that missed the create (the run-removed tombstone still supersedes
+// run-upserted, and a stale meta replayed before the tombstone is removed in
+// seq order).
+function getBrowserControlEventCompactionKey(message: ServerMessage): string | null {
+  switch (message.type) {
+    case 'coordinator-event':
+      return message.event.eventType === 'run-meta-upserted'
+        ? `coordinator:run-meta:${message.event.runId}`
+        : `coordinator:${message.event.entityKey}`;
+    case 'git-status-changed':
+      return typeof message.worktreePath === 'string' ? `git:${message.worktreePath}` : null;
+    case 'task-ports-changed':
+      return `ports:${message.taskId}`;
+    case 'peer-presences':
+      return 'peer-presences';
+    case 'remote-status':
+      return 'remote-status';
+    default:
+      return null;
+  }
+}
+
+// Version-gated resend computation for the resync handshake. Iterates the
+// static category list rather than the server version map so a category whose
+// version getter threw — and was therefore omitted from the map by the
+// version collector in electron/ipc/server-state-bootstrap.ts — is still
+// visited and treated as stale. Its snapshot rebuild then either succeeds or
+// degrades to the per-category marker, matching the legacy full-bootstrap
+// path's failure isolation. Ephemeral connection-scoped categories are always
+// resent.
+export function getStaleBootstrapCategories(
+  serverVersions: ResyncVersionMap,
+  presentedVersions: Record<string, number>,
+): ServerStateBootstrapCategory[] {
+  const staleCategories: ServerStateBootstrapCategory[] = [];
+  for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+    const serverVersion = serverVersions[category];
+    if (
+      category === 'peer-presence' ||
+      category === 'remote-status' ||
+      serverVersion === undefined ||
+      presentedVersions[category] !== serverVersion
+    ) {
+      staleCategories.push(category);
+    }
+  }
+
+  return staleCategories;
+}
+
 function getSimulatedChannelDelayMs(options: CreateBrowserControlPlaneOptions): number {
   const latencyMs = Math.max(0, options.simulateLatencyMs ?? 0);
   const jitterMs = Math.max(0, options.simulateJitterMs ?? 0);
@@ -193,6 +278,8 @@ export function createBrowserControlPlane(
   let taskCommandLeasePruneTimer: ReturnType<typeof setInterval> | null = null;
   let deferAuthenticatedClientCountChanged = false;
   let deferredAuthenticatedClientCountChanged = false;
+  let agentListVersion = 0;
+  const recentlyDisconnectedClientIds = new Map<string, number>();
   const peerPresence = createBrowserPeerPresence({
     broadcastControl,
   });
@@ -244,6 +331,7 @@ export function createBrowserControlPlane(
 
       broadcastRemoteStatus();
     },
+    getControlEventCompactionKey: getBrowserControlEventCompactionKey,
     ...createTransportTuningOptions(options),
   });
 
@@ -282,7 +370,20 @@ export function createBrowserControlPlane(
     timeoutMs: TASK_COMMAND_TAKEOVER_TIMEOUT_MS,
   });
 
-  function cleanupDisconnectedClient(clientId: string): void {
+  // Disconnect cleanup splits in two: presence/takeover state is cleaned
+  // immediately, but the task-command lease release is deferred for the SAME
+  // clientId through the reconnect grace window so a short blip never emits an
+  // intermediate controller-null snapshot. A peer takeover during the grace
+  // window legitimately moves the lease (lease ownership itself is untouched
+  // here), and the eventual grace release only releases leases the client
+  // still holds.
+  function handleClientDisconnected(clientId: string): void {
+    taskCommandTakeovers.cleanupRequestsForClient(clientId);
+    peerPresence.removePeerPresence(clientId);
+    recentlyDisconnectedClientIds.set(clientId, Date.now());
+  }
+
+  function releaseInactiveClientState(clientId: string): void {
     taskCommandTakeovers.cleanupRequestsForClient(clientId);
     emitReleasedTaskCommandControllers(clientId);
     peerPresence.removePeerPresence(clientId);
@@ -300,7 +401,19 @@ export function createBrowserControlPlane(
     }
   }
 
-  function pruneInactiveClientState(): void {
+  function pruneInactiveClientState(now = Date.now()): void {
+    for (const [clientId, disconnectedAt] of [...recentlyDisconnectedClientIds]) {
+      if (transport.hasClientId(clientId)) {
+        recentlyDisconnectedClientIds.delete(clientId);
+        continue;
+      }
+
+      if (now - disconnectedAt >= TASK_COMMAND_LEASE_RECONNECT_GRACE_MS) {
+        recentlyDisconnectedClientIds.delete(clientId);
+        releaseInactiveClientState(clientId);
+      }
+    }
+
     const inactiveClientIds = new Set<string>();
 
     for (const snapshot of getTaskCommandControllers()) {
@@ -317,7 +430,11 @@ export function createBrowserControlPlane(
     }
 
     for (const clientId of inactiveClientIds) {
-      cleanupDisconnectedClient(clientId);
+      // Grace-held clientIds had a real connection; never-connected ids
+      // (coordinator automation) keep today's immediate prune semantics.
+      if (!recentlyDisconnectedClientIds.has(clientId)) {
+        releaseInactiveClientState(clientId);
+      }
     }
   }
 
@@ -327,7 +444,7 @@ export function createBrowserControlPlane(
     delayedSends.clearClient(client);
     transport.cleanupClient(client);
     if (clientId && !transport.hasClientId(clientId)) {
-      cleanupDisconnectedClient(clientId);
+      handleClientDisconnected(clientId);
     }
   }
 
@@ -357,6 +474,7 @@ export function createBrowserControlPlane(
     sendJsonMessage(client, {
       type: 'agents',
       list: options.buildAgentList(),
+      version: agentListVersion,
     });
   }
 
@@ -365,7 +483,26 @@ export function createBrowserControlPlane(
     transport.sendAgentControllers(client);
   }
 
-  function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
+  // Presented per-boot versions are only comparable within one server
+  // process: a mismatched (or absent) serverInstanceId falls back to the full
+  // bootstrap path so a restarted server can never compare fresh low counters
+  // as "current" against a client's stale high ones.
+  function getHonoredResyncRequest(
+    resync: BrowserControlResyncRequest | undefined,
+  ): BrowserControlResyncRequest | undefined {
+    if (resync === undefined || resync.serverInstanceId !== getServerInstanceId()) {
+      return undefined;
+    }
+
+    return resync;
+  }
+
+  function authenticateConnection(
+    client: WebSocket,
+    clientId?: string,
+    lastSeq?: number,
+    resync?: BrowserControlResyncRequest,
+  ): boolean {
     const lastReplayableSeq =
       lastSeq === undefined ? undefined : transport.getLatestControlEventSeq();
     deferAuthenticatedClientCountChanged = lastSeq !== undefined;
@@ -386,12 +523,38 @@ export function createBrowserControlPlane(
     }
 
     peerPresence.ensurePeerPresence(authResult.clientId);
+    recentlyDisconnectedClientIds.delete(authResult.clientId);
 
+    const honoredResync = getHonoredResyncRequest(resync);
     if (lastSeq !== undefined) {
-      transport.replayControlEvents(client, lastSeq, lastReplayableSeq);
+      transport.replayControlEvents(client, lastSeq, lastReplayableSeq, {
+        batch: honoredResync !== undefined,
+      });
     }
-    sendAgentSnapshot(client);
-    sendJsonMessage(client, controlState.createStateBootstrapMessage());
+
+    if (honoredResync?.agentsVersion === agentListVersion) {
+      transport.sendAgentControllers(client);
+    } else {
+      sendAgentSnapshot(client);
+    }
+
+    // Version-gated bootstrap: a resyncing client receives only the stale
+    // categories (possibly none) instead of the unconditional full bootstrap.
+    // The state-bootstrap message doubles as the handshake-complete signal and
+    // always carries the serverInstanceId.
+    sendJsonMessage(
+      client,
+      controlState.createStateBootstrapMessage(
+        honoredResync === undefined
+          ? {}
+          : {
+              categories: getStaleBootstrapCategories(
+                controlState.getServerStateVersions(),
+                honoredResync.categoryVersions,
+              ),
+            },
+      ),
+    );
     broadcastControl({
       type: 'peer-presences',
       list: peerPresence.getPeerPresenceSnapshots(),
@@ -434,8 +597,10 @@ export function createBrowserControlPlane(
     emitRemoteLiveIpcEvent(IPC.AgentSupervisionChanged, payload);
   }
 
+  // Coordinator events ride exactly one sequenced channel: 'coordinator-event'.
+  // The browser registry and remote shell both consume that message; the old
+  // ipc-event duplicate doubled wire bytes and replay-ring occupancy.
   function emitCoordinatorChanged(payload: CoordinatorEventEnvelope): void {
-    emitRemoteLiveIpcEvent(IPC.CoordinatorChanged, payload);
     broadcastControl({
       type: 'coordinator-event',
       event: payload,
@@ -468,10 +633,24 @@ export function createBrowserControlPlane(
   }
 
   function broadcastAgentList(): void {
+    agentListVersion += 1;
     transport.broadcast({
       type: 'agents',
       list: options.buildAgentList(),
+      version: agentListVersion,
     });
+  }
+
+  function sendStateBootstrap(client: WebSocket, categories: string[]): void {
+    const validCategories = categories.filter(isServerStateBootstrapCategory);
+    if (validCategories.length === 0) {
+      return;
+    }
+
+    sendJsonMessage(
+      client,
+      controlState.createStateBootstrapMessage({ categories: validCategories }),
+    );
   }
 
   function broadcastRemoteStatus(): void {
@@ -594,6 +773,7 @@ export function createBrowserControlPlane(
 
   return {
     authenticateConnection,
+    sendStateBootstrap,
     broadcastAgentList,
     broadcastControl,
     broadcastRemoteStatus,

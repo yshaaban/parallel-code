@@ -19,20 +19,22 @@ const {
   inspectArenaCompetitorMock,
   getActiveAgentIdsMock,
   getAgentMetaMock,
+  getAgentDefsWithLastKnownAvailabilityMock,
   getRecentProjectPathsMock,
   discoverProjectsMock,
-  listAgentsMock,
   loadAppStateForEnvMock,
   loadWorkspaceStateForEnvMock,
+  readPlanForWorktreeMock,
 } = vi.hoisted(() => ({
   inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
+  getAgentDefsWithLastKnownAvailabilityMock: vi.fn(),
   getRecentProjectPathsMock: vi.fn(),
   discoverProjectsMock: vi.fn(),
-  listAgentsMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
   loadWorkspaceStateForEnvMock: vi.fn(),
+  readPlanForWorktreeMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -46,10 +48,26 @@ vi.mock('./pty.js', async () => {
 
 vi.mock('./storage.js', async () => {
   const actual = await vi.importActual<typeof import('./storage.js')>('./storage.js');
+  const { createSavedStateDocument } = await vi.importActual<
+    typeof import('./saved-state-document.js')
+  >('./saved-state-document.js');
   return {
     ...actual,
     loadAppStateForEnv: loadAppStateForEnvMock,
     loadWorkspaceStateForEnv: loadWorkspaceStateForEnvMock,
+    loadAppStateDocumentForEnv: (env: unknown) => {
+      const json = loadAppStateForEnvMock(env) as string | null;
+      return json === null || json === undefined ? null : createSavedStateDocument(json);
+    },
+    loadWorkspaceStateDocumentForEnv: (env: unknown) => {
+      const loaded = loadWorkspaceStateForEnvMock(env) as {
+        json: string;
+        revision: number;
+      } | null;
+      return loaded === null || loaded === undefined
+        ? null
+        : { document: createSavedStateDocument(loaded.json), revision: loaded.revision };
+    },
   };
 });
 
@@ -58,7 +76,25 @@ vi.mock('./arena-competitors.js', () => ({
 }));
 
 vi.mock('./agents.js', () => ({
-  listAgents: listAgentsMock,
+  getAgentDefsWithLastKnownAvailability: getAgentDefsWithLastKnownAvailabilityMock,
+}));
+
+vi.mock('./plans.js', async () => {
+  const actual = await vi.importActual<typeof import('./plans.js')>('./plans.js');
+  return {
+    ...actual,
+    readPlanForWorktree: readPlanForWorktreeMock,
+  };
+});
+
+// The cold-bootstrap handler must never touch the availability prober: this
+// hangs every probe path forever so any inline probing deadlocks the test.
+vi.mock('./command-resolver.js', () => ({
+  isCommandAvailable: () => new Promise<boolean>(() => {}),
+}));
+
+vi.mock('./hydra-adapter.js', () => ({
+  getHydraRuntimeAvailability: () => new Promise(() => {}),
 }));
 
 vi.mock('./recent-projects.js', () => ({
@@ -67,6 +103,7 @@ vi.mock('./recent-projects.js', () => ({
 }));
 
 import { createSystemIpcHandlers } from './system-handlers.js';
+import type { SavedStateDocument } from './saved-state-document.js';
 
 type SystemIpcHandlers = ReturnType<typeof createSystemIpcHandlers>;
 
@@ -83,12 +120,12 @@ function buildContext(): HandlerContext {
 
 function buildOptions(): {
   getTaskName: (taskId: string) => string;
-  syncProjectBaseBranchesFromJson: (json: string) => void;
-  syncTaskConvergenceFromJson: (json: string) => void;
-  syncTaskNamesFromJson: (json: string) => void;
-  syncTaskReviewSignalsFromJson: (json: string) => void;
-  syncTaskStepsFromJson: (json: string) => void;
-  syncTaskWorkflowWorktreesFromJson: (json: string) => void;
+  syncProjectBaseBranchesFromJson: (state: SavedStateDocument) => void;
+  syncTaskConvergenceFromJson: (state: SavedStateDocument) => void;
+  syncTaskNamesFromJson: (state: SavedStateDocument) => void;
+  syncTaskReviewSignalsFromJson: (state: SavedStateDocument) => void;
+  syncTaskStepsFromJson: (state: SavedStateDocument) => void;
+  syncTaskWorkflowWorktreesFromJson: (state: SavedStateDocument) => void;
 } {
   return {
     getTaskName: (taskId: string) => taskId,
@@ -129,7 +166,8 @@ describe('system handlers', () => {
     inspectArenaCompetitorMock.mockReset();
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
-    listAgentsMock.mockResolvedValue([]);
+    getAgentDefsWithLastKnownAvailabilityMock.mockReturnValue([]);
+    readPlanForWorktreeMock.mockReturnValue(null);
     discoverProjectsMock.mockResolvedValue([]);
     getRecentProjectPathsMock.mockResolvedValue([]);
     resetTaskCommandLeasesForTest();
@@ -394,12 +432,10 @@ describe('system handlers', () => {
     });
   });
 
-  it('dedupes reconnect saved-state reads within the warm reconnect cache window', async () => {
+  it('dedupes reconnect saved-state reads through the revision-keyed cache until a save invalidates it', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);
-    loadAppStateForEnvMock
-      .mockReturnValueOnce('{"version":1}')
-      .mockReturnValueOnce('{"version":2}');
+    loadAppStateForEnvMock.mockReturnValueOnce('{"version":1}');
     getActiveAgentIdsMock
       .mockReturnValueOnce(['agent-1'])
       .mockReturnValueOnce(['agent-2'])
@@ -415,7 +451,6 @@ describe('system handlers', () => {
       taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
-      workspaceStateJson: '{"version":1}',
     });
     expect(secondSnapshot).toEqual({
       ...firstSnapshot,
@@ -426,24 +461,22 @@ describe('system handlers', () => {
     expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
     expect(options.syncTaskNamesFromJson).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(5_001);
+    // The cache has no TTL: time alone does not expire it because every save
+    // path invalidates it explicitly.
+    await vi.advanceTimersByTimeAsync(60_000);
 
     const thirdSnapshot = await getBrowserReconnectSnapshot(handlers);
 
     expect(thirdSnapshot).toEqual({
+      ...firstSnapshot,
       agentGenerations: { 'agent-2': 0 },
-      appStateJson: '{"version":2}',
       runningAgentIds: ['agent-2'],
-      taskCommandControllerVersion: 0,
-      taskCommandControllers: [],
-      workspaceRevision: 0,
-      workspaceStateJson: '{"version":2}',
     });
-    expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
+    expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(1);
     expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(3);
     expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
-      cacheHits: 1,
-      cacheMisses: 2,
+      cacheHits: 2,
+      cacheMisses: 1,
     });
   });
 
@@ -517,6 +550,7 @@ describe('system handlers', () => {
     expect(status).toEqual({
       agentGenerations: { 'agent-1': 5 },
       runningAgentIds: ['agent-1'],
+      serverInstanceId: expect.any(String),
       taskCommandControllerVersion: 0,
       workspaceRevision: 7,
     });
@@ -667,7 +701,6 @@ describe('system handlers', () => {
       taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
-      workspaceStateJson: '{"version":1}',
     });
     expect(secondSnapshot).toEqual({
       agentGenerations: { 'agent-1': 0 },
@@ -676,16 +709,281 @@ describe('system handlers', () => {
       taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
-      workspaceStateJson: '{"version":2}',
     });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
-    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(1, '{"version":1}');
-    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(2, '{"version":2}');
-    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(3, '{"version":2}');
+    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ json: '{"version":1}' }),
+    );
+    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ json: '{"version":2}' }),
+    );
+    expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ json: '{"version":2}' }),
+    );
     expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
       cacheHits: 0,
       cacheInvalidations: 1,
       cacheMisses: 2,
     });
+  });
+
+  it('omits both saved-state payloads when knownWorkspaceRevision matches the current revision', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    loadWorkspaceStateForEnvMock.mockReturnValue({
+      json: '{"version":9}',
+      revision: 7,
+    });
+    getActiveAgentIdsMock.mockReturnValue(['agent-1']);
+    getAgentMetaMock.mockReturnValue({ generation: 3 });
+    acquireTaskCommandLease('task-1', 'client-1', 'owner-1', 'merge this task');
+
+    const snapshot = (await handlers[IPC.GetBrowserReconnectSnapshot]?.({
+      knownWorkspaceRevision: 7,
+    })) as BrowserReconnectSnapshot;
+
+    expect(snapshot.workspaceStateJson).toBeUndefined();
+    expect(snapshot.appStateJson).toBeUndefined();
+    expect(snapshot).toMatchObject({
+      agentGenerations: { 'agent-1': 3 },
+      runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 1,
+      taskCommandControllers: [
+        expect.objectContaining({
+          controllerId: 'client-1',
+          taskId: 'task-1',
+        }),
+      ],
+      workspaceRevision: 7,
+    });
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      revisionSkips: 1,
+    });
+    expect(loadAppStateForEnvMock).not.toHaveBeenCalled();
+  });
+
+  it('ships the full workspace payload when knownWorkspaceRevision is stale and never loads legacy app state', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    loadWorkspaceStateForEnvMock.mockReturnValue({
+      json: '{"version":9}',
+      revision: 7,
+    });
+
+    const snapshot = (await handlers[IPC.GetBrowserReconnectSnapshot]?.({
+      knownWorkspaceRevision: 6,
+    })) as BrowserReconnectSnapshot;
+
+    expect(snapshot.workspaceStateJson).toBe('{"version":9}');
+    expect(snapshot.appStateJson).toBeUndefined();
+    expect(snapshot.workspaceRevision).toBe(7);
+    expect(loadAppStateForEnvMock).not.toHaveBeenCalled();
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      revisionSkips: 0,
+    });
+  });
+
+  it('rejects malformed knownWorkspaceRevision payloads as bad requests', () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+
+    expect(() =>
+      handlers[IPC.GetBrowserReconnectSnapshot]?.({ knownWorkspaceRevision: 'seven' }),
+    ).toThrow('knownWorkspaceRevision must be a finite number');
+  });
+
+  it('keeps appStateJson as the single legacy payload when no workspace-state file exists', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    loadAppStateForEnvMock.mockReturnValue('{"version":4}');
+    loadWorkspaceStateForEnvMock.mockReturnValue(null);
+
+    const snapshot = await getBrowserReconnectSnapshot(handlers);
+
+    expect(snapshot.appStateJson).toBe('{"version":4}');
+    // Single-copy contract: the legacy fallback must not duplicate the full
+    // serialized state into workspaceStateJson.
+    expect(snapshot.workspaceStateJson).toBeUndefined();
+    expect(snapshot.workspaceRevision).toBe(0);
+  });
+
+  it('never skips the legacy payload when knownWorkspaceRevision is 0 and no workspace-state file exists', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    loadAppStateForEnvMock.mockReturnValue('{"version":4}');
+    loadWorkspaceStateForEnvMock.mockReturnValue(null);
+
+    const snapshot = (await handlers[IPC.GetBrowserReconnectSnapshot]?.({
+      knownWorkspaceRevision: 0,
+    })) as BrowserReconnectSnapshot;
+
+    // Revision 0 is the unversioned legacy fallback: legacy SaveAppState
+    // mutates the file without a revision bump, so 0 === 0 proves nothing and
+    // the full payload must still ship.
+    expect(snapshot.appStateJson).toBe('{"version":4}');
+    expect(snapshot.workspaceRevision).toBe(0);
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      revisionSkips: 0,
+    });
+  });
+
+  function buildRemoteAccessContext(): HandlerContext {
+    return {
+      ...buildContext(),
+      remoteAccess: {
+        status: () => ({
+          connectedClients: 0,
+          enabled: false,
+          peerClients: 0,
+          port: 7777,
+          tailscaleUrl: null,
+          token: null,
+          url: null,
+          wifiUrl: null,
+        }),
+      } as HandlerContext['remoteAccess'],
+    };
+  }
+
+  function buildPlanWorkspaceJson(existingProjectPath: string, missingProjectPath: string): string {
+    return JSON.stringify({
+      version: 1,
+      projects: [
+        { color: '#336699', id: 'p1', name: 'Project One', path: existingProjectPath },
+        { color: '#336699', id: 'p2', name: 'Project Two', path: missingProjectPath },
+      ],
+      taskOrder: ['task-1', 'task-2'],
+      tasks: {
+        'task-1': {
+          agentIds: ['agent-1'],
+          branchName: 'branch-1',
+          id: 'task-1',
+          lastPrompt: '',
+          name: 'Task One',
+          notes: '',
+          planRelativePath: '.claude/plans/plan-1.md',
+          projectId: 'p1',
+          shellAgentIds: [],
+          worktreePath: '/tmp/worktree-1',
+        },
+        'task-2': {
+          agentIds: ['agent-2'],
+          branchName: 'branch-2',
+          id: 'task-2',
+          lastPrompt: '',
+          name: 'Task Two',
+          notes: '',
+          projectId: 'p1',
+          shellAgentIds: [],
+          worktreePath: '/tmp/worktree-2',
+        },
+      },
+    });
+  }
+
+  it('resolves the cold bootstrap synchronously with last-known agents while the prober is hung', async () => {
+    // The command-resolver/hydra prober mocks at the top of this file hang
+    // forever; if the handler probed availability inline this test would never
+    // resolve. Agent defs come from the sticky last-known availability seam.
+    getAgentDefsWithLastKnownAvailabilityMock.mockReturnValue([]);
+    loadAppStateForEnvMock.mockReturnValue('{"version":1,"projects":[],"taskOrder":[],"tasks":{}}');
+    const handlers = createSystemIpcHandlers(buildRemoteAccessContext(), buildOptions());
+
+    const snapshot = (await handlers[IPC.GetBrowserColdBootstrap]?.()) as
+      | BrowserColdBootstrapSnapshot
+      | undefined;
+
+    expect(snapshot).toBeDefined();
+    expect(getAgentDefsWithLastKnownAvailabilityMock).toHaveBeenCalledTimes(1);
+    expect(snapshot?.serverStateBootstrap).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'agent-availability',
+          payload: [],
+        }),
+      ]),
+    );
+  });
+
+  it('folds plan contents and project-path existence into the cold bootstrap payload', async () => {
+    const existingProjectPath = os.tmpdir();
+    const missingProjectPath = path.join(os.tmpdir(), 'parallel-code-missing-project-path');
+    loadWorkspaceStateForEnvMock.mockReturnValue({
+      json: buildPlanWorkspaceJson(existingProjectPath, missingProjectPath),
+      revision: 3,
+    });
+    readPlanForWorktreeMock.mockImplementation((worktreePath: string, relativePath: string) => ({
+      content: `plan for ${worktreePath}`,
+      fileName: path.basename(relativePath),
+      relativePath,
+    }));
+    const handlers = createSystemIpcHandlers(buildRemoteAccessContext(), buildOptions());
+
+    const snapshot = (await handlers[IPC.GetBrowserColdBootstrap]?.()) as
+      | BrowserColdBootstrapSnapshot
+      | undefined;
+
+    expect(snapshot?.planContents).toEqual([
+      {
+        content: 'plan for /tmp/worktree-1',
+        fileName: 'plan-1.md',
+        relativePath: '.claude/plans/plan-1.md',
+        taskId: 'task-1',
+      },
+    ]);
+    expect(readPlanForWorktreeMock).toHaveBeenCalledTimes(1);
+    expect(readPlanForWorktreeMock).toHaveBeenCalledWith(
+      '/tmp/worktree-1',
+      '.claude/plans/plan-1.md',
+    );
+    expect(snapshot?.projectPathsExist).toEqual({
+      [existingProjectPath]: true,
+      [missingProjectPath]: false,
+    });
+  });
+
+  it('caps cold bootstrap plan contents by total bytes', async () => {
+    const workspaceJson = JSON.stringify({
+      version: 1,
+      projects: [],
+      taskOrder: ['task-1', 'task-2'],
+      tasks: {
+        'task-1': {
+          agentIds: [],
+          branchName: 'branch-1',
+          id: 'task-1',
+          lastPrompt: '',
+          name: 'Task One',
+          notes: '',
+          planRelativePath: '.claude/plans/plan-1.md',
+          projectId: 'p1',
+          shellAgentIds: [],
+          worktreePath: '/tmp/worktree-1',
+        },
+        'task-2': {
+          agentIds: [],
+          branchName: 'branch-2',
+          id: 'task-2',
+          lastPrompt: '',
+          name: 'Task Two',
+          notes: '',
+          planRelativePath: '.claude/plans/plan-2.md',
+          projectId: 'p1',
+          shellAgentIds: [],
+          worktreePath: '/tmp/worktree-2',
+        },
+      },
+    });
+    loadWorkspaceStateForEnvMock.mockReturnValue({ json: workspaceJson, revision: 1 });
+    readPlanForWorktreeMock.mockImplementation((_worktreePath: string, relativePath: string) => ({
+      content: 'x'.repeat(1_500_000),
+      fileName: path.basename(relativePath),
+      relativePath,
+    }));
+    const handlers = createSystemIpcHandlers(buildRemoteAccessContext(), buildOptions());
+
+    const snapshot = (await handlers[IPC.GetBrowserColdBootstrap]?.()) as
+      | BrowserColdBootstrapSnapshot
+      | undefined;
+
+    expect(snapshot?.planContents?.map((entry) => entry.taskId)).toEqual(['task-1']);
   });
 });

@@ -87,6 +87,8 @@ export interface StatusMessage {
 export interface AgentsMessage {
   type: 'agents';
   list: RemoteAgent[];
+  /** Monotonic per-boot agent-list version for the resync handshake. */
+  version?: number;
 }
 
 export interface ScrollbackMessage {
@@ -194,6 +196,12 @@ export type TaskPortsChangedMessage = TaskPortsEvent & {
 export interface StateBootstrapMessage {
   type: 'state-bootstrap';
   snapshots: unknown[];
+  /**
+   * Per-process server identity. Per-boot category versions and the control
+   * seq counter are only comparable within one server instance; clients must
+   * discard cached versions and lastSeq when this changes.
+   */
+  serverInstanceId?: string;
 }
 
 export interface PermissionRequestMessage {
@@ -288,6 +296,18 @@ export interface ReplayTruncatedMessage {
   oldestAvailableSeq: number;
 }
 
+/**
+ * Batched control-event replay: one frame carrying every replayed sequenced
+ * event. The client adopts `toSeq` wholesale instead of running per-event gap
+ * detection, because ring compaction makes inner seqs legitimately
+ * non-contiguous. Sent only to clients that presented resync versions.
+ */
+export interface ControlReplayBatchMessage {
+  type: 'control-replay-batch';
+  toSeq: number;
+  events: unknown[];
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -309,6 +329,7 @@ export type ServerMessage =
   | TaskPortsChangedMessage
   | StateBootstrapMessage
   | ReplayTruncatedMessage
+  | ControlReplayBatchMessage
   | PermissionRequestMessage
   | AgentErrorMessage
   | AgentCommandResultMessage
@@ -402,7 +423,11 @@ function isStatusMessage(value: unknown): value is StatusMessage {
 }
 
 function isAgentsMessage(value: unknown): value is AgentsMessage {
-  return hasServerMessageType(value, 'agents') && isArrayOf(value.list, isRemoteAgent);
+  return (
+    hasServerMessageType(value, 'agents') &&
+    isArrayOf(value.list, isRemoteAgent) &&
+    (value.version === undefined || isNonNegativeInteger(value.version))
+  );
 }
 
 function isScrollbackMessage(value: unknown): value is ScrollbackMessage {
@@ -585,7 +610,19 @@ function isTaskPortsChangedMessage(value: unknown): value is TaskPortsChangedMes
 }
 
 function isStateBootstrapMessage(value: unknown): value is StateBootstrapMessage {
-  return hasServerMessageType(value, 'state-bootstrap') && Array.isArray(value.snapshots);
+  return (
+    hasServerMessageType(value, 'state-bootstrap') &&
+    Array.isArray(value.snapshots) &&
+    (value.serverInstanceId === undefined || typeof value.serverInstanceId === 'string')
+  );
+}
+
+export function isControlReplayBatchMessage(value: unknown): value is ControlReplayBatchMessage {
+  return (
+    hasServerMessageType(value, 'control-replay-batch') &&
+    isReplaySeqCursor(value.toSeq) &&
+    Array.isArray(value.events)
+  );
 }
 
 function isPermissionRequestMessage(value: unknown): value is PermissionRequestMessage {
@@ -735,6 +772,7 @@ const SERVER_MESSAGE_GUARDS = {
   'agent-lifecycle': isAgentLifecycleMessage,
   channel: isChannelMessage,
   'channel-bound': isChannelBoundMessage,
+  'control-replay-batch': isControlReplayBatchMessage,
   'coordinator-event': isCoordinatorEventMessage,
   'git-status-changed': isGitStatusChangedMessage,
   'ipc-event': isIpcEventMessage,
@@ -852,6 +890,15 @@ export interface AuthCommand {
   token: string;
   lastSeq?: number;
   clientId?: string;
+  /**
+   * Per-category resync versions from the shared ResyncVersionMap vocabulary.
+   * Honored only when `serverInstanceId` matches the current server process.
+   */
+  categoryVersions?: Record<string, number>;
+  /** Last observed transport agent-list version. */
+  agentsVersion?: number;
+  /** The server instance the presented versions/lastSeq were observed on. */
+  serverInstanceId?: string;
 }
 
 export interface PingCommand {
@@ -917,6 +964,12 @@ export interface TerminalInputTraceClockSyncCommand extends TerminalInputTraceCl
   type: 'terminal-input-trace-clock-sync';
 }
 
+/** Targeted re-fetch of degraded bootstrap categories. */
+export interface RequestStateBootstrapCommand {
+  type: 'request-state-bootstrap';
+  categories: string[];
+}
+
 export interface TerminalRecoveryRequestCommand {
   type: 'terminal-recovery-request';
   agentId: string;
@@ -951,6 +1004,7 @@ export type ClientMessage =
   | RequestTaskCommandTakeoverCommand
   | RespondTaskCommandTakeoverCommand
   | TaskCommandLeaseCommand
+  | RequestStateBootstrapCommand
   | TerminalRecoveryRequestCommand
   | TerminalStartupRecoveryRequestCommand
   | TerminalInputTraceCommand
@@ -966,6 +1020,7 @@ const CLIENT_MESSAGE_TYPE_VALUES = {
   pause: true,
   'permission-response': true,
   ping: true,
+  'request-state-bootstrap': true,
   'request-task-command-takeover': true,
   resize: true,
   'respond-task-command-takeover': true,
@@ -1038,6 +1093,41 @@ function isFiniteTimestamp(value: unknown): value is number {
 
 function isAuthLastSeq(value: unknown): value is number | undefined {
   return value === undefined || (isInteger(value) && value >= -1);
+}
+
+const MAX_RESYNC_CATEGORY_VERSION_KEYS = 16;
+const MAX_RESYNC_CATEGORY_VERSION_KEY_LENGTH = 40;
+
+export function parseResyncCategoryVersions(
+  value: unknown,
+): Record<string, number> | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length > MAX_RESYNC_CATEGORY_VERSION_KEYS) {
+    return null;
+  }
+
+  const versions: Record<string, number> = {};
+  for (const [key, version] of entries) {
+    if (
+      key.length === 0 ||
+      key.length > MAX_RESYNC_CATEGORY_VERSION_KEY_LENGTH ||
+      !isNonNegativeInteger(version) ||
+      !Number.isSafeInteger(version)
+    ) {
+      return null;
+    }
+
+    versions[key] = version;
+  }
+
+  return versions;
 }
 
 function hasValidTaskControlContext(message: Record<string, unknown>): boolean {
@@ -1328,6 +1418,17 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (!isAuthLastSeq(msg.lastSeq) || !isOptionalStringWithMaxLength(msg.clientId, 100)) {
         return null;
       }
+      const categoryVersions = parseResyncCategoryVersions(msg.categoryVersions);
+      if (categoryVersions === null) {
+        return null;
+      }
+      if (
+        (msg.agentsVersion !== undefined &&
+          (!isNonNegativeInteger(msg.agentsVersion) || !Number.isSafeInteger(msg.agentsVersion))) ||
+        !isOptionalStringWithMaxLength(msg.serverInstanceId, 64)
+      ) {
+        return null;
+      }
       const authMessage: AuthCommand = {
         type: 'auth',
         token: msg.token,
@@ -1337,6 +1438,15 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       }
       if (msg.clientId !== undefined) {
         authMessage.clientId = msg.clientId;
+      }
+      if (categoryVersions !== undefined) {
+        authMessage.categoryVersions = categoryVersions;
+      }
+      if (msg.agentsVersion !== undefined) {
+        authMessage.agentsVersion = msg.agentsVersion;
+      }
+      if (msg.serverInstanceId !== undefined) {
+        authMessage.serverInstanceId = msg.serverInstanceId;
       }
       return authMessage;
     }
@@ -1489,6 +1599,23 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
       case 'task-command-lease':
         return parseTaskCommandLeaseCommand(msg);
+
+      case 'request-state-bootstrap': {
+        if (
+          !Array.isArray(msg.categories) ||
+          msg.categories.length === 0 ||
+          msg.categories.length > MAX_RESYNC_CATEGORY_VERSION_KEYS ||
+          !msg.categories.every((category): category is string =>
+            isNonEmptyStringWithMaxLength(category, MAX_RESYNC_CATEGORY_VERSION_KEY_LENGTH),
+          )
+        ) {
+          return null;
+        }
+        return {
+          type: 'request-state-bootstrap',
+          categories: msg.categories,
+        };
+      }
 
       case 'terminal-recovery-request':
         if (

@@ -9,7 +9,9 @@ export default [
   {
     ignores: [
       'dist/**',
+      'dist-browser-dev/**',
       'dist-electron/**',
+      'dist-remote-dev/**',
       'dist-remote/**',
       'dist-server/**',
       'release/**',

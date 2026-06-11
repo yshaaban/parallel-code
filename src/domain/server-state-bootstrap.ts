@@ -10,6 +10,14 @@ import type {
   TaskPortsEvent,
   TaskPortSnapshot,
 } from './server-state.js';
+import type {
+  AgentAvailabilityChangedEvent,
+  AgentAvailabilitySnapshot,
+} from './agent-availability.js';
+import {
+  isAgentAvailabilityChangedEvent,
+  isAgentAvailabilitySnapshot,
+} from './agent-availability.js';
 import type { CoordinatorBootstrapSnapshot, CoordinatorEventEnvelope } from './coordinator.js';
 import {
   isAgentSupervisionEvent,
@@ -51,9 +59,22 @@ export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
   'task-steps',
   'task-ports',
   'coordinator',
+  'agent-availability',
 ] as const;
 
 export type ServerStateBootstrapCategory = (typeof SERVER_STATE_BOOTSTRAP_CATEGORIES)[number];
+
+// Shared resync version vocabulary for reconnect/version handshakes. Per-category
+// entries use the per-boot server-state bootstrap versions; 'workspace' IS the
+// persisted workspaceRevision (the only restart-safe version). The transport
+// agent-list counter is the 'agents' version space, but it is carried
+// out-of-band on the reconnect handshake (the `agentsVersion` auth field /
+// query param) rather than inside this map; the key stays reserved here so no
+// second version space is ever minted for it. There is exactly one version
+// space per domain; consumers must never mint a second workspace version.
+export type ResyncVersionMap = Partial<
+  Record<ServerStateBootstrapCategory | 'workspace' | 'agents', number>
+>;
 
 const REMOTE_ACCESS_STATUS_ONLY_FIELDS = [
   'enabled',
@@ -76,6 +97,7 @@ export interface ServerStateBootstrapPayloadMap {
   'task-steps': TaskStepsSummarySnapshot[];
   'task-ports': TaskPortSnapshot[];
   coordinator: CoordinatorBootstrapSnapshot;
+  'agent-availability': AgentAvailabilitySnapshot[];
 }
 
 export interface ServerStateEventPayloadMap {
@@ -90,6 +112,7 @@ export interface ServerStateEventPayloadMap {
   'task-steps': TaskStepsEvent;
   'task-ports': TaskPortsEvent;
   coordinator: CoordinatorEventEnvelope;
+  'agent-availability': AgentAvailabilityChangedEvent;
 }
 
 export interface ServerStateBootstrapSnapshot<
@@ -104,6 +127,38 @@ export interface ServerStateBootstrapSnapshot<
 export type AnyServerStateBootstrapSnapshot = {
   [TCategory in ServerStateBootstrapCategory]: ServerStateBootstrapSnapshot<TCategory>;
 }[ServerStateBootstrapCategory];
+
+/**
+ * Per-category failure marker: one throwing category builder degrades only
+ * that category instead of failing the whole bootstrap. Clients keep prior
+ * state for the category and retry it targetedly. Carries no payload/version.
+ */
+export interface DegradedServerStateBootstrapSnapshot {
+  category: ServerStateBootstrapCategory;
+  degraded: true;
+  error?: string;
+}
+
+export type ServerStateBootstrapResultSnapshot =
+  | AnyServerStateBootstrapSnapshot
+  | DegradedServerStateBootstrapSnapshot;
+
+export function isDegradedServerStateBootstrapSnapshot(
+  value: unknown,
+): value is DegradedServerStateBootstrapSnapshot {
+  return (
+    isRecord(value) &&
+    isServerStateBootstrapCategory(value.category) &&
+    value.degraded === true &&
+    (value.error === undefined || typeof value.error === 'string')
+  );
+}
+
+export function filterDegradedServerStateBootstrapSnapshots(
+  snapshots: ReadonlyArray<unknown>,
+): DegradedServerStateBootstrapSnapshot[] {
+  return snapshots.filter(isDegradedServerStateBootstrapSnapshot);
+}
 
 type ServerStateBootstrapPayloadGuard<TCategory extends ServerStateBootstrapCategory> = (
   payload: unknown,
@@ -209,6 +264,11 @@ function createArrayServerStateBootstrapCategoryConfig<
 }
 
 const SERVER_STATE_BOOTSTRAP_CATEGORY_CONFIG = {
+  'agent-availability': createArrayServerStateBootstrapCategoryConfig(
+    'agent-availability',
+    isAgentAvailabilitySnapshot,
+    isAgentAvailabilityChangedEvent,
+  ),
   'agent-supervision': createArrayServerStateBootstrapCategoryConfig(
     'agent-supervision',
     isAgentSupervisionSnapshot,

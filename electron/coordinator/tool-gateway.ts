@@ -1480,7 +1480,11 @@ export function startCoordinatorPromptDeliveryRuntime(
   }
 
   const cleanupCoordinatorEvents = subscribeCoordinatorEvents((event) => {
-    if (event.eventType === 'run-upserted') {
+    if (
+      event.eventType === 'run-upserted' ||
+      event.eventType === 'run-meta-upserted' ||
+      event.eventType === 'workflow-upserted'
+    ) {
       scheduleNextCoordinatorWorkflowExecution();
     }
   });

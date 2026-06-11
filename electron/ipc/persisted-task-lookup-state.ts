@@ -148,6 +148,19 @@ function parsePersistedTasks(value: unknown): Record<string, PersistedTaskLookup
   return tasks;
 }
 
+export function parsePersistedTaskLookupStateFromRoot(
+  root: Record<string, unknown> | null,
+): ParsedPersistedTaskLookupState {
+  if (!root) {
+    return createEmptyParsedPersistedTaskLookupState();
+  }
+
+  return {
+    projects: parsePersistedProjects(root.projects),
+    tasks: parsePersistedTasks(root.tasks),
+  };
+}
+
 export function parsePersistedTaskLookupState(savedJson: string): ParsedPersistedTaskLookupState {
   try {
     const parsed: unknown = JSON.parse(savedJson);
@@ -155,10 +168,7 @@ export function parsePersistedTaskLookupState(savedJson: string): ParsedPersiste
       return createEmptyParsedPersistedTaskLookupState();
     }
 
-    return {
-      projects: parsePersistedProjects(parsed.projects),
-      tasks: parsePersistedTasks(parsed.tasks),
-    };
+    return parsePersistedTaskLookupStateFromRoot(parsed);
   } catch {
     return createEmptyParsedPersistedTaskLookupState();
   }

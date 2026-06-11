@@ -14,22 +14,41 @@ import { markAutosaveClean, setupAutosave } from '../store/autosave';
 import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap';
-import type { BrowserColdBootstrapSnapshot } from '../domain/renderer-invoke';
+import type {
+  BrowserColdBootstrapPlanContent,
+  BrowserColdBootstrapSnapshot,
+} from '../domain/renderer-invoke';
 import type { PlanContentUpdate } from '../domain/renderer-events';
-import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
-import { loadClientSessionState, reconcileClientSessionState } from '../store/client-session';
+import type { ServerStateBootstrapResultSnapshot } from '../domain/server-state-bootstrap';
+import {
+  loadClientSessionState,
+  peekClientSessionSelection,
+  reconcileClientSessionState,
+} from '../store/client-session';
 import { takeBrowserColdBootstrapHandoffProjection } from '../store/browser-cold-bootstrap-handoff';
 import {
   applyBrowserColdBootstrapWorkspaceProjection,
   loadState,
   loadWorkspaceState,
 } from '../store/persistence-load';
-import { validateProjectPaths } from '../store/projects';
+import { showNotification } from '../store/notification';
+import { applyProjectPathExistence, validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
-import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
+import {
+  beginAppStartupPresentation,
+  clearAppStartupStatus,
+  setAppStartupStatus,
+} from './app-startup-status';
+import { startWorkspaceShapeCachePersistence } from './workspace-shape-cache-persistence';
 import { startStartupRestoreAgentSessionEnsure } from './agent-session-ensure';
 import { refreshDiscoveredProjects } from './discovered-projects';
+import {
+  beginSpeculativeSelectedTerminalAttach,
+  getSpeculativeSelectedTerminalIntent,
+  resolveSpeculativeSelectedTerminalAttach,
+  type SpeculativeSelectedTerminalIntent,
+} from './speculative-terminal-attach';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 
 import {
@@ -52,7 +71,7 @@ interface DesktopSessionBootstrapController {
   cleanupStartupListeners(): void;
   complete(): void;
   hydrateInitialSnapshots(
-    snapshots?: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
+    snapshots?: ReadonlyArray<ServerStateBootstrapResultSnapshot>,
   ): Promise<void>;
 }
 
@@ -360,6 +379,47 @@ function scheduleDiscoveredProjectsRefresh(
   }, DISCOVERED_PROJECTS_PREFETCH_DELAY_MS);
 }
 
+function peekSpeculativeSelectedTerminalIntent(): SpeculativeSelectedTerminalIntent | null {
+  const selection = peekClientSessionSelection();
+  if (!selection.activeTaskId) {
+    return null;
+  }
+
+  const agentId = selection.activeAgentId ?? selection.standaloneTerminalAgentId;
+  if (!agentId) {
+    return null;
+  }
+
+  return {
+    agentId,
+    taskId: selection.activeTaskId,
+  };
+}
+
+// Confirmation requires the restored selection to resolve to the exact same
+// task and agent identity; reconcileClientSessionState has already cleared any
+// dangling selection, so a matching activeAgentId implies the agent still
+// exists in restored state.
+function resolveSpeculativeSelectedTerminalAttachFromRestoredSelection(): void {
+  const intent = getSpeculativeSelectedTerminalIntent();
+  if (!intent) {
+    return;
+  }
+
+  const confirmed = store.activeTaskId === intent.taskId && store.activeAgentId === intent.agentId;
+  resolveSpeculativeSelectedTerminalAttach(confirmed ? 'confirmed' : 'discarded');
+}
+
+function applyColdBootstrapPlanContents(
+  planContents: BrowserColdBootstrapPlanContent[] | undefined,
+): void {
+  for (const entry of planContents ?? []) {
+    if (store.tasks[entry.taskId]) {
+      setPlanContent(entry.taskId, entry.content, entry.fileName, entry.relativePath);
+    }
+  }
+}
+
 async function restorePersistedPlanContent(): Promise<void> {
   const taskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
   const restoreRequests = taskIds
@@ -400,10 +460,18 @@ export async function runDesktopSessionStartup(
   isDisposed: () => boolean,
 ): Promise<void> {
   emitStartupBreadcrumb('desktop-startup:begin');
+  // Presentation pending begins before any awaited startup work so skeleton
+  // surfaces never race the first await; clearAppStartupStatus (completion,
+  // failure, and dispose paths) completes it.
+  beginAppStartupPresentation();
   const startupTimerController = createDesktopSessionStartupTimerController();
   const startupCleanupCallbacks = new Set<() => void>();
   function cleanupStartupScopedResources(): void {
     startupTimerController.cancelAll();
+    // Resolution is mandatory for a published speculative intent: a disposed
+    // or aborted startup discards it here so a registered prewarm consumer can
+    // never be left holding an unresolved intent (no-op once resolved).
+    resolveSpeculativeSelectedTerminalAttach('discarded');
     for (const cleanup of startupCleanupCallbacks) {
       cleanup();
     }
@@ -431,11 +499,44 @@ export async function runDesktopSessionStartup(
     return browserAgentCatalogRefreshPromise;
   }
 
+  // App shortcuts register before any startup await; handlers no-op safely on
+  // an empty store.
+  resources.cleanupShortcuts = replaceDesktopSessionResource(
+    isDisposed(),
+    resources.cleanupShortcuts,
+    registerAppShortcuts(),
+    disposeCleanup,
+  );
+  emitStartupBreadcrumb('desktop-startup:shortcuts-registered');
+
+  registerStartupScopedCleanup(startWorkspaceShapeCachePersistence());
+
   setAppStartupStatus('bootstrapping', 'Loading workspace and session state');
   const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync, {
     onRestoreCompleted: taskNotificationRuntime.arm,
     onRestoreStarted: taskNotificationRuntime.disarm,
   });
+
+  // Browser path: the cold-bootstrap fetch is the only awaited network round
+  // trip before the selected-task tier, so it starts before window chrome and
+  // runs concurrently with the websocket runtime registration.
+  let browserColdBootstrapFetch: Promise<BrowserColdBootstrapFetchResult> | null = null;
+  if (!options.electronRuntime) {
+    beginBrowserColdBootstrap();
+    emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
+    beginSpeculativeSelectedTerminalAttach(peekSpeculativeSelectedTerminalIntent());
+    resources.cleanupBrowserRuntime = replaceDesktopSessionResource(
+      isDisposed(),
+      resources.cleanupBrowserRuntime,
+      createBrowserRuntimeCleanup(options, browserRuntimeOptions),
+      disposeCleanup,
+    );
+    setAppStartupStatus('restoring', 'Loading backend browser bootstrap');
+    browserColdBootstrapFetch = fetchBrowserColdBootstrapWithRetry(
+      isDisposed,
+      startupTimerController,
+    );
+  }
 
   await sessionRuntime.setupWindowChrome();
   if (isDisposed()) return;
@@ -450,27 +551,13 @@ export async function runDesktopSessionStartup(
     if (isDisposed()) return;
   }
 
-  if (!options.electronRuntime) {
-    resources.cleanupBrowserRuntime = replaceDesktopSessionResource(
-      isDisposed(),
-      resources.cleanupBrowserRuntime,
-      createBrowserRuntimeCleanup(options, browserRuntimeOptions),
-      disposeCleanup,
-    );
-  }
-
   if (options.electronRuntime) {
     setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadState();
     registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
   } else {
-    beginBrowserColdBootstrap();
-    emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
-    setAppStartupStatus('restoring', 'Loading backend browser bootstrap');
-    const coldBootstrapResult = await fetchBrowserColdBootstrapWithRetry(
-      isDisposed,
-      startupTimerController,
-    );
+    const coldBootstrapResult = await (browserColdBootstrapFetch ??
+      fetchBrowserColdBootstrapWithRetry(isDisposed, startupTimerController));
     if (isDisposed()) {
       return;
     }
@@ -524,10 +611,15 @@ export async function runDesktopSessionStartup(
             coldBootstrapResult.lastError,
             recoveredWorkspaceState.lastError,
           );
-          console.warn(
+          const startupFailureMessage =
             startupFailure?.message ??
-              'Browser cold bootstrap did not restore shared workspace state after retries.',
-          );
+            'Browser cold bootstrap did not restore shared workspace state after retries.';
+          console.warn(startupFailureMessage);
+          // Startup continues (a background sync retry is scheduled), but a
+          // returning user would otherwise see a silent false first-run empty
+          // state once the skeleton clears. Make the degradation honest with
+          // the persistent, dismissable error toast.
+          showNotification(startupFailureMessage, { kind: 'error' });
           browserStateSync.scheduleBrowserStateSync(0, false);
         }
       }
@@ -538,6 +630,13 @@ export async function runDesktopSessionStartup(
         'Browser startup completed without a meaningful workspace projection; continuing with the current workspace snapshot.',
       );
     }
+    // Plan contents and project-path existence ride the cold-bootstrap payload,
+    // so no ReadPlanContent or CheckPathsExist round trips sit on this path; the
+    // delayed background validation below still runs reconciliation refreshes.
+    applyColdBootstrapPlanContents(coldBootstrap?.planContents);
+    if (coldBootstrap?.projectPathsExist) {
+      applyProjectPathExistence(coldBootstrap.projectPathsExist);
+    }
     await bootstrapController.hydrateInitialSnapshots(coldBootstrap?.serverStateBootstrap);
     if (isDisposed()) {
       return;
@@ -547,6 +646,7 @@ export async function runDesktopSessionStartup(
       restoreTerminalPanels: true,
     });
     reconcileClientSessionState();
+    resolveSpeculativeSelectedTerminalAttachFromRestoredSelection();
     registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
     setBrowserStartupTier('selected-task');
     emitStartupBreadcrumb('desktop-startup:browser-selected-task');
@@ -557,12 +657,10 @@ export async function runDesktopSessionStartup(
   if (isDisposed()) return;
 
   if (options.electronRuntime) {
-    await restorePersistedPlanContent();
-    if (isDisposed()) return;
-  }
-
-  if (options.electronRuntime) {
-    await bootstrapController.hydrateInitialSnapshots();
+    await Promise.all([
+      restorePersistedPlanContent(),
+      bootstrapController.hydrateInitialSnapshots(),
+    ]);
   }
   if (isDisposed()) return;
 
@@ -575,23 +673,22 @@ export async function runDesktopSessionStartup(
   emitStartupBreadcrumb('desktop-startup:after-mark-autosave-clean');
 
   if (options.electronRuntime) {
-    await validateProjectPaths();
-    emitStartupBreadcrumb('desktop-startup:after-validate-project-paths');
-    if (isDisposed()) return;
-  } else {
-    validateProjectPathsInBackground();
-    emitStartupBreadcrumb('desktop-startup:after-schedule-project-path-validation');
-  }
-
-  if (options.electronRuntime) {
-    await sessionRuntime.restoreWindowState();
-    emitStartupBreadcrumb('desktop-startup:after-restore-window-state');
+    await Promise.all([
+      validateProjectPaths().then(() => {
+        emitStartupBreadcrumb('desktop-startup:after-validate-project-paths');
+      }),
+      sessionRuntime.restoreWindowState().then(() => {
+        emitStartupBreadcrumb('desktop-startup:after-restore-window-state');
+      }),
+    ]);
     if (isDisposed()) return;
 
     await sessionRuntime.captureWindowState();
     emitStartupBreadcrumb('desktop-startup:after-capture-window-state');
     if (isDisposed()) return;
   } else {
+    validateProjectPathsInBackground();
+    emitStartupBreadcrumb('desktop-startup:after-schedule-project-path-validation');
     captureBrowserWindowStateInBackground(sessionRuntime);
     emitStartupBreadcrumb('desktop-startup:after-schedule-window-state-capture');
   }
@@ -647,12 +744,6 @@ export async function runDesktopSessionStartup(
     }, 1_000);
   }
 
-  resources.cleanupShortcuts = replaceDesktopSessionResource(
-    isDisposed(),
-    resources.cleanupShortcuts,
-    registerAppShortcuts(),
-    disposeCleanup,
-  );
   const unlisten = await sessionRuntime.registerCloseRequestedHandler();
   resources.unlistenCloseRequested = replaceDesktopSessionResource(
     isDisposed(),

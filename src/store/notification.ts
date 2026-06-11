@@ -1,18 +1,35 @@
 import { setStore } from './core';
+import type { AppNotification } from './types';
+
+const INFO_NOTIFICATION_AUTO_CLEAR_MS = 3_000;
 
 let notificationTimer: ReturnType<typeof setTimeout> | null = null;
 
-export function showNotification(message: string): void {
-  if (notificationTimer) clearTimeout(notificationTimer);
-  setStore('notification', message);
-  notificationTimer = setTimeout(() => {
-    setStore('notification', null);
+function clearNotificationTimer(): void {
+  if (notificationTimer) {
+    clearTimeout(notificationTimer);
     notificationTimer = null;
-  }, 3000);
+  }
+}
+
+export function showNotification(
+  message: string,
+  options: { kind?: AppNotification['kind'] } = {},
+): void {
+  const kind = options.kind ?? 'info';
+  clearNotificationTimer();
+  setStore('notification', { kind, message });
+  if (kind === 'error') {
+    return;
+  }
+
+  notificationTimer = setTimeout(() => {
+    notificationTimer = null;
+    setStore('notification', null);
+  }, INFO_NOTIFICATION_AUTO_CLEAR_MS);
 }
 
 export function clearNotification(): void {
-  if (notificationTimer) clearTimeout(notificationTimer);
-  notificationTimer = null;
+  clearNotificationTimer();
   setStore('notification', null);
 }

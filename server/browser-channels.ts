@@ -16,6 +16,7 @@ import {
   isValidChannelDataPayload,
   type QueuedMessage,
 } from './channel-frames.js';
+import { createOutboundChannelLanes } from './browser-outbound-lanes.js';
 
 // Browser terminal stream plane. This owns per-channel fanout, per-client
 // backpressure queues, and reset/rebind recovery for stream loss.
@@ -66,6 +67,7 @@ export interface CreateBrowserChannelManagerOptions {
   clientDegradedMaxQueuedBytes?: number;
   clearAutoPauseReasonsForChannel: (channelId: string) => void;
   coalescedChannelDataMaxBytes?: number;
+  getClientBufferedAmount?: (client: WebSocket) => number;
   getPendingChannelSendState?: (client: WebSocket) => PendingChannelSendState | null;
   send: (client: WebSocket, data: string | Buffer) => boolean;
   backpressureDrainIntervalMs?: number;
@@ -79,6 +81,7 @@ export interface BrowserChannelManager {
   cleanupClient: (client: WebSocket) => void;
   hasActiveSubscriber: (channelId: string) => boolean;
   sendChannelMessage: (channelId: string, payload: unknown) => void;
+  setFocusedChannelIds: (channelIds: Iterable<string>) => void;
   unbindChannel: (client: WebSocket, channelId: string) => void;
 }
 
@@ -259,6 +262,7 @@ export function createBrowserChannelManager(
   };
 
   let backpressureDrainTimer: NodeJS.Timeout | null = null;
+  const lanes = createOutboundChannelLanes();
 
   function getClientRecoveryRequiredSet(client: WebSocket): Set<string> {
     let channels = clientRecoveryRequiredChannels.get(client);
@@ -527,6 +531,7 @@ export function createBrowserChannelManager(
   function flushPendingChannelMessages(
     client: WebSocket,
     channelId: string,
+    byteBudget = Number.POSITIVE_INFINITY,
   ): FlushPendingChannelMessagesResult {
     const queue = clientBackpressureQueues.get(client)?.get(channelId);
     const clientQueues = clientBackpressureQueues.get(client);
@@ -545,6 +550,7 @@ export function createBrowserChannelManager(
       sent += 1;
       sentBytes += entry.sizeBytes;
       if (sent >= maxMessagesToSend) break;
+      if (sentBytes >= byteBudget) break;
     }
     if (sent === 0) {
       if (shouldThrottleDrain) {
@@ -574,16 +580,23 @@ export function createBrowserChannelManager(
     backpressureDrainTimer = setTimeout(() => {
       backpressureDrainTimer = null;
 
-      for (const channelId of backpressuredChannels) {
+      // Lane-ordered drain: focused channels (lane 1) flush without a byte
+      // budget before background channels (lane 2), which round-robin under
+      // a per-pass byte budget so one noisy hidden terminal cannot starve
+      // its siblings.
+      for (const channelId of lanes.orderChannelsForDrain(backpressuredChannels)) {
         const subscribers = channelSubscribers.get(channelId);
         if (!subscribers || subscribers.size === 0) {
           backpressuredChannels.delete(channelId);
           continue;
         }
 
+        const drainByteBudget = lanes.isFocusedChannel(channelId)
+          ? Number.POSITIVE_INFINITY
+          : lanes.getBackgroundByteBudgetPerPass();
         let anyQueued = false;
         for (const client of subscribers) {
-          const flushResult = flushPendingChannelMessages(client, channelId);
+          const flushResult = flushPendingChannelMessages(client, channelId, drainByteBudget);
           const queue = clientBackpressureQueues.get(client)?.get(channelId);
           if (queue && queue.messages.length > 0) {
             if (!flushResult.madeProgress) {
@@ -675,6 +688,19 @@ export function createBrowserChannelManager(
         continue;
       }
 
+      // Bulk soft cap: background channel data defers to the lane-ordered
+      // drain while the client's socket buffer is already deep, so focused
+      // frames and control traffic stay ahead of bulk on the wire.
+      if (
+        isChannelDataPayload(payload) &&
+        options.getClientBufferedAmount !== undefined &&
+        lanes.shouldDeferBulkSend(channelId, options.getClientBufferedAmount(client))
+      ) {
+        queueChannelMessagePerClient(client, channelId, payload);
+        anyBackpressured = true;
+        continue;
+      }
+
       if (options.send(client, message.data)) {
         continue;
       }
@@ -716,6 +742,9 @@ export function createBrowserChannelManager(
     cleanupClient,
     hasActiveSubscriber: (channelId) => (channelSubscribers.get(channelId)?.size ?? 0) > 0,
     sendChannelMessage,
+    setFocusedChannelIds: (channelIds) => {
+      lanes.setFocusedChannelIds(channelIds);
+    },
     unbindChannel,
   };
 }

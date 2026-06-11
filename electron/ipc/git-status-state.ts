@@ -1,11 +1,27 @@
 import type { GitStatusSyncSnapshotEvent } from '../../src/domain/server-state.js';
 
+type GitStatusSnapshotsListener = () => void;
+
 const gitStatusSnapshots = new Map<string, GitStatusSyncSnapshotEvent>();
+const gitStatusSnapshotsListeners = new Set<GitStatusSnapshotsListener>();
 let gitStatusVersion = 0;
 
 function bumpGitStatusVersion(): number {
   gitStatusVersion += 1;
   return gitStatusVersion;
+}
+
+function notifyGitStatusSnapshotsChanged(): void {
+  for (const listener of gitStatusSnapshotsListeners) {
+    listener();
+  }
+}
+
+export function subscribeGitStatusSnapshots(listener: GitStatusSnapshotsListener): () => void {
+  gitStatusSnapshotsListeners.add(listener);
+  return () => {
+    gitStatusSnapshotsListeners.delete(listener);
+  };
 }
 
 export function listGitStatusSnapshots(): GitStatusSyncSnapshotEvent[] {
@@ -16,6 +32,20 @@ export function listGitStatusSnapshots(): GitStatusSyncSnapshotEvent[] {
 
 export function getGitStatusStateVersion(): number {
   return gitStatusVersion;
+}
+
+export function hydrateGitStatusSnapshots(
+  snapshots: ReadonlyArray<GitStatusSyncSnapshotEvent>,
+): void {
+  if (snapshots.length === 0) {
+    return;
+  }
+
+  for (const snapshot of snapshots) {
+    gitStatusSnapshots.set(snapshot.worktreePath, snapshot);
+  }
+  bumpGitStatusVersion();
+  notifyGitStatusSnapshotsChanged();
 }
 
 export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): number {
@@ -30,7 +60,9 @@ export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): n
   }
 
   gitStatusSnapshots.set(snapshot.worktreePath, snapshot);
-  return bumpGitStatusVersion();
+  const version = bumpGitStatusVersion();
+  notifyGitStatusSnapshotsChanged();
+  return version;
 }
 
 export function removeGitStatusSnapshot(worktreePath: string): void {
@@ -39,6 +71,7 @@ export function removeGitStatusSnapshot(worktreePath: string): void {
   }
 
   bumpGitStatusVersion();
+  notifyGitStatusSnapshotsChanged();
 }
 
 export function clearGitStatusSnapshots(): void {
@@ -48,4 +81,5 @@ export function clearGitStatusSnapshots(): void {
 
   gitStatusSnapshots.clear();
   bumpGitStatusVersion();
+  notifyGitStatusSnapshotsChanged();
 }

@@ -6,13 +6,19 @@ import {
   type CoordinatorActivityHintRequest,
   type CoordinatorCreateRunRequest,
   type CoordinatorCreateRunResult,
+  type CoordinatorPersistenceHealth,
 } from '../../src/domain/coordinator.js';
 import type { StorageEnv } from '../ipc/storage.js';
 import { getStateDirForEnv, writeJsonFileAtomically } from '../ipc/storage.js';
 import {
   loadCoordinatorRuntimeStateForEnv,
   saveCoordinatorRuntimeStateForEnv,
+  saveCoordinatorRuntimeStateForEnvAsync,
 } from './persistence.js';
+import {
+  createCoordinatorPersistenceScheduler,
+  type CoordinatorPersistenceScheduler,
+} from './persistence-scheduler.js';
 import {
   cancelCoordinatorPromptsForTask,
   cancelCoordinatorWorkflowLanesForTask,
@@ -58,6 +64,7 @@ interface CoordinatorActivityHintRecord extends CoordinatorActivityHintRequest {
 
 let loadedStateDir: string | null = null;
 let runtimePersistenceCleanup: (() => void) | null = null;
+let runtimePersistenceScheduler: CoordinatorPersistenceScheduler | null = null;
 let runtimePersistenceStateDir: string | null = null;
 const tokenRecordsByToken = new Map<string, CoordinatorTokenRecord>();
 const tokenRecordsByTaskId = new Map<string, CoordinatorTokenRecord>();
@@ -163,7 +170,7 @@ function credentialBelongsToRestoredRun(record: CoordinatorTokenRecord): boolean
   return run.subtasks.some((subtask) => subtask.taskId === record.taskId);
 }
 
-function restoreCoordinatorCredentials(env: StorageEnv): void {
+function restoreCoordinatorCredentials(env: StorageEnv, options: { pruneOrphans: boolean }): void {
   const credentialDir = getCredentialDir(env);
   tokenRecordsByToken.clear();
   tokenRecordsByTaskId.clear();
@@ -187,7 +194,10 @@ function restoreCoordinatorCredentials(env: StorageEnv): void {
         const record = createTokenRecord(credentialPath, parsed);
         if (credentialBelongsToRestoredRun(record)) {
           rememberTokenRecord(record);
-        } else {
+        } else if (options.pruneOrphans) {
+          // Orphan pruning is legal only when the state load legitimately
+          // succeeded ('ok'). A failed or salvaged load must never delete
+          // credential files for runs it could not see.
           fs.unlinkSync(credentialPath);
         }
       }
@@ -197,8 +207,17 @@ function restoreCoordinatorCredentials(env: StorageEnv): void {
   }
 }
 
-function persistRuntimeState(env: StorageEnv): void {
+export function flushCoordinatorRuntimeState(env: StorageEnv): Promise<void> {
+  if (runtimePersistenceScheduler !== null) {
+    return runtimePersistenceScheduler.flushNow();
+  }
+
   saveCoordinatorRuntimeStateForEnv(env, getCoordinatorRuntimeState());
+  return Promise.resolve();
+}
+
+export function getCoordinatorPersistenceHealth(): CoordinatorPersistenceHealth | null {
+  return runtimePersistenceScheduler?.getHealth() ?? null;
 }
 
 export function ensureCoordinatorServiceLoaded(env: StorageEnv): void {
@@ -207,35 +226,47 @@ export function ensureCoordinatorServiceLoaded(env: StorageEnv): void {
     return;
   }
 
-  const persisted = loadCoordinatorRuntimeStateForEnv(env);
-  if (persisted) {
-    restoreCoordinatorRuntimeState(persisted);
-  } else {
-    restoreCoordinatorRuntimeState({
+  const loadResult = loadCoordinatorRuntimeStateForEnv(env);
+  restoreCoordinatorRuntimeState(
+    loadResult.state ?? {
       runs: [],
       stateVersion: 0,
       subtaskLaunches: [],
       toolCallResults: [],
-    });
-  }
-  restoreCoordinatorCredentials(env);
+    },
+  );
+  // 'missing' is a legitimately empty fresh boot; only 'failed'/'salvaged'
+  // loads must never prune (the runs the credentials belong to may still exist).
+  restoreCoordinatorCredentials(env, {
+    pruneOrphans: loadResult.outcome === 'ok' || loadResult.outcome === 'missing',
+  });
 
   loadedStateDir = stateDir;
 }
 
-export function startCoordinatorRuntimePersistence(env: StorageEnv): () => void {
+export function startCoordinatorRuntimePersistence(env: StorageEnv): () => Promise<void> {
   ensureCoordinatorServiceLoaded(env);
   const stateDir = getStateDirForEnv(env);
   if (runtimePersistenceStateDir === stateDir && runtimePersistenceCleanup !== null) {
-    return () => {};
+    return () => Promise.resolve();
   }
 
   runtimePersistenceCleanup?.();
   runtimePersistenceStateDir = stateDir;
-  runtimePersistenceCleanup = subscribeCoordinatorEvents(() => {
-    persistRuntimeState(env);
+  const scheduler = createCoordinatorPersistenceScheduler({
+    save: () => saveCoordinatorRuntimeStateForEnvAsync(env, getCoordinatorRuntimeState()),
   });
-  return () => {
+  runtimePersistenceScheduler = scheduler;
+  const unsubscribe = subscribeCoordinatorEvents(() => {
+    scheduler.schedulePersist();
+  });
+  runtimePersistenceCleanup = () => {
+    unsubscribe();
+    if (runtimePersistenceScheduler === scheduler) {
+      runtimePersistenceScheduler = null;
+    }
+  };
+  return async () => {
     if (runtimePersistenceStateDir !== stateDir) {
       return;
     }
@@ -243,6 +274,9 @@ export function startCoordinatorRuntimePersistence(env: StorageEnv): () => void 
     runtimePersistenceCleanup?.();
     runtimePersistenceCleanup = null;
     runtimePersistenceStateDir = null;
+    // Shutdown flush: the loader's async cleanup awaits this, so a pending
+    // debounced write is durable before the process exits.
+    await scheduler.stop();
   };
 }
 
@@ -340,7 +374,9 @@ export function createCoordinatorRunForTask(
     removeCoordinatorRun(run.id);
     throw error;
   }
-  persistRuntimeState(env);
+  void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
+    console.error('Failed to flush coordinator state after run creation:', error);
+  });
 
   return {
     credentialPath: credential.credentialPath,
@@ -386,7 +422,9 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
     updateCoordinatorRunStatus(run.id, 'cancelled');
     revokeCoordinatorRunCredentials(env, run.id);
     removeCoordinatorRun(run.id);
-    persistRuntimeState(env);
+    void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
+      console.error('Failed to flush coordinator state after task cleanup:', error);
+    });
     return;
   }
 
@@ -402,7 +440,9 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
     updateCoordinatorSubtaskStatus(candidate.id, taskId, 'cancelled', {
       interruptedByRestoreAt: undefined,
     });
-    persistRuntimeState(env);
+    void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
+      console.error('Failed to flush coordinator state after subtask cleanup:', error);
+    });
     return;
   }
 }
@@ -461,12 +501,18 @@ export function getCoordinatorBlockingActivityHints(
   return active;
 }
 
-export function resetCoordinatorServiceForTests(): void {
+// Returns a promise that settles once the abandoned scheduler's save chain has
+// drained, so teardown can deterministically wait for in-flight async saves
+// before removing temp state dirs (no wall-clock sleep needed).
+export function resetCoordinatorServiceForTests(): Promise<void> {
   loadedStateDir = null;
+  const scheduler = runtimePersistenceScheduler;
   runtimePersistenceCleanup?.();
   runtimePersistenceCleanup = null;
+  runtimePersistenceScheduler = null;
   runtimePersistenceStateDir = null;
   tokenRecordsByToken.clear();
   tokenRecordsByTaskId.clear();
   activityHintsByKey.clear();
+  return scheduler?.stop().catch(() => {}) ?? Promise.resolve();
 }

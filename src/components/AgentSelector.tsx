@@ -22,6 +22,10 @@ function getAgentTextColor(isSelected: boolean): string {
 }
 
 function getAvailabilityLabel(agent: AgentDef): string | null {
+  if (agent.availabilityStatus === 'probing') {
+    return 'checking';
+  }
+
   if (agent.available !== false) {
     if (agent.availabilitySource === 'bundled') {
       return 'bundled';

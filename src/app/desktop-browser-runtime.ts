@@ -25,6 +25,8 @@ import {
 import { getLoadedWorkspaceRevision } from '../store/persistence-session';
 import { replacePeerSessions } from '../store/peer-presence';
 import { showNotification } from '../store/notification';
+import { setBrowserResyncStateProvider } from '../lib/ipc';
+import { collectServerStateCategoryVersions } from './server-state-bootstrap';
 
 type BrowserRuntimeRegistrationOptions = Parameters<typeof registerBrowserAppRuntime>[0];
 
@@ -82,6 +84,13 @@ export function createBrowserRuntimeCleanup(
     return () => {};
   }
 
+  // Reconnect resync handshake: the control client presents the renderer's
+  // per-category applied versions so the server can resend only stale
+  // categories instead of the unconditional full bootstrap.
+  setBrowserResyncStateProvider(() => ({
+    categoryVersions: collectServerStateCategoryVersions(),
+  }));
+
   const browserRuntimeOptions: BrowserRuntimeRegistrationOptions = {
     clearRestoringConnectionBanner: () => {
       clearRestoringConnectionBanner(options.setConnectionBanner);
@@ -113,7 +122,11 @@ export function createBrowserRuntimeCleanup(
       runtimeOptions.onTaskNotificationRestoreStarted;
   }
 
-  return registerBrowserAppRuntime(browserRuntimeOptions);
+  const cleanupBrowserRuntime = registerBrowserAppRuntime(browserRuntimeOptions);
+  return () => {
+    setBrowserResyncStateProvider(null);
+    cleanupBrowserRuntime();
+  };
 }
 
 export { getConnectionBannerText };

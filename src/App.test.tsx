@@ -66,7 +66,7 @@ const {
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
     newTaskDropUrl: null,
-    notification: null as string | null,
+    notification: null as { kind: 'error' | 'info'; message: string } | null,
     peerSessions: {},
     remoteAccess: { enabled: false },
     showArena: false,
@@ -270,11 +270,21 @@ describe('desktop app intro', () => {
   });
 
   it('renders the notification toast and clears it on click', () => {
-    storeState.notification = 'Saved successfully';
+    storeState.notification = { kind: 'info', message: 'Saved successfully' };
 
     const result = render(() => <App />);
     fireEvent.click(result.getByText('Saved successfully'));
 
+    expect(clearNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders error notifications with a persistent dismiss affordance', () => {
+    storeState.notification = { kind: 'error', message: 'Failed to create terminal' };
+
+    const result = render(() => <App />);
+
+    expect(result.getByRole('alert')).toBeTruthy();
+    fireEvent.click(result.getByLabelText('Dismiss notification'));
     expect(clearNotificationMock).toHaveBeenCalledTimes(1);
   });
 

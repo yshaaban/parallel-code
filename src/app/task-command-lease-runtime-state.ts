@@ -8,6 +8,8 @@ export interface LocalTaskCommandLease {
   leaseGeneration: number | undefined;
   removed: boolean;
   renewTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+  /** Set while renewals are paused through a transport blip (suspend-and-reclaim). */
+  suspendedAt?: number;
 }
 
 const localTaskCommandLeases = new Map<string, LocalTaskCommandLease>();
@@ -104,6 +106,55 @@ export function clearTaskCommandLeaseRenewal(taskId: string): void {
 export function clearAllTaskCommandLeaseRenewals(): void {
   for (const taskId of localTaskCommandLeases.keys()) {
     clearTaskCommandLeaseRenewal(taskId);
+  }
+}
+
+// Transport-blip suspend: renewal timers stop but the lease records survive so
+// the client can re-claim through the ordinary acquire workflow on reconnect.
+export function suspendAllTaskCommandLeaseRenewals(now = Date.now()): void {
+  for (const [taskId, lease] of localTaskCommandLeases) {
+    if (lease.removed) {
+      continue;
+    }
+
+    if (lease.suspendedAt === undefined) {
+      lease.suspendedAt = now;
+    }
+    clearTaskCommandLeaseRenewal(taskId);
+  }
+}
+
+export function getSuspendedTaskCommandLeases(): Array<[string, LocalTaskCommandLease]> {
+  return [...localTaskCommandLeases.entries()].filter(
+    ([, lease]) => lease.suspendedAt !== undefined,
+  );
+}
+
+/**
+ * Re-claim succeeded: adopt the NEW lease generation issued by the backend.
+ * The pre-blip generation is never reused — a peer takeover during the blip
+ * owns its own generation and re-claim must not resurrect the old one.
+ */
+export function resumeTaskCommandLease(taskId: string, leaseGeneration: number): void {
+  const lease = localTaskCommandLeases.get(taskId);
+  if (!lease) {
+    return;
+  }
+
+  delete lease.suspendedAt;
+  lease.leaseGeneration = leaseGeneration;
+}
+
+export function clearSuspendedTaskCommandLeaseMark(taskId: string): void {
+  const lease = localTaskCommandLeases.get(taskId);
+  if (lease) {
+    delete lease.suspendedAt;
+  }
+}
+
+export function clearAllSuspendedTaskCommandLeaseMarks(): void {
+  for (const lease of localTaskCommandLeases.values()) {
+    delete lease.suspendedAt;
   }
 }
 

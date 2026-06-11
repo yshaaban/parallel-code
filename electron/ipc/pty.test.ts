@@ -21,6 +21,7 @@ vi.mock('./task-ports.js', () => ({
 
 import {
   clearAutoPauseReasonsForChannel,
+  detachAgentOutput,
   getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
@@ -1516,7 +1517,7 @@ describe('spawnAgent', () => {
 
   it('falls back to scrollback snapshots and records diagnostics when terminal-state serialization is unavailable', async () => {
     const serializeSpy = vi
-      .spyOn(TerminalStateMirror.prototype, 'serialize')
+      .spyOn(TerminalStateMirror.prototype, 'serializeLatest')
       .mockResolvedValueOnce(null);
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -2015,5 +2016,144 @@ describe('spawnAgent', () => {
       type: 'Data',
       data: Buffer.from('x').toString('base64'),
     });
+  });
+});
+
+describe('flush-time scans and cursor-first recovery', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    killAllAgents();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  function spawnFlushScanAgent(agentId: string, taskId: string, channelId: string): MockProc {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    spawnAgent(vi.fn(), {
+      taskId,
+      agentId,
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: channelId },
+    });
+    return proc;
+  }
+
+  it('runs supervision and port scans at flush even with zero attached channels', () => {
+    const proc = spawnFlushScanAgent('agent-no-channels', 'task-no-channels', 'detached-channel');
+    detachAgentOutput('agent-no-channels', 'detached-channel');
+    observeTaskPortsFromOutputMock.mockClear();
+
+    proc.emitData('listening on http://localhost:4321');
+    vi.advanceTimersByTime(4);
+
+    // Unattached agents (for example coordinator-driven ones) must keep
+    // supervision, port observation, and the terminal-state mirror live even
+    // though the flush has no channel subscribers to send to.
+    expect(observeTaskPortsFromOutputMock).toHaveBeenCalledWith(
+      'task-no-channels',
+      'listening on http://localhost:4321',
+    );
+  });
+
+  it('forwards the pending batch to the mirror before applying a resize', () => {
+    const enqueueOutputSpy = vi.spyOn(TerminalStateMirror.prototype, 'enqueueOutput');
+    const enqueueResizeSpy = vi.spyOn(TerminalStateMirror.prototype, 'enqueueResize');
+    try {
+      const proc = spawnFlushScanAgent('agent-resize-order', 'task-resize-order', 'resize-channel');
+
+      proc.emitData('pending-bytes');
+      expect(enqueueOutputSpy).not.toHaveBeenCalled();
+
+      resizeAgent('agent-resize-order', 120, 40);
+
+      // Mirror writes and the resize keep the same relative order as the
+      // real PTY byte stream: batch first, then resize.
+      expect(enqueueOutputSpy).toHaveBeenCalledTimes(1);
+      expect(enqueueResizeSpy).toHaveBeenCalledTimes(1);
+      const outputOrder = enqueueOutputSpy.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+      const resizeOrder = enqueueResizeSpy.mock.invocationCallOrder[0] ?? 0;
+      expect(outputOrder).toBeLessThan(resizeOrder);
+    } finally {
+      enqueueOutputSpy.mockRestore();
+      enqueueResizeSpy.mockRestore();
+    }
+  });
+
+  it('tags mirror writes with the cumulative byte cursor at flush time', () => {
+    const enqueueOutputSpy = vi.spyOn(TerminalStateMirror.prototype, 'enqueueOutput');
+    try {
+      const proc = spawnFlushScanAgent('agent-cursor-tag', 'task-cursor-tag', 'cursor-channel');
+
+      proc.emitData('12345');
+      vi.advanceTimersByTime(4);
+      proc.emitData('678');
+      vi.advanceTimersByTime(4);
+
+      expect(enqueueOutputSpy).toHaveBeenCalledTimes(2);
+      expect(enqueueOutputSpy.mock.calls[0]?.[1]).toBe(5);
+      expect(enqueueOutputSpy.mock.calls[1]?.[1]).toBe(8);
+    } finally {
+      enqueueOutputSpy.mockRestore();
+    }
+  });
+
+  it('returns tail-needed on a cursor miss when the capped snapshot would truncate history', () => {
+    const proc = spawnFlushScanAgent('agent-tail-needed', 'task-tail-needed', 'tail-channel');
+    proc.emitData('x'.repeat(100));
+
+    const recovery = getAgentTerminalRecovery('agent-tail-needed', null, 500, 50);
+
+    expect(recovery.kind).toBe('tail-needed');
+    expect(recovery.outputCursor).toBe(100);
+  });
+
+  it('falls back to a capped snapshot on a cursor miss when retention fits the limit', () => {
+    const proc = spawnFlushScanAgent('agent-cursor-miss', 'task-cursor-miss', 'miss-channel');
+    proc.emitData('x'.repeat(100));
+
+    const recovery = getAgentTerminalRecovery('agent-cursor-miss', null, 500, 200);
+
+    expect(recovery.kind).toBe('snapshot');
+    if (recovery.kind !== 'snapshot') {
+      throw new Error('expected snapshot recovery');
+    }
+    expect(recovery.data?.length).toBe(100);
+  });
+
+  it('caps cursorless reconnect snapshots at the requested byte limit', () => {
+    const proc = spawnFlushScanAgent('agent-snapshot-cap', 'task-snapshot-cap', 'cap-channel');
+    proc.emitData('y'.repeat(100));
+
+    const recovery = getAgentTerminalRecovery('agent-snapshot-cap', null, null, 50);
+
+    expect(recovery.kind).toBe('snapshot');
+    if (recovery.kind !== 'snapshot') {
+      throw new Error('expected snapshot recovery');
+    }
+    expect(recovery.data?.length).toBe(50);
+    expect(recovery.outputCursor).toBe(100);
+  });
+
+  it('keeps the cursor-hit delta fast path byte-exact under the snapshot cap', () => {
+    const proc = spawnFlushScanAgent('agent-cursor-hit', 'task-cursor-hit', 'hit-channel');
+    proc.emitData('abcdefghij');
+
+    const recovery = getAgentTerminalRecovery('agent-cursor-hit', null, 6, 4);
+
+    expect(recovery.kind).toBe('delta');
+    if (recovery.kind !== 'delta') {
+      throw new Error('expected delta recovery');
+    }
+    expect(recovery.data.toString('utf8')).toBe('ghij');
+    expect(recovery.outputCursor).toBe(10);
   });
 });

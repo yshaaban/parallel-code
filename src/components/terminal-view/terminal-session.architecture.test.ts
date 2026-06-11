@@ -85,7 +85,7 @@ describe('terminal session architecture guardrails', () => {
 
   it('keeps transport-aware lifecycle logic visible in the public terminal facade', () => {
     expect(terminalSessionSource).toContain('outputChannel.onmessage');
-    expect(terminalSessionSource).toContain('invoke(IPC.SpawnAgent');
+    expect(terminalSessionSource).toContain('invoke(IPC.AttachTerminalSession');
     expect(terminalSessionSource).toContain('onBrowserTransportEvent');
   });
 
@@ -125,7 +125,7 @@ describe('terminal session architecture guardrails', () => {
     expect(ptySource).toContain('scrollback: RingBuffer');
     expect(ptySource).toContain('terminalStateMirror: TerminalStateMirror');
     expect(ptySource).toContain('outputCursor: number');
-    expect(ptySource).toContain('session.outputCursor += chunk.length');
+    expect(ptySource).toContain('session.outputCursor += toCopy');
     expect(ptySource).toContain("sendToAttachedChannels(session, { type: 'Data', data: encoded })");
     expect(ptySource).toContain('export function getAgentTerminalRecovery');
     expect(ptySource).toContain('export async function getAgentTerminalStartupRecovery');
@@ -231,6 +231,29 @@ describe('terminal session architecture guardrails', () => {
       'ResolveClipboardPaste',
       'SaveClipboardImage',
       'navigator.clipboard',
+    ]);
+  });
+
+  it('keeps terminal recovery independent of control-plane replay-truncated signals', () => {
+    // Terminal recovery ('reconnect' reason) is driven by channel-level
+    // recovery and the restore lifecycle. The control-plane replay-truncated
+    // signal only gates the world resync in src/runtime/browser-session.ts;
+    // delta-resync may downgrade it without touching terminal recovery.
+    const scrollbackRestoreSource = readRepoFile('src/lib/scrollbackRestore.ts');
+    expectSourceNotToContain('terminal-recovery-runtime', terminalRecoveryRuntimeSource, [
+      'replay-truncated',
+      'replayTruncated',
+      'hasReplayTruncatedSinceDisconnect',
+    ]);
+    expectSourceNotToContain('scrollbackRestore', scrollbackRestoreSource, [
+      'replay-truncated',
+      'replayTruncated',
+      'hasReplayTruncatedSinceDisconnect',
+    ]);
+    expectSourceNotToContain('terminal-session', terminalSessionSource, [
+      'replay-truncated',
+      'replayTruncated',
+      'hasReplayTruncatedSinceDisconnect',
     ]);
   });
 

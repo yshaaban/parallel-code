@@ -12,7 +12,14 @@ export const WEAK_CONNECTIVITY_CLIENT_HEARTBEAT = {
   pongTimeoutMs: 12_000,
 } as const;
 
-export const WARM_RECONNECT_RESTORE_GRACE_MS = 30_000;
+// Wake-time zombie-socket detection: after a hidden gap (or an 'online'
+// event), an OPEN socket is probed with a short ping deadline instead of being
+// trusted, so silent input loss is bounded by the deadline rather than the
+// heartbeat cycle.
+export const WAKE_LIVENESS_PROBE = {
+  minHiddenGapMs: 5_000,
+  probeDeadlineMs: 2_000,
+} as const;
 
 function clampDelay(delayMs: number): number {
   return Math.max(0, Math.min(delayMs, MAX_RECONNECT_DELAY_MS));
@@ -61,8 +68,4 @@ export function getWeakConnectivityReconnectDelayMs(
   }
 
   return clampDelay(addJitter(Math.min(200 * Math.pow(2, attempt), MAX_RECONNECT_DELAY_MS)));
-}
-
-export function isWarmReconnectWindow(disconnectedDurationMs: number | null): boolean {
-  return isAgeWithinWindow(disconnectedDurationMs, WARM_RECONNECT_RESTORE_GRACE_MS);
 }

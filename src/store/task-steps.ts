@@ -25,6 +25,10 @@ import {
 
 const taskStepsSummaryVersionTracker = createServerStateVersionTracker();
 
+export function getTaskStepsHighestAppliedVersion(): number {
+  return taskStepsSummaryVersionTracker.highestVersion;
+}
+
 export function applyTaskStepsEvent(event: TaskStepsEvent): void {
   const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskStepsEvent(event)) {
@@ -100,6 +104,12 @@ export function createRemovedTaskStepsSummaryEvent(taskId: string): TaskStepsEve
   return createRemovedTaskStepsEvent(taskId);
 }
 
-export function resetTaskStepsProjectionStateForTests(): void {
+// Per-boot version tracking is reset when the server instance changes; see
+// resetServerStateVersionTrackingForInstanceChange.
+export function resetTaskStepsVersionTracking(): void {
   resetServerStateVersionTracker(taskStepsSummaryVersionTracker);
+}
+
+export function resetTaskStepsProjectionStateForTests(): void {
+  resetTaskStepsVersionTracking();
 }

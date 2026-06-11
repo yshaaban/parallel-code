@@ -43,7 +43,13 @@ import { nextCoordinatorActivityHintSeq, sendCoordinatorActivityHint } from '../
 import { getPanelResizeDragEpoch, isPanelResizeDragging } from '../app/panel-resize-drag';
 import { setTaskFocusedPanelState, store } from '../store/store';
 import { loadTaskCommandControllers } from '../store/task-command-controllers';
+import { getTaskTerminalPlaceholderTail } from '../store/task-terminal-slate';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
+import {
+  enqueuePendingSessionInput,
+  getPendingSessionInputCount,
+  takePendingSessionInput,
+} from './terminal-view/terminal-pending-session-input';
 import {
   clearTerminalStartupPaintCoordinationEntry,
   getGlobalTerminalStartupPaintCoordinationSnapshot,
@@ -53,6 +59,7 @@ import {
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { createTaskControlVisualState } from './task-control-visual-state';
+import { ensureAgentSessionForDeferredTerminal } from '../app/agent-session-ensure';
 import {
   notifyTerminalAttachPolicyChanged,
   registerTerminalAttachCandidate,
@@ -735,6 +742,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
+    // Warm the task-command lease at switch intent so the first keystroke
+    // after a task switch does not pay the lease-acquisition round trip.
+    session?.prefetchInputLease();
     const experimentConfig = getTerminalPerformanceExperimentConfig();
     const switchTargetWindowMs =
       getTerminalExperimentSwitchTargetWindowMs(getVisibleTerminalCount());
@@ -1332,9 +1342,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
   }
 
+  function isTerminalSessionExpected(): boolean {
+    return attachRegistration !== undefined || terminalAttachQueued || terminalAttachInProgress;
+  }
+
   function shouldBufferPendingTerminalInputEvent(): boolean {
+    // Keys typed before the session object exists are buffered too, as long
+    // as an attach is queued or in flight; they drain into the session in
+    // acceptStartedTerminalSession so nothing typed in the focus-to-ready
+    // window is lost.
     return (
-      session !== undefined &&
+      (session !== undefined || isTerminalSessionExpected()) &&
       (!canAcceptTerminalInput() ||
         pendingTerminalKeyCapture ||
         isTerminalInputCaptureGraceActive()) &&
@@ -1400,7 +1418,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     if (canAcceptTerminalInput()) {
       schedulePendingTerminalKeyCaptureRelease();
     }
-    session?.handleTerminalData(data);
+    if (session) {
+      session.handleTerminalData(data);
+      return;
+    }
+
+    enqueuePendingSessionInput(terminalStartupKey, data);
   }
 
   function handleTerminalKeyDownCapture(event: KeyboardEvent): void {
@@ -1676,6 +1699,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     terminalAttachInProgress = false;
     session = nextSession;
+    // Drain pre-session keystrokes into the session input pipeline before any
+    // other input so focus-to-ready typing keeps its order relative to keys
+    // typed after the session exists.
+    const pendingSessionInput = takePendingSessionInput(terminalStartupKey);
+    if (pendingSessionInput !== null && pendingSessionInput.length > 0) {
+      nextSession.handleTerminalData(pendingSessionInput);
+    }
     setSessionVersion((version) => version + 1);
     syncCurrentSessionRuntimeState();
   }
@@ -1823,6 +1853,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               updateTerminalAttachTrace(terminalStartupKey, (entry) => {
                 entry.attachBoundAtMs = getRoundedPerformanceNow();
               });
+            },
+            onAttachDispatched: () => {
+              // The scheduler slot only guards renderer CPU phases: release
+              // it as soon as the attach RPC is dispatched instead of when
+              // the backend resolves it.
               attachRegistration?.release();
             },
             onAttachMilestone: (milestone) => {
@@ -1911,21 +1946,30 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
-    if (props.isShell === true && !sessionStartedOnce && !shouldKeepTerminalSessionLive()) {
+    // Mirrors the attachPriority cold-hidden override: a terminal whose tier
+    // has not registered yet still counts as live when it is focused, the
+    // active command target, or already visible.
+    const hasLiveAttachIntent = props.isFocused === true || isActiveCommandTarget() || isVisible();
+    const shouldDeferColdHiddenSession =
+      props.isShell === true
+        ? !shouldKeepTerminalSessionLive()
+        : !shouldKeepTerminalSessionLive() && !hasLiveAttachIntent;
+    if (!sessionStartedOnce && shouldDeferColdHiddenSession) {
+      // Cold-hidden terminals defer their renderer attach until visibility or
+      // prewarm intent. Non-shell terminals keep their backend session (and
+      // supervision) live through the ensure path while deferred.
       clearSessionDormancyTimer();
       setSessionDormant(true);
       setSessionStatus('binding');
+      if (props.isShell !== true) {
+        ensureAgentSessionForDeferredTerminal(taskId, agentId);
+      }
       return;
     }
 
     if (!sessionStartedOnce) {
       clearSessionDormancyTimer();
-      if (shouldKeepTerminalSessionLive() || props.isShell !== true) {
-        ensureTerminalSessionRegistered();
-      } else {
-        setSessionDormant(true);
-        setSessionStatus('binding');
-      }
+      ensureTerminalSessionRegistered();
       return;
     }
 
@@ -2101,6 +2145,32 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const loadingPresentationMode = createMemo(() => getLoadingPresentationMode(presentationMode()));
   const loadingLabel = createMemo(() => {
     return loadingPresentationMode()?.label ?? null;
+  });
+  const queuedInputCount = createMemo(() => getPendingSessionInputCount(terminalStartupKey));
+  // The placeholder is a static capture of the last-known screen, taken once
+  // per loading-phase entry so live writes underneath never animate through
+  // the masked overlay. While the capture is still empty (cold start before
+  // the supervision preview hydrates), a late-arriving tail may fill it once;
+  // a non-empty capture stays frozen until the next loading entry.
+  const [loadingPlaceholderTail, setLoadingPlaceholderTail] = createSignal<string | null>(null);
+  let previousLoadingPresentation = false;
+  createEffect(() => {
+    const loading = presentationMode().kind === 'loading';
+    if (!loading) {
+      previousLoadingPresentation = false;
+      return;
+    }
+
+    if (!previousLoadingPresentation) {
+      previousLoadingPresentation = true;
+      setLoadingPlaceholderTail(untrack(() => getTaskTerminalPlaceholderTail(agentId)));
+    }
+    if (loadingPlaceholderTail() === null) {
+      const lateTail = getTaskTerminalPlaceholderTail(agentId);
+      if (lateTail !== null) {
+        setLoadingPlaceholderTail(lateTail);
+      }
+    }
   });
   const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
   const isLiveRenderReady = createMemo(() => {
@@ -2506,19 +2576,45 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               'pointer-events': 'auto',
             }}
           >
+            <Show when={!isLiveRenderReady() && loadingPlaceholderTail()}>
+              {(placeholderTail) => (
+                <pre
+                  data-terminal-placeholder-tail="true"
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    inset: '12px',
+                    margin: '0',
+                    overflow: 'hidden',
+                    'font-family': getTerminalFontFamily(store.terminalFont),
+                    'font-size': '12px',
+                    'line-height': '1.4',
+                    color: `color-mix(in srgb, ${theme.fgMuted} 55%, transparent)`,
+                    'white-space': 'pre-wrap',
+                    'word-break': 'break-word',
+                    'pointer-events': 'none',
+                    'user-select': 'none',
+                  }}
+                >
+                  {placeholderTail()}
+                </pre>
+              )}
+            </Show>
             <div
               data-terminal-loading-card="true"
               style={{
+                position: 'relative',
                 display: 'grid',
                 'grid-template-columns': '14px minmax(0, 1fr)',
                 'align-items': 'center',
-                gap: '10px',
-                padding: '10px 14px',
-                width: '32ch',
+                gap: '8px 10px',
+                padding: '8px 12px',
                 'max-width': '100%',
-                'min-height': '40px',
-                background: 'color-mix(in srgb, var(--island-bg) 82%, transparent)',
-                border: `1px solid ${theme.border}`,
+                background: 'color-mix(in srgb, var(--island-bg) 92%, transparent)',
+                border:
+                  queuedInputCount() > 0
+                    ? `1px solid color-mix(in srgb, ${theme.accent} 45%, ${theme.border})`
+                    : `1px solid ${theme.border}`,
                 'border-radius': '12px',
                 'box-shadow': '0 12px 30px rgba(0, 0, 0, 0.24)',
               }}
@@ -2538,6 +2634,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               >
                 {label()}
               </span>
+              <Show when={!isLiveRenderReady() && queuedInputCount() > 0}>
+                <span
+                  data-terminal-queued-input-count={String(queuedInputCount())}
+                  style={{
+                    'grid-column': '2',
+                    'font-family': getTerminalFontFamily(store.terminalFont),
+                    'font-size': '11px',
+                    color: theme.accent,
+                    'white-space': 'nowrap',
+                    overflow: 'hidden',
+                    'text-overflow': 'ellipsis',
+                  }}
+                >
+                  {`${queuedInputCount()} key${queuedInputCount() === 1 ? '' : 's'} queued — sent when ready`}
+                </span>
+              </Show>
             </div>
           </div>
         )}

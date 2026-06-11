@@ -27,12 +27,12 @@ import {
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
+import { createTaskOptimistically } from '../app/task-creation-optimism';
 import {
   createCurrentBranchTask,
   createExistingWorktreeTask,
   createTask,
 } from '../app/task-workflows';
-import { loadAgents } from '../app/agent-catalog';
 import {
   findBranchRefPrefixConflict,
   formatBranchRefPrefixConflict,
@@ -73,7 +73,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   );
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [error, setError] = createSignal('');
-  const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [ignoredDirsError, setIgnoredDirsError] = createSignal<string | null>(null);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
@@ -96,7 +95,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const coordinatorModeAvailable = !isElectronRuntime();
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
-  let dialogInitializationGeneration = 0;
 
   const focusableSelector =
     'textarea:not(:disabled), input:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -146,29 +144,16 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     focusables[nextIdx].focus();
   }
 
-  function nextDialogInitializationGeneration(): number {
-    dialogInitializationGeneration += 1;
-    return dialogInitializationGeneration;
-  }
-
-  function invalidateDialogInitialization(): void {
-    dialogInitializationGeneration += 1;
-  }
-
   // Initialize state each time the dialog opens
   createEffect(() => {
     if (!props.open) {
-      invalidateDialogInitialization();
       return;
     }
-
-    const initializationGeneration = nextDialogInitializationGeneration();
 
     // Reset signals for a fresh dialog
     setPrompt('');
     setName('');
     setError('');
-    setLoading(false);
     setCustomAgentMode(false);
     setCustomAgentCommand('');
     setIgnoredDirsError(null);
@@ -186,39 +171,40 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setSelectedBaseBranch(null);
     setAdvancedOpen(false);
 
-    void (async () => {
-      const availableAgents = await loadAgents();
-      if (initializationGeneration !== dialogInitializationGeneration) {
-        return;
+    // Dialog open never awaits an agent probe: the catalog is consumed
+    // synchronously from the store (probing agents stay launchable) and a
+    // throttled backend availability revalidation is fired in the background.
+    untrack(() => {
+      const launchableAgents = store.availableAgents.filter((agent) => agent.available !== false);
+      const lastAgent = store.lastAgentId
+        ? (launchableAgents.find((a) => a.id === store.lastAgentId) ?? null)
+        : null;
+      setSelectedAgent(lastAgent ?? launchableAgents[0] ?? null);
+
+      // Pre-fill from drop data if present
+      const dropUrl = store.newTaskDropUrl;
+      const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
+      const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
+
+      if (dropUrl) setPrompt(`review ${dropUrl}`);
+      if (defaults) setName(defaults.name);
+      setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
+
+      // Pre-fill from arena comparison prompt
+      const prefill = store.newTaskPrefillPrompt;
+      if (prefill) {
+        setPrompt(prefill.prompt);
+        setName('Compare arena results');
+        if (prefill.projectId) setSelectedProjectId(prefill.projectId);
       }
 
-      untrack(() => {
-        const launchableAgents = availableAgents.filter((agent) => agent.available !== false);
-        const lastAgent = store.lastAgentId
-          ? (launchableAgents.find((a) => a.id === store.lastAgentId) ?? null)
-          : null;
-        setSelectedAgent(lastAgent ?? launchableAgents[0] ?? null);
+      promptRef?.focus();
 
-        // Pre-fill from drop data if present
-        const dropUrl = store.newTaskDropUrl;
-        const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
-        const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
-
-        if (dropUrl) setPrompt(`review ${dropUrl}`);
-        if (defaults) setName(defaults.name);
-        setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
-
-        // Pre-fill from arena comparison prompt
-        const prefill = store.newTaskPrefillPrompt;
-        if (prefill) {
-          setPrompt(prefill.prompt);
-          setName('Compare arena results');
-          if (prefill.projectId) setSelectedProjectId(prefill.projectId);
-        }
-
-        promptRef?.focus();
-      });
-    })();
+      const hydraCommand = store.hydraCommand.trim();
+      void invoke(IPC.RefreshAgentAvailability, hydraCommand ? { hydraCommand } : undefined).catch(
+        () => {},
+      );
+    });
 
     // Capture-phase handler for Alt+Arrow to navigate form sections / within fields
     const handleAltArrow = (e: KeyboardEvent) => {
@@ -239,7 +225,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     window.addEventListener('keydown', handleAltArrow, true);
 
     onCleanup(() => {
-      invalidateDialogInitialization();
       window.removeEventListener('keydown', handleAltArrow, true);
     });
   });
@@ -625,8 +610,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       hasLaunchableAgent &&
       !!selectedProjectId() &&
       hasRequiredWorktreePath &&
-      canUseSelectedBranch &&
-      !loading()
+      canUseSelectedBranch
     );
   }
 
@@ -698,7 +682,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setSelectedDirs(next);
   }
 
-  async function handleSubmit(e: Event): Promise<void> {
+  function handleSubmit(e: Event): void {
     e.preventDefault();
     const n = effectiveName();
     if (!n) {
@@ -740,7 +724,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
 
-    setLoading(true);
     setError('');
 
     const p = prompt().trim() || undefined;
@@ -749,64 +732,77 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const promptGitHubUrl = p ? extractGitHubUrl(p) : undefined;
     const ghUrl = promptGitHubUrl ?? store.newTaskDropUrl ?? undefined;
     const shouldSkipPermissions = skipPermissionsActive();
-    try {
-      // Persist the branch prefix to the project for next time
-      if (projectMode === 'git') {
-        updateProject(projectId, { branchPrefix: prefix });
-      }
-
-      let taskId: string;
-      if (currentBranchMode()) {
-        taskId = await createCurrentBranchTask({
-          name: n,
-          agentDef: agent,
-          projectId,
-          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-          initialPrompt: isFromDrop ? undefined : p,
-          githubUrl: ghUrl,
-          stepsTracking: stepsTracking(),
-          coordinatorMode: coordinatorMode(),
-          skipPermissions: shouldSkipPermissions,
-        });
-      } else if (existingWorktreeMode()) {
-        taskId = await createExistingWorktreeTask({
-          name: n,
-          agentDef: agent,
-          projectId,
-          existingWorktreePath: existingWorktreePath().trim(),
-          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-          initialPrompt: isFromDrop ? undefined : p,
-          githubUrl: ghUrl,
-          stepsTracking: stepsTracking(),
-          coordinatorMode: coordinatorMode(),
-          skipPermissions: shouldSkipPermissions,
-        });
-      } else {
-        taskId = await createTask({
-          name: n,
-          agentDef: agent,
-          projectId,
-          projectMode,
-          symlinkDirs: [...selectedDirs()],
-          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-          initialPrompt: isFromDrop ? undefined : p,
-          branchPrefixOverride: prefix,
-          githubUrl: ghUrl,
-          stepsTracking: stepsTracking(),
-          coordinatorMode: coordinatorMode(),
-          skipPermissions: shouldSkipPermissions,
-        });
-      }
-      // Drop flow: prefill prompt without auto-sending
-      if (isFromDrop && p) {
-        setPrefillPrompt(taskId, p);
-      }
-      toggleNewTaskDialog(false);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
+    // Persist the branch prefix to the project for next time
+    if (projectMode === 'git') {
+      updateProject(projectId, { branchPrefix: prefix });
     }
+
+    const isCurrentBranchSubmit = currentBranchMode();
+    const isExistingWorktreeSubmit = existingWorktreeMode();
+    const submitExistingWorktreePath = existingWorktreePath().trim();
+    const submitSymlinkDirs = [...selectedDirs()];
+    const submitStepsTracking = stepsTracking();
+    const submitCoordinatorMode = coordinatorMode();
+    const createPendingTask = (): Promise<string> => {
+      if (isCurrentBranchSubmit) {
+        return createCurrentBranchTask({
+          name: n,
+          agentDef: agent,
+          projectId,
+          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
+          initialPrompt: isFromDrop ? undefined : p,
+          githubUrl: ghUrl,
+          stepsTracking: submitStepsTracking,
+          coordinatorMode: submitCoordinatorMode,
+          skipPermissions: shouldSkipPermissions,
+        });
+      }
+      if (isExistingWorktreeSubmit) {
+        return createExistingWorktreeTask({
+          name: n,
+          agentDef: agent,
+          projectId,
+          existingWorktreePath: submitExistingWorktreePath,
+          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
+          initialPrompt: isFromDrop ? undefined : p,
+          githubUrl: ghUrl,
+          stepsTracking: submitStepsTracking,
+          coordinatorMode: submitCoordinatorMode,
+          skipPermissions: shouldSkipPermissions,
+        });
+      }
+      return createTask({
+        name: n,
+        agentDef: agent,
+        projectId,
+        projectMode,
+        symlinkDirs: submitSymlinkDirs,
+        ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
+        initialPrompt: isFromDrop ? undefined : p,
+        branchPrefixOverride: prefix,
+        githubUrl: ghUrl,
+        stepsTracking: submitStepsTracking,
+        coordinatorMode: submitCoordinatorMode,
+        skipPermissions: shouldSkipPermissions,
+      });
+    };
+
+    // Optimistic creation: the dialog closes synchronously while the backend
+    // round trip runs behind a provisional task column; failures surface on
+    // that column with Retry instead of reopening the dialog.
+    createTaskOptimistically({
+      agentDefName: agent.name,
+      name: n,
+      onCreated: (taskId) => {
+        // Drop flow: prefill prompt without auto-sending
+        if (isFromDrop && p) {
+          setPrefillPrompt(taskId, p);
+        }
+      },
+      projectId,
+      run: createPendingTask,
+    });
+    toggleNewTaskDialog(false);
   }
 
   // Shared visual treatments keep callouts and inputs consistent so the form reads as one
@@ -1500,10 +1496,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               ...typography.uiStrong,
             }}
           >
-            <Show when={loading()}>
-              <span class="inline-spinner" aria-hidden="true" />
-            </Show>
-            {loading() ? 'Creating...' : 'Create Task'}
+            Create Task
           </button>
         </div>
       </form>

@@ -4,13 +4,20 @@ import type {
   ServerStateEventPayloadMap,
 } from '../domain/server-state-bootstrap';
 import {
+  filterDegradedServerStateBootstrapSnapshots,
   filterServerStateBootstrapSnapshots,
   isServerStateEventPayload,
   SERVER_STATE_BOOTSTRAP_CATEGORIES,
 } from '../domain/server-state-bootstrap';
+import {
+  clearDegradedBootstrapCategory,
+  recordDegradedBootstrapCategory,
+} from './runtime-diagnostics';
+import { sendBrowserControlMessage } from '../lib/ipc';
 import type { TaskPortsEvent } from '../domain/server-state';
 import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 import {
+  listenAgentAvailabilityChanged,
   listenAgentSupervisionChanged,
   listenCoordinatorChanged,
   listenGitStatusChanged,
@@ -28,6 +35,7 @@ import { isNonNegativeInteger, isRecord } from '../lib/type-guards';
 import {
   applyServerStateEvent,
   replaceServerStateSnapshot,
+  resetServerStateVersionTrackingForInstanceChange,
   type ServerStateBootstrapCategoryDescriptor,
   type ServerStateBootstrapCategoryDescriptors,
 } from './server-state-bootstrap';
@@ -153,6 +161,12 @@ function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPo
 }
 
 const SERVER_STATE_BOOTSTRAP_REGISTRY: ServerStateBootstrapRegistry = {
+  'agent-availability': {
+    createDescriptor: () => createServerStateCategoryDescriptor('agent-availability'),
+    getListenerScope: () => 'persistent',
+    listenEvent: (_runtime, handle) =>
+      listenValidatedServerStateEvent('agent-availability', listenAgentAvailabilityChanged, handle),
+  },
   'agent-supervision': {
     createDescriptor: () => createServerStateCategoryDescriptor('agent-supervision'),
     getListenerScope: () => 'persistent',
@@ -282,6 +296,58 @@ export function createServerStateBootstrapCategoryDescriptors(): ServerStateBoot
   ) as ServerStateBootstrapCategoryDescriptors;
 }
 
+const DEGRADED_BOOTSTRAP_CATEGORY_RETRY_DELAY_MS = 5_000;
+let degradedBootstrapRetryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+
+// One targeted retry per degraded burst: the server re-sends only the named
+// categories through a fresh state-bootstrap message, which flows back through
+// this same handler (clearing the markers on success).
+function scheduleDegradedBootstrapCategoryRetry(categories: ServerStateBootstrapCategory[]): void {
+  if (degradedBootstrapRetryTimer !== null) {
+    return;
+  }
+
+  degradedBootstrapRetryTimer = globalThis.setTimeout(() => {
+    degradedBootstrapRetryTimer = null;
+    void sendBrowserControlMessage({
+      type: 'request-state-bootstrap',
+      categories,
+    }).catch(() => {});
+  }, DEGRADED_BOOTSTRAP_CATEGORY_RETRY_DELAY_MS);
+}
+
+export function resetDegradedBootstrapCategoryRetryForTests(): void {
+  if (degradedBootstrapRetryTimer !== null) {
+    globalThis.clearTimeout(degradedBootstrapRetryTimer);
+    degradedBootstrapRetryTimer = null;
+  }
+}
+
+// Per-boot category versions are only comparable within one server instance.
+// Every state-bootstrap message carries the serverInstanceId; when it changes
+// (standalone-server restart under a surviving tab), the per-category version
+// trackers still hold the old instance's higher versions and would silently
+// reject the restarted server's full bootstrap, wedging those categories until
+// a page reload. Reset the trackers before hydrating so the new instance's
+// snapshots (and its subsequent live events) are accepted.
+let lastHydratedServerInstanceId: string | null = null;
+
+export function resetServerStateBootstrapInstanceTrackingForTests(): void {
+  lastHydratedServerInstanceId = null;
+}
+
+function noteServerStateBootstrapInstanceId(serverInstanceId: unknown): void {
+  if (typeof serverInstanceId !== 'string' || serverInstanceId.length === 0) {
+    return;
+  }
+
+  if (lastHydratedServerInstanceId !== null && lastHydratedServerInstanceId !== serverInstanceId) {
+    resetServerStateVersionTrackingForInstanceChange();
+  }
+
+  lastHydratedServerInstanceId = serverInstanceId;
+}
+
 function handleBrowserStateBootstrapMessage(
   startupGate: ServerStateBootstrapGate,
   message: unknown,
@@ -290,7 +356,18 @@ function handleBrowserStateBootstrapMessage(
     return;
   }
 
+  noteServerStateBootstrapInstanceId(message.serverInstanceId);
+
+  const degradedSnapshots = filterDegradedServerStateBootstrapSnapshots(message.snapshots);
+  if (degradedSnapshots.length > 0) {
+    for (const snapshot of degradedSnapshots) {
+      recordDegradedBootstrapCategory(snapshot.category);
+    }
+    scheduleDegradedBootstrapCategoryRetry(degradedSnapshots.map((snapshot) => snapshot.category));
+  }
+
   for (const snapshot of filterServerStateBootstrapSnapshots(message.snapshots)) {
+    clearDegradedBootstrapCategory(snapshot.category);
     startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
   }
 }

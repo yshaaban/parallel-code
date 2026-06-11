@@ -4,6 +4,7 @@ import { isAgentResumeStrategy } from '../lib/agent-resume';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
 import { setStore, store } from '../store/state';
+import { applyKnownAgentAvailability } from './agent-availability';
 
 const FALLBACK_AGENT_DEFS: AgentDef[] = [
   {
@@ -102,8 +103,12 @@ function cloneAgents(agents: AgentDef[]): AgentDef[] {
 function mergeAvailableAgents(defaults: AgentDef[]): AgentDef[] {
   const customAgents = store.customAgents;
   const customIds = new Set(customAgents.map((agent) => agent.id));
-  const merged = [...defaults.filter((agent) => !customIds.has(agent.id)), ...customAgents].map(
-    (agent) => applyHydraCommandOverride(agent, store.hydraCommand),
+  // The agent-availability category owns availability truth: re-merging the
+  // catalog must not clobber newer applied availability with a stale response.
+  const merged = applyKnownAgentAvailability(
+    [...defaults.filter((agent) => !customIds.has(agent.id)), ...customAgents].map((agent) =>
+      applyHydraCommandOverride(agent, store.hydraCommand),
+    ),
   );
   setStore('availableAgents', merged);
   return merged;

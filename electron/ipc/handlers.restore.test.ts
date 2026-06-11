@@ -40,6 +40,7 @@ vi.mock('./pty.js', async () => {
   };
 });
 
+import { releaseAllHeldTerminalRecoveryBatchPausesForTests } from './agent-handlers.js';
 import { createIpcHandlers, type HandlerContext } from './handlers.js';
 
 function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
@@ -418,6 +419,7 @@ describe('GetTerminalRecoveryBatch', () => {
   });
 
   afterEach(() => {
+    releaseAllHeldTerminalRecoveryBatchPausesForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -451,6 +453,7 @@ describe('GetTerminalRecoveryBatch', () => {
       ],
     })) as Array<{
       agentId: string;
+      batchPauseId?: string;
       cols: number;
       recovery: { kind: string; data?: string | null; overlapBytes?: number };
       requestId: string;
@@ -460,6 +463,7 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(result).toEqual([
       {
         agentId: 'agent-noop',
+        batchPauseId: expect.any(String),
         cols: 91,
         outputCursor: 14,
         recovery: {
@@ -470,6 +474,7 @@ describe('GetTerminalRecoveryBatch', () => {
       },
       {
         agentId: 'agent-delta',
+        batchPauseId: expect.any(String),
         cols: 92,
         outputCursor: 23,
         recovery: {
@@ -483,6 +488,7 @@ describe('GetTerminalRecoveryBatch', () => {
       },
       {
         agentId: 'agent-snapshot',
+        batchPauseId: expect.any(String),
         cols: 93,
         outputCursor: 37,
         recovery: {
@@ -494,7 +500,15 @@ describe('GetTerminalRecoveryBatch', () => {
       },
     ]);
     expect(pauseAgentMock).toHaveBeenCalledTimes(3);
+    // The batch pause is server-owned: it survives the response so live Data
+    // frames cannot race the client apply, and is released per entry.
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+    const handlersForRelease = handlers[IPC.ReleaseTerminalRecoveryPause];
+    for (const entry of result) {
+      await handlersForRelease?.({ batchPauseId: entry.batchPauseId ?? '' });
+    }
     expect(resumeAgentMock).toHaveBeenCalledTimes(3);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-noop', 'restore');
     expect(getBackendRuntimeDiagnosticsSnapshot().terminalRecovery).toEqual({
       cursorDeltaResponses: 1,
       deltaResponses: 1,
@@ -506,6 +520,7 @@ describe('GetTerminalRecoveryBatch', () => {
         Buffer.byteLength('delta-bytes', 'utf8') + Buffer.byteLength('snapshot-bytes', 'utf8'),
       snapshotResponses: 1,
       tailDeltaResponses: 0,
+      tailNeededResponses: 0,
       terminalStateFallbacks: 0,
       terminalStateResponses: 0,
     });
@@ -516,7 +531,10 @@ describe('GetTerminalRecoveryBatch', () => {
     });
   });
 
-  it('skips redundant backend pause and resume when recovery callers already hold the pause', async () => {
+  it('holds a request-scoped pause even when another recovery caller already holds one', async () => {
+    // Restore pause leases stack: if this request skipped its own pause, the
+    // other caller's release (or auto-resume timer) would expose this
+    // request's pre-apply window to live Data frames.
     getAgentPauseStateMock.mockReturnValue('restore');
     const handlers = createIpcHandlers(buildContext());
 
@@ -532,6 +550,7 @@ describe('GetTerminalRecoveryBatch', () => {
       ],
     })) as Array<{
       agentId: string;
+      batchPauseId?: string;
       cols: number;
       outputCursor: number;
       recovery: { kind: string; data?: string | null };
@@ -542,6 +561,7 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(result).toEqual([
       {
         agentId: 'agent-snapshot',
+        batchPauseId: expect.any(String),
         cols: 93,
         outputCursor: 37,
         recovery: {
@@ -552,9 +572,15 @@ describe('GetTerminalRecoveryBatch', () => {
         rows: 23,
       },
     ]);
-    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(pauseAgentMock).toHaveBeenCalledTimes(1);
+    expect(pauseAgentMock).toHaveBeenCalledWith('agent-snapshot', 'restore');
     expect(resumeAgentMock).not.toHaveBeenCalled();
     expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null, null);
+
+    const handlersForRelease = handlers[IPC.ReleaseTerminalRecoveryPause];
+    await handlersForRelease?.({ batchPauseId: result[0]?.batchPauseId ?? '' });
+    expect(resumeAgentMock).toHaveBeenCalledTimes(1);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-snapshot', 'restore');
   });
 
   it('passes snapshot byte limits through to terminal recovery requests', async () => {
@@ -601,6 +627,9 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(result.map((entry) => entry.requestId)).toEqual(['req-live', 'req-missing']);
     expect(pauseAgentMock).toHaveBeenCalledTimes(1);
     expect(pauseAgentMock).toHaveBeenCalledWith('agent-noop', 'restore');
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+    // A lost release falls back to the server auto-resume timer.
+    vi.advanceTimersByTime(5_000);
     expect(resumeAgentMock).toHaveBeenCalledTimes(1);
     expect(resumeAgentMock).toHaveBeenCalledWith('agent-noop', 'restore');
   });
@@ -680,6 +709,7 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(result).toEqual([
       {
         agentId: 'agent-selected',
+        batchPauseId: expect.any(String),
         cols: 120,
         outputCursor: 48,
         recovery: {
@@ -691,6 +721,7 @@ describe('GetTerminalRecoveryBatch', () => {
       },
       {
         agentId: 'agent-visible',
+        batchPauseId: expect.any(String),
         cols: 96,
         outputCursor: 25,
         recovery: {
@@ -757,7 +788,7 @@ describe('GetTerminalRecoveryBatch', () => {
     );
   });
 
-  it('releases each startup recovery pause before fetching the next agent group', async () => {
+  it('holds each startup recovery pause across the response under a batch pause id', async () => {
     const selectedRecovery = createDeferred<{
       cols: number;
       data: Buffer;
@@ -813,10 +844,9 @@ describe('GetTerminalRecoveryBatch', () => {
 
     expect(pauseAgentMock).toHaveBeenCalledTimes(2);
     expect(pauseAgentMock).toHaveBeenNthCalledWith(2, 'agent-visible', 'restore');
-    expect(resumeAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
-    expect(resumeAgentMock.mock.invocationCallOrder[0]).toBeLessThan(
-      pauseAgentMock.mock.invocationCallOrder[1] ?? Number.POSITIVE_INFINITY,
-    );
+    // The pause is no longer released between groups: the server keeps it
+    // alive past the response so live Data frames cannot race the apply.
+    expect(resumeAgentMock).not.toHaveBeenCalled();
 
     visibleRecovery.resolve({
       cols: 96,
@@ -826,10 +856,33 @@ describe('GetTerminalRecoveryBatch', () => {
       rows: 28,
     });
 
-    await expect(batchPromise).resolves.toEqual([
-      expect.objectContaining({ agentId: 'agent-selected', requestId: 'req-selected' }),
-      expect.objectContaining({ agentId: 'agent-visible', requestId: 'req-visible' }),
+    const entries = (await batchPromise) as Array<{
+      agentId: string;
+      batchPauseId?: string;
+      requestId: string;
+    }>;
+    expect(entries).toEqual([
+      expect.objectContaining({
+        agentId: 'agent-selected',
+        batchPauseId: expect.any(String),
+        requestId: 'req-selected',
+      }),
+      expect.objectContaining({
+        agentId: 'agent-visible',
+        batchPauseId: expect.any(String),
+        requestId: 'req-visible',
+      }),
     ]);
+
+    await handlers[IPC.ReleaseTerminalRecoveryPause]?.({
+      batchPauseId: entries[0]?.batchPauseId ?? '',
+    });
+    expect(resumeAgentMock).toHaveBeenCalledTimes(1);
+    expect(resumeAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
+
+    // The second entry's release is lost; the auto-resume timer covers it.
+    vi.advanceTimersByTime(5_000);
+    expect(resumeAgentMock).toHaveBeenCalledTimes(2);
     expect(resumeAgentMock).toHaveBeenCalledWith('agent-visible', 'restore');
   });
 
@@ -857,6 +910,8 @@ describe('GetTerminalRecoveryBatch', () => {
     expect(result.map((entry) => entry.requestId)).toEqual(['req-live', 'req-missing']);
     expect(pauseAgentMock).toHaveBeenCalledTimes(1);
     expect(pauseAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(5_000);
     expect(resumeAgentMock).toHaveBeenCalledTimes(1);
     expect(resumeAgentMock).toHaveBeenCalledWith('agent-selected', 'restore');
   });

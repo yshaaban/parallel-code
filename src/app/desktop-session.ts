@@ -11,6 +11,7 @@ import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
 import { createBrowserStateSync } from '../runtime/server-sync';
 import { createWindowSessionRuntime } from '../runtime/window-session';
 import { saveClientSessionState } from '../store/client-session';
+import { showNotification } from '../store/notification';
 import { saveBrowserWorkspaceStateOnPagehide, saveState } from '../store/persistence-save';
 import { store } from '../store/state';
 import { setNewTaskDropUrl } from '../store/tasks';
@@ -27,6 +28,7 @@ import {
   createElectronTaskNotificationSink,
   createWebTaskNotificationSink,
 } from './task-notification-sinks';
+import { createBackendFocusReporter } from './backend-focus-reporter';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
 import {
   createDesktopSessionResources,
@@ -98,6 +100,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
   let disposed = false;
   const bootstrapController = createSessionBootstrapController(options.electronRuntime);
+  const stopBackendFocusReporter = createBackendFocusReporter();
   const resources = createDesktopSessionResources();
   const [taskNotificationsArmed, setTaskNotificationsArmed] = createSignal(false);
   void initializeTaskNotificationCapabilityRuntime(options.electronRuntime);
@@ -213,6 +216,14 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
       console.error('Failed to start desktop session:', error);
       emitStartupBreadcrumb('desktop-session:startup-failed');
+      // Clearing startup status drops the skeleton, so the workspace would
+      // otherwise render as a false first-run empty state. Surface the failed
+      // action through the persistent error toast so the degradation is
+      // honest and dismissable.
+      showNotification(
+        `Workspace startup failed: ${error instanceof Error ? error.message : String(error)}`,
+        { kind: 'error' },
+      );
       clearAppStartupStatus();
       resetBrowserStartupState();
     });
@@ -224,6 +235,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     clearAppStartupStatus();
     resetBrowserStartupState();
     bootstrapController.dispose();
+    stopBackendFocusReporter();
     cleanupBrowserStateSyncTimer();
     clearPathInputNotifier();
     document.removeEventListener('paste', handlePaste);

@@ -1,22 +1,17 @@
 import { closeMarkdownViewer } from '../app/markdown-viewer';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
+import { jumpToTaskWithPrewarm, navigateTaskWithPrewarm } from '../app/task-navigation-intents';
 import { initShortcuts, registerShortcut } from '../lib/shortcuts';
 import {
   getTaskFocusedPanel,
   navigateColumn,
   navigateRow,
-  navigateTask,
   sendActivePrompt,
   setPendingAction,
   toggleHelpDialog,
   toggleSettingsDialog,
 } from '../store/focus';
-import {
-  jumpToTask,
-  moveActiveTask,
-  toggleAddProjectDialog,
-  toggleNewTaskDialog,
-} from '../store/navigation';
+import { moveActiveTask, toggleAddProjectDialog, toggleNewTaskDialog } from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
 import { showNotification } from '../store/notification';
@@ -26,7 +21,7 @@ import type { KeybindingActionId } from '../domain/keybindings';
 
 function handleShellShortcutFailure(action: string, error: unknown): void {
   console.warn(`Failed to ${action}:`, error);
-  showNotification(`Failed to ${action}`);
+  showNotification(`Failed to ${action}`, { kind: 'error' });
 }
 
 function getFocusedShellId(): { shellId: string; taskId: string } | null {
@@ -63,11 +58,11 @@ export function registerAppShortcuts(): () => void {
   });
   registerShortcut({
     actionId: 'navigation.task-left',
-    handler: () => navigateTask('left'),
+    handler: () => navigateTaskWithPrewarm('left'),
   });
   registerShortcut({
     actionId: 'navigation.task-right',
-    handler: () => navigateTask('right'),
+    handler: () => navigateTaskWithPrewarm('right'),
   });
 
   registerShortcut({
@@ -82,7 +77,7 @@ export function registerAppShortcuts(): () => void {
   for (let index = 0; index < 9; index += 1) {
     registerShortcut({
       actionId: `task.jump-${index + 1}` as KeybindingActionId,
-      handler: () => jumpToTask(index),
+      handler: () => jumpToTaskWithPrewarm(index),
     });
   }
 

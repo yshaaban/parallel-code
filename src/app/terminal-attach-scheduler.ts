@@ -85,27 +85,22 @@ function handleTerminalAttachError(candidate: TerminalAttachCandidate, error: un
   queueTerminalAttachDrain();
 }
 
+// Slots are released when the attach RPC is DISPATCHED (onAttachDispatched),
+// not when it resolves, so a slot only guards the renderer CPU phases of an
+// attach (xterm open/session start), never backend round trips. The drain
+// skips ineligible candidates instead of breaking so one pending foreground
+// candidate can never collapse background attach concurrency.
 function drainTerminalAttachQueue(): void {
-  const pendingCandidates = listPendingTerminalAttachCandidates();
-  const highestPendingCandidate = pendingCandidates[0];
-  const shouldSerializeForeground =
-    highestPendingCandidate !== undefined &&
-    isForegroundTerminalAttachPriority(highestPendingCandidate.getPriority());
-
-  for (const candidate of pendingCandidates) {
+  for (const candidate of listPendingTerminalAttachCandidates()) {
     if (!canAttachTerminalCandidate(candidate)) {
-      break;
+      continue;
     }
 
     if (
       isBrowserColdBootstrapPending() &&
       !isForegroundTerminalAttachPriority(candidate.getPriority())
     ) {
-      break;
-    }
-
-    if (shouldSerializeForeground && !isForegroundTerminalAttachPriority(candidate.getPriority())) {
-      break;
+      continue;
     }
 
     if (terminalAttachCandidates.get(candidate.key) !== candidate) {
@@ -119,10 +114,6 @@ function drainTerminalAttachQueue(): void {
       candidate.attach();
     } catch (error) {
       handleTerminalAttachError(candidate, error);
-    }
-
-    if (shouldSerializeForeground) {
-      break;
     }
   }
 }

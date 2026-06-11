@@ -2,7 +2,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 
-import { defineConfig } from 'vite';
+import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite';
 import solid from 'vite-plugin-solid';
 
 import packageMetadata from '../package.json';
@@ -57,6 +57,84 @@ function resolveBuildDirty(): boolean {
   return porcelain !== null && porcelain.length > 0;
 }
 
+// Inject modulepreload links for the lazily imported terminal-session chunk
+// and its static import closure (plus prefetch hints for its dynamically
+// imported xterm addon chunks), computed from the bundle graph instead of
+// hardcoded file names. This removes the discovered-waterfall cost of the
+// first terminal mount on cold browser loads.
+function createTerminalModulepreloadPlugin(): Plugin {
+  return {
+    apply: 'build',
+    enforce: 'post',
+    name: 'parallel-code-terminal-modulepreload',
+    transformIndexHtml: {
+      handler(_html, ctx): HtmlTagDescriptor[] {
+        const bundle = ctx.bundle;
+        if (!bundle) {
+          return [];
+        }
+
+        const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
+        const entryFileNames = new Set(
+          chunks.filter((chunk) => chunk.isEntry).map((chunk) => chunk.fileName),
+        );
+        const terminalSessionChunk = chunks.find((chunk) => chunk.name === 'terminal-session');
+        if (!terminalSessionChunk) {
+          return [];
+        }
+
+        const preloadFileNames = new Set<string>();
+        const queue = [terminalSessionChunk.fileName];
+        while (queue.length > 0) {
+          const fileName = queue.pop();
+          if (
+            fileName === undefined ||
+            preloadFileNames.has(fileName) ||
+            entryFileNames.has(fileName)
+          ) {
+            continue;
+          }
+
+          preloadFileNames.add(fileName);
+          const chunk = bundle[fileName];
+          if (chunk && chunk.type === 'chunk') {
+            queue.push(...chunk.imports);
+          }
+        }
+
+        const prefetchFileNames = [
+          ...new Set(
+            chunks
+              .flatMap((chunk) => chunk.dynamicImports)
+              .filter(
+                (fileName) =>
+                  path.basename(fileName).startsWith('addon-') && !preloadFileNames.has(fileName),
+              ),
+          ),
+        ];
+
+        return [
+          ...[...preloadFileNames].map(
+            (fileName): HtmlTagDescriptor => ({
+              attrs: { crossorigin: true, href: `./${fileName}`, rel: 'modulepreload' },
+              injectTo: 'head',
+              tag: 'link',
+            }),
+          ),
+          ...prefetchFileNames.map(
+            (fileName): HtmlTagDescriptor => ({
+              attrs: { as: 'script', crossorigin: true, href: `./${fileName}`, rel: 'prefetch' },
+              injectTo: 'head',
+              tag: 'link',
+            }),
+          ),
+        ];
+      },
+      order: 'post',
+    },
+  };
+}
+
 export default defineConfig({
   base: './',
   build: {
@@ -64,6 +142,7 @@ export default defineConfig({
   },
   plugins: [
     solid(),
+    createTerminalModulepreloadPlugin(),
     {
       name: 'parallel-code-build-metadata',
       configResolved(config) {

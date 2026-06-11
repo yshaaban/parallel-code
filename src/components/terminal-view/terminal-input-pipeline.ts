@@ -163,6 +163,7 @@ export interface TerminalInputPipeline {
   handleTerminalData(data: string): void;
   handleTerminalResize(cols: number, rows: number): void;
   isResizeTransactionPending(): boolean;
+  prefetchInputLease(): void;
   recordKeyboardTraceStart(event: KeyboardTraceEventLike): void;
   requestInputTakeover(): Promise<boolean>;
   setNextProgrammaticInputTrace(data: string): void;
@@ -1708,6 +1709,15 @@ export function createTerminalInputPipeline(
     },
     isResizeTransactionPending(): boolean {
       return resizeState.kind !== 'idle';
+    },
+    prefetchInputLease(): void {
+      // Best-effort lease warm on task-switch intent so the first keystroke
+      // does not pay the lease-acquisition round trip. Never sends input.
+      if (options.isDisposed() || options.isSpawnFailed()) {
+        return;
+      }
+
+      void ensureInputLease().catch(() => {});
     },
     recordKeyboardTraceStart(event: KeyboardTraceEventLike): void {
       pendingKeyboardTraceStarts.push({

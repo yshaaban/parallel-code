@@ -2,11 +2,14 @@ import { assertNever } from '../lib/assert-never';
 import { isHydraAgentDef } from '../lib/hydra';
 import { isTerminalFocusedInputPromptSuppressionActive } from './terminal-focused-input';
 import { getAgentPromptDispatchAt, PROMPT_DISPATCH_WINDOW_MS } from './task-prompt-dispatch';
+import { getCoordinatorTaskAttentionSummary } from './coordinator-ui-model';
 import { getAgentLastOutputAt } from '../store/agent-output-activity';
+import { getCoordinatorRunForTask } from '../store/coordinator';
 import { store } from '../store/state';
 import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import type { PanelId } from '../store/types';
+import { isFailedProcessExit } from '../domain/process-exit';
 import type {
   AgentSupervisionSnapshot,
   AgentSupervisionState,
@@ -35,6 +38,15 @@ export type TaskActivityStatus =
   | 'restoring'
   | 'failed';
 
+// Renderer-side attention reasons widen the backend supervision vocabulary
+// with coordinator-run projections. The domain wire type and its validator
+// stay untouched; these extra reasons never travel over the wire.
+export type TaskAttentionUiReason =
+  | TaskAttentionReason
+  | 'coordinator-approval'
+  | 'coordinator-budget'
+  | 'coordinator-stale';
+
 export interface TaskAttentionEntry {
   agentId: string;
   dotStatus: TaskDotStatus;
@@ -43,7 +55,7 @@ export interface TaskAttentionEntry {
   label: string;
   lastOutputAt: number | null;
   preview: string;
-  reason: TaskAttentionReason;
+  reason: TaskAttentionUiReason;
   state: AgentSupervisionState;
   taskId: string;
   updatedAt: number;
@@ -67,14 +79,14 @@ interface TaskActivityCandidate {
 
 interface LifecycleMetadata {
   dotStatus: TaskDotStatus;
-  reason: TaskAttentionReason | null;
+  reason: TaskAttentionUiReason | null;
   state: AgentSupervisionState;
 }
 
 export type TaskAttentionTone = 'accent' | 'error' | 'muted' | 'success' | 'warning';
 
 const TASK_ATTENTION_REASON_METADATA: Record<
-  TaskAttentionReason,
+  TaskAttentionUiReason,
   {
     group: TaskAttentionEntry['group'];
     label: string;
@@ -83,17 +95,25 @@ const TASK_ATTENTION_REASON_METADATA: Record<
   }
 > = {
   failed: { group: 'needs-action', label: 'Failed', priority: 0, tone: 'error' },
-  'waiting-input': { group: 'needs-action', label: 'Waiting', priority: 1, tone: 'warning' },
+  'coordinator-stale': { group: 'needs-action', label: 'Resume', priority: 1, tone: 'accent' },
+  'waiting-input': { group: 'needs-action', label: 'Waiting', priority: 2, tone: 'warning' },
+  'coordinator-approval': {
+    group: 'needs-action',
+    label: 'Approve',
+    priority: 3,
+    tone: 'warning',
+  },
+  'coordinator-budget': { group: 'needs-action', label: 'Budget', priority: 4, tone: 'warning' },
   'flow-controlled': {
     group: 'needs-action',
     label: 'Flow controlled',
-    priority: 2,
+    priority: 5,
     tone: 'accent',
   },
-  paused: { group: 'needs-action', label: 'Paused', priority: 3, tone: 'warning' },
-  restoring: { group: 'needs-action', label: 'Restoring', priority: 4, tone: 'accent' },
-  'ready-for-next-step': { group: 'ready', label: 'Ready', priority: 5, tone: 'success' },
-  'quiet-too-long': { group: 'quiet', label: 'Quiet', priority: 6, tone: 'muted' },
+  paused: { group: 'needs-action', label: 'Paused', priority: 6, tone: 'warning' },
+  restoring: { group: 'needs-action', label: 'Restoring', priority: 7, tone: 'accent' },
+  'ready-for-next-step': { group: 'ready', label: 'Ready', priority: 8, tone: 'success' },
+  'quiet-too-long': { group: 'quiet', label: 'Quiet', priority: 9, tone: 'muted' },
 };
 
 const TASK_ATTENTION_GROUP_TITLES: Record<TaskAttentionEntry['group'], string> = {
@@ -103,22 +123,22 @@ const TASK_ATTENTION_GROUP_TITLES: Record<TaskAttentionEntry['group'], string> =
 };
 
 const PRESENTATION_PRIORITY_BY_STATE: Record<AgentSupervisionState, number> = {
-  active: 7,
-  'awaiting-input': 1,
-  'exited-clean': 8,
+  active: 10,
+  'awaiting-input': 2,
+  'exited-clean': 11,
   'exited-error': 0,
-  'flow-controlled': 2,
-  'idle-at-prompt': 5,
-  paused: 3,
-  quiet: 6,
-  restoring: 4,
+  'flow-controlled': 5,
+  'idle-at-prompt': 8,
+  paused: 6,
+  quiet: 9,
+  restoring: 7,
 };
 
 const REMOTE_AGENT_STATUS_METADATA: Record<
   Exclude<RemoteAgentStatus, 'exited'>,
   {
     dotStatus: TaskDotStatus;
-    reason: TaskAttentionReason | null;
+    reason: TaskAttentionUiReason | null;
     state: AgentSupervisionState;
   }
 > = {
@@ -176,17 +196,7 @@ const EXITED_ERROR_LIFECYCLE_METADATA: LifecycleMetadata = {
   state: 'exited-error',
 };
 
-function isFailedExit(
-  exitCode: number | null | undefined,
-  signal: string | null | undefined,
-): boolean {
-  return (
-    (exitCode ?? 0) !== 0 ||
-    (signal !== null && signal !== undefined && signal !== 'server_unavailable')
-  );
-}
-
-function getAttentionMetadata(reason: TaskAttentionReason): {
+function getAttentionMetadata(reason: TaskAttentionUiReason): {
   group: TaskAttentionEntry['group'];
   label: string;
   priority: number;
@@ -195,7 +205,7 @@ function getAttentionMetadata(reason: TaskAttentionReason): {
   return TASK_ATTENTION_REASON_METADATA[reason];
 }
 
-export function getTaskAttentionPriority(reason: TaskAttentionReason): number {
+export function getTaskAttentionPriority(reason: TaskAttentionUiReason): number {
   return getAttentionMetadata(reason).priority;
 }
 
@@ -203,7 +213,7 @@ export function getTaskAttentionGroupTitle(group: TaskAttentionEntry['group']): 
   return TASK_ATTENTION_GROUP_TITLES[group];
 }
 
-export function getTaskAttentionTone(reason: TaskAttentionReason): TaskAttentionTone {
+export function getTaskAttentionTone(reason: TaskAttentionUiReason): TaskAttentionTone {
   return getAttentionMetadata(reason).tone;
 }
 
@@ -219,7 +229,7 @@ function isBetterCandidate(
 }
 
 function getPresentationPriority(
-  reason: TaskAttentionReason | null,
+  reason: TaskAttentionUiReason | null,
   state: AgentSupervisionState,
 ): number {
   if (reason) {
@@ -369,7 +379,19 @@ function getDotStatusFromSnapshot(
   return assertNever(snapshot.state, 'Unhandled agent supervision state');
 }
 
-function getFocusPanel(taskId: string, agentId: string, reason: TaskAttentionReason): PanelId {
+function isCoordinatorAttentionReason(reason: TaskAttentionUiReason): boolean {
+  return (
+    reason === 'coordinator-approval' ||
+    reason === 'coordinator-budget' ||
+    reason === 'coordinator-stale'
+  );
+}
+
+function getFocusPanel(taskId: string, agentId: string, reason: TaskAttentionUiReason): PanelId {
+  if (isCoordinatorAttentionReason(reason)) {
+    return 'coordinator';
+  }
+
   const task = store.tasks[taskId];
   const shellIndex = task?.shellAgentIds.indexOf(agentId) ?? -1;
   if (shellIndex >= 0) {
@@ -389,7 +411,7 @@ function getFocusPanel(taskId: string, agentId: string, reason: TaskAttentionRea
 function createAttentionEntry(
   taskId: string,
   agentId: string,
-  reason: TaskAttentionReason,
+  reason: TaskAttentionUiReason,
   state: AgentSupervisionState,
   dotStatus: TaskDotStatus,
   preview: string,
@@ -433,7 +455,7 @@ function createCandidateFromState(args: {
   agentId: string;
   dotStatus: TaskDotStatus;
   label?: string;
-  reason: TaskAttentionReason | null;
+  reason: TaskAttentionUiReason | null;
   state: AgentSupervisionState;
   preview: string;
   lastOutputAt: number | null;
@@ -493,7 +515,7 @@ function getLifecycleMetadata(agentId: string): LifecycleMetadata | null {
   }
 
   if (isExitedRemoteAgentStatus(agent.status)) {
-    if (isFailedExit(agent.exitCode, agent.signal)) {
+    if (isFailedProcessExit(agent.exitCode, agent.signal)) {
       return EXITED_ERROR_LIFECYCLE_METADATA;
     }
 
@@ -515,7 +537,7 @@ function getTaskActivityStatusFromAgentLifecycle(
   const lastLocalOutputAt = getAgentLastOutputAt(agentId);
 
   if (isExitedRemoteAgentStatus(agent.status)) {
-    if (isFailedExit(agent.exitCode, agent.signal)) {
+    if (isFailedProcessExit(agent.exitCode, agent.signal)) {
       return 'failed';
     }
 
@@ -577,9 +599,72 @@ function getGitCandidate(taskId: string): TaskPresentationCandidate {
   return createPresentationCandidate({
     attention: null,
     dotStatus: hasCleanChanges ? 'ready' : 'waiting',
-    priority: hasCleanChanges ? 8 : DEFAULT_TASK_PRESENTATION_CANDIDATE.priority,
+    priority: hasCleanChanges ? 11 : DEFAULT_TASK_PRESENTATION_CANDIDATE.priority,
     updatedAt: 0,
   });
+}
+
+// Coordinator-run operator states are renderer projections of backend run
+// snapshots: a stale-after-restore run, pending workflow approvals, and
+// budget-exhausted workflows all need the operator, so they surface through
+// the same attention pipeline as supervision reasons.
+export function getCoordinatorAttentionCandidate(taskId: string): TaskPresentationCandidate | null {
+  const task = store.tasks[taskId];
+  if (!task || task.coordinatorRole !== 'coordinator') {
+    return null;
+  }
+
+  const run = getCoordinatorRunForTask(taskId);
+  if (!run) {
+    return null;
+  }
+
+  const agentId = getSelectedTaskRuntimeAgentId(task) ?? task.agentIds[0] ?? '';
+  const summary = getCoordinatorTaskAttentionSummary(run);
+  if (summary.staleAfterRestore) {
+    return createCandidateFromState({
+      taskId,
+      agentId,
+      dotStatus: 'paused',
+      reason: 'coordinator-stale',
+      state: 'paused',
+      preview: 'Coordinator run is stale after a restart. Resume to respawn unfinished work.',
+      lastOutputAt: null,
+      updatedAt: run.updatedAt,
+    });
+  }
+
+  if (summary.pendingApprovalCount > 0) {
+    return createCandidateFromState({
+      taskId,
+      agentId,
+      dotStatus: 'waiting',
+      reason: 'coordinator-approval',
+      state: 'awaiting-input',
+      preview: `${summary.pendingApprovalCount} workflow action${
+        summary.pendingApprovalCount === 1 ? '' : 's'
+      } awaiting approval.`,
+      lastOutputAt: null,
+      updatedAt: run.updatedAt,
+    });
+  }
+
+  if (summary.budgetExhaustedWorkflowCount > 0) {
+    return createCandidateFromState({
+      taskId,
+      agentId,
+      dotStatus: 'waiting',
+      reason: 'coordinator-budget',
+      state: 'awaiting-input',
+      preview: `${summary.budgetExhaustedWorkflowCount} workflow${
+        summary.budgetExhaustedWorkflowCount === 1 ? '' : 's'
+      } exhausted a budget.`,
+      lastOutputAt: null,
+      updatedAt: run.updatedAt,
+    });
+  }
+
+  return null;
 }
 
 function getTaskStepsCandidate(taskId: string): TaskPresentationCandidate | null {
@@ -760,6 +845,7 @@ export function getTaskPresentationStatus(taskId: string): TaskPresentationStatu
   const bestCandidate = pickBestCandidate([
     getSnapshotCandidate(taskId),
     getLifecycleCandidate(taskId),
+    getCoordinatorAttentionCandidate(taskId),
     getTaskStepsCandidate(taskId),
     getGitCandidate(taskId),
   ]);

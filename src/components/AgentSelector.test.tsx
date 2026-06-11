@@ -44,6 +44,27 @@ describe('AgentSelector', () => {
     expect(onSelect).toHaveBeenCalledWith(agents[1]);
   });
 
+  it('renders a probing badge and keeps probing agents selectable', () => {
+    resetStoreForTest();
+    const onSelect = vi.fn();
+    const agents = [
+      createTestAgentDef({
+        availabilityStatus: 'probing',
+        id: 'agent-0',
+        name: 'Agent 0',
+      }),
+    ];
+
+    render(() => <AgentSelector agents={agents} selectedAgent={null} onSelect={onSelect} />);
+
+    const probingButton = screen.getByRole('button', { name: /Agent 0/i });
+    expect(probingButton.textContent).toContain('(checking)');
+    expect(probingButton.hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(probingButton);
+    expect(onSelect).toHaveBeenCalledWith(agents[0]);
+  });
+
   it('does not select unavailable agents', () => {
     resetStoreForTest();
     const onSelect = vi.fn();

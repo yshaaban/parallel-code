@@ -588,6 +588,42 @@ describe('server-sync reliability contracts', () => {
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('treats a payload-free reconnect snapshot with a matching revision as verified no-change with side effects intact', async () => {
+    getLoadedWorkspaceRevisionMock.mockReturnValue(5);
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 2 },
+      runningAgentIds: ['agent-1'],
+      workspaceRevision: 5,
+    });
+
+    expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+    // Review-rule-2 invariant: the no-change fast path keeps reconciliation
+    // side effects running.
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 2);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
+    expect(markAutosaveCleanMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to an explicit workspace load when the payload is absent but the revision differs', async () => {
+    getLoadedWorkspaceRevisionMock.mockReturnValue(5);
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: {},
+      runningAgentIds: [],
+      workspaceRevision: 9,
+    });
+
+    expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves reconnect generation and session reconciliation when autosave blocks workspace apply', async () => {
     hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(true);
     const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);

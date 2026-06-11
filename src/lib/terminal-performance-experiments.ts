@@ -343,7 +343,9 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   laneFrameBudgetOverrides: {},
   localInputFeedbackDurationMs: DEFAULT_LOCAL_INPUT_FEEDBACK_DURATION_MS,
   localInputFeedbackMode: 'off',
-  sidebarIntentPrewarmDelayMs: null,
+  // Shipped product default: hover/selection intent prewarms the target task's
+  // terminals after a short dwell instead of staying experiment-only.
+  sidebarIntentPrewarmDelayMs: 120,
   statusFlushDelayOverridesMs: {},
   startupAttachChunkByteOverrides: {},
   startupAttachSwitchWindowChunkByteOverrides: {},

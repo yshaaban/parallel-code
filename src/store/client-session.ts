@@ -222,6 +222,52 @@ function reconcileClientSessionSelection(): void {
   setStore('activeAgentId', getSelectionAgentId(fallbackActiveTaskId));
 }
 
+export interface ClientSessionSelectionPeek {
+  activeAgentId: string | null;
+  activeTaskId: string | null;
+  standaloneTerminalAgentId: string | null;
+}
+
+const EMPTY_CLIENT_SESSION_SELECTION_PEEK: ClientSessionSelectionPeek = {
+  activeAgentId: null,
+  activeTaskId: null,
+  standaloneTerminalAgentId: null,
+};
+
+// Pure read of the persisted client-session fragment through the same parsers
+// loadClientSessionState uses (one parser per persisted fragment); never writes
+// the store. Used to publish the speculative selected-terminal intent before
+// any network round trip resolves.
+export function peekClientSessionSelection(): ClientSessionSelectionPeek {
+  const storage = getSessionStorage();
+  if (!storage) {
+    return { ...EMPTY_CLIENT_SESSION_SELECTION_PEEK };
+  }
+
+  const saved = getSafeStorageItem(storage, CLIENT_SESSION_STORAGE_KEY);
+  if (!saved) {
+    return { ...EMPTY_CLIENT_SESSION_SELECTION_PEEK };
+  }
+
+  const raw = parseClientSessionState(saved);
+  if (!raw) {
+    return { ...EMPTY_CLIENT_SESSION_SELECTION_PEEK };
+  }
+
+  const activeTaskId = parseOptionalSessionId(raw.activeTaskId);
+  const terminalPanels = parsePersistedTerminalPanels(raw.terminalPanels);
+  const standaloneTerminalAgentId =
+    activeTaskId && terminalPanels
+      ? (terminalPanels.terminals[activeTaskId]?.agentId ?? null)
+      : null;
+
+  return {
+    activeAgentId: parseOptionalSessionId(raw.activeAgentId),
+    activeTaskId,
+    standaloneTerminalAgentId,
+  };
+}
+
 export function saveClientSessionState(): void {
   const storage = getSessionStorage();
   if (!storage) {

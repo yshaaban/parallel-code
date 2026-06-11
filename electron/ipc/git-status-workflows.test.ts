@@ -35,12 +35,14 @@ vi.mock('./git-watcher.js', () => ({
   stopGitWatcher: stopGitWatcherMock,
 }));
 
+import { resetBackendWorkQueueForTests } from './backend-work-queue.js';
 import {
   commitAllWorkflow,
   discardUncommittedWorkflow,
   loadGitStatusChangedPayload,
   rebaseTaskWorkflow,
   refreshGitStatusWorkflow,
+  resetGitStatusWorkflowRegistryForTests,
   restoreSavedTaskGitStatusMonitoring,
   startTaskGitStatusMonitoring,
   startTaskGitStatusWatcher,
@@ -70,6 +72,8 @@ describe('git status workflows', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
+    resetBackendWorkQueueForTests();
+    resetGitStatusWorkflowRegistryForTests();
     commitAllMock.mockReset();
     discardUncommittedMock.mockReset();
     getWorktreeStatusMock.mockReset();
@@ -190,7 +194,7 @@ describe('git status workflows', () => {
     });
   });
 
-  it('restores saved-task monitoring with an initial refresh and watcher setup', async () => {
+  it('restores saved-task watchers without scheduling an initial refresh', async () => {
     const emitGitStatusChanged = vi.fn();
 
     restoreSavedTaskGitStatusMonitoring(
@@ -209,16 +213,36 @@ describe('git status workflows', () => {
 
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-2', '/tmp/task-2', expect.any(Function));
+    expect(getWorktreeStatusMock).not.toHaveBeenCalled();
+    expect(emitGitStatusChanged).not.toHaveBeenCalled();
+  });
+
+  it('runs exactly one refresh chain per task after a watcher change fires', async () => {
+    const emitGitStatusChanged = vi.fn();
+    const context = { emitGitStatusChanged };
+
+    restoreSavedTaskGitStatusMonitoring(
+      context,
+      JSON.stringify({
+        tasks: {
+          one: { id: 'task-1', worktreePath: '/tmp/task-1' },
+        },
+      }),
+    );
+    await flushResolvedPromises();
+
+    const watcherCallback = startGitWatcherMock.mock.calls.find(
+      (call) => call[0] === 'task-1',
+    )?.[2] as (() => void) | undefined;
+    expect(watcherCallback).toBeDefined();
+    watcherCallback?.();
+    await flushResolvedPromises();
+
+    expect(getWorktreeStatusMock).toHaveBeenCalledTimes(1);
+    expect(emitGitStatusChanged).toHaveBeenCalledTimes(1);
     expect(emitGitStatusChanged).toHaveBeenCalledWith(
       expect.objectContaining({
         worktreePath: '/tmp/task-1',
-        status: dirtyWorktreeStatus,
-        stateVersion: expect.any(Number),
-      }),
-    );
-    expect(emitGitStatusChanged).toHaveBeenCalledWith(
-      expect.objectContaining({
-        worktreePath: '/tmp/task-2',
         status: dirtyWorktreeStatus,
         stateVersion: expect.any(Number),
       }),

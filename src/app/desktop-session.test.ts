@@ -2,13 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import type { DesktopSessionMainElement } from './desktop-session-types';
 import { getAppStartupSummary, resetAppStartupStatusForTests } from './app-startup-status';
-import { isBrowserColdBootstrapPending, resetBrowserStartupStateForTests } from './browser-startup';
+import {
+  getBrowserStartupState,
+  isBrowserColdBootstrapPending,
+  resetBrowserStartupStateForTests,
+} from './browser-startup';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from './runtime-diagnostics';
 import { isRecord } from '../lib/type-guards';
 import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
+import {
+  getSpeculativeSelectedTerminalIntent,
+  onSpeculativeSelectedTerminalResolved,
+  resetSpeculativeTerminalAttachForTests,
+} from './speculative-terminal-attach';
 import {
   resetTerminalStartupPaintCoordinationForTests,
   setTerminalStartupPaintCoordinationEntry,
@@ -65,6 +74,7 @@ function createMainElementStub(): DesktopSessionMainElement {
 
 const {
   adjustGlobalScaleMock,
+  applyProjectPathExistenceMock,
   applyTaskCommandControllerChangedMock,
   applyTaskConvergenceEventMock,
   applyTaskReviewEventMock,
@@ -91,6 +101,7 @@ const {
   loadStateMock,
   loadWorkspaceStateMock,
   markAutosaveCleanMock,
+  peekClientSessionSelectionMock,
   fetchTaskConvergenceMock,
   reconcileClientSessionStateMock,
   replaceTaskConvergenceSnapshotsMock,
@@ -127,6 +138,7 @@ const {
   windowListeners,
 } = vi.hoisted(() => ({
   adjustGlobalScaleMock: vi.fn(),
+  applyProjectPathExistenceMock: vi.fn(),
   applyTaskCommandControllerChangedMock: vi.fn(),
   applyTaskConvergenceEventMock: vi.fn(),
   applyTaskReviewEventMock: vi.fn(),
@@ -180,6 +192,17 @@ const {
   loadStateMock: vi.fn().mockResolvedValue(undefined),
   loadWorkspaceStateMock: vi.fn().mockResolvedValue(true),
   markAutosaveCleanMock: vi.fn(),
+  peekClientSessionSelectionMock: vi.fn(
+    (): {
+      activeAgentId: string | null;
+      activeTaskId: string | null;
+      standaloneTerminalAgentId: string | null;
+    } => ({
+      activeAgentId: null,
+      activeTaskId: null,
+      standaloneTerminalAgentId: null,
+    }),
+  ),
   fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
   reconcileClientSessionStateMock: vi.fn(),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
@@ -261,9 +284,13 @@ vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
   listen: listenMock,
   listenServerMessage: listenMock,
+  onBrowserAuthenticated: () => () => {},
+  setBrowserResyncStateProvider: () => {},
 }));
 
 vi.mock('../lib/ipc-events', () => ({
+  listenAgentAvailabilityChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.AgentAvailabilityChanged, listener),
   listenAgentSupervisionChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.AgentSupervisionChanged, listener),
   listenCoordinatorChanged: (listener: (payload: unknown) => void) =>
@@ -366,6 +393,7 @@ vi.mock('../app/agent-catalog', () => ({
 
 vi.mock('../store/client-session', () => ({
   loadClientSessionState: loadClientSessionStateMock,
+  peekClientSessionSelection: peekClientSessionSelectionMock,
   reconcileClientSessionState: reconcileClientSessionStateMock,
   saveClientSessionState: saveClientSessionStateMock,
 }));
@@ -399,6 +427,7 @@ vi.mock('../store/persistence-save', () => ({
 }));
 
 vi.mock('../store/projects', () => ({
+  applyProjectPathExistence: applyProjectPathExistenceMock,
   setDiscoveredProjects: vi.fn(),
   validateProjectPaths: validateProjectPathsMock,
 }));
@@ -561,6 +590,14 @@ describe('desktop session startup sequencing', () => {
       isMeaningfulColdBootstrapProjectionForTest,
     );
     loadClientSessionStateMock.mockReset();
+    peekClientSessionSelectionMock.mockReset();
+    peekClientSessionSelectionMock.mockReturnValue({
+      activeAgentId: null,
+      activeTaskId: null,
+      standaloneTerminalAgentId: null,
+    });
+    applyProjectPathExistenceMock.mockReset();
+    resetSpeculativeTerminalAttachForTests();
     loadStateMock.mockReset();
     loadStateMock.mockResolvedValue(undefined);
     loadWorkspaceStateMock.mockReset();
@@ -853,9 +890,11 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
+    // Browser startup enters the restoring phase before its first await
+    // because the cold-bootstrap fetch now starts ahead of window chrome.
     expect(getAppStartupSummary()).toEqual({
-      detail: 'Loading workspace and session state',
-      label: 'Still loading your workspace…',
+      detail: 'Loading backend browser bootstrap',
+      label: 'Restoring your workspace…',
     });
 
     await flushResolvedPromises();
@@ -1489,6 +1528,267 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
+  it('reaches the selected-task tier with the cold bootstrap as the only awaited network round trip', async () => {
+    const deferredColdBootstrap = createDeferred<unknown>();
+    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredColdBootstrap.promise);
+    storeState.tasks = {
+      'task-bootstrap': {
+        agentIds: ['agent-bootstrap'],
+        id: 'task-bootstrap',
+        projectId: 'project-bootstrap',
+        shellAgentIds: [],
+        worktreePath: '/tmp/bootstrap-project/task-bootstrap',
+      },
+    };
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+    // App shortcuts register before the cold-bootstrap fetch resolves.
+    expect(registerAppShortcutsMock).toHaveBeenCalledTimes(1);
+    expect(getBrowserStartupState().tier).toBe('shell');
+
+    deferredColdBootstrap.resolve({
+      planContents: [
+        {
+          content: '# Bootstrap plan',
+          fileName: 'plan.md',
+          relativePath: '.claude/plans/plan.md',
+          taskId: 'task-bootstrap',
+        },
+        {
+          content: '# Gone task plan',
+          fileName: 'gone.md',
+          relativePath: '.claude/plans/gone.md',
+          taskId: 'task-gone',
+        },
+      ],
+      projectPathsExist: { '/tmp/bootstrap-project': true },
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceProjection: createMeaningfulColdBootstrapProjection(),
+    });
+    await flushResolvedPromises();
+
+    expect(getBrowserStartupState().tier).toBe('selected-task');
+    // Exactly one awaited network round trip on the critical path: plan content
+    // and path validation ride the payload instead of their own invokes.
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+    const invokedChannels = invokeMock.mock.calls.map(([channel]) => channel);
+    expect(invokedChannels).not.toContain(IPC.ReadPlanContent);
+    expect(invokedChannels).not.toContain(IPC.CheckPathsExist);
+    expect(invokedChannels).not.toContain(IPC.ListAgents);
+    expect(loadAgentsMock).not.toHaveBeenCalled();
+    expect(setPlanContentMock).toHaveBeenCalledTimes(1);
+    expect(setPlanContentMock).toHaveBeenCalledWith(
+      'task-bootstrap',
+      '# Bootstrap plan',
+      'plan.md',
+      '.claude/plans/plan.md',
+    );
+    expect(applyProjectPathExistenceMock).toHaveBeenCalledWith({
+      '/tmp/bootstrap-project': true,
+    });
+
+    cleanup();
+  });
+
+  it('confirms the speculative selected-terminal intent when the restored selection matches', async () => {
+    peekClientSessionSelectionMock.mockReturnValue({
+      activeAgentId: 'agent-bootstrap',
+      activeTaskId: 'task-bootstrap',
+      standaloneTerminalAgentId: null,
+    });
+    loadClientSessionStateMock.mockImplementation(() => {
+      storeState.activeTaskId = 'task-bootstrap';
+      storeState.activeAgentId = 'agent-bootstrap';
+      return true;
+    });
+    const resolutions: Array<{ outcome: string; tierAtResolution: string }> = [];
+    const offResolved = onSpeculativeSelectedTerminalResolved((outcome) => {
+      resolutions.push({ outcome, tierAtResolution: getBrowserStartupState().tier });
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+
+    // Resolution is mandatory before the selected-task tier is announced.
+    expect(resolutions).toEqual([{ outcome: 'confirmed', tierAtResolution: 'summary' }]);
+    expect(getSpeculativeSelectedTerminalIntent()).toBeNull();
+
+    offResolved();
+    cleanup();
+  });
+
+  it('discards the speculative selected-terminal intent before the selected-task tier when the selection is gone', async () => {
+    peekClientSessionSelectionMock.mockReturnValue({
+      activeAgentId: 'agent-removed',
+      activeTaskId: 'task-removed',
+      standaloneTerminalAgentId: null,
+    });
+    loadClientSessionStateMock.mockImplementation(() => {
+      storeState.activeTaskId = 'task-bootstrap';
+      storeState.activeAgentId = 'agent-bootstrap';
+      return true;
+    });
+    const resolutions: Array<{ outcome: string; tierAtResolution: string }> = [];
+    const offResolved = onSpeculativeSelectedTerminalResolved((outcome) => {
+      resolutions.push({ outcome, tierAtResolution: getBrowserStartupState().tier });
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+
+    expect(resolutions).toEqual([{ outcome: 'discarded', tierAtResolution: 'summary' }]);
+
+    offResolved();
+    cleanup();
+  });
+
+  it('discards an unresolved speculative intent when browser startup is disposed mid-flight', async () => {
+    peekClientSessionSelectionMock.mockReturnValue({
+      activeAgentId: 'agent-bootstrap',
+      activeTaskId: 'task-bootstrap',
+      standaloneTerminalAgentId: null,
+    });
+    const deferredBootstrap = createDeferred<{
+      serverStateBootstrap: [];
+      workspaceRevision: number;
+      workspaceProjection: ReturnType<typeof createEmptyColdBootstrapProjection>;
+    }>();
+    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
+    const resolutions: string[] = [];
+    const offResolved = onSpeculativeSelectedTerminalResolved((outcome) => {
+      resolutions.push(outcome);
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+    expect(resolutions).toEqual([]);
+
+    // Dispose while the cold-bootstrap fetch is still in flight: the
+    // startup-scoped cleanup must resolve the published intent as discarded so
+    // a registered prewarm consumer never leaks an unresolved prewarm.
+    cleanup();
+
+    expect(resolutions).toEqual(['discarded']);
+    expect(getSpeculativeSelectedTerminalIntent()).toBeNull();
+
+    deferredBootstrap.resolve({
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceProjection: createEmptyColdBootstrapProjection(),
+    });
+    await deferredBootstrap.promise;
+    await flushResolvedPromises();
+
+    expect(resolutions).toEqual(['discarded']);
+
+    offResolved();
+  });
+
+  it('runs Electron plan restore and snapshot hydration concurrently with completion strictly after both', async () => {
+    const deferredPlanContent = createDeferred<unknown>();
+    loadStateMock.mockImplementation(async () => {
+      storeState.taskOrder = ['task-1'];
+      storeState.tasks = {
+        'task-1': {
+          agentIds: [],
+          id: 'task-1',
+          planFileName: 'current-plan.md',
+          planRelativePath: 'docs/plans/current-plan.md',
+          shellAgentIds: [],
+          worktreePath: '/tmp/task-1',
+        },
+      };
+    });
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.ReadPlanContent) {
+        return deferredPlanContent.promise;
+      }
+
+      return Promise.resolve([]);
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await flushResolvedPromises();
+    const invokedChannels = invokeMock.mock.calls.map(([channel]) => channel);
+    // Snapshot hydration does not wait for the deferred plan restore.
+    expect(invokedChannels).toContain(IPC.ReadPlanContent);
+    expect(invokedChannels).toContain(IPC.GetServerStateBootstrap);
+
+    // The bootstrap gate is still booting while plan restore is pending, so
+    // live events buffer instead of applying: complete() runs after both.
+    windowListeners.get(IPC.AgentSupervisionChanged)?.({
+      agentId: 'agent-1',
+      attentionReason: 'waiting-input',
+      isShell: false,
+      kind: 'snapshot',
+      lastOutputAt: 1_000,
+      preview: 'Proceed? [Y/n]',
+      state: 'awaiting-input',
+      taskId: 'task-1',
+      updatedAt: 1_000,
+    });
+    expect(applyAgentSupervisionEventMock).not.toHaveBeenCalled();
+
+    deferredPlanContent.resolve({
+      content: '# Restored plan',
+      fileName: 'current-plan.md',
+      relativePath: 'docs/plans/current-plan.md',
+    });
+    await flushResolvedPromises();
+
+    expect(setPlanContentMock).toHaveBeenCalledWith(
+      'task-1',
+      '# Restored plan',
+      'current-plan.md',
+      'docs/plans/current-plan.md',
+    );
+    expect(applyAgentSupervisionEventMock).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
   it('treats an empty backend browser cold bootstrap snapshot as valid state', async () => {
     fetchBrowserColdBootstrapMock.mockResolvedValueOnce({
       serverStateBootstrap: [],
@@ -1673,6 +1973,16 @@ describe('desktop session startup sequencing', () => {
     expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(getAppStartupSummary()).toBeNull();
+
+    // The degradation must be honest: once the skeleton clears the workspace
+    // would otherwise render a false first-run empty state with no
+    // user-visible explanation, so the failure routes through the persistent
+    // error toast.
+    const { showNotification } = await import('../store/notification');
+    expect(showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to restore browser workspace during cold bootstrap'),
+      { kind: 'error' },
+    );
 
     const latestBrowserStateSyncResult =
       createBrowserStateSyncMock.mock.results[createBrowserStateSyncMock.mock.results.length - 1];

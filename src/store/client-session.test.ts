@@ -3,6 +3,7 @@ import { isTerminalHighLoadModeEnabled } from '../app/terminal-high-load-mode';
 import { setStore, store } from './core';
 import {
   loadClientSessionState,
+  peekClientSessionSelection,
   reconcileClientSessionState,
   saveClientSessionState,
 } from './client-session';
@@ -588,6 +589,92 @@ describe('client session state', () => {
     expect(loadClientSessionState()).toBe(true);
     expect(store.terminalHighLoadMode).toBe(true);
     expect(isTerminalHighLoadModeEnabled()).toBe(true);
+  });
+
+  it('peeks the persisted selection through the same parsers without store writes', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'agent-2',
+        activeTaskId: 'task-1',
+        terminalPanels: {
+          collapsedTaskOrder: [],
+          taskOrder: ['task-1'],
+          terminals: {},
+        },
+      }),
+    );
+    setStore('activeTaskId', 'task-untouched');
+    setStore('activeAgentId', 'agent-untouched');
+
+    const peeked = peekClientSessionSelection();
+
+    expect(peeked).toEqual({
+      activeAgentId: 'agent-2',
+      activeTaskId: 'task-1',
+      standaloneTerminalAgentId: null,
+    });
+    // Pure read: the store selection is untouched.
+    expect(store.activeTaskId).toBe('task-untouched');
+    expect(store.activeAgentId).toBe('agent-untouched');
+
+    // Parser parity: loadClientSessionState restores the same identity the peek
+    // reported once the workspace state exists.
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1', 'agent-2'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.activeTaskId).toBe(peeked.activeTaskId);
+    expect(store.activeAgentId).toBe(peeked.activeAgentId);
+  });
+
+  it('peeks the standalone terminal agent when the saved selection is a terminal panel', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeTaskId: 'terminal-1',
+        terminalPanels: {
+          collapsedTaskOrder: [],
+          taskOrder: ['terminal-1'],
+          terminals: {
+            'terminal-1': {
+              agentId: 'shell-agent-1',
+              id: 'terminal-1',
+              name: 'Shell',
+            },
+          },
+        },
+      }),
+    );
+
+    expect(peekClientSessionSelection()).toEqual({
+      activeAgentId: null,
+      activeTaskId: 'terminal-1',
+      standaloneTerminalAgentId: 'shell-agent-1',
+    });
+  });
+
+  it('returns null selections when the persisted session fragment is malformed', () => {
+    sessionStorage.setItem('parallel-code-client-session', '{not json');
+
+    expect(peekClientSessionSelection()).toEqual({
+      activeAgentId: null,
+      activeTaskId: null,
+      standaloneTerminalAgentId: null,
+    });
+    // Peek never deletes the fragment; only loadClientSessionState owns repair.
+    expect(sessionStorage.getItem('parallel-code-client-session')).toBe('{not json');
   });
 
   it('skips browser-local persistence in electron runtime', () => {

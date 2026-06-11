@@ -1,17 +1,14 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
 import { normalizeBaseBranch } from '../../src/lib/base-branch.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 import {
   cacheKey,
   clearCachedMainBranches,
   getCachedMainBranch,
   setCachedMainBranch,
 } from './git-cache.js';
+import { execGit } from './git-exec.js';
 import type { GitBranchInfo, GitBranchListResult } from '../../src/ipc/types.js';
 
-const exec = promisify(execFile);
 const configuredBaseBranchByProjectPath = new Map<string, string>();
 
 function getConfiguredBaseBranch(repoRoot: string): string | undefined {
@@ -30,8 +27,10 @@ function getConfiguredBaseBranch(repoRoot: string): string | undefined {
   return undefined;
 }
 
-export function syncConfiguredBaseBranchesFromSavedState(savedJson: string): void {
-  const parsed = parsePersistedTaskLookupState(savedJson);
+export function syncConfiguredBaseBranchesFromSavedState(
+  savedState: string | SavedStateDocument,
+): void {
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   configuredBaseBranchByProjectPath.clear();
   for (const project of parsed.projects) {
     if (project.projectMode === 'non-git' || !project.path || !project.baseBranch) {
@@ -68,7 +67,7 @@ async function resolveOriginHead(repoRoot: string): Promise<string | null> {
   const prefix = 'refs/remotes/origin/';
 
   try {
-    const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
+    const { stdout } = await execGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], {
       cwd: repoRoot,
     });
     const refname = stdout.trim();
@@ -80,7 +79,7 @@ async function resolveOriginHead(repoRoot: string): Promise<string | null> {
 
 async function remoteTrackingRefExists(repoRoot: string, branch: string): Promise<boolean> {
   try {
-    await exec('git', ['rev-parse', '--verify', `refs/remotes/origin/${branch}`], {
+    await execGit(['rev-parse', '--verify', `refs/remotes/origin/${branch}`], {
       cwd: repoRoot,
     });
     return true;
@@ -91,7 +90,7 @@ async function remoteTrackingRefExists(repoRoot: string, branch: string): Promis
 
 async function localBranchExists(repoRoot: string, branch: string): Promise<boolean> {
   try {
-    await exec('git', ['rev-parse', '--verify', `refs/heads/${branch}`], {
+    await execGit(['rev-parse', '--verify', `refs/heads/${branch}`], {
       cwd: repoRoot,
     });
     return true;
@@ -108,7 +107,7 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
     }
 
     try {
-      await exec('git', ['remote', 'set-head', 'origin', '--auto'], {
+      await execGit(['remote', 'set-head', 'origin', '--auto'], {
         cwd: repoRoot,
         timeout: 5_000,
       });
@@ -136,7 +135,7 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
 
   // Empty repo (no commits yet) — use configured default branch or fall back to "main"
   try {
-    const { stdout } = await exec('git', ['config', '--get', 'init.defaultBranch'], {
+    const { stdout } = await execGit(['config', '--get', 'init.defaultBranch'], {
       cwd: repoRoot,
     });
     const configured = stdout.trim();
@@ -149,7 +148,7 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
 }
 
 export async function getCurrentBranchName(repoRoot: string): Promise<string> {
-  const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: repoRoot });
+  const { stdout } = await execGit(['symbolic-ref', '--short', 'HEAD'], { cwd: repoRoot });
   return stdout.trim();
 }
 
@@ -231,8 +230,7 @@ export async function listBranches(repoRoot: string): Promise<GitBranchListResul
     detectMainBranch(repoRoot),
     getCurrentBranchName(repoRoot).catch(() => null),
   ]);
-  const { stdout } = await exec(
-    'git',
+  const { stdout } = await execGit(
     ['for-each-ref', '--format=%(refname)%09%(upstream:short)', 'refs/heads', 'refs/remotes'],
     { cwd: repoRoot },
   );

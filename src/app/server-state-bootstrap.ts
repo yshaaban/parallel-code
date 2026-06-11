@@ -2,6 +2,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
 import type {
   AnyServerStateBootstrapSnapshot,
+  ServerStateBootstrapResultSnapshot,
   ServerStateBootstrapSnapshot,
   ServerStateBootstrapPayloadMap,
   ServerStateBootstrapCategory,
@@ -15,26 +16,121 @@ import {
   recordBufferedBootstrapSnapshot,
 } from './runtime-diagnostics';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
+import {
+  applyAgentAvailabilityEvent,
+  applyAgentAvailabilitySnapshots,
+  getAgentAvailabilityHighestAppliedVersion,
+  resetAgentAvailabilityVersionTracking,
+} from './agent-availability';
 import { applyRemoteStatus, updateRemotePeerStatus } from './remote-access';
 import { replacePeerSessions } from '../store/peer-presence';
-import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
-import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
+import {
+  applyTaskConvergenceEvent,
+  getTaskConvergenceHighestAppliedVersion,
+  replaceTaskConvergenceSnapshots,
+  resetTaskConvergenceVersionTracking,
+} from './task-convergence';
+import {
+  applyTaskReviewEvent,
+  getTaskReviewHighestAppliedVersion,
+  replaceTaskReviewSnapshots,
+  resetTaskReviewVersionTracking,
+} from './task-review-state';
 import {
   applyTaskReviewSignalsEvent,
+  getTaskReviewSignalsHighestAppliedVersion,
   replaceTaskReviewSignalsSnapshots,
+  resetTaskReviewSignalsVersionTracking,
 } from './task-review-signals';
-import { applyTaskPortsEvent, replaceTaskPortSnapshots } from './task-ports';
-import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
-import { applyTaskStepsEvent, replaceTaskStepsSummarySnapshots } from '../store/task-steps';
-import { handleGitStatusSyncEvent, replaceGitStatusSnapshots } from '../store/task-git-status';
+import {
+  applyTaskPortsEvent,
+  getTaskPortsHighestAppliedVersion,
+  replaceTaskPortSnapshots,
+  resetTaskPortsVersionTracking,
+} from './task-ports';
+import {
+  applyAgentSupervisionEvent,
+  getAgentSupervisionHighestAppliedVersion,
+  replaceAgentSupervisionSnapshots,
+  resetAgentSupervisionVersionTracking,
+} from './task-attention';
+import {
+  applyTaskStepsEvent,
+  getTaskStepsHighestAppliedVersion,
+  replaceTaskStepsSummarySnapshots,
+  resetTaskStepsVersionTracking,
+} from '../store/task-steps';
+import {
+  getGitStatusHighestAppliedVersion,
+  handleGitStatusSyncEvent,
+  replaceGitStatusSnapshots,
+  resetGitStatusVersionTracking,
+} from '../store/task-git-status';
 import {
   applyTaskCommandControllerChanged,
+  getTaskCommandControllerVersion,
   replaceTaskCommandControllers,
+  resetTaskCommandControllerVersionTracking,
 } from '../store/task-command-controllers';
-import { applyCoordinatorEvent, replaceCoordinatorSnapshot } from '../store/coordinator';
+import {
+  applyCoordinatorEvent,
+  replaceCoordinatorSnapshot,
+  resetCoordinatorVersionTracking,
+} from '../store/coordinator';
+import { store } from '../store/state';
 
-export async function fetchServerStateBootstrap(): Promise<AnyServerStateBootstrapSnapshot[]> {
+export async function fetchServerStateBootstrap(): Promise<ServerStateBootstrapResultSnapshot[]> {
   return invoke(IPC.GetServerStateBootstrap);
+}
+
+// Per-category applied versions for the reconnect resync handshake. Categories
+// the renderer has never applied are omitted (the server resends them), and
+// peer-presence/remote-status are connection-scoped and always resent.
+export function collectServerStateCategoryVersions(): Partial<
+  Record<ServerStateBootstrapCategory, number>
+> {
+  const versionGetters: Partial<Record<ServerStateBootstrapCategory, () => number>> = {
+    'agent-availability': getAgentAvailabilityHighestAppliedVersion,
+    'agent-supervision': getAgentSupervisionHighestAppliedVersion,
+    coordinator: () => store.coordinator.stateVersion,
+    'git-status': getGitStatusHighestAppliedVersion,
+    'task-command-controller': getTaskCommandControllerVersion,
+    'task-convergence': getTaskConvergenceHighestAppliedVersion,
+    'task-ports': getTaskPortsHighestAppliedVersion,
+    'task-review': getTaskReviewHighestAppliedVersion,
+    'task-review-signals': getTaskReviewSignalsHighestAppliedVersion,
+    'task-steps': getTaskStepsHighestAppliedVersion,
+  };
+
+  const versions: Partial<Record<ServerStateBootstrapCategory, number>> = {};
+  for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+    const version = versionGetters[category]?.();
+    if (version !== undefined && version >= 0) {
+      versions[category] = version;
+    }
+  }
+
+  return versions;
+}
+
+// All server-state category versions are per-boot counters, so a client that
+// survives a server restart still holds the OLD instance's (typically higher)
+// versions. Without this reset every versioned replacement applier would drop
+// the new instance's full bootstrap (version < tracked highestVersion) and the
+// categories would wedge on old-instance truth until a page reload. Called by
+// the browser state-bootstrap applier when the message's serverInstanceId
+// differs from the last hydrated one.
+export function resetServerStateVersionTrackingForInstanceChange(): void {
+  resetAgentAvailabilityVersionTracking();
+  resetAgentSupervisionVersionTracking();
+  resetCoordinatorVersionTracking();
+  resetGitStatusVersionTracking();
+  resetTaskCommandControllerVersionTracking();
+  resetTaskConvergenceVersionTracking();
+  resetTaskPortsVersionTracking();
+  resetTaskReviewVersionTracking();
+  resetTaskReviewSignalsVersionTracking();
+  resetTaskStepsVersionTracking();
 }
 
 type ServerStateBootstrapPayload<TCategory extends ServerStateBootstrapCategory> =
@@ -61,6 +157,7 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'peer-presence': replacePeerSessions,
   'task-command-controller': applyTaskCommandControllerChanged,
   coordinator: applyCoordinatorEvent,
+  'agent-availability': applyAgentAvailabilityEvent,
   'agent-supervision': applyAgentSupervisionEvent,
   'task-convergence': applyTaskConvergenceEvent,
   'task-review': applyTaskReviewEvent,
@@ -100,6 +197,7 @@ const SERVER_STATE_SNAPSHOT_APPLIERS: {
     replaceTaskCommandControllers(payload, createReplaceVersionOptions(version)),
   coordinator: (payload, version) =>
     replaceCoordinatorSnapshot(payload, createReplaceVersionOptions(version)),
+  'agent-availability': (payload, version) => applyAgentAvailabilitySnapshots(payload, version),
   'agent-supervision': (payload, version) =>
     replaceAgentSupervisionSnapshots(payload, createReplaceVersionOptions(version)),
   'task-convergence': (payload, version) =>
@@ -177,6 +275,7 @@ function createPendingEventQueue(): PendingEventQueue {
     'peer-presence': [],
     'task-command-controller': [],
     coordinator: [],
+    'agent-availability': [],
     'agent-supervision': [],
     'task-convergence': [],
     'task-review': [],

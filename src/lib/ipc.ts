@@ -244,6 +244,17 @@ browserControlClient.setChannelHandlers({
   },
 });
 
+// Resolves a channel's ready promise when the AttachTerminalSession RPC
+// confirms the server bound the channel for this client, so attach does not
+// wait for the separate websocket channel-bound ack.
+export function markBrowserChannelBound(channelId: string): void {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  browserChannelClient.handleChannelBound(channelId);
+}
+
 bindTerminalTraceClockSyncLifecycle();
 bindBrowserTransportTestHook();
 
@@ -749,6 +760,7 @@ type BrowserPauseResumeRequest =
 
 type BrowserControlChannel =
   | BrowserTaskCommandLeaseChannel
+  | IPC.AttachTerminalSession
   | IPC.EnsureAgentSessionsBatch
   | IPC.KillAgent
   | IPC.PauseAgent
@@ -779,6 +791,7 @@ type FireAndForgetChannel = {
 
 const BROWSER_CONTROL_CHANNELS = {
   [IPC.AcquireTaskCommandLease]: true,
+  [IPC.AttachTerminalSession]: true,
   [IPC.EnsureAgentSessionsBatch]: true,
   [IPC.KillAgent]: true,
   [IPC.PauseAgent]: true,
@@ -797,6 +810,15 @@ function isBrowserControlChannel(channel: RendererInvokeChannel): channel is Bro
 function cloneInvokeArgs<TChannel extends RendererInvokeChannel>(
   args: RendererInvokeRequestMap[TChannel],
 ): RendererInvokeRequestMap[TChannel] {
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(args);
+    } catch {
+      // Payloads carrying non-cloneable values (for example Channel refs with
+      // a toJSON) fall back to the JSON round trip below.
+    }
+  }
+
   return JSON.parse(JSON.stringify(args));
 }
 
@@ -1381,6 +1403,12 @@ async function browserInvoke(
       browserControlClient.bindLifecycle();
       await browserControlClient.ensureConnected();
       return browserHttpClient.fetch(IPC.SpawnAgent, args);
+    case IPC.AttachTerminalSession:
+      // The websocket must be connected before the RPC so the server can bind
+      // the output channel for this client inside the same round trip.
+      browserControlClient.bindLifecycle();
+      await browserControlClient.ensureConnected();
+      return browserHttpClient.fetch(IPC.AttachTerminalSession, args);
     case IPC.EnsureAgentSessionsBatch:
       browserControlClient.bindLifecycle();
       await browserControlClient.ensureConnected();
@@ -1502,6 +1530,21 @@ export function getBrowserLastRttMs(): number | null {
   }
 
   return browserControlClient.getLastRttMs();
+}
+
+export type { BrowserResyncStateProvider } from './browser-control-client';
+
+// Injection seam for the reconnect version handshake: the app layer owns the
+// per-category version collection (lib must not import app), and the control
+// client presents it on reconnect socket URLs.
+export function setBrowserResyncStateProvider(
+  provider: (() => { categoryVersions: Record<string, number> } | null) | null,
+): void {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  browserControlClient.setResyncStateProvider(provider);
 }
 
 export function getBrowserReconnectContinuity(): {

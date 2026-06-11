@@ -3,6 +3,7 @@ import { markAgentOutput, resetAgentOutputActivityRuntimeState } from './agent-o
 import { setStore } from './core';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 import {
+  getTaskTerminalPlaceholderTail,
   getTaskTerminalSlateCacheSizeForTests,
   getTaskTerminalSlateSnapshot,
   hasTaskTerminalSlateCacheForAgentForTests,
@@ -62,6 +63,46 @@ describe('task-terminal-slate', () => {
 
     resetTaskTerminalSlateCacheForTests();
     expect(getTaskTerminalSlateCacheSizeForTests()).toBe(0);
+  });
+
+  it('projects the last visible lines of the output tail as the placeholder', () => {
+    markAgentOutput(
+      'agent-1',
+      new TextEncoder().encode('first\n\x1b[32msecond\x1b[0m\nthird\n\n\n'),
+    );
+
+    expect(getTaskTerminalPlaceholderTail('agent-1')).toBe('first\nsecond\nthird');
+  });
+
+  it('caps the placeholder to the last 24 lines and 200 chars per line', () => {
+    const lines = Array.from({ length: 40 }, (_, index) => `line-${index}`);
+    lines.push('x'.repeat(500));
+    markAgentOutput('agent-1', new TextEncoder().encode(`${lines.join('\n')}\n`));
+
+    const placeholder = getTaskTerminalPlaceholderTail('agent-1');
+    const placeholderLines = placeholder?.split('\n') ?? [];
+    expect(placeholderLines).toHaveLength(24);
+    expect(placeholderLines[0]).toBe('line-17');
+    expect(placeholderLines[23]).toBe('x'.repeat(200));
+  });
+
+  it('falls back to the supervision preview when no local output tail exists', () => {
+    setStore('agentSupervision', 'agent-cold', {
+      agentId: 'agent-cold',
+      attentionReason: null,
+      isShell: false,
+      lastOutputAt: 900,
+      preview: 'Last known supervision line',
+      state: 'active',
+      taskId: 'task-1',
+      updatedAt: 900,
+    });
+
+    expect(getTaskTerminalPlaceholderTail('agent-cold')).toBe('Last known supervision line');
+  });
+
+  it('returns null when neither a tail nor a preview exists', () => {
+    expect(getTaskTerminalPlaceholderTail('agent-missing')).toBeNull();
   });
 
   it('promotes updated slate entries before evicting the least recently used entry', () => {

@@ -1,15 +1,12 @@
-import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { promisify } from 'util';
 
 import { detectMainBranch, getCurrentBranchName, listBranches } from './git-branch.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
+import { execGit } from './git-exec.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
 import { listGitWorktrees, worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
 import type { ImportableWorktree } from '../../src/ipc/types.js';
-
-const exec = promisify(execFile);
 
 export { invalidateGitQueryCacheForPath, invalidateWorktreeStatusCache } from './git-cache.js';
 export { createWorktree, removeWorktree, worktreeExists } from './git-worktree.js';
@@ -46,7 +43,7 @@ export async function getGitIgnoredDirs(projectRoot: string): Promise<string[]> 
     }
 
     try {
-      await exec('git', ['check-ignore', '-q', name], { cwd: projectRoot });
+      await execGit(['check-ignore', '-q', name], { cwd: projectRoot });
       results.push(name);
     } catch {
       // directory is not ignored
@@ -70,7 +67,7 @@ export async function getCurrentBranch(projectRoot: string): Promise<string> {
 export { listBranches };
 
 export async function checkoutBranch(projectRoot: string, branchName: string): Promise<void> {
-  await exec('git', ['checkout', branchName], {
+  await execGit(['checkout', branchName], {
     cwd: projectRoot,
     maxBuffer: MAX_BUFFER,
   });
@@ -78,7 +75,7 @@ export async function checkoutBranch(projectRoot: string, branchName: string): P
 
 export async function getGitRepoRoot(candidatePath: string): Promise<string | null> {
   try {
-    const { stdout } = await exec('git', ['rev-parse', '--show-toplevel'], {
+    const { stdout } = await execGit(['rev-parse', '--show-toplevel'], {
       cwd: candidatePath,
       maxBuffer: MAX_BUFFER,
     });
@@ -106,7 +103,7 @@ export async function getGitRepoRoot(candidatePath: string): Promise<string | nu
 
 export async function getGitCommonDirectory(candidatePath: string): Promise<string | null> {
   try {
-    const { stdout } = await exec('git', ['rev-parse', '--git-common-dir'], {
+    const { stdout } = await execGit(['rev-parse', '--git-common-dir'], {
       cwd: candidatePath,
       maxBuffer: MAX_BUFFER,
     });
@@ -137,7 +134,7 @@ export async function getWorktreeStatus(
         return { has_committed_changes: false, has_uncommitted_changes: false };
       }
 
-      const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
+      const { stdout: statusOut } = await execGit(['status', '--porcelain'], {
         cwd: worktreePath,
         maxBuffer: MAX_BUFFER,
       });
@@ -147,7 +144,7 @@ export async function getWorktreeStatus(
       const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
       let hasCommittedChanges = false;
       try {
-        const { stdout: logOut } = await exec('git', ['log', mergeBase + '..HEAD', '--oneline'], {
+        const { stdout: logOut } = await execGit(['log', mergeBase + '..HEAD', '--oneline'], {
           cwd: worktreePath,
           maxBuffer: MAX_BUFFER,
         });
@@ -212,7 +209,7 @@ export async function getBranchLog(worktreePath: string, baseBranch?: string): P
   const mainBranch = await detectMainBranch(worktreePath, baseBranch).catch(() => 'HEAD');
   const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
   try {
-    const { stdout } = await exec('git', ['log', mergeBase + '..HEAD', '--pretty=format:- %h %s'], {
+    const { stdout } = await execGit(['log', mergeBase + '..HEAD', '--pretty=format:- %h %s'], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });

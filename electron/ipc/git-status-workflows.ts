@@ -16,6 +16,7 @@ import {
   type GitStatusSyncEvent,
 } from '../../src/domain/server-state.js';
 import { assertNever } from '../../src/lib/assert-never.js';
+import { enqueueBackendWork, type BackendWorkPriorityClass } from './backend-work-queue.js';
 import {
   scheduleProjectTaskConvergenceRefresh,
   scheduleTaskConvergenceRefreshForBranch,
@@ -27,7 +28,7 @@ import {
   scheduleTaskReviewRefreshForWorktree,
 } from './task-review-state.js';
 import { scheduleTaskReviewSignalsRefreshForWorktree } from './task-review-signals.js';
-import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 import { warn as logWarn } from '../log.js';
 
 export interface GitStatusWorkflowContext {
@@ -50,6 +51,9 @@ export interface WorktreeWorkflowRequest {
   baseBranch?: string;
   worktreePath: string;
 }
+
+const watcherRequestsByTaskId = new Map<string, TaskGitWatcherRequest>();
+const taskIdByWatchedWorktreePath = new Map<string, string>();
 
 function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
@@ -78,8 +82,10 @@ function emitGitStatusChanged(
   context.emitIpcEvent?.(IPC.GitStatusChanged, versionedPayload);
 }
 
-function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[] {
-  const parsed = parsePersistedTaskLookupState(savedJson);
+export function getSavedTaskWatcherRequests(
+  savedState: string | SavedStateDocument,
+): TaskGitWatcherRequest[] {
+  const parsed = toSavedStateDocument(savedState).taskLookup;
   const requests: TaskGitWatcherRequest[] = [];
   for (const task of Object.values(parsed.tasks)) {
     if (!task.id || !task.worktreePath) {
@@ -96,11 +102,20 @@ function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[]
   return requests;
 }
 
+export function findRegisteredGitWatcherRequestForTask(
+  taskId: string,
+): TaskGitWatcherRequest | undefined {
+  return watcherRequestsByTaskId.get(taskId);
+}
+
+export function findRegisteredGitWatcherTaskIdForWorktree(worktreePath: string): string | null {
+  return taskIdByWatchedWorktreePath.get(worktreePath) ?? null;
+}
+
 function restoreSavedTaskRequest(
   context: GitStatusWorkflowContext,
   request: TaskGitWatcherRequest,
 ): void {
-  scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
   void Promise.resolve(startTaskGitStatusWatcher(context, request)).catch((error) => {
     logWarn('git.status', 'failed to restore saved task watcher', {
       error: String(error),
@@ -135,25 +150,37 @@ export async function refreshGitStatusWorkflow(
   context: GitStatusWorkflowContext,
   worktreePath: string,
   baseBranch?: string,
+  priority?: BackendWorkPriorityClass,
 ): Promise<void> {
   emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath, baseBranch));
-  scheduleTaskConvergenceRefreshForWorktree(worktreePath);
-  scheduleTaskReviewRefreshForWorktree(worktreePath);
-  scheduleTaskReviewSignalsRefreshForWorktree(worktreePath);
+  scheduleTaskConvergenceRefreshForWorktree(worktreePath, priority);
+  scheduleTaskReviewRefreshForWorktree(worktreePath, priority);
+  scheduleTaskReviewSignalsRefreshForWorktree(worktreePath, priority);
 }
 
 export function scheduleGitStatusRefresh(
   context: GitStatusWorkflowContext,
   worktreePath: string,
   baseBranch?: string,
+  priority?: BackendWorkPriorityClass,
 ): void {
-  void refreshGitStatusWorkflow(context, worktreePath, baseBranch);
+  const taskId = taskIdByWatchedWorktreePath.get(worktreePath);
+  void enqueueBackendWork(
+    {
+      key: `git-status:${worktreePath}`,
+      ...(priority !== undefined ? { priority } : {}),
+      ...(taskId !== undefined ? { taskId } : {}),
+    },
+    () => refreshGitStatusWorkflow(context, worktreePath, baseBranch, priority),
+  ).catch(() => {});
 }
 
 export function startTaskGitStatusWatcher(
   context: GitStatusWorkflowContext,
   request: TaskGitWatcherRequest,
 ): Promise<void> {
+  watcherRequestsByTaskId.set(request.taskId, request);
+  taskIdByWatchedWorktreePath.set(request.worktreePath, request.taskId);
   return startGitWatcher(request.taskId, request.worktreePath, () => {
     scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
   });
@@ -169,14 +196,19 @@ export async function startTaskGitStatusMonitoring(
 
 export function restoreSavedTaskGitStatusMonitoring(
   context: GitStatusWorkflowContext,
-  savedJson: string,
+  savedState: string | SavedStateDocument,
 ): void {
-  for (const request of getSavedTaskWatcherRequests(savedJson)) {
+  for (const request of getSavedTaskWatcherRequests(savedState)) {
     restoreSavedTaskRequest(context, request);
   }
 }
 
 export function stopTaskGitStatusWatcher(taskId: string): void {
+  const request = watcherRequestsByTaskId.get(taskId);
+  if (request && taskIdByWatchedWorktreePath.get(request.worktreePath) === taskId) {
+    taskIdByWatchedWorktreePath.delete(request.worktreePath);
+  }
+  watcherRequestsByTaskId.delete(taskId);
   stopGitWatcher(taskId);
 }
 
@@ -186,7 +218,7 @@ async function runGitMutationWorkflow<TResult>(
   runMutation: () => Promise<TResult>,
 ): Promise<TResult> {
   const result = await runMutation();
-  scheduleGitStatusRefresh(context, worktreePath);
+  scheduleGitStatusRefresh(context, worktreePath, undefined, 'interactive');
   return result;
 }
 
@@ -257,4 +289,9 @@ export function scheduleTaskReviewRefreshForGitTarget(target: {
   if (typeof target.projectRoot === 'string') {
     scheduleProjectTaskReviewRefresh(target.projectRoot);
   }
+}
+
+export function resetGitStatusWorkflowRegistryForTests(): void {
+  watcherRequestsByTaskId.clear();
+  taskIdByWatchedWorktreePath.clear();
 }

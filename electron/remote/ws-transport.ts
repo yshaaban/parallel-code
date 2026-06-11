@@ -27,6 +27,13 @@ export interface CreateWebSocketTransportOptions<Client extends WebSocket> {
   authTimeoutMs?: number;
   createClientId?: () => string;
   controlEventBufferSize?: number;
+  /**
+   * Replay-ring compaction key. Only legal for message classes whose events
+   * are full-replace snapshots per key: a newer event with the same key
+   * supersedes the older ring entry (latest-wins), so replay never ships dead
+   * intermediate snapshots. Return null (the default) to never compact.
+   */
+  getControlEventCompactionKey?: (message: ServerMessage) => string | null;
   heartbeatIntervalMs?: number;
   maxAuthenticatedClients?: number;
   maxMissedPongs?: number;
@@ -48,6 +55,15 @@ export interface ControlReplayCoverage {
   latestSeq: number;
   oldestAvailableSeq: number | null;
   replayTruncated: boolean;
+}
+
+export interface ReplayControlEventsOptions {
+  /**
+   * Send the replay as one control-replay-batch frame whose toSeq the client
+   * adopts wholesale (compaction makes inner seqs non-contiguous). The inner
+   * event ordering is byte-identical to the unbatched per-event path.
+   */
+  batch?: boolean;
 }
 
 export type ClaimAgentControlResult =
@@ -76,13 +92,19 @@ export interface WebSocketTransport<Client extends WebSocket> {
   claimAgentControl: (client: Client, agentId: string) => ClaimAgentControlResult;
   getAgentControllerId: (agentId: string) => string | null;
   getClientId: (client: Client) => string | null;
+  getClientsById: (clientId: string) => Client[];
   getAuthenticatedClientCount: () => number;
   getLatestControlEventSeq: () => number;
   hasClientId: (clientId: string) => boolean;
   isAuthenticated: (client: Client) => boolean;
   notePong: (client: Client) => void;
   releaseAgentControl: (agentId: string, clientId?: string) => void;
-  replayControlEvents: (client: Client, lastSeq?: number, maxSeq?: number) => ControlReplayCoverage;
+  replayControlEvents: (
+    client: Client,
+    lastSeq?: number,
+    maxSeq?: number,
+    options?: ReplayControlEventsOptions,
+  ) => ControlReplayCoverage;
   scheduleAuthTimeout: (client: Client) => void;
   sendToClientId: (clientId: string, message: ServerMessage) => boolean;
   sendAgentControllers: (client: Client) => void;
@@ -100,7 +122,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
   const clientsByClientId = new Map<string, Set<Client>>();
   const clientMissedPongs = new WeakMap<Client, number>();
   const agentControllers = new Map<string, AgentControllerLease>();
-  const controlEventRingBuffer: Array<{ seq: number; json: string }> = [];
+  const controlEventRingBuffer: Array<{ seq: number; json: string; key: string | null }> = [];
 
   const authTimeoutMs = options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
   const maxAuthenticatedClients =
@@ -182,8 +204,15 @@ export function createWebSocketTransport<Client extends WebSocket>(
     }
   }
 
-  function addControlEvent(seq: number, json: string): void {
-    controlEventRingBuffer.push({ seq, json });
+  function addControlEvent(seq: number, json: string, key: string | null): void {
+    if (key !== null) {
+      const supersededIndex = controlEventRingBuffer.findIndex((entry) => entry.key === key);
+      if (supersededIndex !== -1) {
+        controlEventRingBuffer.splice(supersededIndex, 1);
+      }
+    }
+
+    controlEventRingBuffer.push({ seq, json, key });
     while (controlEventRingBuffer.length > controlEventBufferSize) {
       controlEventRingBuffer.shift();
     }
@@ -237,14 +266,81 @@ export function createWebSocketTransport<Client extends WebSocket>(
     const seq = controlEventSeq++;
     const json = serializeJson({ ...message, seq });
 
-    addControlEvent(seq, json);
+    addControlEvent(seq, json, options.getControlEventCompactionKey?.(message) ?? null);
     broadcastSerialized(json);
+  }
+
+  function replayControlEventsBatched(
+    client: Client,
+    lastSeq: number,
+    maxSeq: number,
+    coverage: ControlReplayCoverage,
+  ): void {
+    const replayedJsons: string[] = [];
+    for (const event of controlEventRingBuffer) {
+      if (event.seq > maxSeq) {
+        break;
+      }
+
+      if (event.seq > lastSeq) {
+        replayedJsons.push(event.json);
+      }
+    }
+
+    const toSeq = Math.min(coverage.latestSeq, maxSeq);
+    // The stored raw json strings are embedded as-is, so inner-event bytes and
+    // ordering are identical to the unbatched per-event replay path.
+    sendSerializedDirect(
+      client,
+      `{"type":"control-replay-batch","toSeq":${toSeq},"events":[${replayedJsons.join(',')}]}`,
+    );
+  }
+
+  // Per-event replay is only legal for a gap-free window: legacy clients run
+  // per-event sequence-gap detection, so replaying a window with holes (ring
+  // eviction or latest-wins compaction) would misfire it on every reconnect —
+  // the remote shell turns that into a hard reconnect and its own churn keeps
+  // re-compacting the window, which loops forever. Batch frames are exempt:
+  // their consumers adopt toSeq wholesale.
+  function isWindowPerEventReplayable(lastSeq: number, latestReplayableSeq: number): boolean {
+    if (latestReplayableSeq <= lastSeq) {
+      return true;
+    }
+
+    let windowEventCount = 0;
+    for (const event of controlEventRingBuffer) {
+      if (event.seq > latestReplayableSeq) {
+        break;
+      }
+
+      if (event.seq > lastSeq) {
+        windowEventCount += 1;
+      }
+    }
+
+    return windowEventCount === latestReplayableSeq - lastSeq;
+  }
+
+  function createCompactedWindowTruncatedMessage(
+    coverage: ControlReplayCoverage,
+  ): ReplayTruncatedMessage | null {
+    if (coverage.oldestAvailableSeq === null) {
+      return null;
+    }
+
+    return {
+      type: 'replay-truncated',
+      lastSeq: coverage.lastSeq,
+      latestSeq: coverage.latestSeq,
+      oldestAvailableSeq: coverage.oldestAvailableSeq,
+    };
   }
 
   function replayControlEvents(
     client: Client,
     lastSeq = -1,
     maxSeq = Number.POSITIVE_INFINITY,
+    replayOptions: ReplayControlEventsOptions = {},
   ): ControlReplayCoverage {
     const coverage = getReplayCoverage(lastSeq, maxSeq);
     const replayTruncatedMessage = createReplayTruncatedMessage(coverage);
@@ -252,6 +348,29 @@ export function createWebSocketTransport<Client extends WebSocket>(
       replayTruncatedMessage &&
       !sendSerializedDirect(client, serializeJson(replayTruncatedMessage))
     ) {
+      return coverage;
+    }
+
+    if (replayOptions.batch === true) {
+      replayControlEventsBatched(client, lastSeq, maxSeq, coverage);
+      return coverage;
+    }
+
+    const latestReplayableSeq = Math.min(coverage.latestSeq, maxSeq);
+    if (!isWindowPerEventReplayable(lastSeq, latestReplayableSeq)) {
+      // A compacted window cannot be replayed per-event without tripping the
+      // client's gap detection. Degrade to the replay-truncated signal (if
+      // eviction did not already send it): old clients answer it with a full
+      // restore, and the current client core adopts latestSeq from it so live
+      // traffic continues gap-free while the handshake bootstrap repairs
+      // state.
+      if (!replayTruncatedMessage) {
+        const compactedWindowMessage = createCompactedWindowTruncatedMessage(coverage);
+        if (compactedWindowMessage) {
+          sendSerializedDirect(client, serializeJson(compactedWindowMessage));
+        }
+      }
+
       return coverage;
     }
 
@@ -385,6 +504,10 @@ export function createWebSocketTransport<Client extends WebSocket>(
     return clientIds.get(client) ?? null;
   }
 
+  function getClientsById(clientId: string): Client[] {
+    return [...(clientsByClientId.get(clientId) ?? [])];
+  }
+
   function sendToClientId(clientId: string, message: ServerMessage): boolean {
     const clients = clientsByClientId.get(clientId);
     if (!clients || clients.size === 0) {
@@ -437,6 +560,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
     claimAgentControl,
     getAgentControllerId,
     getClientId,
+    getClientsById,
     getAuthenticatedClientCount,
     getLatestControlEventSeq,
     hasClientId,

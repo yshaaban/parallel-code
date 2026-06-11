@@ -2,9 +2,14 @@ import express from 'express';
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { gzipSync, brotliCompressSync } from 'zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { registerBrowserStaticRoutes } from './browser-static.js';
+import {
+  isHashedAssetRequestPath,
+  registerBrowserStaticRoutes,
+  selectPrecompressedVariant,
+} from './browser-static.js';
 
 async function createTempDist(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -151,6 +156,150 @@ describe('registerBrowserStaticRoutes', () => {
       expect(assetResponse.status).toBe(302);
       expect(assetResponse.headers.get('location')).toBe('/auth?next=%2Fassets%2Fapp.js');
       await drainResponses(shellResponse, assetResponse);
+    } finally {
+      await closeTestServer(server);
+    }
+  });
+
+  it('selects precompressed variants by encoding preference with identity fallback', () => {
+    const siblings = new Set([
+      '/dist/assets/app-abcdef12.js.br',
+      '/dist/assets/app-abcdef12.js.gz',
+    ]);
+    const exists = (candidate: string): boolean => siblings.has(candidate);
+
+    expect(selectPrecompressedVariant('br, gzip', '/dist/assets/app-abcdef12.js', exists)).toEqual({
+      encoding: 'br',
+      path: '/dist/assets/app-abcdef12.js.br',
+    });
+    expect(selectPrecompressedVariant('gzip', '/dist/assets/app-abcdef12.js', exists)).toEqual({
+      encoding: 'gzip',
+      path: '/dist/assets/app-abcdef12.js.gz',
+    });
+    expect(
+      selectPrecompressedVariant('gzip', '/dist/assets/other-12345678.js', () => false),
+    ).toBeNull();
+    expect(
+      selectPrecompressedVariant(undefined, '/dist/assets/app-abcdef12.js', exists),
+    ).toBeNull();
+    expect(selectPrecompressedVariant('br', '/dist/assets/photo.png', () => true)).toBeNull();
+    expect(
+      selectPrecompressedVariant('identity', '/dist/assets/app-abcdef12.js', exists),
+    ).toBeNull();
+  });
+
+  it('classifies hashed asset request paths for immutable caching', () => {
+    expect(isHashedAssetRequestPath('/assets/index-DGVUb4mE.js')).toBe(true);
+    expect(isHashedAssetRequestPath('/assets/index-DjJEihq7.css')).toBe(true);
+    expect(isHashedAssetRequestPath('/index.html')).toBe(false);
+    expect(isHashedAssetRequestPath('/assets/manifest.json')).toBe(false);
+  });
+
+  it('serves precompressed assets with Content-Encoding, immutable caching, and no-store HTML', async () => {
+    const distDir = await createTempDist('parallel-code-dist-compressed-');
+    tempDirs.push(distDir);
+
+    const jsBody = `console.log("desktop bundle");`.repeat(64);
+    await writeFile(path.join(distDir, 'index.html'), '<html><body>desktop</body></html>');
+    await mkdir(path.join(distDir, 'assets'), { recursive: true });
+    const assetPath = path.join(distDir, 'assets', 'index-DGVUb4mE.js');
+    await writeFile(assetPath, jsBody);
+    await writeFile(`${assetPath}.gz`, gzipSync(Buffer.from(jsBody)));
+    await writeFile(`${assetPath}.br`, brotliCompressSync(Buffer.from(jsBody)));
+
+    const app = express();
+    registerBrowserStaticRoutes({
+      app,
+      authGatePath: '/auth',
+      distDir,
+      distRemoteDir: distDir,
+      isAuthorizedRequest: () => true,
+    });
+
+    const server = await new Promise<import('http').Server>((resolve) => {
+      const nextServer = app.listen(0, () => resolve(nextServer));
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to resolve test server port');
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const brotliResponse = await fetch(`${baseUrl}/assets/index-DGVUb4mE.js`, {
+        headers: { 'accept-encoding': 'br, gzip' },
+      });
+      expect(brotliResponse.headers.get('content-encoding')).toBe('br');
+      expect(brotliResponse.headers.get('vary')).toBe('Accept-Encoding');
+      expect(brotliResponse.headers.get('content-type')).toContain('javascript');
+      expect(brotliResponse.headers.get('cache-control')).toBe(
+        'public, max-age=31536000, immutable',
+      );
+      expect(await brotliResponse.text()).toBe(jsBody);
+
+      const gzipResponse = await fetch(`${baseUrl}/assets/index-DGVUb4mE.js`, {
+        headers: { 'accept-encoding': 'gzip' },
+      });
+      expect(gzipResponse.headers.get('content-encoding')).toBe('gzip');
+      expect(await gzipResponse.text()).toBe(jsBody);
+
+      const identityResponse = await fetch(`${baseUrl}/assets/index-DGVUb4mE.js`, {
+        headers: { 'accept-encoding': 'identity' },
+      });
+      expect(identityResponse.headers.get('content-encoding')).toBeNull();
+      expect(identityResponse.headers.get('vary')).toBe('Accept-Encoding');
+      expect(identityResponse.headers.get('cache-control')).toBe(
+        'public, max-age=31536000, immutable',
+      );
+      expect(await identityResponse.text()).toBe(jsBody);
+
+      const htmlResponse = await fetch(`${baseUrl}/`, {
+        headers: { 'accept-encoding': 'br, gzip' },
+      });
+      expect(htmlResponse.headers.get('cache-control')).toBe('no-store, max-age=0');
+      expect(htmlResponse.headers.get('content-encoding')).toBeNull();
+      await drainResponses(htmlResponse);
+    } finally {
+      await closeTestServer(server);
+    }
+  }, 15_000);
+
+  it('keeps the auth gate ahead of precompressed asset serving', async () => {
+    const distDir = await createTempDist('parallel-code-dist-compressed-auth-');
+    tempDirs.push(distDir);
+    await writeFile(path.join(distDir, 'index.html'), '<html><body>desktop</body></html>');
+    await mkdir(path.join(distDir, 'assets'), { recursive: true });
+    const assetPath = path.join(distDir, 'assets', 'index-DGVUb4mE.js');
+    await writeFile(assetPath, 'console.log("bundle")');
+    await writeFile(`${assetPath}.gz`, gzipSync(Buffer.from('console.log("bundle")')));
+
+    const app = express();
+    registerBrowserStaticRoutes({
+      app,
+      authGatePath: '/auth',
+      distDir,
+      distRemoteDir: distDir,
+      isAuthorizedRequest: () => false,
+    });
+
+    const server = await new Promise<import('http').Server>((resolve) => {
+      const nextServer = app.listen(0, () => resolve(nextServer));
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to resolve test server port');
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/assets/index-DGVUb4mE.js`, {
+        headers: { 'accept-encoding': 'gzip' },
+        redirect: 'manual',
+      });
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toBe('/auth?next=%2Fassets%2Findex-DGVUb4mE.js');
+      await drainResponses(response);
     } finally {
       await closeTestServer(server);
     }

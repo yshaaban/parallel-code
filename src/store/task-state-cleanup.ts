@@ -1,6 +1,7 @@
 import { cleanupPanelEntries } from './core';
 import { deleteRecordEntry } from '../lib/record-utils';
 import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease-runtime';
+import { clearPendingSessionInputForTask } from '../components/terminal-view/terminal-pending-session-input';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
 import { clearRecentTaskGitStatusPollAge } from './task-git-status';
 import { clearTaskTerminalSlateCacheForAgent } from './task-terminal-slate';
@@ -113,6 +114,7 @@ export function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
   for (const taskId of taskIds) {
     void clearRemovedTaskCommandLeaseState(taskId);
     clearTerminalStartupEntriesForTask(taskId);
+    clearPendingSessionInputForTask(taskId);
   }
 }
 

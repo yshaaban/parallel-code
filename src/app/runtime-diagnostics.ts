@@ -41,7 +41,13 @@ const TERMINAL_RECOVERY_REASONS = [
   'reconnect',
   'renderer-loss',
 ] as const;
-const TERMINAL_RECOVERY_KINDS = ['delta', 'noop', 'snapshot', 'terminal-state'] as const;
+const TERMINAL_RECOVERY_KINDS = [
+  'delta',
+  'noop',
+  'snapshot',
+  'tail-needed',
+  'terminal-state',
+] as const;
 const TERMINAL_RECOVERY_RESET_REASONS = [
   'attach',
   'backpressure',
@@ -976,9 +982,27 @@ function incrementCategoryCounter(
   counters[category] = (counters[category] ?? 0) + 1;
 }
 
+// Degraded bootstrap categories: per-category server-side failures surfaced by
+// degraded markers. The client keeps prior state for these categories and the
+// bootstrap owners retry them targetedly.
+const degradedBootstrapCategories = new Set<ServerStateBootstrapCategory>();
+
+export function recordDegradedBootstrapCategory(category: ServerStateBootstrapCategory): void {
+  degradedBootstrapCategories.add(category);
+}
+
+export function clearDegradedBootstrapCategory(category: ServerStateBootstrapCategory): void {
+  degradedBootstrapCategories.delete(category);
+}
+
+export function getDegradedBootstrapCategories(): ServerStateBootstrapCategory[] {
+  return [...degradedBootstrapCategories];
+}
+
 export function resetRendererRuntimeDiagnostics(): void {
   rendererRuntimeDiagnostics = createInitialSnapshot();
   terminalResizePendingEntries.clear();
+  degradedBootstrapCategories.clear();
   attachRendererRuntimeDiagnosticsStore();
 }
 

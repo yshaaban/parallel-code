@@ -15,7 +15,6 @@ const {
   createTaskMock,
   hasCurrentBranchTaskMock,
   invokeMock,
-  loadAgentsMock,
   toggleNewTaskDialogMock,
   updateProjectMock,
 } = vi.hoisted(() => ({
@@ -24,7 +23,6 @@ const {
   createTaskMock: vi.fn(),
   hasCurrentBranchTaskMock: vi.fn(() => false),
   invokeMock: vi.fn(),
-  loadAgentsMock: vi.fn(),
   toggleNewTaskDialogMock: vi.fn(),
   updateProjectMock: vi.fn(),
 }));
@@ -94,23 +92,11 @@ vi.mock('../app/task-workflows', () => ({
   createTask: createTaskMock,
 }));
 
-vi.mock('../app/agent-catalog', () => ({
-  loadAgents: loadAgentsMock,
-}));
-
+import {
+  listPendingTaskCreations,
+  resetPendingTaskCreationsForTests,
+} from '../app/task-creation-optimism';
 import { NewTaskDialog } from './NewTaskDialog';
-
-function createDeferredPromise<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-
-  return { promise, resolve };
-}
 
 async function openAdvanced(): Promise<void> {
   const toggle = await screen.findByRole('button', { name: /^Advanced/i });
@@ -142,17 +128,17 @@ describe('NewTaskDialog', () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    resetPendingTaskCreationsForTests();
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
-    setStore('availableAgents', []);
-    hasCurrentBranchTaskMock.mockReturnValue(false);
-    loadAgentsMock.mockResolvedValue([
+    setStore('availableAgents', [
       createTestAgentDef({
         id: 'codex',
         name: 'Codex',
         skip_permissions_args: ['--yolo'],
       }),
     ]);
+    hasCurrentBranchTaskMock.mockReturnValue(false);
     mockListBranches(['main', 'release/main']);
   });
 
@@ -164,9 +150,7 @@ describe('NewTaskDialog', () => {
     const [open, setOpen] = createSignal(true);
 
     render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await openAdvanced();
     const checkbox = await screen.findByRole('checkbox', {
@@ -183,9 +167,7 @@ describe('NewTaskDialog', () => {
     });
 
     setOpen(true);
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
     await openAdvanced();
     const reopenedCheckbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
@@ -193,55 +175,47 @@ describe('NewTaskDialog', () => {
     expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
   });
 
-  it('ignores stale agent loads after the dialog closes and reopens', async () => {
-    const firstAgents = createDeferredPromise<ReturnType<typeof createTestAgentDef>[]>();
-    const secondAgents = createDeferredPromise<ReturnType<typeof createTestAgentDef>[]>();
-    loadAgentsMock
-      .mockImplementationOnce(() => firstAgents.promise)
-      .mockImplementationOnce(() => secondAgents.promise);
-    const [open, setOpen] = createSignal(true);
+  it('opens synchronously from the store catalog and fires a background availability refresh', async () => {
+    render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+    // The default selection comes from store.availableAgents synchronously:
+    // no awaited list_agents fetch sits on the dialog-open path.
+    expect(screen.getByText('Selected agent: Codex')).toBeDefined();
+    const invokedChannels = invokeMock.mock.calls.map(([channel]) => channel);
+    expect(invokedChannels).not.toContain('list_agents');
+    expect(invokeMock).toHaveBeenCalledWith('refresh_agent_availability', undefined);
+  });
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+  it('forwards the hydra command override with the background availability refresh', async () => {
+    setStore('hydraCommand', '/custom/hydra');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    expect(invokeMock).toHaveBeenCalledWith('refresh_agent_availability', {
+      hydraCommand: '/custom/hydra',
     });
+  });
 
-    setOpen(false);
-    setOpen(true);
-
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
-    });
-
-    secondAgents.resolve([
+  it('treats probing agents as launchable for the default selection', async () => {
+    setStore('availableAgents', [
       createTestAgentDef({
-        id: 'fresh-agent',
-        name: 'Fresh Agent',
-        skip_permissions_args: ['--yolo'],
+        availabilityStatus: 'probing',
+        id: 'codex',
+        name: 'Codex',
+      }),
+      createTestAgentDef({
+        id: 'claude-code',
+        name: 'Claude',
       }),
     ]);
 
-    await waitFor(() => {
-      expect(screen.getByText('Selected agent: Fresh Agent')).toBeDefined();
-    });
+    render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    firstAgents.resolve([
-      createTestAgentDef({
-        id: 'stale-agent',
-        name: 'Stale Agent',
-        skip_permissions_args: ['--yolo'],
-      }),
-    ]);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(screen.getByText('Selected agent: Fresh Agent')).toBeDefined();
-    expect(screen.queryByText('Selected agent: Stale Agent')).toBeNull();
+    expect(screen.getByText('Selected agent: Codex')).toBeDefined();
   });
 
   it('selects the first available agent instead of an unavailable Codex entry', async () => {
-    loadAgentsMock.mockResolvedValue([
+    setStore('availableAgents', [
       createTestAgentDef({
         available: false,
         id: 'codex',
@@ -255,9 +229,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     expect(screen.getByText('Selected agent: Claude')).toBeDefined();
   });
@@ -268,9 +240,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await user.click(screen.getByRole('checkbox', { name: /Use custom command/i }));
     await user.type(screen.getByPlaceholderText('codex'), 'codex --model fast');
@@ -296,9 +266,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await user.click(screen.getByRole('checkbox', { name: /Use custom command/i }));
     await user.type(screen.getByPlaceholderText('codex'), 'codex "unfinished');
@@ -314,9 +282,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
     // Default skip-permissions should apply without ever expanding the Advanced section.
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
     expect(screen.getByText(/Runs without confirmation/i)).toBeDefined();
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
@@ -336,14 +302,51 @@ describe('NewTaskDialog', () => {
     });
   });
 
+  it('closes the dialog synchronously while the create round trip is still in flight', async () => {
+    let resolveCreate: (taskId: string) => void = () => {};
+    createTaskMock.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await screen.findByRole('button', { name: 'Create Task' });
+    const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
+    fireEvent.input(taskNameInput, { target: { value: 'Instant task' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    expect(toggleNewTaskDialogMock).toHaveBeenCalledWith(false);
+    expect(listPendingTaskCreations()).toMatchObject([
+      { name: 'Instant task', state: { kind: 'creating' } },
+    ]);
+
+    resolveCreate('task-real');
+    await waitFor(() => {
+      expect(listPendingTaskCreations()).toEqual([]);
+    });
+  });
+
+  it('keeps the dialog open when synchronous validation fails', async () => {
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await screen.findByRole('button', { name: 'Create Task' });
+
+    fireEvent.submit(
+      screen.getByRole('button', { name: 'Create Task' }).closest('form') as HTMLFormElement,
+    );
+
+    expect(toggleNewTaskDialogMock).not.toHaveBeenCalledWith(false);
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(listPendingTaskCreations()).toEqual([]);
+  });
+
   it('passes stepsTracking through task creation when enabled', async () => {
     createTaskMock.mockResolvedValue('task-steps');
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await openAdvanced();
     const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
@@ -403,9 +406,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await openAdvanced();
     const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
@@ -422,9 +423,7 @@ describe('NewTaskDialog', () => {
     });
 
     setOpen(true);
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     await openAdvanced();
     const reopenedCheckbox = await screen.findByRole('checkbox', {
@@ -458,13 +457,10 @@ describe('NewTaskDialog', () => {
       }),
     );
     setStore('availableAgents', agents);
-    loadAgentsMock.mockResolvedValue(agents);
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
   });
@@ -480,9 +476,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
 
     expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
     expect(
@@ -520,9 +514,7 @@ describe('NewTaskDialog', () => {
     });
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
     const currentBranchButton = await screen.findByRole('button', { name: /^Current branch/i });
     await Promise.resolve();
     await user.click(currentBranchButton);
@@ -640,9 +632,7 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    await waitFor(() => {
-      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    });
+    await screen.findByRole('button', { name: 'Create Task' });
     expect(screen.queryByLabelText('Base branch')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Current branch/i })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Use existing worktree/i })).toBeNull();

@@ -12,6 +12,29 @@ import type { RendererRuntimeDiagnosticsSnapshot } from '../../src/app/runtime-d
 const RUN_BROWSER_STARTUP_METRICS = process.env.RUN_BROWSER_STARTUP_METRICS === '1';
 const startupMetricsDescribe = RUN_BROWSER_STARTUP_METRICS ? test.describe : test.describe.skip;
 
+// Asserted CI budgets for the gated startup-metrics lane (benchmark runner).
+// Re-baselining any number requires an explicit note in docs/TESTING.md.
+const SELECTED_QUEUED_TO_INTERACTIVE_BUDGET_MS = {
+  1: 250,
+  8: 350,
+  24: 800,
+} as const;
+const RECONNECT_RESTORE_TOTAL_BUDGET_MS = 500;
+
+function expectSelectedQueuedToInteractiveWithinBudget(
+  selectedAttachTrace: TerminalAttachTraceEntrySnapshot | null,
+  terminalCount: keyof typeof SELECTED_QUEUED_TO_INTERACTIVE_BUDGET_MS,
+): void {
+  expect(selectedAttachTrace).toBeTruthy();
+  expect(selectedAttachTrace?.readyAtMs).not.toBeNull();
+  const queuedToInteractiveMs =
+    (selectedAttachTrace?.readyAtMs ?? Number.POSITIVE_INFINITY) -
+    (selectedAttachTrace?.attachQueuedAtMs ?? 0);
+  expect(queuedToInteractiveMs).toBeLessThanOrEqual(
+    SELECTED_QUEUED_TO_INTERACTIVE_BUDGET_MS[terminalCount],
+  );
+}
+
 interface StartupMetricsPayload {
   attachTrace: {
     attachBoundAtMs: number | null;
@@ -271,18 +294,26 @@ function expectReconnectRestoreDiagnostics(
 ): void {
   expect(diagnostics).toBeTruthy();
   expect(diagnostics?.browserStartup.modeCompleteCounts['cold-bootstrap']).toBe(0);
-  expect(diagnostics?.browserStartup.modeCompleteCounts['reconnect-restore']).toBe(1);
-  expect(diagnostics?.browserStartup.modeLastDurationMs['reconnect-restore']).not.toBeNull();
+  // Reconnects within continuity may take the short-disconnect skip or the
+  // revision-keyed full restore; both are valid reconnect outcomes, and
+  // terminal recovery is channel-level so the replay trace exists either way.
+  const fullRestores = diagnostics?.browserStartup.modeCompleteCounts['reconnect-restore'] ?? 0;
+  const skipRestores =
+    diagnostics?.browserReconnect.restoreOutcomeCounts['short-disconnect-skip'] ?? 0;
+  expect(fullRestores + skipRestores).toBeGreaterThan(0);
+  if (fullRestores > 0) {
+    expect(diagnostics?.browserStartup.modeLastDurationMs['reconnect-restore']).not.toBeNull();
+    expect(diagnostics?.browserSync.started).toBeGreaterThan(0);
+    expect(diagnostics?.browserSync.completed).toBeGreaterThan(0);
+    expect(diagnostics?.browserSync.failed).toBe(0);
+    expect(diagnostics?.browserSync.lastDurationMs).not.toBeNull();
+  }
   expect(diagnostics?.browserStartup.tierCounts.shell).toBe(0);
   expect(diagnostics?.browserStartup.tierCounts.summary).toBe(0);
   expect(diagnostics?.browserStartup.tierCounts['selected-task']).toBe(0);
   expect(diagnostics?.browserStartup.tierLastReachedMs.shell).toBeNull();
   expect(diagnostics?.browserStartup.tierLastReachedMs.summary).toBeNull();
   expect(diagnostics?.browserStartup.tierLastReachedMs['selected-task']).toBeNull();
-  expect(diagnostics?.browserSync.started).toBeGreaterThan(0);
-  expect(diagnostics?.browserSync.completed).toBeGreaterThan(0);
-  expect(diagnostics?.browserSync.failed).toBe(0);
-  expect(diagnostics?.browserSync.lastDurationMs).not.toBeNull();
   expect(selectedReplayTrace).toBeTruthy();
   const visibleRecoveryReason = selectedReplayTrace?.reason;
   if (visibleRecoveryReason === 'reconnect') {
@@ -301,11 +332,15 @@ function expectReconnectRestoreDiagnostics(
   expect(selectedReplayTrace?.restoreTotalMs).toBeGreaterThanOrEqual(
     selectedReplayTrace?.resumeMs ?? 0,
   );
-  expect(diagnostics?.terminalStartupPaint.logicalReadyLastMs.selected).not.toBeNull();
-  expect(diagnostics?.terminalStartupPaint.paintReadyLastMs.selected).not.toBeNull();
-  expect(diagnostics?.terminalStartupPaint.paintReadyLastMs.selected).toBeGreaterThanOrEqual(
-    diagnostics?.terminalStartupPaint.logicalReadyLastMs.selected ?? 0,
-  );
+  // A reconnect that resolves to cursor-continuity (noop/delta) does not
+  // repaint the already-ready terminal, so a fresh paint-ready sample only
+  // exists when the restore actually re-ran the startup paint flow.
+  const paintReadyLastMs = diagnostics?.terminalStartupPaint.paintReadyLastMs.selected ?? null;
+  if (paintReadyLastMs !== null) {
+    expect(paintReadyLastMs).toBeGreaterThanOrEqual(
+      diagnostics?.terminalStartupPaint.logicalReadyLastMs.selected ?? 0,
+    );
+  }
 }
 
 async function waitForShellAndSelectedTerminalReady(
@@ -430,12 +465,97 @@ startupMetricsDescribe('browser startup metrics / cold bootstrap / prompt ready'
       const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
         await readSelectedColdBootstrapMetrics(page);
       expectColdBootstrapDiagnostics(diagnostics);
+      expectSelectedQueuedToInteractiveWithinBudget(selectedAttachTrace, 1);
       logStartupMetrics(
         'cold-bootstrap-prompt-ready',
         diagnostics,
         selectedAttachTrace,
         selectedReplayTrace,
       );
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+function createTerminalFleetScenario(
+  terminalCount: number,
+): ReturnType<typeof createPromptReadyScenario> {
+  const scenario = createPromptReadyScenario(320);
+  return {
+    ...scenario,
+    additionalTaskNames: Array.from(
+      { length: terminalCount - 1 },
+      (_, index) => `Startup Fleet Task ${index + 2}`,
+    ),
+    name: `${scenario.name}-fleet-${terminalCount}`,
+  };
+}
+
+startupMetricsDescribe('browser startup metrics / cold bootstrap / 8-terminal fleet', () => {
+  test.use({
+    scenario: createTerminalFleetScenario(8),
+  });
+
+  test('keeps selected-terminal queued-to-interactive within the 8-terminal budget', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Startup Metrics 8 Terminals',
+      prepareContext: async (context) => {
+        await initializeTerminalTraceStores(context, { includeAttachTrace: true });
+      },
+    });
+
+    try {
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
+
+      const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
+        await readSelectedColdBootstrapMetrics(page);
+      logStartupMetrics(
+        'cold-bootstrap-8-terminals',
+        diagnostics,
+        selectedAttachTrace,
+        selectedReplayTrace,
+      );
+      expectColdBootstrapDiagnostics(diagnostics);
+      expectSelectedQueuedToInteractiveWithinBudget(selectedAttachTrace, 8);
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+startupMetricsDescribe('browser startup metrics / cold bootstrap / 24-terminal fleet', () => {
+  test.use({
+    scenario: createTerminalFleetScenario(24),
+  });
+
+  test('keeps selected-terminal queued-to-interactive within the 24-terminal budget', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Startup Metrics 24 Terminals',
+      prepareContext: async (context) => {
+        await initializeTerminalTraceStores(context, { includeAttachTrace: true });
+      },
+    });
+
+    try {
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
+
+      const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
+        await readSelectedColdBootstrapMetrics(page);
+      logStartupMetrics(
+        'cold-bootstrap-24-terminals',
+        diagnostics,
+        selectedAttachTrace,
+        selectedReplayTrace,
+      );
+      expectColdBootstrapDiagnostics(diagnostics);
+      expectSelectedQueuedToInteractiveWithinBudget(selectedAttachTrace, 24);
     } finally {
       await context.close();
     }
@@ -524,6 +644,9 @@ startupMetricsDescribe('browser startup metrics / reconnect restore', () => {
         selectedReplayTrace,
       );
       expectReconnectRestoreDiagnostics(diagnostics, selectedAttachTrace, selectedReplayTrace);
+      expect(selectedReplayTrace?.restoreTotalMs ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+        RECONNECT_RESTORE_TOTAL_BUDGET_MS,
+      );
     } finally {
       await context.close();
     }

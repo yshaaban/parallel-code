@@ -233,6 +233,7 @@ function createRemoteBootstrapSnapshotHandler<TCategory extends ServerStateBoots
 }
 
 const REMOTE_BOOTSTRAP_SNAPSHOT_HANDLERS = {
+  'agent-availability': null,
   'agent-supervision': createRemoteBootstrapSnapshotHandler(
     'agent-supervision',
     replaceRemoteAgentSupervisionBootstrap,
@@ -284,7 +285,6 @@ function handleRemoteTaskReviewIpcEvent(payload: unknown): void {
 
 const REMOTE_LIVE_IPC_EVENT_HANDLERS = {
   [IPC.AgentSupervisionChanged]: handleRemoteAgentSupervisionIpcEvent,
-  [IPC.CoordinatorChanged]: null,
   [IPC.GitStatusChanged]: null,
   [IPC.TaskCommandControllerChanged]: handleRemoteTaskCommandControllerIpcEvent,
   [IPC.TaskConvergenceChanged]: null,

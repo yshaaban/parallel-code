@@ -29,6 +29,10 @@ import {
 
 const agentSupervisionVersionTracker = createServerStateVersionTracker();
 
+export function getAgentSupervisionHighestAppliedVersion(): number {
+  return agentSupervisionVersionTracker.highestVersion;
+}
+
 function toStoredAgentSupervisionSnapshot(
   snapshot: AgentSupervisionSnapshot,
 ): AgentSupervisionSnapshot {
@@ -131,6 +135,13 @@ export function getTaskAttentionFocusPanel(
   return entry.focusPanel;
 }
 
-export function resetAgentSupervisionProjectionStateForTests(): void {
+// Server-state versions are per-boot, so a new server instance invalidates the
+// tracked versions; the resync applier resets them before hydrating the
+// instance's full bootstrap.
+export function resetAgentSupervisionVersionTracking(): void {
   resetServerStateVersionTracker(agentSupervisionVersionTracker);
+}
+
+export function resetAgentSupervisionProjectionStateForTests(): void {
+  resetAgentSupervisionVersionTracking();
 }

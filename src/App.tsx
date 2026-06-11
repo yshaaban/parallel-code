@@ -477,7 +477,9 @@ function App(): JSX.Element {
           <DropOverlay />
         </Show>
         <Show when={store.notification}>
-          {(message) => <AppNotificationToast message={message()} onDismiss={clearNotification} />}
+          {(notification) => (
+            <AppNotificationToast notification={notification()} onDismiss={clearNotification} />
+          )}
         </Show>
         <Show when={showGlobalStartupChip()}>
           <TerminalStartupChip />

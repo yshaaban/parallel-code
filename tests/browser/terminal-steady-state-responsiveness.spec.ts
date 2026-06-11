@@ -140,28 +140,46 @@ test.describe('browser-lab steady-state responsiveness', () => {
         minimumCount: 6,
         terminalIndex: focusedShell.terminalIndex,
       });
-      const [outputDiagnostics, rendererDiagnostics, uiFluidityDiagnostics] = await Promise.all([
-        getOutputDiagnostics(page),
-        getRendererDiagnostics(page),
-        getUiFluidityDiagnostics(page),
-      ]);
+      const uiFluidityDiagnostics = await getUiFluidityDiagnostics(page);
 
       expect(snapshot.summary.count).toBeGreaterThanOrEqual(6);
       expect(snapshot.droppedTraces).toBe(0);
       expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(32);
       expect(snapshot.summary.endToEndMs.p95).toBeLessThan(36);
-      expect(
-        outputDiagnostics?.summary.writes.byPriority['visible-background'].calls ?? 0,
-      ).toBeGreaterThan(0);
-      expect(
-        uiFluidityDiagnostics?.terminalOutputPerFrame.visibleBackgroundBytes.p95 ?? 0,
-      ).toBeGreaterThan(0);
-      expect(
-        rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
-      ).toBe(0);
-      expect(
-        rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY,
-      ).toBe(0);
+      // Focused-typing preemption may defer visible-background writes past the
+      // burst itself; the streaming sibling must still render shortly after.
+      await expect
+        .poll(
+          async () => {
+            const polledDiagnostics = await getOutputDiagnostics(page);
+            return polledDiagnostics?.summary.writes.byPriority['visible-background'].calls ?? 0;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(0);
+      await expect
+        .poll(
+          async () => {
+            const polledFluidity = await getUiFluidityDiagnostics(page);
+            return polledFluidity?.terminalOutputPerFrame.visibleBackgroundBytes.p95 ?? 0;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(0);
+      // The last input batch's ack may still be in flight at the snapshot
+      // instant; the gauges must drain to zero once the burst settles.
+      await expect
+        .poll(
+          async () => {
+            const polledRenderer = await getRendererDiagnostics(page);
+            return (
+              (polledRenderer?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY) +
+              (polledRenderer?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY)
+            );
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(0);
       expect(
         uiFluidityDiagnostics?.frames.overBudget50ms ?? Number.POSITIVE_INFINITY,
       ).toBeLessThanOrEqual(2);
@@ -220,23 +238,39 @@ test.describe('browser-lab steady-state responsiveness', () => {
         focusTerminal: false,
         terminalIndex: focusedShell.terminalIndex,
       });
-      const [backendDiagnostics, outputDiagnostics, rendererDiagnostics, uiFluidityDiagnostics] =
-        await Promise.all([
-          getBackendDiagnostics(browserLab, request),
-          getOutputDiagnostics(page),
-          getRendererDiagnostics(page),
-          getUiFluidityDiagnostics(page),
-        ]);
+      const [backendDiagnostics, rendererDiagnostics, uiFluidityDiagnostics] = await Promise.all([
+        getBackendDiagnostics(browserLab, request),
+        getRendererDiagnostics(page),
+        getUiFluidityDiagnostics(page),
+      ]);
 
       expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
       expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
       expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
-      expect(outputDiagnostics?.summary.writes.byPriority.hidden.calls ?? 0).toBeGreaterThan(0);
-      expect(uiFluidityDiagnostics?.terminalOutputPerFrame.hiddenBytes.p95 ?? 0).toBeGreaterThan(0);
-      expect(
-        uiFluidityDiagnostics?.terminalOutputPerFrame.hiddenQueueAgeMs.p95 ??
-          Number.POSITIVE_INFINITY,
-      ).toBeLessThanOrEqual(96);
+      // The hidden sibling keeps streaming through the renderer pipeline
+      // either as real hidden-lane writes or as counted suppressed bytes once
+      // render hibernation engages between its output bursts; both prove the
+      // backlog kept flowing without drops while typing stayed responsive.
+      await expect
+        .poll(
+          async () => {
+            const polledDiagnostics = await getOutputDiagnostics(page);
+            return (
+              (polledDiagnostics?.summary.writes.byPriority.hidden.calls ?? 0) +
+              (polledDiagnostics?.summary.suppressed.byPriority.hidden.chunks ?? 0)
+            );
+          },
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(0);
+      const settledOutputDiagnostics = await getOutputDiagnostics(page);
+      const settledFluidityDiagnostics = await getUiFluidityDiagnostics(page);
+      if ((settledOutputDiagnostics?.summary.writes.byPriority.hidden.calls ?? 0) > 0) {
+        expect(
+          settledFluidityDiagnostics?.terminalOutputPerFrame.hiddenQueueAgeMs.p95 ??
+            Number.POSITIVE_INFINITY,
+        ).toBeLessThanOrEqual(96);
+      }
       expect(
         uiFluidityDiagnostics?.terminalOutputPerFrame.focusedQueueAgeMs.p95 ??
           Number.POSITIVE_INFINITY,
@@ -252,12 +286,18 @@ test.describe('browser-lab steady-state responsiveness', () => {
         rendererDiagnostics?.terminalRecovery.renderRefreshes ?? Number.POSITIVE_INFINITY,
       ).toBe(0);
       expect(backendDiagnostics.terminalRecovery.snapshotResponses).toBe(0);
-      expect(
-        rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
-      ).toBe(0);
-      expect(
-        rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY,
-      ).toBe(0);
+      await expect
+        .poll(
+          async () => {
+            const polledRenderer = await getRendererDiagnostics(page);
+            return (
+              (polledRenderer?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY) +
+              (polledRenderer?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY)
+            );
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(0);
     } finally {
       await context.close();
     }
@@ -397,13 +437,11 @@ test.describe('browser-lab steady-state responsiveness', () => {
         focusTerminal: false,
         terminalIndex: secondShell.terminalIndex,
       });
-      const [backendDiagnostics, outputDiagnostics, rendererDiagnostics, uiFluidityDiagnostics] =
-        await Promise.all([
-          getBackendDiagnostics(browserLab, request),
-          getOutputDiagnostics(page),
-          getRendererDiagnostics(page),
-          getUiFluidityDiagnostics(page),
-        ]);
+      const [backendDiagnostics, rendererDiagnostics, uiFluidityDiagnostics] = await Promise.all([
+        getBackendDiagnostics(browserLab, request),
+        getRendererDiagnostics(page),
+        getUiFluidityDiagnostics(page),
+      ]);
 
       expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
       expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(26);
@@ -412,11 +450,20 @@ test.describe('browser-lab steady-state responsiveness', () => {
         'interactive-live',
       );
       expect(await getTerminalSurfaceTier(page, firstShell.terminalIndex)).toBe('passive-visible');
+      // The noisy sibling paces at real sleep cost and focused-typing
+      // preemption may defer its writes past the measured keystroke.
+      await expect
+        .poll(
+          async () => {
+            const polledDiagnostics = await getOutputDiagnostics(page);
+            return polledDiagnostics?.summary.writes.byPriority['visible-background'].calls ?? 0;
+          },
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(0);
+      const settledFluidityDiagnostics = await getUiFluidityDiagnostics(page);
       expect(
-        outputDiagnostics?.summary.writes.byPriority['visible-background'].calls ?? 0,
-      ).toBeGreaterThan(0);
-      expect(
-        uiFluidityDiagnostics?.terminalOutputPerFrame.visibleBackgroundBytes.p95 ?? 0,
+        settledFluidityDiagnostics?.terminalOutputPerFrame.visibleBackgroundBytes.p95 ?? 0,
       ).toBeGreaterThan(0);
       expect(
         uiFluidityDiagnostics?.terminalOutputPerFrame.focusedQueueAgeMs.p95 ??

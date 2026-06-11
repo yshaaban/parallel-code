@@ -1,10 +1,21 @@
-import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
+import type {
+  AnyServerStateBootstrapSnapshot,
+  DegradedServerStateBootstrapSnapshot,
+  ResyncVersionMap,
+  ServerStateBootstrapCategory,
+  ServerStateBootstrapPayloadMap,
+  ServerStateBootstrapResultSnapshot,
+} from '../../src/domain/server-state-bootstrap.js';
 import { createServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
 import {
   getCoordinatorBootstrapSnapshot,
   getCoordinatorStateVersion,
 } from '../coordinator/runtime.js';
 import type { PeerPresenceSnapshot, RemoteAccessStatus } from '../../src/domain/server-state.js';
+import {
+  getAgentAvailabilityStateVersion,
+  listAgentAvailabilitySnapshots,
+} from './agent-availability-state.js';
 import {
   getAgentSupervisionStateVersion,
   listAgentSupervisionSnapshots,
@@ -41,64 +52,125 @@ function getRemoteStatusVersion(context: ServerStateBootstrapContext): number {
   return Date.now();
 }
 
+interface ServerStateBootstrapSource {
+  category: ServerStateBootstrapCategory;
+  createSnapshot: () => AnyServerStateBootstrapSnapshot;
+  getVersion: () => number;
+}
+
+function createSource<TCategory extends ServerStateBootstrapCategory>(
+  category: TCategory,
+  getPayload: () => ServerStateBootstrapPayloadMap[TCategory],
+  getVersion: () => number,
+): ServerStateBootstrapSource {
+  return {
+    category,
+    createSnapshot: () =>
+      createServerStateBootstrapSnapshot(
+        category,
+        getPayload(),
+        getVersion(),
+      ) as AnyServerStateBootstrapSnapshot,
+    getVersion,
+  };
+}
+
+function getServerStateBootstrapSources(
+  context: ServerStateBootstrapContext,
+): ServerStateBootstrapSource[] {
+  return [
+    createSource('git-status', listGitStatusSnapshots, getGitStatusStateVersion),
+    createSource(
+      'remote-status',
+      () => context.getRemoteStatus(),
+      () => getRemoteStatusVersion(context),
+    ),
+    createSource(
+      'peer-presence',
+      () => context.getPeerPresenceSnapshots?.() ?? [],
+      () => context.getPeerPresenceVersion?.() ?? Date.now(),
+    ),
+    createSource(
+      'task-command-controller',
+      getTaskCommandControllers,
+      getTaskCommandControllerStateVersion,
+    ),
+    createSource('coordinator', getCoordinatorBootstrapSnapshot, getCoordinatorStateVersion),
+    createSource(
+      'agent-supervision',
+      listAgentSupervisionSnapshots,
+      getAgentSupervisionStateVersion,
+    ),
+    createSource(
+      'agent-availability',
+      listAgentAvailabilitySnapshots,
+      getAgentAvailabilityStateVersion,
+    ),
+    createSource('task-convergence', listTaskConvergenceSnapshots, getTaskConvergenceStateVersion),
+    createSource('task-review', listTaskReviewSnapshots, getTaskReviewStateVersion),
+    createSource(
+      'task-review-signals',
+      listTaskReviewSignalsSnapshots,
+      getTaskReviewSignalsStateVersion,
+    ),
+    createSource('task-steps', listTaskStepsSummarySnapshots, getTaskStepsStateVersion),
+    createSource('task-ports', getTaskPortSnapshots, getTaskPortsStateVersion),
+  ];
+}
+
+export interface GetServerStateBootstrapOptions {
+  categories?: ReadonlyArray<ServerStateBootstrapCategory>;
+}
+
+function createDegradedSnapshot(
+  category: ServerStateBootstrapCategory,
+  error: unknown,
+): DegradedServerStateBootstrapSnapshot {
+  return {
+    category,
+    degraded: true,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+// Per-category failure isolation: one throwing category builder yields a
+// degraded marker for that category instead of failing the whole bootstrap.
 export function getServerStateBootstrap(
   context: ServerStateBootstrapContext,
-): AnyServerStateBootstrapSnapshot[] {
-  return [
-    createServerStateBootstrapSnapshot(
-      'git-status',
-      listGitStatusSnapshots(),
-      getGitStatusStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'remote-status',
-      context.getRemoteStatus(),
-      getRemoteStatusVersion(context),
-    ),
-    createServerStateBootstrapSnapshot(
-      'peer-presence',
-      context.getPeerPresenceSnapshots?.() ?? [],
-      context.getPeerPresenceVersion?.() ?? Date.now(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-command-controller',
-      getTaskCommandControllers(),
-      getTaskCommandControllerStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'coordinator',
-      getCoordinatorBootstrapSnapshot(),
-      getCoordinatorStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'agent-supervision',
-      listAgentSupervisionSnapshots(),
-      getAgentSupervisionStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-convergence',
-      listTaskConvergenceSnapshots(),
-      getTaskConvergenceStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-review',
-      listTaskReviewSnapshots(),
-      getTaskReviewStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-review-signals',
-      listTaskReviewSignalsSnapshots(),
-      getTaskReviewSignalsStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-steps',
-      listTaskStepsSummarySnapshots(),
-      getTaskStepsStateVersion(),
-    ),
-    createServerStateBootstrapSnapshot(
-      'task-ports',
-      getTaskPortSnapshots(),
-      getTaskPortsStateVersion(),
-    ),
-  ];
+  options: GetServerStateBootstrapOptions = {},
+): ServerStateBootstrapResultSnapshot[] {
+  const requested = options.categories === undefined ? null : new Set(options.categories);
+  const snapshots: ServerStateBootstrapResultSnapshot[] = [];
+  for (const source of getServerStateBootstrapSources(context)) {
+    if (requested !== null && !requested.has(source.category)) {
+      continue;
+    }
+
+    try {
+      snapshots.push(source.createSnapshot());
+    } catch (error) {
+      snapshots.push(createDegradedSnapshot(source.category, error));
+    }
+  }
+
+  return snapshots;
+}
+
+// Per-category server-state versions in the shared resync vocabulary. These are
+// per-boot counters; the persisted workspaceRevision ('workspace') is owned by
+// the saved-state storage layer, not this map.
+export function getServerStateBootstrapVersions(
+  context: ServerStateBootstrapContext,
+): ResyncVersionMap {
+  const versions: ResyncVersionMap = {};
+  for (const source of getServerStateBootstrapSources(context)) {
+    try {
+      versions[source.category] = source.getVersion();
+    } catch {
+      // A throwing version getter leaves the category out of the map, so the
+      // reconnect handshake treats it as stale and rebuilds it.
+    }
+  }
+
+  return versions;
 }

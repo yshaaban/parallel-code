@@ -197,12 +197,14 @@ export const COORDINATOR_LANDING_STATUSES = [
 export const COORDINATOR_EVENT_TYPES = [
   'snapshot-required',
   'run-upserted',
+  'run-meta-upserted',
   'run-removed',
   'subtask-upserted',
   'subtask-removed',
   'prompt-upserted',
   'prompt-removed',
   'landing-upserted',
+  'workflow-upserted',
 ] as const;
 
 export type CoordinatorRunStatus = (typeof COORDINATOR_RUN_STATUSES)[number];
@@ -262,6 +264,14 @@ export const COORDINATOR_LIMITS = {
   workflowDefaultLaneTimeoutMs: 15 * 60 * 1000,
   workflowDefaultWallClockMs: 60 * 60 * 1000,
   workflowMaxLaneTimeoutMs: 24 * 60 * 60 * 1000,
+} as const;
+
+/** Save-time retention caps applied by coordinator persistence compaction. */
+export const COORDINATOR_PERSISTENCE_LIMITS = {
+  maxRetainedCompletedRuns: 20,
+  maxRetainedResumesPerRun: 20,
+  maxRetainedSettledPromptsPerRun: 100,
+  maxRetainedToolCallResultBytes: 4_194_304,
 } as const;
 
 export interface CoordinatorRunLimits {
@@ -665,6 +675,16 @@ export interface CoordinatorRunSnapshot {
   workflows: CoordinatorWorkflowSnapshot[];
 }
 
+/**
+ * Run-scalar payload for 'run-meta-upserted' events: the run header without its
+ * entity collections, so a status/pause/resume mutation no longer ships every
+ * subtask, prompt, landing, and workflow snapshot over the wire.
+ */
+export type CoordinatorRunMetaSnapshot = Omit<
+  CoordinatorRunSnapshot,
+  'landing' | 'promptQueue' | 'subtasks' | 'workflows'
+>;
+
 export interface CoordinatorBootstrapSnapshot {
   generatedAt: number;
   runs: CoordinatorRunSnapshot[];
@@ -683,6 +703,14 @@ export interface CoordinatorEventEnvelope {
   tombstone?: boolean;
 }
 
+export interface CoordinatorPersistenceHealth {
+  degraded: boolean;
+  lastSuccessAt: number | null;
+  lastErrorAt?: number;
+  lastError?: string;
+  pendingFlush: boolean;
+}
+
 export interface CoordinatorDiagnosticsSnapshot {
   activeRuns: number;
   activeSubtasks: number;
@@ -690,6 +718,7 @@ export interface CoordinatorDiagnosticsSnapshot {
   droppedToSnapshotEvents: number;
   hiddenOutputDroppedBytes: number;
   hiddenOutputRetainedBytes: number;
+  persistence?: CoordinatorPersistenceHealth;
   promptQueueDepth: number;
   queuedSpawns: number;
   stateVersion: number;
@@ -1964,6 +1993,24 @@ export function isCoordinatorRunSnapshot(value: unknown): value is CoordinatorRu
   );
 }
 
+export function isCoordinatorRunMetaSnapshot(value: unknown): value is CoordinatorRunMetaSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.coordinatorTaskId === 'string' &&
+    isNonNegativeInteger(value.createdAt) &&
+    isNonNegativeInteger(value.eventVersion) &&
+    typeof value.id === 'string' &&
+    isCoordinatorRunLimits(value.limits) &&
+    isOptionalNonNegativeInteger(value.pausedAt) &&
+    typeof value.projectId === 'string' &&
+    isProjectMode(value.projectMode) &&
+    typeof value.projectRoot === 'string' &&
+    (value.resumes === undefined || isArrayOf(value.resumes, isCoordinatorRunResumeSnapshot)) &&
+    isCoordinatorRunStatus(value.status) &&
+    isNonNegativeInteger(value.updatedAt)
+  );
+}
+
 export function isCoordinatorBootstrapSnapshot(
   value: unknown,
 ): value is CoordinatorBootstrapSnapshot {
@@ -1998,13 +2045,30 @@ export function isCoordinatorEventEnvelope(value: unknown): value is Coordinator
       return value.payload === null || value.payload === undefined || isRecord(value.payload);
     case 'run-upserted':
       return isCoordinatorRunSnapshot(value.payload);
+    case 'run-meta-upserted':
+      return isCoordinatorRunMetaSnapshot(value.payload);
     case 'subtask-upserted':
       return isCoordinatorSubtaskSnapshot(value.payload);
     case 'prompt-upserted':
       return isCoordinatorPromptRequestSnapshot(value.payload);
     case 'landing-upserted':
       return isCoordinatorLandingStateSnapshot(value.payload);
+    case 'workflow-upserted':
+      return isCoordinatorWorkflowSnapshot(value.payload);
   }
+}
+
+export function isCoordinatorPersistenceHealth(
+  value: unknown,
+): value is CoordinatorPersistenceHealth {
+  return (
+    isRecord(value) &&
+    typeof value.degraded === 'boolean' &&
+    (value.lastSuccessAt === null || isNonNegativeInteger(value.lastSuccessAt)) &&
+    isOptionalNonNegativeInteger(value.lastErrorAt) &&
+    isOptionalString(value.lastError) &&
+    typeof value.pendingFlush === 'boolean'
+  );
 }
 
 export function isCoordinatorDiagnosticsSnapshot(
@@ -2018,6 +2082,7 @@ export function isCoordinatorDiagnosticsSnapshot(
     isNonNegativeInteger(value.droppedToSnapshotEvents) &&
     isNonNegativeInteger(value.hiddenOutputDroppedBytes) &&
     isNonNegativeInteger(value.hiddenOutputRetainedBytes) &&
+    (value.persistence === undefined || isCoordinatorPersistenceHealth(value.persistence)) &&
     isNonNegativeInteger(value.promptQueueDepth) &&
     isNonNegativeInteger(value.queuedSpawns) &&
     isNonNegativeInteger(value.stateVersion)

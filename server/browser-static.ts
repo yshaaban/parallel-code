@@ -3,6 +3,23 @@ import { existsSync } from 'fs';
 import path from 'path';
 
 const HTML_CACHE_CONTROL = 'no-store, max-age=0';
+const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const DEFAULT_STATIC_CACHE_CONTROL = 'public, max-age=0';
+
+const COMPRESSIBLE_CONTENT_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+};
+
+const HASHED_ASSET_PATH_PATTERN = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9.]+$/;
+
+export interface PrecompressedVariant {
+  encoding: 'br' | 'gzip';
+  path: string;
+}
 
 export interface RegisterBrowserStaticRoutesOptions {
   app: express.Express;
@@ -10,6 +27,35 @@ export interface RegisterBrowserStaticRoutesOptions {
   distDir: string;
   distRemoteDir: string;
   isAuthorizedRequest: (req: express.Request) => boolean;
+}
+
+export function selectPrecompressedVariant(
+  acceptEncoding: string | undefined,
+  filePath: string,
+  exists: (candidatePath: string) => boolean,
+): PrecompressedVariant | null {
+  if (!acceptEncoding) {
+    return null;
+  }
+
+  const extension = path.extname(filePath).toLowerCase();
+  if (!(extension in COMPRESSIBLE_CONTENT_TYPES)) {
+    return null;
+  }
+
+  const encodings = acceptEncoding.toLowerCase();
+  if (/(^|[\s,])br($|[\s,;])/.test(encodings) && exists(`${filePath}.br`)) {
+    return { encoding: 'br', path: `${filePath}.br` };
+  }
+  if (/(^|[\s,])gzip($|[\s,;])/.test(encodings) && exists(`${filePath}.gz`)) {
+    return { encoding: 'gzip', path: `${filePath}.gz` };
+  }
+
+  return null;
+}
+
+export function isHashedAssetRequestPath(requestPath: string): boolean {
+  return HASHED_ASSET_PATH_PATTERN.test(requestPath);
 }
 
 function setHtmlCacheHeaders(res: express.Response): void {
@@ -22,14 +68,84 @@ function getRequestSearch(req: express.Request): string {
   return queryIndex >= 0 ? originalUrl.slice(queryIndex) : '';
 }
 
+function resolveStaticFilePath(rootDir: string, requestPath: string): string | null {
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(requestPath);
+  } catch {
+    return null;
+  }
+
+  const resolved = path.normalize(path.join(rootDir, decodedPath));
+  if (resolved !== rootDir && !resolved.startsWith(`${rootDir}${path.sep}`)) {
+    return null;
+  }
+
+  return resolved;
+}
+
 function createStaticHtmlHandler(rootDir: string): express.RequestHandler {
-  return express.static(rootDir, {
+  const identityHandler = express.static(rootDir, {
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.html')) {
         setHtmlCacheHeaders(res);
+        return;
+      }
+
+      const requestPath = res.req.path;
+      if (isHashedAssetRequestPath(requestPath)) {
+        res.setHeader('Cache-Control', IMMUTABLE_CACHE_CONTROL);
+      }
+      if (path.extname(filePath).toLowerCase() in COMPRESSIBLE_CONTENT_TYPES) {
+        res.setHeader('Vary', 'Accept-Encoding');
       }
     },
   });
+
+  return (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      identityHandler(req, res, next);
+      return;
+    }
+
+    const filePath = resolveStaticFilePath(rootDir, req.path);
+    if (!filePath) {
+      identityHandler(req, res, next);
+      return;
+    }
+
+    const acceptEncodingHeader = req.headers['accept-encoding'];
+    const variant = selectPrecompressedVariant(
+      typeof acceptEncodingHeader === 'string' ? acceptEncodingHeader : undefined,
+      filePath,
+      existsSync,
+    );
+    if (!variant) {
+      identityHandler(req, res, next);
+      return;
+    }
+
+    const extension = path.extname(filePath).toLowerCase();
+    res.sendFile(
+      variant.path,
+      {
+        cacheControl: false,
+        headers: {
+          'Cache-Control': isHashedAssetRequestPath(req.path)
+            ? IMMUTABLE_CACHE_CONTROL
+            : DEFAULT_STATIC_CACHE_CONTROL,
+          'Content-Encoding': variant.encoding,
+          'Content-Type': COMPRESSIBLE_CONTENT_TYPES[extension] ?? 'application/octet-stream',
+          Vary: 'Accept-Encoding',
+        },
+      },
+      (error) => {
+        if (error && !res.headersSent) {
+          identityHandler(req, res, next);
+        }
+      },
+    );
+  };
 }
 
 function isAuthExemptRequest(req: express.Request, authGatePath: string): boolean {
