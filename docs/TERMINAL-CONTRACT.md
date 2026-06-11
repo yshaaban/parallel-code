@@ -47,8 +47,12 @@ PTY output is byte truth. The backend records bytes before presentation:
 - PTY data is captured as bytes at the backend boundary. If the PTY runtime supplies strings, the
   backend encodes that string once for the byte stream; if the PTY runtime supplies bytes, the
   backend preserves those bytes directly.
-- The backend appends bytes to scrollback, updates the terminal-state mirror, increments
-  `outputCursor` by byte length, and only then batches output to attached channels.
+- The backend appends bytes to scrollback and increments `outputCursor` by byte length on the hot
+  path; utf8 decoding plus supervision, port, and input-trace scans and terminal-state-mirror
+  writes happen once per batch flush on the already-batched buffer (tagged with the cumulative byte
+  cursor), and they run even when no channel is attached so unattached agents keep supervision
+  truth. Flush-time scanning preserves byte-identical end state because tail concat+slice is
+  associative.
 - `outputCursor` is a byte cursor over backend PTY output, not a line count, render count, or UI
   scroll position.
 - Transport may coalesce adjacent `Data` payloads, choose binary frames for channel delivery, or
@@ -110,6 +114,10 @@ Backend terminal recovery returns exactly these recovery kinds:
   The renderer may reset and replay the returned scrollback bytes.
 - `terminal-state`: startup recovery can return serialized backend terminal state from the
   terminal-state mirror. The renderer may reset and apply this state after aligning geometry.
+- `tail-needed`: a cursor-claiming request missed the retained window and the capped snapshot would
+  truncate retained scrollback. The renderer answers with exactly one bounded (64KB) rendered-tail
+  re-request (phase two, without a cursor claim) so the backend can prove a delta; the phase-two
+  response resolves to one of the other kinds.
 
 Only `snapshot` and `terminal-state` are full-state recoveries. Only full-state recovery may show
 blocking `restoring` UI or call `term.reset()`. `noop` and `delta` are non-destructive continuity
@@ -119,6 +127,37 @@ Visible non-shell startup recovery may use the startup recovery batch path. Visi
 hidden attach, reconnect, and non-startup recovery stay on their documented recovery paths. Changing
 that split is a terminal contract change.
 
+Recovery request and pause lifetime rules:
+
+- A terminal attach is one pipelined `AttachTerminalSession` round trip: the backend binds the
+  output channel for the requesting client, runs the spawn/attach workflow, and captures the
+  initial recovery entry in the same backend tick. Ordering guarantee: the recovery cursor is
+  captured before any `Data` frame is sent on the newly bound channel, so attach replay never races
+  live output. Because of that ordering guarantee, output queued while the initial attach entry
+  waits for apply is strictly post-cursor continuity: the renderer must keep it and flush it after
+  apply, never drop it. The request carries optimistic geometry (last-known or 80x24);
+  attach-to-existing never resizes, and fresh spawns use the requested geometry. Fit gates paint,
+  never spawn.
+- An initial attach claims the renderer's true rendered cursor (0 on a fresh mount), which keeps
+  reload reattach on the non-destructive delta path. Cursor-hit deltas are uncapped by design (live
+  continuity must not be truncated), with one exception: a fresh-mount cursor-0 delta has no
+  rendered history to preserve and is a full-state transfer in disguise, so when it exceeds the
+  requested `snapshotByteLimit` the backend resolves it to the capped snapshot instead of shipping
+  the entire retained ring inline.
+- Non-attach recoveries (reconnect, backpressure, hibernate) are cursor-first: they carry
+  `outputCursor` and a `snapshotByteLimit` only, never a rendered tail. The backend keeps the
+  cursor-hit delta fast path and caps every snapshot (including reconnect snapshots) at the
+  requested limit; `tail-needed` is the only path that requests renderer bytes, and it is bounded.
+- The backend owns the restore pause lifetime for batched recoveries: every batched recovery
+  response (and the attach RPC) holds its own request-scoped `restore` pause under a unique
+  `batchPauseId`, even when the agent is already paused — restore pause leases stack, so one
+  client's release cannot expose another client's pre-apply window. The client releases every
+  pause id it observed (geometry-mismatch re-fetches and `tail-needed` phase two can each mint
+  one) fire-and-forget (`ReleaseTerminalRecoveryPause`) after applying or abandoning the entry,
+  and a 5s server auto-resume timer covers a lost release. Batched recoveries carry zero
+  per-terminal `PauseAgent`/`ResumeAgent` round trips; the explicit pause/resume IPC remains for
+  non-batched callers (for example renderer-loss blocking flows and scrollback batch reads).
+
 ## Cursor, Readiness, And Presentation
 
 Terminal readiness is stricter than DOM existence.
@@ -127,7 +166,7 @@ Terminal readiness is stricter than DOM existence.
 
 - `binding`: session wiring or backend channel binding is not complete.
 - `attaching`: initial attach, fit, or first-mount readiness is still stabilizing.
-- `restoring`: a blocking recovery path is running or a restore resume failure is still unresolved.
+- `restoring`: a blocking recovery path is running.
 - `ready`: fit, recovery gating, restore pause/resume, and queued input/resize drains are complete
   enough for real interaction.
 - `error`: the session failed and must not accept terminal input.
@@ -142,6 +181,11 @@ Cursor blink follows presentation truth, not focus alone. A cursor may blink onl
 is focused, ready, live, not peer-controlled, not render-hibernating, and not restore-blocked.
 Recovery, hibernation wake, and deferred resize must suppress stale cursor presentation until the
 surface is trustworthy again.
+
+`data-terminal-live-render-ready` is the single "safe to reveal" signal: it is present exactly when
+the session is `ready`, the presentation mode is `live`, and the terminal is focused or visible.
+Placeholder removal, surface swaps, and queued-input indicator teardown must key off this
+transition, never off loading labels or status strings.
 
 Browser-lab and UI code should prefer structural readiness and presentation attributes over loading
 copy. Loading text can change without changing the contract.

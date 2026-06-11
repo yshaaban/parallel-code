@@ -64,7 +64,16 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
    steady-state benchmarks before leaning on browser repros:
    - `npm run benchmark:terminal:renderer`
    - `npm run benchmark:terminal:attach-recovery`
+     - scheduler scenarios: `foreground-serialized`, `background-two-slot`,
+       `reprioritized-pending` (background fleet plus a pending promoted-foreground candidate; the
+       asserted bar is `maxActive >= 2`, no serial collapse), and `dispatch-release` (slots
+       released at attach dispatch; the asserted bar is a sub-60ms 24-terminal queue span)
    - `npm run benchmark:terminal:steady-state -- --iterations 12`
+   - server-side attach/recovery counters live in the backend runtime diagnostics snapshot:
+     `terminalRecovery` (per-kind responses including `tailNeededResponses`, returned bytes) and
+     `terminalStateMirror` (enqueue/serialize/drain). Held recovery batch pauses auto-resume after
+     5s, so a stuck-paused terminal after restore points at a lost
+     `ReleaseTerminalRecoveryPause` plus a broken auto-resume timer, in that order
 5. if the issue is about perceived browser fluidity under real many-terminal load, run the
    browser UI-fluidity gate after the specialized harnesses:
    - `npm run profile:terminal:ui-fluidity:gate`

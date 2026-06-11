@@ -232,8 +232,71 @@ For browser startup architecture:
 - do not treat reconnect restore tests alone as proof of cold browser startup behavior
 - use [tests/browser/browser-startup-metrics.spec.ts](../tests/browser/browser-startup-metrics.spec.ts)
   when a change needs real browser cold-start timing evidence
+- the startup-metrics spec owns the asserted TTI budgets on its gated lane
+  (`npm run benchmark:browser:startup-metrics`, which sets `RUN_BROWSER_STARTUP_METRICS=1`; run it
+  on the benchmark runner with the machine otherwise idle):
+  selected-terminal queued-to-interactive (attach trace `attachQueuedAtMs` to `readyAtMs`) of
+  250ms / 350ms / 800ms for the 1 / 8 / 24-terminal fixtures, and reconnect `restoreTotalMs` of
+  500ms on the interactive-node fixture; the steady-state spec owns the echo p95 bar. Budget
+  re-baselines require an explicit note here: the 24-terminal bar was set to 800ms (plan target
+  500ms) because the cold fixture pays a real fresh PTY spawn during a 24-task cold bootstrap
+  (~590-615ms measured locally), not an attach-to-existing
+- the attach pipeline's deterministic CI bars live in node/runtime tests: exactly one backend
+  round trip per attach (`terminal-session.test.tsx`), zero per-terminal pause/resume invokes
+  during batched restores (`terminal-recovery-runtime.test.tsx`), no serial collapse with a
+  pending foreground candidate plus the 24-terminal dispatch-release queue span
+  (`npm run benchmark:terminal:attach-recovery`)
 - record captures and comparisons in
   [BROWSER-BOOTSTRAP-METRICS-2026-04-03.md](./BROWSER-BOOTSTRAP-METRICS-2026-04-03.md)
+- server boot-pipeline changes are proven by `server/boot-pipeline.test.ts` ordering and count
+  assertions (bounded `gitSubprocessCount` at listen, hydrated cold-bootstrap categories,
+  focus-priority refresh ordering, the no-retry coordinator first call), never by wall-clock
+  budgets; the wall-clock numbers belong to the `npm run profile:server:boot` lab scorecard
+  recorded in the metrics doc
+- the cold-bootstrap handler must stay structurally free of process spawns and probing: the
+  hung-prober test in `electron/ipc/system-handlers.test.ts` (command-resolver/hydra probers
+  mocked to never resolve) is the guard, with sticky-availability and probe-scheduling semantics
+  proven at the owner seam in `electron/ipc/agent-availability-state.test.ts`
+- the browser startup critical path is guarded by the recording-invoke round-trip test in
+  `src/app/desktop-session.test.ts`: exactly one awaited network fetch (the cold bootstrap)
+  before the selected-task tier, with plan content and project-path existence applied
+  payload-only and speculation resolved before the tier is announced; do not assert specific
+  attach RPC names there — attach happens after the tier and its channel name belongs to the
+  attach-pipeline owner
+- reconnect payload assertions are value-identity of fields where present, never whole-payload
+  byte identity: the revision-keyed skip legitimately omits `workspaceStateJson`/`appStateJson`,
+  and the no-change path must still prove reconciliation side effects run (review rule 2)
+- derived-state hydration counts as a startup/persistence change: legacy, partial, and corrupt
+  persisted fragments are implicitly part of the proof (`derived-state-persistence.test.ts`,
+  `saved-state-restore.test.ts`), and hydration must stay behind exact identity filters
+- moving work behind the post-listen coordinator runtime loader must keep the coordinator
+  browserless e2e green through awaited readiness at every coordinator entry point, not through
+  client-side retry loops
+
+For perceived-latency presentation work:
+
+- prove the startup-skeleton/false-empty-state contract at the projection seam first
+  (`TilingLayout.test.tsx`: skeleton while presentation is pending with a cached shape, onboarding
+  only for genuinely-first-run users, deterministic enter/exit churn), with one spec-locked
+  browser case (`tests/browser/startup-skeleton.spec.ts`) whose DOM-text history capture proves
+  the first-run copy never persists during a real reload and that skeleton-to-real-columns has no
+  intermediate zero-column frame
+- prove pre-session input buffering at the owner seam
+  (`terminal-pending-session-input.test.tsx`: order, byte cap, drain TTL, reactive count, cleanup)
+  plus `TerminalView.test.tsx` flush-ordering into `session.handleTerminalData`; keep exactly one
+  browser lock (`tests/browser/terminal-preready-input.spec.ts`) asserting the typed marker
+  reaches backend scrollback exactly once — never assert queued-indicator visibility in the
+  browser, the window is timing-fragile once attach is one round trip
+- prove optimistic task creation at the workflow owner seam (`task-creation-optimism.test.ts`:
+  success removal, error+retry, dismiss, the never-in-store invariant); dialog and column
+  component tests stay thin integration checks
+- prove coordinator attention projections in app tests (`task-presentation-status.test.ts`,
+  `coordinator-ui-model` summary) before any browser canary; rail/title-bar affordances are Solid
+  component proofs (`TaskCoordinatorSection.test.tsx`, `TaskTitleBar.test.tsx`) with fake-time
+  coverage for the spawn-ack window
+- time-windowed feedback introduced by this layer (spawn-ack chip, persistent error toasts,
+  pending-input TTL) follows the standing fake-time rule: at least one test advances the clock
+  without unrelated store changes
 
 ## Required Versus Exploratory Validation
 
@@ -716,6 +779,10 @@ Edge cases that are easy to miss:
 
 - legacy persisted fragments
 - corrupt or partial persisted fragments
+- coordinator persistence salvage and compaction: one corrupt run drops only that run, an
+  unreadable primary falls back to `.bak` (quarantining the corrupt file), a failed load never
+  deletes credential files, and save-time compaction strips terminal-run journals/launches under
+  the `COORDINATOR_PERSISTENCE_LIMITS` retention caps (`electron/coordinator/persistence.test.ts`)
 - background terminal attach resuming before the selected surface is ready
 - cleanup before startup fully completes
 - controller/version state surviving a full-state restore incorrectly
@@ -771,6 +838,24 @@ Validate these failure patterns:
 - reconnect restores the wrong category set or misses replayable state
 - clear snapshots drop ordering truth and let older state reapply later
 - cross-plane updates race because the backend did not carry sequence/version truth
+- version-gated resync drift: a reconnecting client presents per-boot category versions against a
+  different server instance, or a stale-category computation resends too little.
+  `tests/contracts/delta-resync.contract.test.ts` is the lane: it asserts the < 5KB no-change
+  blip byte budget at 12-task scale, stale-category-only resend, single `control-replay-batch`
+  frame replay with wholesale `toSeq` adoption, ring compaction (one slot per entity key,
+  tombstone supersession, and the `run-meta-upserted` per-run slot that keeps a blip-window
+  meta mutation from superseding the run's creation snapshot), the instanceId-change
+  full-bootstrap fallback, and the legacy-client full-bootstrap/per-event-replay lock; derive
+  category counts from `SERVER_STATE_BOOTSTRAP_CATEGORIES`, never a literal. The wire seam for
+  the resync fields (query params and auth-message fields into the parsed resync request) is
+  locked positively in `server/browser-websocket.test.ts`, and the client-side instance-change
+  tracker reset is locked in `src/app/server-state-bootstrap-registry.test.ts`
+- `replay-truncated` no longer implies a full client restore (stale categories arrive through the
+  version handshake); a mid-stream sequence gap still forces it, and the
+  `GetBrowserReconnectStatus` mismatch path stays the recovery backstop — proven at
+  `src/runtime/browser-session.runtime.test.ts` (no wall-clock warm window remains)
+- a zombie-OPEN socket after sleep/wake must be detected by the wake liveness probe
+  (`probeLiveness` cases in `src/lib/websocket-client.test.ts`), not by waiting out heartbeats
 
 Edge cases that are easy to miss:
 

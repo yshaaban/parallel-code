@@ -340,11 +340,37 @@ Browser startup now has an explicit split:
   while the renderer applies it through `src/store/browser-cold-bootstrap-projection.ts`,
   restores browser-local client-session state, and keeps background terminal attach blocked until
   the selected terminal gets a head start
+- the cold-bootstrap fetch is the only awaited network round trip before the selected-task
+  startup tier: app shortcuts register before any startup await (handlers no-op on an empty
+  store), the fetch starts before window chrome and runs concurrently with the websocket runtime
+  registration, and the payload folds in what used to be separate round trips — bounded
+  `planContents` (exact persisted `planRelativePath` reads, visible tasks only, count/byte
+  capped), `projectPathsExist` (applied through `applyProjectPathExistence` with a delayed
+  background `validateProjectPaths` for reconciliation), and agent defs with last-known
+  availability
+- the speculative selected-terminal attach lifecycle is owned by
+  `src/app/speculative-terminal-attach.ts`: startup publishes an intent from
+  `peekClientSessionSelection()` (a pure read of the persisted client-session fragment through
+  the same parsers `loadClientSessionState` uses) before any network round trip, and must
+  confirm or discard it against the restored selection identity before announcing the
+  selected-task tier; speculation never writes the store, and v1 ships no prewarm consumer (the
+  attach-pipeline item may register one through the resolution callback)
 - reconnect restore still lives in `src/runtime/browser-session.ts` and continues to use the
   reconnect snapshot path after authenticated control traffic confirms reconnection; if transport
   churn, auth expiry, or restore failure invalidates that restore, `src/app/browser-startup.ts`
   cancels the reconnect-startup mode instead of leaving stale or falsely completed restore
   diagnostics active
+- the full reconnect snapshot is revision-keyed: the client passes its loaded
+  `knownWorkspaceRevision` into `GetBrowserReconnectSnapshot`, the server omits both saved-state
+  JSON payloads on a match (controllers, generations, and running agents still ride along), and
+  `src/runtime/browser-state-sync-controller.ts` treats the payload-free matching snapshot as a
+  verified no-change that still runs client-session reconciliation and project-path validation;
+  revision 0 is the unversioned legacy fallback (legacy `SaveAppState` mutates the file without a
+  revision bump), so the client never claims it as a known revision and the server never skips on
+  it — `appStateJson` is the single legacy payload shipped only when no workspace-state file
+  exists; the handler-side saved-state cache is revision-keyed with no TTL because every save
+  path in the process invalidates it explicitly (hit/miss/invalidation/revision-skip diagnostics
+  keep reporting)
 
 This split keeps first browser loads from behaving like restored Electron sessions.
 
@@ -581,6 +607,152 @@ Responsibilities:
 These modules are low-level. They should provide capabilities that workflows and handlers compose
 rather than quietly becoming use-case layers themselves.
 
+One cross-cutting backend owner is the prioritized work queue:
+
+- `electron/ipc/backend-work-queue.ts`
+
+All deferrable backend recomputation (git-status refresh chains and their convergence / review /
+review-signals fan-out, plus background reconciliation) routes through `enqueueBackendWork` with a
+global concurrency cap (default 3, `PARALLEL_CODE_BACKEND_WORK_CONCURRENCY`) and four priority
+lanes: `interactive` (client-invoked mutation follow-ups) > `selected` > `visible` > `background`.
+The queue dedupes pending jobs by key, reprioritizes focus-derived pending jobs when client focus
+changes, and ages background jobs into the `visible` lane after 60s so they cannot starve forever.
+Client focus arrives through the fire-and-forget `ReportClientTaskFocus` IPC channel
+(`{ selectedTaskId, visibleTaskIds, focusedChannelIds? }`), owned on the renderer side by the
+single reporter `src/app/backend-focus-reporter.ts` (leading-edge on selection change, debounced
+for visibility churn, periodic keepalive against the 60s focus-registry TTL). Identity comes from
+the authenticated browser client-id header (or the single Electron renderer), never request JSON,
+and a client's focus contribution is cleared on disconnect. The `background` lane is gated until
+`releaseBackendBackgroundWork()` runs after listen/window-load; it is the single post-listen
+background scheduler, and the slow reconciliation sweep (~15s after release, one task at a time,
+idle-lanes-only) repairs offline drift for never-focused tasks.
+
+Derived backend snapshots are persisted by their backend owner:
+
+- `electron/ipc/derived-state-persistence.ts` writes `<stateDir>/derived-state.json` (debounced
+  ~2s, atomic) from the five snapshot sources: git status, task convergence, task review, task
+  review signals, and task step summaries
+- `electron/ipc/saved-state-restore.ts` is the shared shell-agnostic boot restore composed by both
+  `server/browser-server.ts` and `electron/main.ts`: it syncs metadata registries from one parsed
+  `SavedStateDocument`, starts watchers without scheduling blanket refreshes, hydrates the
+  persisted derived snapshots behind exact identity filters (taskId + worktreePath + branchName +
+  projectId; git-status entries must belong to a registered watcher worktree), and registers every
+  restored task with the background reconciliation sweep
+- hydrated snapshots may be stale until a demand refresh runs; the UI already presents
+  `updatedAt`-relative recency, the selected task refreshes on first focus, and watchers cover live
+  changes
+- hydrated snapshots are emitted with fresh per-boot `stateVersion` counters, exactly like
+  recomputed snapshots; all server-state category versions are per-boot, so the reconnect-version
+  handshake carries the server instance identity (`getServerInstanceId()` in
+  `electron/ipc/server-instance.ts`, a random UUID per server process) before it may skip
+  bootstrap categories — presented versions are honored only when the presented instance id
+  matches the current process, so a restarted server always serves the full bootstrap path
+- the shared resync version vocabulary is `ResyncVersionMap` in
+  `src/domain/server-state-bootstrap.ts`: per-category entries are the per-boot bootstrap
+  versions (exposed by `getServerStateBootstrapVersions` in
+  `electron/ipc/server-state-bootstrap.ts`), `'workspace'` IS the persisted `workspaceRevision`
+  (the only restart-safe version, already consumed by the revision-keyed
+  `GetBrowserReconnectSnapshot` skip), and `'agents'` is the transport agent-list counter
+  carried on `agents` messages; no domain ever gets a second version space
+
+Browser reconnect is version-gated end to end (delta resync):
+
+- the renderer presents its `ResyncVersionMap` (collected by
+  `collectServerStateCategoryVersions` in `src/app/server-state-bootstrap.ts`, injected into the
+  control client through `setBrowserResyncStateProvider`), the last observed agents version, and
+  the last observed `serverInstanceId` as reconnect socket query params
+- `authenticateConnection` (`server/browser-control-plane.ts`) replays the missed window as one
+  `control-replay-batch` frame, skips the agent list when the agents version is current, and
+  sends a `state-bootstrap` containing only the stale categories (the connection-scoped
+  `peer-presence`/`remote-status` categories are always resent); the bootstrap message doubles as
+  the handshake-complete signal and always carries `serverInstanceId`. Legacy clients (no
+  presented versions) keep the unconditional full bootstrap and per-event replay
+- the control-event replay ring compacts by caller-supplied key
+  (`getControlEventCompactionKey`): only full-replace-per-key message classes may compact
+  (coordinator events by entityKey, git-status by worktree, task-ports by task, peer-presences,
+  remote-status); tombstones share the entity's key so they supersede the earlier upsert.
+  `run-meta-upserted` is the one partial-payload coordinator event (run scalars only), so it
+  compacts on its own per-run slot instead of the run's entityKey — a blip-window meta mutation
+  can never supersede the `run-upserted` creation snapshot in the ring. The client adopts the
+  batch frame's `toSeq` wholesale because compaction makes inner seqs legitimately
+  non-contiguous; mid-stream gap detection for live traffic is unchanged. Per-event (legacy)
+  replay is reserved for gap-free windows: when compaction or eviction left holes in the missed
+  window, the transport sends only the `replay-truncated` signal instead of a holey per-event
+  replay — gap-detecting legacy consumers would otherwise misfire on the seq jump (the remote
+  shell answers gaps with a hard reconnect whose own churn re-compacts the window, looping
+  forever). Old clients answer `replay-truncated` with their full restore; the current client
+  core adopts the signal's `latestSeq` wholesale so live traffic continues gap-free while the
+  handshake bootstrap repairs state. On the client, the coordinator store applier adopts an
+  event's `categorySeq` only when the event was fully applicable: orphan sub-entity deltas (and
+  the meta-seeds-missing-run repair) leave the presented coordinator version stale so the next
+  resync handshake resends the category
+- batch-replay frames and conditional bootstraps ride the same strict-FIFO sequenced control send
+  path (lane 0) as live broadcasts; nothing bypasses it
+- the renderer no longer gates the reconnect-status skip on a 30s wall-clock window: whenever
+  sequenced traffic confirmed the reconnect and no mid-stream sequence gap occurred, the cheap
+  `GetBrowserReconnectStatus` content check (workspaceRevision / taskCommandControllerVersion /
+  agentGenerations) decides; the status payload also carries `serverInstanceId`, but the skip
+  comparison does not need it — taskCommandControllerVersion and agentGenerations are per-boot,
+  so an instance change always fails the content check. `replay-truncated` no longer forces a
+  full restore (stale categories arrive through the handshake), only a sequence gap or a status
+  mismatch does
+- per-boot category versions are only comparable within one server instance on the client too:
+  the browser state-bootstrap applier (`src/app/server-state-bootstrap-registry.ts`) tracks the
+  `serverInstanceId` carried on every state-bootstrap message and, when it changes (standalone
+  server restarted under a surviving tab), resets every category's version tracking
+  (`resetServerStateVersionTrackingForInstanceChange` in `src/app/server-state-bootstrap.ts`)
+  before hydrating — otherwise the versioned replacement appliers would drop the restarted
+  server's lower-versioned full bootstrap and wedge those categories until a page reload
+- wake events (`online`/`pageshow`/visible after a >5s hidden gap) probe an OPEN socket with a 2s
+  ping deadline (`probeLiveness` in `src/lib/websocket-client.ts`, policy in
+  `WAKE_LIVENESS_PROBE`) instead of trusting it; a miss force-closes the zombie socket so the
+  fast-reconnect table takes over
+- one degraded-category contract covers bootstrap failures: a throwing category builder yields a
+  `DegradedServerStateBootstrapSnapshot` marker instead of failing the whole bootstrap; the
+  renderer records the degraded category, keeps prior state, and retries it targetedly (browser:
+  the `request-state-bootstrap` control message; initial bootstrap: a single delayed refetch in
+  `src/app/session-bootstrap-controller.ts`)
+
+Task-command leases get a reconnect grace on both sides:
+
+- the control plane defers the lease release for a disconnected clientId by
+  `TASK_COMMAND_LEASE_RECONNECT_GRACE_MS` (30s); presence/takeover cleanup stays immediate,
+  natural lease expiry (15s, non-renewing holder) still governs, and never-connected automation
+  clientIds (`coordinator:` prefixes) keep immediate-prune semantics. Lease ownership itself is
+  untouched: a peer takeover during the grace window wins and is never resurrected
+- the renderer suspends (rather than invalidates) lease renewals on transport loss
+  (`suspendAllTaskCommandLeaseRenewals`) and re-claims each suspended lease through the ordinary
+  non-takeover acquire on reconnect, adopting the backend's NEW lease generation; denial
+  invalidates that task's sessions, and a 30s client-side deadline falls back to the old full
+  invalidation. Transport detects, the control plane defers release, and
+  `electron/ipc/task-command-leases.ts` is unchanged
+
+Agent availability is backend-owned sticky state:
+
+- `electron/ipc/agent-availability-state.ts` owns per-agent availability snapshots, a monotonic
+  per-boot state version, and background revalidation; probe results are sticky per process and
+  there is no TTL re-probe on any user-facing request path
+- probe rounds route exclusively through the backend work queue: the boot round is enqueued at
+  `background` priority (so it stays gated behind `releaseBackendBackgroundWork()`), and
+  dialog-open / settings-change revalidation runs at `interactive` priority, escalating a pending
+  boot round through the queue's dedupe-by-key path instead of adding a second scheduler;
+  repeat revalidation is throttled (~15s) except when the probe-target key changes
+- `electron/ipc/agents.ts` is synchronous-from-state: `listAgents()` and
+  `getAgentDefsWithLastKnownAvailability()` merge `DEFAULT_AGENTS` with last-known snapshots
+  (`availabilityStatus: 'probing'` until the first probe lands) and never spawn a prober inline;
+  the cold-bootstrap handler consumes the same sticky read, so it stays free of process spawns
+- availability replays as the `agent-availability` server-state bootstrap category and pushes as
+  `agent_availability_changed` through the generic `ipc-event` transport; live pushes are
+  versioned envelopes (`AgentAvailabilityChangedEvent`, carrying the same backend state version
+  as the bootstrap snapshot) so `src/app/agent-availability.ts` applies one stale-version guard
+  to both paths — a pre-snapshot event replayed by startup buffering cannot overwrite newer
+  snapshot truth — and the agent-catalog re-merge preserves applied availability so a stale
+  catalog response cannot clobber newer truth
+- the new-task dialog opens synchronously from the store catalog (probing agents stay
+  launchable, with a probing badge in the agent picker) and fires a throttled
+  `RefreshAgentAvailability` invoke in the background; spawn-time `validateCommand` remains the
+  launch authority, so a stale badge can never block a launch
+
 One newer backend service worth calling out is agent supervision:
 
 - `electron/ipc/agent-supervision.ts`
@@ -659,6 +831,7 @@ The current architecture treats some state as backend-owned:
 - git status
 - remote access status
 - agent supervision / attention
+- agent availability (sticky per-process probe results)
 - task step summaries derived from `.claude/steps.json`
 - task port observation and exposure
 
@@ -823,15 +996,31 @@ Relevant files:
 
 Current shape:
 
-1. `TerminalView` registers with the attach scheduler instead of always attaching immediately
-2. the scheduler gives priority to the active task and focused terminal before background terminals
-3. attach scheduler slots are released as soon as spawn/channel bind completes, so expensive replay
-   no longer blocks the next queued terminal from starting its own bind
+1. `TerminalView` registers with the attach scheduler instead of always attaching immediately;
+   cold-hidden non-shell terminals defer their renderer attach entirely until visibility or
+   prewarm intent, keeping the backend session (and supervision) live through
+   `EnsureAgentSessionsBatch` (`src/app/agent-session-ensure.ts`)
+2. the scheduler gives priority to the active task and focused terminal before background
+   terminals; the drain skips ineligible candidates instead of breaking, so one pending foreground
+   candidate cannot collapse background attach concurrency
+3. attach scheduler slots are released as soon as the attach RPC is dispatched
+   (`onAttachDispatched`), so slots only guard renderer CPU phases, never backend round trips
 4. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
-5. reconnect and non-startup recovery still go through the shared `GetTerminalRecoveryBatch`
-   coalescing path, while visible non-shell startup attach now uses a dedicated backend-owned
-   `GetTerminalStartupRecoveryBatch` path
+5. a terminal attach is one pipelined backend round trip: `AttachTerminalSession` binds the output
+   channel for the requesting client, runs the spawn/attach workflow, and captures the initial
+   recovery entry in the same backend tick, so no Data frame on the new channel can precede the
+   recovery cursor; the spawn uses optimistic geometry (last-known or 80x24) and never resizes an
+   existing session, and fit gates paint, never spawn. Reconnect and non-startup recovery still go
+   through the shared `GetTerminalRecoveryBatch` coalescing path, while visible non-shell startup
+   attach uses the backend-owned `GetTerminalStartupRecoveryBatch` path; non-attach recoveries are
+   cursor-first (no rendered-tail upload) with capped snapshots, and a `tail-needed` response asks
+   the client for one bounded 64KB tail before any destructive truncated snapshot. The backend owns
+   the restore pause lifetime for batched recoveries: every recovery request (and the attach RPC)
+   holds its own request-scoped pause under a unique `batchPauseId` even when the agent is already
+   paused (restore pause leases stack), the client releases every pause id it observed after apply,
+   and a 5s server auto-resume timer covers a lost release; this replaces the per-terminal
+   `PauseAgent`/`ResumeAgent` round trips
 6. visible startup recovery is split by terminal type:
    - visible non-shell startup attach uses `GetTerminalStartupRecoveryBatch`, and the backend
      prefers serialized `terminal-state` payloads from its headless xterm mirror for `selected` and
@@ -881,6 +1070,25 @@ Important property:
 - visible-startup recovery is now server-owned terminal-state recovery instead of renderer-serialized
   historical output; if the headless mirror is unavailable, diagnostics count the fallback and the
   backend returns the ordinary compact snapshot path
+- the backend PTY hot loop only records bytes; utf8 decoding plus supervision, port-scan,
+  input-trace, and terminal-state-mirror writes run once per batch flush (and run before the
+  no-subscriber early return so unattached coordinator agents keep supervision live).
+  `TerminalStateMirror.serializeLatest()` answers against the last applied mirror write with an
+  `appliedCursor`, and startup recovery composes the remaining ring-buffer delta on top, so a noisy
+  terminal's mirror backlog cannot stall the selected terminal's recovery
+- the browser channel plane drains through outbound lanes (`server/browser-outbound-lanes.ts`).
+  Lane invariant: ALL sequenced control-plane messages — live broadcasts, per-event replay,
+  batch-replay frames, and bootstrap messages — ride lane 0 on the existing strict-FIFO control
+  send path and are never reordered; only bulk channel data frames ride the lower lanes
+  (focused-channel frames first, then background channels round-robin under a per-pass byte budget
+  with a bufferedAmount soft cap). Focused-channel priority derives from the single focus signal
+  (`ReportClientTaskFocus.focusedChannelIds`, published only by `src/app/backend-focus-reporter.ts`
+  from the renderer registry in `src/app/terminal-focused-channels.ts`). The lane scheduler is
+  per channel manager, not per client: it consumes the merged union of every connected client's
+  focused channel ids, so a channel focused by one client also drains with focused priority (and
+  focused byte budget) toward other clients. That is a deliberate fairness tradeoff, not an
+  ownership change — single-focus authority stays with each renderer — and any move to per-client
+  lanes must keep lane 0 strict-FIFO per client
 - steady-state continuity still stays delta-first: attach / backpressure / hibernate recovery now
   drains queued local output before asking the backend for recovery state so the renderer and
   backend agree on the current tail, while reconnect replacement restores deliberately preserve the
@@ -953,11 +1161,71 @@ The task attention path is a product-facing reliability path.
 - browser mode receives the same supervision events through the browser control plane
 - `src/app/task-attention.ts` projects agent-level supervision into task-level attention entries
 - `src/app/task-presentation-status.ts` combines supervision, lifecycle, and git readiness into a canonical task presentation model
+- coordinator-run operator states (`stale-after-restore`, pending workflow approvals,
+  budget-exhausted workflows) join the same pipeline as renderer-side
+  `coordinator-stale`/`coordinator-approval`/`coordinator-budget` attention reasons; they are pure
+  renderer projections of backend run snapshots (`getCoordinatorTaskAttentionSummary` in
+  `src/app/coordinator-ui-model.ts`), never new wire state, and the domain
+  `TaskAttentionReason` validator is untouched
 - `src/components/SidebarTaskRow.tsx` renders the compact sidebar attention and review signals inline with each task row
 
 This stays separate from raw task/agent dot status derivation. Attention and review are richer task
 supervision concepts, but they now surface through the same compact task-list UI instead of
 separate top-level queue panels.
+
+All renderer-initiated coordinator operator actions (`resume_run`, `pause_run`, `unpause_run`,
+approvals, lane retries) route through one app-layer workflow,
+`src/app/coordinator-operator-actions.ts`, so the coordinator rail, the task title bar Resume
+affordance, and any future surface share one request shape, run lookup, and rejection mapping.
+
+## Perceived-Latency Presentation Owners
+
+The startup and action-feedback layer keeps real latency windows truthful with renderer-local
+presentation state. These owners are presentation-only by design and must never become restore or
+canonical-state truth:
+
+- `src/app/app-startup-status.ts` owns the coarse `isAppStartupPresentationPending()` window:
+  begun at desktop session startup entry, completed at startup completion, failure, and dispose.
+  `TilingLayout`, `Sidebar`, and `SidebarProjectsSection` suppress first-run onboarding while it
+  is pending.
+- `src/app/workspace-shape-cache.ts` caches the last-known workspace shape (task names, project
+  count) in localStorage, keyed by the serving origin so one browser profile pointing at two
+  servers cannot render the wrong ghost shape. It is a presentation cache only: nothing may
+  hydrate canonical state from it. Returning users get correctly-shaped ghost columns
+  (`src/components/WorkspaceStartupSkeleton.tsx`) while bootstrap is pending; users with no cached
+  shape still get first-run onboarding. Two write guardrails keep the cache a truthful
+  returning-user signal: the persistence subscription never schedules a write while
+  `isAppStartupPresentationPending()` (the subscription registers before the awaited cold
+  bootstrap, so an unguarded debounce would clobber the cache with the still-empty store), and an
+  empty shape (no projects, no tasks) is never cached — persisting an emptied workspace removes
+  the entry and a previously cached empty shape reads as no cache.
+- a failed startup must degrade honestly: when bootstrap or the desktop session startup fails
+  over a live connection, clearing the startup status drops the skeleton, so the failure also
+  routes through the persistent error-class notification. A returning user never gets a silent
+  false first-run empty state.
+- `src/app/task-creation-optimism.ts` owns provisional `PendingTaskCreation` records rendered as
+  `src/components/PendingTaskColumn.tsx`. Pending ids never enter `store.tasks`/`taskOrder`, are
+  never persisted or synced, and there is deliberately no provisional-id to real-id swap: the real
+  task lands through the unchanged `createTask` store insert and the ghost is removed in the same
+  resolve continuation. Pending panels mount as `transient` `ResizablePanel` children, which are
+  excluded from panel-size persistence so provisional ids can never leak into `store.panelSizes`.
+- optimistic coordinator action state must drive the click intent it renders: while the
+  pause/unpause flip is active, the rail derives the label, busy id, and dispatched tool from the
+  flip target (never from the stale run view), and an accepted resume keeps the rail/title-bar
+  Resume controls disabled until a newer run snapshot lands so duplicate requests cannot surface
+  spurious rejection alerts.
+- `src/components/terminal-view/terminal-pending-session-input.ts` buffers keystrokes typed
+  between focusing a terminal and the session object existing, keyed by `terminalStartupKey` with
+  a byte cap and a drain TTL. `acceptStartedTerminalSession` drains it into
+  `session.handleTerminalData` before any later input; the task-state cleanup authority clears it
+  on task removal.
+- the terminal loading overlay renders a dimmed static last-known screen
+  (`getTaskTerminalPlaceholderTail` in `src/store/task-terminal-slate.ts`, falling back to the
+  supervision preview on cold start) under the masked surface. Placeholder removal and the
+  queued-input indicator key off the `data-terminal-live-render-ready` transition per
+  TERMINAL-CONTRACT, never off loading copy.
+- error-class notifications (`src/store/notification.ts`) persist until dismissed and carry the
+  failed action name; info notifications keep the auto-dismiss window.
 
 ## Bundled Runtime Assets
 
@@ -972,6 +1240,22 @@ directory layout. The rule is:
 
 - bundled tools should either work everywhere the product claims they work
 - or fail with a concrete reason that the UI can surface
+
+Browser static delivery is precompressed and cache-aware:
+
+- `scripts/compress-dist-assets.mjs` (wired into `prepare:browser-artifacts`) writes `.gz` and
+  `.br` siblings for compressible `dist`/`dist-remote` assets; `--check` is the CI byte-budget gate
+  (gzipped main bundle < 250KB plus the terminal-session modulepreload link), enforced because
+  `prepare:browser-artifacts` runs it after the compress step and CI's `npm test` prepares browser
+  artifacts
+- `server/browser-static.ts` serves the precompressed sibling with `Content-Encoding` and
+  `Vary: Accept-Encoding` when the client accepts it (identity fallback for dev watch dirs), adds
+  `Cache-Control: public, max-age=31536000, immutable` for hashed `/assets/` files, and keeps HTML
+  `no-store`
+- the Vite build injects modulepreload links for the lazily imported terminal-session chunk and its
+  static import closure (plus prefetch hints for its dynamic xterm addon chunks), computed from the
+  bundle graph in `electron/vite.config.electron.ts`; the remote bundle is a single chunk and needs
+  no equivalent injection
 
 ## Core Concepts
 
@@ -1219,7 +1503,28 @@ Important property:
 
 Flow:
 
-1. `server/main.ts` bootstraps `server/browser-server.ts`
+1. `server/main.ts` bootstraps `server/browser-server.ts`; boot is snapshot-first and
+   demand-driven:
+   - persisted state is parsed once into a `SavedStateDocument`
+     (`electron/ipc/saved-state-document.ts`) shared by the registry sync, restore, and
+     save/load/reconnect consumers instead of re-parsing the JSON per consumer
+   - `electron/ipc/saved-state-restore.ts` restores watchers and hydrates persisted derived
+     snapshots from `derived-state.json`; no per-task git refresh is scheduled at boot
+   - the coordinator runtime is not imported before listen; `server/coordinator-runtime-loader.ts`
+     dynamic-imports and initializes it on the server `listening` event, and every coordinator
+     entry point (the `/api/coordinator/tool-call` route and the lazy coordinator IPC group bound
+     through `electron/ipc/lazy-handler-group.ts`) awaits the single load promise, so an early
+     coordinator request is answered after init completes instead of being rejected
+   - clients whose WS auth or cold bootstrap landed inside the load window received an empty
+     coordinator category; the loader repairs them after hydration by re-emitting the restored
+     runs as ordinary `run-upserted` events (`emitCoordinatorRunRepairEvents`), and shutdown
+     awaits the loader's async `cleanup()` before the exit-on-close path so a future persistence
+     flush cannot be dropped
+   - the Electron shell does not use the loader: `electron/ipc/register.ts` hydrates persisted
+     coordinator state eagerly (`ensureCoordinatorServiceLoaded`) before binding IPC handlers so
+     the renderer's first `GetServerStateBootstrap` already carries restored runs
+   - `releaseBackendBackgroundWork()` runs inside the listen callback as the single post-listen
+     background scheduler
 2. the frontend loads `src/App.tsx`
 3. `src/App.tsx` initializes the same store and root UI shell
 4. `src/app/desktop-session.ts` coordinates the shared desktop startup path
@@ -1628,6 +1933,17 @@ Important property:
 - runtime reconciliation is a second pass that repairs persisted assumptions using live backend data
 - `src/store/persistence.ts` is now a thin facade; save, load/reconcile, codec, and sync-session
   changes should stay in their dedicated owners instead of re-accumulating in one file
+
+The backend additionally persists its own derived external-state snapshots:
+
+- `electron/ipc/derived-state-persistence.ts` owns `<stateDir>/derived-state.json`
+  (`formatVersion` gated, debounced atomic writes, tolerant per-entry load)
+- on boot, both shells hydrate those snapshots through
+  `electron/ipc/saved-state-restore.ts` behind exact identity filters against the registered task
+  metadata; a missing or corrupt file simply boots with empty snapshot maps
+- hydrated snapshots are demand-repaired (selected-task refresh on focus, watcher-driven refresh on
+  real changes, background reconciliation sweep for never-focused tasks) instead of being eagerly
+  recomputed for every task at startup
 
 ### 11. Remote Access Status Flow
 

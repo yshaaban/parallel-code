@@ -70,6 +70,10 @@ in the correct local owner.
 When a change touches browser mode, explicitly verify:
 
 - cold browser bootstrap stays distinct from reconnect restore
+- the cold-bootstrap handler stays free of process spawns and availability probing; agent defs
+  ship with last-known sticky availability and probes run only as background work-queue jobs
+- speculative startup prewarms must be identity-keyed (exact task and agent) and confirmed or
+  discarded before the selected-task tier is announced; speculation never mutates store state
 - reconnect does not start restore before authenticated control traffic is confirmed
 - restore and replay do not run on raw socket state alone
 - browser startup does not unblock hidden/background terminal attach before the selected surface is
@@ -465,6 +469,21 @@ Terminal sessions can remount while old callbacks are still unwinding.
 - guard late timers and input-feedback callbacks during unmount
 - test stale callback paths directly instead of relying only on broad browser restore coverage
 
+### 28. Transport ring compaction is only legal for full-replace snapshot keys
+
+The control-event replay ring may compact (latest-wins per key) only message classes whose every
+event is a complete replacement for that key. A key whose consumers depend on intermediate deltas
+must never compact, or replay silently drops state transitions.
+
+- new compaction keys require a contract test proving no intermediate-delta consumer exists
+- tombstones must share the entity's key so removal supersedes the earlier upsert in the ring
+- batched replay consumers must adopt the frame's `toSeq` wholesale; per-event gap detection is
+  wrong for compacted (legitimately non-contiguous) replayed seqs
+- per-event (legacy) replay is only legal for gap-free windows: a compacted or evicted window
+  must degrade to the `replay-truncated` signal instead of a holey per-event replay, and the
+  shared client core adopts that signal's `latestSeq` wholesale — otherwise gap-detecting
+  consumers (the remote shell hard-reconnects on gaps) loop forever on their own reconnect churn
+
 ### Additional terminal and lifecycle lessons
 
 Terminal perf claims need proof in the lane and layout they claim to improve. A browser run can
@@ -588,9 +607,19 @@ replaced mid-flight, stale restore cleanup must not settle task-scoped recovery 
 to the newer restore. Otherwise switch-window protection can clear early and reopen the same
 continuity/flicker bug the replacement restore was supposed to prevent.
 
-Browser restore pauses must be transaction-safe. Scoped restore pauses should carry a restore lease
-id, renew that id during slow restores, and ignore stale resume ids from older restores on the same
-channel. A fixed timeout alone is not enough proof for slow network or large-history recovery.
+Browser restore pauses must be transaction-safe. Batched recovery pauses are server-owned under a
+unique `batchPauseId`, and every request holds its own pause even when the agent is already paused
+(restore pause leases stack), so one client's release cannot expose another client's pre-apply
+window. A stale or duplicate release is a no-op against a newer pause. The client releases each
+held pause exactly once after apply — a single restore can hold several ids when geometry-mismatch
+re-fetches or `tail-needed` phase two mint additional pauses — and the 5s auto-resume is a safety
+net sized above worst-case replay apply (capped snapshots keep apply in the tens of milliseconds),
+not the primary mechanism. The auto-resume bounds stall time, not correctness: initial-attach
+applies can be deferred past the timer by startup paint/fit gates, which is safe only because the
+attach ordering guarantee makes queued output strictly post-cursor and the renderer keeps it
+instead of dropping it. Non-batched scoped pauses still carry a restore lease id and must ignore
+stale resume ids from older restores on the same channel. A fixed timeout alone is not enough
+proof for slow network or large-history recovery.
 
 Server status snapshots are weaker evidence than lifecycle exits unless the local exit itself is
 explicitly uncertain. Without a backend ordering token, a non-exited snapshot must not blindly

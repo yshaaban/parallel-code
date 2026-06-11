@@ -28,13 +28,56 @@ The backend owns coordinator runs in `electron/coordinator/*`.
   rebuilt at respawn. Because the state file can carry caller-supplied agent env, it is written
   with the same owner-only (0600) file permissions as coordinator credential files.
 - `service.ts` owns persistence, credential files, token indexes, activity hints, and cleanup.
+- `persistence-scheduler.ts` owns the debounced persistence cadence (trailing ~250ms coalesce
+  with a 2s max-interval bound, serialized async saves, retry backoff, surfaced degraded health);
+  `service.ts` owns the flush points (run creation, task cleanup, shutdown).
 - `tool-gateway.ts` owns authorized agent tool execution, renderer action execution, hidden spawn,
   and landing.
 - `prompt-delivery.ts` owns the prompt-delivery state machine: readiness policies, seeded versus
   readiness-gated startup contracts, per-target delivery chains and admission caps, bounded queue
   policy, mid-write lease-generation verification, awaiting-input blocking, retry/backoff on
   supervision and timer events, and the run-status admission hook for queued prompt sweeps.
-- `handlers.ts` exposes typed IPC handlers.
+- `handlers.ts` exposes typed IPC handlers. `CoordinatorGetDiagnostics` merges the persistence
+  scheduler's health (`degraded`, `lastSuccessAt`, `lastErrorAt`, `lastError`, `pendingFlush`)
+  into the diagnostics snapshot so a degraded persistence path is operator-visible.
+
+Coordinator events are granular deltas on exactly one broadcast channel:
+
+- every mutation emits one entity-sized event: `subtask-upserted`, `prompt-upserted`,
+  `landing-upserted`, `workflow-upserted` (single workflow snapshot, entityKey
+  `workflow:<id>`), or `run-meta-upserted` (run scalars only — status, pausedAt, resumes,
+  limits, updatedAt — never the entity collections). `run-upserted` full-run snapshots are
+  reserved for run creation and the post-load repair re-emit; `run-removed` stays the tombstone
+- the renderer store (`src/store/coordinator.ts`) applies each granular event in place and
+  projects the run header (`updatedAt`, `eventVersion`) from the event envelope; a
+  `run-meta-upserted` for an unknown run seeds it with empty collections
+- browser mode broadcasts each envelope once as the sequenced `coordinator-event` control
+  message; the old `ipc-event` duplicate is gone (Electron still emits the
+  `IPC.CoordinatorChanged` renderer event from `register.ts`)
+- `emitCoordinatorEvent` clones the envelope once, deep-freezes it, and isolates every listener
+  in try/catch: a throwing listener (for example a failing persistence write) can no longer
+  block the listeners after it or wedge prompt state
+
+Coordinator persistence is debounced, asynchronous, and durable:
+
+- the per-event synchronous whole-world save is gone; coordinator events schedule a coalesced
+  async save through the persistence scheduler, and run creation, task cleanup, and the
+  loader's async shutdown cleanup flush explicitly (`flushCoordinatorRuntimeState`)
+- `coordinator-state.json` keeps a `.bak` sibling on every save; loads fall back to it, and an
+  unparseable primary is quarantined to `coordinator-state.json.corrupt-<ts>` first
+- runs are validated individually at load: one corrupt run drops only that run (outcome
+  `salvaged`, dropped-run count logged) instead of nulling all coordinator state
+- the load outcome is explicit (`ok` / `salvaged` / `failed` / `missing`); credential-file orphan
+  pruning runs only for `ok`/`missing` loads — a failed or salvaged load never deletes
+  credential files for runs it could not see
+- saves are compacted: terminal-status runs drop prompt delivery journals and their durable
+  launch payloads, and retention is capped by `COORDINATOR_PERSISTENCE_LIMITS` (20 completed
+  runs, 20 resumes per run, 100 settled prompts per run, 4MB of tool-call results,
+  newest-first). Pending prompts and live-run state are never compacted away
+- a prompt stuck in `delivering` with no live delivery owner past
+  `STALE_DELIVERING_REQUEUE_MS` (60s) is requeued by the prompt sweep
+  (`stale-delivering-requeued`), so a crash or failed status write between the `delivering`
+  transition and the terminal status can no longer wedge the prompt forever
 
 Browser mode exposes `POST /api/coordinator/tool-call`. The browser token is not the authority for
 that endpoint; each tool call must include the per-task coordinator token from the credential file.
@@ -154,7 +197,18 @@ counted as attention. Workflow chips show an `A{n}` badge while approvals are pe
 workflow drilldown adds a pending-approvals section (compact validated-action summary with
 Approve/Deny, deny behind a two-click confirm) plus a failed-lanes section with per-lane Retry.
 All affordances are projected through `coordinator-ui-model` with legal-action gating; the
-renderer only issues lease-gated operator requests and never decides outcomes.
+renderer only issues lease-gated operator requests and never decides outcomes. Every
+renderer-initiated operator request routes through the shared
+`src/app/coordinator-operator-actions.ts` workflow.
+
+Operator feedback is immediate and readable: busy buttons show an inline spinner, a rejected
+resume or pause renders as a full-width dismissable alert strip over the rail (full message in the
+tooltip, inline Retry) instead of a truncated inline span, pause/unpause flips the rail status
+optimistically with a syncing tone (reverted on rejection, cleared by any newer run snapshot), and
+an accepted spawn leaves a ghost `queued` chip in the chips row that survives closing the spawn
+form until the subtask lands in a run snapshot or the ack window expires. Stale-after-restore
+runs, pending approvals, and budget-exhausted workflows also surface outside the rail as
+renderer-side task attention (sidebar badges plus a one-click Resume in the task title bar).
 
 Clicking a chip opens a small anchored inspector with output tail, diff, metadata, follow-up, wait,
 ask-to-land, and close controls. The `+` button opens a compact spawn form for a new hidden subtask.
@@ -417,6 +471,17 @@ action shape, or rejected, not with spec-level control flow.
 Coordinator work should prefer browser-free tests first:
 
 - domain guard tests for coordinator snapshots and events
+- runtime tests for the granular event vocabulary (one entity-sized event per mutation,
+  `run-meta-upserted` for run scalar changes, `workflow-upserted` from workflow writes),
+  per-listener exception isolation, and the shared deep-frozen envelope clone
+- persistence tests for per-run salvage, `.bak` fallback, quarantine-on-corrupt, explicit load
+  outcomes, legacy uncompacted files, and the save-time compaction caps
+  (`electron/coordinator/persistence.test.ts`); fake-timer scheduler tests for burst coalescing,
+  the max-interval bound, degraded health with backoff recovery, and flush/stop durability
+  (`electron/coordinator/persistence-scheduler.test.ts`)
+- service tests proving no synchronous fs write per emitted event, sub-5ms per-event emit
+  latency against a multi-MB fixture, and that failed or salvaged loads never delete
+  credential files
 - runtime tests for replayable state, restored stale status, restore interruption markers,
   launch-payload round-trips that stay out of bootstrap snapshots, the stale-to-running
   resume transition with its `resumes[]` audit, the paused marker set/clear and
@@ -427,8 +492,8 @@ Coordinator work should prefer browser-free tests first:
 - prompt-delivery tests for prompt serialization, queued and direct prompt admission caps,
   `awaiting-input` blocking, mid-write lease-loss failure, readiness-policy gating, prompt dedupe
   and per-target bounds, follow-up contract rejection, initial-assignment status mirroring,
-  paused-run admission gating through the run-status hook with delivery after unpause, and
-  delivery-loop lifecycle churn
+  paused-run admission gating through the run-status hook with delivery after unpause,
+  stale-`delivering` requeue after the deadline, and delivery-loop lifecycle churn
 - workflow-executor tests for resume semantics: cached-fact replay including recorded expansions
   and verdicts, respawn with refreshed `timeoutAt` outside the retry budget, respawn-failure
   isolation, deterministic never-spawned lane replacement plus stage completion after the
