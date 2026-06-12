@@ -9,15 +9,20 @@ import {
   shouldCheckBrowserServerBuildArtifacts,
 } from './build-artifacts.js';
 
-async function writeBuildFixture(rootDir: string): Promise<{
+async function writeBuildFixture(
+  rootDir: string,
+  options: { frontendDirName?: string; remoteDirName?: string } = {},
+): Promise<{
   frontendMetadataPath: string;
   frontendIndexPath: string;
   remoteIndexPath: string;
   serverEntryPath: string;
 }> {
-  const frontendIndexPath = path.join(rootDir, 'dist', 'index.html');
-  const frontendMetadataPath = path.join(rootDir, 'dist', 'build-metadata.json');
-  const remoteIndexPath = path.join(rootDir, 'dist-remote', 'index.html');
+  const frontendDirName = options.frontendDirName ?? 'dist';
+  const remoteDirName = options.remoteDirName ?? 'dist-remote';
+  const frontendIndexPath = path.join(rootDir, frontendDirName, 'index.html');
+  const frontendMetadataPath = path.join(rootDir, frontendDirName, 'build-metadata.json');
+  const remoteIndexPath = path.join(rootDir, remoteDirName, 'index.html');
   const serverEntryPath = path.join(rootDir, 'dist-server', 'server', 'main.js');
 
   await mkdir(path.dirname(frontendIndexPath), { recursive: true });
@@ -117,6 +122,53 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
     await expect(
       assertBrowserServerBuildArtifactsAreFresh({
         projectRoot: rootDir,
+        serverEntryPath,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('checks custom browser dist directories when explicit paths are provided', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
+    tempDirs.push(rootDir);
+
+    const frontendDirName = 'dist-browser-dev';
+    const remoteDirName = 'dist-remote-dev';
+    const { frontendIndexPath, frontendMetadataPath, remoteIndexPath, serverEntryPath } =
+      await writeBuildFixture(rootDir, { frontendDirName, remoteDirName });
+    await writeSourceFile(rootDir, 'src/remote/App.tsx');
+    await writeSourceFile(rootDir, 'src/App.tsx');
+    await writeSourceFile(rootDir, 'server/index.ts');
+    await writeSourceFile(rootDir, 'src/ipc/types.ts');
+    await writeSourceFile(rootDir, 'src/domain/server-state.ts');
+    await writeSourceFile(rootDir, 'electron/ipc/example.ts');
+    await writeBuildMetadataSources(rootDir);
+
+    const olderTime = new Date(Date.now() - 10_000);
+    const newerTime = new Date(Date.now() + 10_000);
+    await Promise.all([
+      utimes(path.join(rootDir, 'src', 'remote', 'App.tsx'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'src', 'App.tsx'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'server', 'index.ts'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'src', 'ipc', 'types.ts'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'src', 'domain', 'server-state.ts'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'electron', 'ipc', 'example.ts'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'package.json'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'package-lock.json'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'tsconfig.json'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'server', 'tsconfig.json'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'electron', 'vite.config.electron.ts'), olderTime, olderTime),
+      utimes(path.join(rootDir, 'src', 'remote', 'vite.config.ts'), olderTime, olderTime),
+      utimes(frontendIndexPath, newerTime, newerTime),
+      utimes(frontendMetadataPath, newerTime, newerTime),
+      utimes(remoteIndexPath, newerTime, newerTime),
+      utimes(serverEntryPath, newerTime, newerTime),
+    ]);
+
+    await expect(
+      assertBrowserServerBuildArtifactsAreFresh({
+        frontendDistDir: frontendDirName,
+        projectRoot: rootDir,
+        remoteDistDir: remoteDirName,
         serverEntryPath,
       }),
     ).resolves.toBeUndefined();

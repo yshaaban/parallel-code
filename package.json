@@ -23,7 +23,7 @@
     "build": "node scripts/build-release.mjs",
     "server": "npm run prepare:browser-artifacts && node dist-server/server/main.js",
     "browser:dev": "npm run dev:server",
-    "dev:server": "concurrently -k \"PARALLEL_CODE_VITE_FRONTEND_OUT_DIR=dist-browser-dev vite build --config electron/vite.config.electron.ts --watch\" \"PARALLEL_CODE_VITE_REMOTE_OUT_DIR=dist-remote-dev vite build --config src/remote/vite.config.ts --watch\" \"tsc -p server/tsconfig.json --watch --preserveWatchOutput\" \"wait-on dist-browser-dev/index.html dist-remote-dev/index.html dist-server/server/main.js && PARALLEL_CODE_BROWSER_DIST_DIR=dist-browser-dev PARALLEL_CODE_BROWSER_DIST_REMOTE_DIR=dist-remote-dev node --watch dist-server/server/main.js\"",
+    "dev:server": "concurrently -k \"PARALLEL_CODE_VITE_FRONTEND_OUT_DIR=dist-browser-dev vite build --config electron/vite.config.electron.ts --watch\" \"PARALLEL_CODE_VITE_REMOTE_OUT_DIR=dist-remote-dev vite build --config src/remote/vite.config.ts --watch\" \"tsc -p server/tsconfig.json --watch --preserveWatchOutput\" \"wait-on dist-browser-dev/index.html dist-remote-dev/index.html dist-server/server/main.js && PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK=1 PARALLEL_CODE_BROWSER_DIST_DIR=dist-browser-dev PARALLEL_CODE_BROWSER_DIST_REMOTE_DIR=dist-remote-dev node --watch dist-server/server/main.js\"",
     "serve": "vite preview --config electron/vite.config.electron.ts",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",

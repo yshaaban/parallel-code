@@ -68,7 +68,9 @@ export type BuildArtifactCheckResult =
   | StaleBuildArtifactCheckResult;
 
 export interface BrowserServerBuildArtifactOptions {
+  frontendDistDir?: string;
   projectRoot: string;
+  remoteDistDir?: string;
   serverEntryPath?: string;
 }
 
@@ -103,16 +105,49 @@ function shouldIgnoreBuildSourceFile(filePath: string): boolean {
   return IGNORED_BUILD_SOURCE_FILE_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
+function resolveArtifactDir(projectRoot: string, directoryPath: string): string {
+  return path.isAbsolute(directoryPath) ? directoryPath : path.join(projectRoot, directoryPath);
+}
+
 function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArtifactCheck[] {
   function getArtifactPath(
     label: BuildArtifactLabel,
     config: BrowserBuildArtifactCheckConfig,
   ): string {
+    if (label === 'frontend' && options.frontendDistDir) {
+      return path.join(
+        resolveArtifactDir(options.projectRoot, options.frontendDistDir),
+        'index.html',
+      );
+    }
+
+    if (label === 'remote' && options.remoteDistDir) {
+      return path.join(
+        resolveArtifactDir(options.projectRoot, options.remoteDistDir),
+        'index.html',
+      );
+    }
+
     if (label === 'server' && options.serverEntryPath) {
       return options.serverEntryPath;
     }
 
     return path.join(options.projectRoot, config.artifactRelativePath);
+  }
+
+  function getMetadataPath(config: BrowserBuildArtifactCheckConfig): string {
+    if (!config.metadataRelativePath) {
+      throw new Error('Metadata path requested for a build check without metadata.');
+    }
+
+    if (options.frontendDistDir) {
+      return path.join(
+        resolveArtifactDir(options.projectRoot, options.frontendDistDir),
+        path.basename(config.metadataRelativePath),
+      );
+    }
+
+    return path.join(options.projectRoot, config.metadataRelativePath);
   }
 
   function createBuildCheck(label: BuildArtifactLabel): BuildArtifactCheck {
@@ -126,7 +161,7 @@ function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArt
     };
 
     if (config.metadataRelativePath) {
-      buildCheck.metadataPath = path.join(options.projectRoot, config.metadataRelativePath);
+      buildCheck.metadataPath = getMetadataPath(config);
     }
 
     if (config.versionSourceRelativePath) {
@@ -361,22 +396,15 @@ function isStaleBuildArtifactCheckResult(
 }
 
 function formatMissingArtifactsMessage(
-  options: BrowserServerBuildArtifactOptions,
   missingChecks: readonly MissingBuildArtifactCheckResult[],
 ): string {
-  const frontendArtifactPath = path.relative(
-    process.cwd(),
-    path.join(options.projectRoot, typedBuildArtifactConfig.checks.frontend.artifactRelativePath),
-  );
-  const remoteArtifactPath = path.relative(
-    process.cwd(),
-    path.join(options.projectRoot, typedBuildArtifactConfig.checks.remote.artifactRelativePath),
+  const missingArtifactPaths = missingChecks.map((check) =>
+    path.relative(process.cwd(), check.artifactPath),
   );
 
   return [
     'Browser server build artifacts are missing.',
-    `Expected ${frontendArtifactPath} and ${remoteArtifactPath}.`,
-    `Missing: ${missingChecks.map((check) => path.relative(process.cwd(), check.artifactPath)).join(', ')}.`,
+    `Missing: ${missingArtifactPaths.join(', ')}.`,
     BUILD_REQUIRED_COMMAND,
   ].join(' ');
 }
@@ -418,7 +446,7 @@ export async function assertBrowserServerBuildArtifactsAreFresh(
   }
 
   if (status.missingChecks.length > 0) {
-    throw new Error(formatMissingArtifactsMessage(options, status.missingChecks));
+    throw new Error(formatMissingArtifactsMessage(status.missingChecks));
   }
 
   throw new Error(formatStaleArtifactsMessage(status.staleChecks));
@@ -442,6 +470,6 @@ export async function assertBrowserServerBuildArtifactsExist(
   ).filter((check): check is MissingBuildArtifactCheckResult => check !== null);
 
   if (missingChecks.length > 0) {
-    throw new Error(formatMissingArtifactsMessage(options, missingChecks));
+    throw new Error(formatMissingArtifactsMessage(missingChecks));
   }
 }

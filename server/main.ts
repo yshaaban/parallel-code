@@ -123,7 +123,9 @@ if (runtimeDiagnosticsLoggingConfig) {
 async function main(): Promise<void> {
   if (shouldCheckBrowserServerBuildArtifacts(process.env)) {
     await assertBrowserServerBuildArtifactsAreFresh({
+      frontendDistDir: distDir,
       projectRoot,
+      remoteDistDir: distRemoteDir,
       serverEntryPath: __filename,
     });
   }
