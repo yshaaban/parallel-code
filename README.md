@@ -178,7 +178,7 @@ For active browser UI development, use watch mode instead of `npm run server`:
 npm run browser:dev
 ```
 
-`npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change. Watch mode writes static assets to `dist-browser-dev/` and `dist-remote-dev/`, leaving the production/test `dist/` artifacts stable for browser-free integration tests and Playwright.
+`npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change. Watch mode writes static assets to `dist-browser-dev/` and `dist-remote-dev/`, leaves the production/test `dist/` artifacts stable for browser-free integration tests and Playwright, and bypasses the production freshness guard that expects built `dist/` assets.
 
 ### Option 3: Codex Account Switching Setup (Optional)
 

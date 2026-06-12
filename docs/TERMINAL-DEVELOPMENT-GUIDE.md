@@ -131,7 +131,9 @@ values are loaded as local defaults, so the development URL is stable across res
 `http://127.0.0.1:43117?token=parallel-code-local-browser`. Copy `.env.example` to `.env` only when
 customizing local values, and change `AUTH_TOKEN` before exposing the server outside local
 development. Browser watch mode writes to `dist-browser-dev/` and `dist-remote-dev/`; it does not
-mutate the production/test `dist/` artifacts that browser-lab validation serves.
+mutate the production/test `dist/` artifacts that browser-lab validation serves. The watch-mode
+server intentionally bypasses the production build-artifact freshness guard, because that guard is
+for built `dist/` outputs and can race the live dev rebuilds.
 
 Browser Playwright entrypoints auto-prepare browser artifacts once when they are stale or missing,
 reject zero-byte artifacts, and snapshot validated static assets into the per-test server directory
