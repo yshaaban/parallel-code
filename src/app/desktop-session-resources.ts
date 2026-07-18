@@ -18,6 +18,11 @@ export function disposeOptionalCleanup(cleanup: CleanupFn | null): void {
   cleanup?.();
 }
 
+export function disposeDesktopSessionStartupResources(resources: DesktopSessionResources): void {
+  disposeCleanup(resources.cleanupStartupTimers);
+  resources.cleanupStartupTimers = () => {};
+}
+
 export function replaceDesktopSessionResource<T>(
   disposed: boolean,
   currentResource: T,
@@ -37,8 +42,7 @@ export function disposeDesktopSessionResources(resources: DesktopSessionResource
   resources.unlistenCloseRequested = null;
   disposeCleanup(resources.cleanupShortcuts);
   resources.cleanupShortcuts = () => {};
-  disposeCleanup(resources.cleanupStartupTimers);
-  resources.cleanupStartupTimers = () => {};
+  disposeDesktopSessionStartupResources(resources);
   disposeCleanup(resources.offPlanContent);
   resources.offPlanContent = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);

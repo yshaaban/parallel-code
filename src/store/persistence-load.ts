@@ -1,22 +1,13 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
-import { invoke, isElectronRuntime } from '../lib/ipc';
+import { invoke, invokeWithAbortSignal, isElectronRuntime } from '../lib/ipc';
 import { getLocalDateKey } from '../lib/date';
-import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
-import { isLookPreset } from '../lib/look';
-import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
-import { createDefaultKeybindingOverrides } from '../domain/keybindings';
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
-import { isFiniteNumber } from '../lib/type-guards';
-import { isPersistedTask, parsePersistedWindowState } from './persistence-legacy-state';
-import {
-  createDefaultSidebarSectionCollapsedState,
-  normalizeSidebarSectionCollapsedState,
-} from './sidebar-section-state';
+import { isPersistedTask } from './persistence-legacy-state';
 import {
   forEachHydratedPersistedTaskInContext,
   parsePersistedLoadContext,
@@ -27,17 +18,14 @@ import {
 } from './persistence-terminal-restore';
 import { syncTerminalCounter } from './terminals';
 import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } from './taskStatus';
-import { DEFAULT_FONT_SMOOTHING, DEFAULT_TERMINAL_FONT_SIZE, setStore, store } from './core';
+import { setStore, store } from './core';
 import { applyBrowserColdBootstrapProjection } from './browser-cold-bootstrap-projection.js';
+import { buildWorkspaceSharedState, toNonNegativeInt } from './persistence-codecs';
 import {
-  buildWorkspaceSharedState,
-  isStringNumberRecord,
-  normalizeInactiveColumnOpacity,
-  resolvePersistedFontSmoothing,
-  resolvePersistedTerminalFontSize,
-  resolvePersistedTerminalHighLoadMode,
-  toNonNegativeInt,
-} from './persistence-codecs';
+  applyFullStateLocalShellPreferences,
+  createDefaultLocalShellPreferences,
+  resolveLocalShellPreferences,
+} from './local-shell-preferences';
 import {
   getLoadedStateJson,
   getLoadedWorkspaceRevision,
@@ -45,8 +33,6 @@ import {
   recordLoadedStateJson,
   recordLoadedWorkspaceState,
 } from './persistence-session';
-import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
-import { normalizeKeybindings } from './keybindings';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers';
 import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
@@ -191,6 +177,13 @@ export function applyLoadedStateJson(json: string): boolean {
   const { raw } = context;
   const electronRuntime = isElectronRuntime();
   const lastAgentId: string | null = raw.lastAgentId ?? null;
+  const localShellPreferenceFallbacks = {
+    terminalHighLoadMode: store.terminalHighLoadMode,
+    terminalLocalInputFeedbackEnabled: store.terminalLocalInputFeedbackEnabled,
+  };
+  const localShellPreferences = electronRuntime
+    ? resolveLocalShellPreferences(raw, localShellPreferenceFallbacks)
+    : createDefaultLocalShellPreferences(localShellPreferenceFallbacks);
 
   resetTransientPersistenceRuntimeState();
 
@@ -223,9 +216,7 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.sidebarFocusedTaskId = null;
       storeState.placeholderFocused = false;
       storeState.placeholderFocusedButton = 'add-task';
-      storeState.sidebarSectionCollapsed = electronRuntime
-        ? normalizeSidebarSectionCollapsedState(raw.sidebarSectionCollapsed)
-        : createDefaultSidebarSectionCollapsedState();
+      applyFullStateLocalShellPreferences(storeState, localShellPreferences);
       storeState.customAgents = context.customAgents;
       storeState.availableAgents = context.availableAgents;
       storeState.projects = context.projects;
@@ -233,17 +224,6 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.lastAgentId = lastAgentId;
       storeState.taskOrder = raw.taskOrder;
       storeState.activeTaskId = electronRuntime ? (raw.activeTaskId ?? null) : null;
-      storeState.sidebarVisible =
-        electronRuntime && typeof raw.sidebarVisible === 'boolean' ? raw.sidebarVisible : true;
-      storeState.fontScales =
-        electronRuntime && isStringNumberRecord(raw.fontScales) ? raw.fontScales : {};
-      storeState.panelSizes =
-        electronRuntime && isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {};
-      storeState.globalScale =
-        electronRuntime && isFiniteNumber(raw.globalScale) ? raw.globalScale : 1;
-      storeState.terminalFontSize = electronRuntime
-        ? resolvePersistedTerminalFontSize(raw.terminalFontSize, DEFAULT_TERMINAL_FONT_SIZE)
-        : DEFAULT_TERMINAL_FONT_SIZE;
 
       const completedTaskDate =
         typeof raw.completedTaskDate === 'string' ? raw.completedTaskDate : today;
@@ -258,43 +238,8 @@ export function applyLoadedStateJson(json: string): boolean {
 
       storeState.mergedLinesAdded = toNonNegativeInt(raw.mergedLinesAdded);
       storeState.mergedLinesRemoved = toNonNegativeInt(raw.mergedLinesRemoved);
-      storeState.terminalFont =
-        electronRuntime && isTerminalFont(raw.terminalFont)
-          ? raw.terminalFont
-          : DEFAULT_TERMINAL_FONT;
-      storeState.fontSmoothing = electronRuntime
-        ? resolvePersistedFontSmoothing(raw.fontSmoothing, DEFAULT_FONT_SMOOTHING)
-        : DEFAULT_FONT_SMOOTHING;
-      storeState.themePreset =
-        electronRuntime && isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal';
-      storeState.keybindings = electronRuntime
-        ? normalizeKeybindings(raw.keybindings)
-        : createDefaultKeybindingOverrides();
-      storeState.windowState = electronRuntime ? parsePersistedWindowState(raw.windowState) : null;
       storeState.autoTrustFolders =
         typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
-      storeState.showPlans =
-        electronRuntime && typeof raw.showPlans === 'boolean' ? raw.showPlans : true;
-      storeState.terminalHighLoadMode = electronRuntime
-        ? resolvePersistedTerminalHighLoadMode(
-            raw.terminalHighLoadMode,
-            storeState.terminalHighLoadMode,
-          )
-        : storeState.terminalHighLoadMode;
-      storeState.terminalLocalInputFeedbackEnabled =
-        electronRuntime && typeof raw.terminalLocalInputFeedbackEnabled === 'boolean'
-          ? raw.terminalLocalInputFeedbackEnabled
-          : storeState.terminalLocalInputFeedbackEnabled;
-      storeState.taskNotificationsEnabled = electronRuntime
-        ? getPersistedTaskNotificationsEnabled(raw)
-        : DEFAULT_TASK_NOTIFICATIONS_ENABLED;
-      storeState.taskNotificationsPreferenceInitialized = true;
-      storeState.verboseLogging =
-        electronRuntime && typeof raw.verboseLogging === 'boolean' ? raw.verboseLogging : false;
-
-      storeState.inactiveColumnOpacity = electronRuntime
-        ? normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity)
-        : 0.6;
       storeState.hasSeenDesktopIntro =
         electronRuntime && typeof raw.hasSeenDesktopIntro === 'boolean'
           ? raw.hasSeenDesktopIntro
@@ -509,8 +454,11 @@ export function applyBrowserColdBootstrapWorkspaceProjection(
   return true;
 }
 
-export async function loadWorkspaceState(): Promise<boolean> {
-  const payload = await invoke(IPC.LoadWorkspaceState);
+export async function loadWorkspaceState(signal?: AbortSignal): Promise<boolean> {
+  const payload = signal
+    ? await invokeWithAbortSignal(IPC.LoadWorkspaceState, signal)
+    : await invoke(IPC.LoadWorkspaceState);
+  signal?.throwIfAborted();
   if (!payload?.json) {
     return false;
   }

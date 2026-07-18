@@ -23,6 +23,18 @@ const taskNotesFilesSectionSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskNotesFilesSection.tsx'),
   'utf8',
 );
+const taskCoordinatorSectionEntrySource = readFileSync(
+  path.resolve(projectRoot, 'src/components/task-panel/TaskCoordinatorSectionEntry.tsx'),
+  'utf8',
+);
+const coordinatorAttentionSource = readFileSync(
+  path.resolve(projectRoot, 'src/app/coordinator-attention.ts'),
+  'utf8',
+);
+const taskPresentationStatusSource = readFileSync(
+  path.resolve(projectRoot, 'src/app/task-presentation-status.ts'),
+  'utf8',
+);
 const taskPlanContentSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskPlanContent.tsx'),
   'utf8',
@@ -74,6 +86,21 @@ describe('task panel architecture guardrails', () => {
     expect(taskNotesFilesSectionSource).toContain('lazyNamed(() =>');
     expect(taskNotesFilesSectionSource).toContain("import('../ReviewPanel')");
     expect(taskNotesFilesSectionSource).not.toMatch(/from\s+['"]\.\.\/ReviewPanel['"]/u);
+  });
+
+  it('keeps the coordinator inspector out of the default task panel startup path', () => {
+    expect(taskPanelSource).toContain("from './task-panel/TaskCoordinatorSectionEntry'");
+    expect(taskCoordinatorSectionEntrySource).toContain('lazyNamed(');
+    expect(taskCoordinatorSectionEntrySource).toContain("import('./TaskCoordinatorSection')");
+    expect(taskCoordinatorSectionEntrySource).not.toMatch(
+      /^import\s+(?!type)[^;]*from\s+['"]\.\/TaskCoordinatorSection['"]/mu,
+    );
+    expect(taskCoordinatorSectionEntrySource).toContain('ErrorBoundary');
+    expect(taskCoordinatorSectionEntrySource).toContain('CoordinatorSectionState');
+    expect(taskPresentationStatusSource).toContain("from './coordinator-attention'");
+    expect(taskPresentationStatusSource).not.toContain("from './coordinator-ui-model'");
+    expect(coordinatorAttentionSource).not.toContain('coordinator-ui-model');
+    expect(coordinatorAttentionSource).not.toContain('../components/');
   });
 
   it('keeps the steps section presentational', () => {

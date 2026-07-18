@@ -53,6 +53,7 @@ import {
 const {
   clearAgentActivityMock,
   invokeMock,
+  invokeWithAbortSignalMock,
   isElectronRuntimeMock,
   markAgentSpawnedMock,
   randomPastelColorMock,
@@ -62,6 +63,7 @@ const {
 } = vi.hoisted(() => ({
   clearAgentActivityMock: vi.fn(),
   invokeMock: vi.fn(),
+  invokeWithAbortSignalMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   markAgentSpawnedMock: vi.fn(),
   randomPastelColorMock: vi.fn(() => '#8899aa'),
@@ -72,6 +74,7 @@ const {
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
+  invokeWithAbortSignal: invokeWithAbortSignalMock,
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
@@ -1621,6 +1624,34 @@ describe('persistence integration', () => {
 
     await expect(loadWorkspaceState()).resolves.toBe(true);
     expect(store.tasks['task-1']?.name).toBe('Remote');
+  });
+
+  it('does not apply a workspace response that arrives after startup cancellation', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    let resolveResponse!: (value: unknown) => void;
+    invokeWithAbortSignalMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveResponse = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const cancellation = new Error('startup cancelled');
+    const loading = loadWorkspaceState(controller.signal);
+
+    controller.abort(cancellation);
+    resolveResponse({
+      json: JSON.stringify({
+        projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+        taskOrder: [],
+        tasks: {},
+      }),
+      revision: 5,
+    });
+
+    await expect(loading).rejects.toBe(cancellation);
+    expect(store.projects).toEqual([]);
+    expect(getLoadedWorkspaceRevision()).toBe(0);
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('preserves existing task and agent identities during incremental browser workspace sync', () => {

@@ -1,23 +1,16 @@
 import { createStore } from 'solid-js/store';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state';
-import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
-import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
-import { createDefaultKeybindingOverrides } from '../domain/keybindings';
 import { getInitialTerminalHighLoadModeEnabled } from '../lib/terminal-high-load-mode-bootstrap';
 import { getLocalDateKey } from '../lib/date';
-import { createDefaultSidebarSectionCollapsedState } from './sidebar-section-state';
+import { createDefaultLocalShellPreferences } from './local-shell-preferences';
 import type { AppStore } from './types';
 
-export const MIN_TERMINAL_FONT_SIZE = 10;
-export const MAX_TERMINAL_FONT_SIZE = 20;
-export const DEFAULT_TERMINAL_FONT_SIZE = 13;
-export const DEFAULT_FONT_SMOOTHING = true;
-
-export function clampTerminalFontSize(value: number): number {
-  return Math.round(Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, value)));
-}
-
 export function createInitialAppStore(): AppStore {
+  const localShellPreferences = createDefaultLocalShellPreferences({
+    terminalHighLoadMode: getInitialTerminalHighLoadModeEnabled(),
+    terminalLocalInputFeedbackEnabled: true,
+  });
+
   return {
     projects: [],
     lastProjectId: null,
@@ -39,10 +32,7 @@ export function createInitialAppStore(): AppStore {
     showNewTaskDialog: false,
     showAddProjectDialog: false,
     discoveredProjects: [],
-    sidebarVisible: true,
-    fontScales: {},
-    panelSizes: {},
-    globalScale: 1,
+    ...localShellPreferences,
     taskGitStatus: {},
     taskPorts: {},
     taskConvergence: {},
@@ -61,7 +51,6 @@ export function createInitialAppStore(): AppStore {
     sidebarFocusedTaskId: null,
     placeholderFocused: false,
     placeholderFocusedButton: 'add-task',
-    sidebarSectionCollapsed: createDefaultSidebarSectionCollapsedState(),
     showHelpDialog: false,
     showSettingsDialog: false,
     markdownViewer: null,
@@ -72,24 +61,11 @@ export function createInitialAppStore(): AppStore {
     completedTaskCount: 0,
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
-    terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
-    terminalFont: DEFAULT_TERMINAL_FONT,
-    fontSmoothing: DEFAULT_FONT_SMOOTHING,
-    themePreset: 'minimal',
-    windowState: null,
     autoTrustFolders: false,
-    showPlans: true,
-    terminalHighLoadMode: getInitialTerminalHighLoadModeEnabled(),
-    terminalLocalInputFeedbackEnabled: true,
-    taskNotificationsEnabled: DEFAULT_TASK_NOTIFICATIONS_ENABLED,
-    taskNotificationsPreferenceInitialized: true,
-    verboseLogging: false,
-    inactiveColumnOpacity: 0.6,
     editorCommand: '',
     hydraCommand: '',
     hydraForceDispatchFromPromptPanel: true,
     hydraStartupMode: 'auto',
-    keybindings: createDefaultKeybindingOverrides(),
     newTaskDropUrl: null,
     newTaskPrefillPrompt: null,
     missingProjectIds: {},

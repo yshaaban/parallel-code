@@ -5,7 +5,12 @@ import { createDisabledRemoteAccessStatus } from '../domain/server-state.js';
 import type { AgentDef } from '../ipc/types.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch.js';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input.js';
+import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode.js';
 import { createInitialAppStore, setStore, store } from './core.js';
+import {
+  applyFullStateLocalShellPreferences,
+  getLocalShellPreferencesSnapshot,
+} from './local-shell-preferences.js';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers.js';
 import { resetTaskGitStatusRuntimeState } from './task-git-status.js';
 import { syncTerminalCounter } from './terminals.js';
@@ -104,24 +109,7 @@ function resetStoreForBrowserColdBootstrap(
   storeState.sidebarFocusedTaskId = initialStore.sidebarFocusedTaskId;
   storeState.placeholderFocused = initialStore.placeholderFocused;
   storeState.placeholderFocusedButton = initialStore.placeholderFocusedButton;
-  storeState.sidebarSectionCollapsed = { ...initialStore.sidebarSectionCollapsed };
-  storeState.sidebarVisible = initialStore.sidebarVisible;
-  storeState.fontScales = {};
-  storeState.panelSizes = {};
-  storeState.globalScale = initialStore.globalScale;
-  storeState.terminalFontSize = initialStore.terminalFontSize;
-  storeState.terminalFont = initialStore.terminalFont;
-  storeState.fontSmoothing = initialStore.fontSmoothing;
-  storeState.themePreset = initialStore.themePreset;
-  storeState.windowState = initialStore.windowState;
-  storeState.showPlans = initialStore.showPlans;
-  storeState.terminalHighLoadMode = initialStore.terminalHighLoadMode;
-  storeState.terminalLocalInputFeedbackEnabled = initialStore.terminalLocalInputFeedbackEnabled;
-  storeState.taskNotificationsEnabled = initialStore.taskNotificationsEnabled;
-  storeState.taskNotificationsPreferenceInitialized =
-    initialStore.taskNotificationsPreferenceInitialized;
-  storeState.verboseLogging = initialStore.verboseLogging;
-  storeState.inactiveColumnOpacity = initialStore.inactiveColumnOpacity;
+  applyFullStateLocalShellPreferences(storeState, getLocalShellPreferencesSnapshot(initialStore));
   storeState.editorCommand = initialStore.editorCommand;
   storeState.remoteAccess = createDisabledRemoteAccessStatus(initialStore.remoteAccess.port);
   storeState.missingProjectIds = {};
@@ -162,6 +150,7 @@ export function applyBrowserColdBootstrapProjection(
       restoredRunningAgentIds = restoreExpandedProjectionAgents(storeState);
     }),
   );
+  syncTerminalHighLoadMode(store.terminalHighLoadMode);
 
   for (const agentId of previousAgentIds) {
     clearAgentActivity(agentId);

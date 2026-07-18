@@ -11,7 +11,6 @@ import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from './runtime-diagnostics';
-import { isRecord } from '../lib/type-guards';
 import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 import {
   getSpeculativeSelectedTerminalIntent,
@@ -22,20 +21,6 @@ import {
   resetTerminalStartupPaintCoordinationForTests,
   setTerminalStartupPaintCoordinationEntry,
 } from './terminal-startup-paint';
-
-function isMeaningfulColdBootstrapProjectionForTest(projection: unknown): boolean {
-  if (!isRecord(projection)) {
-    return false;
-  }
-
-  return (
-    (Array.isArray(projection.projects) && projection.projects.length > 0) ||
-    (Array.isArray(projection.taskOrder) && projection.taskOrder.length > 0) ||
-    (Array.isArray(projection.collapsedTaskOrder) && projection.collapsedTaskOrder.length > 0) ||
-    (isRecord(projection.tasks) && Object.keys(projection.tasks).length > 0) ||
-    (isRecord(projection.terminals) && Object.keys(projection.terminals).length > 0)
-  );
-}
 
 function createMeaningfulColdBootstrapProjection() {
   return {
@@ -95,7 +80,6 @@ const {
   listenMock,
   applyBrowserColdBootstrapWorkspaceProjectionMock,
   fetchBrowserColdBootstrapMock,
-  hasMeaningfulBrowserColdBootstrapProjectionMock,
   loadAgentsMock,
   loadClientSessionStateMock,
   loadStateMock,
@@ -184,9 +168,6 @@ const {
     workspaceRevision: 0,
     workspaceProjection: createMeaningfulColdBootstrapProjection(),
   }),
-  hasMeaningfulBrowserColdBootstrapProjectionMock: vi.fn(
-    isMeaningfulColdBootstrapProjectionForTest,
-  ),
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadClientSessionStateMock: vi.fn(),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
@@ -417,7 +398,6 @@ vi.mock('./browser-cold-bootstrap', () => ({
 }));
 
 vi.mock('../store/browser-cold-bootstrap-handoff', () => ({
-  hasMeaningfulBrowserColdBootstrapProjection: hasMeaningfulBrowserColdBootstrapProjectionMock,
   takeBrowserColdBootstrapHandoffProjection: takeBrowserColdBootstrapHandoffProjectionMock,
 }));
 
@@ -531,7 +511,6 @@ function createEmptyColdBootstrapProjection() {
   };
 }
 
-const BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS = 500;
 const BROWSER_COLD_BOOTSTRAP_TEST_FAILURE_WINDOW_MS = 2_000;
 
 function hasEnsureAgentSessionsBatchInvoke(): boolean {
@@ -585,10 +564,6 @@ describe('desktop session startup sequencing', () => {
       workspaceRevision: 0,
       workspaceProjection: createMeaningfulColdBootstrapProjection(),
     });
-    hasMeaningfulBrowserColdBootstrapProjectionMock.mockReset();
-    hasMeaningfulBrowserColdBootstrapProjectionMock.mockImplementation(
-      isMeaningfulColdBootstrapProjectionForTest,
-    );
     loadClientSessionStateMock.mockReset();
     peekClientSessionSelectionMock.mockReset();
     peekClientSessionSelectionMock.mockReturnValue({
@@ -903,6 +878,27 @@ describe('desktop session startup sequencing', () => {
     expect(getAppStartupSummary()).toBeNull();
   });
 
+  it('normalizes an undefined startup rejection into a useful visible failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setupWindowChromeMock.mockRejectedValueOnce(undefined);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+    await flushResolvedPromises();
+
+    const { showNotification } = await import('../store/notification');
+    expect(showNotification).toHaveBeenCalledWith('Workspace startup failed.', { kind: 'error' });
+    expect(getAppStartupSummary()).toBeNull();
+
+    cleanup();
+  });
+
   it('buffers Electron task-port events until state has loaded', async () => {
     const deferredLoadState = createDeferred<undefined>();
     loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
@@ -960,12 +956,8 @@ describe('desktop session startup sequencing', () => {
         worktreePath: '/tmp/task-1',
       },
     };
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+    invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.ReadPlanContent) {
-        expect(args).toEqual({
-          relativePath: 'docs/plans/current-plan.md',
-          worktreePath: '/tmp/task-1',
-        });
         return Promise.resolve({
           content: '# Restored plan',
           fileName: 'current-plan.md',
@@ -987,6 +979,10 @@ describe('desktop session startup sequencing', () => {
 
     await flushResolvedPromises();
 
+    expect(invokeMock).toHaveBeenCalledWith(IPC.ReadPlanContent, {
+      relativePath: 'docs/plans/current-plan.md',
+      worktreePath: '/tmp/task-1',
+    });
     expect(setPlanContentMock).toHaveBeenCalledWith(
       'task-1',
       '# Restored plan',
@@ -1679,7 +1675,11 @@ describe('desktop session startup sequencing', () => {
       workspaceRevision: number;
       workspaceProjection: ReturnType<typeof createEmptyColdBootstrapProjection>;
     }>();
-    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
+    const acquisition = { signal: null as AbortSignal | null };
+    fetchBrowserColdBootstrapMock.mockImplementationOnce((signal: AbortSignal) => {
+      acquisition.signal = signal;
+      return deferredBootstrap.promise;
+    });
     const resolutions: string[] = [];
     const offResolved = onSpeculativeSelectedTerminalResolved((outcome) => {
       resolutions.push(outcome);
@@ -1704,6 +1704,7 @@ describe('desktop session startup sequencing', () => {
 
     expect(resolutions).toEqual(['discarded']);
     expect(getSpeculativeSelectedTerminalIntent()).toBeNull();
+    expect(acquisition.signal?.aborted).toBe(true);
 
     deferredBootstrap.resolve({
       serverStateBootstrap: [],
@@ -1716,6 +1717,42 @@ describe('desktop session startup sequencing', () => {
     expect(resolutions).toEqual(['discarded']);
 
     offResolved();
+  });
+
+  it('aborts in-flight browser recovery when a parallel startup step fails', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const acquisition = { signal: null as AbortSignal | null };
+    fetchBrowserColdBootstrapMock.mockImplementation((signal: AbortSignal) => {
+      acquisition.signal = signal;
+      return new Promise(() => undefined);
+    });
+    setupWindowChromeMock.mockRejectedValueOnce(new Error('window chrome unavailable'));
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+    await flushResolvedPromises();
+
+    expect(acquisition.signal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushResolvedPromises();
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+    expect(loadAgentsMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+
+    const { showNotification } = await import('../store/notification');
+    expect(showNotification).toHaveBeenCalledWith(
+      'Workspace startup failed: window chrome unavailable',
+      { kind: 'error' },
+    );
+
+    cleanup();
   });
 
   it('runs Electron plan restore and snapshot hydration concurrently with completion strictly after both', async () => {
@@ -1789,119 +1826,6 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
-  it('treats an empty backend browser cold bootstrap snapshot as valid state', async () => {
-    fetchBrowserColdBootstrapMock.mockResolvedValueOnce({
-      serverStateBootstrap: [],
-      workspaceRevision: 0,
-      workspaceProjection: createEmptyColdBootstrapProjection(),
-    });
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await flushResolvedPromises();
-
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-      createEmptyColdBootstrapProjection(),
-      0,
-    );
-    expect(takeBrowserColdBootstrapHandoffProjectionMock).not.toHaveBeenCalled();
-    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-
-    cleanup();
-  });
-
-  it('falls back to loading canonical workspace state when cold bootstrap projections are unavailable', async () => {
-    vi.useFakeTimers();
-    fetchBrowserColdBootstrapMock.mockResolvedValue(null);
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
-    await flushResolvedPromises();
-
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-    expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
-    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
-    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
-    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-      takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
-        Number.POSITIVE_INFINITY,
-    );
-    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-      loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-
-    cleanup();
-  });
-
-  it('does not retry empty browser cold bootstrap snapshots', async () => {
-    fetchBrowserColdBootstrapMock.mockResolvedValueOnce({
-      serverStateBootstrap: [],
-      workspaceRevision: 0,
-      workspaceProjection: createEmptyColdBootstrapProjection(),
-    });
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-        createEmptyColdBootstrapProjection(),
-        0,
-      );
-      expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-    });
-
-    cleanup();
-  });
-
-  it('retries loading canonical workspace state when cold bootstrap starts before shared state is available', async () => {
-    vi.useFakeTimers();
-    fetchBrowserColdBootstrapMock.mockResolvedValue(null);
-    loadWorkspaceStateMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await vi.advanceTimersByTimeAsync(500);
-
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
-    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
-    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-
-    cleanup();
-  });
-
   it('cancels pending browser cold bootstrap retry timers when startup is cleaned up', async () => {
     vi.useFakeTimers();
     fetchBrowserColdBootstrapMock.mockResolvedValue(null);
@@ -1924,31 +1848,6 @@ describe('desktop session startup sequencing', () => {
 
     expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-  });
-
-  it('retries canonical workspace load after a transient browser startup load failure', async () => {
-    vi.useFakeTimers();
-    fetchBrowserColdBootstrapMock.mockResolvedValue(null);
-    loadWorkspaceStateMock.mockRejectedValueOnce(new Error('workspace load unavailable'));
-    loadWorkspaceStateMock.mockResolvedValueOnce(true);
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
-    await flushResolvedPromises();
-
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
-    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-
-    cleanup();
   });
 
   it('schedules a follow-up browser sync instead of aborting startup when browser cold bootstrap remains unavailable', async () => {
@@ -1994,67 +1893,12 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
-  it('retries browser cold bootstrap fetches before applying the backend projection', async () => {
+  it('schedules handoff reconciliation after browser-local session restore', async () => {
     vi.useFakeTimers();
-    fetchBrowserColdBootstrapMock
-      .mockRejectedValueOnce(new Error('temporary bootstrap failure'))
-      .mockResolvedValueOnce({
-        serverStateBootstrap: [],
-        workspaceRevision: 7,
-        workspaceProjection: createMeaningfulColdBootstrapProjection(),
-      });
-
-    const cleanup = startDesktopAppSession({
-      electronRuntime: false,
-      mainElement: createMainElementStub(),
-      setConnectionBanner: vi.fn(),
-      setPathInputDialog: vi.fn(),
-      setWindowFocused: vi.fn(),
-      setWindowMaximized: vi.fn(),
-    });
-
-    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
-    await flushResolvedPromises();
-
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(2);
-    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-      createMeaningfulColdBootstrapProjection(),
-      7,
-    );
-    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-
-    cleanup();
-  });
-
-  it('falls back to the same-tab handoff projection when cold bootstrap fetches keep failing', async () => {
-    vi.useFakeTimers();
-    const handoffProjection = {
-      ...createEmptyColdBootstrapProjection(),
-      projects: [
-        {
-          color: '#225577',
-          id: 'project-handoff-error',
-          name: 'Handoff Project',
-          path: '/tmp/handoff-error',
-        },
-      ],
-      taskOrder: ['task-handoff-error'],
-      tasks: {
-        'task-handoff-error': {
-          agentIds: ['agent-handoff-error'],
-          branchName: 'feature/handoff-error',
-          id: 'task-handoff-error',
-          lastPrompt: '',
-          name: 'Handoff Task Error',
-          notes: '',
-          projectId: 'project-handoff-error',
-          shellAgentIds: [],
-          worktreePath: '/tmp/handoff-error/task-handoff-error',
-        },
-      },
-    };
     fetchBrowserColdBootstrapMock.mockRejectedValue(new Error('bootstrap unavailable'));
-    takeBrowserColdBootstrapHandoffProjectionMock.mockReturnValueOnce(handoffProjection);
+    takeBrowserColdBootstrapHandoffProjectionMock.mockReturnValueOnce(
+      createEmptyColdBootstrapProjection(),
+    );
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
@@ -2065,19 +1909,22 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.advanceTimersByTimeAsync(BROWSER_COLD_BOOTSTRAP_TEST_RETRY_WINDOW_MS);
+    await vi.advanceTimersByTimeAsync(500);
     await flushResolvedPromises();
 
-    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-    expect(loadAgentsMock).toHaveBeenCalledTimes(1);
-    expect(takeBrowserColdBootstrapHandoffProjectionMock).toHaveBeenCalledTimes(1);
-    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledWith(
-      handoffProjection,
-      0,
+    const latestBrowserStateSyncResult =
+      createBrowserStateSyncMock.mock.results[createBrowserStateSyncMock.mock.results.length - 1];
+    const browserStateSync = latestBrowserStateSyncResult?.value as
+      | { scheduleBrowserStateSync: ReturnType<typeof vi.fn> }
+      | undefined;
+    expect(browserStateSync?.scheduleBrowserStateSync).toHaveBeenCalledTimes(1);
+    expect(browserStateSync?.scheduleBrowserStateSync).toHaveBeenCalledWith(0, false);
+    expect(loadClientSessionStateMock.mock.invocationCallOrder[0]).toBeLessThan(
+      browserStateSync?.scheduleBrowserStateSync.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
     );
-    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
-    expect(loadAgentsMock.mock.invocationCallOrder[0]).toBeLessThan(
-      takeBrowserColdBootstrapHandoffProjectionMock.mock.invocationCallOrder[0] ??
+    expect(reconcileClientSessionStateMock.mock.invocationCallOrder[0]).toBeLessThan(
+      browserStateSync?.scheduleBrowserStateSync.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
     );
 
@@ -2401,6 +2248,30 @@ describe('desktop session startup sequencing', () => {
     deferredAgents.resolve(undefined);
     await deferredAgents.promise;
     cleanup();
+  });
+
+  it('aborts an in-flight scheduled agent catalog refresh during cleanup', async () => {
+    vi.useFakeTimers();
+    const catalog = { signal: null as AbortSignal | null };
+    loadAgentsMock.mockImplementationOnce((options?: { signal?: AbortSignal }) => {
+      catalog.signal = options?.signal ?? null;
+      return new Promise(() => undefined);
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: createMainElementStub(),
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+    await flushResolvedPromises();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(catalog.signal?.aborted).toBe(false);
+    cleanup();
+    expect(catalog.signal?.aborted).toBe(true);
   });
 
   it('handles failed background browser agent catalog refreshes', async () => {

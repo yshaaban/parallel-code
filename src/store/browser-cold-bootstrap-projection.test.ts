@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  isTerminalHighLoadModeEnabled,
+  syncTerminalHighLoadMode,
+} from '../app/terminal-high-load-mode.js';
 import { createTestAgentDef, resetStoreForTest } from '../test/store-test-helpers.js';
 import { createInitialAppStore, setStore, store } from './core.js';
 import {
   applyBrowserColdBootstrapProjection,
   buildBrowserColdBootstrapProjectionFromJson,
 } from './browser-cold-bootstrap-projection.js';
+import { getLocalShellPreferencesSnapshot } from './local-shell-preferences.js';
 
 describe('browser-cold-bootstrap-projection', () => {
   beforeEach(() => {
@@ -224,7 +229,7 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.agents['agent-2']?.def.id).toBe('codex');
   });
 
-  it('resets local terminal typography settings during browser cold bootstrap', () => {
+  it('resets the complete local shell preference shape during browser cold bootstrap', () => {
     const initialStore = createInitialAppStore();
     const projection = buildBrowserColdBootstrapProjectionFromJson(
       JSON.stringify({
@@ -239,10 +244,63 @@ describe('browser-cold-bootstrap-projection', () => {
       },
     );
 
-    setStore('terminalFontSize', 18);
+    setStore('fontScales', { stale: 1.5 });
+    setStore('fontSmoothing', !initialStore.fontSmoothing);
+    setStore('globalScale', 1.25);
+    setStore('inactiveColumnOpacity', 0.9);
+    setStore('keybindings', {
+      overrides: {
+        'app.new-task': { chords: [{ ctrl: true, key: 'x' }] },
+      },
+      version: 1,
+    });
+    setStore('panelSizes', { 'stale:panel': 0.4 });
+    setStore('showPlans', !initialStore.showPlans);
+    setStore('sidebarSectionCollapsed', {
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: false,
+    });
+    setStore('sidebarVisible', !initialStore.sidebarVisible);
+    setStore('taskNotificationsEnabled', !initialStore.taskNotificationsEnabled);
+    setStore('taskNotificationsPreferenceInitialized', false);
     setStore('terminalFont', 'Fira Code');
-    setStore('fontSmoothing', false);
-    setStore('terminalLocalInputFeedbackEnabled', false);
+    setStore('terminalFontSize', 18);
+    setStore('terminalHighLoadMode', !initialStore.terminalHighLoadMode);
+    syncTerminalHighLoadMode(!initialStore.terminalHighLoadMode);
+    setStore('terminalLocalInputFeedbackEnabled', !initialStore.terminalLocalInputFeedbackEnabled);
+    setStore('themePreset', 'graphite');
+    setStore('verboseLogging', true);
+    setStore('windowState', {
+      height: 720,
+      maximized: false,
+      width: 1280,
+      x: 10,
+      y: 20,
+    });
+
+    expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
+    expect(getLocalShellPreferencesSnapshot(store)).toEqual(
+      getLocalShellPreferencesSnapshot(initialStore),
+    );
+    expect(isTerminalHighLoadModeEnabled()).toBe(initialStore.terminalHighLoadMode);
+  });
+
+  it('clears task-step projections during browser cold bootstrap', () => {
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+        terminals: {},
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
     setStore('taskSteps', {
       stale: {
         errorMessage: null,
@@ -270,12 +328,6 @@ describe('browser-cold-bootstrap-projection', () => {
     });
 
     expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
-    expect(store.terminalFontSize).toBe(initialStore.terminalFontSize);
-    expect(store.terminalFont).toBe(initialStore.terminalFont);
-    expect(store.fontSmoothing).toBe(initialStore.fontSmoothing);
-    expect(store.terminalLocalInputFeedbackEnabled).toBe(
-      initialStore.terminalLocalInputFeedbackEnabled,
-    );
     expect(store.taskSteps).toEqual({});
     expect(store.taskStepSummaries).toEqual({});
   });

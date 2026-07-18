@@ -188,7 +188,28 @@ export interface SidebarSectionCollapsedState {
   tips: boolean;
 }
 
-export interface PersistedState {
+export interface PersistedLocalShellPreferenceFields {
+  sidebarVisible?: boolean;
+  fontScales?: Record<string, number>;
+  panelSizes?: Record<string, number>;
+  globalScale?: number;
+  terminalFontSize?: number;
+  terminalFont?: TerminalFont;
+  fontSmoothing?: boolean;
+  themePreset?: LookPreset;
+  windowState?: PersistedWindowState | null;
+  sidebarSectionCollapsed?: SidebarSectionCollapsedState;
+  showPlans?: boolean;
+  terminalHighLoadMode?: boolean;
+  terminalLocalInputFeedbackEnabled?: boolean;
+  taskNotificationsEnabled?: boolean;
+  taskNotificationsPreferenceInitialized?: boolean;
+  verboseLogging?: boolean;
+  inactiveColumnOpacity?: number;
+  keybindings?: PersistedKeybindingOverrides;
+}
+
+export interface PersistedState extends PersistedLocalShellPreferenceFields {
   projects: Project[];
   lastProjectId: string | null;
   lastAgentId: string | null;
@@ -197,35 +218,18 @@ export interface PersistedState {
   tasks: Record<string, PersistedTask>;
   terminals?: Record<string, PersistedTerminal>;
   activeTaskId?: string | null;
-  sidebarVisible?: boolean;
-  fontScales?: Record<string, number>;
-  panelSizes?: Record<string, number>;
-  globalScale?: number;
   completedTaskDate?: string;
   completedTaskCount?: number;
   mergedLinesAdded?: number;
   mergedLinesRemoved?: number;
-  terminalFontSize?: number;
-  terminalFont?: TerminalFont;
-  fontSmoothing?: boolean;
-  themePreset?: LookPreset;
   windowState?: PersistedWindowState;
-  autoTrustFolders?: boolean;
-  sidebarSectionCollapsed?: SidebarSectionCollapsedState;
-  showPlans?: boolean;
-  terminalHighLoadMode?: boolean;
-  terminalLocalInputFeedbackEnabled?: boolean;
-  taskNotificationsEnabled?: boolean;
-  taskNotificationsPreferenceInitialized?: boolean;
   desktopNotificationsEnabled?: boolean;
-  verboseLogging?: boolean;
-  inactiveColumnOpacity?: number;
+  autoTrustFolders?: boolean;
   hasSeenDesktopIntro?: boolean;
   editorCommand?: string;
   hydraCommand?: string;
   hydraForceDispatchFromPromptPanel?: boolean;
   hydraStartupMode?: HydraStartupMode;
-  keybindings?: PersistedKeybindingOverrides;
   customAgents?: AgentDef[];
 }
 
@@ -251,37 +255,19 @@ export interface ClientSessionTerminalPanels {
   terminals: Record<string, PersistedTerminal>;
 }
 
-export interface ClientSessionState {
+export interface ClientSessionState extends PersistedLocalShellPreferenceFields {
   activeAgentId?: string | null;
   activeTaskId?: string | null;
   editorCommand?: string;
   focusedPanel?: Record<string, PanelId>;
-  fontScales?: Record<string, number>;
-  globalScale?: number;
-  inactiveColumnOpacity?: number;
   lastAgentId?: string | null;
   lastProjectId?: string | null;
-  panelSizes?: Record<string, number>;
   placeholderFocused?: boolean;
   placeholderFocusedButton?: 'add-task' | 'add-terminal';
-  sidebarSectionCollapsed?: SidebarSectionCollapsedState;
-  showPlans?: boolean;
-  terminalHighLoadMode?: boolean;
-  terminalLocalInputFeedbackEnabled?: boolean;
-  taskNotificationsEnabled?: boolean;
-  taskNotificationsPreferenceInitialized?: boolean;
-  verboseLogging?: boolean;
   terminalPanels?: ClientSessionTerminalPanels;
   sidebarFocused?: boolean;
   sidebarFocusedProjectId?: string | null;
   sidebarFocusedTaskId?: string | null;
-  sidebarVisible?: boolean;
-  terminalFontSize?: number;
-  terminalFont?: TerminalFont;
-  fontSmoothing?: boolean;
-  themePreset?: LookPreset;
-  windowState?: PersistedWindowState | null;
-  keybindings?: PersistedKeybindingOverrides;
 }
 
 export type PersistedProjectLookup = Partial<

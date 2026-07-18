@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
-import { clampTerminalFontSize, store, setStore } from './core';
+import { store, setStore } from './core';
+import { clampTerminalFontSize } from './terminal-font-settings';
 import type { TerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';

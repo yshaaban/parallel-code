@@ -56,28 +56,6 @@ function isFreshBrowserColdBootstrapHandoff(handoff: StoredBrowserColdBootstrapH
   return Date.now() - handoff.capturedAtMs <= BROWSER_COLD_BOOTSTRAP_HANDOFF_MAX_AGE_MS;
 }
 
-export function hasMeaningfulBrowserColdBootstrapProjection(
-  projection: BrowserColdBootstrapProjection | null | undefined,
-): projection is BrowserColdBootstrapProjection {
-  if (!projection) {
-    return false;
-  }
-
-  const activeTaskIds = projection.taskOrder.filter(
-    (taskId) => projection.tasks[taskId] !== undefined,
-  );
-  const collapsedTaskIds = projection.collapsedTaskOrder.filter(
-    (taskId) => projection.tasks[taskId] !== undefined,
-  );
-
-  return (
-    projection.projects.length > 0 ||
-    activeTaskIds.length > 0 ||
-    collapsedTaskIds.length > 0 ||
-    Object.keys(projection.tasks).length > 0
-  );
-}
-
 export function saveBrowserColdBootstrapHandoffSnapshot(workspaceStateJson: string): void {
   const payload = JSON.stringify({
     capturedAtMs: Date.now(),

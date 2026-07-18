@@ -77,7 +77,7 @@ import { ScalablePanel } from './ScalablePanel';
 import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 import { TaskTitleBar } from './TaskTitleBar';
 import { createTaskAiTerminalSection } from './task-panel/TaskAiTerminalSection';
-import { createTaskCoordinatorSection } from './task-panel/TaskCoordinatorSection';
+import { createTaskCoordinatorSection } from './task-panel/TaskCoordinatorSectionEntry';
 import { createTaskPanelDialogState } from './task-panel/task-panel-dialog-state';
 import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runtime';
 import { createTaskPanelPermissionController } from './task-panel/task-panel-permission-controller';

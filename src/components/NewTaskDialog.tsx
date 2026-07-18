@@ -33,12 +33,7 @@ import {
   createExistingWorktreeTask,
   createTask,
 } from '../app/task-workflows';
-import {
-  findBranchRefPrefixConflict,
-  formatBranchRefPrefixConflict,
-  sanitizeBranchPrefix,
-  toBranchName,
-} from '../lib/branch-name';
+import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
 import { parseDirectCommandLine } from '../lib/direct-command';
 import { extractGitHubUrl } from '../lib/github-url';
@@ -53,7 +48,8 @@ import { SymlinkDirPicker } from './SymlinkDirPicker';
 import { typography } from '../lib/typography';
 import { getProjectDefaultTaskGitIsolation } from '../store/task-git-isolation';
 import type { ProjectMode } from '../store/types';
-import type { AgentDef, GitBranchInfo } from '../ipc/types';
+import type { AgentDef } from '../ipc/types';
+import { createTaskGitOptionsController } from './new-task-dialog/task-git-options-controller';
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -73,9 +69,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   );
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [error, setError] = createSignal('');
-  const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
-  const [ignoredDirsError, setIgnoredDirsError] = createSignal<string | null>(null);
-  const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
   const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
   const [existingWorktreePath, setExistingWorktreePath] = createSignal('');
@@ -83,15 +76,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [coordinatorMode, setCoordinatorMode] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
-  const [branchOptions, setBranchOptions] = createSignal<GitBranchInfo[]>([]);
-  const [branchListStatus, setBranchListStatus] = createSignal<
-    'idle' | 'loading' | 'ready' | 'error'
-  >('idle');
-  const [branchListError, setBranchListError] = createSignal<string | null>(null);
-  const [branchQuery, setBranchQuery] = createSignal('');
-  const [branchListRefreshId, setBranchListRefreshId] = createSignal(0);
-  const [selectedBaseBranch, setSelectedBaseBranch] = createSignal<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
+  const gitOptions = createTaskGitOptionsController({
+    branchPreview,
+    projectBaseBranch: selectedProjectBaseBranch,
+    projectId: selectedProjectId,
+    projectMode: selectedProjectMode,
+    projectRoot: selectedProjectPath,
+  });
   const coordinatorModeAvailable = !isElectronRuntime();
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
@@ -156,19 +148,13 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setError('');
     setCustomAgentMode(false);
     setCustomAgentCommand('');
-    setIgnoredDirsError(null);
     setCurrentBranchMode(false);
     setExistingWorktreeMode(false);
     setExistingWorktreePath('');
     setStepsTracking(false);
     setCoordinatorMode(false);
     setSkipPermissions(defaultSkipPermissions);
-    setBranchOptions([]);
-    setBranchListStatus('idle');
-    setBranchListError(null);
-    setBranchQuery('');
-    setBranchListRefreshId(0);
-    setSelectedBaseBranch(null);
+    gitOptions.reset();
     setAdvancedOpen(false);
 
     // Dialog open never awaits an agent probe: the catalog is consumed
@@ -229,92 +215,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     });
   });
 
-  // Fetch gitignored dirs when project changes
-  createEffect(() => {
-    branchListRefreshId();
-    const pid = selectedProjectId();
-    const path = pid ? getProjectPath(pid) : undefined;
-    const project = pid ? getProject(pid) : null;
-    let cancelled = false;
-
-    if (!path || getProjectMode(project) === 'non-git') {
-      setIgnoredDirs([]);
-      setIgnoredDirsError(null);
-      setSelectedDirs(new Set<string>());
-      return;
-    }
-
-    setIgnoredDirsError(null);
-
-    void (async () => {
-      try {
-        const dirs = await invoke(IPC.GetGitignoredDirs, { projectRoot: path });
-        if (cancelled) return;
-        setIgnoredDirs(dirs);
-        setSelectedDirs(new Set(dirs)); // all checked by default
-        setIgnoredDirsError(null);
-      } catch (error) {
-        if (cancelled) return;
-        setIgnoredDirs([]);
-        setSelectedDirs(new Set<string>());
-        const message = error instanceof Error ? error.message.trim() : String(error).trim();
-        setIgnoredDirsError(message || 'Unknown backend error');
-      }
-    })();
-
-    onCleanup(() => {
-      cancelled = true;
-    });
-  });
-
   // Sync branch prefix when project changes
   createEffect(() => {
     const pid = selectedProjectId();
     setBranchPrefix(pid ? getProjectBranchPrefix(pid) : 'task');
-  });
-
-  createEffect(() => {
-    const pid = selectedProjectId();
-    const path = pid ? getProjectPath(pid) : undefined;
-    const project = pid ? getProject(pid) : null;
-    const projectBaseBranch = pid ? getProjectBaseBranch(pid) : undefined;
-    let cancelled = false;
-
-    setBranchQuery('');
-    setSelectedBaseBranch(projectBaseBranch ?? null);
-    setBranchOptions([]);
-    setBranchListError(null);
-
-    if (!path || getProjectMode(project) === 'non-git') {
-      setBranchListStatus('idle');
-      return;
-    }
-
-    setBranchListStatus('loading');
-
-    void (async () => {
-      try {
-        const result = await invoke(IPC.ListBranches, { projectRoot: path });
-        if (cancelled) return;
-
-        const branches = Array.isArray(result.branches) ? result.branches : [];
-        const fallbackBranch = result.defaultBranch || branches[0]?.name || null;
-        setBranchOptions(branches);
-        setSelectedBaseBranch(projectBaseBranch ?? fallbackBranch);
-        setBranchListError(null);
-        setBranchListStatus('ready');
-      } catch (error) {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message.trim() : String(error).trim();
-        setBranchOptions([]);
-        setBranchListError(message || 'Unknown backend error');
-        setBranchListStatus('error');
-      }
-    })();
-
-    onCleanup(() => {
-      cancelled = true;
-    });
   });
 
   createEffect(() => {
@@ -372,26 +276,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return n ? `${prefix}/${toBranchName(n)}` : '';
   }
 
-  function localBranchNames(): string[] {
-    return branchOptions()
-      .filter((branch) => branch.local)
-      .map((branch) => branch.name);
-  }
-
-  function branchPreviewConflictMessage(): string | undefined {
-    if (branchListStatus() !== 'ready') {
-      return undefined;
-    }
-
-    const preview = branchPreview();
-    if (!preview) {
-      return undefined;
-    }
-
-    const conflict = findBranchRefPrefixConflict(preview, localBranchNames());
-    return conflict ? formatBranchRefPrefixConflict(conflict) : undefined;
-  }
-
   function selectedProjectPath(): string | undefined {
     const pid = selectedProjectId();
     return pid ? getProjectPath(pid) : undefined;
@@ -409,74 +293,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   function selectedProjectBaseBranch(): string | undefined {
     const pid = selectedProjectId();
     return pid ? getProjectBaseBranch(pid) : undefined;
-  }
-
-  function selectedProjectBaseBranchLabel(): string {
-    const baseBranch = selectedBaseBranch() ?? selectedProjectBaseBranch();
-    return baseBranch ? `base branch (${baseBranch})` : 'base branch (detected on create)';
-  }
-
-  const filteredBranchOptions = createMemo(() => {
-    const query = branchQuery().trim().toLowerCase();
-    if (!query) {
-      return branchOptions();
-    }
-
-    return branchOptions().filter((branch) => branch.name.toLowerCase().includes(query));
-  });
-
-  const visibleBranchOptions = createMemo(() => {
-    const selected = selectedBaseBranch();
-    const filtered = filteredBranchOptions();
-    if (!selected || filtered.some((branch) => branch.name === selected)) {
-      return filtered;
-    }
-
-    const selectedBranch = branchOptions().find((branch) => branch.name === selected);
-    return selectedBranch ? [selectedBranch, ...filtered] : filtered;
-  });
-
-  function selectedBaseBranchAvailable(): boolean {
-    const selected = selectedBaseBranch();
-    if (!selected || branchListStatus() !== 'ready') {
-      return true;
-    }
-
-    return branchOptions().some((branch) => branch.name === selected);
-  }
-
-  function selectedBaseBranchForSubmit(): string | undefined {
-    return selectedBaseBranch()?.trim() || undefined;
-  }
-
-  function branchPickerStatus(): string {
-    switch (branchListStatus()) {
-      case 'idle':
-        return '';
-      case 'loading':
-        return 'Loading branches...';
-      case 'ready': {
-        const count = branchOptions().length;
-        return count === 1 ? '1 branch available.' : `${count} branches available.`;
-      }
-      case 'error':
-        return `Branch list unavailable: ${branchListError() ?? 'Unknown backend error'}`;
-    }
-  }
-
-  function formatBranchOption(branch: GitBranchInfo): string {
-    const qualifiers: string[] = [];
-    if (branch.current) {
-      qualifiers.push('current');
-    }
-    if (branch.remote && !branch.local) {
-      qualifiers.push('remote');
-    }
-    if (branch.name === selectedProjectBaseBranch()) {
-      qualifiers.push('project default');
-    }
-
-    return qualifiers.length === 0 ? branch.name : `${branch.name} (${qualifiers.join(', ')})`;
   }
 
   function currentBranchGuidance(): string {
@@ -604,7 +420,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
     const canUseSelectedBranch =
       selectedProjectIsNonGit() ||
-      (branchListStatus() !== 'loading' && selectedBaseBranchAvailable());
+      (gitOptions.branchListStatus() !== 'loading' && gitOptions.selectedBaseBranchAvailable());
     return (
       hasContent &&
       hasLaunchableAgent &&
@@ -629,12 +445,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
     if (
       !selectedProjectIsNonGit() &&
-      selectedBaseBranch() &&
-      selectedBaseBranch() !== selectedProjectBaseBranch()
+      gitOptions.selectedBaseBranch() &&
+      gitOptions.selectedBaseBranch() !== selectedProjectBaseBranch()
     ) {
       count += 1;
     }
-    if (createsNewWorktree() && branchPreviewConflictMessage()) {
+    if (createsNewWorktree() && gitOptions.branchPreviewConflictMessage()) {
       count += 1;
     }
     return count;
@@ -671,17 +487,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
   }
 
-  function toggleSelectedDir(dir: string): void {
-    const next = new Set(selectedDirs());
-    if (next.has(dir)) {
-      next.delete(dir);
-    } else {
-      next.add(dir);
-    }
-
-    setSelectedDirs(next);
-  }
-
   function handleSubmit(e: Event): void {
     e.preventDefault();
     const n = effectiveName();
@@ -708,16 +513,16 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const projectMode = selectedProjectMode();
     let configuredBaseBranch: string | undefined;
     if (projectMode === 'git') {
-      configuredBaseBranch = selectedBaseBranchForSubmit();
+      configuredBaseBranch = gitOptions.selectedBaseBranchForSubmit();
     }
 
-    if (projectMode === 'git' && !selectedBaseBranchAvailable()) {
+    if (projectMode === 'git' && !gitOptions.selectedBaseBranchAvailable()) {
       setError('Selected base branch is no longer available. Refresh the branch list.');
       setAdvancedOpen(true);
       return;
     }
 
-    const branchConflict = branchPreviewConflictMessage();
+    const branchConflict = gitOptions.branchPreviewConflictMessage();
     if (createsNewWorktree() && branchConflict) {
       setError(branchConflict);
       setAdvancedOpen(true);
@@ -740,7 +545,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const isCurrentBranchSubmit = currentBranchMode();
     const isExistingWorktreeSubmit = existingWorktreeMode();
     const submitExistingWorktreePath = existingWorktreePath().trim();
-    const submitSymlinkDirs = [...selectedDirs()];
+    const submitSymlinkDirs = [...gitOptions.selectedDirs()];
     const submitStepsTracking = stepsTracking();
     const submitCoordinatorMode = coordinatorMode();
     const createPendingTask = (): Promise<string> => {
@@ -1091,7 +896,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 >
                   <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
                 </svg>
-                {selectedProjectBaseBranchLabel()}
+                {gitOptions.selectedProjectBaseBranchLabel()}
               </span>
               <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
                 <svg
@@ -1177,7 +982,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         </Show>
 
         {/* Ignored-dir suggestion failures stay visible even when Advanced is collapsed. */}
-        <Show when={createsNewWorktree() ? ignoredDirsError() : null}>
+        <Show when={createsNewWorktree() ? gitOptions.ignoredDirsError() : null}>
           {(message) => (
             <div role="status" aria-live="polite" style={calloutStyle('warning')}>
               Ignored directory suggestions unavailable: {message()}
@@ -1272,26 +1077,31 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                     <input
                       aria-label="Filter base branches"
                       class="input-field"
-                      disabled={branchListStatus() === 'loading'}
-                      onInput={(event) => setBranchQuery(event.currentTarget.value)}
+                      disabled={gitOptions.branchListStatus() === 'loading'}
+                      onInput={(event) => gitOptions.setBranchQuery(event.currentTarget.value)}
                       placeholder="Filter branches"
                       type="text"
-                      value={branchQuery()}
+                      value={gitOptions.branchQuery()}
                       style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
                     />
                     <select
                       aria-label="Base branch"
                       class="input-field"
                       disabled={
-                        branchListStatus() === 'loading' || visibleBranchOptions().length === 0
+                        gitOptions.branchListStatus() === 'loading' ||
+                        gitOptions.visibleBranchOptions().length === 0
                       }
-                      onChange={(event) => setSelectedBaseBranch(event.currentTarget.value || null)}
-                      value={selectedBaseBranch() ?? ''}
+                      onChange={(event) =>
+                        gitOptions.setSelectedBaseBranch(event.currentTarget.value || null)
+                      }
+                      value={gitOptions.selectedBaseBranch() ?? ''}
                       style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
                     >
-                      <For each={visibleBranchOptions()}>
+                      <For each={gitOptions.visibleBranchOptions()}>
                         {(branch) => (
-                          <option value={branch.name}>{formatBranchOption(branch)}</option>
+                          <option value={branch.name}>
+                            {gitOptions.formatBranchOption(branch)}
+                          </option>
                         )}
                       </For>
                     </select>
@@ -1300,19 +1110,20 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                     role="status"
                     aria-live="polite"
                     style={{
-                      color: branchListStatus() === 'error' ? theme.warning : theme.fgSubtle,
+                      color:
+                        gitOptions.branchListStatus() === 'error' ? theme.warning : theme.fgSubtle,
                       display: 'flex',
                       'align-items': 'center',
                       gap: '8px',
                       ...typography.meta,
                     }}
                   >
-                    <span>{branchPickerStatus()}</span>
-                    <Show when={branchListStatus() === 'error'}>
+                    <span>{gitOptions.branchPickerStatus()}</span>
+                    <Show when={gitOptions.branchListStatus() === 'error'}>
                       <button
                         type="button"
                         class="btn-secondary"
-                        onClick={() => setBranchListRefreshId((id) => id + 1)}
+                        onClick={gitOptions.reloadBranches}
                         style={{
                           background: theme.bgInput,
                           border: `1px solid ${theme.border}`,
@@ -1327,7 +1138,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                       </button>
                     </Show>
                   </div>
-                  <Show when={!selectedBaseBranchAvailable()}>
+                  <Show when={!gitOptions.selectedBaseBranchAvailable()}>
                     <div role="alert" style={calloutStyle('error')}>
                       Selected base branch is no longer available. Refresh or choose another branch.
                     </div>
@@ -1339,7 +1150,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 <BranchPrefixField
                   branchPrefix={branchPrefix()}
                   branchPreview={branchPreview()}
-                  conflictMessage={branchPreviewConflictMessage()}
+                  conflictMessage={gitOptions.branchPreviewConflictMessage()}
                   projectPath={selectedProjectPath()}
                   onPrefixChange={setBranchPrefix}
                 />
@@ -1438,11 +1249,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 </div>
               </Show>
 
-              <Show when={ignoredDirs().length > 0 && createsNewWorktree()}>
+              <Show when={gitOptions.ignoredDirs().length > 0 && createsNewWorktree()}>
                 <SymlinkDirPicker
-                  dirs={ignoredDirs()}
-                  selectedDirs={selectedDirs()}
-                  onToggle={toggleSelectedDir}
+                  dirs={gitOptions.ignoredDirs()}
+                  selectedDirs={gitOptions.selectedDirs()}
+                  onToggle={gitOptions.toggleSelectedDir}
                 />
               </Show>
             </div>

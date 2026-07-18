@@ -174,6 +174,21 @@ describe('client session state', () => {
     });
   });
 
+  it('preserves current sparse layout entries when the saved browser session omits them', () => {
+    setStore('fontScales', { retained: 1.1 });
+    setStore('panelSizes', { retained: 0.6 });
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        fontScales: { restored: 1.2 },
+      }),
+    );
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.fontScales).toEqual({ retained: 1.1, restored: 1.2 });
+    expect(store.panelSizes).toEqual({ retained: 0.6 });
+  });
+
   it('reconciles local selection when the saved task is no longer present', () => {
     sessionStorage.setItem(
       'parallel-code-client-session',

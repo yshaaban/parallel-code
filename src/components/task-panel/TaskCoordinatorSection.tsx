@@ -34,15 +34,29 @@ import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import { theme } from '../../lib/theme';
 import { getCoordinatorRunForTask } from '../../store/coordinator';
 import type { Task } from '../../store/types';
-import type { PanelChild } from '../ResizablePanel';
 import { CoordinatorRailAlert } from './CoordinatorRailAlert';
 import { ScalablePanel } from '../ScalablePanel';
 
-interface TaskCoordinatorSectionProps {
+export interface TaskCoordinatorSectionProps {
   task: Accessor<Task>;
 }
 
 type PeekTab = 'diff' | 'meta' | 'tail';
+
+type CoordinatorPopoverState =
+  | { kind: 'closed' }
+  | { kind: 'debug' }
+  | { kind: 'spawn' }
+  | { kind: 'subtask'; taskId: string }
+  | { kind: 'workflow'; workflowId: string };
+
+const STALE_COORDINATOR_ACTION = Symbol('stale-coordinator-action');
+
+interface CoordinatorActionRequest {
+  generation: number;
+  onInvalidated?: () => void;
+  ownerKey: string;
+}
 
 interface CoordinatorOutputResult {
   output: string;
@@ -333,8 +347,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   let popoverRef: HTMLDivElement | undefined;
   let lastTriggerRef: HTMLButtonElement | undefined;
 
-  const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null);
-  const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(null);
+  const [popover, setPopover] = createSignal<CoordinatorPopoverState>({ kind: 'closed' });
   const [anchor, setAnchor] = createSignal<DOMRect | null>(null);
   const [tab, setTab] = createSignal<PeekTab>('tail');
   const [actionError, setActionError] = createSignal<string | null>(null);
@@ -371,8 +384,6 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   const [diffResult, setDiffResult] = createSignal<CoordinatorDiffResult | null>(null);
   const [followUpText, setFollowUpText] = createSignal('');
   const [outputResult, setOutputResult] = createSignal<CoordinatorOutputResult | null>(null);
-  const [showDebug, setShowDebug] = createSignal(false);
-  const [showSpawn, setShowSpawn] = createSignal(false);
   const [spawnAssignment, setSpawnAssignment] = createSignal('');
   const [spawnCommand, setSpawnCommand] = createSignal('codex');
   const [spawnName, setSpawnName] = createSignal('');
@@ -388,6 +399,108 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       debugCommand: props.task().coordinatorToolCommand,
     });
   });
+  const coordinatorActionOwnerKey = createMemo(() => {
+    const state = popover();
+    const targetId =
+      state.kind === 'subtask' ? state.taskId : state.kind === 'workflow' ? state.workflowId : null;
+    return JSON.stringify([props.task().id, runView()?.run.id ?? null, state.kind, targetId]);
+  });
+  let coordinatorActionGeneration = 0;
+  let activeCoordinatorActionRequest: CoordinatorActionRequest | null = null;
+  let coordinatorSectionDisposed = false;
+
+  function invalidateCoordinatorActionRequest(): void {
+    coordinatorActionGeneration += 1;
+    const request = activeCoordinatorActionRequest;
+    activeCoordinatorActionRequest = null;
+    if (!request) {
+      return;
+    }
+
+    setBusyAction(null);
+    request.onInvalidated?.();
+  }
+
+  function beginCoordinatorActionRequest(
+    busyId: CoordinatorUiActionId,
+    onInvalidated?: () => void,
+  ): CoordinatorActionRequest {
+    invalidateCoordinatorActionRequest();
+    const request = {
+      generation: ++coordinatorActionGeneration,
+      ...(onInvalidated ? { onInvalidated } : {}),
+      ownerKey: coordinatorActionOwnerKey(),
+    } satisfies CoordinatorActionRequest;
+    activeCoordinatorActionRequest = request;
+    setBusyAction(busyId);
+    return request;
+  }
+
+  function isCurrentCoordinatorActionRequest(request: CoordinatorActionRequest): boolean {
+    return (
+      !coordinatorSectionDisposed &&
+      activeCoordinatorActionRequest?.generation === request.generation &&
+      coordinatorActionOwnerKey() === request.ownerKey
+    );
+  }
+
+  function finishCoordinatorActionRequest(request: CoordinatorActionRequest): void {
+    if (activeCoordinatorActionRequest?.generation !== request.generation) {
+      return;
+    }
+
+    activeCoordinatorActionRequest = null;
+    setBusyAction(null);
+  }
+
+  async function runCurrentCoordinatorAction<T>(
+    busyId: CoordinatorUiActionId,
+    action: () => Promise<T>,
+    options: { onInvalidated?: () => void } = {},
+  ): Promise<T | typeof STALE_COORDINATOR_ACTION> {
+    const request = beginCoordinatorActionRequest(busyId, options.onInvalidated);
+    try {
+      const result = await action();
+      return isCurrentCoordinatorActionRequest(request) ? result : STALE_COORDINATOR_ACTION;
+    } catch (error) {
+      if (!isCurrentCoordinatorActionRequest(request)) {
+        return STALE_COORDINATOR_ACTION;
+      }
+      throw error;
+    } finally {
+      finishCoordinatorActionRequest(request);
+    }
+  }
+
+  let previousCoordinatorActionOwnerKey: string | null = null;
+  createEffect(() => {
+    const ownerKey = coordinatorActionOwnerKey();
+    if (previousCoordinatorActionOwnerKey === null) {
+      previousCoordinatorActionOwnerKey = ownerKey;
+      return;
+    }
+    if (ownerKey === previousCoordinatorActionOwnerKey) {
+      return;
+    }
+
+    previousCoordinatorActionOwnerKey = ownerKey;
+    invalidateCoordinatorActionRequest();
+  });
+
+  onCleanup(() => {
+    coordinatorSectionDisposed = true;
+    invalidateCoordinatorActionRequest();
+  });
+  const selectedTaskId = createMemo(() => {
+    const state = popover();
+    return state.kind === 'subtask' ? state.taskId : null;
+  });
+  const selectedWorkflowId = createMemo(() => {
+    const state = popover();
+    return state.kind === 'workflow' ? state.workflowId : null;
+  });
+  const showDebug = createMemo(() => popover().kind === 'debug');
+  const showSpawn = createMemo(() => popover().kind === 'spawn');
   const selectedChip = createMemo(() => {
     const view = runView();
     const taskId = selectedTaskId();
@@ -410,31 +523,29 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   createEffect(() => {
     const view = runView();
     const selected = selectedTaskId();
-    if (!view || !selected) {
-      setSelectedTaskId(null);
+    if (!selected) {
       return;
     }
 
-    if (view.chips.some((chip) => chip.taskId === selected)) {
+    if (view?.chips.some((chip) => chip.taskId === selected)) {
       return;
     }
 
-    setSelectedTaskId(null);
+    setPopover({ kind: 'closed' });
   });
 
   createEffect(() => {
     const view = runView();
     const selected = selectedWorkflowId();
-    if (!view || !selected) {
-      setSelectedWorkflowId(null);
+    if (!selected) {
       return;
     }
 
-    if (view.workflows.some((workflow) => workflow.id === selected)) {
+    if (view?.workflows.some((workflow) => workflow.id === selected)) {
       return;
     }
 
-    setSelectedWorkflowId(null);
+    setPopover({ kind: 'closed' });
   });
 
   createEffect(() => {
@@ -536,11 +647,8 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   });
 
   function closePopover(): void {
-    setSelectedTaskId(null);
-    setSelectedWorkflowId(null);
+    setPopover({ kind: 'closed' });
     setAnchor(null);
-    setShowDebug(false);
-    setShowSpawn(false);
     queueMicrotask(() => lastTriggerRef?.focus());
   }
 
@@ -555,44 +663,32 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     event.stopPropagation();
     lastTriggerRef = event.currentTarget as HTMLButtonElement;
     resetTransientState();
-    setSelectedTaskId(chip.taskId);
-    setSelectedWorkflowId(null);
+    setPopover({ kind: 'subtask', taskId: chip.taskId });
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
-    setShowDebug(false);
-    setShowSpawn(false);
   }
 
   function openWorkflow(event: MouseEvent, workflow: CoordinatorWorkflowTimelineView): void {
     event.stopPropagation();
     lastTriggerRef = event.currentTarget as HTMLButtonElement;
     resetTransientState();
-    setSelectedWorkflowId(workflow.id);
-    setSelectedTaskId(null);
+    setPopover({ kind: 'workflow', workflowId: workflow.id });
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
-    setShowDebug(false);
-    setShowSpawn(false);
   }
 
   function openSpawn(event: MouseEvent): void {
     event.stopPropagation();
     lastTriggerRef = event.currentTarget as HTMLButtonElement;
     resetTransientState();
+    setPopover({ kind: 'spawn' });
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
-    setSelectedTaskId(null);
-    setSelectedWorkflowId(null);
-    setShowDebug(false);
-    setShowSpawn(true);
   }
 
   function openDebug(event: MouseEvent): void {
     event.stopPropagation();
     lastTriggerRef = event.currentTarget as HTMLButtonElement;
     resetTransientState();
+    setPopover({ kind: 'debug' });
     setAnchor((event.currentTarget as HTMLElement).getBoundingClientRect());
-    setSelectedTaskId(null);
-    setSelectedWorkflowId(null);
-    setShowSpawn(false);
-    setShowDebug(true);
   }
 
   function getCurrentRunId(): string | null {
@@ -619,7 +715,6 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       return;
     }
 
-    setBusyAction(action.id);
     setActionError(null);
     setActionStatus(null);
     try {
@@ -634,7 +729,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
         return;
       }
 
-      const response = await callCoordinatorUiTool(request);
+      const response = await runCurrentCoordinatorAction(action.id, () =>
+        callCoordinatorUiTool(request),
+      );
+      if (response === STALE_COORDINATOR_ACTION) {
+        return;
+      }
       if (!response.accepted) {
         throw new Error(response.error ?? 'Coordinator action was rejected.');
       }
@@ -664,8 +764,6 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusyAction(null);
     }
   }
 
@@ -674,6 +772,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   // rejection mapping; this component only owns presentation routing.
   async function runOperatorAction(options: {
     busyId: CoordinatorUiActionId;
+    onInvalidated?: () => void;
     onRejected: (message: string) => void;
     onSuccess?: () => void;
     request: CoordinatorOperatorActionRequest;
@@ -681,22 +780,28 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     if (!runView()) {
       return;
     }
+    const taskId = props.task().id;
 
-    setBusyAction(options.busyId);
-    try {
-      const result = await runCoordinatorOperatorAction({
-        request: options.request,
-        taskId: props.task().id,
-      });
-      if (result.accepted) {
-        options.onSuccess?.();
-        return;
-      }
-
-      options.onRejected(result.message);
-    } finally {
-      setBusyAction(null);
+    const result = await runCurrentCoordinatorAction(
+      options.busyId,
+      () =>
+        runCoordinatorOperatorAction({
+          request: options.request,
+          taskId,
+        }),
+      {
+        ...(options.onInvalidated ? { onInvalidated: options.onInvalidated } : {}),
+      },
+    );
+    if (result === STALE_COORDINATOR_ACTION) {
+      return;
     }
+    if (result.accepted) {
+      options.onSuccess?.();
+      return;
+    }
+
+    options.onRejected(result.message);
   }
 
   async function resumeRun(): Promise<void> {
@@ -739,6 +844,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     });
     await runOperatorAction({
       busyId,
+      onInvalidated: () => setOptimisticPauseFlip(null),
       onRejected: (message) => {
         setOptimisticPauseFlip(null);
         setRailAlert({ message, retry: () => void toggleRunPaused() });
@@ -811,17 +917,21 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       return;
     }
 
-    setBusyAction('spawn-subtask');
     setActionError(null);
     try {
-      const response = await callCoordinatorUiTool({
-        coordinatorTaskId: view.run.coordinatorTaskId,
-        controllerId: getRuntimeClientId(),
-        payload: spawnPayload.payload,
-        requestId: createRequestId(),
-        runId: view.run.id,
-        toolName: 'spawn_subtask',
-      });
+      const response = await runCurrentCoordinatorAction('spawn-subtask', () =>
+        callCoordinatorUiTool({
+          coordinatorTaskId: view.run.coordinatorTaskId,
+          controllerId: getRuntimeClientId(),
+          payload: spawnPayload.payload,
+          requestId: createRequestId(),
+          runId: view.run.id,
+          toolName: 'spawn_subtask',
+        }),
+      );
+      if (response === STALE_COORDINATOR_ACTION) {
+        return;
+      }
       if (!response.accepted) {
         throw new Error(response.error ?? 'Spawn was rejected.');
       }
@@ -830,11 +940,9 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       setSpawnName('');
       setActionStatus('Subtask queued.');
       acknowledgeSpawn(name, assignment);
-      setShowSpawn(false);
+      closePopover();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusyAction(null);
     }
   }
 
@@ -848,7 +956,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
     }
 
     try {
-      await navigator.clipboard.writeText(text);
+      const result = await runCurrentCoordinatorAction('copy-debug-command', () =>
+        navigator.clipboard.writeText(text),
+      );
+      if (result === STALE_COORDINATOR_ACTION) {
+        return;
+      }
       setActionError(null);
       setActionStatus('Copied list_tasks command.');
     } catch (error) {
@@ -858,7 +971,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
   }
 
   createEffect(() => {
-    if (!selectedChip() && !selectedWorkflow() && !showSpawn() && !showDebug()) {
+    if (popover().kind === 'closed') {
       return;
     }
 
@@ -1286,7 +1399,7 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
           )}
         </Show>
       </div>
-      <Show when={selectedChip() || selectedWorkflow() || showSpawn() || showDebug()}>
+      <Show when={popover().kind !== 'closed'}>
         <Portal>
           <div
             ref={(element) => {
@@ -2114,15 +2227,4 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
       </Show>
     </ScalablePanel>
   );
-}
-
-export function createTaskCoordinatorSection(props: TaskCoordinatorSectionProps): PanelChild {
-  return {
-    content: () => <TaskCoordinatorSection {...props} />,
-    fixed: true,
-    id: 'coordinator',
-    initialSize: 44,
-    maxSize: 64,
-    minSize: 40,
-  };
 }

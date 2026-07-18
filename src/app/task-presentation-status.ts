@@ -2,7 +2,7 @@ import { assertNever } from '../lib/assert-never';
 import { isHydraAgentDef } from '../lib/hydra';
 import { isTerminalFocusedInputPromptSuppressionActive } from './terminal-focused-input';
 import { getAgentPromptDispatchAt, PROMPT_DISPATCH_WINDOW_MS } from './task-prompt-dispatch';
-import { getCoordinatorTaskAttentionSummary } from './coordinator-ui-model';
+import { getCoordinatorTaskAttentionSummary } from './coordinator-attention';
 import { getAgentLastOutputAt } from '../store/agent-output-activity';
 import { getCoordinatorRunForTask } from '../store/coordinator';
 import { store } from '../store/state';

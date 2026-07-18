@@ -1,5 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
-import { invoke } from '../lib/ipc';
+import { invoke, invokeWithAbortSignal } from '../lib/ipc';
 import { isAgentResumeStrategy } from '../lib/agent-resume';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
@@ -124,14 +124,26 @@ function refreshAvailableAgents(): void {
   void loadAgents();
 }
 
-export async function loadAgents(): Promise<AgentDef[]> {
+function fetchAgentCatalogFromIpc(hydraCommand: string, signal?: AbortSignal): Promise<unknown> {
+  if (signal) {
+    return hydraCommand
+      ? invokeWithAbortSignal(IPC.ListAgents, signal, { hydraCommand })
+      : invokeWithAbortSignal(IPC.ListAgents, signal);
+  }
+
+  return hydraCommand ? invoke(IPC.ListAgents, { hydraCommand }) : invoke(IPC.ListAgents);
+}
+
+export async function loadAgents(options: { signal?: AbortSignal } = {}): Promise<AgentDef[]> {
+  const { signal } = options;
   try {
+    signal?.throwIfAborted();
     const hydraCommand = store.hydraCommand.trim();
-    const defaults = normalizeLoadedAgents(
-      hydraCommand ? await invoke(IPC.ListAgents, { hydraCommand }) : await invoke(IPC.ListAgents),
-    );
+    const defaults = normalizeLoadedAgents(await fetchAgentCatalogFromIpc(hydraCommand, signal));
+    signal?.throwIfAborted();
     return mergeAvailableAgents(defaults);
   } catch (error) {
+    signal?.throwIfAborted();
     console.warn('Failed to load agent catalog from IPC, using builtin defaults:', error);
     return mergeAvailableAgents(cloneAgents(FALLBACK_AGENT_DEFS));
   }

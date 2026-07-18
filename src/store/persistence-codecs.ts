@@ -2,7 +2,8 @@ import { isElectronRuntime } from '../lib/ipc';
 import type { AgentDef } from '../ipc/types';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
-import { clampTerminalFontSize, store } from './core';
+import { store } from './core';
+import { buildElectronLocalShellPreferences } from './local-shell-preferences';
 import type {
   PersistedState,
   PersistedTask,
@@ -27,16 +28,6 @@ import {
   isNonGitProject,
 } from './project-mode';
 import { getSelectedTaskAgentId } from './task-agent-selection';
-
-export function isStringNumberRecord(value: unknown): value is Record<string, number> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  return Object.values(value as Record<string, unknown>).every(
-    (entry) => typeof entry === 'number' && Number.isFinite(entry),
-  );
-}
 
 function getPrimaryAgentDef(task: Task, fallbackAgentDefs: AgentDef[] = []): AgentDef | null {
   const agentId = task.agentIds[0];
@@ -273,18 +264,6 @@ function buildPersistedTerminalEntries(
   return terminals;
 }
 
-export function resolvePersistedTerminalFontSize(value: unknown, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return clampTerminalFontSize(value);
-}
-
-export function resolvePersistedFontSmoothing(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback;
-}
-
 export function buildWorkspaceSharedState(): WorkspaceSharedState {
   const taskOrder = buildPersistedSharedTaskOrder();
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
@@ -311,6 +290,7 @@ export function buildPersistedState(): PersistedState {
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
   const tasks = buildPersistedTaskEntries(taskOrder, collapsedTaskOrder);
   const terminals = buildPersistedTerminalEntries(taskOrder);
+  const electronRuntime = isElectronRuntime();
   const persisted: PersistedState = {
     projects: store.projects.map((project) => buildPersistedProject(project)),
     taskOrder,
@@ -329,34 +309,16 @@ export function buildPersistedState(): PersistedState {
     ...(terminals ? { terminals } : {}),
     ...(store.editorCommand ? { editorCommand: store.editorCommand } : {}),
     ...(store.hydraCommand ? { hydraCommand: store.hydraCommand } : {}),
-    ...(store.verboseLogging ? { verboseLogging: true } : {}),
+    ...(!electronRuntime && store.verboseLogging ? { verboseLogging: true } : {}),
   };
 
-  if (!isElectronRuntime()) {
+  if (!electronRuntime) {
     return persisted;
   }
 
+  Object.assign(persisted, buildElectronLocalShellPreferences(store));
   persisted.activeTaskId = store.activeTaskId;
-  persisted.sidebarVisible = store.sidebarVisible;
-  persisted.fontScales = { ...store.fontScales };
-  persisted.panelSizes = { ...store.panelSizes };
-  persisted.globalScale = store.globalScale;
-  persisted.terminalFontSize = store.terminalFontSize;
-  persisted.terminalFont = store.terminalFont;
-  persisted.fontSmoothing = store.fontSmoothing;
-  persisted.themePreset = store.themePreset;
-  persisted.keybindings = store.keybindings;
-  persisted.sidebarSectionCollapsed = { ...store.sidebarSectionCollapsed };
-  persisted.showPlans = store.showPlans;
-  persisted.terminalHighLoadMode = store.terminalHighLoadMode;
-  persisted.terminalLocalInputFeedbackEnabled = store.terminalLocalInputFeedbackEnabled;
-  persisted.taskNotificationsEnabled = store.taskNotificationsEnabled;
-  persisted.taskNotificationsPreferenceInitialized = store.taskNotificationsPreferenceInitialized;
-  persisted.inactiveColumnOpacity = store.inactiveColumnOpacity;
   persisted.hasSeenDesktopIntro = store.hasSeenDesktopIntro;
-  if (store.windowState) {
-    persisted.windowState = { ...store.windowState };
-  }
 
   return persisted;
 }
@@ -367,16 +329,4 @@ export function toNonNegativeInt(value: unknown): number {
   }
 
   return Math.max(0, Math.floor(value));
-}
-
-export function resolvePersistedTerminalHighLoadMode(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-export function normalizeInactiveColumnOpacity(value: unknown, fallback = 0.6): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.3 || value > 1) {
-    return fallback;
-  }
-
-  return Math.round(value * 100) / 100;
 }

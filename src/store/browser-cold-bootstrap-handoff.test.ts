@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestAgentDef } from '../test/store-test-helpers.js';
 import {
-  hasMeaningfulBrowserColdBootstrapProjection,
   saveBrowserColdBootstrapHandoffSnapshot,
   takeBrowserColdBootstrapHandoffProjection,
 } from './browser-cold-bootstrap-handoff.js';
@@ -287,71 +286,5 @@ describe('browser-cold-bootstrap-handoff', () => {
 
     expect(projection).toBeNull();
     expect(sessionStorage.getItem(browserColdBootstrapHandoffStorageKey)).toBeNull();
-  });
-
-  it('detects whether a cold bootstrap projection carries meaningful workspace state', () => {
-    expect(
-      hasMeaningfulBrowserColdBootstrapProjection({
-        availableAgents: [],
-        collapsedTaskOrder: [],
-        completedTaskCount: 0,
-        completedTaskDate: '2026-04-08',
-        customAgents: [],
-        hydraCommand: '',
-        hydraForceDispatchFromPromptPanel: true,
-        hydraStartupMode: 'auto',
-        lastProjectId: null,
-        mergedLinesAdded: 0,
-        mergedLinesRemoved: 0,
-        projects: [],
-        taskOrder: [],
-        tasks: {},
-        terminals: {},
-      }),
-    ).toBe(false);
-    expect(
-      hasMeaningfulBrowserColdBootstrapProjection({
-        availableAgents: [],
-        collapsedTaskOrder: [],
-        completedTaskCount: 0,
-        completedTaskDate: '2026-04-08',
-        customAgents: [],
-        hydraCommand: '',
-        hydraForceDispatchFromPromptPanel: true,
-        hydraStartupMode: 'auto',
-        lastProjectId: null,
-        mergedLinesAdded: 0,
-        mergedLinesRemoved: 0,
-        projects: [],
-        taskOrder: ['shell-1'],
-        tasks: {},
-        terminals: {
-          'shell-1': {
-            agentId: 'shell-agent-1',
-            id: 'shell-1',
-            name: 'Shell 1',
-          },
-        },
-      }),
-    ).toBe(false);
-    expect(
-      hasMeaningfulBrowserColdBootstrapProjection({
-        availableAgents: [],
-        collapsedTaskOrder: [],
-        completedTaskCount: 0,
-        completedTaskDate: '2026-04-08',
-        customAgents: [],
-        hydraCommand: '',
-        hydraForceDispatchFromPromptPanel: true,
-        hydraStartupMode: 'auto',
-        lastProjectId: null,
-        mergedLinesAdded: 0,
-        mergedLinesRemoved: 0,
-        projects: [{ color: '#335577', id: 'project-1', name: 'Project', path: '/tmp/project' }],
-        taskOrder: [],
-        tasks: {},
-        terminals: {},
-      }),
-    ).toBe(true);
   });
 });

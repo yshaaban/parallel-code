@@ -37,13 +37,25 @@ vi.mock('../ScalablePanel', () => ({
 }));
 
 import { TaskCoordinatorSection } from './TaskCoordinatorSection';
+import { createTaskCoordinatorSection } from './TaskCoordinatorSectionEntry';
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function createRun(overrides: Partial<CoordinatorRunSnapshot> = {}): CoordinatorRunSnapshot {
   return {
     coordinatorTaskId: 'task-coordinator',
     createdAt: 1_000,
     eventVersion: 1,
-    id: 'run-1',
+    id: overrides.id ?? 'run-1',
     landing: overrides.landing ?? [],
     limits: {
       maxActiveSubtasks: 5,
@@ -224,6 +236,29 @@ function createTask(): Task {
   };
 }
 
+function createRunWithTwoSubtasks(): CoordinatorRunSnapshot {
+  const run = createRun();
+  const firstSubtask = run.subtasks[0];
+  if (!firstSubtask) {
+    throw new Error('Expected the coordinator fixture to include a subtask');
+  }
+
+  return createRun({
+    subtasks: [
+      firstSubtask,
+      {
+        ...firstSubtask,
+        agentId: 'agent-second',
+        assignment: 'Fix renderer behavior',
+        branchName: 'task/renderer',
+        taskId: 'task-second',
+        toolTokenId: 'token-second',
+        worktreePath: '/repo/.worktrees/task-second',
+      },
+    ],
+  });
+}
+
 function openSpawnForm(): void {
   fireEvent.click(screen.getByLabelText('Spawn coordinator subtask'));
 }
@@ -255,6 +290,23 @@ describe('TaskCoordinatorSection', () => {
       callId: 'request-1',
       result: null,
     });
+  });
+
+  it('preserves the panel contract through the lazy coordinator entry', async () => {
+    const section = createTaskCoordinatorSection({ task: () => createTask() });
+
+    expect(section).toMatchObject({
+      fixed: true,
+      id: 'coordinator',
+      initialSize: 44,
+      maxSize: 64,
+      minSize: 40,
+    });
+
+    render(() => section.content());
+    expect(screen.getByRole('status').textContent).toBe('Loading coordinator…');
+    expect(await screen.findByText('RUN')).toBeDefined();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('renders a compact run summary and subtask chip', () => {
@@ -429,6 +481,29 @@ describe('TaskCoordinatorSection', () => {
     expect(callCoordinatorUiToolMock).not.toHaveBeenCalled();
   });
 
+  it('keeps coordinator popover modes mutually exclusive while switching controls', () => {
+    coordinatorRunRef.current = createRun({
+      workflows: [createOperatorWorkflow()],
+    });
+
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    expect(screen.getByLabelText('Follow-up prompt')).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText('Open workflow Gated review'));
+    expect(screen.queryByLabelText('Follow-up prompt')).toBeNull();
+    expect(screen.getByText('Pending approvals')).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText('Spawn coordinator subtask'));
+    expect(screen.queryByText('Pending approvals')).toBeNull();
+    expect(screen.getByLabelText('Subtask name')).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText('Coordinator debug actions'));
+    expect(screen.queryByLabelText('Subtask name')).toBeNull();
+    expect(screen.getByText('Copy list_tasks command')).toBeDefined();
+  });
+
   it('renders the workflow budget counters line in the drilldown', () => {
     coordinatorRunRef.current = createRun({
       workflows: [
@@ -556,6 +631,150 @@ describe('TaskCoordinatorSection', () => {
     expect(callCoordinatorUiToolMock.mock.calls[0]?.[0].requestId).toEqual(expect.any(String));
   });
 
+  it('ignores a pending subtask response after the popover switches targets', async () => {
+    coordinatorRunRef.current = createRunWithTwoSubtasks();
+    const staleRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: { output: string; taskId: string; truncatedBytes: number };
+    }>();
+    const currentRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: { output: string; taskId: string; truncatedBytes: number };
+    }>();
+    callCoordinatorUiToolMock
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    fireEvent.click(screen.getByText('Refresh output'));
+    await waitFor(() => expect(callCoordinatorUiToolMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByLabelText('Open Fix renderer behavior'));
+    fireEvent.click(screen.getByText('Refresh output'));
+    await waitFor(() => expect(callCoordinatorUiToolMock).toHaveBeenCalledTimes(2));
+
+    currentRequest.resolve({
+      accepted: true,
+      callId: 'current-request',
+      result: {
+        output: 'current renderer output',
+        taskId: 'task-second',
+        truncatedBytes: 0,
+      },
+    });
+    await screen.findByText('current renderer output');
+
+    staleRequest.resolve({
+      accepted: true,
+      callId: 'stale-request',
+      result: {
+        output: 'stale parser output',
+        taskId: 'task-child',
+        truncatedBytes: 0,
+      },
+    });
+    await staleRequest.promise;
+    await Promise.resolve();
+
+    expect(screen.queryByText('stale parser output')).toBeNull();
+    expect(screen.getByText('current renderer output')).toBeDefined();
+  });
+
+  it('keeps the latest overlapping action busy and ignores the earlier completion', async () => {
+    const outputRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: { output: string; taskId: string; truncatedBytes: number };
+    }>();
+    const diffRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: {
+        files: Array<{ added: number; path: string; removed: number }>;
+        totalAdded: number;
+        totalRemoved: number;
+        truncatedBytes: number;
+      };
+    }>();
+    callCoordinatorUiToolMock
+      .mockReturnValueOnce(outputRequest.promise)
+      .mockReturnValueOnce(diffRequest.promise);
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    fireEvent.click(screen.getByText('Refresh output'));
+    fireEvent.click(screen.getByText('Diff'));
+    const refreshDiff = screen.getByText('Refresh diff');
+    fireEvent.click(refreshDiff);
+    await waitFor(() => expect(callCoordinatorUiToolMock).toHaveBeenCalledTimes(2));
+    expect(refreshDiff).toHaveProperty('disabled', true);
+
+    outputRequest.resolve({
+      accepted: true,
+      callId: 'older-output-request',
+      result: {
+        output: 'older overlapping output',
+        taskId: 'task-child',
+        truncatedBytes: 0,
+      },
+    });
+    await outputRequest.promise;
+    await Promise.resolve();
+
+    expect(refreshDiff).toHaveProperty('disabled', true);
+
+    diffRequest.resolve({
+      accepted: true,
+      callId: 'newer-diff-request',
+      result: {
+        files: [{ added: 2, path: 'src/current.ts', removed: 1 }],
+        totalAdded: 2,
+        totalRemoved: 1,
+        truncatedBytes: 0,
+      },
+    });
+    await screen.findByText('src/current.ts');
+    expect(refreshDiff).toHaveProperty('disabled', false);
+
+    fireEvent.click(screen.getByText('Tail'));
+    expect(screen.queryByText('older overlapping output')).toBeNull();
+    expect(screen.getByText('No output loaded.')).toBeDefined();
+  });
+
+  it('invalidates a pending response when the coordinator run identity changes', async () => {
+    const staleRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: { output: string; taskId: string; truncatedBytes: number };
+    }>();
+    callCoordinatorUiToolMock.mockReturnValueOnce(staleRequest.promise);
+    render(() => <TaskCoordinatorSection task={() => createTask()} />);
+
+    fireEvent.click(screen.getByLabelText('Open Fix parser behavior'));
+    fireEvent.click(screen.getByText('Refresh output'));
+    await waitFor(() => expect(callCoordinatorUiToolMock).toHaveBeenCalledTimes(1));
+
+    coordinatorRunRef.current = createRun({ id: 'run-2', updatedAt: 2_000 });
+    coordinatorRunReactivity.bump();
+    staleRequest.resolve({
+      accepted: true,
+      callId: 'old-run-request',
+      result: {
+        output: 'output from the replaced run',
+        taskId: 'task-child',
+        truncatedBytes: 0,
+      },
+    });
+    await staleRequest.promise;
+    await Promise.resolve();
+
+    expect(screen.queryByText('output from the replaced run')).toBeNull();
+    expect(screen.getByText('No output loaded.')).toBeDefined();
+  });
+
   it('queues a follow-up prompt from the peek lens', async () => {
     render(() => <TaskCoordinatorSection task={() => createTask()} />);
 
@@ -668,7 +887,8 @@ describe('TaskCoordinatorSection', () => {
   it('spawns a subtask from the compact spawn slit', async () => {
     render(() => <TaskCoordinatorSection task={() => createTask()} />);
 
-    openSpawnForm();
+    const spawnTrigger = screen.getByLabelText('Spawn coordinator subtask');
+    fireEvent.click(spawnTrigger);
     fillSpawnForm();
     fireEvent.click(screen.getByText('Spawn'));
 
@@ -684,6 +904,38 @@ describe('TaskCoordinatorSection', () => {
         }),
       );
     });
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Subtask name')).toBeNull();
+      expect(document.activeElement).toBe(spawnTrigger);
+    });
+  });
+
+  it('does not apply a pending spawn completion after the section unmounts', async () => {
+    const spawnRequest = createDeferred<{
+      accepted: true;
+      callId: string;
+      result: null;
+    }>();
+    callCoordinatorUiToolMock.mockReturnValueOnce(spawnRequest.promise);
+    const view = render(() => <TaskCoordinatorSection task={() => createTask()} />);
+    const spawnTrigger = screen.getByLabelText('Spawn coordinator subtask');
+    const focusSpy = vi.spyOn(spawnTrigger, 'focus');
+
+    fireEvent.click(spawnTrigger);
+    fillSpawnForm();
+    fireEvent.click(screen.getByText('Spawn'));
+    await waitFor(() => expect(callCoordinatorUiToolMock).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    spawnRequest.resolve({
+      accepted: true,
+      callId: 'late-spawn-request',
+      result: null,
+    });
+    await spawnRequest.promise;
+    await Promise.resolve();
+
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 
   it('spawns coordinator subtasks with parsed command args and environment', async () => {

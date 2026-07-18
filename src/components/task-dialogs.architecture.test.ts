@@ -14,6 +14,14 @@ const mergeDialogSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/MergeDialog.tsx'),
   'utf8',
 );
+const newTaskDialogSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/NewTaskDialog.tsx'),
+  'utf8',
+);
+const taskGitOptionsControllerSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/new-task-dialog/task-git-options-controller.ts'),
+  'utf8',
+);
 const appSource = readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
 const sidebarSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/Sidebar.tsx'),
@@ -56,6 +64,14 @@ describe('task dialog architecture guardrails', () => {
     expect(changedFilesListSource).toContain("kind: 'worktree'");
     expect(mergeDialogSource).toContain('kind="task"');
     expect(mergeDialogSource).toContain('taskId={props.task.id}');
+  });
+
+  it('keeps new-task Git option queries behind their form-local controller', () => {
+    expect(newTaskDialogSource).toContain('createTaskGitOptionsController');
+    expect(newTaskDialogSource).not.toContain('IPC.GetGitignoredDirs');
+    expect(newTaskDialogSource).not.toContain('IPC.ListBranches');
+    expect(taskGitOptionsControllerSource).toContain('IPC.GetGitignoredDirs');
+    expect(taskGitOptionsControllerSource).toContain('IPC.ListBranches');
   });
 
   it('keeps closed app surfaces out of the eager startup path', () => {

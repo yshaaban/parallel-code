@@ -1397,31 +1397,6 @@ function getAskLandDisabledReason(
   return undefined;
 }
 
-export interface CoordinatorTaskAttentionSummary {
-  budgetExhaustedWorkflowCount: number;
-  pendingApprovalCount: number;
-  staleAfterRestore: boolean;
-}
-
-// Compact projection of the operator-actionable run states. Consumed by the
-// rail summary and by the renderer-side task attention candidates so both
-// surfaces agree on what counts as "needs the operator".
-export function getCoordinatorTaskAttentionSummary(
-  run: CoordinatorRunSnapshot,
-): CoordinatorTaskAttentionSummary {
-  const workflows = run.workflows ?? [];
-  return {
-    budgetExhaustedWorkflowCount: workflows.filter(
-      (workflow) => workflow.execution?.budget?.exhausted !== undefined,
-    ).length,
-    pendingApprovalCount: workflows.reduce(
-      (count, workflow) => count + countCoordinatorWorkflowPendingApprovals(workflow),
-      0,
-    ),
-    staleAfterRestore: run.status === 'stale-after-restore',
-  };
-}
-
 export function createCoordinatorRunView(
   run: CoordinatorRunSnapshot,
   options: { debugCommand?: string } = {},

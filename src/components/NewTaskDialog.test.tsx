@@ -15,20 +15,33 @@ const {
   createTaskMock,
   hasCurrentBranchTaskMock,
   invokeMock,
+  invokeWithAbortSignalMock,
   toggleNewTaskDialogMock,
   updateProjectMock,
-} = vi.hoisted(() => ({
-  createCurrentBranchTaskMock: vi.fn(),
-  createExistingWorktreeTaskMock: vi.fn(),
-  createTaskMock: vi.fn(),
-  hasCurrentBranchTaskMock: vi.fn(() => false),
-  invokeMock: vi.fn(),
-  toggleNewTaskDialogMock: vi.fn(),
-  updateProjectMock: vi.fn(),
-}));
+} = vi.hoisted(() => {
+  const invokeMock = vi.fn();
+  return {
+    createCurrentBranchTaskMock: vi.fn(),
+    createExistingWorktreeTaskMock: vi.fn(),
+    createTaskMock: vi.fn(),
+    hasCurrentBranchTaskMock: vi.fn(() => false),
+    invokeMock,
+    invokeWithAbortSignalMock: vi.fn(
+      async (channel: string, signal: AbortSignal, args?: unknown) => {
+        signal.throwIfAborted();
+        const result = await invokeMock(channel, args);
+        signal.throwIfAborted();
+        return result;
+      },
+    ),
+    toggleNewTaskDialogMock: vi.fn(),
+    updateProjectMock: vi.fn(),
+  };
+});
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
+  invokeWithAbortSignal: invokeWithAbortSignalMock,
 }));
 
 vi.mock('./Dialog', () => ({
@@ -56,11 +69,19 @@ vi.mock('./BranchPrefixField', () => ({
 }));
 
 vi.mock('./ProjectSelect', () => ({
-  ProjectSelect: () => <div>Project select</div>,
-}));
-
-vi.mock('./SymlinkDirPicker', () => ({
-  SymlinkDirPicker: () => null,
+  ProjectSelect: (props: {
+    onChange: (projectId: string | null) => void;
+    value: string | null;
+  }) => (
+    <select
+      aria-label="Project"
+      onChange={(event) => props.onChange(event.currentTarget.value || null)}
+      value={props.value ?? ''}
+    >
+      <option value="project-1">Project 1</option>
+      <option value="project-2">Project 2</option>
+    </select>
+  ),
 }));
 
 vi.mock('../store/store', async () => {
@@ -173,6 +194,61 @@ describe('NewTaskDialog', () => {
       name: /Dangerously skip all confirms/i,
     });
     expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('reloads only the final selected project when reopening with a different default', async () => {
+    const [open, setOpen] = createSignal(true);
+    setStore('projects', [
+      createTestProject({ id: 'project-1', path: '/repo-a' }),
+      createTestProject({ id: 'project-2', path: '/repo-b' }),
+    ]);
+    setStore('lastProjectId', 'project-1');
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [
+            {
+              current: true,
+              local: true,
+              name: 'main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+      if (channel === 'get_gitignored_dirs') {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter(
+          ([channel, args]) => channel === 'list_branches' && args?.projectRoot === '/repo-a',
+        ),
+      ).toHaveLength(1);
+    });
+
+    setOpen(false);
+    setStore('lastProjectId', 'project-2');
+    setOpen(true);
+
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter(
+          ([channel, args]) => channel === 'list_branches' && args?.projectRoot === '/repo-b',
+        ),
+      ).toHaveLength(1);
+    });
+    expect(
+      invokeMock.mock.calls.filter(
+        ([channel, args]) => channel === 'list_branches' && args?.projectRoot === '/repo-a',
+      ),
+    ).toHaveLength(1);
   });
 
   it('opens synchronously from the store catalog and fires a background availability refresh', async () => {
@@ -398,6 +474,172 @@ describe('NewTaskDialog', () => {
         }),
       );
     });
+  });
+
+  it('submits the selected ignored-directory suggestions', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-1');
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [
+            {
+              current: true,
+              local: true,
+              name: 'main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+      if (channel === 'get_gitignored_dirs') {
+        return Promise.resolve(['node_modules', '.venv']);
+      }
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+
+    const nodeModules = (await screen.findByRole('checkbox', {
+      name: 'node_modules',
+    })) as HTMLInputElement;
+    const virtualEnvironment = screen.getByRole('checkbox', {
+      name: '.venv',
+    }) as HTMLInputElement;
+    expect(nodeModules.checked).toBe(true);
+    expect(virtualEnvironment.checked).toBe(true);
+    await user.click(virtualEnvironment);
+
+    await user.type(screen.getByPlaceholderText('Add user authentication'), 'Ship it');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Ship it',
+          projectId: 'project-1',
+          symlinkDirs: ['node_modules'],
+        }),
+      );
+    });
+  });
+
+  it('does not submit ignored-directory selections from the previous project', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-2');
+    setStore('projects', [
+      createTestProject({ id: 'project-1', path: '/repo-a' }),
+      createTestProject({ id: 'project-2', path: '/repo-b' }),
+    ]);
+    invokeMock.mockImplementation((channel: string, args?: { projectRoot?: string }) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [
+            {
+              current: true,
+              local: true,
+              name: 'main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+      if (channel === 'get_gitignored_dirs') {
+        return args?.projectRoot === '/repo-a'
+          ? Promise.resolve(['node_modules'])
+          : new Promise<string[]>(() => {});
+      }
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+    await screen.findByRole('checkbox', { name: 'node_modules' });
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'project-2');
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: 'node_modules' })).toBeNull();
+    });
+    await user.type(screen.getByPlaceholderText('Add user authentication'), 'Project B task');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Project B task',
+          projectId: 'project-2',
+          symlinkDirs: [],
+        }),
+      );
+    });
+  });
+
+  it('retries only the failed branch request and restores branch selection', async () => {
+    const user = userEvent.setup();
+    let branchRequestCount = 0;
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        branchRequestCount += 1;
+        if (branchRequestCount === 1) {
+          return Promise.reject(new Error('branch backend unavailable'));
+        }
+
+        return Promise.resolve({
+          branches: [
+            {
+              current: true,
+              local: true,
+              name: 'main',
+              remote: true,
+            },
+            {
+              current: false,
+              local: true,
+              name: 'release/main',
+              remote: true,
+            },
+          ],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+
+      if (channel === 'get_gitignored_dirs') {
+        return Promise.resolve(['node_modules']);
+      }
+
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+
+    expect(
+      await screen.findByText(/Branch list unavailable: branch backend unavailable/),
+    ).toBeDefined();
+    const ignoredRequestCount = invokeMock.mock.calls.filter(
+      ([channel]) => channel === 'get_gitignored_dirs',
+    ).length;
+    expect(ignoredRequestCount).toBe(1);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    const branchSelect = (await screen.findByLabelText('Base branch')) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(branchRequestCount).toBe(2);
+      expect(
+        Array.from(branchSelect.options).some((option) => option.value === 'release/main'),
+      ).toBe(true);
+    });
+    expect(branchSelect.value).toBe('main');
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === 'get_gitignored_dirs'),
+    ).toHaveLength(ignoredRequestCount);
   });
 
   it('resets steps tracking when the dialog reopens', async () => {

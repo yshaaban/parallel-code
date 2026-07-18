@@ -4,6 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 const desktopSessionPath = path.resolve(process.cwd(), 'src/app/desktop-session.ts');
 const desktopSessionStartupPath = path.resolve(process.cwd(), 'src/app/desktop-session-startup.ts');
+const browserWorkspaceRecoveryPath = path.resolve(
+  process.cwd(),
+  'src/app/browser-workspace-cold-start-recovery.ts',
+);
 const persistenceLoadPath = path.resolve(process.cwd(), 'src/store/persistence-load.ts');
 const browserColdBootstrapProjectionPath = path.resolve(
   process.cwd(),
@@ -11,6 +15,7 @@ const browserColdBootstrapProjectionPath = path.resolve(
 );
 const desktopSessionSource = readFileSync(desktopSessionPath, 'utf8');
 const desktopSessionStartupSource = readFileSync(desktopSessionStartupPath, 'utf8');
+const browserWorkspaceRecoverySource = readFileSync(browserWorkspaceRecoveryPath, 'utf8');
 const persistenceApplySources = [
   ['src/store/persistence-load.ts', readFileSync(persistenceLoadPath, 'utf8')],
   [
@@ -41,6 +46,33 @@ describe('desktop session architecture guardrails', () => {
       expect(source, sourcePath).not.toContain('listenAgentSupervisionChanged');
       expect(source, sourcePath).not.toContain('listenRemoteStatusChanged');
     }
+  });
+
+  it('delegates browser workspace recovery without absorbing its fallback policy', () => {
+    expect(desktopSessionStartupSource).toContain('startBrowserWorkspaceColdStartRecovery');
+    for (const forbiddenPolicy of [
+      'fetchBrowserColdBootstrap',
+      'takeBrowserColdBootstrapHandoffProjection',
+      'loadWorkspaceState',
+      'BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS',
+      'BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS',
+      'applyBrowserColdBootstrapWorkspaceProjection',
+    ]) {
+      expect(desktopSessionStartupSource).not.toContain(forbiddenPolicy);
+    }
+  });
+
+  it('keeps cold-start recovery separate from reconnect and Electron restore policy', () => {
+    for (const forbiddenPolicy of [
+      'GetBrowserReconnectSnapshot',
+      'syncBrowserStateFromReconnectSnapshot',
+      'beginBrowserReconnectRestore',
+      'setBrowserStartupTier',
+      'electronRuntime',
+    ]) {
+      expect(browserWorkspaceRecoverySource).not.toContain(forbiddenPolicy);
+    }
+    expect(browserWorkspaceRecoverySource).not.toMatch(/\bloadState\s*\(/);
   });
 
   it('routes removed-task persistence cleanup through the shared task cleanup owner', () => {

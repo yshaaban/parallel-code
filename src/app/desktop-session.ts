@@ -32,6 +32,7 @@ import { createBackendFocusReporter } from './backend-focus-reporter';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
 import {
   createDesktopSessionResources,
+  disposeDesktopSessionStartupResources,
   disposeDesktopSessionResources,
 } from './desktop-session-resources';
 import { clearAppStartupStatus } from './app-startup-status';
@@ -40,6 +41,15 @@ import { runDesktopSessionStartup } from './desktop-session-startup';
 import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 import type { BrowserStateSyncApi, StartDesktopAppSessionOptions } from './desktop-session-types';
 import { getConnectionBannerText } from './desktop-browser-runtime';
+
+function getDesktopSessionStartupFailureMessage(error: unknown): string {
+  if (error === null || error === undefined) {
+    return 'Workspace startup failed.';
+  }
+
+  const detail = (error instanceof Error ? error.message : String(error)).trim();
+  return detail ? `Workspace startup failed: ${detail}` : 'Workspace startup failed.';
+}
 
 function openNewTaskDialogFromGitHubUrl(text: string): void {
   setNewTaskDropUrl(text);
@@ -216,14 +226,13 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
       console.error('Failed to start desktop session:', error);
       emitStartupBreadcrumb('desktop-session:startup-failed');
+      disposeDesktopSessionStartupResources(resources);
+      bootstrapController.cleanupStartupListeners();
       // Clearing startup status drops the skeleton, so the workspace would
       // otherwise render as a false first-run empty state. Surface the failed
       // action through the persistent error toast so the degradation is
       // honest and dismissable.
-      showNotification(
-        `Workspace startup failed: ${error instanceof Error ? error.message : String(error)}`,
-        { kind: 'error' },
-      );
+      showNotification(getDesktopSessionStartupFailureMessage(error), { kind: 'error' });
       clearAppStartupStatus();
       resetBrowserStartupState();
     });

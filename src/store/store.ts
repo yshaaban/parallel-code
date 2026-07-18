@@ -6,7 +6,7 @@ export {
   DEFAULT_TERMINAL_FONT_SIZE,
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
-} from './core';
+} from './terminal-font-settings';
 export {
   getProject,
   addProject,

@@ -1,6 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
 import { loadAgents } from '../app/agent-catalog';
-import { fetchBrowserColdBootstrap } from '../app/browser-cold-bootstrap';
 import {
   beginBrowserColdBootstrap,
   completeBrowserColdBootstrap,
@@ -13,11 +12,7 @@ import { reconcileRunningAgents } from '../runtime/server-sync';
 import { markAutosaveClean, setupAutosave } from '../store/autosave';
 import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
-import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap';
-import type {
-  BrowserColdBootstrapPlanContent,
-  BrowserColdBootstrapSnapshot,
-} from '../domain/renderer-invoke';
+import type { BrowserColdBootstrapPlanContent } from '../domain/renderer-invoke';
 import type { PlanContentUpdate } from '../domain/renderer-events';
 import type { ServerStateBootstrapResultSnapshot } from '../domain/server-state-bootstrap';
 import {
@@ -25,13 +20,7 @@ import {
   peekClientSessionSelection,
   reconcileClientSessionState,
 } from '../store/client-session';
-import { takeBrowserColdBootstrapHandoffProjection } from '../store/browser-cold-bootstrap-handoff';
-import {
-  applyBrowserColdBootstrapWorkspaceProjection,
-  loadState,
-  loadWorkspaceState,
-} from '../store/persistence-load';
-import { showNotification } from '../store/notification';
+import { loadState } from '../store/persistence-load';
 import { applyProjectPathExistence, validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
@@ -56,6 +45,10 @@ import {
   createBrowserRuntimeOptions,
 } from './desktop-browser-runtime';
 import {
+  startBrowserWorkspaceColdStartRecovery,
+  type BrowserWorkspaceColdStartRecovery,
+} from './browser-workspace-cold-start-recovery';
+import {
   disposeCleanup,
   disposeOptionalCleanup,
   replaceDesktopSessionResource,
@@ -75,20 +68,8 @@ interface DesktopSessionBootstrapController {
   ): Promise<void>;
 }
 
-const BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS = [75, 200];
-const BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS = [150, 300, 600];
 const BROWSER_AGENT_CATALOG_REFRESH_DELAY_MS = 2_000;
 const DISCOVERED_PROJECTS_PREFETCH_DELAY_MS = 1_500;
-
-interface BrowserColdBootstrapFetchResult {
-  lastError: unknown | null;
-  snapshot: BrowserColdBootstrapSnapshot | null;
-}
-
-interface BrowserWorkspaceStateLoadResult {
-  didLoad: boolean;
-  lastError: unknown | null;
-}
 
 interface DesktopSessionStartupTimerEntry {
   resolve: (completed: boolean) => void;
@@ -159,175 +140,6 @@ function createDesktopSessionStartupTimerController(): DesktopSessionStartupTime
   };
 }
 
-async function fetchBrowserColdBootstrapWithRetry(
-  isDisposed: () => boolean,
-  startupTimerController: DesktopSessionStartupTimerController,
-): Promise<BrowserColdBootstrapFetchResult> {
-  let lastError: unknown = null;
-  let snapshot: BrowserColdBootstrapSnapshot | null = null;
-
-  for (let attempt = 0; attempt <= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      snapshot = await fetchBrowserColdBootstrap();
-      if (snapshot) {
-        return {
-          lastError,
-          snapshot,
-        };
-      }
-    } catch (error) {
-      lastError = error;
-      snapshot = null;
-    }
-
-    if (attempt >= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length || isDisposed()) {
-      break;
-    }
-
-    const retryDelayMs = BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
-    if (retryDelayMs === undefined) {
-      break;
-    }
-
-    if (!(await startupTimerController.wait(retryDelayMs, isDisposed))) {
-      break;
-    }
-  }
-
-  return {
-    lastError,
-    snapshot,
-  };
-}
-
-async function loadWorkspaceStateWithRetry(
-  isDisposed: () => boolean,
-  startupTimerController: DesktopSessionStartupTimerController,
-): Promise<BrowserWorkspaceStateLoadResult> {
-  let lastError: unknown = null;
-
-  for (let attempt = 0; attempt <= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      if (await loadWorkspaceState()) {
-        return {
-          didLoad: true,
-          lastError: null,
-        };
-      }
-    } catch (error) {
-      lastError = error;
-    }
-
-    if (attempt >= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length || isDisposed()) {
-      break;
-    }
-
-    const retryDelayMs = BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
-    if (retryDelayMs === undefined) {
-      break;
-    }
-
-    if (!(await startupTimerController.wait(retryDelayMs, isDisposed))) {
-      break;
-    }
-  }
-
-  return {
-    didLoad: false,
-    lastError,
-  };
-}
-
-async function recoverMissingBrowserWorkspaceState(
-  isDisposed: () => boolean,
-  startupTimerController: DesktopSessionStartupTimerController,
-): Promise<BrowserWorkspaceStateLoadResult> {
-  let lastError: unknown = null;
-
-  for (const delayMs of BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS) {
-    if (isDisposed()) {
-      break;
-    }
-    if (hasMeaningfulWorkspaceStoreState()) {
-      return {
-        didLoad: true,
-        lastError: null,
-      };
-    }
-
-    if (!(await startupTimerController.wait(delayMs, isDisposed))) {
-      break;
-    }
-
-    try {
-      if (await loadWorkspaceState()) {
-        return {
-          didLoad: true,
-          lastError: null,
-        };
-      }
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  return {
-    didLoad: hasMeaningfulWorkspaceStoreState(),
-    lastError,
-  };
-}
-
-function createBrowserWorkspaceStartupFailure(
-  bootstrapError: unknown,
-  workspaceLoadError: unknown,
-): Error | null {
-  const errors = [bootstrapError, workspaceLoadError].filter(
-    (error): error is NonNullable<typeof error> => error !== null,
-  );
-  if (errors.length === 0) {
-    return null;
-  }
-
-  const detail = errors
-    .map((error) => {
-      if (error instanceof Error && error.message.trim()) {
-        return error.message;
-      }
-
-      return String(error);
-    })
-    .join('; ');
-
-  return new Error(
-    detail
-      ? `Failed to restore browser workspace during cold bootstrap: ${detail}`
-      : 'Failed to restore browser workspace during cold bootstrap',
-  );
-}
-
-function hasMeaningfulWorkspaceStoreState(): boolean {
-  return (
-    store.projects.length > 0 ||
-    store.taskOrder.length > 0 ||
-    store.collapsedTaskOrder.length > 0 ||
-    Object.keys(store.tasks).length > 0 ||
-    Object.keys(store.terminals).length > 0
-  );
-}
-
-function applyBrowserWorkspaceProjection(
-  projection: BrowserColdBootstrapProjection | null,
-  workspaceRevision: number,
-): boolean {
-  if (!projection) {
-    return false;
-  }
-
-  applyBrowserColdBootstrapWorkspaceProjection(projection, workspaceRevision);
-  emitStartupBreadcrumb('desktop-startup:browser-projection-applied');
-  return true;
-}
-
 function validateProjectPathsInBackground(): void {
   void validateProjectPaths().catch((error) => {
     console.warn('Failed to validate project paths during browser startup:', error);
@@ -340,13 +152,17 @@ function captureBrowserWindowStateInBackground(sessionRuntime: DesktopSessionRun
   });
 }
 
-function refreshBrowserAgentCatalogInBackground(): Promise<void> {
+function refreshBrowserAgentCatalogInBackground(signal?: AbortSignal): Promise<void> {
   emitStartupBreadcrumb('desktop-startup:browser-agents-refresh-start');
-  return loadAgents()
+  return loadAgents(signal ? { signal } : undefined)
     .then(() => {
+      signal?.throwIfAborted();
       emitStartupBreadcrumb('desktop-startup:browser-agents-refresh-complete');
     })
     .catch((error) => {
+      if (signal?.aborted) {
+        return;
+      }
       console.warn('Failed to refresh browser agent catalog during startup:', error);
     });
 }
@@ -493,10 +309,37 @@ export async function runDesktopSessionStartup(
     cleanupStartupScopedResources,
     disposeCleanup,
   );
+  const browserAgentCatalogRefreshController = new AbortController();
+  registerStartupScopedCleanup(() => {
+    browserAgentCatalogRefreshController.abort(
+      new Error('Browser agent catalog startup refresh cancelled'),
+    );
+  });
   let browserAgentCatalogRefreshPromise: Promise<void> | null = null;
   function ensureBrowserAgentCatalogRefresh(): Promise<void> {
-    browserAgentCatalogRefreshPromise ??= refreshBrowserAgentCatalogInBackground();
+    browserAgentCatalogRefreshPromise ??= refreshBrowserAgentCatalogInBackground(
+      browserAgentCatalogRefreshController.signal,
+    );
     return browserAgentCatalogRefreshPromise;
+  }
+
+  function refreshBrowserAgentCatalogForRecovery(signal: AbortSignal): Promise<void> {
+    const refreshPromise = refreshBrowserAgentCatalogInBackground(signal);
+    return refreshPromise.then(() => {
+      signal.throwIfAborted();
+      browserAgentCatalogRefreshPromise ??= refreshPromise;
+    });
+  }
+
+  function startBrowserWorkspaceRecovery(): BrowserWorkspaceColdStartRecovery {
+    const recovery = startBrowserWorkspaceColdStartRecovery({
+      ensureAgentCatalogRefresh: refreshBrowserAgentCatalogForRecovery,
+      isDisposed,
+      scheduleImmediateSync: () => browserStateSync.scheduleBrowserStateSync(0, false),
+      wait: (delayMs) => startupTimerController.wait(delayMs, isDisposed),
+    });
+    registerStartupScopedCleanup(recovery.cancel);
+    return recovery;
   }
 
   // App shortcuts register before any startup await; handlers no-op safely on
@@ -517,10 +360,10 @@ export async function runDesktopSessionStartup(
     onRestoreStarted: taskNotificationRuntime.disarm,
   });
 
-  // Browser path: the cold-bootstrap fetch is the only awaited network round
-  // trip before the selected-task tier, so it starts before window chrome and
-  // runs concurrently with the websocket runtime registration.
-  let browserColdBootstrapFetch: Promise<BrowserColdBootstrapFetchResult> | null = null;
+  // On the healthy browser path, the cold-bootstrap fetch is the only awaited
+  // network round trip before the selected-task tier, so it starts before
+  // window chrome and runs concurrently with websocket runtime registration.
+  let browserWorkspaceRecovery: BrowserWorkspaceColdStartRecovery | null = null;
   if (!options.electronRuntime) {
     beginBrowserColdBootstrap();
     emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
@@ -532,10 +375,7 @@ export async function runDesktopSessionStartup(
       disposeCleanup,
     );
     setAppStartupStatus('restoring', 'Loading backend browser bootstrap');
-    browserColdBootstrapFetch = fetchBrowserColdBootstrapWithRetry(
-      isDisposed,
-      startupTimerController,
-    );
+    browserWorkspaceRecovery = startBrowserWorkspaceRecovery();
   }
 
   await sessionRuntime.setupWindowChrome();
@@ -556,80 +396,13 @@ export async function runDesktopSessionStartup(
     await loadState();
     registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
   } else {
-    const coldBootstrapResult = await (browserColdBootstrapFetch ??
-      fetchBrowserColdBootstrapWithRetry(isDisposed, startupTimerController));
-    if (isDisposed()) {
+    const recoveryResult = await (
+      browserWorkspaceRecovery ?? startBrowserWorkspaceRecovery()
+    ).restore();
+    if (!recoveryResult || isDisposed()) {
       return;
     }
-    const coldBootstrap = coldBootstrapResult.snapshot;
-    const workspaceRevision = coldBootstrap?.workspaceRevision ?? 0;
-    let appliedWorkspaceProjection = applyBrowserWorkspaceProjection(
-      coldBootstrap?.workspaceProjection ?? null,
-      workspaceRevision,
-    );
-    let usedHandoffProjection = false;
-
-    if (!appliedWorkspaceProjection) {
-      await ensureBrowserAgentCatalogRefresh();
-      if (isDisposed()) {
-        return;
-      }
-
-      const coldBootstrapHandoffProjection = takeBrowserColdBootstrapHandoffProjection({
-        currentAvailableAgents: store.availableAgents,
-        currentCustomAgents: store.customAgents,
-      });
-      if (applyBrowserWorkspaceProjection(coldBootstrapHandoffProjection, workspaceRevision)) {
-        appliedWorkspaceProjection = true;
-        usedHandoffProjection = true;
-      } else {
-        const initialWorkspaceStateLoad = await loadWorkspaceStateWithRetry(
-          isDisposed,
-          startupTimerController,
-        );
-        if (isDisposed()) {
-          return;
-        }
-        const recoveredWorkspaceState =
-          initialWorkspaceStateLoad.didLoad || isDisposed()
-            ? initialWorkspaceStateLoad
-            : await recoverMissingBrowserWorkspaceState(isDisposed, startupTimerController);
-        if (isDisposed()) {
-          return;
-        }
-        if (!recoveredWorkspaceState.didLoad) {
-          if (coldBootstrapResult.lastError) {
-            console.warn('Failed to fetch browser cold bootstrap:', coldBootstrapResult.lastError);
-          }
-          if (recoveredWorkspaceState.lastError) {
-            console.warn(
-              'Failed to load browser workspace state during cold bootstrap:',
-              recoveredWorkspaceState.lastError,
-            );
-          }
-          const startupFailure = createBrowserWorkspaceStartupFailure(
-            coldBootstrapResult.lastError,
-            recoveredWorkspaceState.lastError,
-          );
-          const startupFailureMessage =
-            startupFailure?.message ??
-            'Browser cold bootstrap did not restore shared workspace state after retries.';
-          console.warn(startupFailureMessage);
-          // Startup continues (a background sync retry is scheduled), but a
-          // returning user would otherwise see a silent false first-run empty
-          // state once the skeleton clears. Make the degradation honest with
-          // the persistent, dismissable error toast.
-          showNotification(startupFailureMessage, { kind: 'error' });
-          browserStateSync.scheduleBrowserStateSync(0, false);
-        }
-      }
-    }
-
-    if (!appliedWorkspaceProjection && !hasMeaningfulWorkspaceStoreState()) {
-      console.warn(
-        'Browser startup completed without a meaningful workspace projection; continuing with the current workspace snapshot.',
-      );
-    }
+    const { coldBootstrap, shouldSchedulePostRestoreSync } = recoveryResult;
     // Plan contents and project-path existence ride the cold-bootstrap payload,
     // so no ReadPlanContent or CheckPathsExist round trips sit on this path; the
     // delayed background validation below still runs reconciliation refreshes.
@@ -650,7 +423,7 @@ export async function runDesktopSessionStartup(
     registerStartupScopedCleanup(startStartupRestoreAgentSessionEnsure({ isDisposed }));
     setBrowserStartupTier('selected-task');
     emitStartupBreadcrumb('desktop-startup:browser-selected-task');
-    if (usedHandoffProjection) {
+    if (shouldSchedulePostRestoreSync) {
       browserStateSync.scheduleBrowserStateSync(0, false);
     }
   }
