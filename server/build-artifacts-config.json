@@ -15,6 +15,7 @@
   "ignoredSourceFilePatterns": [
     "\\.spec\\.[cm]?[jt]sx?$",
     "\\.test\\.[cm]?[jt]sx?$",
+    "\\.test-helper\\.[cm]?[jt]sx?$",
     "\\.benchmark\\.[cm]?[jt]sx?$"
   ],
   "checks": {

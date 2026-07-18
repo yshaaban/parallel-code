@@ -8,6 +8,7 @@ import solid from 'vite-plugin-solid';
 import packageMetadata from '../package.json';
 
 const appVersion = packageMetadata.version ?? 'dev';
+const BUILD_GIT_TIMEOUT_MS = 30_000;
 const buildStamp = new Date()
   .toISOString()
   .replace('T', ' ')
@@ -28,6 +29,7 @@ function readGitOutput(args: string[]): string | null {
       cwd: path.resolve(__dirname, '..'),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: BUILD_GIT_TIMEOUT_MS,
     }).trim();
   } catch {
     return null;

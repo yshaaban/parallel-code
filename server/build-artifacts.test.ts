@@ -3,7 +3,9 @@ import os from 'node:os';
 import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import {
+  assertBrowserServerBuildArtifactsExist,
   assertBrowserServerBuildArtifactsAreFresh,
   getBrowserServerBuildArtifactStatus,
   shouldCheckBrowserServerBuildArtifacts,
@@ -71,8 +73,17 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    await runIndependentCleanups(
+      'Build artifact test temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (directory, index) =>
+            [
+              `remove build artifact temporary directory ${index + 1}`,
+              () => rm(directory, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 
@@ -287,6 +298,26 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
         serverEntryPath,
       }),
     ).rejects.toThrow('Browser server build artifacts are missing.');
+    await expect(
+      assertBrowserServerBuildArtifactsExist({
+        projectRoot: rootDir,
+        serverEntryPath,
+      }),
+    ).rejects.toThrow('Browser server build artifacts are missing.');
+  });
+
+  it('treats an empty server entry override as absent', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
+    tempDirs.push(rootDir);
+
+    await writeBuildFixture(rootDir);
+
+    await expect(
+      assertBrowserServerBuildArtifactsExist({
+        projectRoot: rootDir,
+        serverEntryPath: '',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('does not mark browser artifacts stale for unrelated package.json edits', async () => {
@@ -464,7 +495,7 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
     expect(status.staleChecks.map((check) => check.label)).toContain('server');
   });
 
-  it('does not mark browser artifacts stale for benchmark-only source edits', async () => {
+  it('does not mark browser artifacts stale for benchmark or test-helper source edits', async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
     tempDirs.push(rootDir);
 
@@ -479,6 +510,7 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
       rootDir,
       'src/app/terminal-output-scheduler.benchmark.ts',
     );
+    const testHelperPath = await writeSourceFile(rootDir, 'server/runtime.test-helper.ts');
     await writeSourceFile(rootDir, 'electron/ipc/example.ts');
     await writeBuildMetadataSources(rootDir);
 
@@ -492,6 +524,7 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
       utimes(path.join(rootDir, 'src', 'domain', 'server-state.ts'), olderTime, olderTime),
       utimes(path.join(rootDir, 'src', 'lib', 'assert-never.ts'), olderTime, olderTime),
       utimes(benchmarkPath, newerTime, newerTime),
+      utimes(testHelperPath, newerTime, newerTime),
       utimes(path.join(rootDir, 'electron', 'ipc', 'example.ts'), olderTime, olderTime),
       utimes(path.join(rootDir, 'package-lock.json'), olderTime, olderTime),
       utimes(path.join(rootDir, 'tsconfig.json'), olderTime, olderTime),

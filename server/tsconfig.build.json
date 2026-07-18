@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "./**/*.test.ts",
+    "./**/*.spec.ts",
+    "./**/*.test-helper.ts",
+    "../electron/ipc/**/*.test.ts",
+    "../electron/ipc/**/*.spec.ts",
+    "../electron/ipc/**/*.test-helper.ts",
+    "../electron/remote/**/*.test.ts",
+    "../electron/remote/**/*.spec.ts",
+    "../electron/remote/**/*.test-helper.ts",
+    "../electron/main.ts",
+    "../electron/ipc/register.ts",
+    "../electron/vite.config.electron.ts"
+  ]
+}

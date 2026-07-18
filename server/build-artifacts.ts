@@ -34,6 +34,8 @@ interface BuildArtifactCheck {
   versionSourcePath?: string;
 }
 
+type BuildArtifactPathOverrides = Record<BuildArtifactLabel, string | undefined>;
+
 interface BuildArtifactCheckResultBase {
   artifactPath: string;
   label: BuildArtifactLabel;
@@ -110,30 +112,15 @@ function resolveArtifactDir(projectRoot: string, directoryPath: string): string 
 }
 
 function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArtifactCheck[] {
-  function getArtifactPath(
-    label: BuildArtifactLabel,
-    config: BrowserBuildArtifactCheckConfig,
-  ): string {
-    if (label === 'frontend' && options.frontendDistDir) {
-      return path.join(
-        resolveArtifactDir(options.projectRoot, options.frontendDistDir),
-        'index.html',
-      );
-    }
-
-    if (label === 'remote' && options.remoteDistDir) {
-      return path.join(
-        resolveArtifactDir(options.projectRoot, options.remoteDistDir),
-        'index.html',
-      );
-    }
-
-    if (label === 'server' && options.serverEntryPath) {
-      return options.serverEntryPath;
-    }
-
-    return path.join(options.projectRoot, config.artifactRelativePath);
-  }
+  const artifactPathOverrides: BuildArtifactPathOverrides = {
+    frontend: options.frontendDistDir
+      ? path.join(resolveArtifactDir(options.projectRoot, options.frontendDistDir), 'index.html')
+      : undefined,
+    remote: options.remoteDistDir
+      ? path.join(resolveArtifactDir(options.projectRoot, options.remoteDistDir), 'index.html')
+      : undefined,
+    server: options.serverEntryPath || undefined,
+  };
 
   function getMetadataPath(config: BrowserBuildArtifactCheckConfig): string {
     if (!config.metadataRelativePath) {
@@ -153,7 +140,8 @@ function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArt
   function createBuildCheck(label: BuildArtifactLabel): BuildArtifactCheck {
     const config = typedBuildArtifactConfig.checks[label];
     const buildCheck: BuildArtifactCheck = {
-      artifactPath: getArtifactPath(label, config),
+      artifactPath:
+        artifactPathOverrides[label] ?? path.join(options.projectRoot, config.artifactRelativePath),
       label,
       sourcePaths: config.sourceRelativePaths.map((relativePath) =>
         path.join(options.projectRoot, relativePath),
@@ -331,11 +319,16 @@ async function readJsonFile(filePath: string): Promise<unknown | null> {
   }
 }
 
+async function getUsableBuildArtifactStats(artifactPath: string) {
+  const artifactStats = await stat(artifactPath).catch(() => null);
+  return artifactStats?.isFile() && artifactStats.size > 0 ? artifactStats : null;
+}
+
 async function getBuildArtifactCheckResult(
   check: BuildArtifactCheck,
 ): Promise<BuildArtifactCheckResult> {
-  const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
-  if (!buildArtifactStats || !buildArtifactStats.isFile() || buildArtifactStats.size === 0) {
+  const buildArtifactStats = await getUsableBuildArtifactStats(check.artifactPath);
+  if (!buildArtifactStats) {
     return createMissingBuildArtifactCheckResult(check);
   }
 
@@ -459,8 +452,7 @@ export async function assertBrowserServerBuildArtifactsExist(
   const missingChecks = (
     await Promise.all(
       checks.map(async (check): Promise<MissingBuildArtifactCheckResult | null> => {
-        const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
-        if (buildArtifactStats?.isFile() && buildArtifactStats.size > 0) {
+        if (await getUsableBuildArtifactStats(check.artifactPath)) {
           return null;
         }
 

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import {
   resolveRelativeImportSpecifier,
   rewriteDistServerRelativeImports,
@@ -14,8 +15,17 @@ describe('rewriteDistServerRelativeImports', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    await runIndependentCleanups(
+      'Server import rewrite test temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (directory, index) =>
+            [
+              `remove server import rewrite temporary directory ${index + 1}`,
+              () => rm(directory, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 
