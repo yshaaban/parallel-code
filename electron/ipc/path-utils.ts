@@ -1,8 +1,8 @@
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { BadRequestError } from './errors.js';
+import { execGitSync } from './git-sync-exec.js';
 
 export function validatePath(p: unknown, label: string): asserts p is string {
   if (typeof p !== 'string') throw new BadRequestError(`${label} must be a string`);
@@ -21,7 +21,7 @@ export function validateBranchName(name: unknown, label: string): asserts name i
     throw new BadRequestError(`${label} must be a non-empty string`);
   }
   try {
-    execFileSync('git', ['check-ref-format', '--branch', name], {
+    execGitSync(['check-ref-format', '--branch', name], {
       encoding: 'utf8',
       stdio: 'ignore',
     });

@@ -1,78 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
 const GIT_BRANCH_TEST_TIMEOUT_MS = 15_000;
 
-const { execFileMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn(),
+const { execGitMock } = vi.hoisted(() => ({
+  execGitMock: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
+vi.mock('./git-exec.js', () => ({
+  execGit: execGitMock,
 }));
 
-function mockExecFile(
+function mockExecGit(
   handler: (
-    cmd: string,
-    args: string[],
+    args: readonly string[],
     cwd: string | undefined,
   ) => { stdout?: string; stderr?: string },
 ): void {
-  execFileMock.mockImplementation(
-    (
-      cmd: string,
-      args: string[],
-      optionsOrCallback:
-        | {
-            cwd?: string;
-          }
-        | ((error: Error | null, stdout: string, stderr: string) => void),
-      maybeCallback?: (error: Error | null, stdout: string, stderr: string) => void,
-    ) => {
-      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
-      if (!callback) {
-        throw new Error('Missing callback');
-      }
-
-      const cwd = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback.cwd;
-
-      try {
-        const result = handler(cmd, args, cwd);
-        callback(null, result.stdout ?? '', result.stderr ?? '');
-      } catch (error) {
-        callback(error as Error, '', '');
-      }
+  execGitMock.mockImplementation(
+    async (args: readonly string[], options?: { cwd?: string; timeout?: number }) => {
+      const result = handler(args, options?.cwd);
+      return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
     },
   );
-
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: (
-      cmd: string,
-      args: string[],
-      options?: {
-        cwd?: string;
-      },
-    ) =>
-      new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        execFileMock(
-          cmd,
-          args,
-          options ?? {},
-          (error: Error | null, stdout: string, stderr: string) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-
-            resolve({
-              stdout,
-              stderr,
-            });
-          },
-        );
-      }),
-  });
 }
 
 describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
@@ -80,7 +29,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.resetModules();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
   });
 
   afterEach(() => {
@@ -89,7 +38,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   });
 
   it('uses the synced configured base branch for matching worktrees', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (args[0] === 'rev-parse' && args[1] === '--git-common-dir' && cwd === '/repo') {
         return { stdout: '.git\n' };
       }
@@ -124,7 +73,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   });
 
   it('falls back to git detection after a configured base branch is removed', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (args[0] === 'rev-parse' && args[1] === '--git-common-dir' && cwd === '/repo') {
         return { stdout: '.git\n' };
       }
@@ -161,7 +110,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   });
 
   it('ignores configured base branches from non-git project records', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -203,7 +152,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   it('refreshes a stale origin head before falling back', async () => {
     let symbolicRefCallCount = 0;
 
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -249,16 +198,14 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
     const { detectMainBranch } = await import('./git-branch.js');
 
     await expect(detectMainBranch('/repo')).resolves.toBe('main');
-    expect(execFileMock).toHaveBeenCalledWith(
-      'git',
+    expect(execGitMock).toHaveBeenCalledWith(
       ['remote', 'set-head', 'origin', '--auto'],
       expect.objectContaining({ cwd: '/repo', timeout: 5_000 }),
-      expect.any(Function),
     );
   });
 
   it('falls back to remote-tracking main when refreshing origin head fails', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -301,7 +248,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   });
 
   it('uses the configured init default branch when no remote-tracking defaults exist', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -328,16 +275,14 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
     const { detectMainBranch } = await import('./git-branch.js');
 
     await expect(detectMainBranch('/repo')).resolves.toBe('trunk');
-    expect(execFileMock).toHaveBeenCalledWith(
-      'git',
+    expect(execGitMock).toHaveBeenCalledWith(
       ['config', '--get', 'init.defaultBranch'],
       expect.objectContaining({ cwd: '/repo' }),
-      expect.any(Function),
     );
   });
 
   it('falls back to a local default branch when no remote-tracking default exists', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -371,7 +316,7 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   });
 
   it('lists local and remote branches with default and current metadata', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }

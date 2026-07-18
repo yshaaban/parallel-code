@@ -1,14 +1,12 @@
-import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
-import { execGit } from './git-exec.js';
+import { execGit, GitSpawnTimeoutError, spawnGitWithDeadline } from './git-exec.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
 import { invalidateGitQueryCacheForPath, withWorktreeLock } from './git-cache.js';
 import { parseConflictPath } from './git-status-parser.js';
 import { removeWorktree } from './git-worktree.js';
-import { recordGitSubprocessStarted } from './runtime-diagnostics.js';
 import type { MergeResult, MergeStatus } from '../../src/ipc/types.js';
 const PUSH_STDERR_BUFFER_LIMIT = 4096;
 const STDERR_PRIORITY_LINE_PATTERN = /^(?:fatal|error):|^remote:\s*(?:fatal|error):/i;
@@ -268,75 +266,75 @@ export async function streamPushTask(
   branchName: string,
   onOutput?: (text: string) => void,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    recordGitSubprocessStarted();
-    const proc = spawn('git', ['push', '--progress', '-u', 'origin', '--', branchName], {
-      cwd: projectRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stderrBuffer = '';
-    let lastRelevantStderrLine: string | undefined;
-    let settled = false;
-
-    function settleWithError(error: Error): void {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      reject(error);
-    }
-
-    function settleSuccess(): void {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve();
-    }
-
-    function handleChunk(chunk: Buffer): void {
-      const text = chunk.toString('utf8');
-      onOutput?.(text);
-    }
-
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      handleChunk(chunk);
-    });
-
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      stderrBuffer = appendStderrTail(stderrBuffer, text);
-      lastRelevantStderrLine = getLastRelevantStderrLine(text) ?? lastRelevantStderrLine;
-      onOutput?.(text);
-    });
-
-    proc.on('error', (error) => {
-      settleWithError(new Error(`git push failed: ${error.message}`));
-    });
-
-    proc.on('close', (code, signal) => {
-      if (code === 0) {
-        settleSuccess();
-        return;
-      }
-
-      const lastStderrLine = lastRelevantStderrLine ?? getLastNonEmptyLine(stderrBuffer);
-      if (lastStderrLine) {
-        settleWithError(new Error(lastStderrLine));
-        return;
-      }
-
-      if (signal) {
-        settleWithError(new Error(`git push killed by signal ${signal}`));
-        return;
-      }
-
-      settleWithError(new Error(`git push exited with code ${code ?? 'unknown'}`));
-    });
+  const {
+    child: proc,
+    completion,
+    terminate,
+  } = spawnGitWithDeadline(['push', '--progress', '-u', 'origin', '--', branchName], {
+    cwd: projectRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let stderrBuffer = '';
+  let lastRelevantStderrLine: string | undefined;
+
+  function handleStdout(chunk: Buffer | string): void {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    onOutput?.(text);
+  }
+
+  function handleStderr(chunk: Buffer | string): void {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    stderrBuffer = appendStderrTail(stderrBuffer, text);
+    lastRelevantStderrLine = getLastRelevantStderrLine(text) ?? lastRelevantStderrLine;
+    onOutput?.(text);
+  }
+
+  function handleStreamError(error: Error): void {
+    terminate(error);
+  }
+
+  proc.stdout?.on('data', handleStdout);
+  proc.stdout?.on('error', handleStreamError);
+  proc.stderr?.on('data', handleStderr);
+  proc.stderr?.on('error', handleStreamError);
+
+  try {
+    let code: number | null;
+    let signal: NodeJS.Signals | null;
+    try {
+      ({ code, signal } = await completion);
+    } catch (error) {
+      if (error instanceof GitSpawnTimeoutError) {
+        throw error;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`git push failed: ${message}`);
+    }
+
+    if (code === 0) {
+      return;
+    }
+
+    const lastStderrLine = lastRelevantStderrLine ?? getLastNonEmptyLine(stderrBuffer);
+    if (lastStderrLine) {
+      throw new Error(lastStderrLine);
+    }
+
+    if (signal) {
+      throw new Error(`git push killed by signal ${signal}`);
+    }
+
+    throw new Error(`git push exited with code ${code ?? 'unknown'}`);
+  } finally {
+    proc.stdout?.off('data', handleStdout);
+    proc.stdout?.off('error', handleStreamError);
+    proc.stderr?.off('data', handleStderr);
+    proc.stderr?.off('error', handleStreamError);
+    proc.stdin?.destroy();
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+  }
 }
 
 export async function rebaseTask(worktreePath: string, baseBranch?: string): Promise<void> {

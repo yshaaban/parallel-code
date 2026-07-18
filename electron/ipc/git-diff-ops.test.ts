@@ -1,11 +1,14 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, type ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { PassThrough } from 'stream';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  __gitDiffOpsTestExports,
   getAllFileDiffs,
   getAllFileDiffsFromBranch,
   getChangedFiles,
@@ -14,10 +17,33 @@ import {
   getFileDiffFromBranch,
   getProjectDiff,
 } from './git-diff-ops.js';
+import type { BoundedGitSpawn } from './git-exec.js';
 import { commitAll } from './git-mutation-ops.js';
 import { parseMultiFileUnifiedDiff } from '../../src/lib/unified-diff-parser.js';
 
 const REAL_GIT_TIMEOUT_MS = 30_000;
+
+function createFailedBatchSpawn(
+  completionError: Error,
+  forcedTerminationError?: Error,
+): BoundedGitSpawn {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    exitCode: null,
+    signalCode: null,
+    stderr: new PassThrough(),
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+  });
+  const completion = Promise.reject(completionError);
+
+  return {
+    child,
+    completion,
+    forcedTerminationError,
+    terminate: vi.fn(),
+  };
+}
 
 function runGit(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -77,6 +103,34 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     for (const repoPath of repoPaths.splice(0)) {
       fs.rmSync(repoPath, { recursive: true, force: true });
     }
+  });
+
+  it('uses the safe fallback after confirmed batch-reader termination', async () => {
+    const completionError = new Error('git cat-file timed out');
+    const bounded = createFailedBatchSpawn(completionError);
+
+    await expect(
+      __gitDiffOpsTestExports.readGitFilesIfSafe(
+        '/repo',
+        [{ filePath: 'src/file.ts', revision: 'HEAD' }],
+        vi.fn(() => bounded),
+      ),
+    ).resolves.toBeNull();
+    expect(bounded.terminate).toHaveBeenCalledWith(completionError);
+  });
+
+  it('rejects instead of falling back when batch process-tree cleanup is unconfirmed', async () => {
+    const lifecycleError = new Error('git cat-file process tree remained unconfirmed');
+    const bounded = createFailedBatchSpawn(lifecycleError, lifecycleError);
+
+    await expect(
+      __gitDiffOpsTestExports.readGitFilesIfSafe(
+        '/repo',
+        [{ filePath: 'src/file.ts', revision: 'HEAD' }],
+        vi.fn(() => bounded),
+      ),
+    ).rejects.toBe(lifecycleError);
+    expect(bounded.terminate).toHaveBeenCalledWith(lifecycleError);
   });
 
   it('keeps untracked binary files in the changed file list and returns a binary diff marker', async () => {

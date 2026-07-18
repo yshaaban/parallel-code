@@ -1,10 +1,9 @@
-import { execFile, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { promisify } from 'util';
 
-const execFileAsync = promisify(execFile);
+import { execFileWithDeadline } from './bounded-process.js';
 const PATH_LOOKUP_COMMAND = process.platform === 'win32' ? 'where' : 'which';
 const POSIX_WHEREIS_COMMAND = 'whereis';
 const LOGIN_SHELL = process.platform === 'win32' ? null : process.env.SHELL || '/bin/bash';
@@ -193,9 +192,9 @@ async function resolveCommandWithWhereis(command: string): Promise<string | null
   }
 
   try {
-    const { stdout } = await execFileAsync(POSIX_WHEREIS_COMMAND, ['-b', command], {
+    const { stdout } = await execFileWithDeadline(POSIX_WHEREIS_COMMAND, ['-b', command], {
       encoding: 'utf8',
-      timeout: COMMAND_LOOKUP_TIMEOUT_MS,
+      timeoutMs: COMMAND_LOOKUP_TIMEOUT_MS,
     });
     return cacheResolvedCommand(command, getWhereisCommandPath(stdout, command));
   } catch {
@@ -227,12 +226,12 @@ async function resolveCommandWithLoginShell(command: string): Promise<string | n
   }
 
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execFileWithDeadline(
       LOGIN_SHELL,
       ['-lc', getLoginShellCommandLookupScript(command)],
       {
         encoding: 'utf8',
-        timeout: COMMAND_LOOKUP_TIMEOUT_MS,
+        timeoutMs: COMMAND_LOOKUP_TIMEOUT_MS,
       },
     );
     return cacheResolvedCommand(command, getLoginShellResolvedPath(stdout));
@@ -266,9 +265,9 @@ function isAbsoluteCommandPath(command: string): boolean {
 async function commandExistsOnPath(command: string): Promise<boolean> {
   ensureDefaultPathExpansion();
   try {
-    await execFileAsync(PATH_LOOKUP_COMMAND, [command], {
+    await execFileWithDeadline(PATH_LOOKUP_COMMAND, [command], {
       encoding: 'utf8',
-      timeout: COMMAND_LOOKUP_TIMEOUT_MS,
+      timeoutMs: COMMAND_LOOKUP_TIMEOUT_MS,
     });
     return true;
   } catch {

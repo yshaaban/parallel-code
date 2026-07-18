@@ -164,22 +164,12 @@ vi.mock('fs', async () => {
   };
 });
 
-vi.mock('child_process', async () => {
-  const actual = await vi.importActual<typeof import('child_process')>('child_process');
+vi.mock('./bounded-process.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('./bounded-process.js')>('./bounded-process.js');
   return {
     ...actual,
-    execFile: (...args: unknown[]) => {
-      const cb = args[args.length - 1];
-      if (typeof cb === 'function') cb(null, { stdout: '', stderr: '' });
-    },
-  };
-});
-
-vi.mock('util', async () => {
-  const actual = await vi.importActual<typeof import('util')>('util');
-  return {
-    ...actual,
-    promisify: () => execFileAsyncMock,
+    execFileWithDeadline: execFileAsyncMock,
   };
 });
 

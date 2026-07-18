@@ -84,6 +84,8 @@ export class TerminalStateMirror {
     cursorVisible: null,
   };
   private readonly pendingOperations: PendingMirrorOperation[] = [];
+  private readonly priorityOperations: PendingMirrorOperation[] = [];
+  private pendingOperationHead = 0;
   private currentOperation: Promise<void> | null = null;
   private pendingOperationCount = 0;
   private queuedSequence = 0;
@@ -186,7 +188,12 @@ export class TerminalStateMirror {
   }
 
   private flushPendingSerializeResolvers(): void {
-    const pending = this.pendingOperations.splice(0, this.pendingOperations.length);
+    const pending = [
+      ...this.priorityOperations.splice(0, this.priorityOperations.length),
+      ...this.pendingOperations.splice(this.pendingOperationHead),
+    ];
+    this.pendingOperations.length = 0;
+    this.pendingOperationHead = 0;
     this.pendingOperationCount = 0;
     for (const operation of pending) {
       operation.resolveSerialize?.(null);
@@ -204,6 +211,36 @@ export class TerminalStateMirror {
     this.pump();
   }
 
+  private hasQueuedOperations(): boolean {
+    return (
+      this.priorityOperations.length > 0 ||
+      this.pendingOperationHead < this.pendingOperations.length
+    );
+  }
+
+  private takeNextOperation(): PendingMirrorOperation | undefined {
+    const priorityOperation = this.priorityOperations.pop();
+    if (priorityOperation) {
+      return priorityOperation;
+    }
+
+    const operation = this.pendingOperations[this.pendingOperationHead];
+    if (!operation) {
+      return undefined;
+    }
+
+    this.pendingOperationHead += 1;
+    // Keep dequeue constant-time and periodically release consumed slots.
+    if (
+      this.pendingOperationHead >= 1_024 &&
+      this.pendingOperationHead * 2 >= this.pendingOperations.length
+    ) {
+      this.pendingOperations.splice(0, this.pendingOperationHead);
+      this.pendingOperationHead = 0;
+    }
+    return operation;
+  }
+
   private pump(): void {
     if (this.currentOperation) {
       return;
@@ -214,7 +251,7 @@ export class TerminalStateMirror {
       return;
     }
 
-    const next = this.pendingOperations.shift();
+    const next = this.takeNextOperation();
     if (!next) {
       return;
     }
@@ -345,7 +382,7 @@ export class TerminalStateMirror {
       // Jump the queued backlog: serialize right after the in-flight
       // operation completes instead of waiting for every queued write.
       this.pendingOperationCount += 1;
-      this.pendingOperations.unshift(operation);
+      this.priorityOperations.push(operation);
       this.pump();
     });
   }
@@ -364,12 +401,12 @@ export class TerminalStateMirror {
       }
 
       while (
-        (this.currentOperation !== null || this.pendingOperations.length > 0) &&
+        (this.currentOperation !== null || this.hasQueuedOperations()) &&
         !this.disposed &&
         !this.failed
       ) {
         await (this.currentOperation ?? Promise.resolve());
-        if (this.currentOperation === null && this.pendingOperations.length > 0) {
+        if (this.currentOperation === null && this.hasQueuedOperations()) {
           this.pump();
         }
       }

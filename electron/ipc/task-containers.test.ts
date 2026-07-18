@@ -5,6 +5,7 @@ import path from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import type {
   ProjectContainerConfig,
   TaskContainerIssue,
@@ -25,6 +26,10 @@ import {
 } from './task-containers.js';
 
 const tempDirs: string[] = [];
+
+function createDockerCommandError(stderr: string): Error & { stderr: string } {
+  return Object.assign(new Error('docker command failed'), { stderr });
+}
 
 async function createTempDir(prefix: string): Promise<string> {
   const dirPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -137,10 +142,17 @@ describe('task-containers', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     clearTaskContainerPreviewTargets();
-    await Promise.all(
+    await runIndependentCleanups(
+      'Task container test temporary directories',
       tempDirs
         .splice(0)
-        .map((dirPath) => fs.promises.rm(dirPath, { force: true, recursive: true })),
+        .map(
+          (dirPath, index) =>
+            [
+              `remove task container temporary directory ${index + 1}`,
+              () => fs.promises.rm(dirPath, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 
@@ -832,6 +844,88 @@ describe('task-containers', () => {
     );
   });
 
+  it('treats label-cleanup disappearance races as idempotent success', async () => {
+    const executeDocker = vi.fn(async (args: string[]): Promise<string> => {
+      if (args[0] === 'ps') {
+        return 'container-1\n';
+      }
+      if (args[0] === 'network' && args[1] === 'ls') {
+        return 'network-1\n';
+      }
+      if (args[0] === 'volume' && args[1] === 'ls') {
+        return 'volume-1\n';
+      }
+      if (args[0] === 'rm') {
+        throw createDockerCommandError(
+          'Error response from daemon: No such container: container-1',
+        );
+      }
+      if (args[0] === 'network' && args[1] === 'rm') {
+        throw createDockerCommandError('Error response from daemon: network network-1 not found');
+      }
+      if (args[0] === 'volume' && args[1] === 'rm') {
+        throw createDockerCommandError('Error response from daemon: get volume-1: no such volume');
+      }
+      return '';
+    });
+    const runtime = __taskContainerTestExports.createDockerRuntime(executeDocker);
+
+    await expect(
+      runtime.cleanupManagedProjectByLabels({
+        action: 'destroy',
+        composeProjectName: 'parallel-task-1',
+        ownershipLabels: { 'io.parallel-code.task-id': 'task-1' },
+        worktreePath: '/tmp/project',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(executeDocker).toHaveBeenCalledWith(
+      ['rm', '-f', 'container-1'],
+      undefined,
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    expect(executeDocker).toHaveBeenCalledWith(
+      ['network', 'rm', 'network-1'],
+      undefined,
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    expect(executeDocker).toHaveBeenCalledWith(
+      ['volume', 'rm', '-f', 'volume-1'],
+      undefined,
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('still reports real label-cleanup failures alongside disappearance races', async () => {
+    const executeDocker = vi.fn(async (args: string[]): Promise<string> => {
+      if (args[0] === 'ps') {
+        return 'container-1\n';
+      }
+      if (args[0] === 'network' && args[1] === 'ls') {
+        return 'network-1\n';
+      }
+      if (args[0] === 'rm') {
+        throw createDockerCommandError(
+          'Error response from daemon: No such container: container-1',
+        );
+      }
+      if (args[0] === 'network' && args[1] === 'rm') {
+        throw createDockerCommandError('permission denied while removing network');
+      }
+      return '';
+    });
+    const runtime = __taskContainerTestExports.createDockerRuntime(executeDocker);
+
+    await expect(
+      runtime.cleanupManagedProjectByLabels({
+        action: 'destroy',
+        composeProjectName: 'parallel-task-1',
+        ownershipLabels: { 'io.parallel-code.task-id': 'task-1' },
+        worktreePath: '/tmp/project',
+      }),
+    ).rejects.toMatchObject({ stderr: 'permission denied while removing network' });
+  });
+
   it('skips managed label cleanup when Docker is unavailable', async () => {
     const runtime = createRuntime({
       getDockerRuntimeAvailability: vi.fn().mockResolvedValue({
@@ -843,6 +937,88 @@ describe('task-containers', () => {
     await destroyManagedTaskContainersByLabels(createBaseRequest(), runtime);
 
     expect(runtime.cleanupManagedProjectByLabels).not.toHaveBeenCalled();
+  });
+
+  it('retains Docker availability ownership until cancellation settles', async () => {
+    vi.useFakeTimers();
+    let availabilitySignal: AbortSignal | undefined;
+    let resolveAvailability!: (availability: {
+      available: boolean;
+      message: string | null;
+    }) => void;
+    const runtime = createRuntime({
+      getDockerRuntimeAvailability: vi.fn((signal?: AbortSignal) => {
+        availabilitySignal = signal;
+        return new Promise<{ available: boolean; message: string | null }>((resolve) => {
+          resolveAvailability = resolve;
+        });
+      }),
+    });
+    const cleanup = destroyManagedTaskContainersByLabels(createBaseRequest(), runtime);
+    let cleanupSettled = false;
+    void cleanup.then(
+      () => {
+        cleanupSettled = true;
+      },
+      () => {
+        cleanupSettled = true;
+      },
+    );
+    const rejected = expect(cleanup).rejects.toThrow(
+      `Task container cleanup timed out after ${__taskContainerTestExports.TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS}ms`,
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(
+        __taskContainerTestExports.TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS,
+      );
+      expect(availabilitySignal?.aborted).toBe(true);
+      expect(cleanupSettled).toBe(false);
+      resolveAvailability({ available: true, message: null });
+      await rejected;
+      expect(runtime.cleanupManagedProjectByLabels).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains managed-label cleanup ownership after requesting cancellation', async () => {
+    vi.useFakeTimers();
+    let cleanupSignal: AbortSignal | undefined;
+    let resolveCleanup!: () => void;
+    const runtime = createRuntime({
+      cleanupManagedProjectByLabels: vi.fn((request) => {
+        cleanupSignal = request.signal;
+        return new Promise<void>((resolve) => {
+          resolveCleanup = resolve;
+        });
+      }),
+    });
+    const cleanup = destroyManagedTaskContainersByLabels(createBaseRequest(), runtime);
+    let cleanupSettled = false;
+    void cleanup.then(
+      () => {
+        cleanupSettled = true;
+      },
+      () => {
+        cleanupSettled = true;
+      },
+    );
+    const rejected = expect(cleanup).rejects.toThrow(
+      `Task container cleanup timed out after ${__taskContainerTestExports.TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS}ms`,
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(
+        __taskContainerTestExports.TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS,
+      );
+      expect(cleanupSignal?.aborted).toBe(true);
+      expect(cleanupSettled).toBe(false);
+      resolveCleanup();
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('loads recent logs without claiming truncation just because the default tail size is below the maximum', async () => {

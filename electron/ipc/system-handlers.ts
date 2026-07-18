@@ -1,8 +1,6 @@
-import { execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { promisify } from 'util';
 
 import type {
   BrowserColdBootstrapPlanContent,
@@ -19,6 +17,7 @@ import {
 } from '../../src/lib/git-ssh-url.js';
 import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
 import { IPC } from './channels.js';
+import { execFileWithDeadline } from './bounded-process.js';
 import { getAgentDefsWithLastKnownAvailability } from './agents.js';
 import { BadRequestError } from './errors.js';
 import type { IpcHandlerMap } from './handlers.js';
@@ -71,6 +70,7 @@ import {
 } from './path-utils.js';
 import { discoverProjects, getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
+import { execGit } from './git-exec.js';
 import { readMarkdownFileForWorktree } from './markdown-files.js';
 import { inspectArenaCompetitor } from './arena-competitors.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
@@ -90,8 +90,6 @@ import {
   assertStringArray,
   assertTcpPortNumber,
 } from './validate.js';
-
-const execFileAsync = promisify(execFile);
 
 const ELECTRON_FOCUS_CLIENT_ID = 'electron-renderer';
 const COLD_BOOTSTRAP_PLAN_CONTENT_MAX_TASKS = 30;
@@ -495,8 +493,9 @@ function getGitCloneSshCommand(acceptHostKey: boolean | undefined): string {
 
 export async function fetchHostFingerprint(hostname: string, port: number): Promise<string> {
   try {
-    const keyscan = await execFileAsync('ssh-keyscan', ['-p', String(port), hostname], {
-      timeout: 15_000,
+    const keyscan = await execFileWithDeadline('ssh-keyscan', ['-p', String(port), hostname], {
+      encoding: 'utf8',
+      timeoutMs: 15_000,
     });
     const keys = keyscan.stdout.trim();
     if (!keys) return 'Could not retrieve host key';
@@ -507,7 +506,10 @@ export async function fetchHostFingerprint(hostname: string, port: number): Prom
       fs.writeFileSync(tmpFile, keys);
       let keygen;
       try {
-        keygen = await execFileAsync('ssh-keygen', ['-lf', tmpFile], { timeout: 5_000 });
+        keygen = await execFileWithDeadline('ssh-keygen', ['-lf', tmpFile], {
+          encoding: 'utf8',
+          timeoutMs: 5_000,
+        });
       } catch (error) {
         if (isMissingCommandError(error)) {
           return SSH_KEYGEN_NOT_INSTALLED_ERROR;
@@ -567,7 +569,7 @@ export async function cloneGitRepo(
 
   try {
     fs.mkdirSync(destinationRoot, { recursive: true });
-    await execFileAsync('git', ['clone', trimmedUrl, destination], {
+    await execGit(['clone', trimmedUrl, destination], {
       cwd: destinationRoot,
       timeout: 120_000,
       env: {

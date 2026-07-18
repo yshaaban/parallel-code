@@ -1,15 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
-
-const { detectDiffBaseMock, execFileMock, getMainBranchMock } = vi.hoisted(() => ({
+const { detectDiffBaseMock, execGitMock, getMainBranchMock } = vi.hoisted(() => ({
   detectDiffBaseMock: vi.fn(),
-  execFileMock: vi.fn(),
+  execGitMock: vi.fn(),
   getMainBranchMock: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
+vi.mock('./git-exec.js', () => ({
+  execGit: execGitMock,
 }));
 
 vi.mock('./git.js', () => ({
@@ -20,59 +18,13 @@ vi.mock('./git-diff-base.js', () => ({
   detectDiffBase: detectDiffBaseMock,
 }));
 
-function mockExecFile(
-  handler: (cmd: string, args: string[], cwd: string | undefined) => string,
-): void {
-  execFileMock.mockImplementation(
-    (
-      cmd: string,
-      args: string[],
-      optionsOrCallback:
-        | {
-            cwd?: string;
-          }
-        | ((error: Error | null, stdout: string, stderr: string) => void),
-      maybeCallback?: (error: Error | null, stdout: string, stderr: string) => void,
-    ) => {
-      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
-      if (!callback) {
-        throw new Error('Missing callback');
-      }
-
-      const cwd = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback.cwd;
-      try {
-        callback(null, handler(cmd, args, cwd), '');
-      } catch (error) {
-        callback(error as Error, '', '');
-      }
-    },
+function mockExecGit(handler: (args: readonly string[], cwd: string | undefined) => string): void {
+  execGitMock.mockImplementation(
+    async (args: readonly string[], options?: { cwd?: string; maxBuffer?: number }) => ({
+      stderr: '',
+      stdout: handler(args, options?.cwd),
+    }),
   );
-
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: (
-      cmd: string,
-      args: string[],
-      options?: {
-        cwd?: string;
-      },
-    ) =>
-      new Promise<{ stderr: string; stdout: string }>((resolve, reject) => {
-        execFileMock(
-          cmd,
-          args,
-          options ?? {},
-          (error: Error | null, stdout: string, stderr: string) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-
-            resolve({ stderr, stdout });
-          },
-        );
-      }),
-  });
 }
 
 describe('git commit history', () => {
@@ -84,7 +36,7 @@ describe('git commit history', () => {
   });
 
   it('returns structured commit summaries with per-commit file stats', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -197,7 +149,7 @@ describe('git commit history', () => {
   });
 
   it('summarizes merge commits against their first parent', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }

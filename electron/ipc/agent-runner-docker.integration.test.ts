@@ -6,6 +6,7 @@ import path from 'node:path';
 import * as pty from 'node-pty';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import { createDockerAgentRunnerLaunch } from './agent-runner-docker.js';
 
 const RUN_DOCKER_AGENT_INTEGRATION = process.env.RUN_DOCKER_AGENT_INTEGRATION === '1';
@@ -89,10 +90,17 @@ function runPtyCommand(
 
 describeDockerIntegration('agent runner docker integration', () => {
   afterEach(async () => {
-    await Promise.all(
+    await runIndependentCleanups(
+      'Docker agent runner integration temporary directories',
       tempDirs
         .splice(0)
-        .map((dirPath) => fs.promises.rm(dirPath, { force: true, recursive: true })),
+        .map(
+          (dirPath, index) =>
+            [
+              `remove Docker agent runner integration temporary directory ${index + 1}`,
+              () => fs.promises.rm(dirPath, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   }, 60_000);
 
@@ -100,7 +108,7 @@ describeDockerIntegration('agent runner docker integration', () => {
     const worktreePath = await createTempDir('parallel-agent-runner-worktree-');
     await fs.promises.writeFile(path.join(worktreePath, 'marker.txt'), 'mounted-worktree', 'utf8');
 
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-docker-integration',
       args: ['-lc', 'printf "cwd:%s\\nmarker:%s\\n" "$PWD" "$(cat marker.txt)"'],
       command: '/bin/sh',
@@ -126,7 +134,7 @@ describeDockerIntegration('agent runner docker integration', () => {
       expect(result.output).toContain('cwd:/workspace');
       expect(result.output).toContain('marker:mounted-worktree');
     } finally {
-      launch.cleanup();
+      await launch.cleanup();
     }
 
     const inspect = spawnSync(

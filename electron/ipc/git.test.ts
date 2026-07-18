@@ -1,45 +1,35 @@
 import fs from 'fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { execFileMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn(),
+const { execGitMock } = vi.hoisted(() => ({
+  execGitMock: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
+vi.mock('./git-exec.js', () => ({
+  execGit: execGitMock,
 }));
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
-
-function setExecFilePromisifyImplementation(
-  implementation:
-    | ((
-        cmd: string,
-        args: string[],
-        options?: { cwd?: string },
-      ) => Promise<{
-        stderr: string;
-        stdout: string;
-      }>)
-    | undefined,
+function setExecGitImplementation(
+  implementation: (
+    args: readonly string[],
+    options?: { cwd?: string; maxBuffer?: number },
+  ) => Promise<{
+    stderr: string;
+    stdout: string;
+  }>,
 ): void {
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: implementation,
-    writable: true,
-  });
+  execGitMock.mockImplementation(implementation);
 }
 
 describe('getGitRepoRoot', () => {
   beforeEach(() => {
     vi.resetModules();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
     vi.restoreAllMocks();
-    setExecFilePromisifyImplementation(undefined);
   });
 
   it('preserves a selected symlinked repo root path when it resolves to the real git root', async () => {
-    setExecFilePromisifyImplementation(
+    setExecGitImplementation(
       vi.fn(async () => ({
         stderr: '',
         stdout: '/real/repo\n',
@@ -59,7 +49,7 @@ describe('getGitRepoRoot', () => {
   });
 
   it('returns the actual repo root when the selected path is nested inside the repo', async () => {
-    setExecFilePromisifyImplementation(
+    setExecGitImplementation(
       vi.fn(async () => ({
         stderr: '',
         stdout: '/real/repo\n',
@@ -85,14 +75,13 @@ describe('getGitRepoRoot', () => {
 describe('listImportableWorktrees', () => {
   beforeEach(() => {
     vi.resetModules();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
     vi.restoreAllMocks();
-    setExecFilePromisifyImplementation(undefined);
   });
 
   it('filters registered worktree aliases by canonical path before status checks', async () => {
-    setExecFilePromisifyImplementation(
-      vi.fn(async (_cmd, args: string[]) => {
+    setExecGitImplementation(
+      vi.fn(async (args: readonly string[]) => {
         if (args.join(' ') === 'worktree list --porcelain') {
           return {
             stderr: '',

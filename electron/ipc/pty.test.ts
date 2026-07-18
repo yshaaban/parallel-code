@@ -1,3 +1,5 @@
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,11 +23,13 @@ vi.mock('./task-ports.js', () => ({
 
 import {
   clearAutoPauseReasonsForChannel,
+  countRunningAgents,
   detachAgentOutput,
   getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
+  killAgentAndWaitForRunnerCleanup,
   killAllAgents,
   onPtyEvent,
   pauseAgent,
@@ -98,7 +102,7 @@ function getSpawnEnv(): Record<string, string> {
   return spawnOptions?.env ?? {};
 }
 
-function withProcessEnv<T>(updates: Record<string, string>, run: () => T): T {
+function withProcessEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const originals = new Map<string, string | undefined>();
   for (const key of Object.keys(updates)) {
     originals.set(key, process.env[key]);
@@ -106,7 +110,11 @@ function withProcessEnv<T>(updates: Record<string, string>, run: () => T): T {
 
   try {
     for (const [key, value] of Object.entries(updates)) {
-      process.env[key] = value;
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+      } else {
+        process.env[key] = value;
+      }
     }
     return run();
   } finally {
@@ -132,6 +140,22 @@ afterEach(() => {
   killAllAgents();
   vi.useRealTimers();
 });
+
+function withTemporaryDirectory<T>(run: (directoryPath: string) => T): T {
+  const directoryPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-pty-test-'));
+  try {
+    return run(directoryPath);
+  } finally {
+    fs.rmSync(directoryPath, { force: true, recursive: true });
+  }
+}
+
+function createFakeExecutable(directoryPath: string, fileName: string): string {
+  const commandPath = path.join(directoryPath, fileName);
+  fs.writeFileSync(commandPath, '');
+  fs.chmodSync(commandPath, 0o755);
+  return commandPath;
+}
 
 describe('validateCommand', () => {
   let originalPath = '';
@@ -232,6 +256,123 @@ describe('spawnAgent', () => {
         expect(spawnEnv.COLORTERM).toBe('truecolor');
       },
     );
+  });
+
+  it('isolates zsh startup, history, and platform home directories when configured', () => {
+    withTemporaryDirectory((directoryPath) => {
+      const command = createFakeExecutable(directoryPath, 'zsh.exe');
+      const shellHomePath = path.join(directoryPath, 'shell-home');
+      withProcessEnv(
+        {
+          APPDATA: '/real/app-data',
+          HOME: '/real/home',
+          PARALLEL_CODE_TEST_SHELL_HOME: shellHomePath,
+          USERPROFILE: '/real/user-profile',
+          XDG_DATA_HOME: '/real/xdg-data',
+        },
+        () => {
+          const proc = createMockProc();
+          spawnMock.mockReturnValueOnce(proc);
+
+          spawnAgent(vi.fn(), {
+            taskId: 'task-shell-history-sandbox',
+            agentId: 'agent-shell-history-sandbox',
+            command,
+            args: [],
+            cwd: '/',
+            env: {},
+            cols: 80,
+            rows: 24,
+            isShell: true,
+            onOutput: { __CHANNEL_ID__: 'shell-history-sandbox-channel' },
+          });
+
+          const spawnEnv = getSpawnEnv();
+          expect(spawnEnv.HOME).toBe(shellHomePath);
+          expect(spawnEnv.USERPROFILE).toBe(shellHomePath);
+          expect(spawnEnv.APPDATA).toBe(path.join(shellHomePath, '.app-data', 'roaming'));
+          expect(spawnEnv.XDG_DATA_HOME).toBe(path.join(shellHomePath, '.local', 'share'));
+          expect(spawnEnv.HISTFILE).toBe(path.join(shellHomePath, '.shell_history'));
+          expect(spawnEnv.PARALLEL_CODE_TEST_SHELL_HOME).toBeUndefined();
+          expect(spawnEnv.ZDOTDIR).toBe(path.join(shellHomePath, '.config', 'zsh'));
+          expect(spawnEnv.HISTSIZE).toBe('0');
+          expect(spawnEnv.SAVEHIST).toBe('0');
+          expect(
+            fs.readFileSync(path.join(shellHomePath, '.config', 'zsh', '.zshrc'), 'utf8'),
+          ).toContain("PROMPT='%# '");
+          expect(
+            fs.readFileSync(path.join(shellHomePath, '.config', 'zsh', '.zshenv'), 'utf8'),
+          ).toContain('HISTFILE="$HOME/.shell_history"');
+        },
+      );
+    });
+  });
+
+  it('does not apply the test shell sandbox to non-shell launches', () => {
+    withTemporaryDirectory((shellHomePath) => {
+      withProcessEnv(
+        {
+          HOME: '/original/home',
+          PARALLEL_CODE_TEST_SHELL_HOME: shellHomePath,
+        },
+        () => {
+          const proc = createMockProc();
+          spawnMock.mockReturnValueOnce(proc);
+
+          spawnAgent(vi.fn(), {
+            taskId: 'task-no-shell-history-sandbox',
+            agentId: 'agent-no-shell-history-sandbox',
+            command: process.execPath,
+            args: ['--version'],
+            cwd: '/',
+            env: {},
+            cols: 80,
+            rows: 24,
+            onOutput: { __CHANNEL_ID__: 'no-shell-history-sandbox-channel' },
+          });
+
+          const spawnEnv = getSpawnEnv();
+          expect(spawnEnv.HOME).toBe('/original/home');
+          expect(spawnEnv.HISTFILE).not.toBe(path.join(shellHomePath, '.shell_history'));
+          expect(spawnEnv.PARALLEL_CODE_TEST_SHELL_HOME).toBeUndefined();
+          expect(spawnEnv.ZDOTDIR).toBeUndefined();
+        },
+      );
+    });
+  });
+
+  it('does not let an agent env override enable the test-only shell sandbox', () => {
+    withTemporaryDirectory((directoryPath) => {
+      const command = createFakeExecutable(directoryPath, 'zsh');
+      const shellHomePath = path.join(directoryPath, 'agent-selected-shell-home');
+      withProcessEnv(
+        {
+          HOME: '/original/home',
+          PARALLEL_CODE_TEST_SHELL_HOME: undefined,
+        },
+        () => {
+          spawnMock.mockReturnValueOnce(createMockProc());
+
+          spawnAgent(vi.fn(), {
+            taskId: 'task-agent-env-shell-sandbox',
+            agentId: 'agent-agent-env-shell-sandbox',
+            command,
+            args: [],
+            cwd: '/',
+            env: {
+              PARALLEL_CODE_TEST_SHELL_HOME: shellHomePath,
+            },
+            cols: 80,
+            rows: 24,
+            isShell: true,
+          });
+
+          expect(getSpawnEnv().HOME).toBe('/original/home');
+          expect(getSpawnEnv().PARALLEL_CODE_TEST_SHELL_HOME).toBeUndefined();
+          expect(fs.existsSync(shellHomePath)).toBe(false);
+        },
+      );
+    });
   });
 
   it('removes inherited mixed-case color suppression env from agent terminals', () => {
@@ -452,7 +593,7 @@ describe('spawnAgent', () => {
       rows: 24,
     });
 
-    const attachedExistingSession = spawnAgent(sendToChannel, {
+    const spawnDisposition = spawnAgent(sendToChannel, {
       taskId: 'task-backend-only',
       agentId: 'agent-backend-only',
       command: '/bin/sh',
@@ -464,7 +605,10 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'attached-channel' },
     });
 
-    expect(attachedExistingSession).toBe(true);
+    expect(spawnDisposition).toEqual({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
     expect(proc.resize).not.toHaveBeenCalled();
   });
 
@@ -488,7 +632,7 @@ describe('spawnAgent', () => {
     proc.emitData('hello');
     sendToChannel.mockClear();
 
-    const attachedExistingSession = spawnAgent(sendToChannel, {
+    const spawnDisposition = spawnAgent(sendToChannel, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: '/bin/sh',
@@ -500,7 +644,10 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'two' },
     });
 
-    expect(attachedExistingSession).toBe(true);
+    expect(spawnDisposition).toEqual({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
     expect(proc.resize).not.toHaveBeenCalled();
     expect(sendToChannel).not.toHaveBeenCalledWith('two', {
       type: 'RecoveryRequired',
@@ -508,7 +655,7 @@ describe('spawnAgent', () => {
     });
   });
 
-  it('replaces an existing session when explicitly requested', () => {
+  it('replaces an existing session when explicitly requested', async () => {
     const firstProc = createMockProc();
     const secondProc = createMockProc();
     spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
@@ -528,7 +675,7 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'one' },
     });
 
-    const attachedExistingSession = spawnAgent(sendToChannel, {
+    const spawnDisposition = spawnAgent(sendToChannel, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: '/bin/sh',
@@ -541,7 +688,11 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'two' },
     });
 
-    expect(attachedExistingSession).toBe(false);
+    expect(spawnDisposition).toMatchObject({
+      channelAttached: true,
+      kind: 'created-session',
+    });
+    await expect(spawnDisposition.replacedSessionCleanup).resolves.toBeUndefined();
     expect(firstProc.kill).toHaveBeenCalledTimes(1);
     expect(firstCleanup).toHaveBeenCalledTimes(1);
     expect(spawnMock).toHaveBeenCalledTimes(2);
@@ -553,6 +704,192 @@ describe('spawnAgent', () => {
     expect(getAgentMeta('agent-1')).toMatchObject({
       taskId: 'task-1',
     });
+  });
+
+  it('retains ownership of a replaced PTY that does not exit after forced termination', async () => {
+    vi.useFakeTimers();
+    const firstProc = createMockProc();
+    firstProc.kill = vi.fn();
+    const secondProc = createMockProc();
+    const firstCleanup = vi.fn();
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-stuck-replacement',
+      args: ['first'],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      onExitCleanup: firstCleanup,
+      rows: 24,
+      taskId: 'task-1',
+    });
+    const replacement = spawnAgent(vi.fn(), {
+      agentId: 'agent-stuck-replacement',
+      args: ['second'],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      replaceExistingSession: true,
+      rows: 24,
+      taskId: 'task-1',
+    });
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    await expect(replacement.replacedSessionCleanup).rejects.toThrow('did not exit within 6000ms');
+    expect(firstCleanup).toHaveBeenCalledOnce();
+    expect(firstProc.kill).toHaveBeenCalledTimes(2);
+    expect(countRunningAgents()).toBe(1);
+
+    const retry = killAgentAndWaitForRunnerCleanup('agent-stuck-replacement');
+    await Promise.resolve();
+    expect(firstProc.kill).toHaveBeenCalledTimes(3);
+    firstProc.emitExit({ exitCode: 0, signal: null });
+    await retry;
+    expect(countRunningAgents()).toBe(0);
+  });
+
+  it('retries a transient replaced-runner cleanup failure on the next stop', async () => {
+    const firstProc = createMockProc();
+    const secondProc = createMockProc();
+    const firstCleanup = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('transient replacement cleanup failure'))
+      .mockResolvedValueOnce(undefined);
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-replacement-cleanup-retry',
+      args: ['first'],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      onExitCleanup: firstCleanup,
+      rows: 24,
+      taskId: 'task-1',
+    });
+    const replacement = spawnAgent(vi.fn(), {
+      agentId: 'agent-replacement-cleanup-retry',
+      args: ['second'],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      replaceExistingSession: true,
+      rows: 24,
+      taskId: 'task-1',
+    });
+
+    await expect(replacement.replacedSessionCleanup).rejects.toThrow(
+      'transient replacement cleanup failure',
+    );
+    await expect(
+      killAgentAndWaitForRunnerCleanup('agent-replacement-cleanup-retry'),
+    ).resolves.toBeUndefined();
+    expect(firstCleanup).toHaveBeenCalledTimes(2);
+  });
+
+  it('awaits asynchronous runner cleanup when an agent is stopped for task deletion', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    let resolveCleanup!: () => void;
+    const onExitCleanup = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCleanup = resolve;
+        }),
+    );
+
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-runner-cleanup',
+      args: [],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      onExitCleanup,
+      rows: 24,
+      taskId: 'task-1',
+    });
+
+    const cleanup = killAgentAndWaitForRunnerCleanup('agent-runner-cleanup');
+    let settled = false;
+    void cleanup.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(proc.kill).toHaveBeenCalledOnce();
+    expect(onExitCleanup).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    resolveCleanup();
+    await cleanup;
+    expect(settled).toBe(true);
+  });
+
+  it('does not start runner cleanup until the PTY exit is observed', async () => {
+    const proc = createMockProc();
+    proc.kill = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+    const onExitCleanup = vi.fn();
+
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-delayed-exit-cleanup',
+      args: [],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      onExitCleanup,
+      rows: 24,
+      taskId: 'task-1',
+    });
+
+    const cleanup = killAgentAndWaitForRunnerCleanup('agent-delayed-exit-cleanup');
+    await Promise.resolve();
+    expect(proc.kill).toHaveBeenCalledOnce();
+    expect(onExitCleanup).not.toHaveBeenCalled();
+
+    proc.emitExit({ exitCode: 0, signal: null });
+    await cleanup;
+    expect(onExitCleanup).toHaveBeenCalledOnce();
+  });
+
+  it('retries runner cleanup after a transient failure', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const onExitCleanup = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('docker daemon unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-retry-runner-cleanup',
+      args: [],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      onExitCleanup,
+      rows: 24,
+      taskId: 'task-1',
+    });
+
+    await expect(killAgentAndWaitForRunnerCleanup('agent-retry-runner-cleanup')).rejects.toThrow(
+      'docker daemon unavailable',
+    );
+    await expect(
+      killAgentAndWaitForRunnerCleanup('agent-retry-runner-cleanup'),
+    ).resolves.toBeUndefined();
+    await expect(
+      killAgentAndWaitForRunnerCleanup('agent-retry-runner-cleanup'),
+    ).resolves.toBeUndefined();
+
+    expect(proc.kill).toHaveBeenCalledTimes(1);
+    expect(onExitCleanup).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the existing session when replacement command validation fails', () => {
@@ -666,7 +1003,10 @@ describe('spawnAgent', () => {
           rows: 24,
           onOutput: { __CHANNEL_ID__: 'one' },
         }),
-      ).toBe(false);
+      ).toEqual({
+        channelAttached: true,
+        kind: 'created-session',
+      });
 
       firstProc.emitExit({ exitCode: 0, signal: null });
 
@@ -682,7 +1022,10 @@ describe('spawnAgent', () => {
           rows: 24,
           onOutput: { __CHANNEL_ID__: 'two' },
         }),
-      ).toBe(false);
+      ).toEqual({
+        channelAttached: true,
+        kind: 'created-session',
+      });
 
       expect(getAgentMeta('agent-same')).toEqual({
         agentId: 'agent-same',
@@ -742,7 +1085,10 @@ describe('spawnAgent', () => {
           isShell: false,
           onOutput: { __CHANNEL_ID__: 'channel-one' },
         }),
-      ).toBe(false);
+      ).toEqual({
+        channelAttached: true,
+        kind: 'created-session',
+      });
 
       expect(getAgentMeta('agent-reattach-metadata')).toEqual({
         agentId: 'agent-reattach-metadata',
@@ -766,7 +1112,10 @@ describe('spawnAgent', () => {
           isShell: true,
           onOutput: { __CHANNEL_ID__: 'channel-two' },
         }),
-      ).toBe(true);
+      ).toEqual({
+        channelAttached: true,
+        kind: 'attached-existing',
+      });
 
       expect(spawnMock).toHaveBeenCalledTimes(1);
       expect(proc.resize).not.toHaveBeenCalled();
@@ -811,6 +1160,84 @@ describe('spawnAgent', () => {
       offSpawn();
       offPause();
       offResume();
+      offExit();
+    }
+  });
+
+  it('keeps wrapped exit diagnostics in chronological order across small PTY chunks', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const onExit = vi.fn();
+    const offExit = onPtyEvent('exit', onExit);
+
+    const outputLines = Array.from(
+      { length: 60 },
+      (_, index) => `line-${index.toString().padStart(2, '0')}-${'x'.repeat(140)}`,
+    );
+    const output = Buffer.from(`${outputLines.join('\n')}\n`, 'utf8');
+
+    try {
+      spawnAgent(vi.fn(), {
+        taskId: 'task-wrapped-exit-tail',
+        agentId: 'agent-wrapped-exit-tail',
+        command: '/bin/sh',
+        args: [],
+        cwd: '/',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'wrapped-exit-tail' },
+      });
+
+      for (let offset = 0; offset < output.length; offset += 7) {
+        proc.emitData(output.subarray(offset, offset + 7));
+      }
+      proc.emitExit({ exitCode: 1, signal: null });
+
+      expect(onExit).toHaveBeenCalledWith('agent-wrapped-exit-tail', {
+        exitCode: 1,
+        generation: 0,
+        lastOutput: outputLines.slice(-50),
+        signal: null,
+      });
+    } finally {
+      offExit();
+    }
+  });
+
+  it('keeps only the diagnostic suffix from a PTY chunk larger than the tail capacity', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const onExit = vi.fn();
+    const offExit = onPtyEvent('exit', onExit);
+
+    try {
+      spawnAgent(vi.fn(), {
+        taskId: 'task-oversized-exit-tail',
+        agentId: 'agent-oversized-exit-tail',
+        command: '/bin/sh',
+        args: [],
+        cwd: '/',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'oversized-exit-tail' },
+      });
+
+      proc.emitData(Buffer.from(`${'discarded'.repeat(1_200)}\nkept-one\nkept-two\n`, 'utf8'));
+      proc.emitExit({ exitCode: 2, signal: 15 });
+
+      expect(onExit).toHaveBeenCalledWith(
+        'agent-oversized-exit-tail',
+        expect.objectContaining({
+          exitCode: 2,
+          lastOutput: expect.arrayContaining(['kept-one', 'kept-two']),
+          signal: 15,
+        }),
+      );
+      const exitEvent = onExit.mock.calls[0]?.[1] as { lastOutput?: string[] } | undefined;
+      expect(exitEvent?.lastOutput?.slice(-2)).toEqual(['kept-one', 'kept-two']);
+    } finally {
       offExit();
     }
   });

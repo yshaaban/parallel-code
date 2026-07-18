@@ -2,25 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   detectMainBranchMock,
-  execFileMock,
+  execGitMock,
   getCurrentBranchNameMock,
   invalidateGitQueryCacheForPathMock,
   removeWorktreeMock,
-  spawnMock,
   withWorktreeLockMock,
 } = vi.hoisted(() => ({
   detectMainBranchMock: vi.fn(),
-  execFileMock: vi.fn(),
+  execGitMock: vi.fn(),
   getCurrentBranchNameMock: vi.fn(),
   invalidateGitQueryCacheForPathMock: vi.fn(),
   removeWorktreeMock: vi.fn(),
-  spawnMock: vi.fn(),
   withWorktreeLockMock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
-  spawn: spawnMock,
+vi.mock('./git-exec.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./git-exec.js')>()),
+  execGit: execGitMock,
 }));
 
 vi.mock('./git-branch.js', () => ({
@@ -41,40 +39,31 @@ vi.mock('./git-status-parser.js', () => ({
   parseConflictPath: vi.fn(() => null),
 }));
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
-
 type ExecResult = { stderr: string; stdout: string };
 
 function setExecImplementation(
-  implementation: (
-    command: string,
-    args: string[],
-    options: { cwd?: string },
-  ) => Promise<ExecResult>,
+  implementation: (args: readonly string[], options: { cwd?: string }) => Promise<ExecResult>,
 ): void {
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: implementation,
-    writable: true,
-  });
+  execGitMock.mockImplementation((args: readonly string[], options: { cwd?: string } = {}) =>
+    implementation(args, options),
+  );
 }
 
 describe('git mutation phase 1 parity', () => {
   beforeEach(() => {
     vi.resetModules();
     detectMainBranchMock.mockReset();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
     getCurrentBranchNameMock.mockReset();
     invalidateGitQueryCacheForPathMock.mockReset();
     removeWorktreeMock.mockReset();
-    spawnMock.mockReset();
     withWorktreeLockMock.mockClear();
   });
 
   it('reports the current worktree branch in merge status', async () => {
     detectMainBranchMock.mockResolvedValue('main');
     getCurrentBranchNameMock.mockResolvedValue('feature/task');
-    setExecImplementation(async (_command, args) => {
+    setExecImplementation(async (args) => {
       if (args[0] === 'rev-list') {
         expect(args).toEqual([
           'rev-list',
@@ -100,7 +89,7 @@ describe('git mutation phase 1 parity', () => {
   it('counts only non-patch-equivalent base-branch commits as main ahead', async () => {
     detectMainBranchMock.mockResolvedValue('release/main');
     getCurrentBranchNameMock.mockResolvedValue('feature/task');
-    setExecImplementation(async (_command, args) => {
+    setExecImplementation(async (args) => {
       if (args[0] === 'rev-list') {
         expect(args).toEqual([
           'rev-list',
@@ -129,7 +118,7 @@ describe('git mutation phase 1 parity', () => {
 
   it('rejects merge when the worktree branch no longer matches the task branch', async () => {
     getCurrentBranchNameMock.mockResolvedValue('feature/other-branch');
-    setExecImplementation(async (_command, args) => {
+    setExecImplementation(async (args) => {
       if (args[0] === 'rev-parse') {
         return { stderr: '', stdout: '.git\n' };
       }
@@ -153,7 +142,7 @@ describe('git mutation phase 1 parity', () => {
       }
       return 'feature/task';
     });
-    setExecImplementation(async (_command, args, options) => {
+    setExecImplementation(async (args, options) => {
       if (args[0] === 'rev-parse') {
         return { stderr: '', stdout: '.git\n' };
       }

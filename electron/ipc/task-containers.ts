@@ -1,8 +1,6 @@
-import { execFile } from 'child_process';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
-import { promisify } from 'util';
 
 import type {
   ProjectContainerConfig,
@@ -19,15 +17,18 @@ import type {
   TaskContainerServiceState,
 } from '../../src/domain/task-containers.js';
 import { createTaskContainerIdentity } from './task-container-identity.js';
+import { execFileWithDeadline } from './bounded-process.js';
 import {
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
 } from '../../src/domain/server-state.js';
 
-const execFileAsync = promisify(execFile);
-
 const DEFAULT_LOG_LINES = 200;
 const MAX_LOG_LINES = 1_000;
+const DOCKER_QUERY_TIMEOUT_MS = 15_000;
+const DOCKER_MUTATION_TIMEOUT_MS = 2 * 60_000;
+const DOCKER_COMPOSE_UP_TIMEOUT_MS = 15 * 60_000;
+const TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS = 30_000;
 const COMPOSE_FILE_CANDIDATES = [
   'compose.yaml',
   'compose.yml',
@@ -117,6 +118,7 @@ export interface TaskContainerRuntime {
     action: Extract<TaskContainerLifecycleAction, 'stop' | 'destroy'>;
     composeProjectName: string;
     ownershipLabels: Record<string, string>;
+    signal?: AbortSignal;
     worktreePath: string;
   }) => Promise<void>;
   composeDown: (request: {
@@ -153,7 +155,7 @@ export interface TaskContainerRuntime {
     worktreePath: string;
   }) => Promise<DockerComposeProjectStatus>;
   getComposeRuntimeAvailability: () => Promise<TaskContainerRuntimeAvailability>;
-  getDockerRuntimeAvailability: () => Promise<TaskContainerRuntimeAvailability>;
+  getDockerRuntimeAvailability: (signal?: AbortSignal) => Promise<TaskContainerRuntimeAvailability>;
 }
 
 type TaskContainerPlanOperation =
@@ -295,12 +297,15 @@ function selectTaskContainerRunnerProfile(
   };
 }
 
-function createDockerRuntime(): TaskContainerRuntime {
+function createDockerRuntime(
+  executeDocker: DockerCommandExecutor = execDocker,
+): TaskContainerRuntime {
   return {
     cleanupManagedProjectByLabels: async ({
       action,
       composeProjectName,
       ownershipLabels,
+      signal,
     }): Promise<void> => {
       const labelFilters = [
         createDockerLabelFilters(ownershipLabels),
@@ -309,33 +314,82 @@ function createDockerRuntime(): TaskContainerRuntime {
         }),
       ];
       if (action === 'stop') {
-        const runningContainerIds = await listDockerIdsForLabelSets(['ps', '-q'], labelFilters);
+        const runningContainerIds = await listDockerIdsForLabelSets(
+          ['ps', '-q'],
+          labelFilters,
+          signal,
+          executeDocker,
+        );
         if (runningContainerIds.length > 0) {
-          await execDocker(['stop', ...runningContainerIds]);
+          await execDockerCleanupMutation(
+            executeDocker,
+            ['stop', ...runningContainerIds],
+            'container',
+            signal,
+          );
         }
         return;
       }
 
-      const containerIds = await listDockerIdsForLabelSets(['ps', '-aq'], labelFilters);
+      const containerIds = await listDockerIdsForLabelSets(
+        ['ps', '-aq'],
+        labelFilters,
+        signal,
+        executeDocker,
+      );
       if (containerIds.length > 0) {
-        await execDocker(['rm', '-f', ...containerIds]);
+        await execDockerCleanupMutation(
+          executeDocker,
+          ['rm', '-f', ...containerIds],
+          'container',
+          signal,
+        );
       }
 
-      const networkIds = await listDockerIdsForLabelSets(['network', 'ls', '-q'], labelFilters);
+      const networkIds = await listDockerIdsForLabelSets(
+        ['network', 'ls', '-q'],
+        labelFilters,
+        signal,
+        executeDocker,
+      );
       if (networkIds.length > 0) {
-        await execDocker(['network', 'rm', ...networkIds]);
+        await execDockerCleanupMutation(
+          executeDocker,
+          ['network', 'rm', ...networkIds],
+          'network',
+          signal,
+        );
       }
 
-      const volumeIds = await listDockerIdsForLabelSets(['volume', 'ls', '-q'], labelFilters);
+      const volumeIds = await listDockerIdsForLabelSets(
+        ['volume', 'ls', '-q'],
+        labelFilters,
+        signal,
+        executeDocker,
+      );
       if (volumeIds.length > 0) {
-        await execDocker(['volume', 'rm', '-f', ...volumeIds]);
+        await execDockerCleanupMutation(
+          executeDocker,
+          ['volume', 'rm', '-f', ...volumeIds],
+          'volume',
+          signal,
+        );
       }
     },
-    getDockerRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
+    getDockerRuntimeAvailability: async (
+      signal?: AbortSignal,
+    ): Promise<TaskContainerRuntimeAvailability> => {
       try {
-        await execDocker(['version', '--format', '{{json .Client.Version}}']);
+        await executeDocker(['version', '--format', '{{json .Client.Version}}'], undefined, {
+          ...(signal ? { signal } : {}),
+          timeoutMs: DOCKER_QUERY_TIMEOUT_MS,
+        });
         return { available: true, message: null };
       } catch (error) {
+        if (signal?.aborted || (signal !== undefined && isRecord(error) && error.killed === true)) {
+          throw signal?.reason ?? error;
+        }
+
         return {
           available: false,
           message: getCommandErrorMessage(error, 'Docker is not available on PATH'),
@@ -344,7 +398,7 @@ function createDockerRuntime(): TaskContainerRuntime {
     },
     getComposeRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
       try {
-        await execDocker(['compose', 'version']);
+        await executeDocker(['compose', 'version']);
         return { available: true, message: null };
       } catch (error) {
         return {
@@ -358,7 +412,7 @@ function createDockerRuntime(): TaskContainerRuntime {
       composeProjectName,
       worktreePath,
     }): Promise<DockerComposeConfig> => {
-      const stdout = await execDocker(
+      const stdout = await executeDocker(
         ['compose', '-p', composeProjectName, '-f', composeFile, 'config', '--format', 'json'],
         worktreePath,
       );
@@ -388,7 +442,7 @@ function createDockerRuntime(): TaskContainerRuntime {
       composeProjectName,
       worktreePath,
     }): Promise<DockerComposeProjectStatus> => {
-      const stdout = await execDocker(
+      const stdout = await executeDocker(
         ['compose', '-p', composeProjectName, '-f', composeFile, 'ps', '--all', '--format', 'json'],
         worktreePath,
       ).catch((error) => {
@@ -413,7 +467,7 @@ function createDockerRuntime(): TaskContainerRuntime {
       overrideFile,
       worktreePath,
     }): Promise<void> => {
-      await execDocker(
+      await executeDocker(
         [
           'compose',
           '-p',
@@ -428,16 +482,18 @@ function createDockerRuntime(): TaskContainerRuntime {
           '--remove-orphans',
         ],
         worktreePath,
+        { timeoutMs: DOCKER_COMPOSE_UP_TIMEOUT_MS },
       );
     },
     composeStop: async ({ composeFile, composeProjectName, worktreePath }): Promise<void> => {
-      await execDocker(
+      await executeDocker(
         ['compose', '-p', composeProjectName, '-f', composeFile, 'stop'],
         worktreePath,
+        { timeoutMs: DOCKER_MUTATION_TIMEOUT_MS },
       );
     },
     composeDown: async ({ composeFile, composeProjectName, worktreePath }): Promise<void> => {
-      await execDocker(
+      await executeDocker(
         [
           'compose',
           '-p',
@@ -449,6 +505,7 @@ function createDockerRuntime(): TaskContainerRuntime {
           '--volumes',
         ],
         worktreePath,
+        { timeoutMs: DOCKER_MUTATION_TIMEOUT_MS },
       );
     },
     composeLogs: async ({
@@ -457,7 +514,7 @@ function createDockerRuntime(): TaskContainerRuntime {
       lines,
       worktreePath,
     }): Promise<string> => {
-      return execDocker(
+      return executeDocker(
         [
           'compose',
           '-p',
@@ -495,13 +552,71 @@ function getCommandErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-async function execDocker(args: string[], cwd?: string): Promise<string> {
-  const result = await execFileAsync('docker', args, {
+interface ExecDockerOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+type DockerCommandExecutor = (
+  args: string[],
+  cwd?: string,
+  options?: ExecDockerOptions,
+) => Promise<string>;
+
+type DockerCleanupResource = 'container' | 'network' | 'volume';
+
+async function execDocker(
+  args: string[],
+  cwd?: string,
+  options: ExecDockerOptions = {},
+): Promise<string> {
+  const result = await execFileWithDeadline('docker', args, {
     ...(cwd ? { cwd } : {}),
+    encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
+    ...(options.signal ? { signal: options.signal } : {}),
+    timeoutMs: options.timeoutMs ?? DOCKER_QUERY_TIMEOUT_MS,
   });
 
   return result.stdout;
+}
+
+const DOCKER_CLEANUP_NOT_FOUND_PATTERNS: Record<DockerCleanupResource, RegExp> = {
+  container: /\bno such (?:container|object)\b/iu,
+  network: /(?:\bno such network\b|\bnetwork .+ not found\b)/iu,
+  volume: /(?:\bno such volume\b|\bvolume .+ not found\b)/iu,
+};
+
+function isOnlyDockerCleanupNotFoundError(
+  error: unknown,
+  resource: DockerCleanupResource,
+): boolean {
+  const detail = getCommandErrorMessage(error, '');
+  const lines = detail
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const pattern = DOCKER_CLEANUP_NOT_FOUND_PATTERNS[resource];
+  return lines.length > 0 && lines.every((line) => pattern.test(line));
+}
+
+async function execDockerCleanupMutation(
+  executeDocker: DockerCommandExecutor,
+  args: string[],
+  resource: DockerCleanupResource,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await executeDocker(args, undefined, {
+      ...(signal ? { signal } : {}),
+      timeoutMs: DOCKER_MUTATION_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if (isOnlyDockerCleanupNotFoundError(error, resource)) {
+      return;
+    }
+    throw error;
+  }
 }
 
 function resolveDisplayPath(worktreePath: string, filePath: string): string {
@@ -526,10 +641,15 @@ function splitDockerIds(stdout: string): string[] {
 async function listDockerIdsForLabelSets(
   args: string[],
   labelFilterSets: string[][],
+  signal?: AbortSignal,
+  executeDocker: DockerCommandExecutor = execDocker,
 ): Promise<string[]> {
   const ids = new Set<string>();
   for (const labelFilters of labelFilterSets) {
-    const stdout = await execDocker([...args, ...labelFilters]);
+    const stdout = await executeDocker([...args, ...labelFilters], undefined, {
+      ...(signal ? { signal } : {}),
+      timeoutMs: DOCKER_QUERY_TIMEOUT_MS,
+    });
     for (const id of splitDockerIds(stdout)) {
       ids.add(id);
     }
@@ -1661,23 +1781,57 @@ export async function destroyManagedTaskContainersByLabels(
   request: Pick<TaskContainerActionRequest, 'projectPath' | 'taskId' | 'worktreePath'>,
   runtime: TaskContainerRuntime = createDockerRuntime(),
 ): Promise<void> {
-  const availability = await runtime.getDockerRuntimeAvailability();
-  if (!availability.available) {
-    return;
+  const cleanupController = new AbortController();
+  const timeoutError = new Error(
+    `Task container cleanup timed out after ${TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS}ms`,
+  );
+  const timeout = globalThis.setTimeout(() => {
+    cleanupController.abort(timeoutError);
+  }, TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS);
+
+  try {
+    const availability = await waitForTaskContainerCleanupSettlement(
+      runtime.getDockerRuntimeAvailability(cleanupController.signal),
+      cleanupController.signal,
+    );
+    if (!availability.available) {
+      return;
+    }
+
+    const identity = createTaskContainerIdentity({
+      projectPath: request.projectPath,
+      taskId: request.taskId,
+      worktreePath: request.worktreePath,
+    });
+
+    await waitForTaskContainerCleanupSettlement(
+      runtime.cleanupManagedProjectByLabels({
+        action: 'destroy',
+        composeProjectName: identity.composeProjectName,
+        ownershipLabels: identity.ownershipLabels,
+        signal: cleanupController.signal,
+        worktreePath: request.worktreePath,
+      }),
+      cleanupController.signal,
+    );
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
+}
 
-  const identity = createTaskContainerIdentity({
-    projectPath: request.projectPath,
-    taskId: request.taskId,
-    worktreePath: request.worktreePath,
-  });
-
-  await runtime.cleanupManagedProjectByLabels({
-    action: 'destroy',
-    composeProjectName: identity.composeProjectName,
-    ownershipLabels: identity.ownershipLabels,
-    worktreePath: request.worktreePath,
-  });
+async function waitForTaskContainerCleanupSettlement<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  // The runtime owns any process tree it starts. A deadline requests cancellation, but task
+  // deletion cannot advance until that owner settles and confirms no process can keep mutating
+  // container resources. Preserve a rejected owner's cleanup error; only convert a fulfilled
+  // operation that ignored cancellation into the deadline failure.
+  const result = await operation;
+  if (signal.aborted) {
+    throw signal.reason;
+  }
+  return result;
 }
 
 export async function getTaskContainerLogs(
@@ -1713,11 +1867,13 @@ export async function getTaskContainerLogs(
 }
 
 export const __taskContainerTestExports = {
+  TASK_CONTAINER_DELETE_CLEANUP_TIMEOUT_MS,
   collectConfiguredPublishedHostPorts,
   collectComposeConfigIssues,
   createDockerRuntime,
   createOverrideFileContents,
   getPreviews,
+  isOnlyDockerCleanupNotFoundError,
   parseConfiguredHostPort,
   parseComposePsRows,
   planTaskContainerAction,

@@ -1,6 +1,4 @@
-import { execFile } from 'child_process';
 import path from 'path';
-import { promisify } from 'util';
 
 import type {
   ArenaCompetitorInspectIssue,
@@ -11,8 +9,8 @@ import {
   type ArenaCommandTemplateParseError,
 } from '../../src/arena/command-template.js';
 import { isCommandAvailable } from './command-resolver.js';
+import { execFileWithDeadline } from './bounded-process.js';
 
-const execFileAsync = promisify(execFile);
 const COMMAND_PROBE_TIMEOUT_MS = 5_000;
 const QUIET_EXECUTION_COMMANDS = new Set(['claude', 'codex']);
 
@@ -64,9 +62,9 @@ function getExecutableBasename(executable: string): string {
 
 async function runCommandProbe(command: string, args: string[]): Promise<CommandProbeResult> {
   try {
-    const result = await execFileAsync(command, args, {
+    const result = await execFileWithDeadline(command, args, {
       encoding: 'utf8',
-      timeout: COMMAND_PROBE_TIMEOUT_MS,
+      timeoutMs: COMMAND_PROBE_TIMEOUT_MS,
     });
     return {
       ok: true,

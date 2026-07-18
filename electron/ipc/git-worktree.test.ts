@@ -1,80 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
-
-const { execFileMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn(),
+const { execGitMock } = vi.hoisted(() => ({
+  execGitMock: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
+vi.mock('./git-exec.js', () => ({
+  execGit: execGitMock,
 }));
 
-function mockExecFile(
+function mockExecGit(
   handler: (
-    cmd: string,
-    args: string[],
+    args: readonly string[],
     cwd: string | undefined,
   ) => { stderr?: string; stdout?: string },
 ): void {
-  execFileMock.mockImplementation(
-    (
-      cmd: string,
-      args: string[],
-      optionsOrCallback:
-        | {
-            cwd?: string;
-          }
-        | ((error: Error | null, stdout: string, stderr: string) => void),
-      maybeCallback?: (error: Error | null, stdout: string, stderr: string) => void,
-    ) => {
-      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
-      if (!callback) {
-        throw new Error('Missing callback');
-      }
-
-      const cwd = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback.cwd;
-
-      try {
-        const result = handler(cmd, args, cwd);
-        callback(null, result.stdout ?? '', result.stderr ?? '');
-      } catch (error) {
-        callback(error as Error, '', '');
-      }
-    },
-  );
-
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: (
-      cmd: string,
-      args: string[],
-      options?: {
-        cwd?: string;
-      },
-    ) =>
-      new Promise<{ stderr: string; stdout: string }>((resolve, reject) => {
-        execFileMock(
-          cmd,
-          args,
-          options ?? {},
-          (error: Error | null, stdout: string, stderr: string) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-
-            resolve({ stderr, stdout });
-          },
-        );
-      }),
+  execGitMock.mockImplementation(async (args: readonly string[], options?: { cwd?: string }) => {
+    const result = handler(args, options?.cwd);
+    return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   });
 }
 
 describe('git-worktree', () => {
   beforeEach(() => {
     vi.resetModules();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
   });
 
   afterEach(() => {
@@ -82,7 +31,7 @@ describe('git-worktree', () => {
   });
 
   it('rejects worktree creation in an empty repository with a clear error', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -106,7 +55,7 @@ describe('git-worktree', () => {
   });
 
   it('rejects a missing base branch with a clear error in a non-empty repository', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -134,7 +83,7 @@ describe('git-worktree', () => {
   });
 
   it('uses the origin tracking ref when the selected base branch is remote-only', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -174,7 +123,7 @@ describe('git-worktree', () => {
   });
 
   it('passes the validated base branch through to git worktree add', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -210,7 +159,7 @@ describe('git-worktree', () => {
   });
 
   it('rejects a proposed branch below an existing local branch ref', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -232,14 +181,14 @@ describe('git-worktree', () => {
       'Cannot create branch "feature/task" because local branch "feature" already uses that ref path.',
     );
     expect(
-      execFileMock.mock.calls.some(
-        ([, args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
+      execGitMock.mock.calls.some(
+        ([args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
       ),
     ).toBe(false);
   });
 
   it('rejects a proposed branch that would block an existing local branch ref', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -261,14 +210,14 @@ describe('git-worktree', () => {
       'Cannot create branch "feature" because it would block existing local branch "feature/task".',
     );
     expect(
-      execFileMock.mock.calls.some(
-        ([, args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
+      execGitMock.mock.calls.some(
+        ([args]) => Array.isArray(args) && args.join(' ').startsWith('worktree add'),
       ),
     ).toBe(false);
   });
 
   it('allows an exact local branch match so task allocation can retry on normal collision errors', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
@@ -302,7 +251,7 @@ describe('git-worktree', () => {
   });
 
   it('parses git porcelain worktree output for import discovery', async () => {
-    mockExecFile((_cmd, args, cwd) => {
+    mockExecGit((args, cwd) => {
       if (cwd !== '/repo') {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }

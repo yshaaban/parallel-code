@@ -46,6 +46,8 @@ import {
 } from './runtime-diagnostics.js';
 import { observeTaskPortsFromOutput } from './task-ports.js';
 import { TerminalStateMirror } from './terminal-state-mirror.js';
+import { TEST_SHELL_HOME_ENV_KEY } from '../../src/lib/test-shell-env.js';
+import { applyTestShellSandbox } from './test-shell-sandbox.js';
 
 interface PtySession {
   proc: pty.IPty;
@@ -55,6 +57,12 @@ interface PtySession {
   agentId: string;
   runnerIdentity?: AgentRuntimeIdentity;
   onExitCleanup?: () => Promise<void> | void;
+  runnerCleanupPromise?: Promise<void>;
+  runnerCleanupAwaited: boolean;
+  terminationPromise?: Promise<void>;
+  exitPromise: Promise<void>;
+  resolveExit: () => void;
+  exited: boolean;
   isShell: boolean;
   isInternalNodeProcess: boolean;
   acceptsInput: boolean;
@@ -72,8 +80,7 @@ interface PtySession {
   orderedInputState: TerminalOrderedState<QueuedPtyInputBatch>;
   orderedResizeState: TerminalOrderedState<OrderedTerminalResizeRequest>;
   recentInteractiveOutputDeadlineAtMs: number;
-  tailBuf: Buffer;
-  tailOffset: number;
+  exitDiagnosticTail: RingBuffer;
   pauseState: PauseReason | null;
   pauseReasons: Map<PauseReason, number>;
   globalRestorePauseLeases: Map<string, RestorePauseLease>;
@@ -83,6 +90,12 @@ interface PtySession {
   };
   lifecycleGeneration: number;
   disposed: boolean;
+}
+
+export interface AgentSpawnDisposition {
+  channelAttached: boolean;
+  kind: 'attached-existing' | 'created-session';
+  replacedSessionCleanup?: Promise<void>;
 }
 
 interface PauseLease {
@@ -121,6 +134,7 @@ const TERMINAL_ENV_BLOCK_LIST = new Set([
   'DYLD_INSERT_LIBRARIES',
   'NODE_OPTIONS',
   'ELECTRON_RUN_AS_NODE',
+  TEST_SHELL_HOME_ENV_KEY,
 ]);
 
 const PRESENCE_BASED_COLOR_SUPPRESSION_ENV_KEYS = ['NO_COLOR', 'NODE_DISABLE_COLORS'] as const;
@@ -258,6 +272,10 @@ type InputFlushTimer =
     };
 
 const sessions = new Map<string, PtySession>();
+const pendingRunnerCleanupSessions = new Map<string, Set<PtySession>>();
+const terminatingSessions = new Map<string, Set<PtySession>>();
+const PTY_EXIT_GRACE_MS = 5_000;
+const PTY_FORCE_EXIT_GRACE_MS = 1_000;
 const nextLifecycleGenerationByAgentId = new Map<string, number>();
 const TERMINAL_INPUT_TRACE_PREVIEW_LIMIT = 96;
 
@@ -382,26 +400,6 @@ function appendToBatchBuffer(session: PtySession, chunk: Buffer): void {
     readOffset += toCopy;
     if (session.batchOffset === BATCH_MAX) flushSessionBatch(session);
   }
-}
-
-function appendToTailBuffer(session: PtySession, chunk: Buffer): void {
-  if (chunk.length >= TAIL_CAP) {
-    chunk.copy(session.tailBuf, 0, chunk.length - TAIL_CAP);
-    session.tailOffset = TAIL_CAP;
-    return;
-  }
-
-  const writable = TAIL_CAP - session.tailOffset;
-  if (chunk.length > writable) {
-    const bytesToKeep = Math.min(TAIL_CAP - chunk.length, session.tailOffset);
-    if (bytesToKeep > 0) {
-      session.tailBuf.copyWithin(0, session.tailOffset - bytesToKeep, session.tailOffset);
-    }
-    session.tailOffset = bytesToKeep;
-  }
-
-  chunk.copy(session.tailBuf, session.tailOffset);
-  session.tailOffset += chunk.length;
 }
 
 function normalizePtyOutputBytes(data: string | Uint8Array): Buffer {
@@ -687,35 +685,178 @@ function warnSessionCleanupFailure(session: PtySession, error: unknown): void {
   console.warn(`Failed to clean up runner for agent ${session.agentId}:`, error);
 }
 
-function cleanupSessionResources(session: PtySession): void {
-  if (session.disposed) {
+function createPtyLifecycleError(message: string, failures: unknown[]): Error {
+  const error = new Error(message);
+  Object.defineProperty(error, 'cause', {
+    configurable: true,
+    value: failures,
+    writable: true,
+  });
+  return error;
+}
+
+function rememberPendingRunnerCleanup(session: PtySession): void {
+  if (!session.onExitCleanup) {
     return;
   }
 
-  session.disposed = true;
-  clearFlushTimer(session);
-  stopAcceptingInput(session);
-  clearAllAutomaticPauseState(session);
-  session.terminalStateMirror.dispose();
-  try {
-    void Promise.resolve(session.onExitCleanup?.()).catch((error: unknown) => {
-      warnSessionCleanupFailure(session, error);
-    });
-  } catch (error) {
-    warnSessionCleanupFailure(session, error);
+  const pendingSessions = pendingRunnerCleanupSessions.get(session.agentId) ?? new Set();
+  pendingSessions.add(session);
+  pendingRunnerCleanupSessions.set(session.agentId, pendingSessions);
+}
+
+function forgetPendingRunnerCleanup(session: PtySession): void {
+  const pendingSessions = pendingRunnerCleanupSessions.get(session.agentId);
+  if (!pendingSessions) {
+    return;
+  }
+
+  pendingSessions.delete(session);
+  if (pendingSessions.size === 0) {
+    pendingRunnerCleanupSessions.delete(session.agentId);
   }
 }
 
-function replaceExistingSession(agentId: string, session: PtySession): void {
+function cleanupSessionRunner(session: PtySession): Promise<void> {
+  if (!session.runnerCleanupPromise) {
+    rememberPendingRunnerCleanup(session);
+    let cleanupAttempt: Promise<void>;
+    try {
+      cleanupAttempt = Promise.resolve(session.onExitCleanup?.());
+    } catch (error) {
+      cleanupAttempt = Promise.reject(error);
+    }
+
+    session.runnerCleanupPromise = cleanupAttempt.then(
+      () => {
+        forgetPendingRunnerCleanup(session);
+      },
+      (error: unknown) => {
+        throw error;
+      },
+    );
+  }
+
+  return session.runnerCleanupPromise;
+}
+
+function disposeSessionResources(session: PtySession): void {
+  if (!session.disposed) {
+    session.disposed = true;
+    clearFlushTimer(session);
+    stopAcceptingInput(session);
+    clearAllAutomaticPauseState(session);
+    session.terminalStateMirror.dispose();
+  }
+}
+
+function cleanupSessionResources(session: PtySession): Promise<void> {
+  disposeSessionResources(session);
+  return cleanupSessionRunner(session);
+}
+
+function cleanupSessionResourcesBestEffort(session: PtySession): void {
+  void cleanupSessionResources(session).catch((error: unknown) => {
+    delete session.runnerCleanupPromise;
+    warnSessionCleanupFailure(session, error);
+  });
+}
+
+function waitForSessionExit(session: PtySession, timeoutMs: number): Promise<boolean> {
+  if (session.exited) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    void session.exitPromise.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+function rememberTerminatingSession(session: PtySession): void {
+  const ownedSessions = terminatingSessions.get(session.agentId) ?? new Set();
+  ownedSessions.add(session);
+  terminatingSessions.set(session.agentId, ownedSessions);
+}
+
+function forgetTerminatingSession(session: PtySession): void {
+  const ownedSessions = terminatingSessions.get(session.agentId);
+  if (!ownedSessions) {
+    return;
+  }
+  ownedSessions.delete(session);
+  if (ownedSessions.size === 0) {
+    terminatingSessions.delete(session.agentId);
+  }
+}
+
+async function performSessionTermination(session: PtySession): Promise<void> {
+  if (session.exited) {
+    return;
+  }
+  session.proc.kill();
+  if (await waitForSessionExit(session, PTY_EXIT_GRACE_MS)) {
+    return;
+  }
+
+  session.proc.kill('SIGKILL');
+  if (await waitForSessionExit(session, PTY_FORCE_EXIT_GRACE_MS)) {
+    return;
+  }
+
+  throw new Error(
+    `Agent ${session.agentId} did not exit within ${PTY_EXIT_GRACE_MS + PTY_FORCE_EXIT_GRACE_MS}ms`,
+  );
+}
+
+function terminateSessionAndWait(session: PtySession): Promise<void> {
+  if (!session.terminationPromise) {
+    session.terminationPromise = performSessionTermination(session).then(
+      () => {
+        forgetTerminatingSession(session);
+      },
+      (error: unknown) => {
+        delete session.terminationPromise;
+        throw error;
+      },
+    );
+  }
+  return session.terminationPromise;
+}
+
+async function terminateSessionAndCleanup(session: PtySession): Promise<void> {
+  session.runnerCleanupAwaited = true;
+  const termination = terminateSessionAndWait(session);
+  const cleanup = termination.then(
+    () =>
+      cleanupSessionResources(session).catch((cleanupError: unknown) => {
+        delete session.runnerCleanupPromise;
+        throw cleanupError;
+      }),
+    async (terminationError: unknown) => {
+      try {
+        await cleanupSessionResources(session);
+      } catch (cleanupError) {
+        delete session.runnerCleanupPromise;
+        throw createPtyLifecycleError(
+          `Failed to stop agent ${session.agentId} and clean its runner`,
+          [terminationError, cleanupError],
+        );
+      }
+      throw terminationError;
+    },
+  );
+  await cleanup;
+}
+
+function replaceExistingSession(agentId: string, session: PtySession): Promise<void> {
   sessions.delete(agentId);
+  rememberTerminatingSession(session);
   session.channelIds.clear();
   session.subscribers.clear();
-  try {
-    session.proc.kill();
-  } catch {
-    // The replacement has already removed this session from the active map.
-  }
-  cleanupSessionResources(session);
+  return terminateSessionAndCleanup(session);
 }
 
 function enqueueTerminalInputRequest(session: PtySession, request: QueuedPtyInputBatch): void {
@@ -1169,7 +1310,7 @@ export function spawnAgent(
     onExitCleanup?: () => Promise<void> | void;
     onOutput?: { __CHANNEL_ID__: string };
   },
-): boolean {
+): AgentSpawnDisposition {
   const channelId = args.onOutput?.__CHANNEL_ID__ ?? null;
   const command = args.command || resolveUserShell();
   const cwd = args.cwd || process.env.HOME || '/';
@@ -1185,7 +1326,10 @@ export function spawnAgent(
     existing.taskId = args.taskId;
     existing.isShell = args.isShell ?? false;
     existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
-    return isNewChannel;
+    return {
+      channelAttached: isNewChannel,
+      kind: 'attached-existing',
+    };
   }
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
@@ -1214,6 +1358,14 @@ export function spawnAgent(
     ...safeEnvOverrides,
   };
   removeInheritedTerminalColorSuppression(spawnEnv, safeEnvOverrides);
+  const commandArgs = applyTestShellSandbox({
+    command,
+    commandArgs: args.args,
+    configuredShellHomePath: process.env[TEST_SHELL_HOME_ENV_KEY],
+    isShell: args.isShell === true,
+    platform: process.platform,
+    spawnEnv,
+  });
   if (args.isInternalNodeProcess && process.versions.electron) {
     spawnEnv.ELECTRON_RUN_AS_NODE = '1';
   }
@@ -1223,7 +1375,7 @@ export function spawnAgent(
   delete spawnEnv.CLAUDE_CODE_SESSION;
   delete spawnEnv.CLAUDE_CODE_ENTRYPOINT;
 
-  const proc = pty.spawn(command, args.args, {
+  const proc = pty.spawn(command, commandArgs, {
     name: 'xterm-256color',
     cols: args.cols,
     rows: args.rows,
@@ -1235,6 +1387,10 @@ export function spawnAgent(
   const lifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId) ?? 0;
   nextLifecycleGenerationByAgentId.set(args.agentId, lifecycleGeneration + 1);
 
+  let resolveExit!: () => void;
+  const exitPromise = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
   const session: PtySession = {
     proc,
     channelIds: channelId === null ? new Set() : new Set([channelId]),
@@ -1243,6 +1399,10 @@ export function spawnAgent(
     agentId: args.agentId,
     ...(args.runnerIdentity !== undefined ? { runnerIdentity: args.runnerIdentity } : {}),
     ...(args.onExitCleanup !== undefined ? { onExitCleanup: args.onExitCleanup } : {}),
+    runnerCleanupAwaited: false,
+    exitPromise,
+    resolveExit,
+    exited: false,
     isShell: args.isShell ?? false,
     isInternalNodeProcess: args.isInternalNodeProcess ?? false,
     acceptsInput: true,
@@ -1262,8 +1422,7 @@ export function spawnAgent(
     orderedInputState: createTerminalOrderedState(),
     orderedResizeState: createTerminalOrderedState(),
     recentInteractiveOutputDeadlineAtMs: 0,
-    tailBuf: Buffer.alloc(TAIL_CAP),
-    tailOffset: 0,
+    exitDiagnosticTail: new RingBuffer(TAIL_CAP),
     pauseState: null,
     pauseReasons: new Map(),
     globalRestorePauseLeases: new Map(),
@@ -1275,8 +1434,11 @@ export function spawnAgent(
     disposed: false,
   };
 
-  if (existing) {
-    replaceExistingSession(args.agentId, existing);
+  const replacedSessionCleanup = existing
+    ? replaceExistingSession(args.agentId, existing)
+    : undefined;
+  if (replacedSessionCleanup) {
+    void replacedSessionCleanup.catch(() => undefined);
   }
 
   sessions.set(args.agentId, session);
@@ -1292,8 +1454,9 @@ export function spawnAgent(
     const chunk = normalizePtyOutputBytes(data);
     session.scrollback.write(chunk);
 
-    // Maintain tail buffer for exit diagnostics
-    appendToTailBuffer(session, chunk);
+    // Keep exit diagnostics in a fixed-size ring so small chunks never shift
+    // the retained tail. It is linearized only when the process exits.
+    session.exitDiagnosticTail.write(chunk);
 
     appendToBatchBuffer(session, chunk);
 
@@ -1319,10 +1482,18 @@ export function spawnAgent(
   proc.onData(handlePtyData as (data: string) => void);
 
   proc.onExit(({ exitCode, signal }) => {
+    session.exited = true;
+    session.resolveExit();
+    forgetTerminatingSession(session);
     // If this session was replaced by a new spawn with the same agentId,
     // skip cleanup — the new session owns the map entry now.
     if (sessions.get(args.agentId) !== session) {
-      cleanupSessionResources(session);
+      if (session.runnerCleanupAwaited) {
+        disposeSessionResources(session);
+        void cleanupSessionRunner(session).catch(() => undefined);
+      } else {
+        cleanupSessionResourcesBestEffort(session);
+      }
       return;
     }
 
@@ -1330,7 +1501,7 @@ export function spawnAgent(
     flushSessionBatch(session);
 
     // Parse tail buffer into last N lines for exit diagnostics
-    const lines = getTailLines(session.tailBuf.subarray(0, session.tailOffset));
+    const lines = getTailLines(session.exitDiagnosticTail.read());
 
     sendToAttachedChannels(session, {
       type: 'Exit',
@@ -1353,7 +1524,12 @@ export function spawnAgent(
       signal: signal === null || signal === undefined ? null : String(signal),
     });
     sessions.delete(args.agentId);
-    cleanupSessionResources(session);
+    if (session.runnerCleanupAwaited) {
+      disposeSessionResources(session);
+      void cleanupSessionRunner(session).catch(() => undefined);
+    } else {
+      cleanupSessionResourcesBestEffort(session);
+    }
   });
 
   recordAgentSpawn({
@@ -1368,7 +1544,11 @@ export function spawnAgent(
     taskId: args.taskId,
   });
   emitPtyEvent('spawn', args.agentId, { generation: session.lifecycleGeneration });
-  return false;
+  return {
+    channelAttached: channelId !== null,
+    kind: 'created-session',
+    ...(replacedSessionCleanup !== undefined ? { replacedSessionCleanup } : {}),
+  };
 }
 
 export function writeToAgent(
@@ -1548,10 +1728,109 @@ export function killAgent(agentId: string): void {
     session.subscribers.clear();
     session.proc.kill();
   }
+  for (const terminatingSession of terminatingSessions.get(agentId) ?? []) {
+    terminatingSession.proc.kill();
+  }
+}
+
+export async function killAgentAndWaitForRunnerCleanup(agentId: string): Promise<void> {
+  const activeSession = sessions.get(agentId);
+  const cleanupSessions = new Set([
+    ...(pendingRunnerCleanupSessions.get(agentId) ?? []),
+    ...(terminatingSessions.get(agentId) ?? []),
+  ]);
+  if (activeSession) {
+    cleanupSessions.add(activeSession);
+  }
+  if (!activeSession && cleanupSessions.size === 0) {
+    return;
+  }
+
+  const cleanupSessionList = [...cleanupSessions];
+  const cleanupResults = await Promise.allSettled(
+    cleanupSessionList.map((session) => {
+      clearFlushTimer(session);
+      stopAcceptingInput(session);
+      clearAllAutomaticPauseState(session);
+      session.subscribers.clear();
+      return terminateSessionAndCleanup(session);
+    }),
+  );
+  const cleanupErrors = cleanupResults.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
+  if (cleanupErrors.length > 1) {
+    throw createPtyLifecycleError(
+      `Failed to stop agent ${agentId} and clean its runners`,
+      cleanupErrors,
+    );
+  }
+}
+
+export async function killAllAgentsAndWaitForRunnerCleanup(): Promise<void> {
+  const agentIds = new Set([
+    ...sessions.keys(),
+    ...pendingRunnerCleanupSessions.keys(),
+    ...terminatingSessions.keys(),
+  ]);
+  const results = await Promise.allSettled(
+    [...agentIds].map((agentId) => killAgentAndWaitForRunnerCleanup(agentId)),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw createPtyLifecycleError('Failed to stop all agents and clean their runners', failures);
+  }
+}
+
+export async function killTaskAgentsAndWaitForRunnerCleanup(
+  taskId: string,
+  knownAgentIds: readonly string[] = [],
+): Promise<void> {
+  const agentIds = new Set(knownAgentIds);
+  for (const session of sessions.values()) {
+    if (session.taskId === taskId) {
+      agentIds.add(session.agentId);
+    }
+  }
+  for (const pendingSessions of pendingRunnerCleanupSessions.values()) {
+    for (const session of pendingSessions) {
+      if (session.taskId === taskId) {
+        agentIds.add(session.agentId);
+      }
+    }
+  }
+  for (const ownedSessions of terminatingSessions.values()) {
+    for (const session of ownedSessions) {
+      if (session.taskId === taskId) {
+        agentIds.add(session.agentId);
+      }
+    }
+  }
+
+  const results = await Promise.allSettled(
+    [...agentIds].map((agentId) => killAgentAndWaitForRunnerCleanup(agentId)),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw createPtyLifecycleError(`Failed to stop agents for task ${taskId}`, failures);
+  }
 }
 
 export function countRunningAgents(): number {
-  return sessions.size;
+  return new Set([...sessions.keys(), ...terminatingSessions.keys()]).size;
 }
 
 export function killAllAgents(): void {
@@ -1561,6 +1840,11 @@ export function killAllAgents(): void {
     clearAllAutomaticPauseState(session);
     session.subscribers.clear();
     session.proc.kill();
+  }
+  for (const ownedSessions of terminatingSessions.values()) {
+    for (const session of ownedSessions) {
+      session.proc.kill();
+    }
   }
   // Let onExit handlers clean up sessions individually
 }

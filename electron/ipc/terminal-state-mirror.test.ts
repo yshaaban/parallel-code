@@ -105,6 +105,22 @@ describe('TerminalStateMirror', () => {
     });
   });
 
+  it('preserves output across queue storage compaction', async () => {
+    const mirror = createMirror();
+    const chunkCount = 1_100;
+
+    for (let index = 0; index < chunkCount; index += 1) {
+      mirror.enqueueOutput(Buffer.from('x'));
+    }
+    const serialized = await serializeMirrorText(mirror);
+
+    expect(serialized.match(/x/g)).toHaveLength(chunkCount);
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalStateMirror).toMatchObject({
+      operationDrainCount: chunkCount,
+      outputEnqueues: chunkCount,
+    });
+  });
+
   it('preserves hidden cursor mode in serialized terminal state', async () => {
     const serialized = await serializeMirrorOutput('\x1b[?25lTUI draws its own cursor');
 

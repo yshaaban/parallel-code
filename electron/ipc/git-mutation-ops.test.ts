@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileMock, spawnMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -11,16 +11,25 @@ vi.mock('child_process', () => ({
   spawn: spawnMock,
 }));
 
+function createProcessStream(): EventEmitter & { destroy: ReturnType<typeof vi.fn> } {
+  const stream = new EventEmitter() as EventEmitter & { destroy: ReturnType<typeof vi.fn> };
+  stream.destroy = vi.fn();
+  return stream;
+}
+
 function createSpawnProcess(): EventEmitter & {
-  stdout: EventEmitter;
-  stderr: EventEmitter;
+  kill: ReturnType<typeof vi.fn>;
+  stdout: ReturnType<typeof createProcessStream>;
+  stderr: ReturnType<typeof createProcessStream>;
 } {
   const proc = new EventEmitter() as EventEmitter & {
-    stdout: EventEmitter;
-    stderr: EventEmitter;
+    kill: ReturnType<typeof vi.fn>;
+    stdout: ReturnType<typeof createProcessStream>;
+    stderr: ReturnType<typeof createProcessStream>;
   };
-  proc.stdout = new EventEmitter();
-  proc.stderr = new EventEmitter();
+  proc.kill = vi.fn(() => true);
+  proc.stdout = createProcessStream();
+  proc.stderr = createProcessStream();
   return proc;
 }
 
@@ -30,6 +39,10 @@ describe('streamPushTask', () => {
     vi.resetModules();
     execFileMock.mockReset();
     spawnMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('streams stdout and stderr push output before resolving', async () => {
@@ -57,6 +70,7 @@ describe('streamPushTask', () => {
       ['push', '--progress', '-u', 'origin', '--', 'feature/task'],
       {
         cwd: '/repo',
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -114,5 +128,41 @@ describe('streamPushTask', () => {
     proc.emit('close', 1, null);
 
     await expect(pushPromise).rejects.toThrow('fatal: denied by remote policy');
+  });
+
+  it('force-kills and cleans streams when a timed-out push never closes', async () => {
+    vi.useFakeTimers();
+    const proc = createSpawnProcess();
+    spawnMock.mockReturnValue(proc);
+    const {
+      DEFAULT_GIT_EXEC_TIMEOUT_MS,
+      GIT_SPAWN_FORCE_KILL_CLOSE_GRACE_MS,
+      GIT_SPAWN_TERMINATE_GRACE_MS,
+    } = await import('./git-exec.js');
+    const { streamPushTask } = await import('./git-mutation-ops.js');
+    const baselineTimerCount = vi.getTimerCount();
+    const pushPromise = streamPushTask('/repo', 'feature/task');
+    const rejection = expect(pushPromise).rejects.toThrow(
+      `Git subprocess timed out after ${DEFAULT_GIT_EXEC_TIMEOUT_MS}ms`,
+    );
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_GIT_EXEC_TIMEOUT_MS);
+    expect(proc.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+
+    await vi.advanceTimersByTimeAsync(GIT_SPAWN_TERMINATE_GRACE_MS);
+    expect(proc.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+
+    await vi.advanceTimersByTimeAsync(GIT_SPAWN_FORCE_KILL_CLOSE_GRACE_MS);
+    await rejection;
+
+    expect(proc.stdout.destroy).toHaveBeenCalledOnce();
+    expect(proc.stderr.destroy).toHaveBeenCalledOnce();
+    expect(proc.stdout.listenerCount('data')).toBe(0);
+    expect(proc.stdout.listenerCount('error')).toBe(0);
+    expect(proc.stderr.listenerCount('data')).toBe(0);
+    expect(proc.stderr.listenerCount('error')).toBe(0);
+    expect(proc.listenerCount('close')).toBe(0);
+    expect(proc.listenerCount('error')).toBe(0);
+    expect(vi.getTimerCount()).toBe(baselineTimerCount);
   });
 });

@@ -1,8 +1,8 @@
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import type { PlanContentUpdate } from '../../src/domain/renderer-events.js';
+import { execGitSync } from './git-sync-exec.js';
 
 interface PlanWatcher {
   currentRelativePath: string | null;
@@ -46,11 +46,21 @@ const PLAN_SETTINGS_EXCLUDE_ENTRY = '.claude/settings.local.json';
  */
 function ensurePlanSettingsGitExclude(worktreePath: string): void {
   try {
-    const gitExcludePath = execFileSync(
-      'git',
+    const gitExcludeOutput = execGitSync(
       ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
-      { cwd: worktreePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim();
+      {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    if (typeof gitExcludeOutput !== 'string') {
+      return;
+    }
+    const gitExcludePath = gitExcludeOutput.trim();
+    if (!gitExcludePath) {
+      return;
+    }
     let existing = '';
     try {
       existing = fs.readFileSync(gitExcludePath, 'utf-8');

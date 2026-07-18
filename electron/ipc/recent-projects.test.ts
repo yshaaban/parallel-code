@@ -4,6 +4,7 @@ import path from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import {
   discoverProjects,
   getRecentProjectPaths,
@@ -20,8 +21,15 @@ afterEach(async () => {
 
 async function removeTempDirs(): Promise<void> {
   const dirsToRemove = tempDirs.splice(0);
-  await Promise.all(
-    dirsToRemove.map((dirPath) => fs.promises.rm(dirPath, { recursive: true, force: true })),
+  await runIndependentCleanups(
+    'Recent project test temporary directories',
+    dirsToRemove.map(
+      (dirPath, index) =>
+        [
+          `remove recent project temporary directory ${index + 1}`,
+          () => fs.promises.rm(dirPath, { recursive: true, force: true }),
+        ] as const,
+    ),
   );
 }
 

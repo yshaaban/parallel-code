@@ -1,34 +1,27 @@
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
+
+const { execFileWithDeadlineMock } = vi.hoisted(() => ({
+  execFileWithDeadlineMock: vi.fn(),
+}));
+
+vi.mock('./bounded-process.js', () => ({
+  execFileWithDeadline: execFileWithDeadlineMock,
+}));
 
 import {
+  cleanupPendingDockerAgentRunnerBuilds,
   createDockerAgentRunnerLabels,
   createDockerAgentRunnerLaunch,
+  DOCKER_BUILD_TIMEOUT_MS,
+  DOCKER_CLEANUP_TIMEOUT_MS,
+  DOCKER_QUERY_TIMEOUT_MS,
 } from './agent-runner-docker.js';
-
-vi.mock('node:child_process', () => ({
-  spawnSync: vi.fn((command, args = []) => {
-    if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
-      return {
-        status: 0,
-        stderr: '',
-        stdout: JSON.stringify({
-          'com.parallel-code.agent-id': 'agent-1',
-          'com.parallel-code.managed': 'true',
-          'com.parallel-code.provider': 'docker-container',
-          'com.parallel-code.resource': 'agent-runner',
-          'com.parallel-code.task-id': 'task-1',
-        }),
-      };
-    }
-
-    return { status: 0, stderr: '', stdout: 'ok' };
-  }),
-}));
 
 const tempDirs: string[] = [];
 
@@ -55,20 +48,35 @@ function getDockerEnvAssignments(args: string[]): string[] {
 }
 
 function getDockerBuildCall(): unknown[] | undefined {
-  return vi
-    .mocked(spawnSync)
-    .mock.calls.find(
-      ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'build',
-    );
+  return execFileWithDeadlineMock.mock.calls.find(
+    ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'build',
+  );
+}
+
+function createCommandError(message: string, stderr = '', stdout = ''): Error {
+  return Object.assign(new Error(message), { stderr, stdout });
 }
 
 describe('agent-runner-docker', () => {
+  beforeEach(() => {
+    execFileWithDeadlineMock.mockReset();
+    execFileWithDeadlineMock.mockResolvedValue({ stderr: '', stdout: 'ok' });
+  });
+
   afterEach(async () => {
-    vi.clearAllMocks();
-    await Promise.all(
+    execFileWithDeadlineMock.mockResolvedValue({ stderr: '', stdout: 'ok' });
+    await cleanupPendingDockerAgentRunnerBuilds().catch(() => undefined);
+    await runIndependentCleanups(
+      'Docker agent runner test temporary directories',
       tempDirs
         .splice(0)
-        .map((dirPath) => fs.promises.rm(dirPath, { force: true, recursive: true })),
+        .map(
+          (dirPath, index) =>
+            [
+              `remove Docker agent runner temporary directory ${index + 1}`,
+              () => fs.promises.rm(dirPath, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 
@@ -93,7 +101,7 @@ describe('agent-runner-docker', () => {
 
   it('builds docker run args with labels, bind mount, env, and resource options', async () => {
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: ['--flag'],
       command: 'codex',
@@ -131,7 +139,7 @@ describe('agent-runner-docker', () => {
 
   it('filters unsafe launch env values before building docker run args', async () => {
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -156,7 +164,7 @@ describe('agent-runner-docker', () => {
   it('rejects unsafe profile env keys', async () => {
     const worktreePath = await createTempDir();
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -170,13 +178,13 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.env.PATH is not allowed for Docker agent runners');
+    ).rejects.toThrow('agentRunnerProfile.env.PATH is not allowed for Docker agent runners');
   });
 
   it('rejects invalid profile env keys', async () => {
     const worktreePath = await createTempDir();
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -190,13 +198,13 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.env.BAD-NAME must be a valid environment variable name');
+    ).rejects.toThrow('agentRunnerProfile.env.BAD-NAME must be a valid environment variable name');
   });
 
   it('rejects unsafe profile env allowlist entries', async () => {
     const worktreePath = await createTempDir();
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -210,14 +218,14 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.envAllowlist is not allowed for Docker agent runners');
+    ).rejects.toThrow('agentRunnerProfile.envAllowlist is not allowed for Docker agent runners');
   });
 
   it('validates profile env before building Dockerfile images', async () => {
     const worktreePath = await createTempDir();
     await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -231,7 +239,7 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.env.PATH is not allowed for Docker agent runners');
+    ).rejects.toThrow('agentRunnerProfile.env.PATH is not allowed for Docker agent runners');
     expect(getDockerBuildCall()).toBeUndefined();
   });
 
@@ -240,7 +248,7 @@ describe('agent-runner-docker', () => {
     const ambiguousMountPath = await createTempDirWithPrefix('parallel-agent-runner-mount,-');
     await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -254,7 +262,7 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.mounts.source must not contain "," or "="');
+    ).rejects.toThrow('agentRunnerProfile.mounts.source must not contain "," or "="');
     expect(getDockerBuildCall()).toBeUndefined();
   });
 
@@ -262,7 +270,7 @@ describe('agent-runner-docker', () => {
     const worktreePath = await createTempDir();
     const outsidePath = await createTempDir();
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -276,8 +284,8 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('rejects extra bind mount symlinks that resolve outside the worktree', async () => {
@@ -286,7 +294,7 @@ describe('agent-runner-docker', () => {
     const symlinkPath = path.join(worktreePath, 'outside-link');
     await fs.promises.symlink(outsidePath, symlinkPath);
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -300,8 +308,8 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow('agentRunnerProfile.mounts.source must stay inside the task worktree');
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('rejects Dockerfile symlinks that resolve outside the worktree', async () => {
@@ -313,7 +321,7 @@ describe('agent-runner-docker', () => {
       path.join(worktreePath, 'Dockerfile'),
     );
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -326,15 +334,15 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('Dockerfile must stay inside the task worktree');
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow('Dockerfile must stay inside the task worktree');
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('fails clearly when a configured Dockerfile is missing', async () => {
     const worktreePath = await createTempDir();
     const dockerfilePath = path.join(worktreePath, 'Dockerfile');
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -347,8 +355,8 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow(`Dockerfile does not exist: ${dockerfilePath}`);
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow(`Dockerfile does not exist: ${dockerfilePath}`);
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('keeps Dockerfile paths behind relative-path validation', async () => {
@@ -356,7 +364,7 @@ describe('agent-runner-docker', () => {
     const dockerfilePath = path.join(worktreePath, 'Dockerfile');
     await fs.promises.writeFile(dockerfilePath, 'FROM busybox\n', 'utf8');
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -369,8 +377,8 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.dockerfile must not be absolute');
-    expect(() =>
+    ).rejects.toThrow('agentRunnerProfile.dockerfile must not be absolute');
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -383,13 +391,13 @@ describe('agent-runner-docker', () => {
         },
         taskId: 'task-1',
       }),
-    ).toThrow('agentRunnerProfile.dockerfile must not contain ".."');
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow('agentRunnerProfile.dockerfile must not contain ".."');
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('uses a stable container workspace default instead of the host worktree path', async () => {
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -407,7 +415,7 @@ describe('agent-runner-docker', () => {
   it('rejects missing image and dockerfile before spawning docker run', async () => {
     const worktreePath = await createTempDir();
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -417,20 +425,17 @@ describe('agent-runner-docker', () => {
         profile: { provider: 'docker-container' },
         taskId: 'task-1',
       }),
-    ).toThrow('Docker agent runner requires an image or dockerfile');
-    expect(spawnSync).not.toHaveBeenCalled();
+    ).rejects.toThrow('Docker agent runner requires an image or dockerfile');
+    expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
   });
 
   it('fails fast when Docker availability checks time out', async () => {
     const worktreePath = await createTempDir();
-    vi.mocked(spawnSync).mockReturnValueOnce({
-      error: new Error('spawnSync docker ETIMEDOUT'),
-      status: null,
-      stderr: '',
-      stdout: '',
-    } as ReturnType<typeof spawnSync>);
+    execFileWithDeadlineMock.mockRejectedValueOnce(
+      createCommandError('docker subprocess timed out after 5000ms'),
+    );
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -440,13 +445,13 @@ describe('agent-runner-docker', () => {
         profile: { image: 'agent:latest', provider: 'docker-container' },
         taskId: 'task-1',
       }),
-    ).toThrow('Docker is unavailable: spawnSync docker ETIMEDOUT');
+    ).rejects.toThrow('Docker is unavailable: docker subprocess timed out after 5000ms');
   });
 
   it('rejects bind mount values that Docker would parse ambiguously', async () => {
     const worktreePath = await createTempDirWithPrefix('parallel-agent-runner-comma,-');
 
-    expect(() =>
+    await expect(
       createDockerAgentRunnerLaunch({
         agentId: 'agent-1',
         args: [],
@@ -456,12 +461,12 @@ describe('agent-runner-docker', () => {
         profile: { image: 'agent:latest', provider: 'docker-container' },
         taskId: 'task-1',
       }),
-    ).toThrow('cwd must not contain "," or "="');
+    ).rejects.toThrow('cwd must not contain "," or "="');
   });
 
-  it('removes the exact managed container on cleanup', async () => {
+  it('idempotently removes the exact managed container on cleanup', async () => {
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -470,43 +475,53 @@ describe('agent-runner-docker', () => {
       profile: { image: 'agent:latest', provider: 'docker-container' },
       taskId: 'task-1',
     });
-    vi.mocked(spawnSync).mockImplementation((command, args = []) => {
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
       if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
         return {
-          status: 0,
           stderr: '',
-          stdout: JSON.stringify(launch.identity.labels),
-        } as ReturnType<typeof spawnSync>;
+          stdout: JSON.stringify({
+            ...launch.identity.labels,
+            'com.parallel-code.image-metadata': 'allowed-extra-label',
+          }),
+        };
       }
 
-      return { status: 0, stderr: '', stdout: 'ok' } as ReturnType<typeof spawnSync>;
+      return { stderr: '', stdout: 'ok' };
     });
 
-    launch.cleanup();
+    await Promise.all([launch.cleanup(), launch.cleanup()]);
 
-    const rmCall = vi
-      .mocked(spawnSync)
-      .mock.calls.find(
-        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
-      );
+    const rmCall = execFileWithDeadlineMock.mock.calls.find(
+      ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+    );
     expect(rmCall).toBeTruthy();
+    expect(
+      execFileWithDeadlineMock.mock.calls.filter(
+        ([, args]) => Array.isArray(args) && args[0] === 'container' && args[1] === 'inspect',
+      ),
+    ).toHaveLength(1);
+    expect(
+      execFileWithDeadlineMock.mock.calls.filter(
+        ([, args]) => Array.isArray(args) && args[0] === 'rm',
+      ),
+    ).toHaveLength(1);
     expect(rmCall?.[1]).toContain('--force');
     expect(rmCall?.[1]).toContain(launch.identity.containerName);
-    for (const [command, _args, options] of vi.mocked(spawnSync).mock.calls) {
+    for (const [command, args, options] of execFileWithDeadlineMock.mock.calls) {
       if (command !== 'docker') {
         continue;
       }
 
-      expect(options).toMatchObject({
-        stdio: 'pipe',
-        timeout: 5_000,
-      });
+      expect(options).toMatchObject({ encoding: 'utf8' });
+      expect(options.timeoutMs).toBe(
+        args[0] === 'rm' ? DOCKER_CLEANUP_TIMEOUT_MS : DOCKER_QUERY_TIMEOUT_MS,
+      );
     }
   });
 
   it('throws when exact managed container cleanup fails', async () => {
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -515,32 +530,33 @@ describe('agent-runner-docker', () => {
       profile: { image: 'agent:latest', provider: 'docker-container' },
       taskId: 'task-1',
     });
-    vi.mocked(spawnSync).mockImplementation((command, args = []) => {
+    let removeAttempts = 0;
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
       if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
         return {
-          status: 0,
           stderr: '',
           stdout: JSON.stringify(launch.identity.labels),
-        } as ReturnType<typeof spawnSync>;
+        };
       }
       if (command === 'docker' && args[0] === 'rm') {
-        return {
-          status: 1,
-          stderr: 'permission denied',
-          stdout: '',
-        } as ReturnType<typeof spawnSync>;
+        removeAttempts += 1;
+        if (removeAttempts === 1) {
+          throw createCommandError('docker exited with code 1', 'permission denied');
+        }
       }
 
-      return { status: 0, stderr: '', stdout: 'ok' } as ReturnType<typeof spawnSync>;
+      return { stderr: '', stdout: 'ok' };
     });
 
-    expect(() => launch.cleanup()).toThrow('permission denied');
+    await expect(launch.cleanup()).rejects.toThrow('permission denied');
+    await expect(launch.cleanup()).resolves.toBeUndefined();
+    expect(removeAttempts).toBe(2);
   });
 
-  it('removes Dockerfile-built image tags during cleanup', async () => {
+  it('still removes a built image when managed container removal fails', async () => {
     const worktreePath = await createTempDir();
     await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -549,26 +565,239 @@ describe('agent-runner-docker', () => {
       profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
       taskId: 'task-1',
     });
-    vi.mocked(spawnSync).mockImplementation((command, args = []) => {
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
       if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
-        return {
-          status: 0,
-          stderr: '',
-          stdout: JSON.stringify(launch.identity.labels),
-        } as ReturnType<typeof spawnSync>;
+        return { stderr: '', stdout: JSON.stringify(launch.identity.labels) };
       }
-
-      return { status: 0, stderr: '', stdout: 'ok' } as ReturnType<typeof spawnSync>;
+      if (command === 'docker' && args[0] === 'rm') {
+        throw createCommandError('docker exited with code 1', 'container removal failed');
+      }
+      return { stderr: '', stdout: 'ok' };
     });
 
-    launch.cleanup();
-
-    const imageRmCall = vi
-      .mocked(spawnSync)
-      .mock.calls.find(
+    await expect(launch.cleanup()).rejects.toThrow('container removal failed');
+    expect(
+      execFileWithDeadlineMock.mock.calls.some(
         ([command, args]) =>
           command === 'docker' && Array.isArray(args) && args[0] === 'image' && args[1] === 'rm',
-      );
+      ),
+    ).toBe(true);
+  });
+
+  it('treats already-removed image and container resources as idempotent cleanup success', async () => {
+    const worktreePath = await createTempDir();
+    await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    let containerRemoveAttempts = 0;
+    let imageRemoveAttempts = 0;
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        return { stderr: '', stdout: JSON.stringify(launch.identity.labels) };
+      }
+      if (command === 'docker' && args[0] === 'rm') {
+        containerRemoveAttempts += 1;
+        if (containerRemoveAttempts === 1) {
+          throw createCommandError('docker exited with code 1', 'container removal failed');
+        }
+      }
+      if (command === 'docker' && args[0] === 'image' && args[1] === 'rm') {
+        imageRemoveAttempts += 1;
+        if (imageRemoveAttempts === 2) {
+          throw createCommandError('docker exited with code 1', 'Error: No such image: old-tag');
+        }
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(launch.cleanup()).rejects.toThrow('container removal failed');
+    await expect(launch.cleanup()).resolves.toBeUndefined();
+    expect(containerRemoveAttempts).toBe(2);
+    expect(imageRemoveAttempts).toBe(2);
+  });
+
+  it('tolerates a managed container disappearing between inspect and removal', async () => {
+    const worktreePath = await createTempDir();
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { image: 'agent:latest', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        return { stderr: '', stdout: JSON.stringify(launch.identity.labels) };
+      }
+      if (command === 'docker' && args[0] === 'rm') {
+        throw createCommandError(
+          'docker exited with code 1',
+          'Error: No such container: old-runner',
+        );
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(launch.cleanup()).resolves.toBeUndefined();
+  });
+
+  it('retains a failed partial-build image cleanup for task-owned retry', async () => {
+    const worktreePath = await createTempDir();
+    await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
+    let imageCleanupAttempts = 0;
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'build') {
+        throw createCommandError('build aborted', 'build cancelled');
+      }
+      if (command === 'docker' && args[0] === 'image' && args[1] === 'rm') {
+        imageCleanupAttempts += 1;
+        if (imageCleanupAttempts === 1) {
+          throw createCommandError('daemon unavailable');
+        }
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(
+      createDockerAgentRunnerLaunch({
+        agentId: 'agent-partial-build',
+        args: [],
+        command: 'codex',
+        cwd: worktreePath,
+        env: {},
+        profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+        taskId: 'task-partial-build',
+      }),
+    ).rejects.toThrow('image cleanup also failed');
+    await expect(
+      cleanupPendingDockerAgentRunnerBuilds({ taskId: 'task-partial-build' }),
+    ).resolves.toBeUndefined();
+    expect(imageCleanupAttempts).toBe(2);
+  });
+
+  it('reports inspect failures and retries instead of memoizing false cleanup success', async () => {
+    const worktreePath = await createTempDir();
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { image: 'agent:latest', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    let inspectAttempts = 0;
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        inspectAttempts += 1;
+        if (inspectAttempts === 1) {
+          throw createCommandError('docker subprocess timed out after 5000ms');
+        }
+        return { stderr: '', stdout: JSON.stringify(launch.identity.labels) };
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(launch.cleanup()).rejects.toThrow('Docker container inspect failed');
+    await expect(launch.cleanup()).resolves.toBeUndefined();
+    expect(inspectAttempts).toBe(2);
+    expect(
+      execFileWithDeadlineMock.mock.calls.filter(
+        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('rejects malformed inspect labels without deleting an unverified container', async () => {
+    const worktreePath = await createTempDir();
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { image: 'agent:latest', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        return { stderr: '', stdout: '{not-json' };
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(launch.cleanup()).rejects.toThrow('returned invalid labels');
+    expect(
+      execFileWithDeadlineMock.mock.calls.some(
+        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects non-object inspect labels without deleting an unverified container', async () => {
+    const worktreePath = await createTempDir();
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { image: 'agent:latest', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        return { stderr: '', stdout: '[]' };
+      }
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await expect(launch.cleanup()).rejects.toThrow('returned invalid labels');
+    expect(
+      execFileWithDeadlineMock.mock.calls.some(
+        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+      ),
+    ).toBe(false);
+  });
+
+  it('removes Dockerfile-built image tags during cleanup', async () => {
+    const worktreePath = await createTempDir();
+    await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
+    const launch = await createDockerAgentRunnerLaunch({
+      agentId: 'agent-1',
+      args: [],
+      command: 'codex',
+      cwd: worktreePath,
+      env: {},
+      profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
+      if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
+        return {
+          stderr: '',
+          stdout: JSON.stringify(launch.identity.labels),
+        };
+      }
+
+      return { stderr: '', stdout: 'ok' };
+    });
+
+    await launch.cleanup();
+
+    const imageRmCall = execFileWithDeadlineMock.mock.calls.find(
+      ([command, args]) =>
+        command === 'docker' && Array.isArray(args) && args[0] === 'image' && args[1] === 'rm',
+    );
     expect(imageRmCall?.[1]).toContain(launch.identity.imageRef);
   });
 
@@ -576,7 +805,7 @@ describe('agent-runner-docker', () => {
     const worktreePath = await createTempDir();
     await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
 
-    const firstLaunch = createDockerAgentRunnerLaunch({
+    const firstLaunch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -585,7 +814,7 @@ describe('agent-runner-docker', () => {
       profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
       taskId: 'task-1',
     });
-    const secondLaunch = createDockerAgentRunnerLaunch({
+    const secondLaunch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-2',
       args: [],
       command: 'codex',
@@ -598,12 +827,23 @@ describe('agent-runner-docker', () => {
     expect(firstLaunch.identity.imageRef).toMatch(/^parallel-code-agent-/u);
     expect(secondLaunch.identity.imageRef).toMatch(/^parallel-code-agent-/u);
     expect(firstLaunch.identity.imageRef).not.toBe(secondLaunch.identity.imageRef);
+    const buildCalls = execFileWithDeadlineMock.mock.calls.filter(
+      ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'build',
+    );
+    expect(buildCalls).toHaveLength(2);
+    for (const [, , options] of buildCalls) {
+      expect(options).toMatchObject({
+        cwd: worktreePath,
+        maxBuffer: 16 * 1024 * 1024,
+        timeoutMs: DOCKER_BUILD_TIMEOUT_MS,
+      });
+    }
   });
 
   it('removes a built image even when the managed container is already gone', async () => {
     const worktreePath = await createTempDir();
     await fs.promises.writeFile(path.join(worktreePath, 'Dockerfile'), 'FROM busybox\n', 'utf8');
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -612,40 +852,31 @@ describe('agent-runner-docker', () => {
       profile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
       taskId: 'task-1',
     });
-    vi.mocked(spawnSync).mockImplementation((command, args = []) => {
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
       if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
-        return {
-          status: 1,
-          stderr: 'No such container',
-          stdout: '',
-        } as ReturnType<typeof spawnSync>;
+        throw createCommandError('docker exited with code 1', 'No such container');
       }
 
-      return { status: 0, stderr: '', stdout: 'ok' } as ReturnType<typeof spawnSync>;
+      return { stderr: '', stdout: 'ok' };
     });
 
-    launch.cleanup();
+    await launch.cleanup();
 
-    const rmCall = vi
-      .mocked(spawnSync)
-      .mock.calls.find(
-        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
-      );
-    const imageRmCall = vi
-      .mocked(spawnSync)
-      .mock.calls.find(
-        ([command, args]) =>
-          command === 'docker' && Array.isArray(args) && args[0] === 'image' && args[1] === 'rm',
-      );
+    const rmCall = execFileWithDeadlineMock.mock.calls.find(
+      ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+    );
+    const imageRmCall = execFileWithDeadlineMock.mock.calls.find(
+      ([command, args]) =>
+        command === 'docker' && Array.isArray(args) && args[0] === 'image' && args[1] === 'rm',
+    );
     expect(rmCall).toBeUndefined();
     expect(imageRmCall?.[1]).toContain(launch.identity.imageRef);
   });
 
   it('does not remove a container when exact managed labels do not match', async () => {
-    vi.mocked(spawnSync).mockImplementation((command, args = []) => {
+    execFileWithDeadlineMock.mockImplementation(async (command, args = []) => {
       if (command === 'docker' && args[0] === 'container' && args[1] === 'inspect') {
         return {
-          status: 0,
           stderr: '',
           stdout: JSON.stringify({
             'com.parallel-code.agent-id': 'foreign-agent',
@@ -654,13 +885,13 @@ describe('agent-runner-docker', () => {
             'com.parallel-code.resource': 'agent-runner',
             'com.parallel-code.task-id': 'task-1',
           }),
-        } as ReturnType<typeof spawnSync>;
+        };
       }
 
-      return { status: 0, stderr: '', stdout: 'ok' } as ReturnType<typeof spawnSync>;
+      return { stderr: '', stdout: 'ok' };
     });
     const worktreePath = await createTempDir();
-    const launch = createDockerAgentRunnerLaunch({
+    const launch = await createDockerAgentRunnerLaunch({
       agentId: 'agent-1',
       args: [],
       command: 'codex',
@@ -670,13 +901,11 @@ describe('agent-runner-docker', () => {
       taskId: 'task-1',
     });
 
-    launch.cleanup();
+    await launch.cleanup();
 
-    const rmCall = vi
-      .mocked(spawnSync)
-      .mock.calls.find(
-        ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
-      );
+    const rmCall = execFileWithDeadlineMock.mock.calls.find(
+      ([command, args]) => command === 'docker' && Array.isArray(args) && args[0] === 'rm',
+    );
     expect(rmCall).toBeUndefined();
   });
 });

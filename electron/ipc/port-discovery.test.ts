@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileSyncMock, readlinkSyncMock } = vi.hoisted(() => ({
   execFileSyncMock: vi.fn(),
@@ -16,12 +16,20 @@ vi.mock('fs', () => ({
   readlinkSync: readlinkSyncMock,
 }));
 
-import { rediscoverTaskPorts, scanTaskPortExposureCandidates } from './port-discovery.js';
+import {
+  PORT_DISCOVERY_LSOF_TIMEOUT_MS,
+  rediscoverTaskPorts,
+  scanTaskPortExposureCandidates,
+} from './port-discovery.js';
 
 describe('port rediscovery', () => {
   beforeEach(() => {
     execFileSyncMock.mockReset();
     readlinkSyncMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('maps listening ports to the deepest matching task worktree', () => {
@@ -81,6 +89,75 @@ describe('port rediscovery', () => {
         suggestion: 'Rediscovered listening port 5173',
       },
     ]);
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'lsof',
+      ['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'],
+      expect.objectContaining({
+        killSignal: 'SIGKILL',
+        timeout: expect.any(Number),
+      }),
+    );
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'lsof',
+      ['-a', '-p', '100', '-d', 'cwd', '-Fn'],
+      expect.objectContaining({
+        killSignal: 'SIGKILL',
+        timeout: expect.any(Number),
+      }),
+    );
+  });
+
+  it('degrades to no rediscovered ports when the bounded lsof scan times out', () => {
+    execFileSyncMock.mockImplementation(() => {
+      const error = new Error('spawnSync lsof ETIMEDOUT') as NodeJS.ErrnoException;
+      error.code = 'ETIMEDOUT';
+      throw error;
+    });
+
+    expect(rediscoverTaskPorts([{ taskId: 'frontend', worktreePath: '/repo' }])).toEqual([]);
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'lsof',
+      ['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'],
+      expect.objectContaining({
+        killSignal: 'SIGKILL',
+        timeout: expect.any(Number),
+      }),
+    );
+    expect(readlinkSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('shares one lsof deadline across pid fallbacks and stops after a timeout', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
+      if (args.includes('-iTCP')) {
+        vi.setSystemTime(10_750);
+        return ['p100', 'n127.0.0.1:5173', 'p101', 'n127.0.0.1:5174', ''].join('\n');
+      }
+
+      vi.setSystemTime(10_000 + PORT_DISCOVERY_LSOF_TIMEOUT_MS);
+      const error = new Error('spawnSync lsof ETIMEDOUT') as NodeJS.ErrnoException;
+      error.code = 'ETIMEDOUT';
+      throw error;
+    });
+    readlinkSyncMock.mockImplementation(() => {
+      throw new Error('procfs unavailable');
+    });
+
+    expect(rediscoverTaskPorts([{ taskId: 'frontend', worktreePath: '/repo' }])).toEqual([]);
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      1,
+      'lsof',
+      ['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'],
+      expect.objectContaining({ timeout: PORT_DISCOVERY_LSOF_TIMEOUT_MS }),
+    );
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      2,
+      'lsof',
+      ['-a', '-p', '100', '-d', 'cwd', '-Fn'],
+      expect.objectContaining({ timeout: PORT_DISCOVERY_LSOF_TIMEOUT_MS - 750 }),
+    );
   });
 
   it('caches fallback lsof cwd lookups by pid during one rediscovery scan', () => {

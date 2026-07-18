@@ -1,4 +1,3 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +13,7 @@ import {
 } from '../../src/domain/agent-runners.js';
 import { isPathInside, isPathInsideOrEqual, validateRelativePath } from './path-utils.js';
 import { BadRequestError } from './errors.js';
+import { execFileWithDeadline } from './bounded-process.js';
 
 interface DockerAgentRunnerLaunchRequest {
   agentId: string;
@@ -22,6 +22,7 @@ interface DockerAgentRunnerLaunchRequest {
   cwd: string;
   env: Record<string, string>;
   profile: AgentRunnerProfileConfig;
+  signal?: AbortSignal;
   taskId: string;
 }
 
@@ -30,10 +31,17 @@ interface DockerAgentRunnerImageResolution {
   image: string;
 }
 
+interface PendingDockerImageCleanup {
+  agentId: string;
+  cleanupPromise?: Promise<void>;
+  image: string;
+  taskId: string;
+}
+
 export interface DockerAgentRunnerLaunch {
   args: string[];
   command: 'docker';
-  cleanup: () => void;
+  cleanup: () => Promise<void>;
   cwd: string;
   env: Record<string, string>;
   identity: AgentRuntimeIdentity;
@@ -59,22 +67,54 @@ const DEFAULT_ENV_ALLOWLIST = [
   'GITHUB_TOKEN',
   'OPENAI_API_KEY',
 ];
-const DOCKER_SYNC_TIMEOUT_MS = 5_000;
+export const DOCKER_QUERY_TIMEOUT_MS = 5_000;
+export const DOCKER_CLEANUP_TIMEOUT_MS = 30_000;
+export const DOCKER_BUILD_TIMEOUT_MS = 10 * 60_000;
+const pendingDockerImageCleanups = new Set<PendingDockerImageCleanup>();
 
-function runDockerSync(
+function runDockerCommand(
   args: string[],
   options: {
     cwd?: string;
     maxBuffer?: number;
+    signal?: AbortSignal;
+    timeoutMs?: number;
   } = {},
-): SpawnSyncReturns<string> {
-  return spawnSync('docker', args, {
+): Promise<{ stderr: string; stdout: string }> {
+  return execFileWithDeadline('docker', args, {
     encoding: 'utf8',
-    stdio: 'pipe',
-    timeout: DOCKER_SYNC_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs ?? DOCKER_QUERY_TIMEOUT_MS,
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
   });
+}
+
+function getSubprocessOutput(error: unknown, stream: 'stderr' | 'stdout'): string {
+  if (!error || typeof error !== 'object' || !(stream in error)) {
+    return '';
+  }
+  const value = (error as Record<'stderr' | 'stdout', unknown>)[stream];
+  return Buffer.isBuffer(value) ? value.toString('utf8') : typeof value === 'string' ? value : '';
+}
+
+function getDockerFailureMessage(error: unknown, fallback: string): string {
+  return (
+    getSubprocessOutput(error, 'stderr').trim() ||
+    getSubprocessOutput(error, 'stdout').trim() ||
+    (error instanceof Error ? error.message : '') ||
+    fallback
+  );
+}
+
+function createDockerCommandError(message: string, cause: unknown): Error {
+  const error = new Error(message);
+  Object.defineProperty(error, 'cause', {
+    configurable: true,
+    value: cause,
+    writable: true,
+  });
+  return error;
 }
 
 function shortHash(value: string): string {
@@ -125,14 +165,16 @@ export function createDockerAgentRunnerLabels(
   };
 }
 
-function assertDockerAvailable(): void {
-  const result = runDockerSync(['version', '--format', '{{.Server.Version}}']);
-  if (result.error) {
-    throw new Error(`Docker is unavailable: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    const message = result.stderr.trim() || result.stdout.trim() || 'Docker daemon is unavailable';
-    throw new Error(message);
+async function assertDockerAvailable(signal?: AbortSignal): Promise<void> {
+  try {
+    await runDockerCommand(['version', '--format', '{{.Server.Version}}'], {
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  } catch (error) {
+    throw createDockerCommandError(
+      `Docker is unavailable: ${getDockerFailureMessage(error, 'unknown error')}`,
+      error,
+    );
   }
 }
 
@@ -189,25 +231,41 @@ function assertExistingHostPath(value: string, fieldName: string, allowedParent?
   }
 }
 
-function resolveImage(
+async function resolveImage(
   profile: AgentRunnerProfileConfig,
   cwd: string,
   dockerfilePath: string | undefined,
   runnerInstanceId: string,
-): DockerAgentRunnerImageResolution {
+  request: Pick<DockerAgentRunnerLaunchRequest, 'agentId' | 'taskId'>,
+  signal?: AbortSignal,
+): Promise<DockerAgentRunnerImageResolution> {
   if (dockerfilePath !== undefined) {
     const tag = `parallel-code-agent-${runnerInstanceId.slice('runner-'.length)}`;
-    const result = runDockerSync(['build', '-t', tag, '-f', dockerfilePath, cwd], {
-      cwd,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    if (result.error) {
-      throw new Error(`Docker build failed: ${result.error.message}`);
+    const pendingCleanup: PendingDockerImageCleanup = {
+      agentId: request.agentId,
+      image: tag,
+      taskId: request.taskId,
+    };
+    pendingDockerImageCleanups.add(pendingCleanup);
+    try {
+      await runDockerCommand(['build', '-t', tag, '-f', dockerfilePath, cwd], {
+        cwd,
+        maxBuffer: 16 * 1024 * 1024,
+        ...(signal !== undefined ? { signal } : {}),
+        timeoutMs: DOCKER_BUILD_TIMEOUT_MS,
+      });
+    } catch (error) {
+      try {
+        await cleanupPendingDockerImage(pendingCleanup);
+      } catch (cleanupError) {
+        throw createDockerCommandError(
+          `Docker build failed and image cleanup also failed: ${getDockerFailureMessage(error, 'unknown build error')}`,
+          [error, cleanupError],
+        );
+      }
+      throw createDockerCommandError(getDockerFailureMessage(error, 'Docker build failed'), error);
     }
-    if (result.status !== 0) {
-      const message = result.stderr.trim() || result.stdout.trim() || 'Docker build failed';
-      throw new Error(message);
-    }
+    pendingDockerImageCleanups.delete(pendingCleanup);
     return {
       builtImage: true,
       image: tag,
@@ -280,72 +338,161 @@ function appendDockerRunOption(args: string[], flag: string, value: string | und
   args.push(flag, value);
 }
 
-function isExactManagedContainer(containerName: string, labels: Record<string, string>): boolean {
-  const result = runDockerSync([
-    'container',
-    'inspect',
-    '--format',
-    '{{json .Config.Labels}}',
-    containerName,
-  ]);
-  if (result.error || result.status !== 0) {
-    return false;
+async function isExactManagedContainer(
+  containerName: string,
+  labels: Record<string, string>,
+): Promise<boolean> {
+  let stdout: string;
+  try {
+    ({ stdout } = await runDockerCommand([
+      'container',
+      'inspect',
+      '--format',
+      '{{json .Config.Labels}}',
+      containerName,
+    ]));
+  } catch (error) {
+    const detail = getDockerFailureMessage(error, 'unknown inspect error');
+    if (/\bno such (?:container|object)\b/iu.test(detail)) {
+      return false;
+    }
+    throw createDockerCommandError(`Docker container inspect failed: ${detail}`, error);
   }
 
-  const rawLabels = result.stdout.trim();
+  const rawLabels = stdout.trim();
   if (!rawLabels) {
-    return false;
+    throw new Error(`Docker container inspect returned no labels for ${containerName}`);
   }
 
   try {
     const inspectedLabels = JSON.parse(rawLabels) as unknown;
-    if (!inspectedLabels || typeof inspectedLabels !== 'object') {
-      return false;
+    if (!inspectedLabels || typeof inspectedLabels !== 'object' || Array.isArray(inspectedLabels)) {
+      throw new Error('labels must be an object');
     }
 
-    const inspectedParallelCodeLabels = Object.fromEntries(
-      Object.entries(inspectedLabels as Record<string, unknown>).filter(([key]) =>
-        key.startsWith('com.parallel-code.'),
-      ),
+    return Object.entries(labels).every(
+      ([key, value]) => (inspectedLabels as Record<string, unknown>)[key] === value,
     );
-    return (
-      Object.keys(inspectedParallelCodeLabels).length === Object.keys(labels).length &&
-      Object.entries(labels).every(([key, value]) => inspectedParallelCodeLabels[key] === value)
+  } catch (error) {
+    throw createDockerCommandError(
+      `Docker container inspect returned invalid labels for ${containerName}`,
+      error,
     );
-  } catch {
-    return false;
   }
 }
 
-function runDockerCleanupCommand(args: string[], label: string): void {
-  const result = runDockerSync(args);
-  if (result.error) {
-    throw new Error(`${label} failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    const message = result.stderr.trim() || result.stdout.trim() || `${label} failed`;
-    throw new Error(message);
+async function runDockerCleanupCommand(
+  args: string[],
+  label: string,
+  notFoundPattern?: RegExp,
+): Promise<void> {
+  try {
+    await runDockerCommand(args, { timeoutMs: DOCKER_CLEANUP_TIMEOUT_MS });
+  } catch (error) {
+    const detail = getDockerFailureMessage(error, `${label} failed`);
+    if (notFoundPattern?.test(detail)) {
+      return;
+    }
+    throw createDockerCommandError(detail, error);
   }
 }
 
-function cleanupDockerAgentRunnerResources(
+async function cleanupPendingDockerImage(cleanup: PendingDockerImageCleanup): Promise<void> {
+  if (!cleanup.cleanupPromise) {
+    cleanup.cleanupPromise = runDockerCleanupCommand(
+      ['image', 'rm', '--force', cleanup.image],
+      'Docker image cleanup',
+      /\bno such image\b/iu,
+    ).then(
+      () => {
+        pendingDockerImageCleanups.delete(cleanup);
+      },
+      (error: unknown) => {
+        delete cleanup.cleanupPromise;
+        throw error;
+      },
+    );
+  }
+  await cleanup.cleanupPromise;
+}
+
+export async function cleanupPendingDockerAgentRunnerBuilds(
+  options: {
+    agentIds?: ReadonlySet<string>;
+    taskId?: string;
+  } = {},
+): Promise<void> {
+  const cleanups = [...pendingDockerImageCleanups].filter(
+    (cleanup) =>
+      (options.taskId === undefined || cleanup.taskId === options.taskId) &&
+      (options.agentIds === undefined || options.agentIds.has(cleanup.agentId)),
+  );
+  const results = await Promise.allSettled(
+    cleanups.map((cleanup) => cleanupPendingDockerImage(cleanup)),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw createDockerCommandError('Failed to clean pending Docker agent runner images', failures);
+  }
+}
+
+async function cleanupDockerAgentRunnerResources(
   containerName: string,
   image: string,
   builtImage: boolean,
   labels: Record<string, string>,
-): void {
-  if (isExactManagedContainer(containerName, labels)) {
-    runDockerCleanupCommand(['rm', '--force', containerName], 'Docker container cleanup');
+): Promise<void> {
+  const failures: unknown[] = [];
+  let shouldRemoveContainer = false;
+  try {
+    shouldRemoveContainer = await isExactManagedContainer(containerName, labels);
+  } catch (error) {
+    failures.push(error);
+  }
+
+  if (shouldRemoveContainer) {
+    try {
+      await runDockerCleanupCommand(
+        ['rm', '--force', containerName],
+        'Docker container cleanup',
+        /\bno such (?:container|object)\b/iu,
+      );
+    } catch (error) {
+      failures.push(error);
+    }
   }
 
   if (builtImage) {
-    runDockerCleanupCommand(['image', 'rm', '--force', image], 'Docker image cleanup');
+    try {
+      await runDockerCleanupCommand(
+        ['image', 'rm', '--force', image],
+        'Docker image cleanup',
+        /\bno such image\b/iu,
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    const detail = failures
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join('; ');
+    throw createDockerCommandError(`Docker runner cleanup failed: ${detail}`, failures);
   }
 }
 
-export function createDockerAgentRunnerLaunch(
+export async function createDockerAgentRunnerLaunch(
   request: DockerAgentRunnerLaunchRequest,
-): DockerAgentRunnerLaunch {
+): Promise<DockerAgentRunnerLaunch> {
   assertExistingHostPath(request.cwd, 'cwd');
 
   const dockerfilePath = resolveDockerfilePath(request.profile, request.cwd);
@@ -364,14 +511,16 @@ export function createDockerAgentRunnerLaunch(
   );
   const dockerEnv = collectDockerEnv(request.profile, request.env);
 
-  assertDockerAvailable();
+  await assertDockerAvailable(request.signal);
 
   const runnerInstanceId = createRunnerInstanceId();
-  const { builtImage, image } = resolveImage(
+  const { builtImage, image } = await resolveImage(
     request.profile,
     request.cwd,
     dockerfilePath,
     runnerInstanceId,
+    request,
+    request.signal,
   );
   const containerName = createContainerName(request.taskId, request.agentId, runnerInstanceId);
   const createdAt = new Date().toISOString();
@@ -404,12 +553,24 @@ export function createDockerAgentRunnerLaunch(
   }
 
   dockerArgs.push(image, request.command, ...request.args);
+  let cleanupPromise: Promise<void> | undefined;
 
   return {
     args: dockerArgs,
     command: 'docker',
     cleanup: () => {
-      cleanupDockerAgentRunnerResources(containerName, image, builtImage, labels);
+      if (!cleanupPromise) {
+        cleanupPromise = cleanupDockerAgentRunnerResources(
+          containerName,
+          image,
+          builtImage,
+          labels,
+        ).catch((error: unknown) => {
+          cleanupPromise = undefined;
+          throw error;
+        });
+      }
+      return cleanupPromise;
     },
     cwd: request.cwd,
     env: {},

@@ -6,6 +6,7 @@ import path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import type {
   ProjectContainerConfig,
   TaskContainerInspectStatus,
@@ -171,18 +172,28 @@ async function listenOnRandomPort(): Promise<{ close: () => Promise<void>; port:
 
 describeDockerIntegration('task-containers docker integration', () => {
   afterEach(async () => {
-    while (cleanupCallbacks.length > 0) {
-      const cleanup = cleanupCallbacks.pop();
-      if (!cleanup) {
-        continue;
-      }
-      await cleanup();
-    }
+    await runIndependentCleanups(
+      'Task container integration runtime owners',
+      cleanupCallbacks
+        .splice(0)
+        .reverse()
+        .map(
+          (cleanup, index) =>
+            [`destroy task container integration owner ${index + 1}`, cleanup] as const,
+        ),
+    );
 
-    await Promise.all(
+    await runIndependentCleanups(
+      'Task container integration temporary directories',
       tempDirs
         .splice(0)
-        .map((dirPath) => fs.promises.rm(dirPath, { force: true, recursive: true })),
+        .map(
+          (dirPath, index) =>
+            [
+              `remove task container integration temporary directory ${index + 1}`,
+              () => fs.promises.rm(dirPath, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   }, 60_000);
 

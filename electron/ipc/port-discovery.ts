@@ -34,6 +34,64 @@ const COMMON_DEV_PORTS = new Set([
   3000, 3001, 3002, 3003, 4173, 4200, 4321, 5000, 5001, 5173, 5174, 5175, 6006, 7007, 8000, 8001,
   8080, 8081, 8088, 8787, 8888, 9000, 9090,
 ]);
+export const PORT_DISCOVERY_LSOF_TIMEOUT_MS = 3_000;
+
+interface LsofScanBudget {
+  deadlineAtMs: number;
+  exhausted: boolean;
+}
+
+function createLsofScanBudget(): LsofScanBudget {
+  return {
+    deadlineAtMs: Date.now() + PORT_DISCOVERY_LSOF_TIMEOUT_MS,
+    exhausted: false,
+  };
+}
+
+function getRemainingLsofBudgetMs(budget: LsofScanBudget): number {
+  if (budget.exhausted) {
+    return 0;
+  }
+
+  const remainingMs = Math.ceil(budget.deadlineAtMs - Date.now());
+  if (remainingMs <= 0) {
+    budget.exhausted = true;
+    return 0;
+  }
+  return remainingMs;
+}
+
+function isLsofTimeoutError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    String((error as NodeJS.ErrnoException).code) === 'ETIMEDOUT'
+  );
+}
+
+function runBoundedLsof(args: string[], budget: LsofScanBudget): string | null {
+  const timeout = getRemainingLsofBudgetMs(budget);
+  if (timeout === 0) {
+    return null;
+  }
+
+  try {
+    const output = execFileSync('lsof', args, {
+      encoding: 'utf8',
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout,
+    });
+    getRemainingLsofBudgetMs(budget);
+    return output;
+  } catch (error) {
+    if (isLsofTimeoutError(error) || getRemainingLsofBudgetMs(budget) === 0) {
+      budget.exhausted = true;
+    }
+    throw error;
+  }
+}
 
 function getTaskPathMatch(
   cwd: string,
@@ -127,20 +185,20 @@ function parseListeningSockets(raw: string): ListeningSocket[] {
   return sockets;
 }
 
-function readProcessWorkingDirectory(pid: number): string | null {
+function readProcessWorkingDirectory(pid: number, budget: LsofScanBudget): string | null {
   try {
     return fs.readlinkSync(`/proc/${pid}/cwd`);
   } catch {
-    return readProcessWorkingDirectoryWithLsof(pid);
+    return readProcessWorkingDirectoryWithLsof(pid, budget);
   }
 }
 
-function readProcessWorkingDirectoryWithLsof(pid: number): string | null {
+function readProcessWorkingDirectoryWithLsof(pid: number, budget: LsofScanBudget): string | null {
   try {
-    const output = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    const output = runBoundedLsof(['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], budget);
+    if (output === null) {
+      return null;
+    }
     for (const line of output.split('\n')) {
       if (line.startsWith('n') && line.length > 1) {
         return line.slice(1);
@@ -154,7 +212,9 @@ function readProcessWorkingDirectoryWithLsof(pid: number): string | null {
 
 const MAX_WORKING_DIRECTORY_LOOKUPS_PER_PID = 2;
 
-function createProcessWorkingDirectoryReader(): (pid: number) => string | null {
+function createProcessWorkingDirectoryReader(
+  budget: LsofScanBudget,
+): (pid: number) => string | null {
   const cache = new Map<number, { attempts: number; cwd: string | null }>();
   return (pid) => {
     const cached = cache.get(pid);
@@ -165,7 +225,7 @@ function createProcessWorkingDirectoryReader(): (pid: number) => string | null {
       return null;
     }
 
-    const cwd = readProcessWorkingDirectory(pid);
+    const cwd = readProcessWorkingDirectory(pid, budget);
     cache.set(pid, {
       attempts: (cached?.attempts ?? 0) + 1,
       cwd,
@@ -187,12 +247,12 @@ function findTaskForListeningSocket(
   return getTaskPathMatch(cwd, tasks);
 }
 
-function getListeningSockets(): ListeningSocket[] {
+function getListeningSockets(budget: LsofScanBudget): ListeningSocket[] {
   try {
-    const output = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    const output = runBoundedLsof(['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'], budget);
+    if (output === null) {
+      return [];
+    }
     return parseListeningSockets(output);
   } catch {
     return [];
@@ -223,8 +283,9 @@ export function scanTaskPortExposureCandidates(
 ): TaskPortExposureCandidateScanResult[] {
   const results: TaskPortExposureCandidateScanResult[] = [];
   const seenPorts = new Set<number>();
-  const listeningSockets = getListeningSockets();
-  const readWorkingDirectory = createProcessWorkingDirectoryReader();
+  const lsofBudget = createLsofScanBudget();
+  const listeningSockets = getListeningSockets(lsofBudget);
+  const readWorkingDirectory = createProcessWorkingDirectoryReader(lsofBudget);
 
   for (const socket of listeningSockets) {
     if (!findTaskForListeningSocket(socket, [task], readWorkingDirectory)) {
@@ -254,9 +315,10 @@ export function rediscoverTaskPorts(
 
   const discoveredPorts: RediscoveredTaskPort[] = [];
   const seenPorts = new Set<string>();
-  const readWorkingDirectory = createProcessWorkingDirectoryReader();
+  const lsofBudget = createLsofScanBudget();
+  const readWorkingDirectory = createProcessWorkingDirectoryReader(lsofBudget);
 
-  for (const socket of getListeningSockets()) {
+  for (const socket of getListeningSockets(lsofBudget)) {
     const matchingTask = findTaskForListeningSocket(socket, tasks, readWorkingDirectory);
     if (!matchingTask) {
       continue;

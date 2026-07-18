@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcess } from 'child_process';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import net from 'net';
@@ -6,6 +6,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { isHydraStartupMode, type HydraStartupMode } from '../../src/lib/hydra.js';
+import {
+  spawnWithDeadline,
+  terminateBoundedSpawnAndWait,
+  type BoundedSpawn,
+  type BoundedSpawnOptions,
+  type SubprocessExit,
+} from './bounded-process.js';
 import { isCommandAvailable, validateCommand } from './command-resolver.js';
 import {
   findRuntimeAsset,
@@ -23,6 +30,7 @@ export const HYDRA_PORT_SPAN = 15000;
 export const HYDRA_PORT_PROBE_ATTEMPTS = 64;
 export const HYDRA_HEALTH_TIMEOUT_MS = 15_000;
 export const HYDRA_HEALTH_POLL_INTERVAL_MS = 250;
+export const HYDRA_HTTP_REQUEST_TIMEOUT_MS = 1_000;
 export const HYDRA_SHUTDOWN_TIMEOUT_MS = 2_000;
 const HYDRA_COMMAND_LOOKUP = process.platform === 'win32' ? 'where' : 'which';
 const HYDRA_COMMAND_LOOKUP_TIMEOUT_MS = 3_000;
@@ -505,6 +513,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withHydraRequestDeadline<T>(
+  label: string,
+  timeoutMs: number,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      const error = Object.assign(new Error(`${label} timed out after ${timeoutMs}ms.`), {
+        code: 'ETIMEDOUT',
+      });
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+
+  try {
+    return await Promise.race([Promise.resolve().then(() => request(controller.signal)), deadline]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  }
+}
+
 async function isPortAvailable(port: number, host = HYDRA_HOST): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const server = net.createServer();
@@ -517,30 +553,44 @@ async function isPortAvailable(port: number, host = HYDRA_HOST): Promise<boolean
 }
 
 async function fetchHydraHealth(url: string): Promise<HydraHealthResponse> {
-  const response = await fetch(`${url}/health`, {
-    headers: {
-      Accept: 'application/json',
+  return withHydraRequestDeadline(
+    'Hydra health request',
+    HYDRA_HTTP_REQUEST_TIMEOUT_MS,
+    async (signal) => {
+      const response = await fetch(`${url}/health`, {
+        headers: {
+          Accept: 'application/json',
+        },
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Hydra health check failed (${response.status})`);
+      }
+      return (await response.json()) as HydraHealthResponse;
     },
-  });
-  if (!response.ok) {
-    throw new Error(`Hydra health check failed (${response.status})`);
-  }
-  return (await response.json()) as HydraHealthResponse;
+  );
 }
 
 async function requestHydraShutdown(url: string): Promise<void> {
-  const response = await fetch(`${url}/shutdown`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+  await withHydraRequestDeadline(
+    'Hydra shutdown request',
+    HYDRA_HTTP_REQUEST_TIMEOUT_MS,
+    async (signal) => {
+      const response = await fetch(`${url}/shutdown`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+        signal,
+      });
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`Hydra shutdown failed (${response.status}): ${body}`);
+      }
     },
-    body: '{}',
-  });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`Hydra shutdown failed (${response.status}): ${body}`);
-  }
+  );
 }
 
 async function waitForPortRelease(port: number, timeoutMs: number): Promise<boolean> {
@@ -601,67 +651,165 @@ function formatSpawnCommand(command: string, args: string[]): string {
   return renderedArgs.length > 0 ? `${command} ${renderedArgs}` : command;
 }
 
-function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (child.pid === undefined || child.exitCode !== null || child.killed) {
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error('Timed out waiting for child process to exit.'));
-    }, timeoutMs);
-
-    function cleanup() {
-      clearTimeout(timer);
-      child.off('exit', onExit);
-      child.off('error', onError);
-    }
-
-    function onExit() {
-      cleanup();
-      resolve();
-    }
-
-    function onError(error: Error) {
-      cleanup();
-      reject(error);
-    }
-
-    child.once('exit', onExit);
-    child.once('error', onError);
+function spawnHydraChild(
+  command: string,
+  args: readonly string[],
+  options: BoundedSpawnOptions,
+  spawnChild: typeof spawnWithDeadline = spawnWithDeadline,
+): BoundedSpawn {
+  return spawnChild(command, args, options, {
+    terminateGraceMs: HYDRA_SHUTDOWN_TIMEOUT_MS,
+    // Hydra children are intentionally long-lived. Their HTTP/PTY owner starts termination;
+    // timeout 0 disables only the automatic deadline, not group/tree cleanup and escalation.
+    timeoutMs: 0,
   });
 }
 
-async function terminateChild(
-  child: ChildProcess | null | undefined,
-  signal: NodeJS.Signals,
-  timeoutMs: number,
-): Promise<void> {
-  if (!child || child.pid === undefined || child.exitCode !== null || child.killed) return;
-  child.kill(signal);
-  try {
-    await waitForChildExit(child, timeoutMs);
-  } catch {
-    if (signal !== 'SIGKILL') {
-      child.kill('SIGKILL');
-      await waitForChildExit(child, Math.max(250, Math.min(1_000, timeoutMs)));
-    }
+function destroyHydraChildStreams(child: BoundedSpawn): void {
+  child.child.stdin?.destroy();
+  child.child.stdout?.destroy();
+  child.child.stderr?.destroy();
+}
+
+function handleHydraDaemonStreamError(
+  daemon: BoundedSpawn,
+  daemonFailure: { current: Error | null },
+  error: Error,
+): void {
+  const failure =
+    daemonFailure.current ?? new Error(`Hydra daemon output stream failed: ${error.message}`);
+  daemonFailure.current = failure;
+  daemon.terminate(failure);
+}
+
+function forwardHydraOperatorResize(
+  operator: BoundedSpawn | null,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (
+    platform === 'win32' ||
+    !operator ||
+    operator.child.exitCode !== null ||
+    operator.child.signalCode !== null
+  ) {
+    return;
   }
+
+  try {
+    operator.child.kill('SIGWINCH');
+  } catch {
+    // The operator can exit between the lifecycle check and resize forwarding.
+  }
+}
+
+function waitForHydraChildExit(child: BoundedSpawn, timeoutMs: number): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error('Timed out waiting for child process to exit.'));
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+
+  return Promise.race([child.completion.then(() => undefined), deadline]).finally(() => {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  });
+}
+
+async function terminateHydraChild(child: BoundedSpawn | null | undefined): Promise<void> {
+  if (!child) return;
+
+  try {
+    await terminateBoundedSpawnAndWait(child, new Error('Hydra child termination requested'));
+  } finally {
+    destroyHydraChildStreams(child);
+  }
+}
+
+export interface HydraRuntimeCleanupFailure {
+  error: unknown;
+  owner: 'daemon' | 'operator';
+}
+
+export class HydraRuntimeCleanupError extends Error {
+  constructor(readonly failures: HydraRuntimeCleanupFailure[]) {
+    super(`Hydra runtime cleanup failed: ${failures.map(({ owner }) => owner).join(', ')}`);
+    this.name = 'HydraRuntimeCleanupError';
+  }
+}
+
+export class HydraOperationCleanupError extends Error {
+  constructor(
+    readonly operationError: unknown,
+    readonly cleanupError: unknown,
+  ) {
+    super('Hydra operation failed and runtime cleanup also failed');
+    this.name = 'HydraOperationCleanupError';
+  }
+}
+
+async function settleHydraRuntimeCleanupOwners(
+  operator: BoundedSpawn | null,
+  cleanupDaemon: () => Promise<void>,
+  options?: { observedOperatorFailure: unknown },
+): Promise<void> {
+  const operatorCleanup = terminateHydraChild(operator).catch((error: unknown) => {
+    if (options !== undefined && error === options.observedOperatorFailure) {
+      return;
+    }
+    throw error;
+  });
+  const results = await Promise.allSettled([
+    operatorCleanup,
+    Promise.resolve().then(cleanupDaemon),
+  ]);
+  const owners = ['operator', 'daemon'] as const;
+  const failures = results.flatMap((result, index): HydraRuntimeCleanupFailure[] => {
+    if (result.status === 'fulfilled') {
+      return [];
+    }
+    const owner = owners[index];
+    return owner === undefined ? [] : [{ error: result.reason, owner }];
+  });
+
+  if (failures.length === 1) {
+    throw failures[0]?.error;
+  }
+  if (failures.length > 1) {
+    throw new HydraRuntimeCleanupError(failures);
+  }
+}
+
+async function rethrowHydraOperationFailure(
+  operationError: unknown,
+  operator: BoundedSpawn | null,
+  cleanupDaemon: () => Promise<void>,
+): Promise<never> {
+  try {
+    await settleHydraRuntimeCleanupOwners(operator, cleanupDaemon, {
+      observedOperatorFailure: operationError,
+    });
+  } catch (cleanupError) {
+    throw new HydraOperationCleanupError(operationError, cleanupError);
+  }
+  throw operationError;
 }
 
 async function waitForHydraHealth(
   url: string,
-  daemon: ChildProcess,
+  daemon: BoundedSpawn['child'],
   daemonOutput: string[],
-  daemonSpawnError: { current: Error | null },
+  daemonFailure: { current: Error | null },
 ): Promise<void> {
   const deadline = Date.now() + HYDRA_HEALTH_TIMEOUT_MS;
   let lastError = 'Hydra daemon did not report healthy status.';
 
   while (Date.now() < deadline) {
-    if (daemonSpawnError.current) {
-      throw buildHydraDaemonFailure(daemonSpawnError.current.message, daemonOutput);
+    if (daemonFailure.current) {
+      throw buildHydraDaemonFailure(daemonFailure.current.message, daemonOutput);
     }
     if (daemon.exitCode !== null || daemon.signalCode !== null) {
       lastError =
@@ -682,30 +830,34 @@ async function waitForHydraHealth(
     await sleep(HYDRA_HEALTH_POLL_INTERVAL_MS);
   }
 
-  if (daemonSpawnError.current) {
-    throw buildHydraDaemonFailure(daemonSpawnError.current.message, daemonOutput);
+  if (daemonFailure.current) {
+    throw buildHydraDaemonFailure(daemonFailure.current.message, daemonOutput);
   }
 
   throw buildHydraDaemonFailure(lastError, daemonOutput);
 }
 
-async function shutdownHydraDaemon(url: string, daemon: ChildProcess | null): Promise<void> {
-  if (!daemon || daemon.pid === undefined || daemon.exitCode !== null || daemon.killed) return;
+async function shutdownHydraDaemon(url: string, daemon: BoundedSpawn | null): Promise<void> {
+  if (!daemon) return;
 
   try {
-    await requestHydraShutdown(url);
-  } catch {
-    // Fall back to direct termination below.
-  }
+    try {
+      await requestHydraShutdown(url);
+    } catch {
+      // Fall back to direct termination below.
+    }
 
-  try {
-    await waitForChildExit(daemon, HYDRA_SHUTDOWN_TIMEOUT_MS);
-    return;
-  } catch {
-    // Fall back to direct termination below.
-  }
+    try {
+      await waitForHydraChildExit(daemon, HYDRA_SHUTDOWN_TIMEOUT_MS);
+      return;
+    } catch {
+      // Fall back to direct termination below.
+    }
 
-  await terminateChild(daemon, 'SIGTERM', HYDRA_SHUTDOWN_TIMEOUT_MS);
+    await terminateHydraChild(daemon);
+  } finally {
+    destroyHydraChildStreams(daemon);
+  }
 }
 
 async function runHydraAdapter(): Promise<number> {
@@ -727,21 +879,37 @@ async function runHydraAdapter(): Promise<number> {
   };
 
   const daemonOutput: string[] = [];
-  const daemon = spawn(runtime.daemon.command, runtime.daemon.args, {
+  const daemon = spawnHydraChild(runtime.daemon.command, runtime.daemon.args, {
     cwd: worktreePath,
     env: hydraEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const daemonSpawnError: { current: Error | null } = { current: null };
-  daemon.once('error', (error) => {
+  const daemonFailure: { current: Error | null } = { current: null };
+  daemon.child.once('error', (error) => {
     const reason = error instanceof Error ? error.message : String(error);
-    daemonSpawnError.current = new Error(
+    daemonFailure.current = new Error(
       `Failed to start Hydra daemon (${formatSpawnCommand(runtime.daemon.command, runtime.daemon.args)}): ${reason}`,
     );
   });
+  // Health polling owns the user-facing spawn diagnostic. Consume the completion rejection now so
+  // a very early spawn failure cannot become an unhandled rejection before the poll observes it.
+  void daemon.completion.catch(() => undefined);
 
-  daemon.stdout?.on('data', (chunk: Buffer) => appendCapturedLines(daemonOutput, chunk));
-  daemon.stderr?.on('data', (chunk: Buffer) => appendCapturedLines(daemonOutput, chunk));
+  const handleDaemonStdout = (chunk: Buffer): void => appendCapturedLines(daemonOutput, chunk);
+  const handleDaemonStderr = (chunk: Buffer): void => appendCapturedLines(daemonOutput, chunk);
+  const handleDaemonStreamError = (error: Error): void =>
+    handleHydraDaemonStreamError(daemon, daemonFailure, error);
+  daemon.child.stdout?.on('data', handleDaemonStdout);
+  daemon.child.stdout?.on('error', handleDaemonStreamError);
+  daemon.child.stderr?.on('data', handleDaemonStderr);
+  daemon.child.stderr?.on('error', handleDaemonStreamError);
+
+  const detachDaemonOutput = (): void => {
+    daemon.child.stdout?.off('data', handleDaemonStdout);
+    daemon.child.stdout?.off('error', handleDaemonStreamError);
+    daemon.child.stderr?.off('data', handleDaemonStderr);
+    daemon.child.stderr?.off('error', handleDaemonStreamError);
+  };
 
   let cleanedUp = false;
   let cleaningUp: Promise<void> | null = null;
@@ -750,68 +918,104 @@ async function runHydraAdapter(): Promise<number> {
     url,
     startupMode: options.startupMode,
   });
-  let operator: ChildProcess | null = null;
+  let operator: BoundedSpawn | null = null;
 
   const cleanup = async (): Promise<void> => {
     if (cleanedUp) return;
     if (cleaningUp) return cleaningUp;
 
     cleaningUp = (async () => {
-      await shutdownHydraDaemon(url, daemon);
-      cleanedUp = true;
+      try {
+        await shutdownHydraDaemon(url, daemon);
+        cleanedUp = true;
+      } finally {
+        detachDaemonOutput();
+      }
     })();
 
     await cleaningUp;
   };
 
+  let signalCleanupPromise: Promise<void> | null = null;
+  let signalExitCode: number | null = null;
   const handleSignal = (signal: NodeJS.Signals) => {
-    void (async () => {
-      if (operator && operator.exitCode === null) {
-        await terminateChild(operator, 'SIGTERM', HYDRA_SHUTDOWN_TIMEOUT_MS);
-      }
-      await cleanup();
-      const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
-      const exitCode = signalCodes[signal] ?? 1;
-      process.exit(exitCode);
-    })();
+    if (signalCleanupPromise) {
+      return;
+    }
+    const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+    signalExitCode = signalCodes[signal] ?? 1;
+    signalCleanupPromise = settleHydraRuntimeCleanupOwners(operator, cleanup);
+    // The main adapter flow observes the same cleanup before returning its signal exit code.
+    void signalCleanupPromise.catch(() => {});
   };
 
   process.once('SIGINT', handleSignal);
   process.once('SIGTERM', handleSignal);
   process.once('SIGHUP', handleSignal);
+  const handleTerminalResize = (): void => forwardHydraOperatorResize(operator);
+  if (process.platform !== 'win32') {
+    process.on('SIGWINCH', handleTerminalResize);
+  }
 
   try {
-    await waitForHydraHealth(url, daemon, daemonOutput, daemonSpawnError);
+    let operatorResult: SubprocessExit;
+    try {
+      await waitForHydraHealth(url, daemon.child, daemonOutput, daemonFailure);
+      if (signalCleanupPromise) {
+        await signalCleanupPromise;
+        return signalExitCode ?? 1;
+      }
 
-    operator = spawn(runtime.operator.command, [...runtime.operator.args, ...operatorArgs], {
-      cwd: worktreePath,
-      env: hydraEnv,
-      stdio: 'inherit',
-    });
+      operator = spawnHydraChild(
+        runtime.operator.command,
+        [...runtime.operator.args, ...operatorArgs],
+        {
+          cwd: worktreePath,
+          env: hydraEnv,
+          stdio: 'inherit',
+        },
+      );
+      operatorResult = await operator.completion;
+    } catch (error) {
+      if (signalCleanupPromise) {
+        await signalCleanupPromise;
+        return signalExitCode ?? 1;
+      }
+      return await rethrowHydraOperationFailure(error, operator, cleanup);
+    }
 
-    const operatorResult = await new Promise<{ code: number | null; signal: string | null }>(
-      (resolve, reject) => {
-        operator?.once('error', reject);
-        operator?.once('exit', (code, signal) => {
-          resolve({
-            code,
-            signal: typeof signal === 'string' ? signal : null,
-          });
-        });
-      },
-    );
-
-    await cleanup();
-    if (operatorResult.code !== null) return operatorResult.code;
-    return operatorResult.signal ? 1 : 0;
-  } catch (error) {
-    if (operator && operator.exitCode === null) {
-      await terminateChild(operator, 'SIGTERM', HYDRA_SHUTDOWN_TIMEOUT_MS);
+    if (signalCleanupPromise) {
+      await signalCleanupPromise;
+      return signalExitCode ?? 1;
     }
     await cleanup();
-    throw error;
+    if (signalCleanupPromise) {
+      await signalCleanupPromise;
+      return signalExitCode ?? 1;
+    }
+    if (operatorResult.code !== null) return operatorResult.code;
+    return operatorResult.signal ? 1 : 0;
+  } finally {
+    process.off('SIGINT', handleSignal);
+    process.off('SIGTERM', handleSignal);
+    process.off('SIGHUP', handleSignal);
+    if (process.platform !== 'win32') {
+      process.off('SIGWINCH', handleTerminalResize);
+    }
   }
 }
+
+export const __hydraAdapterTestExports = {
+  forwardHydraOperatorResize,
+  handleHydraDaemonStreamError,
+  spawnHydraChild,
+  rethrowHydraOperationFailure,
+  settleHydraRuntimeCleanupOwners,
+  terminateHydraChild,
+  waitForHydraHealth,
+  waitForHydraChildExit,
+  withHydraRequestDeadline,
+};
 
 function isDirectExecution(): boolean {
   const entry = process.argv[1];

@@ -1,4 +1,3 @@
-import { execFile, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -8,16 +7,17 @@ import {
   type ChangedFileStatus,
 } from '../../src/domain/git-status.js';
 import { isBinaryDiff } from '../../src/lib/diff-parser.js';
+import { terminateBoundedSpawnAndWait } from './bounded-process.js';
 import { NotFoundError } from './errors.js';
 import { detectMainBranch } from './git-branch.js';
 import { looksBinaryBuffer } from './git-binary.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
-import { execGit } from './git-exec.js';
+import { execGit, execGitBuffer, spawnGitWithDeadline } from './git-exec.js';
 import { normalizeStatusPath, parseDiffRawNumstat } from './git-status-parser.js';
 import { worktreeExists } from './git-worktree.js';
-import { recordGitSubprocessStarted } from './runtime-diagnostics.js';
 import type { FileDiffResult, GitChangedFile, ProjectDiffResult } from './git-types.js';
+
 const EMPTY_TREE_HASH_FALLBACK = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 async function pinHead(worktreePath: string): Promise<string> {
@@ -314,21 +314,9 @@ async function readGitFileIfSafe(
   filePath: string,
 ): Promise<GitSafeFileReadResult> {
   try {
-    const stdout = await new Promise<Buffer>((resolve, reject) => {
-      recordGitSubprocessStarted();
-      execFile(
-        'git',
-        ['show', `${revision}:${filePath}`],
-        { cwd, encoding: 'buffer', maxBuffer: MAX_BUFFER },
-        (error, nextStdout) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve(nextStdout as Buffer);
-        },
-      );
+    const { stdout } = await execGitBuffer(['show', `${revision}:${filePath}`], {
+      cwd,
+      maxBuffer: MAX_BUFFER,
     });
 
     if (looksBinaryBuffer(stdout)) {
@@ -428,6 +416,7 @@ function parseGitBatchReadOutput(
 async function readGitFilesIfSafe(
   cwd: string,
   requests: ReadonlyArray<GitBatchFileReadRequest>,
+  spawnBatchProcess: typeof spawnGitWithDeadline = spawnGitWithDeadline,
 ): Promise<GitSafeFileReadResult[] | null> {
   if (requests.length === 0) {
     return [];
@@ -435,53 +424,71 @@ async function readGitFilesIfSafe(
 
   const specs = requests.map(({ revision, filePath }) => `${revision}:${filePath}`);
   const maxBytes = MAX_BUFFER * requests.length;
+  const bounded = spawnBatchProcess(['cat-file', '--batch'], {
+    cwd,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  const { child, completion, terminate } = bounded;
+  const stdout = child.stdout;
+  const stdin = child.stdin;
+  if (!stdout || !stdin) {
+    await terminateBoundedSpawnAndWait(
+      bounded,
+      new Error('git cat-file batch pipes were unavailable'),
+    );
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    return null;
+  }
 
-  return new Promise((resolve) => {
-    recordGitSubprocessStarted();
-    const child = spawn('git', ['cat-file', '--batch'], {
-      cwd,
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    let stdoutLength = 0;
-    let settled = false;
-
-    function finish(result: GitSafeFileReadResult[] | null): void {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve(result);
+  const stdoutChunks: Buffer[] = [];
+  let stdoutLength = 0;
+  let outputLimitExceeded = false;
+  const handleStdout = (chunk: Buffer | string): void => {
+    if (outputLimitExceeded) {
+      return;
     }
 
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      stdoutLength += bufferChunk.length;
-      if (stdoutLength > maxBytes) {
-        child.kill();
-        finish(null);
-        return;
-      }
-      stdoutChunks.push(bufferChunk);
-    });
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    stdoutLength += bufferChunk.length;
+    if (stdoutLength > maxBytes) {
+      outputLimitExceeded = true;
+      terminate(new Error('git cat-file batch output exceeded the safe buffer limit'));
+      return;
+    }
+    stdoutChunks.push(bufferChunk);
+  };
+  const handleStreamError = (error: Error): void => {
+    terminate(error);
+  };
 
-    child.on('error', () => {
-      finish(null);
-    });
+  stdout.on('data', handleStdout);
+  stdout.on('error', handleStreamError);
+  stdin.on('error', handleStreamError);
 
-    child.on('close', (code) => {
-      if (code !== 0) {
-        finish(null);
-        return;
-      }
+  try {
+    stdin.end(`${specs.join('\n')}\n`);
+    const { code } = await completion;
+    if (code !== 0 || outputLimitExceeded) {
+      return null;
+    }
 
-      const stdout = Buffer.concat(stdoutChunks);
-      finish(parseGitBatchReadOutput(specs, stdout));
-    });
-
-    child.stdin.end(`${specs.join('\n')}\n`);
-  });
+    return parseGitBatchReadOutput(specs, Buffer.concat(stdoutChunks));
+  } catch (error) {
+    await terminateBoundedSpawnAndWait(
+      bounded,
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return null;
+  } finally {
+    stdout.off('data', handleStdout);
+    stdout.off('error', handleStreamError);
+    stdin.off('error', handleStreamError);
+    stdin.destroy();
+    stdout.destroy();
+    child.stderr?.destroy();
+  }
 }
 
 async function readComparedBranchFiles(
@@ -1068,23 +1075,16 @@ async function getFirstParentCommit(
 }
 
 async function getEmptyTreeHash(projectRoot: string): Promise<string> {
-  return new Promise((resolve) => {
-    recordGitSubprocessStarted();
-    const child = execFile(
-      'git',
-      ['hash-object', '-t', 'tree', '--stdin'],
-      { cwd: projectRoot, maxBuffer: MAX_BUFFER },
-      (error, stdout) => {
-        if (error) {
-          resolve(EMPTY_TREE_HASH_FALLBACK);
-          return;
-        }
-
-        resolve(String(stdout).trim() || EMPTY_TREE_HASH_FALLBACK);
-      },
-    );
-    child.stdin?.end('');
-  });
+  try {
+    const { stdout } = await execGit(['hash-object', '-t', 'tree', '--stdin'], {
+      cwd: projectRoot,
+      input: '',
+      maxBuffer: MAX_BUFFER,
+    });
+    return stdout.trim() || EMPTY_TREE_HASH_FALLBACK;
+  } catch {
+    return EMPTY_TREE_HASH_FALLBACK;
+  }
 }
 
 async function getComparedCommitFileDiff(
@@ -1616,3 +1616,7 @@ export async function getProjectDiff(
     totalRemoved: files.reduce((sum, file) => sum + file.lines_removed, 0),
   };
 }
+
+export const __gitDiffOpsTestExports = {
+  readGitFilesIfSafe,
+};

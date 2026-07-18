@@ -3,6 +3,8 @@ import { IPC } from './channels.js';
 
 const {
   spawnAgentMock,
+  cleanupPendingDockerAgentRunnerBuildsMock,
+  createDockerAgentRunnerLaunchMock,
   ensurePlansDirectoryMock,
   getAgentColsMock,
   getAgentMetaMock,
@@ -15,6 +17,8 @@ const {
   writeToAgentMock,
 } = vi.hoisted(() => ({
   spawnAgentMock: vi.fn(),
+  cleanupPendingDockerAgentRunnerBuildsMock: vi.fn(),
+  createDockerAgentRunnerLaunchMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
   getAgentColsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
@@ -25,6 +29,11 @@ const {
   startPlanWatcherMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
   writeToAgentMock: vi.fn(),
+}));
+
+vi.mock('./agent-runner-docker.js', () => ({
+  cleanupPendingDockerAgentRunnerBuilds: cleanupPendingDockerAgentRunnerBuildsMock,
+  createDockerAgentRunnerLaunch: createDockerAgentRunnerLaunchMock,
 }));
 
 vi.mock('./pty.js', async () => {
@@ -87,6 +96,32 @@ beforeEach(() => {
   getAgentRowsMock.mockReturnValue(24);
   hasAgentSessionMock.mockReturnValue(false);
   isTaskCommandLeaseHeldMock.mockReturnValue(true);
+  spawnAgentMock.mockImplementation(
+    (_sendToChannel, request: { agentId: string; replaceExistingSession?: boolean }) => ({
+      channelAttached: true,
+      kind:
+        hasAgentSessionMock(request.agentId) && request.replaceExistingSession !== true
+          ? 'attached-existing'
+          : 'created-session',
+    }),
+  );
+  cleanupPendingDockerAgentRunnerBuildsMock.mockResolvedValue(undefined);
+  createDockerAgentRunnerLaunchMock.mockResolvedValue({
+    args: ['run', 'agent:latest', 'codex'],
+    cleanup: vi.fn(),
+    command: 'docker',
+    cwd: '/tmp/parallel-code/worktree-one',
+    env: {},
+    identity: {
+      agentId: 'agent-1',
+      labels: {},
+      profileId: 'profile-1',
+      provider: 'docker-container',
+      runnerInstanceId: 'runner-1',
+      startedAt: '2026-05-24T00:00:00.000Z',
+      taskId: 'task-1',
+    },
+  });
   startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
 });
 
@@ -280,7 +315,7 @@ describe('Hydra spawn handling', () => {
         throw new Error('spawn failed');
       }
 
-      return false;
+      return { channelAttached: true, kind: 'created-session' };
     });
 
     await expect(
@@ -403,7 +438,7 @@ describe('Hydra spawn handling', () => {
         throw new Error('spawn failed');
       }
 
-      return false;
+      return { channelAttached: true, kind: 'created-session' };
     });
 
     const response = (await handlers[IPC.EnsureAgentSessionsBatch]?.({
@@ -450,8 +485,11 @@ describe('Hydra spawn handling', () => {
     });
     getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
     spawnAgentMock.mockImplementation(() => {
+      if (sessionExists) {
+        return { channelAttached: false, kind: 'attached-existing' };
+      }
       sessionExists = true;
-      return false;
+      return { channelAttached: true, kind: 'created-session' };
     });
 
     await expect(
@@ -502,6 +540,101 @@ describe('Hydra spawn handling', () => {
       ],
     });
     expect(spawnAgentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('single-flights duplicate Docker launches while asynchronous runner setup is pending', async () => {
+    const handlers = createIpcHandlers(buildContext());
+    let sessionExists = false;
+    hasAgentSessionMock.mockImplementation(
+      (agentId: string) => agentId === 'agent-docker-dupe' && sessionExists,
+    );
+    getAgentMetaMock.mockReturnValue({ taskId: 'task-1' });
+    spawnAgentMock.mockImplementation(() => {
+      if (sessionExists) {
+        return { channelAttached: false, kind: 'attached-existing' };
+      }
+      sessionExists = true;
+      return { channelAttached: true, kind: 'created-session' };
+    });
+    let resolveDockerLaunch!: (launch: unknown) => void;
+    createDockerAgentRunnerLaunchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDockerLaunch = resolve;
+      }),
+    );
+
+    const response = handlers[IPC.EnsureAgentSessionsBatch]?.({
+      clientId: 'client-1',
+      reason: 'dispatch-storm',
+      requests: [
+        {
+          agentId: 'agent-docker-dupe',
+          args: [],
+          cols: 80,
+          command: 'codex',
+          cwd: '/tmp/parallel-code/worktree-one',
+          env: {},
+          rows: 24,
+          runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-docker-dupe',
+          args: [],
+          cols: 80,
+          command: 'codex',
+          cwd: '/tmp/parallel-code/worktree-one',
+          env: {},
+          rows: 24,
+          runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+          taskId: 'task-1',
+        },
+      ],
+    });
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    });
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+
+    resolveDockerLaunch({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup: vi.fn(),
+      command: 'docker',
+      cwd: '/tmp/parallel-code/worktree-one',
+      env: {},
+      identity: {
+        agentId: 'agent-docker-dupe',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
+
+    await expect(response).resolves.toEqual({
+      results: [
+        {
+          agentId: 'agent-docker-dupe',
+          cols: 80,
+          created: true,
+          existed: false,
+          rows: 24,
+          taskId: 'task-1',
+        },
+        {
+          agentId: 'agent-docker-dupe',
+          cols: 80,
+          created: false,
+          existed: true,
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
+    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
   });
 
   it('rejects invalid terminal geometry before spawning or resizing', async () => {
@@ -556,6 +689,10 @@ describe('Hydra spawn handling', () => {
     const context = buildContext();
     const handlers = createIpcHandlers(context);
     hasAgentSessionMock.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
     getAgentColsMock.mockReturnValue(100);
     getAgentRowsMock.mockReturnValue(30);
 
@@ -572,7 +709,7 @@ describe('Hydra spawn handling', () => {
         onOutput: { __CHANNEL_ID__: 'channel-1' },
         runnerProfile: { provider: 'podman' },
       }),
-    ).resolves.toEqual({ attachedExistingSession: false });
+    ).resolves.toEqual({ attachedExistingSession: true });
 
     expect(spawnAgentMock).toHaveBeenCalledWith(
       context.sendToChannel,
@@ -696,7 +833,7 @@ describe('Hydra spawn handling', () => {
     hasAgentSessionMock.mockReturnValue(true);
     getAgentColsMock.mockReturnValue(88);
     getAgentRowsMock.mockReturnValue(26);
-    spawnAgentMock.mockReturnValue(false);
+    spawnAgentMock.mockReturnValue({ channelAttached: true, kind: 'created-session' });
 
     await expect(
       handlers[IPC.SpawnAgent]?.({

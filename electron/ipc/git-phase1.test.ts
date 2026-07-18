@@ -1,13 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { detectMainBranchMock, execFileMock, worktreeExistsMock } = vi.hoisted(() => ({
+const { detectMainBranchMock, execGitMock, worktreeExistsMock } = vi.hoisted(() => ({
   detectMainBranchMock: vi.fn(),
-  execFileMock: vi.fn(),
+  execGitMock: vi.fn(),
   worktreeExistsMock: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execFile: execFileMock,
+vi.mock('./git-exec.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./git-exec.js')>()),
+  execGit: execGitMock,
 }));
 
 vi.mock('./git-branch.js', () => ({
@@ -34,43 +35,28 @@ vi.mock('./git-diff-ops.js', () => ({}));
 vi.mock('./git-mutation-ops.js', () => ({}));
 vi.mock('./git-types.js', () => ({}));
 
-const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
-
 type ExecResult = { stderr: string; stdout: string };
 
 function setExecImplementation(
-  implementation: (
-    command: string,
-    args: string[],
-    options: { cwd?: string },
-  ) => Promise<ExecResult>,
+  implementation: (args: readonly string[], options: { cwd?: string }) => Promise<ExecResult>,
 ): void {
-  Object.defineProperty(execFileMock, PROMISIFY_CUSTOM, {
-    configurable: true,
-    value: implementation,
-    writable: true,
-  });
+  execGitMock.mockImplementation((args: readonly string[], options: { cwd?: string } = {}) =>
+    implementation(args, options),
+  );
 }
 
 describe('git phase 1 parity', () => {
   beforeEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
     vi.resetModules();
-    execFileMock.mockReset();
+    execGitMock.mockReset();
     detectMainBranchMock.mockReset();
     worktreeExistsMock.mockReset();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
   });
 
   it('uses the merge base when checking for committed worktree changes', async () => {
     detectMainBranchMock.mockResolvedValue('main');
     worktreeExistsMock.mockResolvedValue(true);
-    setExecImplementation(async (_command, args) => {
+    setExecImplementation(async (args) => {
       if (args[0] === 'status') {
         return { stderr: '', stdout: '' };
       }
@@ -96,7 +82,7 @@ describe('git phase 1 parity', () => {
 
   it('uses the merge base when loading the branch log', async () => {
     detectMainBranchMock.mockResolvedValue('main');
-    setExecImplementation(async (_command, args) => {
+    setExecImplementation(async (args) => {
       if (args[0] === 'merge-base') {
         return { stderr: '', stdout: 'base456\n' };
       }
