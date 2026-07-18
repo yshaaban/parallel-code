@@ -479,6 +479,32 @@ describe('AgentDetail', () => {
     );
   });
 
+  it('caps mobile live recovery history to the exact retained byte suffix', () => {
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    const startupRequest = vi.mocked(requestRemoteTerminalStartupRecovery).mock.calls[0]?.[0];
+    emitNoopRecovery(startupRequest?.requestId ?? 'missing-startup-request');
+
+    const firstChunk = 'a'.repeat(40 * 1024);
+    const secondChunk = 'b'.repeat(40 * 1024);
+    emitStructuredData(firstChunk);
+    emitStructuredData(secondChunk);
+    remoteDetailState.emitTerminalStream?.('agent-1', {
+      reason: 'backpressure',
+      type: 'RecoveryRequired',
+    });
+
+    const recoveryCalls = vi.mocked(requestRemoteTerminalRecovery).mock.calls;
+    const recoveryRequest = recoveryCalls[recoveryCalls.length - 1]?.[0];
+    const fullOutput = Buffer.from(`${firstChunk}${secondChunk}`, 'utf8');
+    const expectedTail = fullOutput.subarray(fullOutput.length - 64 * 1024);
+
+    expect(recoveryRequest?.outputCursor).toBe(fullOutput.length);
+    expect(Buffer.from(recoveryRequest?.renderedTail ?? '', 'base64').equals(expectedTail)).toBe(
+      true,
+    );
+  });
+
   it('includes locally buffered bytes in live recovery metadata', () => {
     render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
 

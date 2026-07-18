@@ -439,7 +439,8 @@ vi.mock('../../lib/dispatch-by-type', () => ({
   ),
 }));
 
-vi.mock('../../lib/fonts', () => ({
+vi.mock('../../lib/fonts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/fonts')>()),
   getTerminalFontFamily: vi.fn(() => 'monospace'),
 }));
 

@@ -32,22 +32,6 @@ async function waitForTerminalAgentId(
   return agentId ?? '';
 }
 
-async function waitForVisibleShellPrompt(
-  page: import('@playwright/test').Page,
-  terminalIndex: number,
-): Promise<void> {
-  const terminalStatus = page.locator('[data-terminal-status]').nth(terminalIndex);
-  await expect
-    .poll(
-      async () => {
-        const text = await terminalStatus.textContent();
-        return /(?:➜|❯)|(?:^|\n)\s*[$#%]\s*$/u.test(text ?? '');
-      },
-      { timeout: 20_000 },
-    )
-    .toBe(true);
-}
-
 test.describe('browser-lab noisy background terminals', () => {
   test.use({
     scenario: createPromptReadyScenario(),
@@ -71,10 +55,10 @@ test.describe('browser-lab noisy background terminals', () => {
     const focusedTerminalIndex = await browserLab.createShellTerminal(page);
     const focusedShellAgentId = await waitForTerminalAgentId(page, focusedTerminalIndex);
     await browserLab.beginTerminalStatusHistory(page, focusedTerminalIndex);
-    await waitForVisibleShellPrompt(page, focusedTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, focusedShellAgentId);
     const backgroundTerminalIndex = await browserLab.createShellTerminal(page);
     const backgroundAgentId = await waitForTerminalAgentId(page, backgroundTerminalIndex);
-    await waitForVisibleShellPrompt(page, backgroundTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, backgroundAgentId);
 
     await browserLab.runInTerminal(page, NOISY_OUTPUT_COMMAND, {
       terminalIndex: backgroundTerminalIndex,
@@ -82,7 +66,7 @@ test.describe('browser-lab noisy background terminals', () => {
     await browserLab.waitForAgentScrollback(request, backgroundAgentId, 'NOISE_');
     await browserLab.focusTerminal(page, focusedTerminalIndex);
     await browserLab.waitForTerminalInteractiveReady(page, focusedTerminalIndex);
-    await waitForVisibleShellPrompt(page, focusedTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, focusedShellAgentId);
 
     const focusReadyMarker = `FR${Date.now().toString(36).slice(-4)}`;
     await browserLab.focusTerminal(page, focusedTerminalIndex);

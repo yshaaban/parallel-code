@@ -7,6 +7,13 @@ import {
   summarizeDurations,
   writeBenchmarkArtifact,
 } from '../lib/benchmark-helpers';
+import { resetTerminalPerformanceExperimentConfigForTests } from '../lib/terminal-performance-experiments';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
+import {
+  resetTerminalFramePressureForTests,
+  setTerminalFramePressureLevelForTests,
+} from './terminal-frame-pressure';
+import { resetTerminalHighLoadModeForTests } from './terminal-high-load-mode';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
@@ -78,24 +85,19 @@ describe('terminal-output-scheduler benchmark', () => {
   const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
   const originalPerformance = globalThis.performance;
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
-  let animationFrameCallbacks: Array<FrameRequestCallback | undefined> = [];
+  let animationFrame: ReturnType<typeof installManualAnimationFrame>;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    animationFrameCallbacks = [];
-    vi.stubGlobal(
-      'requestAnimationFrame',
-      vi.fn((callback: FrameRequestCallback) => {
-        animationFrameCallbacks.push(callback);
-        return animationFrameCallbacks.length - 1;
-      }),
-    );
-    vi.stubGlobal(
-      'cancelAnimationFrame',
-      vi.fn((index: number) => {
-        animationFrameCallbacks[index] = undefined;
-      }),
-    );
+    animationFrame = installManualAnimationFrame();
+    vi.stubGlobal('window', {
+      __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      __PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__: false,
+    });
+    resetTerminalHighLoadModeForTests();
+    resetTerminalPerformanceExperimentConfigForTests();
+    resetTerminalFramePressureForTests();
+    setTerminalFramePressureLevelForTests('stable');
     resetRendererRuntimeDiagnostics();
     resetTerminalOutputSchedulerForTests();
   });
@@ -103,36 +105,30 @@ describe('terminal-output-scheduler benchmark', () => {
   afterEach(() => {
     resetTerminalOutputSchedulerForTests();
     resetRendererRuntimeDiagnostics();
+    resetTerminalFramePressureForTests();
+    resetTerminalPerformanceExperimentConfigForTests();
+    resetTerminalHighLoadModeForTests();
     vi.useRealTimers();
-    animationFrameCallbacks = [];
     vi.unstubAllGlobals();
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
     globalThis.performance = originalPerformance;
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
   });
 
-  function flushScheduledWork(): void {
+  function flushScheduledWork(isOutputSettled: () => boolean): void {
     let safetyCounter = 0;
 
     while (safetyCounter < 2_000) {
-      let didWork = false;
-
-      while (animationFrameCallbacks.length > 0) {
-        const callback = animationFrameCallbacks.shift();
-        if (!callback) {
-          continue;
-        }
-        callback(16);
-        didWork = true;
-      }
-
-      if (vi.getTimerCount() > 0) {
-        vi.runOnlyPendingTimers();
-        didWork = true;
-      }
-
-      if (!didWork) {
+      if (isOutputSettled() && animationFrame.pendingCount() === 0) {
         return;
+      }
+
+      if (animationFrame.pendingCount() > 0) {
+        animationFrame.flush();
+      } else if (vi.getTimerCount() > 0) {
+        vi.advanceTimersToNextTimer();
+      } else {
+        throw new Error('Scheduler benchmark output stalled without scheduled work');
       }
 
       safetyCounter += 1;
@@ -178,7 +174,9 @@ describe('terminal-output-scheduler benchmark', () => {
       for (const busyIndex of busyIndexes) {
         registrations[busyIndex]?.requestDrain();
       }
-      flushScheduledWork();
+      flushScheduledWork(() =>
+        [...pendingBytesByKey.values()].every((pendingBytes) => pendingBytes === 0),
+      );
       durationsMs.push(nodePerformance.now() - startedAtMs);
     }
 
@@ -222,5 +220,9 @@ describe('terminal-output-scheduler benchmark', () => {
     });
 
     expect(results.length).toBe(terminalCounts.length * SCHEDULER_SCENARIOS.length);
+    expect(results.every((result) => result.diagnostics.scanCalls > 0)).toBe(true);
+    expect(results.every((result) => result.diagnostics.scannedCandidates > 0)).toBe(true);
+    expect(results.every((result) => result.diagnostics.drainCalls > 0)).toBe(true);
+    expect(results.every((result) => result.diagnostics.drainedBytes > 0)).toBe(true);
   });
 });

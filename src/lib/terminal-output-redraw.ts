@@ -1,5 +1,6 @@
 const ESCAPE = 0x1b;
 const CARRIAGE_RETURN = 0x0d;
+const LINE_FEED = 0x0a;
 const CSI = 0x5b;
 const SAVE_CURSOR = 0x73;
 const RESTORE_CURSOR = 0x75;
@@ -9,147 +10,191 @@ const ERASE_LINE = 0x4b;
 const ERASE_DISPLAY = 0x4a;
 const CURSOR_POSITION = 0x48;
 const HORIZONTAL_VERTICAL_POSITION = 0x66;
-const DIGIT_ZERO = 0x30;
-const DIGIT_NINE = 0x39;
-const SEMICOLON = 0x3b;
-const QUESTION_MARK = 0x3f;
+const CONTROL_SEQUENCE_INTERMEDIATE_MIN = 0x20;
+const CONTROL_SEQUENCE_INTERMEDIATE_MAX = 0x2f;
+const CONTROL_SEQUENCE_PARAMETER_MIN = 0x30;
+const CONTROL_SEQUENCE_PARAMETER_MAX = 0x3f;
 const CONTROL_SEQUENCE_FINAL_MIN = 0x40;
 const CONTROL_SEQUENCE_FINAL_MAX = 0x7e;
+const CANCEL = 0x18;
+const SUBSTITUTE = 0x1a;
+const C0_CONTROL_MAX = 0x1f;
+const DELETE = 0x7f;
 
-interface TerminalRedrawControlScanResult {
-  containsRedrawControlSequence: boolean;
-  trailingEscapeSequence: Uint8Array | null;
-}
+type TerminalControlSequenceState = 'csi' | 'escape' | 'ground';
 
 export interface TerminalRedrawControlTracker {
+  analyzeChunk: (chunk: Uint8Array) => TerminalRedrawControlAnalysis;
   isRedrawControlChunk: (chunk: Uint8Array) => boolean;
   reset: () => void;
 }
 
-function isDigit(byte: number): boolean {
-  return byte >= DIGIT_ZERO && byte <= DIGIT_NINE;
+export interface TerminalRedrawControlAnalysis {
+  carriageReturnCount: number;
+  clearDisplayCount: number;
+  clearLineCount: number;
+  containsControlSequence: boolean;
+  containsRedrawControlSequence: boolean;
+  cursorPositionCount: number;
+  hasPendingControlSequence: boolean;
+  pendingCarriageReturnCount: number;
+  saveRestoreCount: number;
+}
+
+interface TerminalRedrawControlScanResult extends TerminalRedrawControlAnalysis {
+  nextControlSequenceState: TerminalControlSequenceState;
 }
 
 function isControlSequenceFinal(byte: number): boolean {
   return byte >= CONTROL_SEQUENCE_FINAL_MIN && byte <= CONTROL_SEQUENCE_FINAL_MAX;
 }
 
-function concatenateChunks(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const combined = new Uint8Array(left.length + right.length);
-  combined.set(left, 0);
-  combined.set(right, left.length);
-  return combined;
+function isControlSequencePrefixByte(byte: number): boolean {
+  return (
+    (byte >= CONTROL_SEQUENCE_INTERMEDIATE_MIN && byte <= CONTROL_SEQUENCE_INTERMEDIATE_MAX) ||
+    (byte >= CONTROL_SEQUENCE_PARAMETER_MIN && byte <= CONTROL_SEQUENCE_PARAMETER_MAX)
+  );
 }
 
-function scanTerminalRedrawControlSequence(chunk: Uint8Array): TerminalRedrawControlScanResult {
-  for (let index = 0; index < chunk.length; index += 1) {
-    const byte = chunk[index];
-    if (byte === CARRIAGE_RETURN) {
-      return {
-        containsRedrawControlSequence: true,
-        trailingEscapeSequence: null,
-      };
-    }
+function scanTerminalRedrawControlSequence(
+  chunk: Uint8Array,
+  initialControlSequenceState: TerminalControlSequenceState = 'ground',
+  initialPendingCarriageReturnCount = 0,
+): TerminalRedrawControlScanResult {
+  let carriageReturnCount = 0;
+  let clearDisplayCount = 0;
+  let clearLineCount = 0;
+  let containsControlSequence = initialControlSequenceState !== 'ground';
+  let controlSequenceState = initialControlSequenceState;
+  let cursorPositionCount = 0;
+  let pendingCarriageReturnCount = initialPendingCarriageReturnCount;
+  let saveRestoreCount = 0;
 
-    if (byte !== ESCAPE) {
-      continue;
-    }
-
-    if (index === chunk.length - 1) {
-      return {
-        containsRedrawControlSequence: false,
-        trailingEscapeSequence: chunk.subarray(index),
-      };
-    }
-
-    const next = chunk[index + 1];
-    if (next === DEC_SAVE_CURSOR || next === DEC_RESTORE_CURSOR) {
-      return {
-        containsRedrawControlSequence: true,
-        trailingEscapeSequence: null,
-      };
-    }
-
-    if (next !== CSI) {
-      continue;
-    }
-
-    if (index + 2 >= chunk.length) {
-      return {
-        containsRedrawControlSequence: false,
-        trailingEscapeSequence: chunk.subarray(index),
-      };
-    }
-
-    for (let cursor = index + 2; cursor < chunk.length; cursor += 1) {
-      const controlByte = chunk[cursor];
-      if (controlByte === undefined) {
-        break;
+  for (const byte of chunk) {
+    if (pendingCarriageReturnCount > 0) {
+      if (byte === CARRIAGE_RETURN) {
+        pendingCarriageReturnCount += 1;
+        continue;
       }
-      if (isDigit(controlByte) || controlByte === SEMICOLON || controlByte === QUESTION_MARK) {
+      if (byte === LINE_FEED) {
+        pendingCarriageReturnCount = 0;
         continue;
       }
 
-      if (
-        controlByte === ERASE_LINE ||
-        controlByte === ERASE_DISPLAY ||
-        controlByte === CURSOR_POSITION ||
-        controlByte === HORIZONTAL_VERTICAL_POSITION ||
-        controlByte === SAVE_CURSOR ||
-        controlByte === RESTORE_CURSOR
-      ) {
-        return {
-          containsRedrawControlSequence: true,
-          trailingEscapeSequence: null,
-        };
-      }
-
-      if (isControlSequenceFinal(controlByte)) {
-        break;
-      }
-
-      break;
+      carriageReturnCount += pendingCarriageReturnCount;
+      pendingCarriageReturnCount = 0;
     }
 
-    const lastByte = chunk[chunk.length - 1];
-    if (
-      lastByte !== undefined &&
-      (isDigit(lastByte) || lastByte === SEMICOLON || lastByte === QUESTION_MARK)
-    ) {
-      return {
-        containsRedrawControlSequence: false,
-        trailingEscapeSequence: chunk.subarray(index),
-      };
+    if (byte === CARRIAGE_RETURN) {
+      pendingCarriageReturnCount = 1;
+      continue;
+    }
+
+    if (byte === ESCAPE) {
+      containsControlSequence = true;
+      controlSequenceState = 'escape';
+      continue;
+    }
+
+    if (controlSequenceState === 'ground') {
+      continue;
+    }
+
+    containsControlSequence = true;
+    if (byte === CANCEL || byte === SUBSTITUTE) {
+      controlSequenceState = 'ground';
+      continue;
+    }
+    if (byte <= C0_CONTROL_MAX || byte === DELETE) {
+      continue;
+    }
+
+    if (controlSequenceState === 'escape') {
+      if (byte === CSI) {
+        controlSequenceState = 'csi';
+        continue;
+      }
+
+      if (byte === DEC_SAVE_CURSOR || byte === DEC_RESTORE_CURSOR) {
+        saveRestoreCount += 1;
+      }
+      controlSequenceState = 'ground';
+      continue;
+    }
+
+    if (isControlSequencePrefixByte(byte)) {
+      continue;
+    }
+
+    controlSequenceState = 'ground';
+    if (!isControlSequenceFinal(byte)) {
+      continue;
+    }
+
+    if (byte === ERASE_LINE) {
+      clearLineCount += 1;
+    } else if (byte === ERASE_DISPLAY) {
+      clearDisplayCount += 1;
+    } else if (byte === CURSOR_POSITION || byte === HORIZONTAL_VERTICAL_POSITION) {
+      cursorPositionCount += 1;
+    } else if (byte === SAVE_CURSOR || byte === RESTORE_CURSOR) {
+      saveRestoreCount += 1;
     }
   }
 
+  const containsRedrawControlSequence =
+    carriageReturnCount > 0 ||
+    clearDisplayCount > 0 ||
+    clearLineCount > 0 ||
+    cursorPositionCount > 0 ||
+    saveRestoreCount > 0;
+
   return {
-    containsRedrawControlSequence: false,
-    trailingEscapeSequence: null,
+    carriageReturnCount,
+    clearDisplayCount,
+    clearLineCount,
+    containsControlSequence,
+    containsRedrawControlSequence,
+    cursorPositionCount,
+    hasPendingControlSequence: controlSequenceState !== 'ground',
+    nextControlSequenceState: controlSequenceState,
+    pendingCarriageReturnCount,
+    saveRestoreCount,
   };
 }
 
 export function containsTerminalRedrawControlSequence(chunk: Uint8Array): boolean {
-  return scanTerminalRedrawControlSequence(chunk).containsRedrawControlSequence;
+  const result = scanTerminalRedrawControlSequence(chunk);
+  return result.containsRedrawControlSequence || result.pendingCarriageReturnCount > 0;
 }
 
 export function createTerminalRedrawControlTracker(): TerminalRedrawControlTracker {
-  let trailingEscapeSequence: Uint8Array | null = null;
+  let controlSequenceState: TerminalControlSequenceState = 'ground';
+  let pendingCarriageReturnCount = 0;
+
+  function analyzeChunk(chunk: Uint8Array): TerminalRedrawControlAnalysis {
+    const result = scanTerminalRedrawControlSequence(
+      chunk,
+      controlSequenceState,
+      pendingCarriageReturnCount,
+    );
+    controlSequenceState = result.nextControlSequenceState;
+    pendingCarriageReturnCount = result.pendingCarriageReturnCount;
+    return result;
+  }
 
   function isRedrawControlChunk(chunk: Uint8Array): boolean {
-    const combinedChunk = trailingEscapeSequence
-      ? concatenateChunks(trailingEscapeSequence, chunk)
-      : chunk;
-    const scanResult = scanTerminalRedrawControlSequence(combinedChunk);
-    trailingEscapeSequence = scanResult.trailingEscapeSequence;
-    return scanResult.containsRedrawControlSequence || trailingEscapeSequence !== null;
+    const result = analyzeChunk(chunk);
+    return result.containsRedrawControlSequence || result.hasPendingControlSequence;
   }
 
   function reset(): void {
-    trailingEscapeSequence = null;
+    controlSequenceState = 'ground';
+    pendingCarriageReturnCount = 0;
   }
 
   return {
+    analyzeChunk,
     isRedrawControlChunk,
     reset,
   };

@@ -121,6 +121,9 @@ describe('agent-output-activity benchmark', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    vi.stubGlobal('window', {
+      __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+    });
     resetRendererRuntimeDiagnostics();
     resetAgentOutputActivityStateForTests();
     setStore('activeTaskId', null);
@@ -225,5 +228,26 @@ describe('agent-output-activity benchmark', () => {
     });
 
     expect(results.length).toBe(terminalCounts.length * ACTIVITY_SCENARIOS.length);
+    expect(
+      results
+        .filter((result) => result.processingMode === 'full')
+        .every(
+          (result) =>
+            result.diagnostics.analysisCalls > 0 && result.diagnostics.analysisSchedules > 0,
+        ),
+    ).toBe(true);
+    expect(
+      results
+        .filter((result) => result.scenario === 'all-background-statusline')
+        .every((result) => result.diagnostics.backgroundSkips > 0),
+    ).toBe(true);
+    expect(
+      results
+        .filter((result) => result.processingMode === 'shell')
+        .every(
+          (result) =>
+            result.diagnostics.analysisCalls === 0 && result.diagnostics.analysisSchedules === 0,
+        ),
+    ).toBe(true);
   }, 30_000);
 });

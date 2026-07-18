@@ -26,7 +26,11 @@ export function installManualAnimationFrame(): ManualAnimationFrame {
   return {
     cancelAnimationFrameMock,
     flush: () => {
-      for (const [frame, callback] of Array.from(callbacks.entries())) {
+      for (const frame of Array.from(callbacks.keys())) {
+        const callback = callbacks.get(frame);
+        if (!callback) {
+          continue;
+        }
         callbacks.delete(frame);
         callback(16);
       }

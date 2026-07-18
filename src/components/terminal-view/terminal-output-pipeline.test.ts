@@ -454,7 +454,7 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('keeps recent interactive echo chunks split while the first focused write is in flight', () => {
+  it('keeps recent echo chunks split while limiting queued echo writes to one per frame', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
     pipeline.armInteractiveEchoFastPath();
@@ -468,6 +468,8 @@ describe('terminal-output-pipeline', () => {
     expect(writes).toEqual(['a', 'b']);
 
     finishNextWrite();
+    expect(writes).toEqual(['a', 'b']);
+    vi.advanceTimersToNextTimer();
     expect(writes).toEqual(['a', 'b', 'c']);
 
     finishNextWrite();
@@ -488,12 +490,16 @@ describe('terminal-output-pipeline', () => {
     expect(writes).toEqual(['a', 'b']);
 
     finishNextWrite();
+    expect(writes).toEqual(['a', 'b']);
+    vi.advanceTimersToNextTimer();
     expect(writes).toEqual(['a', 'b', 'c']);
 
     finishNextWrite();
+    vi.advanceTimersToNextTimer();
     expect(writes).toEqual(['a', 'b', 'c', 'd']);
 
     finishNextWrite();
+    vi.advanceTimersToNextTimer();
     expect(writes).toEqual(['a', 'b', 'c', 'd', 'efgh']);
 
     finishNextWrite();
@@ -873,6 +879,25 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('drains many independently queued control chunks in exact order', () => {
+    let canFlushOutput = false;
+    const { pipeline, writes } = createPipelineWithOptions('hidden', {
+      canFlushOutput: () => canFlushOutput,
+    });
+    const controlChunk = encoder.encode('\x1b[s');
+    const chunkCount = 20_000;
+
+    for (let index = 0; index < chunkCount; index += 1) {
+      pipeline.enqueueOutput(controlChunk);
+    }
+
+    canFlushOutput = true;
+    expect(pipeline.flushOutputQueueSlice(Number.POSITIVE_INFINITY)).toBe(
+      controlChunk.length * chunkCount,
+    );
+    expect(writes).toEqual(['\x1b[s'.repeat(chunkCount)]);
+  });
+
   it('releases redraw bursts immediately when the terminal is no longer focused', () => {
     const { pipeline, setPriority, writes } = createPipeline();
 
@@ -1013,7 +1038,7 @@ describe('terminal-output-pipeline', () => {
     expect(getPendingWriteCount()).toBe(1);
 
     finishNextWrite();
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes).toHaveLength(2);
     pipeline.cleanup();
@@ -1171,6 +1196,33 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('does not complete the initial queued drain after only a direct startup write', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('prompt> '));
+    finishNextWrite();
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[1]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('keeps CRLF startup output on the focused pre-input pacing path', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('line of startup output\r\r\n'.repeat(8_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[0]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
   it('keeps the focused pre-input write cap active while switch echo grace is still pending', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
@@ -1184,7 +1236,7 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('stops applying the focused pre-input write cap after the initial focused queue drain completes', () => {
+  it('stops applying the focused pre-input write cap after the initial queue drain completes', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
     pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
@@ -1201,6 +1253,130 @@ describe('terminal-output-pipeline', () => {
     advanceQueuedOutputFlushTimers();
 
     expect(writes.at(-1)?.length).toBe(96 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('keeps focused queued writes on separate frames across queue gaps', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(64 * 1024)));
+    advanceQueuedOutputFlushTimers();
+    expect(writes[0]?.length).toBe(64 * 1024);
+    finishNextWrite();
+
+    pipeline.enqueueOutput(encoder.encode('y'.repeat(140_000)));
+    expect(writes).toHaveLength(1);
+    vi.mocked(cancelAnimationFrame).mockClear();
+    pipeline.scheduleOutputFlush();
+    expect(cancelAnimationFrame).not.toHaveBeenCalled();
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[1]?.length).toBe(96 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('falls back to bounded timer pacing when animation frames are suspended', () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 101),
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(128 * 1024)));
+    advanceQueuedOutputFlushTimers();
+    expect(writes).toHaveLength(1);
+    finishNextWrite();
+
+    vi.advanceTimersByTime(99);
+    expect(writes).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    vi.advanceTimersToNextTimer();
+    expect(writes).toHaveLength(2);
+
+    finishNextWrite();
+    pipeline.cleanup();
+    vi.advanceTimersByTime(1_000);
+
+    expect(writes).toHaveLength(2);
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(101);
+  });
+
+  it('cancels the pacing fallback after the animation frame wins', () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    let nextFrameHandle = 200;
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        frameCallbacks.push(callback);
+        nextFrameHandle += 1;
+        return nextFrameHandle;
+      }),
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(192 * 1024)));
+    advanceQueuedOutputFlushTimers();
+    expect(writes).toHaveLength(1);
+
+    vi.advanceTimersByTime(50);
+    finishNextWrite();
+    const firstFallbackCallIndex = setTimeoutSpy.mock.calls.findIndex(
+      ([, timeout]) => timeout === 100,
+    );
+    expect(firstFallbackCallIndex).toBeGreaterThanOrEqual(0);
+    const firstFallbackHandle = setTimeoutSpy.mock.results[firstFallbackCallIndex]?.value;
+
+    frameCallbacks.shift()?.(16);
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(firstFallbackHandle);
+    vi.advanceTimersToNextTimer();
+    expect(writes).toHaveLength(2);
+    finishNextWrite();
+
+    vi.advanceTimersByTime(50);
+    expect(writes).toHaveLength(2);
+
+    frameCallbacks.shift()?.(32);
+    const fallbackCallIndexes = setTimeoutSpy.mock.calls.flatMap(([, timeout], index) =>
+      timeout === 100 ? [index] : [],
+    );
+    expect(fallbackCallIndexes).toHaveLength(2);
+    const secondFallbackHandle = setTimeoutSpy.mock.results[fallbackCallIndexes[1] ?? -1]?.value;
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(secondFallbackHandle);
+    vi.advanceTimersToNextTimer();
+    expect(writes).toHaveLength(3);
+    finishNextWrite();
+
+    pipeline.cleanup();
+    vi.advanceTimersByTime(1_000);
+
+    expect(writes).toHaveLength(3);
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(201);
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(202);
+  });
+
+  it('paces large focused writes during the interactive echo window', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+    const largeEchoAdjacentChunk = encoder.encode('x'.repeat(20_000));
+
+    pipeline.armInteractiveEchoFastPath();
+    pipeline.enqueueOutput(largeEchoAdjacentChunk);
+    vi.advanceTimersToNextTimer();
+    expect(writes).toHaveLength(1);
+    finishNextWrite();
+
+    pipeline.enqueueOutput(largeEchoAdjacentChunk);
+    expect(writes).toHaveLength(1);
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes).toHaveLength(2);
 
     finishNextWrite();
     pipeline.cleanup();

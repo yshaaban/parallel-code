@@ -21,6 +21,7 @@ interface DelayedClientSendEntry {
 
 interface DelayedClientSendState {
   queue: DelayedClientSendEntry[];
+  queueHead: number;
   timer: ReturnType<typeof setTimeout> | null;
   totalBytes: number;
 }
@@ -80,7 +81,7 @@ function shouldSimulateDroppedSend(
 }
 
 function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
-  const firstEntry = state.queue[0];
+  const firstEntry = state.queue[state.queueHead];
   if (!firstEntry) {
     return 0;
   }
@@ -88,16 +89,38 @@ function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
   return Math.max(0, Date.now() - firstEntry.enqueuedAt);
 }
 
+function getDelayedClientQueueDepth(state: DelayedClientSendState): number {
+  return state.queue.length - state.queueHead;
+}
+
+function takeDelayedClientQueueHead(
+  state: DelayedClientSendState,
+): DelayedClientSendEntry | undefined {
+  const entry = state.queue[state.queueHead];
+  if (!entry) {
+    return undefined;
+  }
+
+  state.queueHead += 1;
+  // Retain constant-time dequeue while periodically releasing consumed slots.
+  if (state.queueHead >= 1_024 && state.queueHead * 2 >= state.queue.length) {
+    state.queue = state.queue.slice(state.queueHead);
+    state.queueHead = 0;
+  }
+  return entry;
+}
+
 function recordDelayedClientQueueHighWater(state: DelayedClientSendState): void {
-  if (state.queue.length === 0) {
+  const queueDepth = getDelayedClientQueueDepth(state);
+  if (queueDepth === 0) {
     return;
   }
 
   recordBrowserControlDelayedQueue(
-    state.queue.length,
+    queueDepth,
     state.totalBytes,
     getDelayedClientQueueAgeMs(state),
-    createDiagnosticsGenerationDetails(state.queue[0]?.generation),
+    createDiagnosticsGenerationDetails(state.queue[state.queueHead]?.generation),
   );
 }
 
@@ -115,6 +138,7 @@ export function createBrowserControlDelayedSends(
 
     state = {
       queue: [],
+      queueHead: 0,
       timer: null,
       totalBytes: 0,
     };
@@ -196,7 +220,7 @@ export function createBrowserControlDelayedSends(
     client: WebSocket,
     state: DelayedClientSendState,
   ): void {
-    const firstDueAt = state.queue[0]?.dueAt;
+    const firstDueAt = state.queue[state.queueHead]?.dueAt;
     if (firstDueAt === undefined) {
       return;
     }
@@ -215,9 +239,9 @@ export function createBrowserControlDelayedSends(
       return;
     }
 
-    while (state.queue.length > 0) {
+    while (getDelayedClientQueueDepth(state) > 0) {
       recordDelayedClientQueueHighWater(state);
-      const nextEntry = state.queue[0];
+      const nextEntry = state.queue[state.queueHead];
       if (!nextEntry) {
         break;
       }
@@ -238,7 +262,7 @@ export function createBrowserControlDelayedSends(
         return;
       }
 
-      state.queue.shift();
+      takeDelayedClientQueueHead(state);
       state.totalBytes -= nextEntry.sizeBytes;
     }
 
@@ -312,14 +336,14 @@ export function createBrowserControlDelayedSends(
 
   function getPendingChannelSendState(client: WebSocket): PendingChannelSendState | null {
     const state = delayedClientSends.get(client);
-    if (!state || state.queue.length === 0) {
+    if (!state || getDelayedClientQueueDepth(state) === 0) {
       return null;
     }
 
     return {
       queueAgeMs: getDelayedClientQueueAgeMs(state),
       queueBytes: state.totalBytes,
-      queueDepth: state.queue.length,
+      queueDepth: getDelayedClientQueueDepth(state),
     };
   }
 

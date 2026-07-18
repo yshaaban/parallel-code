@@ -1,6 +1,10 @@
 import type { Terminal } from '@xterm/xterm';
 
 import type { TerminalOutputPriority } from './terminal-output-priority';
+import {
+  createTerminalRedrawControlTracker,
+  type TerminalRedrawControlTracker,
+} from './terminal-output-redraw';
 
 export interface TerminalOutputDiagnosticsSnapshot {
   summary: TerminalOutputDiagnosticsSummarySnapshot;
@@ -12,6 +16,8 @@ export interface TerminalOutputTerminalSnapshot {
   control: {
     carriageReturnChunks: number;
     carriageReturnCount: number;
+    clearDisplayChunks: number;
+    clearDisplayCount: number;
     clearLineChunks: number;
     clearLineCount: number;
     cursorPositionChunks: number;
@@ -283,6 +289,8 @@ interface TerminalOutputWriteRecord {
 interface TerminalOutputControlRecord {
   carriageReturnChunks: number;
   carriageReturnCount: number;
+  clearDisplayChunks: number;
+  clearDisplayCount: number;
   clearLineChunks: number;
   clearLineCount: number;
   cursorPositionChunks: number;
@@ -312,6 +320,7 @@ interface TerminalOutputRenderRecord {
 interface TerminalOutputTerminalRecord {
   agentId: string;
   control: TerminalOutputControlRecord;
+  controlTracker: TerminalRedrawControlTracker;
   key: string;
   priority: TerminalOutputPriority | null;
   render: TerminalOutputRenderRecord;
@@ -406,12 +415,8 @@ const TERMINAL_OUTPUT_WRITE_SHAPES: readonly TerminalOutputWriteShape[] = [
   'control',
   'redraw-control',
 ];
-const CLEAR_LINE_PATTERN = new RegExp(String.raw`\u001b\[(?:0|1|2)?K`, 'gu');
-const CURSOR_POSITION_PATTERN = new RegExp(String.raw`\u001b\[[0-9;]*[Hf]`, 'gu');
-const SAVE_RESTORE_PATTERN = new RegExp(String.raw`\u001b(?:7|8|\[s|\[u)`, 'gu');
 const outputDiagnostics = new Map<string, TerminalOutputTerminalRecord>();
 let terminalOutputSummary = createTerminalOutputDiagnosticsSummary();
-const decoder = new TextDecoder();
 
 function isTerminalOutputDiagnosticsEnabled(): boolean {
   return (
@@ -680,6 +685,8 @@ function createTerminalRecord(
     control: {
       carriageReturnChunks: 0,
       carriageReturnCount: 0,
+      clearDisplayChunks: 0,
+      clearDisplayCount: 0,
       clearLineChunks: 0,
       clearLineCount: 0,
       cursorPositionChunks: 0,
@@ -688,6 +695,7 @@ function createTerminalRecord(
       saveRestoreChunks: 0,
       saveRestoreCount: 0,
     },
+    controlTracker: createTerminalRedrawControlTracker(),
     key,
     priority: null,
     render: {
@@ -742,20 +750,6 @@ function getTerminalRecord(taskId: string, agentId: string): TerminalOutputTermi
   const created = createTerminalRecord(key, taskId, agentId);
   outputDiagnostics.set(key, created);
   return created;
-}
-
-function countMatches(text: string, pattern: RegExp): number {
-  return text.match(pattern)?.length ?? 0;
-}
-
-function mayContainTrackedControlSequence(chunk: Uint8Array): boolean {
-  for (const byte of chunk) {
-    if (byte === 13 || byte === 27) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function shouldCaptureVisibleLineDiagnostics(): boolean {
@@ -1087,40 +1081,30 @@ function createBoundaryActiveWriteSummaries(boundaryStartedAtMs: number | null |
 
 interface TerminalOutputControlAnalysis {
   carriageReturnCount: number;
+  clearDisplayCount: number;
   clearLineCount: number;
   cursorPositionCount: number;
   saveRestoreCount: number;
   shape: TerminalOutputWriteShape;
 }
 
-function analyzeControlSequences(chunk: Uint8Array): TerminalOutputControlAnalysis {
-  if (chunk.length === 0 || !mayContainTrackedControlSequence(chunk)) {
-    return {
-      carriageReturnCount: 0,
-      clearLineCount: 0,
-      cursorPositionCount: 0,
-      saveRestoreCount: 0,
-      shape: 'plain',
-    };
-  }
-
-  const text = decoder.decode(chunk);
-  const carriageReturnCount = countMatches(text, /\r/gu);
-  const clearLineCount = countMatches(text, CLEAR_LINE_PATTERN);
-  const cursorPositionCount = countMatches(text, CURSOR_POSITION_PATTERN);
-  const saveRestoreCount = countMatches(text, SAVE_RESTORE_PATTERN);
-  const hasRedrawControl =
-    carriageReturnCount > 0 ||
-    clearLineCount > 0 ||
-    cursorPositionCount > 0 ||
-    saveRestoreCount > 0;
+function analyzeControlSequences(
+  tracker: TerminalRedrawControlTracker,
+  chunk: Uint8Array,
+): TerminalOutputControlAnalysis {
+  const analysis = tracker.analyzeChunk(chunk);
 
   return {
-    carriageReturnCount,
-    clearLineCount,
-    cursorPositionCount,
-    saveRestoreCount,
-    shape: hasRedrawControl ? 'redraw-control' : 'control',
+    carriageReturnCount: analysis.carriageReturnCount,
+    clearDisplayCount: analysis.clearDisplayCount,
+    clearLineCount: analysis.clearLineCount,
+    cursorPositionCount: analysis.cursorPositionCount,
+    saveRestoreCount: analysis.saveRestoreCount,
+    shape: analysis.containsRedrawControlSequence
+      ? 'redraw-control'
+      : analysis.containsControlSequence
+        ? 'control'
+        : 'plain',
   };
 }
 
@@ -1135,6 +1119,10 @@ function recordControlSequences(
   if (analysis.carriageReturnCount > 0) {
     record.control.carriageReturnChunks += 1;
     record.control.carriageReturnCount += analysis.carriageReturnCount;
+  }
+  if (analysis.clearDisplayCount > 0) {
+    record.control.clearDisplayChunks += 1;
+    record.control.clearDisplayCount += analysis.clearDisplayCount;
   }
   if (analysis.clearLineCount > 0) {
     record.control.clearLineChunks += 1;
@@ -1203,7 +1191,7 @@ export function recordTerminalOutputWrite(options: RecordTerminalOutputWriteOpti
   const now = performance.now();
   const record = getTerminalRecord(options.taskId, options.agentId);
   const lane = getTerminalOutputDiagnosticsLane(options.priority);
-  const controlAnalysis = analyzeControlSequences(options.chunk);
+  const controlAnalysis = analyzeControlSequences(record.controlTracker, options.chunk);
   const shape = controlAnalysis.shape;
   record.priority = options.priority;
   record.writes.active.push({

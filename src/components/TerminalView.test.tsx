@@ -98,8 +98,8 @@ vi.mock('./terminal-view/terminal-session-loader', () => ({
   startLoadedTerminalSession: startTerminalSessionMock,
 }));
 
-vi.mock('../lib/fonts', () => ({
-  DEFAULT_TERMINAL_FONT: 'JetBrains Mono',
+vi.mock('../lib/fonts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fonts')>()),
   getTerminalFontFamily: getTerminalFontFamilyMock,
 }));
 
@@ -2378,35 +2378,19 @@ describe('TerminalView', () => {
       />
     ));
 
+    intersectionCallback?.([{ isIntersecting: true }]);
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+    intersectionCallback?.([{ isIntersecting: false }]);
     await vi.advanceTimersByTimeAsync(200);
+    expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
 
+    let selectedRecoveryProtectedAtSessionStart: boolean | undefined;
+    let switchWindowAtSessionStart: ReturnType<typeof getTerminalSwitchWindowSnapshot> | undefined;
     startTerminalSessionMock.mockImplementationOnce(
       (options: { isSelectedRecoveryProtected?: () => boolean }) => {
-        expect(getTerminalSwitchWindowSnapshot()).toEqual(
-          expect.objectContaining({
-            active: true,
-            targetTaskId: 'task-1',
-          }),
-        );
-        expect(options.isSelectedRecoveryProtected?.()).toBe(true);
-
-        return {
-          cleanup: sessionCleanupMock,
-          isRestoreBlocked: vi.fn(() => false),
-          prefetchInputLease: vi.fn(),
-          prewarmRenderHibernation: vi.fn(),
-          requestInputTakeover: requestInputTakeoverMock,
-          term: {
-            focus: vi.fn(),
-            options: {
-              cursorBlink: false,
-              fontFamily: '',
-              fontSize: 12,
-              theme: undefined,
-            },
-          },
-          updateOutputPriority: vi.fn(),
-        };
+        switchWindowAtSessionStart = getTerminalSwitchWindowSnapshot();
+        selectedRecoveryProtectedAtSessionStart = options.isSelectedRecoveryProtected?.();
+        return createMockTerminalSession();
       },
     );
 
@@ -2414,6 +2398,13 @@ describe('TerminalView', () => {
     intersectionCallback?.([{ isIntersecting: true }]);
 
     expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+    expect(switchWindowAtSessionStart).toEqual(
+      expect.objectContaining({
+        active: true,
+        targetTaskId: 'task-1',
+      }),
+    );
+    expect(selectedRecoveryProtectedAtSessionStart).toBe(true);
   });
 
   it('arms focused output preemption when a terminal gains selection or focus', () => {

@@ -12,6 +12,7 @@ import {
   untrack,
 } from 'solid-js';
 import type { TerminalRecoveryBatchEntry } from '../ipc/types';
+import { createBoundedByteHistory } from '../lib/bounded-byte-history';
 import { createRandomId } from '../lib/random-id';
 import { b64decode } from './base64';
 import { AgentDetailControls } from './AgentDetailControls';
@@ -202,7 +203,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let agentMissingValue = false;
   let bufferedOutput: Uint8Array[] = [];
   let renderedOutputCursor: number | null = 0;
-  let renderedTail: Uint8Array = new Uint8Array(0);
+  const renderedTail = createBoundedByteHistory(TERMINAL_RECOVERY_TAIL_MAX_BYTES);
 
   createEffect(
     on(selectedAgentStatus, (next, prev) => {
@@ -304,50 +305,6 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     clearMissingAgentTimer();
   }
 
-  function replaceRenderedTail(bytes: Uint8Array): void {
-    if (bytes.length === 0) {
-      renderedTail = new Uint8Array(0);
-      return;
-    }
-
-    if (bytes.length > TERMINAL_RECOVERY_TAIL_MAX_BYTES) {
-      renderedTail = bytes.slice(bytes.length - TERMINAL_RECOVERY_TAIL_MAX_BYTES);
-      return;
-    }
-
-    renderedTail = bytes.slice();
-  }
-
-  function createTailWithAppendedBytes(currentTail: Uint8Array, bytes: Uint8Array): Uint8Array {
-    if (bytes.length === 0) {
-      return currentTail.slice();
-    }
-
-    if (bytes.length >= TERMINAL_RECOVERY_TAIL_MAX_BYTES) {
-      return bytes.slice(bytes.length - TERMINAL_RECOVERY_TAIL_MAX_BYTES);
-    }
-
-    const totalBytes = Math.min(
-      currentTail.length + bytes.length,
-      TERMINAL_RECOVERY_TAIL_MAX_BYTES,
-    );
-    const previousBytesToKeep = Math.min(currentTail.length, totalBytes - bytes.length);
-    const nextTail = new Uint8Array(totalBytes);
-    if (previousBytesToKeep > 0) {
-      nextTail.set(currentTail.subarray(currentTail.length - previousBytesToKeep), 0);
-    }
-    nextTail.set(bytes, previousBytesToKeep);
-    return nextTail;
-  }
-
-  function appendRenderedTail(bytes: Uint8Array): void {
-    if (bytes.length === 0) {
-      return;
-    }
-
-    renderedTail = createTailWithAppendedBytes(renderedTail, bytes);
-  }
-
   function recordLiveTerminalBytes(bytes: Uint8Array): void {
     if (bytes.length === 0) {
       return;
@@ -356,7 +313,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     if (renderedOutputCursor !== null) {
       renderedOutputCursor += bytes.length;
     }
-    appendRenderedTail(bytes);
+    renderedTail.append(bytes);
   }
 
   function recordDeltaRecovery(
@@ -365,15 +322,13 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     delta: Uint8Array,
   ): void {
     if (recovery.source === 'tail' && recovery.overlapBytes > 0) {
-      const overlapBytes = Math.min(recovery.overlapBytes, renderedTail.length);
-      const nextTail = new Uint8Array(overlapBytes + delta.length);
-      if (overlapBytes > 0) {
-        nextTail.set(renderedTail.subarray(renderedTail.length - overlapBytes), 0);
-      }
-      nextTail.set(delta, overlapBytes);
-      replaceRenderedTail(nextTail);
+      const overlap = renderedTail.getTailBytes(recovery.overlapBytes);
+      const nextTail = new Uint8Array(overlap.length + delta.length);
+      nextTail.set(overlap, 0);
+      nextTail.set(delta, overlap.length);
+      renderedTail.replace(nextTail);
     } else {
-      appendRenderedTail(delta);
+      renderedTail.append(delta);
     }
 
     renderedOutputCursor = entry.outputCursor;
@@ -387,15 +342,17 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     if (bufferedBytes.length === 0) {
       return {
         outputCursor: renderedOutputCursor,
-        renderedTail: encodeRecoveryTail(renderedTail),
+        renderedTail: encodeRecoveryTail(renderedTail.getBytes()),
       };
     }
 
-    const requestTail = createTailWithAppendedBytes(renderedTail, bufferedBytes);
+    const requestTail = createBoundedByteHistory(TERMINAL_RECOVERY_TAIL_MAX_BYTES);
+    requestTail.replace(renderedTail.getBytes());
+    requestTail.append(bufferedBytes);
     return {
       outputCursor:
         renderedOutputCursor === null ? null : renderedOutputCursor + bufferedBytes.length,
-      renderedTail: encodeRecoveryTail(requestTail),
+      renderedTail: encodeRecoveryTail(requestTail.getBytes()),
     };
   }
 
@@ -577,7 +534,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
           writeTerminalRecoveryPayload(entry.requestId, snapshot, {
             clear: true,
             onRendered: () => {
-              replaceRenderedTail(snapshot);
+              renderedTail.replace(snapshot);
               renderedOutputCursor = entry.outputCursor;
             },
           });
@@ -588,7 +545,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
         beginTerminalRestore({ dropBufferedOutput: true });
         writeTerminalRecoveryPayload(entry.requestId, terminalState, {
           onRendered: () => {
-            replaceRenderedTail(new Uint8Array(0));
+            renderedTail.replace(new Uint8Array(0));
             renderedOutputCursor = entry.outputCursor;
           },
           reset: true,
@@ -834,7 +791,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       term?.clear();
       const bytes = b64decode(data);
       term?.write(bytes, () => {
-        replaceRenderedTail(bytes);
+        renderedTail.replace(bytes);
         renderedOutputCursor = null;
         finishTerminalRestore();
       });

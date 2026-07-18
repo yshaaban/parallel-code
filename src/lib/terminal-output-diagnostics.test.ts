@@ -75,7 +75,7 @@ describe('terminal-output-diagnostics', () => {
     });
     recordTerminalOutputWrite({
       agentId: 'agent-1',
-      chunk: new TextEncoder().encode('\r\nsteady output\r\n'),
+      chunk: new TextEncoder().encode('\rsteady output\r  '),
       priority: 'focused',
       queueAgeMs: 24,
       source: 'queued',
@@ -713,6 +713,8 @@ describe('terminal-output-diagnostics', () => {
     expect(terminal?.control).toEqual({
       carriageReturnChunks: 0,
       carriageReturnCount: 0,
+      clearDisplayChunks: 0,
+      clearDisplayCount: 0,
       clearLineChunks: 0,
       clearLineCount: 0,
       cursorPositionChunks: 0,
@@ -723,6 +725,140 @@ describe('terminal-output-diagnostics', () => {
     });
     expect(getTerminalOutputDiagnosticsSnapshot().summary.writes.byShape.plain).toEqual({
       bytes: chunk.length,
+      calls: 1,
+    });
+  });
+
+  it('treats CRLF line endings as plain output rather than redraw control', () => {
+    const chunk = new TextEncoder().encode('first line\r\nsecond line\r\r\n');
+    recordTerminalOutputWrite({
+      agentId: 'agent-crlf',
+      chunk,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-crlf',
+    });
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-crlf');
+
+    expect(terminal?.control.carriageReturnCount).toBe(0);
+    expect(terminal?.control.redrawChunks).toBe(0);
+    expect(snapshot.summary.writes.byShape.plain).toEqual({
+      bytes: chunk.length,
+      calls: 1,
+    });
+  });
+
+  it('treats CRLF and normalized CRCRLF split across writes as plain output', () => {
+    const chunks = ['first line\r', '\nsecond line\r', '\r\nthird line'].map((text) =>
+      new TextEncoder().encode(text),
+    );
+
+    for (const chunk of chunks) {
+      recordTerminalOutputWrite({
+        agentId: 'agent-split-crlf',
+        chunk,
+        priority: 'focused',
+        source: 'queued',
+        taskId: 'task-split-crlf',
+      });
+    }
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-split-crlf');
+
+    expect(terminal?.control.carriageReturnCount).toBe(0);
+    expect(terminal?.control.redrawChunks).toBe(0);
+    expect(snapshot.summary.writes.byShape.plain).toEqual({
+      bytes: chunks.reduce((total, chunk) => total + chunk.length, 0),
+      calls: chunks.length,
+    });
+  });
+
+  it('classifies a split bare carriage return when the following write resolves it', () => {
+    const initialChunk = new TextEncoder().encode('progress 10%\r');
+    const resolvingChunk = new TextEncoder().encode('progress 20%');
+
+    recordTerminalOutputWrite({
+      agentId: 'agent-split-redraw',
+      chunk: initialChunk,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-split-redraw',
+    });
+    recordTerminalOutputWrite({
+      agentId: 'agent-split-redraw',
+      chunk: resolvingChunk,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-split-redraw',
+    });
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-split-redraw');
+
+    expect(terminal?.control.carriageReturnCount).toBe(1);
+    expect(terminal?.control.redrawChunks).toBe(1);
+    expect(snapshot.summary.writes.byShape.plain).toEqual({
+      bytes: initialChunk.length,
+      calls: 1,
+    });
+    expect(snapshot.summary.writes.byShape['redraw-control']).toEqual({
+      bytes: resolvingChunk.length,
+      calls: 1,
+    });
+  });
+
+  it('classifies erase-display control as redraw work', () => {
+    const chunk = new TextEncoder().encode('\x1b[2J');
+
+    recordTerminalOutputWrite({
+      agentId: 'agent-clear-display',
+      chunk,
+      priority: 'focused',
+      source: 'queued',
+      taskId: 'task-clear-display',
+    });
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-clear-display');
+
+    expect(terminal?.control.clearDisplayChunks).toBe(1);
+    expect(terminal?.control.clearDisplayCount).toBe(1);
+    expect(terminal?.control.redrawChunks).toBe(1);
+    expect(snapshot.summary.writes.byShape['redraw-control']).toEqual({
+      bytes: chunk.length,
+      calls: 1,
+    });
+  });
+
+  it('classifies a redraw control sequence completed in a later write', () => {
+    const prefixChunk = new TextEncoder().encode('\x1b[');
+    const finalChunk = new TextEncoder().encode('2K');
+
+    for (const chunk of [prefixChunk, finalChunk]) {
+      recordTerminalOutputWrite({
+        agentId: 'agent-split-clear-line',
+        chunk,
+        priority: 'focused',
+        source: 'queued',
+        taskId: 'task-split-clear-line',
+      });
+    }
+
+    const snapshot = getTerminalOutputDiagnosticsSnapshot();
+    const terminal = snapshot.terminals.find((entry) => entry.agentId === 'agent-split-clear-line');
+
+    expect(terminal?.control.clearLineChunks).toBe(1);
+    expect(terminal?.control.clearLineCount).toBe(1);
+    expect(terminal?.control.redrawChunks).toBe(1);
+    expect(snapshot.summary.writes.byShape.control).toEqual({
+      bytes: prefixChunk.length,
+      calls: 1,
+    });
+    expect(snapshot.summary.writes.byShape['redraw-control']).toEqual({
+      bytes: finalChunk.length,
       calls: 1,
     });
   });

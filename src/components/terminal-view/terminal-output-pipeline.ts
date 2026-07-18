@@ -39,7 +39,7 @@ import {
   getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes,
   getTerminalExperimentWriteBatchLimitOverride,
 } from '../../lib/terminal-performance-experiments';
-import { createRenderedOutputHistoryBuffer } from './rendered-output-history';
+import { createBoundedByteHistory } from '../../lib/bounded-byte-history';
 import type { TerminalViewProps } from './types';
 import {
   getTerminalStatusFlushDelayMs,
@@ -65,6 +65,7 @@ const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_BYTES = 256;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS = 4;
 const FOCUSED_QUEUED_STATUS_FLUSH_DELAY_MS = 24;
 const FOCUSED_PRE_INPUT_WRITE_BATCH_LIMIT_BYTES = 64 * 1024;
+const FOCUSED_QUEUED_WRITE_PACING_FALLBACK_MS = 100;
 const FOCUSED_STARTUP_QUEUED_STATUS_FLUSH_DELAY_MS = 40;
 const TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
@@ -138,6 +139,7 @@ export function createTerminalOutputPipeline(
   const redrawControlTracker = createTerminalRedrawControlTracker();
 
   let outputQueue: Uint8Array[] = [];
+  let outputQueueHead = 0;
   let outputQueuedBytes = 0;
   let outputQueueFirstReceiveTs = 0;
   let outputWriteInFlight = false;
@@ -147,7 +149,9 @@ export function createTerminalOutputPipeline(
   let pendingBackgroundStatusPayload: Uint8Array | null = null;
   let focusedBurstFlushTimer: number | undefined;
   let focusedRedrawFlushTimer: number | undefined;
-  let focusedStartupFlushFrame: number | undefined;
+  let focusedQueuedWritePacingFrame: number | undefined;
+  let focusedQueuedWritePacingFallbackTimer: number | undefined;
+  let focusedInteractiveEchoQueuedBypassUsed = false;
   let nonFocusedVisibleFlushTimer: number | undefined;
   let lastBackgroundStatusDispatchAt = 0;
   let outputRegistration: ReturnType<typeof registerTerminalOutputCandidate> | undefined;
@@ -163,7 +167,7 @@ export function createTerminalOutputPipeline(
   let renderHibernating = false;
   let suppressedOutputSinceHibernation = false;
   let cleanedUp = false;
-  const renderedOutputHistory = createRenderedOutputHistoryBuffer(RESTORE_HISTORY_MAX_BYTES);
+  const renderedOutputHistory = createBoundedByteHistory(RESTORE_HISTORY_MAX_BYTES);
 
   function isPipelineDisposed(): boolean {
     return cleanedUp || options.isDisposed();
@@ -269,7 +273,7 @@ export function createTerminalOutputPipeline(
       !containsRedrawControlSequence &&
       hasRecentInteractiveEchoPriority() &&
       outputQueuedBytes < INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_BYTES &&
-      outputQueue.length < INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS
+      getQueuedOutputChunkCount() < INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS
     );
   }
 
@@ -300,13 +304,17 @@ export function createTerminalOutputPipeline(
     focusedBurstFlushTimer = undefined;
   }
 
-  function clearFocusedStartupFlushFrame(): void {
-    if (focusedStartupFlushFrame === undefined) {
-      return;
+  function clearFocusedQueuedWritePacing(): void {
+    focusedInteractiveEchoQueuedBypassUsed = false;
+    if (focusedQueuedWritePacingFrame !== undefined) {
+      cancelAnimationFrame(focusedQueuedWritePacingFrame);
+      focusedQueuedWritePacingFrame = undefined;
     }
 
-    cancelAnimationFrame(focusedStartupFlushFrame);
-    focusedStartupFlushFrame = undefined;
+    if (focusedQueuedWritePacingFallbackTimer !== undefined) {
+      clearTimeout(focusedQueuedWritePacingFallbackTimer);
+      focusedQueuedWritePacingFallbackTimer = undefined;
+    }
   }
 
   function clearNonFocusedVisibleFlushTimer(): void {
@@ -321,7 +329,7 @@ export function createTerminalOutputPipeline(
   function clearQueuedOutputFlushTimers(): void {
     clearFocusedRedrawFlushTimer();
     clearFocusedBurstFlushTimer();
-    clearFocusedStartupFlushFrame();
+    clearFocusedQueuedWritePacing();
     clearNonFocusedVisibleFlushTimer();
   }
 
@@ -332,7 +340,6 @@ export function createTerminalOutputPipeline(
 
   function requestScheduledOutputFlush(): void {
     clearFocusedBurstFlushTimer();
-    clearFocusedStartupFlushFrame();
     outputRegistration?.requestDrain();
   }
 
@@ -366,10 +373,6 @@ export function createTerminalOutputPipeline(
     }, FOCUSED_OUTPUT_BURST_COALESCE_MS);
   }
 
-  function shouldFlushFocusedStartupOutputNextFrame(): boolean {
-    return shouldUseFocusedPreInputQueuedOutputPolicy() && outputQueue.length > 0;
-  }
-
   function shouldUseFocusedPreInputQueuedOutputPolicy(): boolean {
     return (
       isFocusedOutputPriority() &&
@@ -382,19 +385,67 @@ export function createTerminalOutputPipeline(
     );
   }
 
-  function scheduleFocusedStartupFlushNextFrame(): void {
-    if (focusedStartupFlushFrame !== undefined) {
+  function shouldPaceFocusedQueuedWrites(): boolean {
+    return isFocusedOutputPriority() && !isTerminalSwitchEchoGraceActiveForTask(taskId);
+  }
+
+  function tryDrainQueuedInteractiveEchoImmediately(): boolean {
+    if (focusedInteractiveEchoQueuedBypassUsed || !shouldDrainQueuedInteractiveEchoImmediately()) {
+      return false;
+    }
+
+    focusedInteractiveEchoQueuedBypassUsed = true;
+    if (flushNextQueuedInteractiveEchoChunk()) {
+      return true;
+    }
+
+    focusedInteractiveEchoQueuedBypassUsed = false;
+    return false;
+  }
+
+  function isFocusedQueuedWritePacingPending(): boolean {
+    return (
+      focusedQueuedWritePacingFrame !== undefined ||
+      focusedQueuedWritePacingFallbackTimer !== undefined
+    );
+  }
+
+  function releaseFocusedQueuedWritePacing(): void {
+    clearFocusedQueuedWritePacing();
+    if (
+      isPipelineDisposed() ||
+      !shouldPaceFocusedQueuedWrites() ||
+      outputWriteInFlight ||
+      !options.canFlushOutput() ||
+      !hasQueuedOutput()
+    ) {
       return;
     }
 
-    focusedStartupFlushFrame = requestAnimationFrame(() => {
-      focusedStartupFlushFrame = undefined;
-      if (!options.canFlushOutput() || outputQueuedBytes === 0) {
-        return;
-      }
+    if (tryDrainQueuedInteractiveEchoImmediately()) {
+      return;
+    }
 
-      requestScheduledOutputFlush();
-    });
+    requestScheduledOutputFlush();
+  }
+
+  function scheduleFocusedQueuedWritePacing(): void {
+    if (!shouldPaceFocusedQueuedWrites() || isFocusedQueuedWritePacingPending()) {
+      return;
+    }
+
+    focusedQueuedWritePacingFrame = requestAnimationFrame(releaseFocusedQueuedWritePacing);
+    focusedQueuedWritePacingFallbackTimer = window.setTimeout(
+      releaseFocusedQueuedWritePacing,
+      FOCUSED_QUEUED_WRITE_PACING_FALLBACK_MS,
+    );
+  }
+
+  function canDrainQueuedOutputNow(): boolean {
+    return (
+      !outputWriteInFlight &&
+      (!shouldPaceFocusedQueuedWrites() || !isFocusedQueuedWritePacingPending())
+    );
   }
 
   function shouldUseNonFocusedVisibleBurstCoalescing(): boolean {
@@ -594,7 +645,7 @@ export function createTerminalOutputPipeline(
 
   function getFocusedQueuedStatusFlushDelayMs(): number {
     const shouldDeferStatusPayload =
-      isFocusedOutputPriority() && outputQueue.length > 0 && !hasRecentInteractiveEchoPriority();
+      isFocusedOutputPriority() && hasQueuedOutput() && !hasRecentInteractiveEchoPriority();
     if (!shouldDeferStatusPayload) {
       return 0;
     }
@@ -731,7 +782,12 @@ export function createTerminalOutputPipeline(
     let bytesToSkip = Math.max(0, outputQueuedBytes - bytesToCopy);
     let writeOffset = offset;
 
-    for (const queuedChunk of outputQueue) {
+    for (let index = outputQueueHead; index < outputQueue.length; index += 1) {
+      const queuedChunk = outputQueue[index];
+      if (!queuedChunk) {
+        continue;
+      }
+
       if (bytesToSkip >= queuedChunk.length) {
         bytesToSkip -= queuedChunk.length;
         continue;
@@ -955,6 +1011,9 @@ export function createTerminalOutputPipeline(
     source: TerminalOutputRoute,
   ): void {
     outputWriteInFlight = true;
+    if (source === 'queued') {
+      scheduleFocusedQueuedWritePacing();
+    }
     const writeStartedAtMs = performance.now();
     const writePriority = getOutputPriority();
     const queueAgeMs = receiveTs > 0 ? Math.max(0, performance.now() - receiveTs) : undefined;
@@ -1009,23 +1068,23 @@ export function createTerminalOutputPipeline(
           requestPtyResume();
         }
         dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
-        if (outputQueue.length > 0) {
-          if (shouldFlushFocusedStartupOutputNextFrame()) {
-            scheduleFocusedStartupFlushNextFrame();
+        if (hasQueuedOutput()) {
+          if (tryDrainQueuedInteractiveEchoImmediately()) {
             return;
           }
 
-          if (shouldDrainQueuedInteractiveEchoImmediately()) {
-            if (flushNextQueuedInteractiveEchoChunk()) {
-              return;
-            }
+          if (shouldPaceFocusedQueuedWrites()) {
+            scheduleFocusedQueuedWritePacing();
+            return;
           }
 
           scheduleQueuedOutputFlush();
           return;
         }
 
-        hasCompletedInitialQueueDrain = true;
+        if (source === 'queued') {
+          hasCompletedInitialQueueDrain = true;
+        }
         queuedRedrawControlSinceDrainStart = false;
         if (isFocusedOutputPriority() && isTerminalSwitchEchoGraceActiveForTask(taskId)) {
           completeTerminalSwitchEchoGrace(taskId);
@@ -1052,7 +1111,7 @@ export function createTerminalOutputPipeline(
     receiveTs: number,
     containsRedrawControlSequence: boolean,
   ): void {
-    const wasQueueEmpty = outputQueue.length === 0;
+    const wasQueueEmpty = !hasQueuedOutput();
     appendQueuedOutputChunk(chunk, containsRedrawControlSequence);
     if (isFocusedRedrawControlChunk(containsRedrawControlSequence)) {
       queuedRedrawControlPending = true;
@@ -1065,6 +1124,10 @@ export function createTerminalOutputPipeline(
     }
 
     if (!options.canFlushOutput()) {
+      return;
+    }
+
+    if (shouldPaceFocusedQueuedWrites() && isFocusedQueuedWritePacingPending()) {
       return;
     }
 
@@ -1089,7 +1152,8 @@ export function createTerminalOutputPipeline(
       !containsRedrawControlSequence &&
       !shouldPreserveInteractiveEchoChunkSplit(containsRedrawControlSequence)
     ) {
-      const lastChunk = outputQueue[outputQueue.length - 1];
+      const lastChunkIndex = outputQueue.length - 1;
+      const lastChunk = outputQueue[lastChunkIndex];
       if (
         lastChunk &&
         lastChunk.length + chunk.length <= coalesceMaxBytes &&
@@ -1098,7 +1162,7 @@ export function createTerminalOutputPipeline(
         const mergedChunk = new Uint8Array(lastChunk.length + chunk.length);
         mergedChunk.set(lastChunk, 0);
         mergedChunk.set(chunk, lastChunk.length);
-        outputQueue[outputQueue.length - 1] = mergedChunk;
+        outputQueue[lastChunkIndex] = mergedChunk;
         outputQueuedBytes += chunk.length;
         return;
       }
@@ -1121,20 +1185,48 @@ export function createTerminalOutputPipeline(
     }
   }
 
+  function getQueuedOutputChunkCount(): number {
+    return outputQueue.length - outputQueueHead;
+  }
+
+  function hasQueuedOutput(): boolean {
+    return outputQueueHead < outputQueue.length;
+  }
+
+  function clearQueuedOutputStorage(): void {
+    outputQueue = [];
+    outputQueueHead = 0;
+  }
+
+  function compactQueuedOutputStorage(): void {
+    const activeChunkCount = getQueuedOutputChunkCount();
+    if (activeChunkCount === 0) {
+      clearQueuedOutputStorage();
+      return;
+    }
+
+    if (outputQueueHead >= activeChunkCount) {
+      outputQueue = outputQueue.slice(outputQueueHead);
+      outputQueueHead = 0;
+    }
+  }
+
   function takeNextQueuedOutputChunk(): { payload: Uint8Array; receiveTs: number } | null {
-    if (outputQueue.length === 0) {
+    if (!hasQueuedOutput()) {
       return null;
     }
 
-    const nextChunk = outputQueue.shift();
+    const nextChunk = outputQueue[outputQueueHead];
     if (!nextChunk) {
       return null;
     }
+    outputQueueHead += 1;
+    compactQueuedOutputStorage();
 
     const receiveTs = outputQueueFirstReceiveTs;
     outputQueuedBytes = Math.max(0, outputQueuedBytes - nextChunk.length);
-    outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
-    if (outputQueue.length === 0) {
+    outputQueueFirstReceiveTs = hasQueuedOutput() ? receiveTs : 0;
+    if (!hasQueuedOutput()) {
       resetQueuedRedrawControlState();
     }
 
@@ -1147,19 +1239,19 @@ export function createTerminalOutputPipeline(
   function takeOutputQueueSlice(
     maxBytes: number,
   ): { payload: Uint8Array; receiveTs: number } | null {
-    if (outputQueue.length === 0 || maxBytes <= 0) {
+    if (!hasQueuedOutput() || maxBytes <= 0) {
       return null;
     }
 
     const receiveTs = outputQueueFirstReceiveTs;
-    if (outputQueue.length === 1) {
-      const onlyChunk = outputQueue[0];
+    if (getQueuedOutputChunkCount() === 1) {
+      const onlyChunk = outputQueue[outputQueueHead];
       if (!onlyChunk) {
         return null;
       }
 
       if (onlyChunk.length <= maxBytes) {
-        outputQueue = [];
+        clearQueuedOutputStorage();
         outputQueuedBytes = 0;
         outputQueueFirstReceiveTs = 0;
         resetQueuedRedrawControlState();
@@ -1169,7 +1261,7 @@ export function createTerminalOutputPipeline(
         };
       }
 
-      outputQueue[0] = onlyChunk.subarray(maxBytes);
+      outputQueue[outputQueueHead] = onlyChunk.subarray(maxBytes);
       outputQueuedBytes -= maxBytes;
       return {
         payload: onlyChunk.subarray(0, maxBytes),
@@ -1181,10 +1273,10 @@ export function createTerminalOutputPipeline(
     const payload = new Uint8Array(totalBytes);
     let payloadOffset = 0;
 
-    while (payloadOffset < totalBytes && outputQueue.length > 0) {
-      const nextChunk = outputQueue[0];
+    while (payloadOffset < totalBytes && hasQueuedOutput()) {
+      const nextChunk = outputQueue[outputQueueHead];
       if (!nextChunk) {
-        outputQueue.shift();
+        outputQueueHead += 1;
         continue;
       }
 
@@ -1193,15 +1285,16 @@ export function createTerminalOutputPipeline(
       payloadOffset += writableBytes;
 
       if (writableBytes === nextChunk.length) {
-        outputQueue.shift();
+        outputQueueHead += 1;
       } else {
-        outputQueue[0] = nextChunk.subarray(writableBytes);
+        outputQueue[outputQueueHead] = nextChunk.subarray(writableBytes);
       }
     }
+    compactQueuedOutputStorage();
 
     outputQueuedBytes = Math.max(0, outputQueuedBytes - payloadOffset);
-    outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
-    if (outputQueue.length === 0) {
+    outputQueueFirstReceiveTs = hasQueuedOutput() ? receiveTs : 0;
+    if (!hasQueuedOutput()) {
       resetQueuedRedrawControlState();
     }
     return {
@@ -1211,7 +1304,7 @@ export function createTerminalOutputPipeline(
   }
 
   function flushOutputQueueSlice(maxBytes: number): number {
-    if (!options.canFlushOutput() || outputWriteInFlight || outputQueue.length === 0) {
+    if (!options.canFlushOutput() || outputWriteInFlight || !hasQueuedOutput()) {
       return 0;
     }
 
@@ -1228,7 +1321,7 @@ export function createTerminalOutputPipeline(
   }
 
   function flushNextQueuedInteractiveEchoChunk(): boolean {
-    if (!options.canFlushOutput() || outputWriteInFlight || outputQueue.length === 0) {
+    if (!options.canFlushOutput() || outputWriteInFlight || !hasQueuedOutput()) {
       return false;
     }
 
@@ -1265,7 +1358,7 @@ export function createTerminalOutputPipeline(
       options.canFlushOutput() &&
       shouldUseDirectOutputWrite(chunk, containsRedrawControlSequence) &&
       !outputWriteInFlight &&
-      outputQueue.length === 0
+      !hasQueuedOutput()
     ) {
       recordOutputRoute('direct', chunk.length);
       writeOutputChunk(chunk, receiveTs, 'direct');
@@ -1278,7 +1371,7 @@ export function createTerminalOutputPipeline(
 
   function dropQueuedOutputForRecovery(): void {
     const droppedBytes = outputQueuedBytes;
-    outputQueue = [];
+    clearQueuedOutputStorage();
     outputQueuedBytes = 0;
     outputQueueFirstReceiveTs = 0;
     resetQueuedRedrawControlState();
@@ -1294,7 +1387,7 @@ export function createTerminalOutputPipeline(
     getOutputPriority,
     () => outputQueuedBytes,
     (budgetBytes) => flushOutputQueueSlice(budgetBytes),
-    () => !outputWriteInFlight,
+    canDrainQueuedOutputNow,
   );
 
   return {
@@ -1349,7 +1442,7 @@ export function createTerminalOutputPipeline(
       return suppressedOutputSinceHibernation;
     },
     hasQueuedOutput(): boolean {
-      return outputQueue.length > 0;
+      return hasQueuedOutput();
     },
     hasQueuedOutputBytes(): boolean {
       return outputQueuedBytes > 0;

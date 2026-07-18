@@ -1935,6 +1935,33 @@ describe('browser control plane', () => {
     expect(vi.getTimerCount()).toBe(0);
   }, 10_000);
 
+  it('preserves a high-volume delayed queue across storage compaction', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateJitterMs: 0,
+      simulateLatencyMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+    const messageCount = 2_500;
+    for (let index = 0; index < messageCount; index += 1) {
+      expect(controlPlane.sendChannelData(client, Buffer.from(String(index)))).toBe(true);
+    }
+
+    expect(controlPlane.getPendingChannelSendState(client)?.queueDepth).toBe(messageCount);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(sent).toHaveLength(messageCount);
+    expect(sent[0]).toEqual(Buffer.from('0'));
+    expect(sent[sent.length - 1]).toEqual(Buffer.from(String(messageCount - 1)));
+    expect(controlPlane.getPendingChannelSendState(client)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  }, 10_000);
+
   it('does not let delayed sends from before a diagnostics reset pollute the next sample', async () => {
     vi.useFakeTimers();
     const controlPlane = createTrackedControlPlane({

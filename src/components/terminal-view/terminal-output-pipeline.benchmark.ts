@@ -3,6 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetTerminalOutputSchedulerForTests } from '../../app/terminal-output-scheduler';
 import {
+  resetTerminalFramePressureForTests,
+  setTerminalFramePressureLevelForTests,
+} from '../../app/terminal-frame-pressure';
+import {
+  resetTerminalHighLoadModeForTests,
+  syncTerminalHighLoadMode,
+} from '../../app/terminal-high-load-mode';
+import {
   parseBenchmarkIterationCount,
   parseBenchmarkTerminalCounts,
   summarizeDurations,
@@ -18,6 +26,8 @@ import {
   createStatuslineChunks,
 } from '../../lib/terminal-workload-fixtures';
 import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
+import { resetTerminalPerformanceExperimentConfigForTests } from '../../lib/terminal-performance-experiments';
+import { installManualAnimationFrame } from '../../test/manual-animation-frame';
 import {
   createTerminalOutputPipeline,
   type TerminalOutputPipeline,
@@ -88,29 +98,30 @@ const DEFAULT_ITERATIONS = 8;
 describe('terminal-output-pipeline benchmark', () => {
   const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
-  let animationFrameCallbacks: Array<FrameRequestCallback | undefined> = [];
+  let animationFrame: ReturnType<typeof installManualAnimationFrame>;
+  let focusedQueuedWritePacingFallbackRuns = 0;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    animationFrameCallbacks = [];
-    Object.defineProperty(globalThis, 'window', {
-      configurable: true,
-      value: globalThis,
+    animationFrame = installManualAnimationFrame();
+    focusedQueuedWritePacingFallbackRuns = 0;
+    vi.stubGlobal('window', {
+      __TERMINAL_OUTPUT_DIAGNOSTICS__: true,
+      setTimeout: (handler: TimerHandler, timeout?: number): number => {
+        if (timeout !== 100 || typeof handler !== 'function') {
+          return globalThis.setTimeout(handler, timeout) as unknown as number;
+        }
+
+        return globalThis.setTimeout(() => {
+          focusedQueuedWritePacingFallbackRuns += 1;
+          handler();
+        }, timeout) as unknown as number;
+      },
     });
-    window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
-    vi.stubGlobal(
-      'requestAnimationFrame',
-      vi.fn((callback: FrameRequestCallback) => {
-        animationFrameCallbacks.push(callback);
-        return animationFrameCallbacks.length - 1;
-      }),
-    );
-    vi.stubGlobal(
-      'cancelAnimationFrame',
-      vi.fn((index: number) => {
-        animationFrameCallbacks[index] = undefined;
-      }),
-    );
+    syncTerminalHighLoadMode(true);
+    resetTerminalPerformanceExperimentConfigForTests();
+    resetTerminalFramePressureForTests();
+    setTerminalFramePressureLevelForTests('stable');
     resetTerminalOutputDiagnostics();
     resetTerminalOutputSchedulerForTests();
   });
@@ -118,42 +129,45 @@ describe('terminal-output-pipeline benchmark', () => {
   afterEach(() => {
     resetTerminalOutputDiagnostics();
     resetTerminalOutputSchedulerForTests();
+    resetTerminalFramePressureForTests();
+    resetTerminalPerformanceExperimentConfigForTests();
+    resetTerminalHighLoadModeForTests();
     vi.useRealTimers();
-    animationFrameCallbacks = [];
     vi.unstubAllGlobals();
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
-    Reflect.deleteProperty(globalThis, 'window');
   });
 
-  function flushScheduledWork(): void {
+  function flushScheduledWork(harnesses: readonly PipelineHarness[]): void {
     let safetyCounter = 0;
 
     while (safetyCounter < 4_000) {
-      let didWork = false;
-
-      while (animationFrameCallbacks.length > 0) {
-        const callback = animationFrameCallbacks.shift();
-        if (!callback) {
-          continue;
-        }
-        callback(16);
-        didWork = true;
-      }
-
-      if (vi.getTimerCount() > 0) {
-        vi.runOnlyPendingTimers();
-        didWork = true;
-      }
-
-      if (!didWork) {
+      const outputSettled = harnesses.every(
+        ({ pipeline }) => !pipeline.hasQueuedOutputBytes() && !pipeline.hasWriteInFlight(),
+      );
+      if (outputSettled && animationFrame.pendingCount() === 0) {
         return;
+      }
+
+      if (animationFrame.pendingCount() > 0) {
+        animationFrame.flush();
+      } else if (vi.getTimerCount() > 0) {
+        vi.advanceTimersToNextTimer();
+      } else {
+        throw new Error('Pipeline benchmark output stalled without scheduled work');
       }
 
       safetyCounter += 1;
     }
 
-    throw new Error('Pipeline benchmark exceeded the flush safety limit');
+    const pendingHarnesses = harnesses.map(({ pipeline, writes }) => ({
+      queued: pipeline.hasQueuedOutputBytes(),
+      writeInFlight: pipeline.hasWriteInFlight(),
+      writes: writes.calls,
+    }));
+    throw new Error(
+      `Pipeline benchmark exceeded the flush safety limit (pending frames: ${animationFrame.pendingCount()}, pending timers: ${vi.getTimerCount()}, harnesses: ${JSON.stringify(pendingHarnesses)})`,
+    );
   }
 
   function createPipelineHarness(
@@ -221,6 +235,7 @@ describe('terminal-output-pipeline benchmark', () => {
         scenario.buildChunks(terminalIndex),
       );
       const maxChunkCount = Math.max(0, ...chunksByTerminal.map((chunks) => chunks.length));
+      let elapsedSinceAnimationFrameMs = 0;
 
       const startedAtMs = nodePerformance.now();
       for (let chunkIndex = 0; chunkIndex < maxChunkCount; chunkIndex += 1) {
@@ -235,10 +250,14 @@ describe('terminal-output-pipeline benchmark', () => {
 
         if (scenario.interChunkAdvanceMs > 0) {
           vi.advanceTimersByTime(scenario.interChunkAdvanceMs);
+          elapsedSinceAnimationFrameMs += scenario.interChunkAdvanceMs;
+          if (elapsedSinceAnimationFrameMs >= 16) {
+            animationFrame.flush();
+            elapsedSinceAnimationFrameMs %= 16;
+          }
         }
       }
-      vi.advanceTimersByTime(200);
-      flushScheduledWork();
+      flushScheduledWork(harnesses);
       durationsMs.push(nodePerformance.now() - startedAtMs);
 
       const diagnostics = getTerminalOutputDiagnosticsSnapshot();
@@ -289,5 +308,18 @@ describe('terminal-output-pipeline benchmark', () => {
     });
 
     expect(results.length).toBe(terminalCounts.length * PIPELINE_SCENARIOS.length);
+    expect(results.every((result) => result.totalWriteCalls > 0)).toBe(true);
+    expect(results.every((result) => result.totalQueuedCalls > 0)).toBe(true);
+    expect(
+      results
+        .filter((result) => result.scenario === 'plain-lines-many')
+        .every((result) => result.totalRedrawChunks === 0),
+    ).toBe(true);
+    expect(
+      results
+        .filter((result) => result.scenario !== 'plain-lines-many')
+        .every((result) => result.totalRedrawChunks > 0),
+    ).toBe(true);
+    expect(focusedQueuedWritePacingFallbackRuns).toBe(0);
   });
 });
