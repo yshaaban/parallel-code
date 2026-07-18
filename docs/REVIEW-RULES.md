@@ -161,6 +161,10 @@ When browser build freshness is under review, keep the owner split explicit:
 
 - runner scripts may auto-prepare stale browser artifacts once before Playwright starts
 - the standalone harness must still reject stale or missing browser artifacts as a backstop
+- freshness roots must cover the complete production dependency closure: value imports for Vite
+  bundles and every compiled or typechecked input for the production TypeScript server build; keep
+  this mapping under an import-closure guard so new cross-boundary dependencies cannot silently
+  leave an artifact stale, and do not make Vite artifacts stale for type-only imports they omit
 - do not key freshness to whole-file `package.json` mtime when only a narrower build input, such
   as the shipped app version, is actually required
 - for Electron releases, classify Vite-only renderer packages as build-time dependencies, not Node

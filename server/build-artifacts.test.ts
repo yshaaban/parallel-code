@@ -227,6 +227,39 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
     ).rejects.toThrow('Browser server remote build artifact is stale.');
   });
 
+  it('marks the remote artifact stale when shared server-state versioning changes', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
+    tempDirs.push(rootDir);
+
+    const { frontendIndexPath, frontendMetadataPath, remoteIndexPath, serverEntryPath } =
+      await writeBuildFixture(rootDir);
+    const sharedRemoteSourcePath = await writeSourceFile(
+      rootDir,
+      'src/store/server-state-versioning.ts',
+    );
+    await writeBuildMetadataSources(rootDir);
+
+    const staleTime = new Date(Date.now() - 10_000);
+    const sourceTime = new Date(Date.now() + 10_000);
+    const freshTime = new Date(Date.now() + 20_000);
+    await Promise.all([
+      utimes(remoteIndexPath, staleTime, staleTime),
+      utimes(sharedRemoteSourcePath, sourceTime, sourceTime),
+      utimes(frontendIndexPath, freshTime, freshTime),
+      utimes(frontendMetadataPath, freshTime, freshTime),
+      utimes(serverEntryPath, freshTime, freshTime),
+    ]);
+
+    const status = await getBrowserServerBuildArtifactStatus({
+      projectRoot: rootDir,
+      serverEntryPath,
+    });
+
+    const remoteStatus = status.staleChecks.find((check) => check.label === 'remote');
+    expect(remoteStatus?.staleReason).toBe('source-newer');
+    expect(remoteStatus?.latestSourceFile.filePath).toBe(sharedRemoteSourcePath);
+  });
+
   it('reports missing and stale checks without throwing', async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-build-artifacts-'));
     tempDirs.push(rootDir);
