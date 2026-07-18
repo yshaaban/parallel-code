@@ -104,8 +104,12 @@ readiness signal, do not block background attach forever.
   - owns the cold bootstrap payload and reconnect snapshot payload
   - owns server-state bootstrap categories
 - workflow / app
-  - owns startup mode and startup-tier policy
-  - decides when background terminal attach is allowed
+  - `src/app/browser-workspace-cold-start-recovery.ts` owns cancellable cold-bootstrap acquisition,
+    per-attempt deadlines, bounded retry, same-tab handoff, canonical-workspace fallback, and
+    visible degraded continuation
+  - `src/app/desktop-session-startup.ts` owns session sequencing, payload hydration, client-session
+    reconciliation, startup tiers, and the selected-terminal head start
+  - `src/app/browser-startup.ts` owns startup mode and startup-tier policy
 - store / projection
   - applies workspace projection state
   - restores browser-local client-session preferences
@@ -114,6 +118,16 @@ readiness signal, do not block background attach forever.
 
 Leaf terminal components may report facts such as readiness, but they must not redefine startup
 policy.
+
+The cold-start recovery order is backend projection, fallback-only agent-catalog refresh,
+same-tab handoff projection, then canonical workspace load and delayed recovery. Any non-null
+backend projection is authoritative for this decision, including a valid empty projection. If all
+sources remain unavailable, startup continues with a persistent error and schedules immediate
+background reconciliation instead of presenting a silent false first-run state.
+Canonical fallback authority comes from the persistence-session loaded-snapshot marker, never from
+renderer-local panel or project shape. Startup failure and session teardown abort any in-flight
+bootstrap, catalog, or canonical-load acquisition, and timed-out browser HTTP requests bypass the
+reconnect queue.
 
 ## What Browser Startup Applies
 

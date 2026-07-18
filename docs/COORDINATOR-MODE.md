@@ -22,15 +22,28 @@ The backend owns coordinator runs in `electron/coordinator/*`.
 
 - `runtime.ts` owns replayable run, subtask, prompt, landing, workflow, diagnostics, and
   idempotency state, plus the backend-only durable subtask launch payload store and run-level
-  resume audit entries. Launch payloads are persisted in `coordinator-state.json` but are never
-  exposed through run snapshots, bootstrap payloads, or coordinator events because caller-supplied
-  agent env may carry secrets; coordinator `PARALLEL_CODE_*` env vars are not recorded and are
-  rebuilt at respawn. Because the state file can carry caller-supplied agent env, it is written
-  with the same owner-only (0600) file permissions as coordinator credential files.
+  resume audit entries. Each run stores non-entity metadata once and keeps subtasks, prompts,
+  landings, and workflows in their authoritative keyed maps. Full run snapshots are reserved for
+  bootstrap, persistence, explicit status responses, and full-run events; backend schedulers,
+  authorization checks, diagnostics, credential restore, and cleanup use detached metadata,
+  entity, or queue projections from the runtime owner so growth in one collection does not tax
+  unrelated paths. Workflow events pass their authoritative workflow snapshot directly to the
+  scheduler; run-meta changes rescan only that run's workflow entries. Launch payloads are
+  persisted in `coordinator-state.json` but are never exposed through run snapshots, bootstrap
+  payloads, or coordinator events because caller-supplied agent env may carry secrets; coordinator
+  `PARALLEL_CODE_*` env vars are not recorded and are rebuilt at respawn. Because the state file can
+  carry caller-supplied agent env, it is written with the same owner-only (0600) file permissions as
+  coordinator credential files.
+- `workflow-policy.ts` is the single owner for workflow and append-policy defaults plus initial
+  lane-concurrency derivation. The tool gateway still validates untrusted payloads, while the
+  runtime resolves defaults and the executor enforces admission; those layers do not restate the
+  policy defaults.
 - `service.ts` owns persistence, credential files, token indexes, activity hints, and cleanup.
 - `persistence-scheduler.ts` owns the debounced persistence cadence (trailing ~250ms coalesce
-  with a 2s max-interval bound, serialized async saves, retry backoff, surfaced degraded health);
-  `service.ts` owns the flush points (run creation, task cleanup, shutdown).
+  with a 2s max-interval bound, serialized async saves, retry backoff, surfaced degraded health)
+  and the single shutdown durability boundary; `service.ts` owns the flush points (run creation,
+  task cleanup, shutdown) and keeps one persistence owner authoritative until that final write
+  settles.
 - `tool-gateway.ts` owns authorized agent tool execution, renderer action execution, hidden spawn,
   and landing.
 - `prompt-delivery.ts` owns the prompt-delivery state machine: readiness policies, seeded versus
@@ -61,8 +74,12 @@ Coordinator events are granular deltas on exactly one broadcast channel:
 Coordinator persistence is debounced, asynchronous, and durable:
 
 - the per-event synchronous whole-world save is gone; coordinator events schedule a coalesced
-  async save through the persistence scheduler, and run creation, task cleanup, and the
-  loader's async shutdown cleanup flush explicitly (`flushCoordinatorRuntimeState`)
+  async save through the persistence scheduler, while run creation and task cleanup flush
+  explicitly (`flushCoordinatorRuntimeState`)
+- after mutation producers drain, shutdown always queues one final current-state snapshot behind
+  every older save, even when no event marked the scheduler dirty (for example, an idempotent
+  read-only result-ledger write); repeated stop/flush callers join that same promise, and a failed
+  final save rejects runtime cleanup instead of being normalized into success
 - `coordinator-state.json` keeps a `.bak` sibling on every save; loads fall back to it, and an
   unparseable primary is quarantined to `coordinator-state.json.corrupt-<ts>` first
 - runs are validated individually at load: one corrupt run drops only that run (outcome
@@ -196,7 +213,8 @@ to the stale-run Resume button, paused runs render with a warning tone, and pend
 counted as attention. Workflow chips show an `A{n}` badge while approvals are pending, and the
 workflow drilldown adds a pending-approvals section (compact validated-action summary with
 Approve/Deny, deny behind a two-click confirm) plus a failed-lanes section with per-lane Retry.
-All affordances are projected through `coordinator-ui-model` with legal-action gating; the
+Inspector affordances are projected through `coordinator-ui-model` with legal-action gating, while
+compact cross-task attention is projected eagerly through `src/app/coordinator-attention.ts`. The
 renderer only issues lease-gated operator requests and never decides outcomes. Every
 renderer-initiated operator request routes through the shared
 `src/app/coordinator-operator-actions.ts` workflow.
@@ -224,6 +242,26 @@ backend token index. Snapshots expose `toolTokenId`, not the token.
 
 Credentials are revoked when a coordinator parent task or subtask is removed through backend task
 cleanup.
+
+Parent cleanup marks the run cancelled before inspecting its subtasks, drains already-admitted
+spawn promises within one backend-owned deadline, then re-reads and cleans the owned subtask
+projection before removing the run. A spawn that outlives that bounded drain keeps a run-independent
+task-cleanup owner: rollback is retried in the background, by repeated parent cleanup, and during
+application/server shutdown. Capacity reservations and process-lifecycle ownership are separate:
+parent cleanup may release a timed-out reservation, while runtime shutdown closes every new call,
+prompt-delivery, scheduler, and spawn admission seam. It drains active prompt chains, the current
+scheduler execution, every admitted tool or renderer call through its persisted idempotency-result
+write, direct run creation/activity hints, final task deletion and state-removing cleanup, and every
+nested create/rollback owner before persistence flushes last. These mutations all enter the same
+producer owner instead of maintaining parallel shutdown lists. Remembered call replays remain
+available because they perform no write. A later in-process server start reopens admission only
+after the preceding shutdown has settled, and a request tied to an older browser-server lifecycle
+cannot mutate the replacement state directory. Cleanup warnings remain visible instead of allowing
+a late-created task to reappear in persisted coordinator state or silently lose its retry owner.
+Browser shutdown settles both the coordinator and agent-runner owners before reporting the aggregate
+result: `whenCoordinatorRuntimeStopped()` rejects with every labeled owner failure, and a
+signal-driven exit uses status `1` after cleanup failure rather than reporting a durable shutdown
+with status `0`.
 
 Restored coordinator runs are marked `stale-after-restore` because hidden PTY sessions are never
 reattached after a server restart, but a stale run is now resumable through the explicit
@@ -473,7 +511,8 @@ Coordinator work should prefer browser-free tests first:
 - domain guard tests for coordinator snapshots and events
 - runtime tests for the granular event vocabulary (one entity-sized event per mutation,
   `run-meta-upserted` for run scalar changes, `workflow-upserted` from workflow writes),
-  per-listener exception isolation, and the shared deep-frozen envelope clone
+  per-listener exception isolation, the shared deep-frozen envelope clone, detached narrow-read
+  projections, and diagnostics that do not materialize unrelated multi-MB run payloads
 - persistence tests for per-run salvage, `.bak` fallback, quarantine-on-corrupt, explicit load
   outcomes, legacy uncompacted files, and the save-time compaction caps
   (`electron/coordinator/persistence.test.ts`); fake-timer scheduler tests for burst coalescing,
@@ -527,8 +566,9 @@ Coordinator work should prefer browser-free tests first:
   launch payload recording and cleanup, credential rotation on respawn, seeded versus readiness-gated
   initial-assignment re-establishment, write-unknown non-redelivery, output/diff caps, idle
   waits, workflow advancement, adaptive step appends, decision-lane workflow actions, typed result
-  submission, partial lane failure, typed verifier verdicts, cleanup propagation, and landing
-  cleanup
+  submission, partial lane failure, typed verifier verdicts, cleanup propagation, parent cleanup
+  cancelling admission and draining an already-admitted spawn without persistence resurrection,
+  and landing cleanup
 - app projection tests for coordinator rail summaries, attention ordering, prompt beads, landing
   labels, workflow timelines, join progress, blocked and failed stage counts, append and branch
   activity, result previews, pause/unpause controls, pending-approval attention and gating,

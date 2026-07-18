@@ -169,11 +169,14 @@ Two current ownership splits matter in review:
   `src/app/desktop-session-startup.ts` own the coarse bootstrap/restore lifecycle updates that feed
   it; the required display-name dialog owns that live region while it is open, and the global
   chip resumes once the dialog is gone
-- `src/store/sidebar-section-state.ts` owns the canonical sidebar chrome collapse defaults and
-  normalization, `src/store/sidebar-sections.ts` owns the live store toggle helpers,
-  `src/store/client-session.ts` owns the browser-local persistence for that shell state, the
-  Electron full-state path in `src/store/persistence-codecs.ts` and
-  `src/store/persistence-load.ts` owns the desktop-local restore path, and
+- `src/store/local-shell-preferences.ts` owns canonical defaults, resolution, detached snapshots,
+  and boundary-specific encoding for the shared renderer-local shell preference shape.
+  `src/store/sidebar-section-state.ts` owns the sidebar collapse sub-fragment defaults and
+  normalization, while `src/store/sidebar-sections.ts` owns the live store toggle helpers. Browser
+  session storage stays in `src/store/client-session.ts`, browser cold-bootstrap resets apply the
+  same closed snapshot in `src/store/browser-cold-bootstrap-projection.ts`, the Electron full-state
+  storage boundary stays in `src/store/persistence-codecs.ts` and
+  `src/store/persistence-load.ts`, and
   `src/components/sidebar/SidebarProjectsSection.tsx` plus `src/components/SidebarFooter.tsx` only
   render and toggle those section states; collapsed secondary sections may stay compact, but the
   footer still needs to surface peer-session identity cues without requiring an explicit expand
@@ -206,13 +209,27 @@ Two current ownership splits matter in review:
   `src/app/project-workflows.ts` owns project picking/removal sequencing, while
   `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
   `src/store/navigation.ts` focused on pure dialog state toggles
-- task deletion spans backend cleanup and renderer projection, but the ownership remains explicit:
-  `electron/ipc/task-workflows.ts` owns best-effort runtime, worktree, branch, and container cleanup;
-  `src/domain/task-cleanup.ts` owns the typed cleanup-warning result shared across IPC transports;
+- `src/components/NewTaskDialog.tsx` owns form and DOM interaction state, while
+  `src/components/new-task-dialog/task-git-options-controller.ts` owns the form-local Git metadata
+  lifecycle: parallel branch and ignored-directory reads, stale-response suppression, independent
+  branch retry, selection defaults, and branch-conflict projection. The lifecycle is keyed by
+  project identity, not only repository path or Git configuration, because multiple project records
+  may reference the same path. Branch retry must not invalidate ignored-directory suggestions;
+  those queries have different failure and refresh reasons even though the form presents them
+  together
+- task deletion spans backend cleanup and renderer projection, but the ownership remains explicit
+  across both managed-worktree `DeleteTask` and state-removing `CleanupTaskRuntime` routes:
+  `electron/ipc/task-workflows.ts` first closes and drains pending agent spawns, then owns
+  best-effort runner, runtime, worktree, branch, and container cleanup;
+  `src/domain/task-cleanup.ts` owns the typed cleanup-warning result shared by both routes across
+  Electron and browser IPC transports;
   `src/app/task-lifecycle-workflows.ts` owns user-facing close sequencing, notification of partial
   cleanup warnings, immediate task removal from renderer state, and best-effort persistence after
   removal. A failed cleanup step may warn the user, but it must not leave the task stuck in a
-  transitional UI state once the backend has released the runtime owner state
+  transitional UI state once the backend has released the runtime owner state. Docker label cleanup
+  on this path has one backend-owned deadline propagated into its subprocesses, so a wedged Docker
+  runtime becomes a cleanup warning instead of blocking task deletion indefinitely; an unavailable
+  runtime still skips the optional container cleanup without blocking the remaining deletion steps
 - task container lifecycle is backend-owned. `electron/ipc/task-containers.ts` and
   `electron/ipc/task-container-identity.ts` own Compose support detection, identity, lifecycle, and
   logs; `electron/ipc/task-container-handlers.ts` is the typed IPC seam;
@@ -227,9 +244,23 @@ Two current ownership splits matter in review:
   `electron/ipc/agent-runner-handlers.ts` owns typed profile validation,
   `electron/ipc/agent-runner-docker.ts` owns Docker CLI preflight, Dockerfile build/run argument
   construction, managed labels, bind-mount policy, and exact-label cleanup, and
-  `electron/ipc/task-workflows.ts` selects the runner before PTY spawn. `electron/ipc/pty.ts` owns
-  live runner identity on the PTY session and projects it into backend supervision/remote agent
-  metadata. Renderer code may configure and present runner state, but it must not import Docker
+  `electron/ipc/task-workflows.ts` owns pending-spawn admission, cancellation, per-agent
+  serialization, the global preparation limit, and prepared-launch cleanup. It disposes a prepared
+  launch if spawn admission closes or the PTY attaches to an already-created session, and retains a
+  failed prepared cleanup owner for retry. Per-agent stop is single-flight and keeps that agent's
+  spawn admission closed through pending-spawn drain and runner cleanup; global stop applies the
+  same single-flight admission barrier to every agent. Either failed stop retains closed admission
+  until an explicit retry confirms successful settlement. Independent PTY, prepared-launch, and
+  pending-build cleanup is lazily settled so even a synchronous failure cannot skip a later owner.
+  Electron IPC, browser websocket, and remote websocket kill paths all await that same workflow owner.
+  `electron/ipc/agent-handlers.ts` is the typed IPC seam;
+  it does not own spawn concurrency. `electron/ipc/pty.ts` owns live and terminating session
+  identity, normally waits for PTY exit before external cleanup, and retains both a non-exiting PTY
+  and failed external cleanup for explicit retry. After bounded TERM/KILL exit waits are exhausted,
+  it may attempt external cleanup as a force-stop fallback, but the still-live PTY remains owned
+  until an exit is observed. Task deletion and application shutdown close and drain pending spawns,
+  then await runner cleanup. Renderer code may configure and present runner state, but it must not
+  import Docker
   runtime code or infer Docker truth from settings. Host remains the default runner; Docker
   container execution is opt-in; Docker sandbox and Docker-backed Hydra adapter launches are
   explicitly rejected until they have their own backend owner contract. Dockerfile-built images use
@@ -305,6 +336,7 @@ Files:
 - `src/app/desktop-session.ts`
 - `src/app/desktop-session-startup.ts`
 - `src/app/browser-cold-bootstrap.ts`
+- `src/app/browser-workspace-cold-start-recovery.ts`
 - `src/app/browser-startup.ts`
 - `src/app/desktop-browser-runtime.ts`
 - `src/app/desktop-session-types.ts`
@@ -334,16 +366,21 @@ This seam is now central. Runtime wiring is easier to find than it was before th
 
 Browser startup now has an explicit split:
 
-- cold browser bootstrap in `src/app/desktop-session-startup.ts` fetches a dedicated backend-owned
-  cold bootstrap payload through `src/app/browser-cold-bootstrap.ts`; the backend builds that
+- `src/app/desktop-session-startup.ts` starts
+  `src/app/browser-workspace-cold-start-recovery.ts` before window chrome, then keeps ownership of
+  payload hydration, browser-local client-session restore, and startup-tier sequencing; the
+  recovery owner acquires the dedicated backend payload through the thin
+  `src/app/browser-cold-bootstrap.ts` transport adapter and owns cancellable per-attempt deadlines,
+  bounded retries, and the backend projection -> same-tab handoff -> canonical workspace fallback
+  order. Canonical fallback authority is the persistence-session loaded-snapshot marker, not
+  renderer-local panel or project shape. The backend builds the
   typed workspace projection through `src/domain/browser-cold-bootstrap-projection-builder.ts`
-  while the renderer applies it through `src/store/browser-cold-bootstrap-projection.ts`,
-  restores browser-local client-session state, and keeps background terminal attach blocked until
-  the selected terminal gets a head start
-- the cold-bootstrap fetch is the only awaited network round trip before the selected-task
-  startup tier: app shortcuts register before any startup await (handlers no-op on an empty
-  store), the fetch starts before window chrome and runs concurrently with the websocket runtime
-  registration, and the payload folds in what used to be separate round trips — bounded
+  while the renderer applies it through `src/store/browser-cold-bootstrap-projection.ts`
+- on the successful backend-projection path, the cold-bootstrap fetch is the only awaited network
+  round trip before the selected-task startup tier: app shortcuts register before any startup
+  await (handlers no-op on an empty store), the fetch starts before window chrome and runs
+  concurrently with the websocket runtime registration, and the payload folds in what used to be
+  separate round trips — bounded
   `planContents` (exact persisted `planRelativePath` reads, visible tasks only, count/byte
   capped), `projectPathsExist` (applied through `applyProjectPathExistence` with a delayed
   background `validateProjectPaths` for reconciliation), and agent defs with last-known
@@ -606,6 +643,16 @@ Responsibilities:
 
 These modules are low-level. They should provide capabilities that workflows and handlers compose
 rather than quietly becoming use-case layers themselves.
+
+`electron/ipc/ask-about-code.ts` owns every launched provider process from admission through bounded
+tree termination. Cancelling or replacing a request removes only the current request-id projection;
+the terminating process remains in the global concurrency owner set until cleanup settles. Both
+Electron and browser-server shutdown close this admission seam, terminate and drain every owner,
+and include any cleanup failure in their labeled runtime aggregate. Confirmed requested termination
+is an expected cleanup result; exhausting the bounded close grace without confirming process-tree
+release remains a lifecycle failure even though the UI request reports cancellation. Desktop
+shutdown exits nonzero after an aggregate failure; it does not merely log the failure and report a
+clean quit.
 
 One cross-cutting backend owner is the prioritized work queue:
 
@@ -1165,7 +1212,7 @@ The task attention path is a product-facing reliability path.
   budget-exhausted workflows) join the same pipeline as renderer-side
   `coordinator-stale`/`coordinator-approval`/`coordinator-budget` attention reasons; they are pure
   renderer projections of backend run snapshots (`getCoordinatorTaskAttentionSummary` in
-  `src/app/coordinator-ui-model.ts`), never new wire state, and the domain
+  `src/app/coordinator-attention.ts`), never new wire state, and the domain
   `TaskAttentionReason` validator is untouched
 - `src/components/SidebarTaskRow.tsx` renders the compact sidebar attention and review signals inline with each task row
 
@@ -1177,6 +1224,16 @@ All renderer-initiated coordinator operator actions (`resume_run`, `pause_run`, 
 approvals, lane retries) route through one app-layer workflow,
 `src/app/coordinator-operator-actions.ts`, so the coordinator rail, the task title bar Resume
 affordance, and any future surface share one request shape, run lookup, and rejection mapping.
+
+`src/components/task-panel/TaskCoordinatorSectionEntry.tsx` is the stable task-panel boundary for
+the coordinator rail. It preserves the fixed `PanelChild` contract while lazy-loading the full
+`TaskCoordinatorSection.tsx` inspector only when a coordinator task is rendered. Compact
+coordinator attention remains eager through `src/app/coordinator-attention.ts`; inspector-specific
+workflow projection and controls stay out of the default task-panel startup bundle. The inspector
+owns one request generation keyed by task, run, popover kind, and target across tool, operator,
+spawn, and clipboard actions; switching target/run, starting a newer action, or unmounting
+invalidates the older completion so it cannot overwrite the current popover or clear newer busy
+state.
 
 ## Perceived-Latency Presentation Owners
 
@@ -1240,6 +1297,31 @@ directory layout. The rule is:
 
 - bundled tools should either work everywhere the product claims they work
 - or fail with a concrete reason that the UI can surface
+- `electron/ipc/hydra-adapter.ts` remains the protocol owner for its intentionally long-lived
+  daemon and operator children: bounded health and HTTP shutdown requests drive the normal
+  lifecycle, while the shared bounded subprocess owner runs with no automatic child deadline and
+  owns process-group/tree termination, escalation, exit waiting, and stream cleanup when shutdown
+  or adapter signals fail. Adapter failure and signal paths settle daemon and operator cleanup
+  together; a requested termination is successful only after tree release is confirmed, and any
+  independent operation/cleanup failures remain composed for the nonzero adapter exit.
+
+Electron package dependencies follow the same ownership boundary. Packages imported only by
+`src/**` are Vite build inputs and belong in `devDependencies`; their code is already emitted into
+`dist` and `dist-remote`, so copying their source trees into the Electron Node runtime only adds
+size and duplicate authority. `dependencies` is reserved for Electron/backend runtime imports and
+the vendored Hydra runtime. `scripts/verify-electron-package.mjs` rejects renderer-bundled package
+trees, requires the unique locked name/version identities represented by all non-development,
+non-optional package-lock entries plus every declared direct runtime dependency in each produced
+archive (so legitimate package-manager hoisting is layout-independent), recursively checks every
+packaged build/runtime input for freshness, verifies every archive from multi-target release
+builds, and rejects known test, benchmark, demo, coverage, snapshot, and runner-config artifacts
+from dependencies. The standalone server uses `server/tsconfig.build.json` as its production-only
+emit boundary;
+`server/build-server.mjs` removes the previous output before compilation, scans successful output
+for development artifacts and Vitest imports, and removes failed partial emits, while
+`server/tsconfig.json` remains the broader typecheck boundary that includes tests. Session-stress
+and server integration harnesses invoke this production build owner too; raw non-watch TypeScript
+emits must not repopulate the shared `dist-server` tree with test modules after it was validated.
 
 Browser static delivery is precompressed and cache-aware:
 
@@ -1514,12 +1596,27 @@ Flow:
      dynamic-imports and initializes it on the server `listening` event, and every coordinator
      entry point (the `/api/coordinator/tool-call` route and the lazy coordinator IPC group bound
      through `electron/ipc/lazy-handler-group.ts`) awaits the single load promise, so an early
-     coordinator request is answered after init completes instead of being rejected
+     coordinator request is answered after init completes instead of being rejected. Owner
+     acquisition is transactional: if a later initialization step fails, every earlier persistence,
+     mutation-producer, and event-consumer owner is asked to release in shutdown order before
+     readiness rejects. A successful rollback releases the serialized ownership turn so a later
+     loader may retry; a failed rollback preserves both errors, leaves the turn unreleased, and
+     rejects replacement admission
    - clients whose WS auth or cold bootstrap landed inside the load window received an empty
      coordinator category; the loader repairs them after hydration by re-emitting the restored
      runs as ordinary `run-upserted` events (`emitCoordinatorRunRepairEvents`), and shutdown
-     awaits the loader's async `cleanup()` before the exit-on-close path so a future persistence
-     flush cannot be dropped
+     awaits the loader's async `cleanup()` before the exit-on-close path. Cleanup first closes and
+     drains coordinator mutation producers (active prompt chains, the workflow scheduler execution,
+     admitted tool/renderer calls including their persisted result-ledger writes, and nested spawn
+     rollbacks), then unsubscribes outbound event consumers, and flushes persistence last; every
+     owner is attempted and failures are aggregated, so one rejection cannot
+     skip a later cleanup or make a rollback mutation non-durable. Loader instances serialize owner
+     acquisition behind the prior loader's full teardown, so synchronous browser-server cleanup can
+     be followed immediately by an in-process replacement without overlapping persistence owners.
+     Failed owner cleanup retains the failed admission barrier and rejects both public cleanup and
+     any replacement loader, which makes signal-driven browser shutdown exit nonzero rather than
+     acquiring owners over an uncertain predecessor; cleanup before the `listening` callback settles
+     the never-started loader explicitly
    - the Electron shell does not use the loader: `electron/ipc/register.ts` hydrates persisted
      coordinator state eagerly (`ensureCoordinatorServiceLoaded`) before binding IPC handlers so
      the renderer's first `GetServerStateBootstrap` already carries restored runs
@@ -1810,6 +1907,8 @@ Important property:
 
 Files:
 
+- `electron/ipc/bounded-process.ts`
+- `electron/ipc/git-exec.ts`
 - `electron/ipc/git.ts`
 - `electron/ipc/git-watcher.ts`
 - `electron/ipc/git-status-workflows.ts`
@@ -1841,6 +1940,11 @@ Flow:
 Important property:
 
 - browser mode now has a clear canonical path: backend owns git state, server pushes and replays it
+- asynchronous Git commands enter through `git-exec.ts`, while `bounded-process.ts` owns their one
+  buffered-or-streamed process lifecycle, deadline, process-group/tree termination, and cleanup
+- the batched `git cat-file` reader may fall back to individual safe reads after an ordinary Git
+  failure, but not after bounded cleanup exhausts its deadline without confirming process-tree
+  release
 - Electron mode is much closer to the same ownership model for git and convergence state
 - the main remaining asymmetry is startup/restore contract alignment and a few advanced on-demand UI reads
 - task-bound destructive dialogs consume `src/store/task-git-status.ts` through shared selectors and

@@ -101,6 +101,10 @@ For task-container work:
 For agent-runner work:
 
 - keep Docker agent execution proof separate from task-container/Compose preview proof
+- prove per-agent and global stop admission as one lifecycle: every spawn initiated after stop
+  begins is rejected through pending-spawn drain and runner cleanup, even behind a cancelled
+  predecessor; overlapping stops share one attempt, failed cleanup keeps admission closed, and an
+  explicit successful retry reopens it; synchronous cleanup throws must not skip later owners
 - prove profile normalization, Docker argument construction, exact-label cleanup, and runner
   identity projection in `node / backend` tests
 - use `npm run test:node:docker:agent-runner` for optional local real-Docker proof and
@@ -155,7 +159,24 @@ For coordinator-mode work:
 - prove spawn rollback, duplicate-spawn dedupe, custom agent launch propagation, prompt
   close-before-delivery cancellation, seeded-start versus prompt-delivered startup contracts,
   follow-up rejection for disallowed subtasks, credential revocation, restored stale runs, and
-  landing cleanup before relying on browser canaries
+  landing cleanup before relying on browser canaries; parent-deadline tests must also prove that a
+  late task-create remains shutdown-owned through rollback; shutdown tests must also hold a real
+  prompt delivery, scheduler retry, agent call, and renderer call in flight, prove new calls are
+  rejected while remembered read-only replays remain available, and prove every admitted call is
+  drained through its persisted result-ledger write before teardown takes an unconditional final
+  current-state snapshot behind every older write. Exercise the shared producer seam through direct
+  run creation/activity and final task deletion/state-removing cleanup as well as tool calls, and
+  reject a request carrying an older browser-server lifecycle after an in-process restart. Prove a
+  remembered read-only result survives a shutdown with no dirty event and a final-save failure
+  rejects cleanup. Transactional loader
+  initialization releases every owner acquired before a later failure, and synchronous
+  browser-server cleanup followed by an immediate in-process replacement reaches coordinator
+  readiness with a live persistence owner. The failure complement must prove that rollback or
+  runtime cleanup rejection keeps the ownership turn unreleased, rejects replacement admission,
+  reaches the labeled browser cleanup aggregate, and selects a nonzero shutdown exit. Browser
+  cleanup tests must also hold one owner open after another rejects, then verify the public wait
+  rejects with all labeled failures and signal-driven shutdown selects a nonzero exit only after
+  every owner settles
 - prove operator controls at the backend seam: per-action run-status and lease authorization for
   the operator-action rule table (`resume_run`, `pause_run`, `unpause_run`,
   `approve_workflow_actions`, `deny_workflow_actions`, `retry_lane`) with structural rejection of
@@ -290,10 +311,12 @@ For perceived-latency presentation work:
 - prove optimistic task creation at the workflow owner seam (`task-creation-optimism.test.ts`:
   success removal, error+retry, dismiss, the never-in-store invariant); dialog and column
   component tests stay thin integration checks
-- prove coordinator attention projections in app tests (`task-presentation-status.test.ts`,
-  `coordinator-ui-model` summary) before any browser canary; rail/title-bar affordances are Solid
-  component proofs (`TaskCoordinatorSection.test.tsx`, `TaskTitleBar.test.tsx`) with fake-time
-  coverage for the spawn-ack window
+- prove coordinator attention projections in app tests (`task-presentation-status.test.ts`
+  exercising the compact `coordinator-attention.ts` projection) before any browser canary;
+  rail/title-bar affordances are Solid component proofs (`TaskCoordinatorSection.test.tsx`,
+  `TaskTitleBar.test.tsx`) with fake-time coverage for the spawn-ack window; inspector tests must
+  also hold responses across target/run switches, overlapping actions, and unmount so stale
+  completions cannot replace current content or clear a newer busy owner
 - time-windowed feedback introduced by this layer (spawn-ack chip, persistent error toasts,
   pending-input TTL) follows the standing fake-time rule: at least one test advances the clock
   without unrelated store changes
@@ -373,6 +396,8 @@ For lifecycle-heavy work, test invariants as well as transitions:
 - every transitional state must have one live owner
 - every transitional state must have one deterministic exit
 - stale generation or stale transport completions must not mutate current truth
+- abortable renderer transport tests cover browser cancellation and an Electron IPC promise that
+  remains pending after the consumer has already rejected with the exact abort reason
 - a UI that looks input-ready must still prove the send path, controller lease, and transport are
   valid
 - paused, flow-controlled, reconnecting, and restoring states must fail once the owning blocker is
@@ -389,6 +414,23 @@ For lifecycle-heavy work, test invariants as well as transitions:
   failures surface as warnings instead of leaving stale `closing`, `removing`, or `restoring` state
 - terminal remount/teardown changes need proof that stale callbacks from the old session cannot
   clear the current focus callback, readiness state, or input feedback state
+- bounded request-process tests must prove cancellation keeps consuming admission until cleanup
+  settles, repeated request ids cannot bypass the global owner cap, and both runtime shells drain
+  every request; desktop and browser cleanup tests must wait for independent owners and map any
+  labeled aggregate failure to a nonzero process exit
+- every consumer that treats requested subprocess termination as expected must also prove an
+  unconfirmed forced settlement remains a failure; fallback paths may proceed only after the shared
+  bounded owner confirms process-tree release
+- profiler lifecycle tests include successful measurement plus failed cleanup, not only operation
+  failure plus cleanup, so a pending `return` cannot silently erase cleanup errors; include a
+  non-`Error` rejection such as `undefined` or `null` anywhere outcome staging could confuse a
+  rejection reason with the no-failure sentinel
+- independent cleanup batches must start and settle every owner before rejecting, preserve stable
+  owner labels, and retain simultaneous or non-`Error` failures instead of exposing only the first
+- session-stress client acquisition tests must prove concurrent connect and bind attempts all settle
+  before cleanup snapshots ownership, every authenticated client is owned before later bind or
+  restore work, and failed pre-authentication sockets terminate without retaining startup listeners;
+  a socket teardown failure must remain visible alongside the connection failure
 
 When manual testing finds a new stuck state, the fix is not complete until the suite has:
 
@@ -549,6 +591,9 @@ The current required state-machine set is:
        - fixed-port conflict handling
        - unsupported compose-shape detection from real config output
        - same-project multi-worktree identity isolation
+     - keep mocked deletion-cleanup fault injection for Docker availability and label cleanup that
+       never settle; both must reject at the owner deadline so task deletion can continue with a
+       typed cleanup warning
 5. Multi-client control and lease lifecycle
    - states:
      - `unowned`
@@ -681,6 +726,14 @@ Those wrappers:
   keep the standalone harness freshness check as a backstop instead of silently testing stale
   bundles
 
+Standalone server integration helpers, profilers, and stress fixtures use the shared
+`scripts/lib/standalone-server-process.mjs` owner. Keep both sides of its teardown contract under
+direct test: capture POSIX ownership during startup output/readiness so a real uncooperative
+descendant in a detached process group remains owned even when its root exits before the first stop
+attempt, keep that identity across cleanup retries, and prove it is gone after escalation. Simulated
+Windows coverage must prove that even a root which exited before shutdown cannot bypass the awaited
+tree-kill request, including bounded forced escalation and helper failure.
+
 You can override the timeout with `VITEST_SCOPED_TIMEOUT_MS=<ms>` or
 `--timeout-ms <ms>`.
 
@@ -688,6 +741,11 @@ When a Solid/jsdom test waits through transient loading states, avoid patterns l
 `waitFor(() => screen.getByText(...))`. Prefer a non-throwing query inside `waitFor`, or a small
 helper built on `screen.queryBy...`, so a stale failure path does not repeatedly serialize the DOM
 for thrown query errors.
+
+Keep assertions out of `mockImplementation` and other test-double callbacks. A mock callback may
+never run, which can make an important expectation disappear while the test still passes. Let the
+double record its calls and return or throw the configured behavior, then assert call count,
+arguments, ordering, and captured values from the test body after the workflow completes.
 
 When a UI behavior has a dedicated local owner, prove the state machine at that owner seam first
 and keep the leaf-component integration test thin. For example, task-control banner/chip behavior
@@ -739,6 +797,11 @@ Examples:
 - a ReviewPanel controller split is sufficiently covered when architecture tests prove the component
   no longer owns transport/loading orchestration and Solid tests prove selected-file continuity and
   mode switching still work
+- a NewTaskDialog Git-options split is sufficiently covered when the controller tests prove parallel
+  initial reads, stale-response suppression, same-configuration project identity resets, non-git
+  clearing, and branch-only retry, while dialog tests prove the visible Retry affordance restores
+  branch selection without reissuing the independent ignored-directory query and selected
+  ignored-directory suggestions reach task creation
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
 - a task-steps redesign is sufficiently covered when backend tests prove `.claude/steps.json`

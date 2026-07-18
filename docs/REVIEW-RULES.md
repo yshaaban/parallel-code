@@ -163,6 +163,21 @@ When browser build freshness is under review, keep the owner split explicit:
 - the standalone harness must still reject stale or missing browser artifacts as a backstop
 - do not key freshness to whole-file `package.json` mtime when only a narrower build input, such
   as the shipped app version, is actually required
+- for Electron releases, classify Vite-only renderer packages as build-time dependencies, not Node
+  runtime dependencies; verify the archive against every recursively packaged output/runtime tree
+  and the lockfile rather than representative entrypoints, because a fresh `index.html` or
+  `main.js` does not prove that sibling chunks and backend modules are fresh
+- verify every archive produced by a multi-platform or multi-architecture release, and require the
+  complete set of unique non-development, non-optional locked name/version identities plus
+  declared direct dependencies in each archive; match transitive packages by identity instead of
+  installation path so legitimate hoisting does not create false failures, and do not treat one
+  unpacked target or a handful of direct entrypoints as representative
+- production server compilation must start from an empty output directory and use a build-only
+  tsconfig that excludes tests and test helpers; scan the emitted tree for development artifacts
+  and test-runner imports, remove failed partial emits, and keep the broader server tsconfig for
+  test-aware typechecking instead of trading release cleanliness for weaker checks; every standard
+  non-watch harness build must route through that owner instead of emitting the broad config into
+  the already-validated production directory
 
 ## IPC And Persistence Review Checklist
 
@@ -190,6 +205,46 @@ verify:
   that touch `window`, `document`, or Solid runtime helpers
 - agent resume behavior stays canonical in the shared agent definition shape instead of drifting
   into UI or workflow heuristics
+- every coordinator mutation producer enters one lifecycle owner, including direct run/activity
+  commands and final task deletion/state-removing cleanup; close admission before draining, retain
+  deadline-detached rollback work, and bind browser requests to the lifecycle that owns their state
+  directory so an old request cannot write after an in-process replacement
+- a shutdown persistence owner takes one unconditional current-state snapshot after mutation
+  producers drain and after every older queued write; do not infer durability solely from an event-
+  driven dirty bit, and do not normalize the final write rejection into successful cleanup
+- cleanup boundaries attempt every independent owner, then preserve the aggregate failure for
+  callers and process status; logging a rejection while returning a fulfilled public wait or exit
+  status `0` is not failure propagation
+- model operation and cleanup outcomes with an explicit fulfilled/rejected discriminator. `null` or
+  `undefined` cannot be a "no failure" sentinel because JavaScript promises may reject with either;
+  filtering rejection reasons by value silently converts real cleanup failures into success
+- when `finally` collects cleanup errors, do not `return` from its paired `try`: JavaScript resumes
+  that pending return after `finally` and skips post-cleanup checks. Stage the operation result,
+  compose operation and cleanup outcomes afterward, and include top-level browser/context closure
+- process-backed request registries count terminating owners until bounded cleanup actually settles;
+  deleting the current request-id projection during cancel/replacement must not free concurrency or
+  make that process invisible to Electron and browser-server shutdown
+- an `AbortSignal` transport API must settle its consumer promptly in every runtime; Electron cannot
+  retract already-admitted backend work, but waiting for that IPC promise before observing abort
+  retains stale reactive closures and makes the browser and Electron contracts diverge
+- app-owned buffered and streamed runtime subprocesses use the shared bounded process owner; Node's
+  direct-child timeout is not a completion or descendant-tree deadline, so the owner must reject
+  pre-aborted work before launch, create an owned POSIX process group (or tracked Windows
+  tree-kill), discover descendants that escape into another process group/session, retain verified
+  process identities across a bounded cleanup retry, terminate every owned group, escalate to a
+  forced kill, verify the tree is absent, and detach streams/listeners on every outcome; Windows
+  cleanup must await its tree request even when the root already exited; on POSIX, snapshot ownership
+  during startup output/readiness rather than waiting for stop, because the root can exit first;
+  consumers may ignore only the exact rejection created by their own confirmed termination request,
+  and must propagate the bounded owner's forced-settlement error instead of converting unconfirmed
+  process-tree cleanup into a successful fallback;
+  prove non-closing children with fake time and prove a real detached, uncooperative descendant is
+  gone with an OS-level test
+- subprocess error decoration must tolerate immutable external errors; buffering stdout/stderr is
+  useful diagnostic enrichment, but it must never throw instead of settling the owning promise
+- runtime Git commands stay behind the diagnostic Git wrappers: buffered and streamed calls use the
+  bounded owner, while unavoidable synchronous calls receive the shared timeout policy and expose
+  the nullable result produced by ignored stdio instead of promising output that does not exist
 
 If any of those drift, add or update direct node tests before treating the change as review-ready.
 
@@ -454,10 +509,18 @@ prefill as shared state, multi-client behavior will drift quietly.
 ### 26. Destructive cleanup warnings are part of the contract
 
 Deleting a task has two user-visible outcomes: the task should close, and best-effort cleanup may
-still report leftovers such as containers, worktrees, or branches.
+still report leftovers such as agent runners, containers, worktrees, or branches.
 
-- return cleanup warnings through the typed IPC payload instead of throwing after user-facing
-  runtime state has been released
+- return cleanup warnings through the typed IPC payload from both managed-worktree deletion and
+  state-removing runtime cleanup instead of throwing or erasing them after user-facing runtime
+  state has been released
+- await asynchronous runner cleanup before reporting the destructive workflow complete; keep a
+  failed cleanup owner reachable so a transient infrastructure failure can be retried
+- attempt independent cleanup resources even when one fails, and aggregate the failures instead of
+  abandoning later cleanup
+- when an external resource is prepared before final spawn admission, dispose it if admission
+  closes or another caller already created the session; the spawn result must distinguish resource
+  creation from merely attaching a new output channel
 - surface the warning once in the workflow owner
 - do not keep the task in a transitional close state just because a secondary cleanup step failed
 
@@ -689,6 +752,16 @@ state until that owner actually starts.
   restore start
 - when an automatic pause clears, reclassify from the saved tail instead of falling back to a
   generic busy/active state
+
+Bounded chunk histories and output-drain queues must make front trimming amortized. Repeated
+`Array.shift()` turns small terminal/control chunks into quadratic work; re-slicing or periodically
+flattening a large retained head during append has the same failure mode after restore. Use a head
+cursor for transient drain queues and fixed writable blocks (or an equivalent deque/ring) for byte
+history, bound discarded storage and metadata, and compact only at an amortized threshold. Prove
+exact retained suffix, caller-buffer isolation, replacement followed by many small appends, tail
+reads, repeated compaction, and an independently queued small-control-chunk drain. This is a
+storage-shape optimization; it must not change terminal pacing, byte order, flow control, or
+recovery budgets.
 
 ## What To Update With The Code
 

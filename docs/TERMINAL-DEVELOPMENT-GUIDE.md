@@ -138,7 +138,35 @@ for built `dist/` outputs and can race the live dev rebuilds.
 Browser Playwright entrypoints auto-prepare browser artifacts once when they are stale or missing,
 reject zero-byte artifacts, and snapshot validated static assets into the per-test server directory
 before launch. The standalone harness still fails on stale `dist`, `dist-remote`, or `dist-server`
-if someone bypasses the wrapper, so stale browser runs do not silently succeed.
+if someone bypasses the wrapper, so stale browser runs do not silently succeed. Session-stress and
+server integration setup use the same clean production server builder; do not invoke the broad
+test-aware server tsconfig as a non-watch emit into `dist-server`. Browser-lab, browser/server test
+helpers, and local terminal profilers also sandbox shell-terminal
+home/history state, so interactive shell fixtures do not append typed test commands into the
+contributor's real shell history. The sandbox is opt-in at the server-process boundary, applies
+only to launches marked as shells, and redirects `HOME`/`USERPROFILE`, XDG data/config/state,
+and Windows application-data locations into the cleanup-owned test directory while disabling or
+redirecting shell/tool history files. Zsh, Bash/POSIX, Fish, and PowerShell receive shell-specific
+startup protection; non-shell agent launches keep their normal environment.
+`electron/ipc/test-shell-sandbox.ts` owns that shell classification and startup policy;
+`electron/ipc/pty.ts` only decides whether the test-only policy is eligible for a launch. Raw Node
+profilers and the session-stress runner share readiness and bounded shutdown through
+`scripts/lib/standalone-server-process.mjs`; process-backed fixture tests reuse the same bounded
+shutdown owner and its owned process-group/tree spawn. The typed browser-lab harness keeps its richer
+overall lifecycle snapshot, but delegates readiness observation, process-tree spawn, and TERM/KILL
+teardown to that same owner. The server integration helpers use it for both their primary and
+simulated-latency servers. POSIX launches receive a dedicated root process group, while shutdown snapshots stable
+PID/start-time identities and follows descendants that created their own group or session. The owner
+captures that tree during startup output and again at readiness, so verified detached identities
+remain available when the root exits before the first stop attempt. Those owned identities survive
+the single bounded stop retry, receive TERM/KILL escalation, and must be absent from a final snapshot
+before shutdown resolves. Windows shutdown invokes and awaits its tree request even when the root
+already exited, then uses one bounded forced-tree escalation instead of treating root exit as proof
+that descendants are gone. Profilers with disposable standalone-server
+data also use the owner's development-state cleanup, while the boot profiler retains its broader
+seeded fixture across iterations and removes that fixture as one unit. Temporary roots enter their
+cleanup scope as soon as they are created, so repository seeding, state writes, spawn, readiness
+failures, and uncooperative descendants cannot strand partial fixtures.
 
 Generated profiler and stress outputs under `artifacts/` are local scratch data, not product
 surface. Keep them out of review. Move durable conclusions into docs instead of relying on a
