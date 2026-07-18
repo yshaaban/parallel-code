@@ -15,11 +15,14 @@ import type { ProjectMode } from '../../src/store/types.js';
 import {
   applyCoordinatorActivityHint,
   createCoordinatorRunForTask,
-  ensureCoordinatorServiceLoaded,
   getCoordinatorPersistenceHealth,
 } from './service.js';
 import { getCoordinatorDiagnostics } from './runtime.js';
-import { executeCoordinatorRendererAction, executeCoordinatorToolCall } from './tool-gateway.js';
+import {
+  executeCoordinatorProducer,
+  executeCoordinatorRendererAction,
+  executeCoordinatorToolCall,
+} from './tool-gateway.js';
 
 const COORDINATOR_UI_CREDENTIAL_FIELDS = ['credentialPath', 'token', 'toolToken'] as const;
 
@@ -76,16 +79,10 @@ function assertNoCoordinatorUiCredentials(request: object): void {
   }
 }
 
-function ensureCoordinatorRuntime(context: HandlerContext): void {
-  ensureCoordinatorServiceLoaded(context);
-}
-
 export function createCoordinatorIpcHandlers(
   context: HandlerContext,
   taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
 ): Partial<Record<IPC, IpcHandler>> {
-  ensureCoordinatorRuntime(context);
-
   return {
     [IPC.CoordinatorActivityHint]: defineIpcHandler<IPC.CoordinatorActivityHint>(
       IPC.CoordinatorActivityHint,
@@ -98,8 +95,10 @@ export function createCoordinatorIpcHandlers(
         assertString(request.taskId, 'taskId');
         assertOptionalNonNegativeInt(request.ttlMs, 'ttlMs');
 
-        applyCoordinatorActivityHint(request);
-        return undefined;
+        return executeCoordinatorProducer(context, () => {
+          applyCoordinatorActivityHint(request);
+          return undefined;
+        });
       },
     ),
 
@@ -112,7 +111,9 @@ export function createCoordinatorIpcHandlers(
         assertProjectMode(request.projectMode);
         assertString(request.projectRoot, 'projectRoot');
 
-        return createCoordinatorRunForTask(context, request);
+        return executeCoordinatorProducer(context, () =>
+          createCoordinatorRunForTask(context, request),
+        );
       },
     ),
 

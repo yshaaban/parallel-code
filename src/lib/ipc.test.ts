@@ -453,6 +453,33 @@ describe('Channel', () => {
     await expect(request).rejects.toThrow('Browser HTTP IPC client reset for tests');
   });
 
+  it('cancels signal-aware browser HTTP IPC without adding reconnect queue work', async () => {
+    const capturedRequest: { signal: AbortSignal | null } = { signal: null };
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      capturedRequest.signal = init?.signal ?? null;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+          once: true,
+        });
+      });
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+    const cancellation = new Error('startup acquisition cancelled');
+    const controller = new AbortController();
+    const { getBrowserQueueDepth, invokeWithAbortSignal } = await import('./ipc');
+    const request = invokeWithAbortSignal(IPC.LoadWorkspaceState, controller.signal);
+    await flushMicrotasks();
+
+    controller.abort(cancellation);
+
+    await expect(request).rejects.toBe(cancellation);
+    expect(capturedRequest.signal?.aborted).toBe(true);
+    expect(getBrowserQueueDepth()).toBe(0);
+  });
+
   it('invalidates in-flight browser HTTP IPC work when auth expires', async () => {
     const deferredResponse = createDeferred<Response>();
     const capturedRequest: { signal: AbortSignal | null } = { signal: null };
@@ -1214,6 +1241,44 @@ describe('Channel', () => {
     expect(invokeMock.mock.calls[1]?.[1]).not.toHaveProperty('trace');
   });
 
+  it('settles an aborted Electron IPC consumer before the underlying request completes', async () => {
+    const deferredResponse = createDeferred<boolean>();
+    const invokeMock = vi
+      .fn<(channel: IPC, args?: unknown) => Promise<unknown>>()
+      .mockReturnValue(deferredResponse.promise);
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        location: new URL('http://localhost/terminal'),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        setTimeout,
+        clearTimeout,
+        electron: {
+          ipcRenderer: {
+            invoke: invokeMock,
+            on: vi.fn(),
+            removeAllListeners: vi.fn(),
+          },
+        },
+      },
+    });
+    const cancellation = new Error('dialog request superseded');
+    const controller = new AbortController();
+    const { invokeWithAbortSignal } = await import('./ipc');
+
+    const request = invokeWithAbortSignal(IPC.CheckPathExists, controller.signal, {
+      path: '/repo/task-1',
+    });
+    controller.abort(cancellation);
+
+    await expect(request).rejects.toBe(cancellation);
+    expect(await getPromiseState(deferredResponse.promise)).toBe('pending');
+
+    deferredResponse.resolve(true);
+    await expect(deferredResponse.promise).resolves.toBe(true);
+  });
+
   it('chunks large browser write_to_agent payloads without splitting surrogate pairs', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -1920,11 +1985,19 @@ describe('Channel', () => {
     await expect(invoke(IPC.ResetBackendRuntimeDiagnostics)).resolves.toBeUndefined();
   });
 
-  it('accepts undefined browser HTTP IPC responses for cleanup_task_runtime', async () => {
+  it('returns typed browser HTTP cleanup warnings for cleanup_task_runtime', async () => {
+    const cleanupResult = {
+      cleanupWarnings: [
+        {
+          kind: 'runners' as const,
+          message: 'Failed to clean agent runners while removing task runtime: timeout',
+        },
+      ],
+    };
     Object.defineProperty(globalThis, 'fetch', {
       configurable: true,
       value: vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({}), {
+        new Response(JSON.stringify({ result: cleanupResult }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -1940,7 +2013,7 @@ describe('Channel', () => {
         removeTaskState: true,
         taskId: 'task-1',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual(cleanupResult);
   });
 
   it('queues browserFetch requests after a network error and retries them on the next drain tick', async () => {

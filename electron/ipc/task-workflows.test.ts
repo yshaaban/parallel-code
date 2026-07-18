@@ -6,11 +6,16 @@ import { IPC } from './channels.js';
 
 const {
   resolveHydraAdapterLaunchMock,
+  cleanupPendingDockerAgentRunnerBuildsMock,
   createDockerAgentRunnerLaunchMock,
   ensurePlansDirectoryMock,
   startPlanWatcherMock,
   stopPlanWatcherMock,
   spawnAgentMock,
+  hasAgentSessionMock,
+  killAgentAndWaitForRunnerCleanupMock,
+  killAllAgentsAndWaitForRunnerCleanupMock,
+  killTaskAgentsAndWaitForRunnerCleanupMock,
   createCurrentBranchTaskMock,
   createNonGitTaskMock,
   createTaskMock,
@@ -30,11 +35,16 @@ const {
   removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
   resolveHydraAdapterLaunchMock: vi.fn(),
+  cleanupPendingDockerAgentRunnerBuildsMock: vi.fn(),
   createDockerAgentRunnerLaunchMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
   stopPlanWatcherMock: vi.fn(),
   spawnAgentMock: vi.fn(),
+  hasAgentSessionMock: vi.fn(),
+  killAgentAndWaitForRunnerCleanupMock: vi.fn(),
+  killAllAgentsAndWaitForRunnerCleanupMock: vi.fn(),
+  killTaskAgentsAndWaitForRunnerCleanupMock: vi.fn(),
   createCurrentBranchTaskMock: vi.fn(),
   createNonGitTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
@@ -59,6 +69,7 @@ vi.mock('./hydra-adapter.js', () => ({
 }));
 
 vi.mock('./agent-runner-docker.js', () => ({
+  cleanupPendingDockerAgentRunnerBuilds: cleanupPendingDockerAgentRunnerBuildsMock,
   createDockerAgentRunnerLaunch: createDockerAgentRunnerLaunchMock,
 }));
 
@@ -72,6 +83,10 @@ vi.mock('./pty.js', async () => {
   const actual = await vi.importActual<typeof import('./pty.js')>('./pty.js');
   return {
     ...actual,
+    hasAgentSession: hasAgentSessionMock,
+    killAllAgentsAndWaitForRunnerCleanup: killAllAgentsAndWaitForRunnerCleanupMock,
+    killAgentAndWaitForRunnerCleanup: killAgentAndWaitForRunnerCleanupMock,
+    killTaskAgentsAndWaitForRunnerCleanup: killTaskAgentsAndWaitForRunnerCleanupMock,
     spawnAgent: spawnAgentMock,
   };
 });
@@ -132,9 +147,12 @@ vi.mock('./task-containers.js', () => ({
 import {
   clearTaskWorkflowWorktreeRegistryForTests,
   cleanupTaskRuntimeWorkflow,
+  countRunningAndPendingTaskAgents,
   createTaskWorkflow,
   deleteTaskWorkflow,
   spawnTaskAgentWorkflow,
+  stopAllTaskAgentWorkflows,
+  stopTaskAgentWorkflow,
   syncTaskWorkflowWorktreesFromSavedState,
   type TaskWorkflowContext,
 } from './task-workflows.js';
@@ -161,6 +179,25 @@ describe('task workflows', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
+    spawnAgentMock.mockReturnValue({
+      channelAttached: true,
+      kind: 'created-session',
+    });
+    hasAgentSessionMock.mockReturnValue(false);
+    killAgentAndWaitForRunnerCleanupMock.mockResolvedValue(undefined);
+    killAllAgentsAndWaitForRunnerCleanupMock.mockResolvedValue(undefined);
+    killTaskAgentsAndWaitForRunnerCleanupMock.mockImplementation(
+      async (_taskId: string, agentIds: readonly string[]) => {
+        const results = await Promise.allSettled(
+          agentIds.map((agentId) => killAgentAndWaitForRunnerCleanupMock(agentId)),
+        );
+        const failure = results.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (failure) throw failure.reason;
+      },
+    );
+    cleanupPendingDockerAgentRunnerBuildsMock.mockResolvedValue(undefined);
     resolveHydraAdapterLaunchMock.mockReturnValue({
       command: process.execPath,
       args: ['adapter-entry'],
@@ -194,10 +231,10 @@ describe('task workflows', () => {
     vi.useRealTimers();
   });
 
-  it('routes hydra agent creation through the adapter and starts worktree watchers', () => {
+  it('routes hydra agent creation through the adapter and starts worktree watchers', async () => {
     const context = createContext();
 
-    spawnTaskAgentWorkflow(context, {
+    await spawnTaskAgentWorkflow(context, {
       taskId: 'task-1',
       agentId: 'agent-1',
       adapter: 'hydra',
@@ -249,7 +286,7 @@ describe('task workflows', () => {
     });
   });
 
-  it('wraps non-shell agent launches through a configured Docker runner', () => {
+  it('wraps non-shell agent launches through a configured Docker runner', async () => {
     const context = createContext();
     const cleanup = vi.fn();
     createDockerAgentRunnerLaunchMock.mockReturnValueOnce({
@@ -269,7 +306,7 @@ describe('task workflows', () => {
       },
     });
 
-    spawnTaskAgentWorkflow(context, {
+    await spawnTaskAgentWorkflow(context, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: 'codex',
@@ -286,18 +323,20 @@ describe('task workflows', () => {
       },
     });
 
-    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledWith({
-      agentId: 'agent-1',
-      args: ['run'],
-      command: 'codex',
-      cwd: '/tmp/task-1',
-      env: { KEEP_ME: 'yes' },
-      profile: {
-        image: 'agent:latest',
-        provider: 'docker-container',
-      },
-      taskId: 'task-1',
-    });
+    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        args: ['run'],
+        command: 'codex',
+        cwd: '/tmp/task-1',
+        env: { KEEP_ME: 'yes' },
+        profile: {
+          image: 'agent:latest',
+          provider: 'docker-container',
+        },
+        taskId: 'task-1',
+      }),
+    );
     expect(spawnAgentMock).toHaveBeenCalledWith(
       context.sendToChannel,
       expect.objectContaining({
@@ -320,7 +359,7 @@ describe('task workflows', () => {
     });
   });
 
-  it('cleans a prepared Docker runner when PTY spawn fails', () => {
+  it('cleans a prepared Docker runner when PTY spawn fails', async () => {
     const context = createContext();
     const cleanup = vi.fn();
     createDockerAgentRunnerLaunchMock.mockReturnValueOnce({
@@ -343,7 +382,7 @@ describe('task workflows', () => {
       throw new Error('pty spawn failed');
     });
 
-    expect(() =>
+    await expect(
       spawnTaskAgentWorkflow(context, {
         taskId: 'task-1',
         agentId: 'agent-1',
@@ -359,15 +398,127 @@ describe('task workflows', () => {
           provider: 'docker-container',
         },
       }),
-    ).toThrow('pty spawn failed');
+    ).rejects.toThrow('pty spawn failed');
     expect(cleanup).toHaveBeenCalledOnce();
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
 
-  it('rejects Hydra adapter agents for Docker container runners before creating Docker resources', () => {
+  it('cleans an async Docker launch when spawn admission closes before PTY creation', async () => {
+    const context = createContext();
+    const cleanup = vi.fn();
+    const assertSpawnAdmitted = vi.fn();
+    let resolveDockerLaunch!: (launch: {
+      args: string[];
+      cleanup: () => void;
+      command: string;
+      cwd: string;
+      env: Record<string, string>;
+      identity: {
+        agentId: string;
+        labels: Record<string, string>;
+        profileId: string;
+        provider: 'docker-container';
+        runnerInstanceId: string;
+        startedAt: string;
+        taskId: string;
+      };
+    }) => void;
+    createDockerAgentRunnerLaunchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDockerLaunch = resolve;
+      }),
+    );
+
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-1',
+      args: ['run'],
+      assertSpawnAdmitted,
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-1',
+      env: {},
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+      rows: 24,
+      runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+      taskId: 'task-1',
+    });
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    });
+    assertSpawnAdmitted.mockImplementation(() => {
+      throw new Error('spawn admission closed');
+    });
+    resolveDockerLaunch({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/task-1',
+      env: {},
+      identity: {
+        agentId: 'agent-1',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
+
+    await expect(spawn).rejects.toThrow('spawn admission closed');
+    expect(assertSpawnAdmitted).toHaveBeenCalledTimes(2);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('cleans a prepared Docker launch that loses a concurrent session-creation race', async () => {
+    const context = createContext();
+    const cleanup = vi.fn();
+    createDockerAgentRunnerLaunchMock.mockResolvedValueOnce({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/task-1',
+      env: {},
+      identity: {
+        agentId: 'agent-1',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-1',
+      },
+    });
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
+
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-1',
+        args: ['run'],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-1',
+        env: {},
+        onOutput: { __CHANNEL_ID__: 'channel-1' },
+        rows: 24,
+        runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+        taskId: 'task-1',
+      }),
+    ).resolves.toEqual({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('rejects Hydra adapter agents for Docker container runners before creating Docker resources', async () => {
     const context = createContext();
 
-    expect(() =>
+    await expect(
       spawnTaskAgentWorkflow(context, {
         taskId: 'task-1',
         agentId: 'agent-1',
@@ -384,15 +535,690 @@ describe('task workflows', () => {
           provider: 'docker-container',
         },
       }),
-    ).toThrow('Docker container agent runners do not support Hydra adapter agents yet.');
+    ).rejects.toThrow('Docker container agent runners do not support Hydra adapter agents yet.');
     expect(createDockerAgentRunnerLaunchMock).not.toHaveBeenCalled();
     expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
-  it('skips plan and git watchers for shell agents', () => {
+  it('cancels pending Docker setup before a killed agent can spawn late', async () => {
+    const context = createContext();
+    createDockerAgentRunnerLaunchMock.mockImplementationOnce(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-pending-build',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-pending-build',
+      env: {},
+      rows: 24,
+      runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+      taskId: 'task-pending-build',
+    });
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    });
+    expect(countRunningAndPendingTaskAgents()).toBe(1);
+
+    await expect(stopTaskAgentWorkflow('agent-pending-build')).resolves.toBeUndefined();
+    await expect(spawn).rejects.toThrow('Agent agent-pending-build was stopped');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+    expect(countRunningAndPendingTaskAgents()).toBe(0);
+  });
+
+  it('removes a cancelled spawn from the global admission queue without waiting for active builds', async () => {
+    const context = createContext();
+    createDockerAgentRunnerLaunchMock.mockImplementation(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    const spawns = Array.from({ length: 5 }, (_, index) =>
+      spawnTaskAgentWorkflow(context, {
+        agentId: `agent-queued-${index}`,
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: `/tmp/task-queued-${index}`,
+        env: {},
+        rows: 24,
+        runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+        taskId: `task-queued-${index}`,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledTimes(4);
+    });
+
+    await expect(stopTaskAgentWorkflow('agent-queued-4')).resolves.toBeUndefined();
+    await expect(spawns[4]).rejects.toThrow('Agent agent-queued-4 was stopped');
+    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledTimes(4);
+
+    await expect(stopAllTaskAgentWorkflows()).resolves.toBeUndefined();
+    await Promise.allSettled(spawns.slice(0, 4));
+  });
+
+  it('attaches to an existing session without waiting behind runner preparation', async () => {
+    const context = createContext();
+    createDockerAgentRunnerLaunchMock.mockImplementation(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    const builds = Array.from({ length: 4 }, (_, index) =>
+      spawnTaskAgentWorkflow(context, {
+        agentId: `agent-building-${index}`,
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: `/tmp/task-building-${index}`,
+        env: {},
+        rows: 24,
+        runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+        taskId: `task-building-${index}`,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledTimes(4);
+    });
+    hasAgentSessionMock.mockImplementation((agentId: string) => agentId === 'agent-existing');
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
+
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-existing',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-existing',
+        env: {},
+        onOutput: { __CHANNEL_ID__: 'existing-channel' },
+        rows: 24,
+        taskId: 'task-existing',
+      }),
+    ).resolves.toEqual({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
+    expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledTimes(4);
+
+    await stopAllTaskAgentWorkflows();
+    await Promise.allSettled(builds);
+  });
+
+  it('cancels and drains pending setup before deleting task resources', async () => {
+    const context = createContext();
+    createDockerAgentRunnerLaunchMock.mockImplementationOnce(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-delete-pending',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-delete-pending',
+      env: {},
+      rows: 24,
+      runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+      taskId: 'task-delete-pending',
+    });
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    });
+
+    await expect(
+      deleteTaskWorkflow({
+        agentIds: ['agent-delete-pending'],
+        branchName: 'task/delete-pending',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        taskId: 'task-delete-pending',
+        worktreePath: '/tmp/task-delete-pending',
+      }),
+    ).resolves.toMatchObject({ cleanupWarnings: [] });
+    await expect(spawn).rejects.toThrow('Task task-delete-pending was closed');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+    expect(deleteTaskMock).toHaveBeenCalledOnce();
+  });
+
+  it('retains a failed prepared cleanup owner for an explicit stop retry', async () => {
+    const context = createContext();
+    const cleanup = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('daemon temporarily unavailable'))
+      .mockResolvedValueOnce(undefined);
+    createDockerAgentRunnerLaunchMock.mockResolvedValueOnce({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/task-cleanup-retry',
+      env: {},
+      identity: {
+        agentId: 'agent-cleanup-retry',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-1',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-cleanup-retry',
+      },
+    });
+    spawnAgentMock.mockImplementationOnce(() => {
+      throw new Error('pty spawn failed');
+    });
+
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-cleanup-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-cleanup-retry',
+        env: {},
+        rows: 24,
+        runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+        taskId: 'task-cleanup-retry',
+      }),
+    ).rejects.toThrow('prepared runner cleanup also failed');
+    await expect(stopTaskAgentWorkflow('agent-cleanup-retry')).resolves.toBeUndefined();
+
+    expect(cleanup).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks admission after awaiting replacement cleanup', async () => {
+    const context = createContext();
+    let resolveReplacementCleanup!: () => void;
+    const replacedSessionCleanup = new Promise<void>((resolve) => {
+      resolveReplacementCleanup = resolve;
+    });
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'created-session',
+      replacedSessionCleanup,
+    });
+    const assertSpawnAdmitted = vi.fn();
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-replacement-admission',
+      args: [],
+      assertSpawnAdmitted,
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-replacement-admission',
+      env: {},
+      replaceExistingSession: true,
+      rows: 24,
+      taskId: 'task-replacement-admission',
+    });
+    await vi.waitFor(() => {
+      expect(spawnAgentMock).toHaveBeenCalledOnce();
+    });
+    expect(killAgentAndWaitForRunnerCleanupMock).not.toHaveBeenCalled();
+    assertSpawnAdmitted.mockImplementation(() => {
+      throw new Error('replacement admission closed');
+    });
+    resolveReplacementCleanup();
+
+    await expect(spawn).rejects.toThrow('replacement admission closed');
+    expect(assertSpawnAdmitted).toHaveBeenCalledTimes(3);
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledWith(
+      'agent-replacement-admission',
+    );
+  });
+
+  it('starts replacement rollback as soon as a pending spawn is cancelled', async () => {
+    const context = createContext();
+    let resolveReplacementCleanup!: () => void;
+    const replacedSessionCleanup = new Promise<void>((resolve) => {
+      resolveReplacementCleanup = resolve;
+    });
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'created-session',
+      replacedSessionCleanup,
+    });
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-cancelled-replacement',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-cancelled-replacement',
+      env: {},
+      replaceExistingSession: true,
+      rows: 24,
+      taskId: 'task-cancelled-replacement',
+    });
+    const spawnFailure = spawn.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() => {
+      expect(spawnAgentMock).toHaveBeenCalledOnce();
+    });
+
+    let stopSettled = false;
+    const stop = stopTaskAgentWorkflow('agent-cancelled-replacement').finally(() => {
+      stopSettled = true;
+    });
+    await vi.waitFor(() => {
+      expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledWith(
+        'agent-cancelled-replacement',
+      );
+    });
+    expect(stopSettled).toBe(false);
+
+    resolveReplacementCleanup();
+    await stop;
+    const spawnError = await spawnFailure;
+    expect(spawnError).toEqual(expect.objectContaining({ name: 'AbortError' }));
+    expect((spawnError as Error).message).toContain(
+      'Agent agent-cancelled-replacement was stopped',
+    );
+  });
+
+  it('retains an undefined replacement rollback rejection', async () => {
+    const context = createContext();
+    let rejectReplacementCleanup!: (error: Error) => void;
+    const replacedSessionCleanup = new Promise<void>((_resolve, reject) => {
+      rejectReplacementCleanup = reject;
+    });
+    spawnAgentMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'created-session',
+      replacedSessionCleanup,
+    });
+    killAgentAndWaitForRunnerCleanupMock.mockRejectedValue(undefined);
+    const spawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-failed-replacement',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-failed-replacement',
+      env: {},
+      replaceExistingSession: true,
+      rows: 24,
+      taskId: 'task-failed-replacement',
+    });
+    await vi.waitFor(() => {
+      expect(spawnAgentMock).toHaveBeenCalledOnce();
+    });
+
+    const replacementError = new Error('old session cleanup failed');
+    rejectReplacementCleanup(replacementError);
+    const failure = await spawn.catch((error: unknown) => error);
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        cause: [replacementError, undefined],
+        message: 'Agent replacement cleanup failed and the replacement runner rollback also failed',
+      }),
+    );
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a healthy existing session when replacement validation or spawn fails', async () => {
+    const context = createContext();
+    spawnAgentMock.mockImplementationOnce(() => {
+      throw new Error('replacement command is invalid');
+    });
+
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-invalid-replacement',
+        args: [],
+        cols: 80,
+        command: 'invalid;command',
+        cwd: '/tmp/task-invalid-replacement',
+        env: {},
+        replaceExistingSession: true,
+        rows: 24,
+        taskId: 'task-invalid-replacement',
+      }),
+    ).rejects.toThrow('replacement command is invalid');
+
+    expect(killAgentAndWaitForRunnerCleanupMock).not.toHaveBeenCalled();
+  });
+
+  it('shares overlapping global stop work until cleanup fully settles', async () => {
+    let resolveCleanup!: () => void;
+    killAllAgentsAndWaitForRunnerCleanupMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveCleanup = resolve;
+      }),
+    );
+
+    const firstStop = stopAllTaskAgentWorkflows();
+    const secondStop = stopAllTaskAgentWorkflows();
+    expect(secondStop).toBe(firstStop);
+    await vi.waitFor(() => {
+      expect(killAllAgentsAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+    });
+
+    resolveCleanup();
+    await Promise.all([firstStop, secondStop]);
+    expect(killAllAgentsAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+  });
+
+  it('retains failed global stop admission until an explicit shared retry settles successfully', async () => {
+    const context = createContext();
+    let resolveRetry!: () => void;
+    killAllAgentsAndWaitForRunnerCleanupMock
+      .mockRejectedValueOnce(new Error('global runner cleanup failed'))
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveRetry = resolve;
+        }),
+      );
+
+    await expect(stopAllTaskAgentWorkflows()).rejects.toThrow('global runner cleanup failed');
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-global-stop-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-global-stop-retry',
+        env: {},
+        rows: 24,
+        taskId: 'task-global-stop-retry',
+      }),
+    ).rejects.toThrow('Agent sessions are stopping and do not admit new spawns');
+
+    const firstRetry = stopAllTaskAgentWorkflows();
+    const secondRetry = stopAllTaskAgentWorkflows();
+    expect(secondRetry).toBe(firstRetry);
+    await vi.waitFor(() => {
+      expect(killAllAgentsAndWaitForRunnerCleanupMock).toHaveBeenCalledTimes(2);
+    });
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-global-stop-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-global-stop-retry',
+        env: {},
+        rows: 24,
+        taskId: 'task-global-stop-retry',
+      }),
+    ).rejects.toThrow('Agent sessions are stopping and do not admit new spawns');
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+
+    resolveRetry();
+    await Promise.all([firstRetry, secondRetry]);
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-global-stop-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-global-stop-retry',
+        env: {},
+        rows: 24,
+        taskId: 'task-global-stop-retry',
+      }),
+    ).resolves.toMatchObject({ kind: 'created-session' });
+
+    expect(killAllAgentsAndWaitForRunnerCleanupMock).toHaveBeenCalledTimes(2);
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+  });
+
+  it('lets successful global cleanup supersede retained per-agent stop failures', async () => {
+    const context = createContext();
+    killAgentAndWaitForRunnerCleanupMock.mockRejectedValueOnce(
+      new Error('individual runner cleanup failed'),
+    );
+
+    await expect(stopTaskAgentWorkflow('agent-global-recovery')).rejects.toThrow(
+      'individual runner cleanup failed',
+    );
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-global-recovery',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-global-recovery',
+        env: {},
+        rows: 24,
+        taskId: 'task-global-recovery',
+      }),
+    ).rejects.toThrow('Agent agent-global-recovery is stopping and does not admit new spawns');
+
+    await expect(stopAllTaskAgentWorkflows()).resolves.toBeUndefined();
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-global-recovery',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-global-recovery',
+        env: {},
+        rows: 24,
+        taskId: 'task-global-recovery',
+      }),
+    ).resolves.toMatchObject({ kind: 'created-session' });
+
+    expect(killAllAgentsAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+  });
+
+  it('shares overlapping per-agent stops and keeps spawn admission closed through cleanup', async () => {
+    const context = createContext();
+    let resolveCleanup!: () => void;
+    killAgentAndWaitForRunnerCleanupMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveCleanup = resolve;
+      }),
+    );
+
+    const firstStop = stopTaskAgentWorkflow('agent-stop-owner');
+    const secondStop = stopTaskAgentWorkflow('agent-stop-owner');
+    expect(secondStop).toBe(firstStop);
+
+    const blockedSpawn = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-stop-owner',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-stop-owner',
+      env: {},
+      rows: 24,
+      taskId: 'task-stop-owner',
+    });
+    await expect(blockedSpawn).rejects.toThrow(
+      'Agent agent-stop-owner is stopping and does not admit new spawns',
+    );
+    await vi.waitFor(() => {
+      expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+    });
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+
+    resolveCleanup();
+    await Promise.all([firstStop, secondStop]);
+
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-stop-owner',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-stop-owner',
+        env: {},
+        rows: 24,
+        taskId: 'task-stop-owner',
+      }),
+    ).resolves.toMatchObject({ kind: 'created-session' });
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects every spawn initiated during stop instead of queuing behind a cancelled predecessor', async () => {
+    const context = createContext();
+    let rejectPredecessor!: (error: unknown) => void;
+    let reportPredecessorAbort!: () => void;
+    const predecessorAborted = new Promise<void>((resolve) => {
+      reportPredecessorAbort = resolve;
+    });
+    createDockerAgentRunnerLaunchMock.mockImplementationOnce(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          rejectPredecessor = reject;
+          signal.addEventListener('abort', reportPredecessorAbort, { once: true });
+        }),
+    );
+    const predecessor = spawnTaskAgentWorkflow(context, {
+      agentId: 'agent-stop-predecessor',
+      args: [],
+      cols: 80,
+      command: 'codex',
+      cwd: '/tmp/task-stop-predecessor',
+      env: {},
+      rows: 24,
+      runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+      taskId: 'task-stop-predecessor',
+    });
+    await vi.waitFor(() => {
+      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+    });
+
+    const stop = stopTaskAgentWorkflow('agent-stop-predecessor');
+    await predecessorAborted;
+    const spawnsDuringStop = Array.from({ length: 8 }, () =>
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-stop-predecessor',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-stop-predecessor',
+        env: {},
+        rows: 24,
+        taskId: 'task-stop-predecessor',
+      }),
+    );
+
+    rejectPredecessor(new Error('cancelled predecessor settled'));
+    await expect(predecessor).rejects.toThrow('cancelled predecessor settled');
+    await expect(stop).resolves.toBeUndefined();
+    for (const spawnDuringStop of spawnsDuringStop) {
+      await expect(spawnDuringStop).rejects.toThrow(
+        'Agent agent-stop-predecessor is stopping and does not admit new spawns',
+      );
+    }
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('retains failed per-agent stop admission until an explicit retry settles successfully', async () => {
+    const context = createContext();
+    killAgentAndWaitForRunnerCleanupMock
+      .mockRejectedValueOnce(new Error('runner cleanup failed'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(stopTaskAgentWorkflow('agent-stop-retry')).rejects.toThrow(
+      'runner cleanup failed',
+    );
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-stop-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-stop-retry',
+        env: {},
+        rows: 24,
+        taskId: 'task-stop-retry',
+      }),
+    ).rejects.toThrow('Agent agent-stop-retry is stopping and does not admit new spawns');
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+
+    await expect(stopTaskAgentWorkflow('agent-stop-retry')).resolves.toBeUndefined();
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-stop-retry',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-stop-retry',
+        env: {},
+        rows: 24,
+        taskId: 'task-stop-retry',
+      }),
+    ).resolves.toMatchObject({ kind: 'created-session' });
+
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledTimes(2);
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+  });
+
+  it('attempts every per-agent cleanup owner when PTY cleanup throws synchronously', async () => {
+    const preparedCleanup = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('retain prepared cleanup'))
+      .mockResolvedValueOnce(undefined);
+    createDockerAgentRunnerLaunchMock.mockResolvedValueOnce({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup: preparedCleanup,
+      command: 'docker',
+      cwd: '/tmp/task-sync-stop-cleanup',
+      env: {},
+      identity: {
+        agentId: 'agent-sync-stop-cleanup',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-sync-stop-cleanup',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'task-sync-stop-cleanup',
+      },
+    });
+    spawnAgentMock.mockImplementationOnce(() => {
+      throw new Error('PTY spawn failed');
+    });
+    await expect(
+      spawnTaskAgentWorkflow(createContext(), {
+        agentId: 'agent-sync-stop-cleanup',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-sync-stop-cleanup',
+        env: {},
+        rows: 24,
+        runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+        taskId: 'task-sync-stop-cleanup',
+      }),
+    ).rejects.toThrow('prepared runner cleanup also failed');
+    killAgentAndWaitForRunnerCleanupMock.mockImplementationOnce(() => {
+      throw new Error('synchronous PTY cleanup failed');
+    });
+
+    await expect(stopTaskAgentWorkflow('agent-sync-stop-cleanup')).rejects.toThrow(
+      'synchronous PTY cleanup failed',
+    );
+
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledOnce();
+    expect(preparedCleanup).toHaveBeenCalledTimes(2);
+    expect(cleanupPendingDockerAgentRunnerBuildsMock).toHaveBeenCalledWith({
+      agentIds: new Set(['agent-sync-stop-cleanup']),
+    });
+  });
+
+  it('skips plan and git watchers for shell agents', async () => {
     const context = createContext();
 
-    spawnTaskAgentWorkflow(context, {
+    await spawnTaskAgentWorkflow(context, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: 'bash',
@@ -411,10 +1237,10 @@ describe('task workflows', () => {
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
 
-  it('starts plan watchers but not git watchers for non-git agents', () => {
+  it('starts plan watchers but not git watchers for non-git agents', async () => {
     const context = createContext();
 
-    spawnTaskAgentWorkflow(context, {
+    await spawnTaskAgentWorkflow(context, {
       taskId: 'task-non-git',
       agentId: 'agent-non-git',
       command: 'codex',
@@ -935,7 +1761,8 @@ describe('task workflows', () => {
       taskId: 'task-3',
       worktreePath: '/tmp/project/.worktrees/task-3',
     });
-    expect(deleteTaskMock).toHaveBeenCalledWith(['agent-1'], 'task/delete', true, '/tmp/project');
+    expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledWith('agent-1');
+    expect(deleteTaskMock).toHaveBeenCalledWith('task/delete', true, '/tmp/project');
     expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
     expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
@@ -997,6 +1824,62 @@ describe('task workflows', () => {
     }
   });
 
+  it('awaits runner cleanup and reports failures without skipping later deletion steps', async () => {
+    killAgentAndWaitForRunnerCleanupMock.mockRejectedValue(new Error('runner cleanup failed'));
+    deleteTaskMock.mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await deleteTaskWorkflow({
+        agentIds: ['agent-1'],
+        branchName: 'task/delete',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        taskId: 'task-3',
+        worktreePath: '/tmp/project/.worktrees/task-3',
+      });
+
+      expect(result.cleanupWarnings).toContainEqual({
+        kind: 'runners',
+        message: 'Failed to clean agent runners while deleting task: runner cleanup failed',
+      });
+      expect(destroyManagedTaskContainersByLabelsMock).toHaveBeenCalledOnce();
+      expect(deleteTaskMock).toHaveBeenCalledOnce();
+      expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('reports synchronous task runner cleanup failure after attempting later owners', async () => {
+    killTaskAgentsAndWaitForRunnerCleanupMock.mockImplementationOnce(() => {
+      throw new Error('synchronous task runner cleanup failed');
+    });
+    deleteTaskMock.mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await deleteTaskWorkflow({
+        agentIds: ['agent-1'],
+        branchName: 'task/delete',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        taskId: 'task-3',
+        worktreePath: '/tmp/project/.worktrees/task-3',
+      });
+
+      expect(result.cleanupWarnings).toContainEqual({
+        kind: 'runners',
+        message:
+          'Failed to clean agent runners while deleting task: synchronous task runner cleanup failed',
+      });
+      expect(cleanupPendingDockerAgentRunnerBuildsMock).toHaveBeenCalledWith({ taskId: 'task-3' });
+      expect(deleteTaskMock).toHaveBeenCalledOnce();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('still removes backend task state when task container cleanup fails', async () => {
     destroyManagedTaskContainersByLabelsMock.mockRejectedValue(new Error('container failed'));
     deleteTaskMock.mockResolvedValue(undefined);
@@ -1022,7 +1905,7 @@ describe('task workflows', () => {
           message: 'Failed to clean task containers while deleting task: container failed',
         },
       ]);
-      expect(deleteTaskMock).toHaveBeenCalledWith(['agent-1'], 'task/delete', true, '/tmp/project');
+      expect(deleteTaskMock).toHaveBeenCalledWith('task/delete', true, '/tmp/project');
       expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
       expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
     } finally {
@@ -1085,10 +1968,10 @@ describe('task workflows', () => {
     expect(removeGitStatusSnapshotMock).not.toHaveBeenCalled();
   });
 
-  it('forwards plan watcher updates to the IPC event channel', () => {
+  it('forwards plan watcher updates to the IPC event channel', async () => {
     const context = createContext();
 
-    spawnTaskAgentWorkflow(context, {
+    await spawnTaskAgentWorkflow(context, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: 'codex',

@@ -503,9 +503,9 @@ export function registerBrowserWebSocketServer(
         );
       },
       kill: (currentMessage) => {
-        agentCommandRunner.run(client, currentMessage.agentId, 'kill', () => {
-          killBrowserAgent(currentMessage.agentId);
-        });
+        agentCommandRunner.run(client, currentMessage.agentId, 'kill', () =>
+          killBrowserAgent(currentMessage.agentId),
+        );
       },
       pause: (currentMessage) => {
         agentCommandRunner.run(

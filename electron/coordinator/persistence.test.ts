@@ -17,7 +17,7 @@ import {
   saveCoordinatorRuntimeStateForEnvAsync,
 } from './persistence.js';
 import type { CoordinatorRuntimeState } from './runtime.js';
-import { createStorageEnv, removeStorageEnv } from './test-helpers.js';
+import { createStorageEnv, removeStorageEnv } from './test-helpers.test-helper.js';
 
 function createRunSnapshot(
   id: string,

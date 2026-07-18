@@ -5,6 +5,7 @@ import path from 'path';
 import { gzipSync, brotliCompressSync } from 'zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import {
   isHashedAssetRequestPath,
   registerBrowserStaticRoutes,
@@ -38,8 +39,17 @@ describe('registerBrowserStaticRoutes', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    await runIndependentCleanups(
+      'Browser static test temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (directory, index) =>
+            [
+              `remove browser static temporary directory ${index + 1}`,
+              () => rm(directory, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 

@@ -236,7 +236,10 @@ describe('boot pipeline (12-task snapshot-first server boot)', () => {
   }, 120_000);
 
   afterAll(async () => {
-    serverController?.cleanup();
+    if (serverController) {
+      serverController.cleanup();
+      await serverController.whenCoordinatorRuntimeStopped();
+    }
     await new Promise((resolve) => {
       setTimeout(resolve, 50);
     });

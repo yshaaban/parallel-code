@@ -10,7 +10,6 @@ const {
   getGitCommonDirectoryMock,
   getMainBranchMock,
   removeWorktreeMock,
-  killAgentMock,
   notifyAgentListChangedMock,
 } = vi.hoisted(() => ({
   checkoutBranchMock: vi.fn(),
@@ -19,7 +18,6 @@ const {
   getGitCommonDirectoryMock: vi.fn(),
   getMainBranchMock: vi.fn(),
   removeWorktreeMock: vi.fn(),
-  killAgentMock: vi.fn(),
   notifyAgentListChangedMock: vi.fn(),
 }));
 
@@ -33,7 +31,6 @@ vi.mock('./git.js', () => ({
 }));
 
 vi.mock('./pty.js', () => ({
-  killAgent: killAgentMock,
   notifyAgentListChanged: notifyAgentListChangedMock,
 }));
 
@@ -155,11 +152,8 @@ describe('deleteTask', () => {
   it('notifies agent-list subscribers even when worktree cleanup fails', async () => {
     removeWorktreeMock.mockRejectedValue(new Error('remove failed'));
 
-    await expect(deleteTask(['agent-1'], 'task/delete', true, '/tmp/project')).rejects.toThrow(
-      'remove failed',
-    );
+    await expect(deleteTask('task/delete', true, '/tmp/project')).rejects.toThrow('remove failed');
 
-    expect(killAgentMock).toHaveBeenCalledWith('agent-1');
     expect(notifyAgentListChangedMock).toHaveBeenCalledTimes(1);
   });
 });

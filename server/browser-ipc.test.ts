@@ -342,7 +342,13 @@ describe('browser IPC routes', () => {
       worktreePath: '/repo',
       worktreeOwnership: 'managed',
     });
-    const cleanupTaskRuntime = vi.fn().mockResolvedValue(undefined);
+    const cleanupWarnings = [
+      {
+        kind: 'runners',
+        message: 'Failed to clean agent runners while removing task runtime: timeout',
+      },
+    ];
+    const cleanupTaskRuntime = vi.fn().mockResolvedValue({ cleanupWarnings });
     const server = await startTestServer({
       broadcastControl,
       emitGitStatusChanged,
@@ -361,7 +367,7 @@ describe('browser IPC routes', () => {
       worktreePath: '/repo',
     });
 
-    await expect(response.json()).resolves.toEqual({});
+    await expect(response.json()).resolves.toEqual({ result: { cleanupWarnings } });
     expect(response.status).toBe(200);
     expect(taskNames.getTaskMetadata('task-1')).toBeNull();
     expect(broadcastControl).toHaveBeenCalledWith({

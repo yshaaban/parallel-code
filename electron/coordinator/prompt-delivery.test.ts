@@ -68,7 +68,7 @@ import {
   createStorageEnv as createCoordinatorTestStorageEnv,
   createSupervisionSnapshot,
   removeStorageEnv,
-} from './test-helpers.js';
+} from './test-helpers.test-helper.js';
 
 const CODEX_COMPOSER_TAIL = ['Codex session ready.', '', '› Describe the next change'].join('\n');
 
@@ -129,9 +129,9 @@ describe('coordinator prompt delivery', () => {
     mocks.getAgentScrollbackBufferMock.mockReturnValue(Buffer.from(''));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     resetCoordinatorPromptDeliveryForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetTaskCommandLeasesForTest();
     vi.clearAllTimers();
@@ -180,6 +180,51 @@ describe('coordinator prompt delivery', () => {
       '\r',
       'Follow up\r',
     ]);
+  });
+
+  it('closes prompt admission and drains an active delivery before allowing restart', async () => {
+    vi.useFakeTimers();
+    const env = createStorageEnv();
+    envs.push(env);
+    const context = createContext(env);
+    const runId = createRunForCoordinatorTask(context);
+    addRunningSubtask(runId, 'child');
+    mocks.hasAgentSessionMock.mockReturnValue(true);
+    mocks.getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-child',
+      generation: 1,
+      isShell: false,
+      taskId: 'task-child',
+    });
+    mocks.getAgentSupervisionSnapshotMock.mockReturnValue(
+      createSupervisionSnapshot('idle-at-prompt'),
+    );
+    startCoordinatorPromptDeliveryLoop(context);
+
+    const delivery = queuePrompt(context, runId, 'task-child', 'First line\nSecond line');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getCoordinatorRun(runId)?.promptQueue[0]?.status).toBe('delivering');
+
+    let shutdownSettled = false;
+    const shutdown = stopCoordinatorPromptDeliveryLoop().finally(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+    expect(() => startCoordinatorPromptDeliveryLoop(context)).toThrow(
+      'prompt delivery while shutdown is pending',
+    );
+    await expect(queuePrompt(context, runId, 'task-child', 'Must not be admitted')).rejects.toThrow(
+      'Coordinator prompt delivery is stopping',
+    );
+
+    await vi.runAllTimersAsync();
+    await expect(delivery).resolves.toMatchObject({ status: 'delivered' });
+    await expect(shutdown).resolves.toBeUndefined();
+
+    startCoordinatorPromptDeliveryLoop(context);
+    await stopCoordinatorPromptDeliveryLoop();
   });
 
   it('does not spend prompt delivery capacity while a prompt waits behind the same target', async () => {
@@ -763,7 +808,7 @@ describe('coordinator prompt delivery', () => {
     );
     expect(settledPrompt?.status).toBe('delivered');
     expect(mocks.writeToAgentMock).toHaveBeenCalled();
-    stopCoordinatorPromptDeliveryLoop();
+    await stopCoordinatorPromptDeliveryLoop();
   });
 
   it('keeps an actively delivering prompt out of the stale requeue sweep', async () => {
@@ -798,7 +843,7 @@ describe('coordinator prompt delivery', () => {
     await vi.runAllTimersAsync();
     await deliveryPromise;
     expect(getCoordinatorRun(runId)?.promptQueue[0]?.status).toBe('delivered');
-    stopCoordinatorPromptDeliveryLoop();
+    await stopCoordinatorPromptDeliveryLoop();
   });
 
   it('no-ops scheduled sweeps while detached and clears subscriptions across start/stop cycles', async () => {
@@ -840,13 +885,13 @@ describe('coordinator prompt delivery', () => {
     expect(mocks.supervisionListeners.size).toBe(1);
     startCoordinatorPromptDeliveryLoop(context);
     expect(mocks.supervisionListeners.size).toBe(1);
-    stopCoordinatorPromptDeliveryLoop();
+    await stopCoordinatorPromptDeliveryLoop();
     expect(mocks.supervisionListeners.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
 
     startCoordinatorPromptDeliveryLoop(context);
     expect(mocks.supervisionListeners.size).toBe(1);
-    stopCoordinatorPromptDeliveryLoop();
+    await stopCoordinatorPromptDeliveryLoop();
     expect(mocks.supervisionListeners.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
     await vi.runAllTimersAsync();

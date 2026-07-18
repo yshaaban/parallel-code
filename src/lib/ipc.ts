@@ -1265,6 +1265,25 @@ function invokeElectronTransport<TChannel extends RendererInvokeChannel>(
   return electron.invoke(cmd, args);
 }
 
+function settleConsumerOnAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+
+  return new Promise<T>((resolve, reject) => {
+    const handleAbort = (): void => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    signal.addEventListener('abort', handleAbort, { once: true });
+    void operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', handleAbort);
+    });
+  });
+}
+
 function createAutomaticPauseResumeCommand(
   type: 'pause' | 'resume',
   request: BrowserPauseResumeRequest,
@@ -1452,6 +1471,38 @@ export async function invoke<TChannel extends RendererInvokeChannel>(
     cmd,
     safeArgs as Exclude<RendererInvokeRequestMap[TChannel], undefined>,
   );
+}
+
+export async function invokeWithAbortSignal<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  signal: AbortSignal,
+  ...args: InvokeArgs<TChannel>
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  signal.throwIfAborted();
+  const [argsValue] = args;
+  const safeArgs = getSafeInvokeArgs(cmd, argsValue);
+  let result: RendererInvokeResponseMap[TChannel];
+
+  if (isElectronRuntime()) {
+    const electron = window.electron?.ipcRenderer;
+    if (!electron) {
+      throw new Error('Electron IPC bridge is unavailable');
+    }
+
+    // Electron cannot cancel work already admitted by the main process, but
+    // the renderer-side consumer must still release its reactive ownership
+    // promptly when the request is no longer relevant.
+    result = await settleConsumerOnAbort(invokeElectronTransport(electron, cmd, safeArgs), signal);
+  } else {
+    if (isBrowserControlChannel(cmd)) {
+      throw new Error(`Abortable browser IPC is unsupported for control channel ${cmd}`);
+    }
+
+    result = await browserHttpClient.fetchCancellable(cmd, safeArgs, signal);
+  }
+
+  signal.throwIfAborted();
+  return result;
 }
 
 export function sendPagehideInvoke<TChannel extends RendererInvokeChannel>(

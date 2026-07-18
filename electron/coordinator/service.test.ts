@@ -21,14 +21,17 @@ import {
   addCoordinatorSubtask,
   getCoordinatorBootstrapSnapshot,
   getCoordinatorSubtaskLaunch,
+  getCoordinatorToolResult,
   recordCoordinatorSubtaskLaunch,
+  rememberCoordinatorToolResult,
   resetCoordinatorRuntimeForTests,
   updateCoordinatorSubtaskStatus,
 } from './runtime.js';
+import * as coordinatorRuntime from './runtime.js';
 import {
   createStorageEnv as createCoordinatorTestStorageEnv,
   removeStorageEnv,
-} from './test-helpers.js';
+} from './test-helpers.test-helper.js';
 
 function createStorageEnv(): StorageEnv {
   return createCoordinatorTestStorageEnv('parallel-code-coordinator-service-');
@@ -58,8 +61,8 @@ function readCredential(pathname: string): {
 describe('coordinator service', () => {
   const envs: StorageEnv[] = [];
 
-  afterEach(() => {
-    resetCoordinatorServiceForTests();
+  afterEach(async () => {
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     for (const env of envs) {
       removeStorageEnv(env);
@@ -84,6 +87,39 @@ describe('coordinator service', () => {
     expect(credential.taskId).toBe('task-coordinator');
     expect(resolveCoordinatorToken(credential.token)?.tokenId).toBe(credential.tokenId);
     expect(JSON.stringify(getCoordinatorBootstrapSnapshot())).not.toContain(credential.token);
+  });
+
+  it('uses narrow run metadata for duplicate detection and parent cleanup', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    ensureCoordinatorServiceLoaded(env);
+    const run = coordinatorRuntime.createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+
+    const fullRunRead = vi.spyOn(coordinatorRuntime, 'getCoordinatorRun');
+    try {
+      expect(() =>
+        createCoordinatorRunForTask(env, {
+          coordinatorAgentId: 'agent-coordinator',
+          coordinatorTaskId: 'task-coordinator',
+          projectId: 'project-1',
+          projectMode: 'git',
+          projectRoot: '/repo',
+        }),
+      ).toThrow('Coordinator task already has a run: task-coordinator');
+
+      cleanupCoordinatorStateForTask(env, 'task-coordinator');
+      expect(fullRunRead).not.toHaveBeenCalled();
+    } finally {
+      fullRunRead.mockRestore();
+    }
+
+    expect(getCoordinatorBootstrapSnapshot().runs).toEqual([]);
+    expect(coordinatorRuntime.getCoordinatorRunMeta(run.id)).toBeNull();
   });
 
   it('does not carry runtime state across storage roots without persisted coordinator state', () => {
@@ -328,7 +364,7 @@ describe('coordinator service', () => {
     });
     await stopPersistence();
 
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     ensureCoordinatorServiceLoaded(env);
 
@@ -339,7 +375,7 @@ describe('coordinator service', () => {
     });
   });
 
-  it('loads legacy coordinator state files without subtask launch payloads', () => {
+  it('loads legacy coordinator state files without subtask launch payloads', async () => {
     const env = createStorageEnv();
     envs.push(env);
     const result = createCoordinatorRunForTask(env, {
@@ -354,7 +390,7 @@ describe('coordinator service', () => {
     delete persisted.subtaskLaunches;
     fs.writeFileSync(statePath, JSON.stringify(persisted));
 
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     ensureCoordinatorServiceLoaded(env);
 
@@ -440,6 +476,30 @@ describe('coordinator service persistence overhaul', () => {
     await stopPersistence();
   });
 
+  it('persists a remembered read-only result in the unconditional shutdown snapshot', async () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const stopPersistence = startCoordinatorRuntimePersistence(env);
+    const resultKey = 'tool:run-read:task-read:call-read';
+    const rememberedResult = {
+      accepted: true,
+      callId: 'call-read',
+      result: { status: 'read-only-result' },
+    };
+
+    // Remembering an idempotent read result intentionally emits no domain
+    // event, so only the persistence owner's final snapshot can make it durable.
+    rememberCoordinatorToolResult(resultKey, rememberedResult);
+    expect(getCoordinatorPersistenceHealth()).toMatchObject({ pendingFlush: false });
+    await stopPersistence();
+
+    await resetCoordinatorServiceForTests();
+    resetCoordinatorRuntimeForTests();
+    ensureCoordinatorServiceLoaded(env);
+
+    expect(getCoordinatorToolResult(resultKey)).toEqual(rememberedResult);
+  });
+
   it('keeps per-event emit latency under 5ms with a multi-MB state fixture', async () => {
     const env = createStorageEnv();
     envs.push(env);
@@ -470,7 +530,7 @@ describe('coordinator service persistence overhaul', () => {
     await stopPersistence();
   });
 
-  it('never deletes credential files when the coordinator state load failed', () => {
+  it('never deletes credential files when the coordinator state load failed', async () => {
     const env = createStorageEnv();
     envs.push(env);
 
@@ -490,7 +550,7 @@ describe('coordinator service persistence overhaul', () => {
     fs.rmSync(`${statePath}.bak`, { force: true });
     fs.writeFileSync(`${statePath}.bak`, 'garbage');
 
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     ensureCoordinatorServiceLoaded(env);
 
@@ -499,7 +559,7 @@ describe('coordinator service persistence overhaul', () => {
     expect(fs.existsSync(credentialPath)).toBe(true);
   });
 
-  it('keeps credentials for runs dropped by per-run salvage', () => {
+  it('keeps credentials for runs dropped by per-run salvage', async () => {
     const env = createStorageEnv();
     envs.push(env);
 
@@ -517,7 +577,7 @@ describe('coordinator service persistence overhaul', () => {
     fs.writeFileSync(statePath, JSON.stringify(persisted));
     fs.rmSync(`${statePath}.bak`, { force: true });
 
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     ensureCoordinatorServiceLoaded(env);
 

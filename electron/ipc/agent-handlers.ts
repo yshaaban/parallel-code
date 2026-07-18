@@ -1,7 +1,4 @@
-import { performance } from 'node:perf_hooks';
-
 import { IPC } from './channels.js';
-import { normalizeAgentRunnerProfileConfig } from './agent-runner-handlers.js';
 import { listAgentSupervisionSnapshots } from './agent-supervision.js';
 import { listAgents, requestAgentCatalogAvailabilityRevalidation } from './agents.js';
 import {
@@ -10,7 +7,6 @@ import {
   type IpcHandler,
 } from './handler-context.js';
 import {
-  countRunningAgents,
   detachAgentOutput,
   getActiveAgentIds,
   getAgentCols,
@@ -20,24 +16,25 @@ import {
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
   hasAgentSession,
-  killAgent,
-  killAllAgents,
   pauseAgent,
   resizeAgent,
   resumeAgent,
+  type AgentSpawnDisposition,
   writeToAgent,
 } from './pty.js';
 import { decodeTerminalRenderedTail, serializeTerminalRecoveryEntry } from './terminal-recovery.js';
 import { getTaskCommandControllerSnapshot, isTaskCommandLeaseHeld } from './task-command-leases.js';
-import { spawnTaskAgentWorkflow } from './task-workflows.js';
+import {
+  countRunningAndPendingTaskAgents,
+  spawnTaskAgentWorkflow,
+  stopAllTaskAgentWorkflows,
+  stopTaskAgentWorkflow,
+} from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
   recordTerminalRecoveryBatch,
   recordAgentSessionEnsureBatch,
   recordAgentSessionEnsureResult,
-  recordAgentSessionSpawnAdmissionState,
-  recordAgentSessionSpawnAdmissionWait,
-  recordAgentSessionSpawnDuration,
   recordScrollbackReplay,
   recordScrollbackReplayCacheHit,
   recordScrollbackReplayCacheMiss,
@@ -74,65 +71,7 @@ interface CachedScrollbackBatch {
 
 const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
 const MAX_TERMINAL_ORDER_EPOCH_LENGTH = 100;
-const MAX_CONCURRENT_AGENT_SESSION_SPAWNS = 4;
 const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
-const pendingAgentSessionSpawnAdmissions: Array<() => void> = [];
-let activeAgentSessionSpawns = 0;
-
-async function acquireAgentSessionSpawnAdmission(): Promise<void> {
-  const startedAt = performance.now();
-  if (activeAgentSessionSpawns < MAX_CONCURRENT_AGENT_SESSION_SPAWNS) {
-    activeAgentSessionSpawns += 1;
-    recordAgentSessionSpawnAdmissionState({
-      activeSpawns: activeAgentSessionSpawns,
-      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
-    });
-    recordAgentSessionSpawnAdmissionWait(performance.now() - startedAt);
-    return;
-  }
-
-  await new Promise<void>((resolve) => {
-    pendingAgentSessionSpawnAdmissions.push(resolve);
-    recordAgentSessionSpawnAdmissionState({
-      activeSpawns: activeAgentSessionSpawns,
-      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
-    });
-  });
-  recordAgentSessionSpawnAdmissionState({
-    activeSpawns: activeAgentSessionSpawns,
-    pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
-  });
-  recordAgentSessionSpawnAdmissionWait(performance.now() - startedAt);
-}
-
-function releaseAgentSessionSpawnAdmission(): void {
-  const nextAdmission = pendingAgentSessionSpawnAdmissions.shift();
-  if (nextAdmission) {
-    recordAgentSessionSpawnAdmissionState({
-      activeSpawns: activeAgentSessionSpawns,
-      pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
-    });
-    nextAdmission();
-    return;
-  }
-
-  activeAgentSessionSpawns = Math.max(0, activeAgentSessionSpawns - 1);
-  recordAgentSessionSpawnAdmissionState({
-    activeSpawns: activeAgentSessionSpawns,
-    pendingSpawns: pendingAgentSessionSpawnAdmissions.length,
-  });
-}
-
-async function runNewAgentSessionSpawn<T>(operation: () => Promise<T> | T): Promise<T> {
-  await acquireAgentSessionSpawnAdmission();
-  const startedAt = performance.now();
-  try {
-    return await operation();
-  } finally {
-    recordAgentSessionSpawnDuration(performance.now() - startedAt);
-    releaseAgentSessionSpawnAdmission();
-  }
-}
 
 function clearExpiredScrollbackBatchEntries(now: number): void {
   for (const [cacheKey, entry] of pendingScrollbackBatchByKey) {
@@ -594,7 +533,6 @@ interface AgentSpawnRequestFields {
 
 interface NormalizedAgentSpawnRequest {
   channelId: string;
-  hasExistingSession: boolean;
   replaceExistingSession: boolean;
   requestedCols: number;
   requestedRows: number;
@@ -627,7 +565,6 @@ function assertAgentSpawnRequestFields(
 
   return {
     channelId: getRequiredChannelId(request.onOutput),
-    hasExistingSession: hasAgentSession(request.agentId),
     replaceExistingSession: request.replaceExistingSession === true,
     requestedCols: normalizeTerminalDimension(request.cols, 80, 'cols'),
     requestedRows: normalizeTerminalDimension(request.rows, 24, 'rows'),
@@ -638,15 +575,12 @@ async function runAgentSpawnRequest(
   context: HandlerContext,
   request: AgentSpawnRequestFields,
   normalized: NormalizedAgentSpawnRequest,
-): Promise<boolean> {
+): Promise<AgentSpawnDisposition> {
   const { channelId, replaceExistingSession, requestedCols, requestedRows } = normalized;
 
-  function spawnWorkflow(): boolean {
+  function spawnWorkflow(): Promise<AgentSpawnDisposition> {
     const hasSessionAtSpawn = hasAgentSession(request.agentId);
     const shouldAttachExistingSession = hasSessionAtSpawn && !replaceExistingSession;
-    const runnerProfile = shouldAttachExistingSession
-      ? undefined
-      : normalizeAgentRunnerProfileConfig(request.runnerProfile);
     // Attach-to-existing never resizes: the backend session geometry stays
     // authoritative regardless of the optimistic geometry on the request.
     const cols = shouldAttachExistingSession ? getAgentCols(request.agentId) : requestedCols;
@@ -668,15 +602,11 @@ async function runAgentSpawnRequest(
       onOutput: { __CHANNEL_ID__: channelId },
       ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
       ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
-      ...(runnerProfile !== undefined ? { runnerProfile } : {}),
+      ...(request.runnerProfile !== undefined ? { runnerProfile: request.runnerProfile } : {}),
     });
   }
 
-  if (normalized.hasExistingSession && !replaceExistingSession) {
-    return spawnWorkflow();
-  }
-
-  return runNewAgentSessionSpawn(spawnWorkflow);
+  return spawnWorkflow();
 }
 
 interface NormalizedInitialAttachRecoveryRequest {
@@ -733,10 +663,10 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
     [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
       const request = args;
       const normalized = assertAgentSpawnRequestFields(request);
-      const attachedExistingSession = await runAgentSpawnRequest(context, request, normalized);
+      const spawnDisposition = await runAgentSpawnRequest(context, request, normalized);
 
       return {
-        attachedExistingSession,
+        attachedExistingSession: spawnDisposition.kind === 'attached-existing',
       };
     }),
 
@@ -754,7 +684,8 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         // channels and every Data frame on the new channel strictly follows
         // the captured recovery cursor.
         const channelBound = context.bindChannelForClient?.(clientId, normalized.channelId) ?? true;
-        const attachedExistingSession = await runAgentSpawnRequest(context, request, normalized);
+        const spawnDisposition = await runAgentSpawnRequest(context, request, normalized);
+        const attachedExistingSession = spawnDisposition.kind === 'attached-existing';
         if (!attachedExistingSession) {
           return {
             attachedExistingSession,
@@ -926,36 +857,27 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
               };
             }
 
-            if (hasAgentSession(entry.agentId)) {
-              recordAgentSessionEnsureResult('existing');
-              return buildExistingResult();
-            }
-
             try {
-              const created = await runNewAgentSessionSpawn(() => {
-                if (hasAgentSession(entry.agentId)) {
-                  return false;
-                }
-
-                const runnerProfile = normalizeAgentRunnerProfileConfig(entry.runnerProfile);
-                spawnTaskAgentWorkflow(context, {
-                  taskId: entry.taskId,
-                  ...(entry.baseBranch !== undefined ? { baseBranch: entry.baseBranch } : {}),
-                  agentId: entry.agentId,
-                  command: entry.command,
-                  args: entry.spawnArgs,
-                  cwd: entry.cwd,
-                  env: entry.env,
-                  cols: entry.requestedCols,
-                  rows: entry.requestedRows,
-                  isShell: entry.isShell,
-                  resumeOnStart: entry.resumeOnStart,
-                  ...(entry.projectMode !== undefined ? { projectMode: entry.projectMode } : {}),
-                  ...(entry.adapter !== undefined ? { adapter: entry.adapter } : {}),
-                  ...(runnerProfile !== undefined ? { runnerProfile } : {}),
-                });
-                return true;
+              const spawnDisposition = await spawnTaskAgentWorkflow(context, {
+                taskId: entry.taskId,
+                ...(entry.baseBranch !== undefined ? { baseBranch: entry.baseBranch } : {}),
+                agentId: entry.agentId,
+                command: entry.command,
+                args: entry.spawnArgs,
+                cwd: entry.cwd,
+                env: entry.env,
+                cols: entry.requestedCols,
+                rows: entry.requestedRows,
+                isShell: entry.isShell,
+                resumeOnStart: entry.resumeOnStart,
+                skipExistingSessionAttach: true,
+                ...(entry.projectMode !== undefined ? { projectMode: entry.projectMode } : {}),
+                ...(entry.adapter !== undefined ? { adapter: entry.adapter } : {}),
+                ...(entry.runnerProfile !== undefined
+                  ? { runnerProfile: entry.runnerProfile }
+                  : {}),
               });
+              const created = spawnDisposition.kind === 'created-session';
 
               if (!created) {
                 recordAgentSessionEnsureResult('existing');
@@ -1173,15 +1095,15 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       return undefined;
     }),
 
-    [IPC.KillAgent]: defineIpcHandler<IPC.KillAgent>(IPC.KillAgent, (args) => {
+    [IPC.KillAgent]: defineIpcHandler<IPC.KillAgent>(IPC.KillAgent, async (args) => {
       const request = args;
       assertString(request.agentId, 'agentId');
-      killAgent(request.agentId);
+      await stopTaskAgentWorkflow(request.agentId);
       return undefined;
     }),
 
-    [IPC.CountRunningAgents]: () => countRunningAgents(),
-    [IPC.KillAllAgents]: () => killAllAgents(),
+    [IPC.CountRunningAgents]: () => countRunningAndPendingTaskAgents(),
+    [IPC.KillAllAgents]: () => stopAllTaskAgentWorkflows(),
     [IPC.ListAgents]: defineIpcHandler<IPC.ListAgents>(IPC.ListAgents, (args) => {
       const request = args;
       assertOptionalString(request.hydraCommand, 'hydraCommand');

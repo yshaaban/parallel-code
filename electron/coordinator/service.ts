@@ -23,10 +23,11 @@ import {
   cancelCoordinatorPromptsForTask,
   cancelCoordinatorWorkflowLanesForTask,
   createCoordinatorRun,
-  getCoordinatorRun,
-  getCoordinatorRunByCoordinatorTaskId,
+  getCoordinatorRunIdBySubtaskTaskId,
+  getCoordinatorRunMeta,
+  getCoordinatorRunMetaByCoordinatorTaskId,
   getCoordinatorRuntimeState,
-  listCoordinatorRuns,
+  getCoordinatorSubtask,
   removeCoordinatorRun,
   removeCoordinatorSubtaskLaunch,
   restoreCoordinatorRuntimeState,
@@ -62,10 +63,15 @@ interface CoordinatorActivityHintRecord extends CoordinatorActivityHintRequest {
   expiresAt: number;
 }
 
+interface CoordinatorRuntimePersistenceOwner {
+  scheduler: CoordinatorPersistenceScheduler;
+  stateDir: string;
+  stop: () => Promise<void>;
+  stopPromise: Promise<void> | null;
+}
+
 let loadedStateDir: string | null = null;
-let runtimePersistenceCleanup: (() => void) | null = null;
-let runtimePersistenceScheduler: CoordinatorPersistenceScheduler | null = null;
-let runtimePersistenceStateDir: string | null = null;
+let runtimePersistenceOwner: CoordinatorRuntimePersistenceOwner | null = null;
 const tokenRecordsByToken = new Map<string, CoordinatorTokenRecord>();
 const tokenRecordsByTaskId = new Map<string, CoordinatorTokenRecord>();
 const activityHintsByKey = new Map<string, CoordinatorActivityHintRecord>();
@@ -159,7 +165,7 @@ function rememberTokenRecord(record: CoordinatorTokenRecord): void {
 }
 
 function credentialBelongsToRestoredRun(record: CoordinatorTokenRecord): boolean {
-  const run = getCoordinatorRun(record.runId);
+  const run = getCoordinatorRunMeta(record.runId);
   if (!run) {
     return false;
   }
@@ -167,7 +173,7 @@ function credentialBelongsToRestoredRun(record: CoordinatorTokenRecord): boolean
     return true;
   }
 
-  return run.subtasks.some((subtask) => subtask.taskId === record.taskId);
+  return getCoordinatorSubtask(record.runId, record.taskId) !== null;
 }
 
 function restoreCoordinatorCredentials(env: StorageEnv, options: { pruneOrphans: boolean }): void {
@@ -208,8 +214,8 @@ function restoreCoordinatorCredentials(env: StorageEnv, options: { pruneOrphans:
 }
 
 export function flushCoordinatorRuntimeState(env: StorageEnv): Promise<void> {
-  if (runtimePersistenceScheduler !== null) {
-    return runtimePersistenceScheduler.flushNow();
+  if (runtimePersistenceOwner !== null) {
+    return runtimePersistenceOwner.scheduler.flushNow();
   }
 
   saveCoordinatorRuntimeStateForEnv(env, getCoordinatorRuntimeState());
@@ -217,7 +223,7 @@ export function flushCoordinatorRuntimeState(env: StorageEnv): Promise<void> {
 }
 
 export function getCoordinatorPersistenceHealth(): CoordinatorPersistenceHealth | null {
-  return runtimePersistenceScheduler?.getHealth() ?? null;
+  return runtimePersistenceOwner?.scheduler.getHealth() ?? null;
 }
 
 export function ensureCoordinatorServiceLoaded(env: StorageEnv): void {
@@ -245,39 +251,50 @@ export function ensureCoordinatorServiceLoaded(env: StorageEnv): void {
 }
 
 export function startCoordinatorRuntimePersistence(env: StorageEnv): () => Promise<void> {
-  ensureCoordinatorServiceLoaded(env);
   const stateDir = getStateDirForEnv(env);
-  if (runtimePersistenceStateDir === stateDir && runtimePersistenceCleanup !== null) {
-    return () => Promise.resolve();
+  if (runtimePersistenceOwner !== null) {
+    if (
+      runtimePersistenceOwner.stateDir === stateDir &&
+      runtimePersistenceOwner.stopPromise === null
+    ) {
+      return () => Promise.resolve();
+    }
+
+    throw new Error('Cannot start coordinator persistence before its previous owner has stopped');
   }
 
-  runtimePersistenceCleanup?.();
-  runtimePersistenceStateDir = stateDir;
+  ensureCoordinatorServiceLoaded(env);
   const scheduler = createCoordinatorPersistenceScheduler({
     save: () => saveCoordinatorRuntimeStateForEnvAsync(env, getCoordinatorRuntimeState()),
   });
-  runtimePersistenceScheduler = scheduler;
   const unsubscribe = subscribeCoordinatorEvents(() => {
     scheduler.schedulePersist();
   });
-  runtimePersistenceCleanup = () => {
-    unsubscribe();
-    if (runtimePersistenceScheduler === scheduler) {
-      runtimePersistenceScheduler = null;
-    }
-  };
-  return async () => {
-    if (runtimePersistenceStateDir !== stateDir) {
-      return;
-    }
+  let subscribed = true;
+  const owner: CoordinatorRuntimePersistenceOwner = {
+    scheduler,
+    stateDir,
+    stopPromise: null,
+    stop: () => {
+      if (owner.stopPromise !== null) {
+        return owner.stopPromise;
+      }
 
-    runtimePersistenceCleanup?.();
-    runtimePersistenceCleanup = null;
-    runtimePersistenceStateDir = null;
-    // Shutdown flush: the loader's async cleanup awaits this, so a pending
-    // debounced write is durable before the process exits.
-    await scheduler.stop();
+      if (subscribed) {
+        subscribed = false;
+        unsubscribe();
+      }
+      const stopPromise = scheduler.stop().finally(() => {
+        if (runtimePersistenceOwner === owner) {
+          runtimePersistenceOwner = null;
+        }
+      });
+      owner.stopPromise = stopPromise;
+      return stopPromise;
+    },
   };
+  runtimePersistenceOwner = owner;
+  return owner.stop;
 }
 
 export function hasCoordinatorToolCallUrl(env: StorageEnv): boolean {
@@ -349,7 +366,7 @@ export function createCoordinatorRunForTask(
   if (existingCredential) {
     throw new Error(`Coordinator task already has a run: ${request.coordinatorTaskId}`);
   }
-  const existingRun = getCoordinatorRunByCoordinatorTaskId(request.coordinatorTaskId);
+  const existingRun = getCoordinatorRunMetaByCoordinatorTaskId(request.coordinatorTaskId);
   if (existingRun) {
     throw new Error(`Coordinator task already has a run: ${request.coordinatorTaskId}`);
   }
@@ -417,9 +434,11 @@ export function revokeCoordinatorRunCredentials(env: StorageEnv, runId: string):
 
 export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string): void {
   ensureCoordinatorServiceLoaded(env);
-  const run = getCoordinatorRunByCoordinatorTaskId(taskId);
+  const run = getCoordinatorRunMetaByCoordinatorTaskId(taskId);
   if (run) {
-    updateCoordinatorRunStatus(run.id, 'cancelled');
+    if (run.status !== 'cancelled') {
+      updateCoordinatorRunStatus(run.id, 'cancelled');
+    }
     revokeCoordinatorRunCredentials(env, run.id);
     removeCoordinatorRun(run.id);
     void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
@@ -428,16 +447,13 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
     return;
   }
 
-  for (const candidate of listCoordinatorRuns()) {
-    if (!candidate.subtasks.some((subtask) => subtask.taskId === taskId)) {
-      continue;
-    }
-
+  const candidateRunId = getCoordinatorRunIdBySubtaskTaskId(taskId);
+  if (candidateRunId) {
     revokeCoordinatorTaskCredential(env, taskId);
-    cancelCoordinatorPromptsForTask(candidate.id, taskId, 'task-cleaned-up');
-    cancelCoordinatorWorkflowLanesForTask(candidate.id, taskId, 'task-cleaned-up');
-    removeCoordinatorSubtaskLaunch(candidate.id, taskId);
-    updateCoordinatorSubtaskStatus(candidate.id, taskId, 'cancelled', {
+    cancelCoordinatorPromptsForTask(candidateRunId, taskId, 'task-cleaned-up');
+    cancelCoordinatorWorkflowLanesForTask(candidateRunId, taskId, 'task-cleaned-up');
+    removeCoordinatorSubtaskLaunch(candidateRunId, taskId);
+    updateCoordinatorSubtaskStatus(candidateRunId, taskId, 'cancelled', {
       interruptedByRestoreAt: undefined,
     });
     void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
@@ -501,18 +517,14 @@ export function getCoordinatorBlockingActivityHints(
   return active;
 }
 
-// Returns a promise that settles once the abandoned scheduler's save chain has
-// drained, so teardown can deterministically wait for in-flight async saves
-// before removing temp state dirs (no wall-clock sleep needed).
+// Returns a promise that settles once the scheduler's authoritative final
+// snapshot has landed, so teardown can deterministically remove temp state
+// dirs without a wall-clock sleep.
 export function resetCoordinatorServiceForTests(): Promise<void> {
   loadedStateDir = null;
-  const scheduler = runtimePersistenceScheduler;
-  runtimePersistenceCleanup?.();
-  runtimePersistenceCleanup = null;
-  runtimePersistenceScheduler = null;
-  runtimePersistenceStateDir = null;
+  const owner = runtimePersistenceOwner;
   tokenRecordsByToken.clear();
   tokenRecordsByTaskId.clear();
   activityHintsByKey.clear();
-  return scheduler?.stop().catch(() => {}) ?? Promise.resolve();
+  return owner?.stop() ?? Promise.resolve();
 }

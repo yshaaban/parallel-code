@@ -27,7 +27,6 @@ import {
   type CoordinatorWorkflowFindingSnapshot,
   type CoordinatorWorkflowPendingApprovalSnapshot,
   type CoordinatorWorkflowPolicyPayload,
-  type CoordinatorWorkflowPolicySnapshot,
   type CoordinatorWorkflowResultSnapshot,
   type CoordinatorWorkflowResultStatus,
   type CoordinatorWorkflowSnapshot,
@@ -60,17 +59,20 @@ import {
   cancelCoordinatorPromptsForTask,
   cancelCoordinatorWorkflowPendingApprovals,
   createCoordinatorWorkflow,
-  getCoordinatorRun,
+  getCoordinatorOwnedLaneWorkflowCandidates,
   getCoordinatorRunStatus,
   getCoordinatorWorkflow,
   resolveCoordinatorWorkflowPendingApproval,
+  type CoordinatorOwnedLaneWorkflowProjection,
+  type CoordinatorWorkflowSchedulingProjection,
   updateCoordinatorWorkflow,
   updateCoordinatorWorkflowLane,
   updateCoordinatorWorkflowStage,
 } from './runtime.js';
+import { withCoordinatorWorkflowLaneConcurrency } from './workflow-policy.js';
 
 export const DEFAULT_WORKFLOW_AGENT_COMMAND = 'codex';
-export const DEFAULT_WORKFLOW_CONCURRENCY = 3;
+export { DEFAULT_WORKFLOW_CONCURRENCY } from './workflow-policy.js';
 
 export interface WorkflowSpawnedLane {
   error?: string;
@@ -199,6 +201,21 @@ interface ResolveOwnedWorkflowLaneOptions {
   requireActiveLane?: boolean;
 }
 
+type CoordinatorWorkflowDecisionReadSnapshot = Pick<
+  CoordinatorWorkflowSnapshot,
+  | 'appendPolicy'
+  | 'execution'
+  | 'expansions'
+  | 'id'
+  | 'lanes'
+  | 'policy'
+  | 'runId'
+  | 'sourceSpec'
+  | 'stages'
+  | 'status'
+  | 'stepAppends'
+>;
+
 interface ReconcileWorkflowOptions {
   now?: number;
   runId: string;
@@ -242,16 +259,6 @@ function getWorkflowOrThrow(runId: string, workflowId: string): CoordinatorWorkf
   }
 
   return workflow;
-}
-
-function mergeWorkflowPolicyPayload(
-  policy: CoordinatorWorkflowPolicyPayload | undefined,
-  laneCount: number,
-): Partial<CoordinatorWorkflowPolicySnapshot> {
-  return {
-    maxConcurrentLanes: Math.max(DEFAULT_WORKFLOW_CONCURRENCY, laneCount),
-    ...(policy ?? {}),
-  };
 }
 
 function getSpecNormalizationLimits(): CoordinatorWorkflowSpecValidationLimits {
@@ -621,7 +628,7 @@ function createTemplateWorkflowSpec(
 }
 
 function getStep(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   stageId: string,
 ): CoordinatorWorkflowSpecStepSnapshot | undefined {
   return workflow.sourceSpec?.steps.find((step) => step.id === stageId);
@@ -648,7 +655,7 @@ function getStageLanes(
 }
 
 function getStageExecutionPolicy(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   stageId: string,
 ): EffectiveStagePolicy {
   const stepPolicy = getStep(workflow, stageId)?.policy;
@@ -663,7 +670,7 @@ function getStageExecutionPolicy(
 }
 
 function getLaneByTask(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
   taskId: string,
 ): CoordinatorWorkflowSnapshot['lanes'][number] | undefined {
   return workflow.lanes.find((lane) => lane.taskId === taskId);
@@ -981,7 +988,7 @@ function getStepLaneDedupeKeys(
 }
 
 function assertAppendedLaneDedupeKeys(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'id' | 'lanes' | 'sourceSpec'>,
   appendedSteps: CoordinatorWorkflowSpecStepSnapshot[],
 ): void {
   const reservedKeys = new Set(
@@ -1056,7 +1063,7 @@ function humanizeBundleName(bundleId: string): string {
 }
 
 function getWorkflowBranchIterationCount(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'expansions'>,
   branchKey: string,
 ): number {
   return (workflow.expansions ?? [])
@@ -1145,7 +1152,7 @@ function createBranchBundleSteps(
 
 function getDecisionAppendActionPlans(
   actions: CoordinatorWorkflowDynamicActionSnapshot[],
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowDecisionReadSnapshot,
   resultId: string,
   stageId: string,
 ): DecisionAppendActionPlan[] {
@@ -1197,7 +1204,7 @@ function createDecisionAppendBatchReason(laneName: string, stepIds: string[]): s
 }
 
 function validateDecisionAppendActionPlans(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowDecisionReadSnapshot,
   plans: DecisionAppendActionPlan[],
 ): void {
   if (plans.length === 0) {
@@ -1254,7 +1261,7 @@ function validateDecisionAppendActionPlans(
 }
 
 export function readWorkflowDecisionActions(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowDecisionReadSnapshot,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
   metadata: Record<string, unknown> | undefined,
 ): CoordinatorWorkflowDynamicActionSnapshot[] {
@@ -1334,7 +1341,7 @@ export function getWorkflowResultStatusForActions(
 }
 
 export function validateWorkflowDecisionActionsForResult(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowDecisionReadSnapshot,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
   resultId: string,
   actions: CoordinatorWorkflowDynamicActionSnapshot[],
@@ -1366,7 +1373,7 @@ function recordWorkflowExpansion(
 }
 
 function assertTerminalDecisionActionQuiescent(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes'>,
   laneId: string,
   actionKind: 'mark_blocked' | 'stop_workflow',
 ): void {
@@ -1500,7 +1507,7 @@ function getWorkflowWallClockExhaustedUsage(
  * completion is never rewritten to blocked.
  */
 export function assertWorkflowWithinDeadline(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'execution' | 'id' | 'policy' | 'runId' | 'status'>,
   now: number,
   options: { tripUnlessCompleted?: boolean } = {},
 ): void {
@@ -1527,7 +1534,7 @@ function assertWorkflowStepAppendCapacity(
 }
 
 export function assertWorkflowBudgetAdmits(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: Pick<CoordinatorWorkflowSnapshot, 'lanes' | 'policy' | 'sourceSpec' | 'stages'>,
   options: { addedLanes: number; addedSteps?: number; label: string },
 ): void {
   const limits = getCoordinatorWorkflowBudgetLimits(workflow.policy);
@@ -1900,7 +1907,7 @@ function refreshExecutionSnapshot(
   });
 }
 
-function getActiveLaneCount(workflow: CoordinatorWorkflowSnapshot): number {
+function getActiveLaneCount(workflow: CoordinatorWorkflowSchedulingProjection): number {
   return workflow.lanes.filter((lane) => !isCoordinatorTerminalWorkflowLaneStatus(lane.status))
     .length;
 }
@@ -1931,7 +1938,7 @@ function getLaneRetryReadyAt(
 }
 
 function isLaneRetryEligible(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
 ): boolean {
   if ((lane.status !== 'failed' && lane.status !== 'timed-out') || lane.resultId !== undefined) {
@@ -1949,7 +1956,7 @@ interface WorkflowRetryBudgetContext {
 }
 
 function createWorkflowRetryBudgetContext(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
 ): WorkflowRetryBudgetContext {
   return {
     committedLaneCount: getCommittedWorkflowLaneCount(workflow),
@@ -1959,7 +1966,7 @@ function createWorkflowRetryBudgetContext(
 }
 
 function canRetryLane(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
   context: WorkflowRetryBudgetContext,
 ): boolean {
@@ -1984,14 +1991,14 @@ function hasPendingRetryableLane(
 }
 
 function hasScheduledRetryLane(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   lane: CoordinatorWorkflowSnapshot['lanes'][number],
 ): boolean {
   return hasScheduledCoordinatorWorkflowLaneRetry(workflow, lane);
 }
 
 function getWorkflowRetryState(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   now: number,
 ): {
   nextRetryAt?: number;
@@ -2299,7 +2306,7 @@ export async function startCoordinatorWorkflowExecution(
     (count, step) => Math.max(count, countStepLanes(step)),
     0,
   );
-  const policy = mergeWorkflowPolicyPayload(options.policy, maxStageLaneCount);
+  const policy = withCoordinatorWorkflowLaneConcurrency(options.policy, maxStageLaneCount);
   const maxConcurrentLanes =
     policy.maxConcurrentLanes ?? COORDINATOR_LIMITS.maxActiveSubtasksPerRun;
   if (maxStageLaneCount > maxConcurrentLanes) {
@@ -3100,7 +3107,7 @@ export async function tickCoordinatorWorkflowExecution(
 }
 
 export function getCoordinatorWorkflowNextTickAt(
-  workflow: CoordinatorWorkflowSnapshot,
+  workflow: CoordinatorWorkflowSchedulingProjection,
   now = Date.now(),
 ): number | null {
   if (isCoordinatorTerminalWorkflowStatus(workflow.status)) {
@@ -3189,20 +3196,16 @@ export function resolveOwnedWorkflowLane(
   options: ResolveOwnedWorkflowLaneOptions,
 ): {
   lane: CoordinatorWorkflowSnapshot['lanes'][number];
-  workflow: CoordinatorWorkflowSnapshot;
+  workflow: CoordinatorOwnedLaneWorkflowProjection;
 } {
-  const run = getCoordinatorRun(runId);
-  if (!run) {
+  const workflows = getCoordinatorOwnedLaneWorkflowCandidates(runId, workflowId);
+  if (workflows === null) {
     throw new BadRequestError('Coordinator run is no longer active');
   }
-  const workflows =
-    workflowId !== undefined
-      ? run.workflows.filter((workflow) => workflow.id === workflowId)
-      : run.workflows;
   let match:
     | {
         lane: CoordinatorWorkflowSnapshot['lanes'][number];
-        workflow: CoordinatorWorkflowSnapshot;
+        workflow: CoordinatorOwnedLaneWorkflowProjection;
       }
     | undefined;
 

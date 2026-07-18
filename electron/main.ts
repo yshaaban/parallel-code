@@ -13,7 +13,8 @@ import {
   loadPersistedDerivedState,
   startDerivedStatePersistence,
 } from './ipc/derived-state-persistence.js';
-import { killAllAgents } from './ipc/pty.js';
+import { stopAllTaskAgentWorkflows } from './ipc/task-workflows.js';
+import { stopAllAskAboutCodeRequests } from './ipc/ask-about-code.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { restoreSavedTaskPorts } from './ipc/task-ports.js';
 import { restoreBackendDerivedState } from './ipc/saved-state-restore.js';
@@ -29,6 +30,10 @@ import {
   getElectronPreloadPath,
   getFrontendIndexPath,
 } from './main-paths.js';
+import {
+  finishDesktopRuntimeShutdown,
+  settleDesktopRuntimeCleanupOwners,
+} from './runtime-cleanup.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,10 +197,43 @@ function createWindow(): void {
 
 app.whenReady().then(createWindow);
 
-app.on('before-quit', () => {
-  killAllAgents();
+let quitAfterRuntimeCleanup = false;
+let runtimeCleanupStarted = false;
+
+app.on('before-quit', (event) => {
+  if (quitAfterRuntimeCleanup) {
+    return;
+  }
+  event.preventDefault();
   stopAllPlanWatchers();
   stopAllGitWatchers();
+  if (runtimeCleanupStarted) {
+    return;
+  }
+  runtimeCleanupStarted = true;
+  const runtimeCleanup = settleDesktopRuntimeCleanupOwners([
+    { cleanup: stopAllTaskAgentWorkflows(), label: 'agent runner' },
+    { cleanup: stopAllAskAboutCodeRequests(), label: 'ask about code' },
+    {
+      cleanup: import('./coordinator/tool-gateway.js').then((module) =>
+        module.cleanupCoordinatorProducersForShutdown(),
+      ),
+      label: 'coordinator',
+    },
+  ]);
+  void finishDesktopRuntimeShutdown(runtimeCleanup, {
+    quit: () => {
+      quitAfterRuntimeCleanup = true;
+      app.quit();
+    },
+    exit: (code, error) => {
+      logWarn('app.shutdown', 'failed to finish runtime cleanup before quit', {
+        error: String(error),
+      });
+      quitAfterRuntimeCleanup = true;
+      app.exit(code);
+    },
+  });
 });
 
 app.on('window-all-closed', () => {

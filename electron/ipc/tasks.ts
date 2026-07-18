@@ -9,7 +9,7 @@ import {
   getMainBranch,
   removeWorktree,
 } from './git.js';
-import { killAgent, notifyAgentListChanged } from './pty.js';
+import { notifyAgentListChanged } from './pty.js';
 
 const MAX_SLUG_LEN = 72;
 const MAX_BRANCH_ATTEMPTS = 100;
@@ -243,18 +243,10 @@ export async function importExistingWorktreeTask(
 }
 
 export async function deleteTask(
-  agentIds: string[],
   branchName: string,
   deleteBranch: boolean,
   projectRoot: string,
 ): Promise<void> {
-  for (const agentId of agentIds) {
-    try {
-      killAgent(agentId);
-    } catch {
-      /* already dead */
-    }
-  }
   try {
     await removeWorktree(projectRoot, branchName, deleteBranch);
   } finally {

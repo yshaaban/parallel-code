@@ -1,11 +1,26 @@
-import { spawn, type ChildProcess } from 'child_process';
+/** Shared lifecycle helpers for standalone-server integration tests. */
+import type { ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
+import { rm, rmdir } from 'fs/promises';
 import { createServer } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 
+import {
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+  waitForStandaloneServerReady,
+} from '../scripts/lib/standalone-server-process.mjs';
+import type { StandaloneServerProcess } from '../scripts/lib/standalone-server-process.mjs';
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
+import { getStateDirForEnv } from '../electron/ipc/storage.js';
+import {
+  createTestShellEnv,
+  getTestShellHomePath,
+  TEST_SHELL_HOME_ENV_KEY,
+} from '../src/lib/test-shell-env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +28,10 @@ const __dirname = path.dirname(__filename);
 export const TEST_TOKEN = 'test-integration-token-' + Date.now();
 export const TEST_CLIENT_ID = 'test-integration-client-' + Date.now();
 
+const DEFAULT_TEST_SERVER_USER_DATA_PATH = path.resolve(__dirname, '..', '.test-server-data');
+
 let serverProcess: ChildProcess | null = null;
+let serverEnvironment: NodeJS.ProcessEnv | null = null;
 let testPort = 19876;
 
 export interface ServerMessage {
@@ -55,12 +73,21 @@ interface TaskControlLeaseHandle extends TaskControlRegistration {
   renewTimer: ReturnType<typeof setInterval> | null;
 }
 
-interface TestServerProcess extends Pick<ChildProcess, 'exitCode' | 'kill' | 'off' | 'on'> {
-  stderr: NonNullable<ChildProcess['stderr']>;
-  stdout: NonNullable<ChildProcess['stdout']>;
-}
+export type TestServerProcess = StandaloneServerProcess;
 
 const socketMessageBuffers = new WeakMap<WebSocket, SocketMessageBuffer>();
+
+class TestServerStartupCleanupError extends Error {
+  readonly cleanupErrors: unknown[];
+  readonly startupError: unknown;
+
+  constructor(startupError: unknown, cleanupErrors: unknown[]) {
+    super('Test server startup and cleanup failed');
+    this.name = 'TestServerStartupCleanupError';
+    this.startupError = startupError;
+    this.cleanupErrors = cleanupErrors;
+  }
+}
 const taskControlByAgentId = new Map<string, TaskControlRegistration>();
 const taskControlLeaseHandles = new Map<string, TaskControlLeaseHandle>();
 
@@ -77,13 +104,66 @@ export function getServerUrl(): string {
 }
 
 export function createTestServerEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const userDataPath = overrides.PARALLEL_CODE_USER_DATA_DIR ?? DEFAULT_TEST_SERVER_USER_DATA_PATH;
   return {
     ...process.env,
     AUTH_TOKEN: TEST_TOKEN,
     PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK: '1',
-    PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data'),
+    PARALLEL_CODE_USER_DATA_DIR: userDataPath,
+    ...createTestShellEnv(userDataPath),
     ...overrides,
   };
+}
+
+export async function cleanupTestServerEnv(
+  env: NodeJS.ProcessEnv,
+  options: { defaultUserDataPath?: string } = {},
+): Promise<void> {
+  const userDataPath = env.PARALLEL_CODE_USER_DATA_DIR;
+  const shellHomePath = env[TEST_SHELL_HOME_ENV_KEY];
+  const cleanupSteps: Array<readonly [string, () => Promise<void>]> = [];
+  if (
+    userDataPath &&
+    shellHomePath &&
+    path.resolve(shellHomePath) === getTestShellHomePath(userDataPath)
+  ) {
+    cleanupSteps.push([
+      'remove test shell home',
+      () => rm(shellHomePath, { force: true, recursive: true }),
+    ]);
+  }
+
+  const defaultUserDataPath = path.resolve(
+    options.defaultUserDataPath ?? DEFAULT_TEST_SERVER_USER_DATA_PATH,
+  );
+  const ownedDefaultUserDataPath =
+    userDataPath !== undefined && path.resolve(userDataPath) === defaultUserDataPath
+      ? userDataPath
+      : null;
+  if (ownedDefaultUserDataPath) {
+    cleanupSteps.push([
+      'remove test server development state',
+      () =>
+        rm(getStateDirForEnv({ isPackaged: false, userDataPath: ownedDefaultUserDataPath }), {
+          force: true,
+          recursive: true,
+        }),
+    ]);
+  }
+
+  await runIndependentCleanups('Test server environment', cleanupSteps);
+
+  if (ownedDefaultUserDataPath) {
+    try {
+      await rmdir(ownedDefaultUserDataPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST' && code !== 'ENOENT' && code !== 'ENOTEMPTY') {
+        throw error;
+      }
+      // Preserve a non-empty default directory; only remove the empty root created by the sandbox.
+    }
+  }
 }
 
 export function reserveTestPort(): Promise<number> {
@@ -272,116 +352,91 @@ export async function startServer(env: Record<string, string> = {}): Promise<voi
   const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
   testPort = await reserveTestPort();
   clearTaskControlRegistrations();
-
-  serverProcess = spawn('node', [serverPath], {
-    env: createTestServerEnv({
-      PORT: String(testPort),
-      ...env,
-    }),
-    stdio: ['pipe', 'pipe', 'pipe'],
+  const serverEnv = createTestServerEnv({
+    PORT: String(testPort),
+    ...env,
   });
-
-  const proc = serverProcess;
-  const stdout = proc?.stdout;
-  const stderr = proc?.stderr;
-  if (!proc || !stdout || !stderr) {
-    throw new Error('Server process or stdio streams unavailable');
-  }
-
-  await waitForTestServerStartup(proc as TestServerProcess);
-}
-
-function terminateTestServerProcess(proc: TestServerProcess): void {
-  if (proc.exitCode !== null) {
-    return;
-  }
+  serverEnvironment = serverEnv;
+  let proc: ChildProcess | null = null;
 
   try {
-    proc.kill('SIGTERM');
-  } catch {
-    // The process can exit between the status check and signal delivery.
+    proc = spawnStandaloneServerProcess(process.execPath, [serverPath], {
+      env: serverEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    serverProcess = proc;
+
+    const stdout = proc.stdout;
+    const stderr = proc.stderr;
+    if (!stdout || !stderr) {
+      throw new Error('Server process or stdio streams unavailable');
+    }
+
+    await waitForTestServerStartup(proc as TestServerProcess);
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    let processStopped = proc === null;
+    if (proc) {
+      try {
+        await stopTestServerProcess(proc);
+        processStopped = true;
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (processStopped) {
+      serverProcess = null;
+      try {
+        await cleanupTestServerEnv(serverEnv);
+        serverEnvironment = null;
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new TestServerStartupCleanupError(error, cleanupErrors);
+    }
+    throw error;
   }
+}
+
+export async function stopTestServerProcess(proc: ChildProcess): Promise<void> {
+  await stopStandaloneServerProcessWithRetry(proc, {
+    forceKillAfterMs: 1_000,
+    forceKillSettleMs: 4_000,
+  });
 }
 
 export function waitForTestServerStartup(
   proc: TestServerProcess,
   timeoutMs = 10_000,
 ): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    let stdoutText = '';
-    let settled = false;
-
-    const cleanup = (): void => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timeout);
-      proc.stdout.off('data', onStdout);
-      proc.stderr.off('data', onStderr);
-      proc.off('error', onError);
-      proc.off('exit', onExit);
-    };
-
-    const rejectStartup = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-
-    const timeout = setTimeout(() => {
-      terminateTestServerProcess(proc);
-      rejectStartup(new Error('Server startup timeout'));
-    }, timeoutMs);
-
-    function onStdout(data: Buffer): void {
-      stdoutText += data.toString();
-      if (!stdoutText.includes('listening on')) {
-        return;
-      }
-
-      cleanup();
-      resolve();
-    }
-
-    function onStderr(data: Buffer): void {
-      const text = data.toString();
+  return waitForStandaloneServerReady(proc, {
+    onStderr: (text) => {
       if (text.includes('ExperimentalWarning') || text.includes('DeprecationWarning')) return;
       console.warn('[server stderr]', text);
-    }
-
-    function onError(error: Error): void {
-      rejectStartup(error);
-    }
-
-    function onExit(code: number | null, signal: NodeJS.Signals | null): void {
-      rejectStartup(
-        new Error(`Server exited before startup with code ${code ?? signal ?? 'null'}`),
-      );
-    }
-
-    proc.stdout.on('data', onStdout);
-    proc.stderr.on('data', onStderr);
-    proc.on('error', onError);
-    proc.on('exit', onExit);
-  });
+    },
+    timeoutMs,
+  }).then(() => undefined);
 }
 
 export async function stopServer(): Promise<void> {
   clearTaskControlRegistrations();
   const proc = serverProcess;
-  serverProcess = null;
-  if (!proc) return;
-  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  const environment = serverEnvironment;
 
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, 5_000);
-    proc.once('exit', () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    proc.kill('SIGTERM');
-  });
+  if (proc) {
+    await stopTestServerProcess(proc);
+  }
+  if (serverProcess === proc) {
+    serverProcess = null;
+  }
+  if (environment) {
+    await cleanupTestServerEnv(environment);
+  }
+  if (serverEnvironment === environment) {
+    serverEnvironment = null;
+  }
 }
 
 export function connectWs(query?: string): Promise<WebSocket> {

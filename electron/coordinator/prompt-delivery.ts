@@ -42,8 +42,11 @@ import { hasCodexPromptInTail, hasShellPromptReadyInTail } from '../../src/lib/p
 import { getCoordinatorBlockingActivityHints } from './service.js';
 import {
   enqueueCoordinatorPrompt,
-  getCoordinatorRun,
-  listCoordinatorRuns,
+  getCoordinatorPrompt,
+  getCoordinatorPromptQueue,
+  getCoordinatorRunStatus,
+  getCoordinatorSubtask,
+  listCoordinatorPromptQueueProjections,
   subscribeCoordinatorEvents,
   updateCoordinatorPrompt,
   updateCoordinatorSubtaskStatus,
@@ -61,7 +64,7 @@ export const STALE_DELIVERING_REQUEUE_MS = 60_000;
 export interface QueueCoordinatorPromptOptions {
   dedupeKey?: string;
   kind?: CoordinatorPromptKind;
-  run: CoordinatorRunSnapshot;
+  run: Pick<CoordinatorRunSnapshot, 'id' | 'limits' | 'promptQueue'>;
   sourceTaskId: string;
   subtask: CoordinatorSubtaskSnapshot;
   text: string;
@@ -69,11 +72,15 @@ export interface QueueCoordinatorPromptOptions {
 
 let promptDeliveryCleanup: (() => void) | null = null;
 let promptDeliveryContext: HandlerContext | null = null;
+let promptDeliveryAdmissionClosed = false;
 let promptDeliveryForce = false;
+let promptDeliveryShutdownPromise: Promise<void> | null = null;
 let promptDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 const activePromptDeliveryKeys = new Set<string>();
 const scheduledPromptDeliveryKeys = new Set<string>();
-const promptDeliveryChainsByTargetKey = new Map<string, Promise<unknown>>();
+// The value is an observed, non-rejecting lifecycle promise. It both serializes a target's writes
+// and gives shutdown one authoritative set of deliveries to drain before persistence is flushed.
+const promptDeliveryChainsByTargetKey = new Map<string, Promise<void>>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -98,11 +105,7 @@ function getPromptDeliveryTargetKey(
 function getLatestPromptSnapshot(
   prompt: Pick<CoordinatorPromptRequestSnapshot, 'requestId' | 'runId'>,
 ): CoordinatorPromptRequestSnapshot | null {
-  return (
-    getCoordinatorRun(prompt.runId)?.promptQueue.find(
-      (candidate) => candidate.requestId === prompt.requestId,
-    ) ?? null
-  );
+  return getCoordinatorPrompt(prompt.runId, prompt.requestId);
 }
 
 function countReservedPromptDeliveryTargets(
@@ -203,9 +206,8 @@ function isStartupSubtaskStatus(status: CoordinatorSubtaskSnapshot['status']): b
 }
 
 function isPromptTargetActive(prompt: CoordinatorPromptRequestSnapshot): boolean {
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
-  return subtask !== undefined && !isCoordinatorTerminalSubtaskStatus(subtask.status);
+  const subtask = getCoordinatorSubtask(prompt.runId, prompt.targetTaskId);
+  return subtask !== null && !isCoordinatorTerminalSubtaskStatus(subtask.status);
 }
 
 function updateInitialPromptSubtaskStatus(prompt: CoordinatorPromptRequestSnapshot): void {
@@ -213,8 +215,7 @@ function updateInitialPromptSubtaskStatus(prompt: CoordinatorPromptRequestSnapsh
     return;
   }
 
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
+  const subtask = getCoordinatorSubtask(prompt.runId, prompt.targetTaskId);
   if (!subtask || !isStartupSubtaskStatus(subtask.status)) {
     return;
   }
@@ -329,17 +330,24 @@ function isStaleDeliveringPrompt(prompt: CoordinatorPromptRequestSnapshot, now: 
   return now - deliveringSince >= STALE_DELIVERING_REQUEUE_MS;
 }
 
-function requeueStaleDeliveringPrompts(run: CoordinatorRunSnapshot, now: number): void {
-  for (const prompt of run.promptQueue) {
+function requeueStaleDeliveringPrompts(
+  prompts: readonly CoordinatorPromptRequestSnapshot[],
+  now: number,
+): boolean {
+  let changed = false;
+  for (const prompt of prompts) {
     if (!isStaleDeliveringPrompt(prompt, now)) {
       continue;
     }
 
+    changed = true;
     updateCoordinatorPromptDeliveryState(prompt.runId, prompt.requestId, {
       status: 'queued',
       waitingReason: 'stale-delivering-requeued',
     });
   }
+
+  return changed;
 }
 
 async function processCoordinatorPromptQueue(force = false): Promise<void> {
@@ -350,12 +358,15 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
 
   const now = Date.now();
   let nextRetryAt: number | null = null;
-  for (const run of listCoordinatorRuns()) {
+  for (const run of listCoordinatorPromptQueueProjections()) {
     if (!coordinatorRunAdmitsPromptDelivery(run)) {
       continue;
     }
-    requeueStaleDeliveringPrompts(run, now);
-    for (const prompt of getCoordinatorRun(run.id)?.promptQueue ?? run.promptQueue) {
+    const requeuedStalePrompt = requeueStaleDeliveringPrompts(run.promptQueue, now);
+    const promptQueue = requeuedStalePrompt
+      ? (getCoordinatorPromptQueue(run.runId) ?? run.promptQueue)
+      : run.promptQueue;
+    for (const prompt of promptQueue) {
       if (!isDeliverablePromptStatus(prompt.status)) {
         continue;
       }
@@ -382,6 +393,10 @@ async function processCoordinatorPromptQueue(force = false): Promise<void> {
 }
 
 export function startCoordinatorPromptDeliveryLoop(context: HandlerContext): void {
+  if (promptDeliveryShutdownPromise !== null) {
+    throw new Error('Cannot start coordinator prompt delivery while shutdown is pending');
+  }
+  promptDeliveryAdmissionClosed = false;
   promptDeliveryContext = context;
   if (promptDeliveryCleanup !== null) {
     scheduleCoordinatorPromptDelivery();
@@ -403,9 +418,6 @@ export function startCoordinatorPromptDeliveryLoop(context: HandlerContext): voi
       clearTimeout(promptDeliveryTimer);
       promptDeliveryTimer = null;
     }
-    activePromptDeliveryKeys.clear();
-    scheduledPromptDeliveryKeys.clear();
-    promptDeliveryChainsByTargetKey.clear();
     promptDeliveryForce = false;
     promptDeliveryCleanup = null;
     promptDeliveryContext = null;
@@ -413,15 +425,35 @@ export function startCoordinatorPromptDeliveryLoop(context: HandlerContext): voi
   scheduleCoordinatorPromptDelivery();
 }
 
-export function stopCoordinatorPromptDeliveryLoop(): void {
+export function stopCoordinatorPromptDeliveryLoop(): Promise<void> {
+  if (promptDeliveryShutdownPromise !== null) {
+    return promptDeliveryShutdownPromise;
+  }
+
+  promptDeliveryAdmissionClosed = true;
   promptDeliveryCleanup?.();
+  const activeDeliveries = [...promptDeliveryChainsByTargetKey.values()];
+  if (activeDeliveries.length === 0) {
+    activePromptDeliveryKeys.clear();
+    scheduledPromptDeliveryKeys.clear();
+    return Promise.resolve();
+  }
+
+  promptDeliveryShutdownPromise = Promise.all(activeDeliveries).then(() => {
+    activePromptDeliveryKeys.clear();
+    scheduledPromptDeliveryKeys.clear();
+    promptDeliveryShutdownPromise = null;
+  });
+  return promptDeliveryShutdownPromise;
 }
 
 export function resetCoordinatorPromptDeliveryForTests(): void {
   promptDeliveryCleanup?.();
   promptDeliveryCleanup = null;
   promptDeliveryContext = null;
+  promptDeliveryAdmissionClosed = false;
   promptDeliveryForce = false;
+  promptDeliveryShutdownPromise = null;
   if (promptDeliveryTimer !== null) {
     clearTimeout(promptDeliveryTimer);
     promptDeliveryTimer = null;
@@ -444,6 +476,8 @@ async function deliverCoordinatorPromptSerialized(
 ): Promise<CoordinatorPromptRequestSnapshot> {
   const targetKey = getPromptDeliveryTargetKey(prompt);
   const previousDelivery = promptDeliveryChainsByTargetKey.get(targetKey) ?? Promise.resolve();
+  // Keep the existing queue turn between admission and delivery so a task cleanup in the same
+  // turn can cancel the prompt with its authoritative reason before terminal writes begin.
   const delivery = previousDelivery
     .catch(() => undefined)
     .then(async () => {
@@ -457,12 +491,13 @@ async function deliverCoordinatorPromptSerialized(
 
       return deliverCoordinatorPrompt(context, latestPrompt);
     });
-  const trackedDelivery = delivery.finally(() => {
-    if (promptDeliveryChainsByTargetKey.get(targetKey) === trackedDelivery) {
+  const releaseLifecycleOwner = (): void => {
+    if (promptDeliveryChainsByTargetKey.get(targetKey) === lifecycle) {
       promptDeliveryChainsByTargetKey.delete(targetKey);
     }
-  });
-  promptDeliveryChainsByTargetKey.set(targetKey, trackedDelivery);
+  };
+  const lifecycle = delivery.then(releaseLifecycleOwner, releaseLifecycleOwner);
+  promptDeliveryChainsByTargetKey.set(targetKey, lifecycle);
   return delivery;
 }
 
@@ -470,6 +505,9 @@ export async function deliverCoordinatorPromptWithAdmission(
   context: HandlerContext,
   prompt: CoordinatorPromptRequestSnapshot,
 ): Promise<CoordinatorPromptRequestSnapshot> {
+  if (promptDeliveryAdmissionClosed) {
+    throw new BadRequestError('Coordinator prompt delivery is stopping');
+  }
   const latestPrompt = getLatestPromptSnapshot(prompt);
   if (!latestPrompt) {
     return prompt;
@@ -477,8 +515,8 @@ export async function deliverCoordinatorPromptWithAdmission(
   if (!isDeliverablePromptStatus(latestPrompt.status)) {
     return latestPrompt;
   }
-  const run = getCoordinatorRun(latestPrompt.runId);
-  if (run !== null && !coordinatorRunAdmitsPromptDelivery(run)) {
+  const runStatus = getCoordinatorRunStatus(latestPrompt.runId);
+  if (runStatus !== null && !coordinatorRunAdmitsPromptDelivery({ status: runStatus })) {
     return latestPrompt;
   }
 
@@ -568,8 +606,7 @@ async function deliverCoordinatorPrompt(
       waitingReason: `agent-${supervision.state}`,
     });
   }
-  const run = getCoordinatorRun(prompt.runId);
-  const subtask = run?.subtasks.find((candidate) => candidate.taskId === prompt.targetTaskId);
+  const subtask = getCoordinatorSubtask(prompt.runId, prompt.targetTaskId);
   const startup = getCoordinatorSubtaskStartupSnapshot(subtask?.startup);
   const scrollback = getAgentScrollbackBuffer(prompt.targetAgentId)?.toString('utf8') ?? '';
   if (!isPromptReadyForReadinessPolicy(startup.readinessPolicy, scrollback)) {
@@ -724,6 +761,9 @@ export async function queueCoordinatorPromptForDelivery(
   context: HandlerContext,
   options: QueueCoordinatorPromptOptions,
 ): Promise<CoordinatorPromptRequestSnapshot> {
+  if (promptDeliveryAdmissionClosed) {
+    throw new BadRequestError('Coordinator prompt delivery is stopping');
+  }
   const { run, subtask } = options;
   if (
     options.kind !== 'initial-assignment' &&

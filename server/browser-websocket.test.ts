@@ -19,6 +19,7 @@ const {
   recordBrowserControlSimulatedDropMock,
   recordTerminalInputTraceClientDisconnectedMock,
   resumeAgentMock,
+  stopTaskAgentWorkflowMock,
   subscribeToAgentMock,
   writeToAgentMock,
 } = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ const {
   recordBrowserControlSimulatedDropMock: vi.fn(),
   recordTerminalInputTraceClientDisconnectedMock: vi.fn(),
   resumeAgentMock: vi.fn(),
+  stopTaskAgentWorkflowMock: vi.fn<(agentId: string) => Promise<void>>(),
   subscribeToAgentMock: vi.fn<(agentId: string, callback: (data: string) => void) => boolean>(
     () => false,
   ),
@@ -56,7 +58,6 @@ vi.mock('../electron/ipc/pty.js', () => ({
   getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
   getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
   hasAgentSession: vi.fn(() => true),
-  killAgent: vi.fn(),
   onPtyEvent: onPtyEventMock,
   pauseAgent: pauseAgentMock,
   resizeAgent: vi.fn(),
@@ -68,6 +69,10 @@ vi.mock('../electron/ipc/pty.js', () => ({
 
 vi.mock('../electron/ipc/task-command-leases.js', () => ({
   isTaskCommandLeaseHeld: isTaskCommandLeaseHeldMock,
+}));
+
+vi.mock('../electron/ipc/task-workflows.js', () => ({
+  stopTaskAgentWorkflow: stopTaskAgentWorkflowMock,
 }));
 
 vi.mock('../electron/ipc/runtime-diagnostics.js', () => ({
@@ -230,6 +235,7 @@ describe('registerBrowserWebSocketServer', () => {
       outputCursor: 24,
       rows: 30,
     });
+    stopTaskAgentWorkflowMock.mockResolvedValue(undefined);
     subscribeToAgentMock.mockReturnValue(false);
   });
 
@@ -288,6 +294,39 @@ describe('registerBrowserWebSocketServer', () => {
     });
 
     expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
+  });
+
+  it('surfaces asynchronous browser kill cleanup failures through the command runner', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    const sendAgentError = vi.fn();
+    const failure = new Error('runner cleanup failed');
+    wss.clients.add(client);
+    stopTaskAgentWorkflowMock.mockRejectedValueOnce(failure);
+
+    registerBrowserWebSocketServer(
+      createRegisterOptions({
+        sendAgentError,
+        wss,
+      }),
+    );
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+    client.emit(
+      'message',
+      JSON.stringify({
+        agentId: 'agent-1',
+        type: 'kill',
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(stopTaskAgentWorkflowMock).toHaveBeenCalledWith('agent-1');
+      expect(sendAgentError).toHaveBeenCalledWith(client, 'agent-1', 'kill failed', failure);
+    });
   });
 
   it('routes task-command lease messages through the websocket control handler', async () => {

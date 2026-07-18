@@ -42,6 +42,10 @@ import {
 } from '../../src/domain/coordinator.js';
 import type { CoordinatorWorkflowSpecSnapshot } from '../../src/domain/coordinator-workflow-spec.js';
 import type { ProjectMode } from '../../src/store/types.js';
+import {
+  resolveCoordinatorWorkflowAppendPolicy,
+  resolveCoordinatorWorkflowPolicy,
+} from './workflow-policy.js';
 
 export interface CoordinatorRuntimeState {
   runs: CoordinatorRunSnapshot[];
@@ -54,11 +58,45 @@ export interface CoordinatorRuntimeState {
   }>;
 }
 
+export interface CoordinatorPromptQueueProjection {
+  promptQueue: CoordinatorPromptRequestSnapshot[];
+  runId: string;
+  status: CoordinatorRunStatus;
+}
+
+export type CoordinatorWorkflowSchedulingProjection = Pick<
+  CoordinatorWorkflowSnapshot,
+  'execution' | 'id' | 'lanes' | 'policy' | 'runId' | 'sourceSpec' | 'stages' | 'status'
+>;
+
+export interface CoordinatorWorkflowSchedulingEntry {
+  coordinatorTaskId: string;
+  workflow: CoordinatorWorkflowSchedulingProjection;
+}
+
+export type CoordinatorOwnedLaneWorkflowProjection = Pick<
+  CoordinatorWorkflowSnapshot,
+  | 'appendPolicy'
+  | 'execution'
+  | 'expansions'
+  | 'id'
+  | 'lanes'
+  | 'pendingApprovals'
+  | 'policy'
+  | 'runId'
+  | 'sourceSpec'
+  | 'stages'
+  | 'status'
+  | 'stepAppends'
+> & {
+  resultCount: number;
+};
+
 export type CoordinatorEventListener = (event: CoordinatorEventEnvelope) => void;
 
 interface RunRecord {
-  run: CoordinatorRunSnapshot;
   landingByTaskId: Map<string, CoordinatorLandingStateSnapshot>;
+  meta: CoordinatorRunMetaSnapshot;
   promptsByRequestId: Map<string, CoordinatorPromptRequestSnapshot>;
   subtasksByTaskId: Map<string, CoordinatorSubtaskSnapshot>;
   workflowsById: Map<string, CoordinatorWorkflowSnapshot>;
@@ -249,26 +287,6 @@ const DEFAULT_RUN_LIMITS: CoordinatorRunLimits = {
   maxQueuedSubtasks: COORDINATOR_LIMITS.maxQueuedSubtasksPerRun,
 };
 
-const DEFAULT_WORKFLOW_POLICY: CoordinatorWorkflowPolicySnapshot = {
-  continueOnFailure: true,
-  maxConcurrentLanes: COORDINATOR_LIMITS.maxActiveSubtasksPerRun,
-  maxIterationsPerBranch: 3,
-  maxOutputBytesPerLane: COORDINATOR_LIMITS.snapshotMaxBytes,
-  maxTotalLanes: COORDINATOR_LIMITS.maxWorkflowLanes,
-  maxTotalRetries: COORDINATOR_LIMITS.maxWorkflowTotalRetries,
-  maxTotalSteps: COORDINATOR_LIMITS.maxWorkflowTotalSteps,
-  maxWallClockMs: COORDINATOR_LIMITS.workflowDefaultWallClockMs,
-  resultRequired: true,
-  retryBackoffMs: 1_000,
-  retryCount: 0,
-  timeoutMs: COORDINATOR_LIMITS.workflowDefaultLaneTimeoutMs,
-};
-
-const DEFAULT_WORKFLOW_APPEND_POLICY: CoordinatorWorkflowAppendPolicySnapshot = {
-  maxActionsPerDecision: COORDINATOR_LIMITS.maxWorkflowDecisionActionsPerResult,
-  maxStepAppends: COORDINATOR_LIMITS.maxWorkflowStepAppends,
-};
-
 const RESTORED_RUN_STATUSES: readonly CoordinatorRunStatus[] = [
   'draining',
   'paused-by-user',
@@ -319,6 +337,12 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function storeOwnedSnapshot<K, T>(map: Map<K, T>, key: K, snapshot: T): T {
+  const ownedSnapshot = clone(snapshot);
+  map.set(key, ownedSnapshot);
+  return ownedSnapshot;
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -340,21 +364,19 @@ function getNow(now: number | undefined): number {
 }
 
 function createRunRecord(run: CoordinatorRunSnapshot): RunRecord {
+  const { landing, promptQueue, subtasks, workflows = [], ...meta } = run;
   return {
-    run: {
-      ...run,
-      workflows: run.workflows ?? [],
-    },
-    landingByTaskId: new Map(run.landing.map((landing) => [landing.taskId, landing])),
-    promptsByRequestId: new Map(run.promptQueue.map((prompt) => [prompt.requestId, prompt])),
-    subtasksByTaskId: new Map(run.subtasks.map((subtask) => [subtask.taskId, subtask])),
-    workflowsById: new Map((run.workflows ?? []).map((workflow) => [workflow.id, workflow])),
+    landingByTaskId: new Map(landing.map((entry) => [entry.taskId, entry])),
+    meta,
+    promptsByRequestId: new Map(promptQueue.map((prompt) => [prompt.requestId, prompt])),
+    subtasksByTaskId: new Map(subtasks.map((subtask) => [subtask.taskId, subtask])),
+    workflowsById: new Map(workflows.map((workflow) => [workflow.id, workflow])),
   };
 }
 
 function materializeRun(record: RunRecord): CoordinatorRunSnapshot {
   return {
-    ...record.run,
+    ...record.meta,
     landing: [...record.landingByTaskId.values()],
     promptQueue: [...record.promptsByRequestId.values()],
     subtasks: [...record.subtasksByTaskId.values()],
@@ -363,22 +385,7 @@ function materializeRun(record: RunRecord): CoordinatorRunSnapshot {
 }
 
 function materializeRunMeta(record: RunRecord): CoordinatorRunMetaSnapshot {
-  const { landing, promptQueue, subtasks, workflows, ...meta } = record.run;
-  void landing;
-  void promptQueue;
-  void subtasks;
-  void workflows;
-  return meta;
-}
-
-function replaceRun(record: RunRecord, run: CoordinatorRunSnapshot): void {
-  record.run = {
-    ...run,
-    landing: [...record.landingByTaskId.values()],
-    promptQueue: [...record.promptsByRequestId.values()],
-    subtasks: [...record.subtasksByTaskId.values()],
-    workflows: [...record.workflowsById.values()],
-  };
+  return { ...record.meta };
 }
 
 function createLegacyPromptStartupSnapshot(
@@ -529,8 +536,8 @@ function normalizeRestoredWorkflow(
   );
   const restoredWorkflow: CoordinatorWorkflowSnapshot = {
     ...workflowWithCancelledApprovals,
-    appendPolicy: mergeWorkflowAppendPolicy(workflow.appendPolicy),
-    policy: mergeWorkflowPolicy(workflow.policy),
+    appendPolicy: resolveCoordinatorWorkflowAppendPolicy(workflow.appendPolicy),
+    policy: resolveCoordinatorWorkflowPolicy(workflow.policy),
     lanes: workflow.lanes.map(restoreWorkflowLaneAfterRestart),
     stages: workflow.stages.map(restoreWorkflowStageAfterRestart),
     programVersion: workflow.programVersion ?? COORDINATOR_WORKFLOW_PROGRAM_VERSION,
@@ -595,10 +602,11 @@ function emitCoordinatorEvent(
 }
 
 function updateRunTimestamp(record: RunRecord, now: number): void {
-  const nextRun = materializeRun(record);
-  nextRun.updatedAt = now;
-  nextRun.eventVersion = stateVersion;
-  replaceRun(record, nextRun);
+  record.meta = {
+    ...record.meta,
+    eventVersion: stateVersion,
+    updatedAt: now,
+  };
 }
 
 export function subscribeCoordinatorEvents(listener: CoordinatorEventListener): () => void {
@@ -637,24 +645,23 @@ export function updateCoordinatorRunStatus(
   runId: string,
   status: CoordinatorRunStatus,
   now = Date.now(),
-): CoordinatorRunSnapshot {
+): CoordinatorRunMetaSnapshot {
   const record = requireRunRecord(runId);
   const version = nextVersion();
-  const run = {
-    ...materializeRun(record),
+  record.meta = {
+    ...record.meta,
     eventVersion: version,
     status,
     updatedAt: now,
   };
-  replaceRun(record, run);
   emitCoordinatorEvent(
-    run.id,
+    runId,
     'run-meta-upserted',
-    `run:${run.id}`,
+    `run:${runId}`,
     version,
     materializeRunMeta(record),
   );
-  return clone(run);
+  return clone(materializeRunMeta(record));
 }
 
 export function setCoordinatorRunPaused(
@@ -664,18 +671,17 @@ export function setCoordinatorRunPaused(
 ): CoordinatorRunSnapshot {
   const record = requireRunRecord(runId);
   const version = nextVersion();
-  const run = materializeRun(record);
-  const nextRun: CoordinatorRunSnapshot = {
-    ...run,
+  const nextMeta: CoordinatorRunMetaSnapshot = {
+    ...record.meta,
     eventVersion: version,
     status: paused ? 'paused-by-user' : 'running',
     updatedAt: now,
     ...(paused ? { pausedAt: now } : {}),
   };
   if (!paused) {
-    delete nextRun.pausedAt;
+    delete nextMeta.pausedAt;
   }
-  replaceRun(record, nextRun);
+  record.meta = nextMeta;
   emitCoordinatorEvent(
     runId,
     'run-meta-upserted',
@@ -686,7 +692,9 @@ export function setCoordinatorRunPaused(
   return clone(materializeRun(record));
 }
 
-function getResumedRunStatus(run: CoordinatorRunSnapshot): CoordinatorRunStatus {
+function getResumedRunStatus(
+  run: Pick<CoordinatorRunMetaSnapshot, 'pausedAt'>,
+): CoordinatorRunStatus {
   if (run.pausedAt !== undefined) {
     return 'paused-by-user';
   }
@@ -719,22 +727,20 @@ export function resumeCoordinatorRunFromStale(
   options: ResumeCoordinatorRunFromStaleOptions,
 ): CoordinatorRunSnapshot {
   const record = requireRunRecord(runId);
-  if (record.run.status !== 'stale-after-restore') {
-    throw new Error(`Coordinator run is ${record.run.status}`);
+  if (record.meta.status !== 'stale-after-restore') {
+    throw new Error(`Coordinator run is ${record.meta.status}`);
   }
 
   const now = getNow(options.now);
   const version = nextVersion();
-  const run = materializeRun(record);
-  const resumes = run.resumes ?? [];
-  const nextRun: CoordinatorRunSnapshot = {
-    ...run,
+  const resumes = record.meta.resumes ?? [];
+  record.meta = {
+    ...record.meta,
     eventVersion: version,
     resumes: appendCoordinatorRunResumeEntry(resumes, options.resumeId, now),
-    status: getResumedRunStatus(run),
+    status: getResumedRunStatus(record.meta),
     updatedAt: now,
   };
-  replaceRun(record, nextRun);
   emitCoordinatorEvent(
     runId,
     'run-meta-upserted',
@@ -753,8 +759,7 @@ export function recordCoordinatorRunResumeOutcome(
 ): CoordinatorRunSnapshot {
   const record = requireRunRecord(runId);
   const version = nextVersion();
-  const run = materializeRun(record);
-  const resumes: CoordinatorRunResumeSnapshot[] = (run.resumes ?? []).map((entry) => {
+  const resumes: CoordinatorRunResumeSnapshot[] = (record.meta.resumes ?? []).map((entry) => {
     if (entry.resumeId !== resumeId) {
       return entry;
     }
@@ -765,13 +770,12 @@ export function recordCoordinatorRunResumeOutcome(
       respawnedTaskIds: [...outcome.respawnedTaskIds],
     };
   });
-  const nextRun: CoordinatorRunSnapshot = {
-    ...run,
+  record.meta = {
+    ...record.meta,
     eventVersion: version,
     resumes,
     updatedAt: now,
   };
-  replaceRun(record, nextRun);
   emitCoordinatorEvent(
     runId,
     'run-meta-upserted',
@@ -817,23 +821,23 @@ export function addCoordinatorSubtask(
     createdAt: existing?.createdAt ?? now,
     ...(options.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : {}),
     parentCoordinatorTaskId: options.parentCoordinatorTaskId,
-    startup: getCoordinatorSubtaskStartupSnapshot(options.startup ?? existing?.startup),
+    startup: clone(getCoordinatorSubtaskStartupSnapshot(options.startup ?? existing?.startup)),
     status: options.status ?? existing?.status ?? 'running',
     taskId: options.taskId,
     toolTokenId: options.toolTokenId,
     updatedAt: now,
     worktreePath: options.worktreePath,
   };
-  record.subtasksByTaskId.set(subtask.taskId, subtask);
+  const committedSubtask = storeOwnedSnapshot(record.subtasksByTaskId, subtask.taskId, subtask);
   updateRunTimestamp(record, now);
   emitCoordinatorEvent(
     options.runId,
     'subtask-upserted',
     `subtask:${subtask.taskId}`,
     version,
-    subtask,
+    committedSubtask,
   );
-  return clone(subtask);
+  return subtask;
 }
 
 export function updateCoordinatorSubtaskStatus(
@@ -856,7 +860,7 @@ export function updateCoordinatorSubtaskStatus(
       ? { interruptedByRestoreAt: options.interruptedByRestoreAt }
       : {}),
     ...(options.result !== undefined ? { result: options.result } : {}),
-    ...(options.startup !== undefined ? { startup: options.startup } : {}),
+    ...(options.startup !== undefined ? { startup: clone(options.startup) } : {}),
     ...(options.toolTokenId !== undefined ? { toolTokenId: options.toolTokenId } : {}),
     status,
     updatedAt: now,
@@ -869,10 +873,10 @@ export function updateCoordinatorSubtaskStatus(
   }
 
   const subtask = nextSubtask as CoordinatorSubtaskSnapshot;
-  record.subtasksByTaskId.set(taskId, subtask);
+  const committedSubtask = storeOwnedSnapshot(record.subtasksByTaskId, taskId, subtask);
   updateRunTimestamp(record, now);
-  emitCoordinatorEvent(runId, 'subtask-upserted', `subtask:${taskId}`, version, subtask);
-  return clone(subtask);
+  emitCoordinatorEvent(runId, 'subtask-upserted', `subtask:${taskId}`, version, committedSubtask);
+  return subtask;
 }
 
 export function enqueueCoordinatorPrompt(
@@ -897,10 +901,10 @@ export function enqueueCoordinatorPrompt(
     text: options.text,
   };
   const version = nextVersion();
-  record.promptsByRequestId.set(prompt.requestId, prompt);
+  const committedPrompt = storeOwnedSnapshot(record.promptsByRequestId, prompt.requestId, prompt);
   const subtask = record.subtasksByTaskId.get(prompt.targetTaskId);
   if (subtask) {
-    record.subtasksByTaskId.set(prompt.targetTaskId, {
+    storeOwnedSnapshot(record.subtasksByTaskId, prompt.targetTaskId, {
       ...subtask,
       lastPromptRequestId: prompt.requestId,
       updatedAt: now,
@@ -912,9 +916,9 @@ export function enqueueCoordinatorPrompt(
     'prompt-upserted',
     `prompt:${prompt.requestId}`,
     version,
-    prompt,
+    committedPrompt,
   );
-  return clone(prompt);
+  return prompt;
 }
 
 export function updateCoordinatorPrompt(
@@ -932,16 +936,19 @@ export function updateCoordinatorPrompt(
   const nextPrompt = {
     ...existing,
     ...patch,
+    ...(patch.deliveryJournal !== undefined
+      ? { deliveryJournal: clone(patch.deliveryJournal) }
+      : {}),
   };
   if ('waitingReason' in patch && patch.waitingReason === undefined) {
     delete nextPrompt.waitingReason;
   }
 
   const prompt = nextPrompt as CoordinatorPromptRequestSnapshot;
-  record.promptsByRequestId.set(requestId, prompt);
+  const committedPrompt = storeOwnedSnapshot(record.promptsByRequestId, requestId, prompt);
   updateRunTimestamp(record, Date.now());
-  emitCoordinatorEvent(runId, 'prompt-upserted', `prompt:${requestId}`, version, prompt);
-  return clone(prompt);
+  emitCoordinatorEvent(runId, 'prompt-upserted', `prompt:${requestId}`, version, committedPrompt);
+  return prompt;
 }
 
 export function cancelCoordinatorPromptsForTask(
@@ -972,60 +979,20 @@ export function upsertCoordinatorLanding(
 ): CoordinatorLandingStateSnapshot {
   const record = requireRunRecord(options.runId);
   const version = nextVersion();
-  record.landingByTaskId.set(options.landing.taskId, options.landing);
+  const landing: CoordinatorLandingStateSnapshot = {
+    ...options.landing,
+    verification: [...options.landing.verification],
+  };
+  const committedLanding = storeOwnedSnapshot(record.landingByTaskId, landing.taskId, landing);
   updateRunTimestamp(record, Date.now());
   emitCoordinatorEvent(
     options.runId,
     'landing-upserted',
-    `landing:${options.landing.taskId}`,
+    `landing:${landing.taskId}`,
     version,
-    options.landing,
+    committedLanding,
   );
-  return clone(options.landing);
-}
-
-function mergeWorkflowPolicy(
-  policy: Partial<CoordinatorWorkflowPolicySnapshot> | undefined,
-): CoordinatorWorkflowPolicySnapshot {
-  return {
-    ...DEFAULT_WORKFLOW_POLICY,
-    ...(policy?.budgetHint !== undefined ? { budgetHint: policy.budgetHint } : {}),
-    ...(policy?.continueOnFailure !== undefined
-      ? { continueOnFailure: policy.continueOnFailure }
-      : {}),
-    ...(policy?.maxConcurrentLanes !== undefined
-      ? { maxConcurrentLanes: policy.maxConcurrentLanes }
-      : {}),
-    ...(policy?.maxIterationsPerBranch !== undefined
-      ? { maxIterationsPerBranch: policy.maxIterationsPerBranch }
-      : {}),
-    ...(policy?.maxOutputBytesPerLane !== undefined
-      ? { maxOutputBytesPerLane: policy.maxOutputBytesPerLane }
-      : {}),
-    ...(policy?.maxTotalLanes !== undefined ? { maxTotalLanes: policy.maxTotalLanes } : {}),
-    ...(policy?.maxTotalRetries !== undefined ? { maxTotalRetries: policy.maxTotalRetries } : {}),
-    ...(policy?.maxTotalSteps !== undefined ? { maxTotalSteps: policy.maxTotalSteps } : {}),
-    ...(policy?.maxWallClockMs !== undefined ? { maxWallClockMs: policy.maxWallClockMs } : {}),
-    ...(policy?.requireDecisionApproval !== undefined
-      ? { requireDecisionApproval: policy.requireDecisionApproval }
-      : {}),
-    ...(policy?.resultRequired !== undefined ? { resultRequired: policy.resultRequired } : {}),
-    ...(policy?.retryBackoffMs !== undefined ? { retryBackoffMs: policy.retryBackoffMs } : {}),
-    ...(policy?.retryCount !== undefined ? { retryCount: policy.retryCount } : {}),
-    ...(policy?.timeoutMs !== undefined ? { timeoutMs: policy.timeoutMs } : {}),
-  };
-}
-
-function mergeWorkflowAppendPolicy(
-  policy: Partial<CoordinatorWorkflowAppendPolicySnapshot> | undefined,
-): CoordinatorWorkflowAppendPolicySnapshot {
-  return {
-    ...DEFAULT_WORKFLOW_APPEND_POLICY,
-    ...(policy?.maxActionsPerDecision !== undefined
-      ? { maxActionsPerDecision: policy.maxActionsPerDecision }
-      : {}),
-    ...(policy?.maxStepAppends !== undefined ? { maxStepAppends: policy.maxStepAppends } : {}),
-  };
+  return landing;
 }
 
 function getNextWorkflowJournalSeq(workflow: Pick<CoordinatorWorkflowSnapshot, 'journal'>): number {
@@ -1094,22 +1061,24 @@ function getWorkflowOrThrow(record: RunRecord, workflowId: string): CoordinatorW
   return workflow;
 }
 
-function setWorkflow(
+function commitWorkflow(
   record: RunRecord,
   workflow: CoordinatorWorkflowSnapshot,
   now: number,
   version: number,
 ): CoordinatorWorkflowSnapshot {
-  record.workflowsById.set(workflow.id, workflow);
+  // The runtime owns committed workflow state. Clone on write so nested caller-owned inputs and
+  // the returned candidate cannot mutate canonical state without a versioned mutation and event.
+  const committedWorkflow = storeOwnedSnapshot(record.workflowsById, workflow.id, workflow);
   updateRunTimestamp(record, now);
   emitCoordinatorEvent(
-    workflow.runId,
+    committedWorkflow.runId,
     'workflow-upserted',
-    `workflow:${workflow.id}`,
+    `workflow:${committedWorkflow.id}`,
     version,
-    workflow,
+    committedWorkflow,
   );
-  return clone(workflow);
+  return workflow;
 }
 
 function isRuntimeWorkflowStageReady(
@@ -1205,7 +1174,7 @@ export function createCoordinatorWorkflow(
   const workflowId = randomUUID();
   const stages: CoordinatorWorkflowStageSnapshot[] = options.stages.map((stage) => ({
     createdAt: now,
-    dependsOn: stage.dependsOn ?? [],
+    dependsOn: [...(stage.dependsOn ?? [])],
     id: stage.id ?? randomUUID(),
     kind: stage.kind,
     laneIds: [],
@@ -1215,10 +1184,10 @@ export function createCoordinatorWorkflow(
     updatedAt: now,
   }));
   const workflow: CoordinatorWorkflowSnapshot = {
-    appendPolicy: mergeWorkflowAppendPolicy(options.appendPolicy),
+    appendPolicy: resolveCoordinatorWorkflowAppendPolicy(options.appendPolicy),
     createdAt: now,
     eventVersion: version,
-    ...(options.execution !== undefined ? { execution: options.execution } : {}),
+    ...(options.execution !== undefined ? { execution: clone(options.execution) } : {}),
     id: workflowId,
     journal: [
       {
@@ -1229,20 +1198,20 @@ export function createCoordinatorWorkflow(
       },
     ],
     lanes: [],
-    policy: mergeWorkflowPolicy(options.policy),
+    policy: resolveCoordinatorWorkflowPolicy(options.policy),
     programVersion: COORDINATOR_WORKFLOW_PROGRAM_VERSION,
     results: [],
     runId: options.runId,
-    ...(options.sourceSpec !== undefined ? { sourceSpec: options.sourceSpec } : {}),
+    ...(options.sourceSpec !== undefined ? { sourceSpec: clone(options.sourceSpec) } : {}),
     stages,
     startedAt: now,
     status: options.status ?? 'running',
     template: options.template,
     title: options.title,
     updatedAt: now,
-    ...(options.verdicts !== undefined ? { verdicts: options.verdicts } : {}),
+    ...(options.verdicts !== undefined ? { verdicts: clone(options.verdicts) } : {}),
   };
-  return setWorkflow(record, workflow, now, version);
+  return commitWorkflow(record, workflow, now, version);
 }
 
 export function appendCoordinatorWorkflowSteps(
@@ -1271,9 +1240,10 @@ export function appendCoordinatorWorkflowSteps(
 
   const now = getNow(options.now);
   const version = nextVersion();
+  const append = clone(options.append);
   const appendedStages: CoordinatorWorkflowStageSnapshot[] = options.stages.map((stage) => ({
     createdAt: now,
-    dependsOn: stage.dependsOn ?? [],
+    dependsOn: [...(stage.dependsOn ?? [])],
     id: stage.id,
     kind: stage.kind,
     laneIds: [],
@@ -1295,17 +1265,15 @@ export function appendCoordinatorWorkflowSteps(
       {
         at: now,
         kind: 'workflow-steps-appended',
-        ...(options.append.sourceLaneId !== undefined
-          ? { laneId: options.append.sourceLaneId }
-          : {}),
-        message: createWorkflowStepAppendMessage(options.append.stepIds),
+        ...(append.sourceLaneId !== undefined ? { laneId: append.sourceLaneId } : {}),
+        message: createWorkflowStepAppendMessage(append.stepIds),
         seq: getNextWorkflowJournalSeq(workflow),
       },
     ],
-    sourceSpec: options.sourceSpec,
+    sourceSpec: clone(options.sourceSpec),
     stages: [...workflow.stages, ...appendedStages],
     status: nextStatus,
-    stepAppends: [...(workflow.stepAppends ?? []), options.append],
+    stepAppends: [...(workflow.stepAppends ?? []), append],
     updatedAt: now,
   };
   const updatedWorkflow: CoordinatorWorkflowSnapshot = {
@@ -1313,7 +1281,7 @@ export function appendCoordinatorWorkflowSteps(
     execution: createRuntimeWorkflowExecutionSnapshot(workflowWithAppend, now),
   };
 
-  return setWorkflow(record, updatedWorkflow, now, version);
+  return commitWorkflow(record, updatedWorkflow, now, version);
 }
 
 export function appendCoordinatorWorkflowJournal(
@@ -1328,7 +1296,7 @@ export function appendCoordinatorWorkflowJournal(
   const workflow = getWorkflowOrThrow(record, workflowId);
   const now = getNow(entry.at);
   const version = nextVersion();
-  return setWorkflow(
+  return commitWorkflow(
     record,
     {
       ...workflow,
@@ -1390,7 +1358,7 @@ export function addCoordinatorWorkflowLane(
     ),
     updatedAt: now,
   };
-  setWorkflow(record, updatedWorkflow, now, version);
+  commitWorkflow(record, updatedWorkflow, now, version);
   return clone(lane);
 }
 
@@ -1438,7 +1406,7 @@ export function updateCoordinatorWorkflowLane(
     lanes: workflow.lanes.map((candidate) => (candidate.id === laneId ? lane : candidate)),
     updatedAt: now,
   };
-  setWorkflow(record, updatedWorkflow, now, version);
+  commitWorkflow(record, updatedWorkflow, now, version);
   return clone(lane);
 }
 
@@ -1461,8 +1429,8 @@ export function updateCoordinatorWorkflowStage(
     ...existing,
     ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
     ...(patch.failure !== undefined ? { failure: patch.failure } : {}),
-    ...(patch.laneIds !== undefined ? { laneIds: patch.laneIds } : {}),
-    ...(patch.resultIds !== undefined ? { resultIds: patch.resultIds } : {}),
+    ...(patch.laneIds !== undefined ? { laneIds: [...patch.laneIds] } : {}),
+    ...(patch.resultIds !== undefined ? { resultIds: [...patch.resultIds] } : {}),
     ...(patch.startedAt !== undefined ? { startedAt: patch.startedAt } : {}),
     ...(patch.status !== undefined ? { status: patch.status } : {}),
     updatedAt: now,
@@ -1478,7 +1446,7 @@ export function updateCoordinatorWorkflowStage(
     stages: workflow.stages.map((candidate) => (candidate.id === stageId ? stage : candidate)),
     updatedAt: now,
   };
-  setWorkflow(record, updatedWorkflow, now, version);
+  commitWorkflow(record, updatedWorkflow, now, version);
   return clone(stage);
 }
 
@@ -1491,22 +1459,18 @@ export function updateCoordinatorWorkflow(
   const workflow = getWorkflowOrThrow(record, workflowId);
   const now = getNow(patch.now);
   const version = nextVersion();
-  return setWorkflow(
-    record,
-    {
-      ...workflow,
-      ...(patch.appendPolicy !== undefined ? { appendPolicy: patch.appendPolicy } : {}),
-      ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
-      eventVersion: version,
-      ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
-      ...(patch.expansions !== undefined ? { expansions: patch.expansions } : {}),
-      ...(patch.status !== undefined ? { status: patch.status } : {}),
-      updatedAt: now,
-      ...(patch.verdicts !== undefined ? { verdicts: patch.verdicts } : {}),
-    },
-    now,
-    version,
-  );
+  const updatedWorkflow: CoordinatorWorkflowSnapshot = {
+    ...workflow,
+    ...(patch.appendPolicy !== undefined ? { appendPolicy: clone(patch.appendPolicy) } : {}),
+    ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
+    eventVersion: version,
+    ...(patch.execution !== undefined ? { execution: clone(patch.execution) } : {}),
+    ...(patch.expansions !== undefined ? { expansions: clone(patch.expansions) } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    updatedAt: now,
+    ...(patch.verdicts !== undefined ? { verdicts: clone(patch.verdicts) } : {}),
+  };
+  return commitWorkflow(record, updatedWorkflow, now, version);
 }
 
 export function addCoordinatorWorkflowResult(
@@ -1516,7 +1480,7 @@ export function addCoordinatorWorkflowResult(
   const now = getNow(options.now);
   const version = nextVersion();
   const result: CoordinatorWorkflowResultSnapshot = {
-    ...options.result,
+    ...clone(options.result),
     createdAt: options.result.createdAt ?? now,
     id: options.result.id ?? randomUUID(),
     runId: options.runId,
@@ -1539,7 +1503,7 @@ export function addCoordinatorWorkflowResult(
     ),
     updatedAt: now,
   };
-  setWorkflow(record, updatedWorkflow, now, version);
+  commitWorkflow(record, updatedWorkflow, now, version);
   return clone(result);
 }
 
@@ -1556,7 +1520,7 @@ export function addCoordinatorWorkflowPendingApproval(
   const now = getNow(options.now);
   const version = nextVersion();
   const approval: CoordinatorWorkflowPendingApprovalSnapshot = {
-    actions: options.actions,
+    actions: clone(options.actions),
     createdAt: now,
     id: options.id,
     laneId: options.laneId,
@@ -1564,7 +1528,7 @@ export function addCoordinatorWorkflowPendingApproval(
     stageId: options.stageId,
     status: 'pending',
   };
-  setWorkflow(
+  commitWorkflow(
     record,
     {
       ...workflow,
@@ -1600,7 +1564,7 @@ export function resolveCoordinatorWorkflowPendingApproval(
     resolvedAt: now,
     status: resolution,
   };
-  setWorkflow(
+  commitWorkflow(
     record,
     {
       ...workflow,
@@ -1630,7 +1594,8 @@ export function cancelCoordinatorWorkflowPendingApprovals(
   }
 
   const version = nextVersion();
-  return setWorkflow(record, { ...cancelled, eventVersion: version, updatedAt: now }, now, version);
+  const updatedWorkflow = { ...cancelled, eventVersion: version, updatedAt: now };
+  return commitWorkflow(record, updatedWorkflow, now, version);
 }
 
 export function cancelCoordinatorWorkflowLanesForTask(
@@ -1725,7 +1690,7 @@ export function cancelCoordinatorWorkflowLanesForTask(
       ...(workflowCancelled ? { status: 'cancelled' as const } : {}),
       updatedAt: now,
     };
-    setWorkflow(record, updatedWorkflow, now, version);
+    commitWorkflow(record, updatedWorkflow, now, version);
   }
 
   return clone(cancelled);
@@ -1736,9 +1701,54 @@ export function getCoordinatorRun(runId: string): CoordinatorRunSnapshot | null 
   return record ? clone(materializeRun(record)) : null;
 }
 
+export function getCoordinatorRunMeta(runId: string): CoordinatorRunMetaSnapshot | null {
+  const record = recordsByRunId.get(runId);
+  return record ? clone(materializeRunMeta(record)) : null;
+}
+
 /** Status-only read for hot paths that must not pay for the full-run clone `getCoordinatorRun` does. */
 export function getCoordinatorRunStatus(runId: string): CoordinatorRunStatus | null {
-  return recordsByRunId.get(runId)?.run.status ?? null;
+  return recordsByRunId.get(runId)?.meta.status ?? null;
+}
+
+export function getCoordinatorPrompt(
+  runId: string,
+  requestId: string,
+): CoordinatorPromptRequestSnapshot | null {
+  const prompt = recordsByRunId.get(runId)?.promptsByRequestId.get(requestId);
+  return prompt ? clone(prompt) : null;
+}
+
+export function getCoordinatorPromptQueue(
+  runId: string,
+): CoordinatorPromptRequestSnapshot[] | null {
+  const record = recordsByRunId.get(runId);
+  return record ? clone([...record.promptsByRequestId.values()]) : null;
+}
+
+export function getCoordinatorPromptQueueForTask(
+  runId: string,
+  taskId: string,
+): CoordinatorPromptRequestSnapshot[] | null {
+  const record = recordsByRunId.get(runId);
+  return record
+    ? clone(
+        [...record.promptsByRequestId.values()].filter((prompt) => prompt.targetTaskId === taskId),
+      )
+    : null;
+}
+
+export function getCoordinatorSubtask(
+  runId: string,
+  taskId: string,
+): CoordinatorSubtaskSnapshot | null {
+  const subtask = recordsByRunId.get(runId)?.subtasksByTaskId.get(taskId);
+  return subtask ? clone(subtask) : null;
+}
+
+export function getCoordinatorSubtasks(runId: string): CoordinatorSubtaskSnapshot[] | null {
+  const record = recordsByRunId.get(runId);
+  return record ? clone([...record.subtasksByTaskId.values()]) : null;
 }
 
 export function getCoordinatorWorkflow(
@@ -1751,12 +1761,58 @@ export function getCoordinatorWorkflow(
     : null;
 }
 
-export function getCoordinatorRunByCoordinatorTaskId(
+export function getCoordinatorOwnedLaneWorkflowCandidates(
+  runId: string,
+  workflowId?: string,
+): CoordinatorOwnedLaneWorkflowProjection[] | null {
+  const record = recordsByRunId.get(runId);
+  if (!record) {
+    return null;
+  }
+
+  const workflows =
+    workflowId === undefined
+      ? record.workflowsById.values()
+      : [record.workflowsById.get(workflowId)].filter(
+          (workflow): workflow is CoordinatorWorkflowSnapshot => workflow !== undefined,
+        );
+  return [...workflows].map((workflow) => {
+    return clone({
+      appendPolicy: workflow.appendPolicy,
+      ...(workflow.execution !== undefined ? { execution: workflow.execution } : {}),
+      ...(workflow.expansions !== undefined ? { expansions: workflow.expansions } : {}),
+      id: workflow.id,
+      lanes: workflow.lanes,
+      ...(workflow.pendingApprovals !== undefined
+        ? { pendingApprovals: workflow.pendingApprovals }
+        : {}),
+      policy: workflow.policy,
+      resultCount: workflow.results.length,
+      runId: workflow.runId,
+      ...(workflow.sourceSpec !== undefined ? { sourceSpec: workflow.sourceSpec } : {}),
+      stages: workflow.stages,
+      status: workflow.status,
+      ...(workflow.stepAppends !== undefined ? { stepAppends: workflow.stepAppends } : {}),
+    });
+  });
+}
+
+export function getCoordinatorRunMetaByCoordinatorTaskId(
   taskId: string,
-): CoordinatorRunSnapshot | null {
+): CoordinatorRunMetaSnapshot | null {
   for (const record of recordsByRunId.values()) {
-    if (record.run.coordinatorTaskId === taskId) {
-      return clone(materializeRun(record));
+    if (record.meta.coordinatorTaskId === taskId) {
+      return clone(materializeRunMeta(record));
+    }
+  }
+
+  return null;
+}
+
+export function getCoordinatorRunIdBySubtaskTaskId(taskId: string): string | null {
+  for (const record of recordsByRunId.values()) {
+    if (record.subtasksByTaskId.has(taskId)) {
+      return record.meta.id;
     }
   }
 
@@ -1765,6 +1821,52 @@ export function getCoordinatorRunByCoordinatorTaskId(
 
 export function listCoordinatorRuns(): CoordinatorRunSnapshot[] {
   return [...recordsByRunId.values()].map((record) => clone(materializeRun(record)));
+}
+
+export function listCoordinatorPromptQueueProjections(): CoordinatorPromptQueueProjection[] {
+  return [...recordsByRunId.values()].map((record) => ({
+    promptQueue: clone([...record.promptsByRequestId.values()]),
+    runId: record.meta.id,
+    status: record.meta.status,
+  }));
+}
+
+export function listCoordinatorWorkflowSchedulingEntries(
+  runId?: string,
+): CoordinatorWorkflowSchedulingEntry[] {
+  const entries: CoordinatorWorkflowSchedulingEntry[] = [];
+
+  function appendRecordEntries(record: RunRecord): void {
+    for (const workflow of record.workflowsById.values()) {
+      const projection: CoordinatorWorkflowSchedulingProjection = {
+        ...(workflow.execution !== undefined ? { execution: workflow.execution } : {}),
+        id: workflow.id,
+        lanes: workflow.lanes,
+        policy: workflow.policy,
+        runId: workflow.runId,
+        ...(workflow.sourceSpec !== undefined ? { sourceSpec: workflow.sourceSpec } : {}),
+        stages: workflow.stages,
+        status: workflow.status,
+      };
+      entries.push({
+        coordinatorTaskId: record.meta.coordinatorTaskId,
+        workflow: clone(projection),
+      });
+    }
+  }
+
+  if (runId !== undefined) {
+    const record = recordsByRunId.get(runId);
+    if (record) {
+      appendRecordEntries(record);
+    }
+    return entries;
+  }
+
+  for (const record of recordsByRunId.values()) {
+    appendRecordEntries(record);
+  }
+  return entries;
 }
 
 export function removeCoordinatorRun(runId: string): void {
@@ -1875,11 +1977,13 @@ export function getCoordinatorDiagnostics(): CoordinatorDiagnosticsSnapshot {
   let promptQueueDepth = 0;
   let queuedSpawns = 0;
 
-  for (const run of listCoordinatorRuns()) {
-    promptQueueDepth += run.promptQueue.filter((prompt) =>
-      isCoordinatorPendingPromptStatus(prompt.status),
-    ).length;
-    for (const subtask of run.subtasks) {
+  for (const record of recordsByRunId.values()) {
+    for (const prompt of record.promptsByRequestId.values()) {
+      if (isCoordinatorPendingPromptStatus(prompt.status)) {
+        promptQueueDepth += 1;
+      }
+    }
+    for (const subtask of record.subtasksByTaskId.values()) {
       if (subtask.status === 'queued' || subtask.status === 'spawning') {
         queuedSpawns += 1;
       }

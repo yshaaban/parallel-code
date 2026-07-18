@@ -64,7 +64,6 @@ type BrowserInvokeResponseEnvelope<TChannel extends RendererInvokeChannel> =
     };
 
 const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
-  [IPC.CleanupTaskRuntime]: true,
   [IPC.CommitAll]: true,
   [IPC.CoordinatorActivityHint]: true,
   [IPC.DetachAgentOutput]: true,
@@ -105,6 +104,11 @@ export interface BrowserHttpIpcClient {
   fetch: <TChannel extends RendererInvokeChannel>(
     cmd: TChannel,
     args?: RendererInvokeRequestMap[TChannel],
+  ) => Promise<RendererInvokeResponseMap[TChannel]>;
+  fetchCancellable: <TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args: RendererInvokeRequestMap[TChannel] | undefined,
+    signal: AbortSignal,
   ) => Promise<RendererInvokeResponseMap[TChannel]>;
   getQueueDepth: () => number;
   invalidateActiveRequests: (error: Error) => void;
@@ -523,12 +527,23 @@ export function createBrowserHttpIpcClient(
   async function executeFetch<TChannel extends RendererInvokeChannel>(
     cmd: TChannel,
     args?: RendererInvokeRequestMap[TChannel],
+    externalSignal?: AbortSignal,
   ): Promise<RendererInvokeResponseMap[TChannel]> {
     const generation = resetGeneration;
     const clientId = options.getClientId();
     const token = options.getToken();
     const abortController = typeof AbortController === 'undefined' ? null : new AbortController();
+    const requestSignal = abortController?.signal ?? externalSignal;
+    const abortFromExternalSignal = () => {
+      abortController?.abort(externalSignal?.reason);
+    };
+    const throwIfExternallyAborted = (): void => {
+      externalSignal?.throwIfAborted();
+    };
     let response: Response;
+
+    throwIfExternallyAborted();
+    externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
     if (abortController) {
       inFlightFetchControllers.add(abortController);
     }
@@ -544,12 +559,13 @@ export function createBrowserHttpIpcClient(
             ...(clientId ? { [BROWSER_CLIENT_ID_HEADER]: clientId } : {}),
           },
           body: JSON.stringify(args ?? {}),
-          ...(abortController ? { signal: abortController.signal } : {}),
+          ...(requestSignal ? { signal: requestSignal } : {}),
         });
       } catch (error) {
         if (generation !== resetGeneration) {
           throw createInvalidationError();
         }
+        throwIfExternallyAborted();
 
         setState('unreachable');
         options.onUnreachable(BROWSER_UNREACHABLE_MESSAGE);
@@ -564,10 +580,12 @@ export function createBrowserHttpIpcClient(
         if (generation !== resetGeneration) {
           throw createInvalidationError();
         }
+        throwIfExternallyAborted();
 
         throw error;
       }
       assertActiveGeneration(generation);
+      throwIfExternallyAborted();
       if (response.status === 401) {
         setState('auth-expired');
         const authError = new Error(data.error ?? 'Browser session expired');
@@ -594,6 +612,7 @@ export function createBrowserHttpIpcClient(
 
       throw new Error(data.error ?? `IPC request failed (${response.status})`);
     } finally {
+      externalSignal?.removeEventListener('abort', abortFromExternalSignal);
       if (abortController) {
         inFlightFetchControllers.delete(abortController);
       }
@@ -724,6 +743,7 @@ export function createBrowserHttpIpcClient(
   return {
     clearDurableQueueStorage,
     fetch: fetchWithQueue,
+    fetchCancellable: (cmd, args, signal) => executeFetch(cmd, args, signal),
     getQueueDepth: () => pendingRequestQueue.length,
     invalidateActiveRequests,
     onStateChange: (listener) => {

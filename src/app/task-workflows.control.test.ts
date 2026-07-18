@@ -209,7 +209,7 @@ describe('task workflow control leases', () => {
         case IPC.DeleteTask:
           return Promise.resolve({ cleanupWarnings: [] });
         case IPC.CleanupTaskRuntime:
-          return Promise.resolve(undefined);
+          return Promise.resolve({ cleanupWarnings: [] });
         case IPC.MergeTask:
           return Promise.resolve({
             lines_added: 12,
@@ -463,7 +463,7 @@ describe('task workflow control leases', () => {
             createAcquireLeaseResult(args, (args as { action: string }).action),
           );
         case IPC.CleanupTaskRuntime:
-          return Promise.resolve(undefined);
+          return Promise.resolve({ cleanupWarnings: [] });
         case IPC.ReleaseTaskCommandLease:
           return Promise.resolve(createReleaseLeaseResult(args));
         default:
@@ -624,7 +624,49 @@ describe('task workflow control leases', () => {
     expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces backend cleanup warnings after task deletion completes', async () => {
+  it.each([
+    {
+      cleanupWarnings: [
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+      ],
+      expectedMessage:
+        'Task closed, but worktree cleanup did not finish. Check server logs before reusing this task branch.',
+      warningScope: 'worktree',
+    },
+    {
+      cleanupWarnings: [
+        {
+          kind: 'runners',
+          message: 'Failed to stop task runners while deleting task: timeout',
+        },
+      ],
+      expectedMessage:
+        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+      warningScope: 'runner',
+    },
+    {
+      cleanupWarnings: [
+        {
+          kind: 'worktree',
+          message: 'Failed to clean task worktree while deleting task: remove failed',
+        },
+        {
+          kind: 'runners',
+          message: 'Failed to stop task runners while deleting task: timeout',
+        },
+        {
+          kind: 'containers',
+          message: 'Failed to clean task containers while deleting task: daemon unavailable',
+        },
+      ],
+      expectedMessage:
+        'Task closed, but worktree, agent runner, and container cleanup did not finish. Check server logs before reusing this task branch.',
+      warningScope: 'combined',
+    },
+  ])('surfaces $warningScope cleanup warnings after task deletion completes', async (testCase) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
@@ -638,12 +680,7 @@ describe('task workflow control leases', () => {
           return Promise.resolve(undefined);
         case IPC.DeleteTask:
           return Promise.resolve({
-            cleanupWarnings: [
-              {
-                kind: 'worktree',
-                message: 'Failed to clean task worktree while deleting task: remove failed',
-              },
-            ],
+            cleanupWarnings: testCase.cleanupWarnings,
           });
         case IPC.RenewTaskCommandLease:
           return Promise.resolve(createRenewLeaseResult(args));
@@ -656,15 +693,11 @@ describe('task workflow control leases', () => {
       await closeTask('task-1');
 
       expect(store.tasks['task-1']).toBeUndefined();
-      expect(showNotificationMock).toHaveBeenCalledWith(
-        'Task closed, but worktree cleanup did not finish. Check server logs before reusing this task branch.',
+      expect(showNotificationMock).toHaveBeenCalledWith(testCase.expectedMessage);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Task task-1 closed with cleanup warnings:',
+        testCase.cleanupWarnings,
       );
-      expect(warnSpy).toHaveBeenCalledWith('Task task-1 closed with cleanup warnings:', [
-        {
-          kind: 'worktree',
-          message: 'Failed to clean task worktree while deleting task: remove failed',
-        },
-      ]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -684,6 +717,7 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
       agentIds: ['agent-1', 'shell-1'],
       controllerId: 'client-self',
+      projectRoot: '/tmp/project',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
@@ -692,6 +726,56 @@ describe('task workflow control leases', () => {
       IPC.DeleteTask,
       expect.objectContaining({ taskId: 'task-1' }),
     );
+  });
+
+  it('surfaces runtime cleanup warnings when closing a direct-mode task', async () => {
+    const cleanupWarnings = [
+      {
+        kind: 'runners' as const,
+        message: 'Failed to clean agent runners while removing task runtime: timeout',
+      },
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        directMode: true,
+        shellAgentIds: ['shell-1'],
+      }),
+    });
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.resolve({ cleanupWarnings });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    try {
+      await closeTask('task-1');
+
+      expect(store.tasks['task-1']).toBeUndefined();
+      expect(showNotificationMock).toHaveBeenCalledWith(
+        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Task task-1 closed with cleanup warnings:',
+        cleanupWarnings,
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('uses runtime cleanup instead of delete-task when closing an external worktree task', async () => {
@@ -709,6 +793,7 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
       agentIds: ['agent-1', 'shell-1'],
       controllerId: 'client-self',
+      projectRoot: '/tmp/project',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
@@ -736,6 +821,7 @@ describe('task workflow control leases', () => {
       agentIds: ['agent-1', 'shell-1'],
       controllerId: 'client-self',
       projectMode: 'non-git',
+      projectRoot: '/tmp/project',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/folder',
@@ -1045,11 +1131,57 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
       agentIds: ['agent-1', 'shell-1'],
       controllerId: 'client-self',
+      projectRoot: '/tmp/project',
       removeTaskState: true,
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
     });
     expect(store.completedTaskCount).toBe(1);
+  });
+
+  it('surfaces runtime cleanup warnings when merge cleanup removes the task', async () => {
+    const cleanupWarnings = [
+      {
+        kind: 'runners' as const,
+        message: 'Failed to clean agent runners while removing task runtime: timeout',
+      },
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.resolve({ cleanupWarnings });
+        case IPC.MergeTask:
+          return Promise.resolve({ lines_added: 12, lines_removed: 4 });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    try {
+      await mergeTask('task-1', { cleanup: true, squash: false });
+
+      expect(store.tasks['task-1']).toBeUndefined();
+      expect(showNotificationMock).toHaveBeenCalledWith(
+        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Task task-1 closed with cleanup warnings:',
+        cleanupWarnings,
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('does not count plain task close as merged progress', async () => {

@@ -6,6 +6,7 @@ import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport
 
 const writeToAgentMock = vi.fn();
 const resizeAgentMock = vi.fn();
+const stopTaskAgentWorkflowMock = vi.fn<(agentId: string) => Promise<void>>();
 const recordTerminalInputTraceClientUpdateMock = vi.fn();
 const acquireTaskCommandLeaseMock = vi.fn();
 const getAgentMetaMock = vi.fn<
@@ -43,7 +44,6 @@ vi.mock('../ipc/pty.js', () => ({
   getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
   getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
   hasAgentSession: vi.fn(() => false),
-  killAgent: vi.fn(),
   onPtyEvent: onPtyEventMock,
   pauseAgent: vi.fn(),
   resizeAgent: resizeAgentMock,
@@ -51,6 +51,10 @@ vi.mock('../ipc/pty.js', () => ({
   subscribeToAgent: subscribeToAgentMock,
   unsubscribeFromAgent: unsubscribeFromAgentMock,
   writeToAgent: writeToAgentMock,
+}));
+
+vi.mock('../ipc/task-workflows.js', () => ({
+  stopTaskAgentWorkflow: stopTaskAgentWorkflowMock,
 }));
 
 vi.mock('../ipc/task-command-leases.js', () => ({
@@ -134,6 +138,7 @@ function createMockTransport(
 describe('registerRemoteWebSocketServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stopTaskAgentWorkflowMock.mockResolvedValue(undefined);
     getAgentTerminalRecoveryMock.mockReturnValue({
       cols: 80,
       kind: 'noop',
@@ -252,6 +257,45 @@ describe('registerRemoteWebSocketServer', () => {
     });
 
     expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
+  });
+
+  it('routes kill through the canonical stop workflow and surfaces asynchronous cleanup failure', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+    const failure = new Error('runner cleanup failed');
+    stopTaskAgentWorkflowMock.mockRejectedValueOnce(failure);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+    client.emit(
+      'message',
+      JSON.stringify({
+        agentId: 'agent-1',
+        type: 'kill',
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(stopTaskAgentWorkflowMock).toHaveBeenCalledWith('agent-1');
+      expect(sendMessage).toHaveBeenCalledWith(client, {
+        agentId: 'agent-1',
+        message: 'runner cleanup failed',
+        type: 'agent-error',
+      });
+    });
   });
 
   it('responds to browser terminal trace clock sync requests', async () => {

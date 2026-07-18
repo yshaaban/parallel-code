@@ -58,7 +58,7 @@ export interface BrowserAgentCommandRunner<Client> {
     client: Client,
     agentId: string,
     action: string,
-    execute: () => void,
+    execute: () => Promise<void> | void,
     requireControl?: boolean,
     commandOptions?: AgentCommandExecutionOptions,
   ) => void;
@@ -207,7 +207,7 @@ export function createBrowserAgentCommandRunner<Client>(
     client: Client,
     agentId: string,
     action: string,
-    execute: () => void,
+    execute: () => Promise<void> | void,
     requireControl = true,
     commandOptions?: AgentCommandExecutionOptions,
   ): void {
@@ -219,6 +219,21 @@ export function createBrowserAgentCommandRunner<Client>(
         return;
       }
     }
+
+    const handleExecutionFailure = (error: unknown): void => {
+      const errorMessage = error instanceof Error ? error.message : `${action} failed`;
+      commandOptions?.onFailure?.(errorMessage);
+      if (sendRequestedAgentCommandResult(client, request, false, errorMessage)) {
+        return;
+      }
+
+      options.sendAgentError(client, agentId, `${action} failed`, error);
+    };
+    const handleExecutionSuccess = (): void => {
+      if (commandOptions?.deferSuccessResult !== true) {
+        sendRequestedAgentCommandResult(client, request, true);
+      }
+    };
 
     try {
       if (requireControl) {
@@ -234,18 +249,14 @@ export function createBrowserAgentCommandRunner<Client>(
         }
       }
 
-      execute();
-      if (commandOptions?.deferSuccessResult !== true) {
-        sendRequestedAgentCommandResult(client, request, true);
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : `${action} failed`;
-      commandOptions?.onFailure?.(errorMessage);
-      if (sendRequestedAgentCommandResult(client, request, false, errorMessage)) {
+      const execution = execute();
+      if (execution) {
+        void execution.then(handleExecutionSuccess, handleExecutionFailure);
         return;
       }
-
-      options.sendAgentError(client, agentId, `${action} failed`, error);
+      handleExecutionSuccess();
+    } catch (error) {
+      handleExecutionFailure(error);
     }
   }
 

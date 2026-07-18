@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import { resetTaskCommandLeasesForTest } from '../../electron/ipc/task-command-leases.js';
 import {
   resetCoordinatorRuntimeForTests,
@@ -559,13 +560,13 @@ function forgetActiveHarness(harness: CoordinatorBrowserlessHarness): void {
 }
 
 describe('browser-less coordinator E2E', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     clearTaskPortRegistry();
     resetTaskCommandLeasesForTest();
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetMockState();
     spawnCallIndex = 0;
@@ -586,14 +587,31 @@ describe('browser-less coordinator E2E', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(activeHarnesses.splice(0).map((harness) => harness.close()));
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    await runIndependentCleanups(
+      'Coordinator browserless E2E harnesses',
+      activeHarnesses
+        .splice(0)
+        .map(
+          (harness, index) =>
+            [`close coordinator browserless harness ${index + 1}`, () => harness.close()] as const,
+        ),
+    );
+    await runIndependentCleanups(
+      'Coordinator browserless E2E temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (directory, index) =>
+            [
+              `remove coordinator browserless temporary directory ${index + 1}`,
+              () => rm(directory, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
     clearTaskPortRegistry();
     resetTaskCommandLeasesForTest();
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetMockState();
     vi.restoreAllMocks();
@@ -2896,7 +2914,7 @@ describe('browser-less coordinator E2E', () => {
     await firstHarness.close();
     forgetActiveHarness(firstHarness);
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetTaskCommandLeasesForTest();
 
@@ -3035,7 +3053,7 @@ describe('browser-less coordinator E2E', () => {
     await firstHarness.close();
     forgetActiveHarness(firstHarness);
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetTaskCommandLeasesForTest();
     resetMockState();
@@ -3255,7 +3273,7 @@ describe('browser-less coordinator E2E', () => {
     await firstHarness.close();
     forgetActiveHarness(firstHarness);
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
     resetTaskCommandLeasesForTest();
     resetMockState();

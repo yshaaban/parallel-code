@@ -37,7 +37,9 @@ export function createCoordinatorPersistenceScheduler(
   let dirty = false;
   let stopped = false;
   let retryAttempt = 0;
+  let pendingSaveCount = 0;
   let saveChain: Promise<void> = Promise.resolve();
+  let stopPromise: Promise<void> | null = null;
   let degraded = false;
   let lastSuccessAt: number | null = null;
   let lastErrorAt: number | undefined;
@@ -76,6 +78,7 @@ export function createCoordinatorPersistenceScheduler(
   // the same state file can never interleave or land out of order.
   function runSave(): Promise<void> {
     dirty = false;
+    pendingSaveCount += 1;
     const run = saveChain.then(async () => {
       try {
         await options.save();
@@ -85,7 +88,14 @@ export function createCoordinatorPersistenceScheduler(
         throw error;
       }
     });
-    saveChain = run.catch(() => {});
+    saveChain = run.then(
+      () => {
+        pendingSaveCount -= 1;
+      },
+      () => {
+        pendingSaveCount -= 1;
+      },
+    );
     return run;
   }
 
@@ -115,25 +125,33 @@ export function createCoordinatorPersistenceScheduler(
     armTimer(Math.max(0, dueAt - now));
   }
 
-  async function flushNow(): Promise<void> {
+  function flushNow(): Promise<void> {
+    // Once stop has queued the authoritative final snapshot, every later flush
+    // joins that same lifecycle instead of appending a write behind it.
+    if (stopPromise !== null) {
+      return stopPromise;
+    }
+
     clearTimer();
     burstStartedAt = null;
-    await runSave();
+    return runSave();
   }
 
-  async function stop(): Promise<void> {
-    if (stopped) {
-      await saveChain;
-      return;
+  function stop(): Promise<void> {
+    if (stopPromise !== null) {
+      return stopPromise;
     }
 
     stopped = true;
     clearTimer();
     burstStartedAt = null;
-    if (dirty) {
-      await runSave().catch(() => {});
-    }
-    await saveChain;
+    // Always enqueue one final save after the existing chain. The save callback
+    // materializes its snapshot only when this turn starts, so every older
+    // queued write has settled and can never land after the shutdown snapshot.
+    // Keep the rejecting promise: a failed final durability boundary must be
+    // visible to the runtime owner and every repeated stop/flush caller.
+    stopPromise = runSave();
+    return stopPromise;
   }
 
   function getHealth(): CoordinatorPersistenceHealth {
@@ -142,7 +160,7 @@ export function createCoordinatorPersistenceScheduler(
       lastSuccessAt,
       ...(lastErrorAt !== undefined ? { lastErrorAt } : {}),
       ...(lastError !== undefined ? { lastError } : {}),
-      pendingFlush: dirty || timer !== null,
+      pendingFlush: dirty || timer !== null || pendingSaveCount > 0,
     };
   }
 

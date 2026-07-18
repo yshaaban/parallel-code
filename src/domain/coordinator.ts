@@ -923,21 +923,25 @@ export interface CoordinatorSpawnManyLanePayload {
   spawnedBy?: CoordinatorWorkflowLaneSpawnSource;
 }
 
-export interface CoordinatorWorkflowPolicyPayload {
-  budgetHint?: string;
-  continueOnFailure?: boolean;
-  maxConcurrentLanes?: number;
-  maxIterationsPerBranch?: number;
-  maxOutputBytesPerLane?: number;
-  maxTotalLanes?: number;
-  maxTotalRetries?: number;
-  maxTotalSteps?: number;
-  maxWallClockMs?: number;
-  resultRequired?: boolean;
-  retryBackoffMs?: number;
-  retryCount?: number;
-  timeoutMs?: number;
-}
+export type CoordinatorWorkflowPolicyPayload = Partial<
+  Pick<
+    CoordinatorWorkflowPolicySnapshot,
+    | 'budgetHint'
+    | 'continueOnFailure'
+    | 'maxConcurrentLanes'
+    | 'maxIterationsPerBranch'
+    | 'maxOutputBytesPerLane'
+    | 'maxTotalLanes'
+    | 'maxTotalRetries'
+    | 'maxTotalSteps'
+    | 'maxWallClockMs'
+    | 'requireDecisionApproval'
+    | 'resultRequired'
+    | 'retryBackoffMs'
+    | 'retryCount'
+    | 'timeoutMs'
+  >
+>;
 
 export interface CoordinatorSpawnManyPayload {
   agent?: CoordinatorSpawnSubtaskPayload['agent'];

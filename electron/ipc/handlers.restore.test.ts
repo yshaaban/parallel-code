@@ -365,8 +365,6 @@ describe('GetTerminalRecoveryBatch', () => {
         }
 
         if (agentId === 'agent-delta') {
-          expect(renderedText).toBe('rendered-tail');
-          expect(outputCursor).toBe(12);
           return {
             cols: 92,
             data: Buffer.from('delta-bytes', 'utf8'),
@@ -387,35 +385,25 @@ describe('GetTerminalRecoveryBatch', () => {
         };
       },
     );
-    getAgentTerminalStartupRecoveryMock.mockImplementation(
-      (
-        agentId: string,
-        renderedTail: Buffer | null,
-        outputCursor: number | null,
-        _role: 'selected' | 'visible-sibling',
-        _visibleTerminalCount: number,
-      ) => {
-        expect(renderedTail).toBeNull();
-        expect(outputCursor).toBeNull();
-        if (agentId === 'agent-selected') {
-          return {
-            cols: 120,
-            data: Buffer.from('selected-startup', 'utf8'),
-            kind: 'terminal-state',
-            outputCursor: 48,
-            rows: 32,
-          };
-        }
-
+    getAgentTerminalStartupRecoveryMock.mockImplementation((agentId: string) => {
+      if (agentId === 'agent-selected') {
         return {
-          cols: 96,
-          data: Buffer.from('visible-startup', 'utf8'),
+          cols: 120,
+          data: Buffer.from('selected-startup', 'utf8'),
           kind: 'terminal-state',
-          outputCursor: 25,
-          rows: 28,
+          outputCursor: 48,
+          rows: 32,
         };
-      },
-    );
+      }
+
+      return {
+        cols: 96,
+        data: Buffer.from('visible-startup', 'utf8'),
+        kind: 'terminal-state',
+        outputCursor: 25,
+        rows: 28,
+      };
+    });
   });
 
   afterEach(() => {
@@ -499,6 +487,12 @@ describe('GetTerminalRecoveryBatch', () => {
         rows: 23,
       },
     ]);
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-delta',
+      Buffer.from('rendered-tail', 'utf8'),
+      12,
+      null,
+    );
     expect(pauseAgentMock).toHaveBeenCalledTimes(3);
     // The batch pause is server-owned: it survives the response so live Data
     // frames cannot race the client apply, and is released per entry.

@@ -1,6 +1,7 @@
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'http';
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import { createBrowserAuthController } from './browser-auth.js';
 
 describe('createBrowserAuthController', { timeout: 15_000 }, () => {
@@ -12,20 +13,25 @@ describe('createBrowserAuthController', { timeout: 15_000 }, () => {
 
   afterEach(async () => {
     vi.useRealTimers();
-    await Promise.all(
+    await runIndependentCleanups(
+      'Browser auth test servers',
       servers.splice(0).map(
-        (server) =>
-          new Promise<void>((resolve, reject) => {
-            server.closeAllConnections?.();
-            server.closeIdleConnections?.();
-            server.close((error) => {
-              if (error) {
-                reject(error);
-                return;
-              }
-              resolve();
-            });
-          }),
+        (server, index) =>
+          [
+            `close browser auth server ${index + 1}`,
+            () =>
+              new Promise<void>((resolve, reject) => {
+                server.closeAllConnections?.();
+                server.closeIdleConnections?.();
+                server.close((error) => {
+                  if (error) {
+                    reject(error);
+                    return;
+                  }
+                  resolve();
+                });
+              }),
+          ] as const,
       ),
     );
   });

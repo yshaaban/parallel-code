@@ -161,7 +161,7 @@ async function runWorkload(workload: WorkloadDefinition): Promise<EmpiricalWorkf
   resetTaskCommandLeasesForTest();
   resetCoordinatorToolGatewayForTests();
   resetCoordinatorRuntimeForTests();
-  resetCoordinatorServiceForTests();
+  await resetCoordinatorServiceForTests();
 
   const env = await createEnv();
   let toolCallUrl = '';

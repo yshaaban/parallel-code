@@ -139,6 +139,40 @@ describe('browser agent command runner', () => {
     expect(sendAgentError).not.toHaveBeenCalled();
   });
 
+  it('waits for asynchronous execution before sending request-tracked success', async () => {
+    const sendMessage = vi.fn(() => true);
+    let resolveExecution!: () => void;
+    const execution = new Promise<void>((resolve) => {
+      resolveExecution = resolve;
+    });
+    const { runner } = createRunner({ sendMessage });
+
+    runner.run(CLIENT, 'agent-1', 'write', () => execution, true, {
+      request: createRequest(),
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    resolveExecution();
+    await vi.waitFor(() => {
+      expect(sendMessage).toHaveBeenCalledWith(
+        CLIENT,
+        expect.objectContaining({ accepted: true, type: 'agent-command-result' }),
+      );
+    });
+  });
+
+  it('surfaces asynchronous untracked execution failures as agent errors', async () => {
+    const failure = new Error('runner cleanup failed');
+    const sendAgentError = vi.fn();
+    const { runner } = createRunner({ sendAgentError });
+
+    runner.run(CLIENT, 'agent-1', 'kill', () => Promise.reject(failure));
+
+    await vi.waitFor(() => {
+      expect(sendAgentError).toHaveBeenCalledWith(CLIENT, 'agent-1', 'kill failed', failure);
+    });
+  });
+
   it('notifies after request-tracked results are sent successfully', () => {
     const onAgentCommandResultSent = vi.fn();
     const request = createRequest();

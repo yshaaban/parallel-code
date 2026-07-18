@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   COORDINATOR_LIMITS,
@@ -10,6 +10,7 @@ import {
   addCoordinatorWorkflowLane,
   appendCoordinatorWorkflowJournal,
   createCoordinatorRun,
+  createCoordinatorWorkflow,
   getCoordinatorRuntimeState,
   getCoordinatorWorkflow,
   resetCoordinatorRuntimeForTests,
@@ -19,6 +20,7 @@ import {
   updateCoordinatorWorkflowLane,
   updateCoordinatorWorkflowStage,
 } from './runtime.js';
+import * as coordinatorRuntime from './runtime.js';
 import {
   advanceCoordinatorWorkflowExecution,
   appendCoordinatorWorkflowExecutionSteps,
@@ -27,6 +29,7 @@ import {
   denyCoordinatorWorkflowActions,
   getCoordinatorWorkflowNextTickAt,
   recordPendingWorkflowApproval,
+  resolveOwnedWorkflowLane,
   resumeCoordinatorWorkflowExecution,
   retryCoordinatorWorkflowLaneFromOperator,
   startCoordinatorWorkflowExecution,
@@ -291,6 +294,69 @@ function completeWorkflowLane(
 describe('coordinator workflow executor', () => {
   beforeEach(() => {
     resetCoordinatorRuntimeForTests();
+  });
+
+  it('resolves owned workflow lanes through detached workflow reads', () => {
+    const run = createRun();
+    const workflow = createCoordinatorWorkflow({
+      now: 1_010,
+      runId: run.id,
+      stages: [{ id: 'worker', kind: 'map', name: 'Worker' }],
+      template: 'map_reduce',
+      title: 'Owned lane workflow',
+    });
+    const lane = addCoordinatorWorkflowLane({
+      agentId: 'agent-worker',
+      assignment: 'Do the work',
+      name: 'Worker',
+      now: 1_020,
+      runId: run.id,
+      stageId: 'worker',
+      status: 'waiting-for-result',
+      taskId: 'task-worker',
+      workflowId: workflow.id,
+    });
+    createCoordinatorWorkflow({
+      now: 1_030,
+      runId: run.id,
+      stages: [{ id: 'other', kind: 'verify', name: 'Other' }],
+      template: 'adversarial_review',
+      title: 'Unrelated workflow',
+    });
+
+    const fullRunRead = vi.spyOn(coordinatorRuntime, 'getCoordinatorRun');
+    try {
+      const resolved = resolveOwnedWorkflowLane(run.id, 'task-worker', undefined, undefined, {
+        actionName: 'submit_result',
+      });
+      const resolvedById = resolveOwnedWorkflowLane(run.id, 'task-worker', workflow.id, lane.id, {
+        actionName: 'submit_result',
+      });
+
+      expect(resolved).toMatchObject({
+        lane: { id: lane.id, taskId: 'task-worker' },
+        workflow: { id: workflow.id },
+      });
+      expect(resolvedById).toMatchObject({
+        lane: { id: lane.id },
+        workflow: { id: workflow.id },
+      });
+      resolved.lane.name = 'Mutated lane';
+      resolved.workflow.title = 'Mutated workflow';
+      expect(getCoordinatorWorkflow(run.id, workflow.id)).toMatchObject({
+        lanes: [expect.objectContaining({ name: 'Worker' })],
+        title: 'Owned lane workflow',
+      });
+      expect(fullRunRead).not.toHaveBeenCalled();
+    } finally {
+      fullRunRead.mockRestore();
+    }
+
+    expect(() =>
+      resolveOwnedWorkflowLane('missing-run', 'task-worker', undefined, undefined, {
+        actionName: 'submit_result',
+      }),
+    ).toThrow('Coordinator run is no longer active');
   });
 
   it('marks timed-out lanes terminal and retries while retry budget remains', async () => {

@@ -1,12 +1,12 @@
 import {
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
-  killAgent,
   pauseAgent,
   resizeAgent,
   resumeAgent,
   writeToAgent,
 } from '../electron/ipc/pty.js';
+import { stopTaskAgentWorkflow } from '../electron/ipc/task-workflows.js';
 import {
   decodeTerminalRenderedTail,
   runWithTerminalRestorePause,
@@ -55,8 +55,8 @@ export function resizeBrowserAgent(
   resizeAgent(agentId, cols, rows, order, callbacks);
 }
 
-export function killBrowserAgent(agentId: string): void {
-  killAgent(agentId);
+export function killBrowserAgent(agentId: string): Promise<void> {
+  return stopTaskAgentWorkflow(agentId);
 }
 
 export function pauseBrowserAgent(

@@ -90,7 +90,10 @@ describe('AttachTerminalSession', () => {
     getAgentPauseStateMock.mockReturnValue(null);
     getAgentColsMock.mockReturnValue(132);
     getAgentRowsMock.mockReturnValue(43);
-    spawnTaskAgentWorkflowMock.mockReturnValue(true);
+    spawnTaskAgentWorkflowMock.mockReturnValue({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
     getAgentTerminalRecoveryMock.mockReturnValue({
       cols: 132,
       kind: 'noop',
@@ -120,7 +123,7 @@ describe('AttachTerminalSession', () => {
     });
     spawnTaskAgentWorkflowMock.mockImplementation(() => {
       callOrder.push('spawn');
-      return true;
+      return { channelAttached: true, kind: 'attached-existing' };
     });
     const handlers = createIpcHandlers(buildContext({ bindChannelForClient }));
 
@@ -224,7 +227,10 @@ describe('AttachTerminalSession', () => {
 
   it('returns recovery null for a fresh spawn without pausing', async () => {
     hasAgentSessionMock.mockReturnValue(false);
-    spawnTaskAgentWorkflowMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockReturnValue({
+      channelAttached: true,
+      kind: 'created-session',
+    });
     const handlers = createIpcHandlers(buildContext());
 
     const result = (await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest())) as {

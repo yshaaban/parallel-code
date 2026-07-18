@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { WebSocket } from 'ws';
 
-import { startBrowserServer } from './browser-server.js';
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
+import {
+  __browserServerTestExports,
+  BrowserRuntimeCleanupError,
+  startBrowserServer,
+} from './browser-server.js';
 import { IPC } from '../electron/ipc/channels.js';
 import type { TaskPortExposureCandidate } from '../src/domain/server-state.js';
 import { saveAppStateForEnv } from '../electron/ipc/storage.js';
@@ -15,8 +20,14 @@ import { resetCoordinatorServiceForTests } from '../electron/coordinator/service
 import { resetCoordinatorToolGatewayForTests } from '../electron/coordinator/tool-gateway.js';
 import type {
   CoordinatorCreateRunResult,
+  CoordinatorDiagnosticsSnapshot,
   CoordinatorToolCallResult,
 } from '../src/domain/coordinator.js';
+import {
+  CoordinatorRuntimeCleanupError,
+  CoordinatorRuntimeInitializationError,
+  __coordinatorRuntimeLoaderTestExports,
+} from './coordinator-runtime-loader.js';
 
 async function getAvailablePort(): Promise<number> {
   const server = createServer();
@@ -83,6 +94,11 @@ async function waitForBrowserIpcResult<T>(options: {
   throw lastError instanceof Error
     ? lastError
     : new Error(`Timed out waiting for browser IPC channel ${options.channel}`);
+}
+
+async function stopBrowserServer(controller: ReturnType<typeof startBrowserServer>): Promise<void> {
+  controller.cleanup();
+  await controller.whenCoordinatorRuntimeStopped();
 }
 
 async function waitForSocketMessage<T>(
@@ -157,18 +173,175 @@ async function expectWebSocketUpgradeRejected(url: string, statusCode: number): 
   });
 }
 
+describe('browser runtime cleanup observation', () => {
+  it('observes an immediate cleanup rejection while retaining the original promise', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cleanup = Promise.reject(new Error('cleanup failed immediately'));
+
+    const retained = __browserServerTestExports.retainObservedRuntimeCleanup(
+      cleanup,
+      'coordinator',
+    );
+
+    expect(retained).toBe(cleanup);
+    await expect(retained).rejects.toThrow('cleanup failed immediately');
+    await Promise.resolve();
+    expect(warning).toHaveBeenCalledWith(
+      'Browser server coordinator cleanup failed:',
+      expect.objectContaining({ message: 'cleanup failed immediately' }),
+    );
+    warning.mockRestore();
+  });
+
+  it('waits for every runtime owner before rejecting with all cleanup failures', async () => {
+    let rejectCoordinator: (error: unknown) => void = () => {};
+    let rejectAgentRunner: (error: unknown) => void = () => {};
+    let rejectAskAboutCode: (error: unknown) => void = () => {};
+    const coordinatorError = new Error('coordinator cleanup failed');
+    const agentRunnerError = new Error('agent runner cleanup failed');
+    const askAboutCodeError = new Error('ask-about-code cleanup failed');
+    const coordinatorCleanup = new Promise<void>((_resolve, reject) => {
+      rejectCoordinator = reject;
+    });
+    const agentRunnerCleanup = new Promise<void>((_resolve, reject) => {
+      rejectAgentRunner = reject;
+    });
+    const askAboutCodeCleanup = new Promise<void>((_resolve, reject) => {
+      rejectAskAboutCode = reject;
+    });
+    const cleanup = __browserServerTestExports.settleBrowserRuntimeCleanupOwners([
+      { cleanup: coordinatorCleanup, label: 'coordinator' },
+      { cleanup: agentRunnerCleanup, label: 'agent runner' },
+      { cleanup: askAboutCodeCleanup, label: 'ask about code' },
+    ]);
+    let cleanupSettled = false;
+    void cleanup.then(
+      () => {
+        cleanupSettled = true;
+      },
+      () => {
+        cleanupSettled = true;
+      },
+    );
+
+    rejectCoordinator(coordinatorError);
+    await Promise.resolve();
+    expect(cleanupSettled).toBe(false);
+
+    rejectAgentRunner(agentRunnerError);
+    await Promise.resolve();
+    expect(cleanupSettled).toBe(false);
+
+    rejectAskAboutCode(askAboutCodeError);
+    const error = await cleanup.catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BrowserRuntimeCleanupError);
+    expect((error as BrowserRuntimeCleanupError).failures).toEqual([
+      { error: coordinatorError, label: 'coordinator' },
+      { error: agentRunnerError, label: 'agent runner' },
+      { error: askAboutCodeError, label: 'ask about code' },
+    ]);
+    expect(cleanupSettled).toBe(true);
+  });
+
+  it('uses a nonzero process exit when settled runtime cleanup rejects', async () => {
+    const exit = vi.fn<(code: number) => void>();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const cleanupError = new BrowserRuntimeCleanupError([
+      { error: new Error('disk full'), label: 'coordinator' },
+    ]);
+
+    await __browserServerTestExports.exitAfterBrowserRuntimeCleanup(
+      Promise.reject(cleanupError),
+      exit,
+    );
+
+    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(errorLog).toHaveBeenCalledWith('Browser server shutdown cleanup failed:', cleanupError);
+    errorLog.mockRestore();
+  });
+
+  it('exits nonzero when coordinator initialization rollback leaves ownership unreleased', async () => {
+    const initializationError = new Error('coordinator subscription failed');
+    const rollbackError = new Error('coordinator producer rollback failed');
+    const loader = __coordinatorRuntimeLoaderTestExports.startSerializedCoordinatorRuntimeLoad(() =>
+      __coordinatorRuntimeLoaderTestExports.initializeCoordinatorRuntimeOwners({
+        emitRepairEvents: () => {},
+        ensureServiceLoaded: () => {},
+        startMutationProducers: () => () => {
+          throw rollbackError;
+        },
+        startPersistence: () => () => {},
+        subscribeEventConsumers: () => {
+          throw initializationError;
+        },
+      }),
+    );
+    const exit = vi.fn<(code: number) => void>();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const initializationFailure = await loader.ready.catch((error: unknown) => error);
+      expect(initializationFailure).toBeInstanceOf(CoordinatorRuntimeInitializationError);
+      expect(
+        (initializationFailure as CoordinatorRuntimeInitializationError).cleanupError,
+      ).toBeInstanceOf(CoordinatorRuntimeCleanupError);
+
+      const cleanup = __browserServerTestExports.settleBrowserRuntimeCleanupOwners([
+        { cleanup: loader.cleanup(), label: 'coordinator' },
+        { cleanup: Promise.resolve(), label: 'agent runner' },
+        { cleanup: Promise.resolve(), label: 'ask about code' },
+      ]);
+      await __browserServerTestExports.exitAfterBrowserRuntimeCleanup(cleanup, exit);
+
+      expect(exit).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+      const shutdownFailure = errorLog.mock.calls[0]?.[1];
+      expect(shutdownFailure).toBeInstanceOf(BrowserRuntimeCleanupError);
+      expect((shutdownFailure as BrowserRuntimeCleanupError).failures).toEqual([
+        { error: initializationFailure, label: 'coordinator' },
+      ]);
+    } finally {
+      __coordinatorRuntimeLoaderTestExports.resetSerializedCoordinatorRuntimeForTests();
+      errorLog.mockRestore();
+    }
+  });
+
+  it('uses a zero process exit only after successful runtime cleanup', async () => {
+    const exit = vi.fn<(code: number) => void>();
+
+    await __browserServerTestExports.exitAfterBrowserRuntimeCleanup(Promise.resolve(), exit);
+
+    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+});
+
 describe('startBrowserServer', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
     clearTaskPortRegistry();
     resetCoordinatorToolGatewayForTests();
-    resetCoordinatorServiceForTests();
+    await resetCoordinatorServiceForTests();
     resetCoordinatorRuntimeForTests();
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
-    );
-    vi.restoreAllMocks();
+    try {
+      await runIndependentCleanups(
+        'Browser server test temporary directories',
+        tempDirs
+          .splice(0)
+          .map(
+            (directory, index) =>
+              [
+                `remove browser server temporary directory ${index + 1}`,
+                () => rm(directory, { force: true, recursive: true }),
+              ] as const,
+          ),
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it('removes process handlers during repeated in-process start and cleanup cycles', async () => {
@@ -200,10 +373,81 @@ describe('startBrowserServer', () => {
         expect(process.listenerCount(eventName)).toBe(baselineListenerCounts[eventName] + 1);
       }
 
-      controller.cleanup();
+      await stopBrowserServer(controller);
 
       for (const eventName of trackedEvents) {
         expect(process.listenerCount(eventName)).toBe(baselineListenerCounts[eventName]);
+      }
+    }
+  });
+
+  it('becomes coordinator-ready after cleanup followed by an immediate in-process restart', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
+    tempDirs.push(rootDir);
+
+    const distDir = path.join(rootDir, 'dist');
+    const distRemoteDir = path.join(rootDir, 'dist-remote');
+    const userDataPath = path.join(rootDir, 'user-data');
+    await Promise.all([
+      mkdir(distDir, { recursive: true }),
+      mkdir(distRemoteDir, { recursive: true }),
+    ]);
+
+    const firstPort = await getAvailablePort();
+    const replacementPort = await getAvailablePort();
+    const firstToken = 'browser-server-restart-token-first';
+    const first = startBrowserServer({
+      distDir,
+      distRemoteDir,
+      port: firstPort,
+      registerProcessHandlers: false,
+      token: firstToken,
+      userDataPath,
+    });
+    let replacement: ReturnType<typeof startBrowserServer> | null = null;
+
+    try {
+      await waitForBrowserIpcResult<CoordinatorDiagnosticsSnapshot>({
+        body: undefined,
+        channel: IPC.CoordinatorGetDiagnostics,
+        port: firstPort,
+        token: firstToken,
+      });
+
+      first.cleanup();
+      const firstStopped = first.whenCoordinatorRuntimeStopped();
+      const replacementToken = 'browser-server-restart-token-replacement';
+      replacement = startBrowserServer({
+        distDir,
+        distRemoteDir,
+        port: replacementPort,
+        registerProcessHandlers: false,
+        token: replacementToken,
+        userDataPath,
+      });
+
+      await waitForBrowserIpcResult<CoordinatorDiagnosticsSnapshot>({
+        body: undefined,
+        channel: IPC.CoordinatorGetDiagnostics,
+        port: replacementPort,
+        token: replacementToken,
+      });
+      await firstStopped;
+
+      const diagnosticsAfterPriorCleanup =
+        await waitForBrowserIpcResult<CoordinatorDiagnosticsSnapshot>({
+          body: undefined,
+          channel: IPC.CoordinatorGetDiagnostics,
+          port: replacementPort,
+          token: replacementToken,
+        });
+      expect(diagnosticsAfterPriorCleanup.persistence).toEqual(
+        expect.objectContaining({ degraded: false }),
+      );
+    } finally {
+      await stopBrowserServer(first);
+      if (replacement) {
+        await stopBrowserServer(replacement);
       }
     }
   });
@@ -263,7 +507,7 @@ describe('startBrowserServer', () => {
         nonce: 'integration',
       });
     } finally {
-      controller.cleanup();
+      await stopBrowserServer(controller);
     }
   });
 
@@ -346,7 +590,7 @@ describe('startBrowserServer', () => {
         },
       });
     } finally {
-      controller.cleanup();
+      await stopBrowserServer(controller);
     }
   });
 
@@ -428,7 +672,7 @@ describe('startBrowserServer', () => {
       });
     } finally {
       socket.close();
-      controller.cleanup();
+      await stopBrowserServer(controller);
     }
   });
 
@@ -472,7 +716,7 @@ describe('startBrowserServer', () => {
       socket.once('error', reject);
     });
 
-    controller.cleanup();
+    await stopBrowserServer(controller);
 
     await closePromise;
   });
@@ -500,7 +744,7 @@ describe('startBrowserServer', () => {
     try {
       await expectWebSocketUpgradeRejected(`ws://127.0.0.1:${port}/unknown`, 404);
     } finally {
-      controller.cleanup();
+      await stopBrowserServer(controller);
     }
   });
 
@@ -538,7 +782,7 @@ describe('startBrowserServer', () => {
 
       expect(Array.isArray(candidates)).toBe(true);
     } finally {
-      controller.cleanup();
+      await stopBrowserServer(controller);
     }
   });
 });

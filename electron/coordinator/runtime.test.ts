@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { COORDINATOR_LIMITS } from '../../src/domain/coordinator.js';
+import {
+  COORDINATOR_LIMITS,
+  type CoordinatorSubtaskStartupSnapshot,
+} from '../../src/domain/coordinator.js';
 import {
   addCoordinatorSubtask,
+  appendCoordinatorWorkflowJournal,
   appendCoordinatorWorkflowSteps,
   addCoordinatorWorkflowLane,
   addCoordinatorWorkflowPendingApproval,
@@ -13,11 +17,19 @@ import {
   enqueueCoordinatorPrompt,
   getCoordinatorBootstrapSnapshot,
   getCoordinatorDiagnostics,
+  getCoordinatorOwnedLaneWorkflowCandidates,
+  getCoordinatorPrompt,
   getCoordinatorStateVersion,
   getCoordinatorRun,
+  getCoordinatorRunIdBySubtaskTaskId,
+  getCoordinatorRunMeta,
+  getCoordinatorRunMetaByCoordinatorTaskId,
   getCoordinatorRuntimeState,
+  getCoordinatorSubtask,
   getCoordinatorSubtaskLaunch,
   getCoordinatorToolResult,
+  listCoordinatorPromptQueueProjections,
+  listCoordinatorWorkflowSchedulingEntries,
   recordCoordinatorRunResumeOutcome,
   recordCoordinatorSubtaskLaunch,
   rememberCoordinatorToolResult,
@@ -34,6 +46,7 @@ import {
   updateCoordinatorSubtaskStatus,
   updateCoordinatorWorkflow,
   updateCoordinatorWorkflowLane,
+  upsertCoordinatorLanding,
 } from './runtime.js';
 
 describe('coordinator runtime', () => {
@@ -88,6 +101,312 @@ describe('coordinator runtime', () => {
     );
 
     cleanup();
+  });
+
+  it('returns detached narrow run, prompt, and subtask snapshots', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Original assignment',
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: run.id,
+      startup: {
+        followupPromptMode: 'post-ready-prompt',
+        initialAssignmentMode: 'post-ready-prompt',
+        initialAssignmentStatus: 'pending-prompt',
+        readinessPolicy: 'terminal-generic',
+      },
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-id',
+      worktreePath: '/repo/task-child',
+      now: 1_100,
+    });
+    const prompt = enqueueCoordinatorPrompt({
+      kind: 'follow-up',
+      runId: run.id,
+      sourceTaskId: 'task-coordinator',
+      targetAgentId: 'agent-child',
+      targetTaskId: 'task-child',
+      text: 'Original prompt',
+      now: 1_200,
+    });
+
+    const metaSnapshot = getCoordinatorRunMeta(run.id);
+    const promptSnapshot = getCoordinatorPrompt(run.id, prompt.requestId);
+    const subtaskSnapshot = getCoordinatorSubtask(run.id, 'task-child');
+    if (!metaSnapshot || !promptSnapshot || !subtaskSnapshot || !subtaskSnapshot.startup) {
+      throw new Error('Expected narrow coordinator snapshots.');
+    }
+
+    metaSnapshot.limits.maxActiveSubtasks = 999;
+    metaSnapshot.status = 'failed';
+    promptSnapshot.text = 'Mutated prompt';
+    promptSnapshot.deliveryJournal.push({
+      agentGeneration: 1,
+      deliveryAttemptId: 'caller-attempt',
+      ptySessionId: 'caller-pty',
+      requestId: prompt.requestId,
+      writePreparedAt: 1_300,
+    });
+    subtaskSnapshot.assignment = 'Mutated assignment';
+    subtaskSnapshot.startup.initialAssignmentStatus = 'failed';
+
+    expect(getCoordinatorRunMeta(run.id)).toMatchObject({
+      limits: { maxActiveSubtasks: COORDINATOR_LIMITS.maxActiveSubtasksPerRun },
+      status: 'running',
+    });
+    expect(getCoordinatorPrompt(run.id, prompt.requestId)).toMatchObject({
+      deliveryJournal: [],
+      text: 'Original prompt',
+    });
+    expect(getCoordinatorSubtask(run.id, 'task-child')).toMatchObject({
+      assignment: 'Original assignment',
+      startup: { initialAssignmentStatus: 'pending-prompt' },
+    });
+    expect(getCoordinatorRunMeta('missing-run')).toBeNull();
+    expect(getCoordinatorPrompt(run.id, 'missing-prompt')).toBeNull();
+    expect(getCoordinatorSubtask(run.id, 'missing-task')).toBeNull();
+  });
+
+  it('lists detached prompt queue projections in run and insertion order', () => {
+    const firstRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-a',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const secondRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-b',
+      now: 1_010,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const firstPrompt = enqueueCoordinatorPrompt({
+      kind: 'follow-up',
+      now: 1_100,
+      runId: firstRun.id,
+      sourceTaskId: 'task-coordinator-a',
+      targetAgentId: 'agent-a',
+      targetTaskId: 'task-a',
+      text: 'First prompt',
+    });
+    const secondPrompt = enqueueCoordinatorPrompt({
+      kind: 'system',
+      now: 1_200,
+      runId: firstRun.id,
+      sourceTaskId: 'task-coordinator-a',
+      targetAgentId: 'agent-a',
+      targetTaskId: 'task-a',
+      text: 'Second prompt',
+    });
+    const thirdPrompt = enqueueCoordinatorPrompt({
+      kind: 'follow-up',
+      now: 1_300,
+      runId: secondRun.id,
+      sourceTaskId: 'task-coordinator-b',
+      targetAgentId: 'agent-b',
+      targetTaskId: 'task-b',
+      text: 'Third prompt',
+    });
+    setCoordinatorRunPaused(secondRun.id, true, 1_400);
+
+    const projections = listCoordinatorPromptQueueProjections();
+    expect(
+      projections.map((projection) => ({
+        promptIds: projection.promptQueue.map((entry) => entry.requestId),
+        runId: projection.runId,
+        status: projection.status,
+      })),
+    ).toEqual([
+      {
+        promptIds: [firstPrompt.requestId, secondPrompt.requestId],
+        runId: firstRun.id,
+        status: 'running',
+      },
+      {
+        promptIds: [thirdPrompt.requestId],
+        runId: secondRun.id,
+        status: 'paused-by-user',
+      },
+    ]);
+
+    const projectedPrompt = projections[0]?.promptQueue[0];
+    if (!projectedPrompt) {
+      throw new Error('Expected projected prompt.');
+    }
+    projectedPrompt.text = 'Mutated projection';
+    expect(getCoordinatorPrompt(firstRun.id, firstPrompt.requestId)?.text).toBe('First prompt');
+  });
+
+  it('lists detached workflow scheduling entries globally and for one run', () => {
+    const firstRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-a',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const secondRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-b',
+      now: 1_010,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const firstWorkflow = createCoordinatorWorkflow({
+      now: 1_100,
+      runId: firstRun.id,
+      stages: [{ id: 'first', kind: 'map', name: 'First' }],
+      template: 'map_reduce',
+      title: 'First workflow',
+    });
+    const secondWorkflow = createCoordinatorWorkflow({
+      now: 1_200,
+      runId: firstRun.id,
+      stages: [{ id: 'second', kind: 'reduce', name: 'Second' }],
+      template: 'map_reduce',
+      title: 'Second workflow',
+    });
+    const thirdWorkflow = createCoordinatorWorkflow({
+      now: 1_300,
+      runId: secondRun.id,
+      stages: [{ id: 'third', kind: 'verify', name: 'Third' }],
+      template: 'adversarial_review',
+      title: 'Third workflow',
+    });
+    addCoordinatorWorkflowResult({
+      now: 1_310,
+      result: {
+        agentId: 'agent-first',
+        commandsRun: [],
+        evidence: [],
+        findings: [],
+        laneId: 'lane-first',
+        risks: [],
+        stageId: 'first',
+        status: 'completed',
+        summary: 'Heavy result history stays out of owned-lane projections.',
+        taskId: 'task-first',
+        workflowId: firstWorkflow.id,
+      },
+      runId: firstRun.id,
+      workflowId: firstWorkflow.id,
+    });
+    appendCoordinatorWorkflowJournal(firstRun.id, firstWorkflow.id, {
+      at: 1_320,
+      kind: 'lane-result',
+      message: 'Heavy journal history stays out of owned-lane projections.',
+      stageId: 'first',
+    });
+
+    const globalEntries = listCoordinatorWorkflowSchedulingEntries();
+    expect(
+      globalEntries.map((entry) => ({
+        coordinatorTaskId: entry.coordinatorTaskId,
+        workflowId: entry.workflow.id,
+      })),
+    ).toEqual([
+      { coordinatorTaskId: 'task-coordinator-a', workflowId: firstWorkflow.id },
+      { coordinatorTaskId: 'task-coordinator-a', workflowId: secondWorkflow.id },
+      { coordinatorTaskId: 'task-coordinator-b', workflowId: thirdWorkflow.id },
+    ]);
+    expect(
+      listCoordinatorWorkflowSchedulingEntries(secondRun.id).map((entry) => entry.workflow.id),
+    ).toEqual([thirdWorkflow.id]);
+    expect(listCoordinatorWorkflowSchedulingEntries('missing-run')).toEqual([]);
+    expect(
+      getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id)?.map((workflow) => ({
+        id: workflow.id,
+        resultCount: workflow.resultCount,
+      })),
+    ).toEqual([
+      { id: firstWorkflow.id, resultCount: 1 },
+      { id: secondWorkflow.id, resultCount: 0 },
+    ]);
+    expect(getCoordinatorOwnedLaneWorkflowCandidates('missing-run')).toBeNull();
+    expect(getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id)?.[0]).not.toHaveProperty(
+      'journal',
+    );
+    expect(getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id)?.[0]).not.toHaveProperty(
+      'results',
+    );
+    expect(getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id)?.[0]).not.toHaveProperty('title');
+    expect(getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id)?.[0]).not.toHaveProperty(
+      'eventVersion',
+    );
+
+    const firstEntry = globalEntries[0];
+    if (!firstEntry) {
+      throw new Error('Expected a workflow scheduling entry.');
+    }
+    firstEntry.workflow.policy.timeoutMs = 1;
+    const workflowSnapshots = getCoordinatorOwnedLaneWorkflowCandidates(firstRun.id);
+    if (!workflowSnapshots?.[0]) {
+      throw new Error('Expected detached workflow snapshots.');
+    }
+    workflowSnapshots[0].status = 'cancelled';
+    expect(getCoordinatorRun(firstRun.id)?.workflows[0]?.policy.timeoutMs).not.toBe(1);
+    expect(getCoordinatorRun(firstRun.id)?.workflows[0]?.status).not.toBe('cancelled');
+    expect(getCoordinatorRun(firstRun.id)?.workflows[0]?.title).toBe('First workflow');
+  });
+
+  it('looks up task owners through detached run metadata and scalar ids', () => {
+    const firstRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-a',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const secondRun = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator-b',
+      now: 1_010,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      parentCoordinatorTaskId: 'task-coordinator-b',
+      runId: secondRun.id,
+      status: 'running',
+      taskId: 'task-child',
+      toolTokenId: 'token-id',
+      worktreePath: '/repo/task-child',
+      now: 1_100,
+    });
+
+    expect(getCoordinatorRunIdBySubtaskTaskId('task-child')).toBe(secondRun.id);
+    expect(getCoordinatorRunIdBySubtaskTaskId(firstRun.coordinatorTaskId)).toBeNull();
+    expect(getCoordinatorRunIdBySubtaskTaskId('missing-task')).toBeNull();
+
+    const owner = getCoordinatorRunMetaByCoordinatorTaskId('task-coordinator-b');
+    expect(owner).toMatchObject({
+      coordinatorTaskId: 'task-coordinator-b',
+      id: secondRun.id,
+    });
+    expect(owner).not.toHaveProperty('subtasks');
+    expect(owner).not.toHaveProperty('promptQueue');
+    expect(getCoordinatorRunMetaByCoordinatorTaskId('task-child')).toBeNull();
+    expect(getCoordinatorRunMetaByCoordinatorTaskId('missing-task')).toBeNull();
+
+    if (!owner) {
+      throw new Error('Expected coordinator run metadata.');
+    }
+    owner.limits.maxActiveSubtasks = 0;
+    expect(
+      getCoordinatorRunMetaByCoordinatorTaskId('task-coordinator-b')?.limits.maxActiveSubtasks,
+    ).toBe(COORDINATOR_LIMITS.maxActiveSubtasksPerRun);
   });
 
   it('restores persisted runtime state and tombstones removed runs', () => {
@@ -279,6 +598,203 @@ describe('coordinator runtime', () => {
     });
   });
 
+  it('owns committed workflow state and returns detached workflow snapshots', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const reduceDependencies = ['map'];
+    const workflow = createCoordinatorWorkflow({
+      now: 1_010,
+      runId: run.id,
+      stages: [
+        { id: 'map', kind: 'map', name: 'Map' },
+        { dependsOn: reduceDependencies, id: 'reduce', kind: 'reduce', name: 'Reduce' },
+      ],
+      template: 'map_reduce',
+      title: 'Original workflow',
+    });
+    const lane = addCoordinatorWorkflowLane({
+      assignment: 'Map the repository.',
+      name: 'Original lane',
+      now: 1_020,
+      runId: run.id,
+      stageId: 'map',
+      workflowId: workflow.id,
+    });
+    const appendPolicy = {
+      maxActionsPerDecision: 2,
+      maxStepAppends: 3,
+    };
+    const updatedWorkflow = updateCoordinatorWorkflow(run.id, workflow.id, {
+      appendPolicy,
+      now: 1_030,
+      status: 'waiting-for-results',
+    });
+    const journalledWorkflow = appendCoordinatorWorkflowJournal(run.id, workflow.id, {
+      at: 1_040,
+      kind: 'stage-started',
+      message: 'Started map stage.',
+      stageId: 'map',
+    });
+    const commandsRun = ['npm test'];
+    const result = addCoordinatorWorkflowResult({
+      now: 1_050,
+      result: {
+        agentId: 'agent-child',
+        commandsRun,
+        evidence: [],
+        findings: [],
+        laneId: lane.id,
+        risks: [],
+        stageId: 'map',
+        status: 'completed',
+        summary: 'Mapped the repository.',
+        taskId: 'task-child',
+        workflowId: workflow.id,
+      },
+      runId: run.id,
+      workflowId: workflow.id,
+    });
+
+    reduceDependencies.push('caller-mutated-dependency');
+    appendPolicy.maxStepAppends = 99;
+    commandsRun.push('caller-mutated-command');
+    workflow.title = 'Mutated caller workflow';
+    lane.name = 'Mutated caller lane';
+    updatedWorkflow.appendPolicy.maxActionsPerDecision = 99;
+    const journalEntry = journalledWorkflow.journal[1];
+    if (journalEntry === undefined) {
+      throw new Error('Expected the appended journal entry.');
+    }
+    journalEntry.message = 'Mutated caller journal';
+    result.commandsRun.push('mutated returned result');
+
+    const canonicalWorkflow = getCoordinatorRun(run.id)?.workflows[0];
+    expect(canonicalWorkflow?.title).toBe('Original workflow');
+    expect(canonicalWorkflow?.lanes[0]?.name).toBe('Original lane');
+    expect(canonicalWorkflow?.status).toBe('waiting-for-results');
+    expect(canonicalWorkflow?.appendPolicy).toEqual({
+      maxActionsPerDecision: 2,
+      maxStepAppends: 3,
+    });
+    expect(canonicalWorkflow?.stages.find((stage) => stage.id === 'reduce')?.dependsOn).toEqual([
+      'map',
+    ]);
+    expect(canonicalWorkflow?.journal[1]?.message).toBe('Started map stage.');
+    expect(canonicalWorkflow?.results[0]?.commandsRun).toEqual(['npm test']);
+  });
+
+  it('owns mutable subtask, prompt, and landing inputs after committing them', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    const startup: CoordinatorSubtaskStartupSnapshot = {
+      followupPromptMode: 'post-ready-prompt',
+      initialAssignmentMode: 'post-ready-prompt',
+      initialAssignmentStatus: 'pending-prompt',
+      readinessPolicy: 'terminal-generic',
+    };
+    const subtask = addCoordinatorSubtask({
+      agentId: 'agent-child',
+      assignment: 'Do the work',
+      now: 1_010,
+      parentCoordinatorTaskId: 'task-coordinator',
+      runId: run.id,
+      startup,
+      taskId: 'task-child',
+      toolTokenId: 'token-id',
+      worktreePath: '/repo/task-child',
+    });
+    const prompt = enqueueCoordinatorPrompt({
+      kind: 'follow-up',
+      now: 1_020,
+      runId: run.id,
+      sourceTaskId: 'task-coordinator',
+      targetAgentId: 'agent-child',
+      targetTaskId: 'task-child',
+      text: 'Continue',
+    });
+    const deliveryJournal = [
+      {
+        agentGeneration: 1,
+        deliveryAttemptId: 'attempt-1',
+        ptySessionId: 'pty-1',
+        requestId: prompt.requestId,
+        writePreparedAt: 1_030,
+      },
+    ];
+    const updatedPrompt = updateCoordinatorPrompt(run.id, prompt.requestId, {
+      deliveryJournal,
+      status: 'delivering',
+    });
+    const verification = ['npm test'];
+    const landing = upsertCoordinatorLanding({
+      landing: {
+        requestedAt: 1_040,
+        requestedByAgentId: 'agent-child',
+        runId: run.id,
+        status: 'requested',
+        summary: 'Ready to land.',
+        taskId: 'task-child',
+        verification,
+      },
+      runId: run.id,
+    });
+
+    startup.initialAssignmentStatus = 'failed';
+    if (subtask.startup === undefined || deliveryJournal[0] === undefined) {
+      throw new Error('Expected committed subtask startup and prompt delivery state.');
+    }
+    subtask.startup.initialAssignmentStatus = 'blocked-by-question';
+    deliveryJournal[0].ptySessionId = 'caller-mutated-pty';
+    updatedPrompt.deliveryJournal.push({
+      agentGeneration: 2,
+      deliveryAttemptId: 'attempt-2',
+      ptySessionId: 'pty-2',
+      requestId: prompt.requestId,
+      writePreparedAt: 1_050,
+    });
+    verification.push('caller-mutated-command');
+    landing.verification.push('mutated returned landing');
+
+    const canonicalAfterCreate = getCoordinatorRun(run.id);
+    expect(canonicalAfterCreate?.subtasks[0]?.startup?.initialAssignmentStatus).toBe(
+      'pending-prompt',
+    );
+    expect(canonicalAfterCreate?.promptQueue[0]?.deliveryJournal).toEqual([
+      expect.objectContaining({ ptySessionId: 'pty-1' }),
+    ]);
+    expect(canonicalAfterCreate?.landing[0]?.verification).toEqual(['npm test']);
+
+    const resumedStartup: CoordinatorSubtaskStartupSnapshot = {
+      followupPromptMode: 'post-ready-prompt',
+      initialAssignmentMode: 'post-ready-prompt',
+      initialAssignmentStatus: 'delivered',
+      readinessPolicy: 'terminal-generic',
+    };
+    const updatedSubtask = updateCoordinatorSubtaskStatus(run.id, 'task-child', 'running', {
+      now: 1_060,
+      startup: resumedStartup,
+    });
+    resumedStartup.initialAssignmentStatus = 'failed';
+    if (updatedSubtask.startup === undefined) {
+      throw new Error('Expected updated subtask startup state.');
+    }
+    updatedSubtask.startup.initialAssignmentStatus = 'blocked-by-question';
+
+    expect(getCoordinatorRun(run.id)?.subtasks[0]?.startup?.initialAssignmentStatus).toBe(
+      'delivered',
+    );
+  });
+
   it('backfills legacy workflow append policy, program version, and journal sequence on restore', () => {
     const run = createCoordinatorRun({
       coordinatorTaskId: 'task-coordinator',
@@ -385,6 +901,48 @@ describe('coordinator runtime', () => {
       retries: { limit: COORDINATOR_LIMITS.maxWorkflowTotalRetries, used: 0 },
       steps: { limit: COORDINATOR_LIMITS.maxWorkflowTotalSteps, used: 1 },
     });
+  });
+
+  it('drops unknown workflow policy fields while restoring canonical state', () => {
+    const run = createCoordinatorRun({
+      coordinatorTaskId: 'task-coordinator',
+      now: 1_000,
+      projectId: 'project-1',
+      projectMode: 'git',
+      projectRoot: '/repo',
+    });
+    createCoordinatorWorkflow({
+      now: 1_010,
+      runId: run.id,
+      stages: [{ id: 'map', kind: 'map', name: 'Map' }],
+      template: 'map_reduce',
+      title: 'Canonical policy restore',
+    });
+    const persisted = getCoordinatorRuntimeState();
+    const stateWithUnknownPolicy = {
+      ...persisted,
+      runs: persisted.runs.map((entry) => ({
+        ...entry,
+        workflows: entry.workflows.map((workflow) => ({
+          ...workflow,
+          appendPolicy: {
+            ...workflow.appendPolicy,
+            unknownAppendPolicy: 'drop-me',
+          },
+          policy: {
+            ...workflow.policy,
+            unknownPolicy: 'drop-me',
+          },
+        })),
+      })),
+    };
+
+    resetCoordinatorRuntimeForTests();
+    restoreCoordinatorRuntimeState(stateWithUnknownPolicy);
+
+    const restoredWorkflow = getCoordinatorRun(run.id)?.workflows[0];
+    expect(restoredWorkflow?.policy).not.toHaveProperty('unknownPolicy');
+    expect(restoredWorkflow?.appendPolicy).not.toHaveProperty('unknownAppendPolicy');
   });
 
   it('preserves a non-default maxIterationsPerBranch across create and restore', () => {
@@ -1051,6 +1609,46 @@ describe('coordinator runtime', () => {
 
     expect(getCoordinatorDiagnostics().promptQueueDepth).toBe(1);
   });
+
+  it('keeps diagnostics scans below 5ms at p90 with multi-megabyte entity payloads', () => {
+    const largeAssignment = 'x'.repeat(64_000);
+    const runCount = 6;
+    const subtasksPerRun = 40;
+    for (let runIndex = 0; runIndex < runCount; runIndex += 1) {
+      const run = createCoordinatorRun({
+        coordinatorTaskId: `task-coordinator-${runIndex}`,
+        now: 1_000 + runIndex,
+        projectId: 'project-1',
+        projectMode: 'git',
+        projectRoot: '/repo',
+      });
+      for (let subtaskIndex = 0; subtaskIndex < subtasksPerRun; subtaskIndex += 1) {
+        addCoordinatorSubtask({
+          agentId: `agent-${runIndex}-${subtaskIndex}`,
+          assignment: largeAssignment,
+          parentCoordinatorTaskId: run.coordinatorTaskId,
+          runId: run.id,
+          status: 'running',
+          taskId: `task-${runIndex}-${subtaskIndex}`,
+          toolTokenId: `token-${runIndex}-${subtaskIndex}`,
+          worktreePath: `/repo/task-${runIndex}-${subtaskIndex}`,
+          now: 2_000 + subtaskIndex,
+        });
+      }
+    }
+
+    expect(getCoordinatorDiagnostics().activeSubtasks).toBe(runCount * subtasksPerRun);
+    const latenciesMs: number[] = [];
+    for (let index = 0; index < 30; index += 1) {
+      const startedAt = process.hrtime.bigint();
+      getCoordinatorDiagnostics();
+      latenciesMs.push(Number(process.hrtime.bigint() - startedAt) / 1_000_000);
+    }
+    const sortedLatencies = [...latenciesMs].sort((left, right) => left - right);
+    const p90LatencyMs = sortedLatencies[Math.floor(sortedLatencies.length * 0.9)] ?? 0;
+
+    expect(p90LatencyMs).toBeLessThan(5);
+  });
 });
 
 describe('coordinator runtime granular events', () => {
@@ -1169,6 +1767,8 @@ describe('coordinator runtime granular events', () => {
     const updated = updateCoordinatorRunStatus(run.id, 'draining');
 
     expect(updated.status).toBe('draining');
+    expect(updated).not.toHaveProperty('subtasks');
+    expect(updated).not.toHaveProperty('workflows');
     expect(getCoordinatorRun(run.id)?.status).toBe('draining');
     expect(received).toEqual(['run-meta-upserted']);
     expect(consoleErrorSpy).toHaveBeenCalled();

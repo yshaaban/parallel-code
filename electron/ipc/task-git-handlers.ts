@@ -35,9 +35,14 @@ import {
   createTaskWorkflow,
   deleteTaskWorkflow,
   findRegisteredTaskIdForWorktreePath,
+  stopTaskAgentWorkflowsForTask,
 } from './task-workflows.js';
-import { cleanupCoordinatorTaskStateAndOwnedSubtasks } from '../coordinator/tool-gateway.js';
+import {
+  cleanupCoordinatorTaskStateAndOwnedSubtasks,
+  executeCoordinatorProducer,
+} from '../coordinator/tool-gateway.js';
 import { scheduleTaskReviewSignalsRefresh } from './task-review-signals.js';
+import { destroyManagedTaskContainersByLabels } from './task-containers.js';
 import {
   assertBoolean,
   assertOptionalBoolean,
@@ -64,6 +69,7 @@ import {
 } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
+import type { TaskCleanupWarning } from '../../src/domain/task-cleanup.js';
 import type { MergeResult } from '../../src/ipc/types.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
@@ -154,6 +160,24 @@ function assertTaskCommandLeaseHeld(taskId: string, controllerId: string): void 
   if (!isTaskCommandLeaseHeld(taskId, controllerId)) {
     throw new BadRequestError('Task is controlled by another client');
   }
+}
+
+function executeTaskLeaseProtectedCoordinatorProducer<T>(
+  context: HandlerContext,
+  request: { controllerId: string; taskId: string },
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  // Fail fast on arrival, then revalidate after the coordinator readiness/admission wait. A
+  // lease may expire or move while an early browser request is queued behind runtime startup.
+  assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+  return executeCoordinatorProducer(context, () => {
+    assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+    return operation();
+  });
+}
+
+function getTaskCleanupErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function assertRegisteredTaskGitMutationLease(request: {
@@ -305,27 +329,28 @@ export function createTaskAndGitIpcHandlers(
       assertBoolean(request.deleteBranch, 'deleteBranch');
       assertString(request.controllerId, 'controllerId');
       assertString(request.taskId, 'taskId');
-      assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 
-      const cleanupResult = await deleteTaskWorkflow({
-        agentIds: request.agentIds,
-        branchName: request.branchName,
-        deleteBranch: request.deleteBranch,
-        projectRoot: request.projectRoot,
-        taskId: request.taskId,
-        worktreePath: request.worktreePath,
+      return executeTaskLeaseProtectedCoordinatorProducer(context, request, async () => {
+        const cleanupResult = await deleteTaskWorkflow({
+          agentIds: request.agentIds,
+          branchName: request.branchName,
+          deleteBranch: request.deleteBranch,
+          projectRoot: request.projectRoot,
+          taskId: request.taskId,
+          worktreePath: request.worktreePath,
+        });
+        emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
+
+        taskNames.deleteTask(request.taskId);
+        const coordinatorCleanupWarnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
+          { context, taskNames },
+          request.taskId,
+        );
+
+        return {
+          cleanupWarnings: [...cleanupResult.cleanupWarnings, ...coordinatorCleanupWarnings],
+        };
       });
-      emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
-
-      taskNames.deleteTask(request.taskId);
-      const coordinatorCleanupWarnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
-        { context, taskNames },
-        request.taskId,
-      );
-
-      return {
-        cleanupWarnings: [...cleanupResult.cleanupWarnings, ...coordinatorCleanupWarnings],
-      };
     }),
 
     [IPC.CleanupTaskRuntime]: defineIpcHandler<IPC.CleanupTaskRuntime>(
@@ -335,31 +360,77 @@ export function createTaskAndGitIpcHandlers(
         assertStringArray(request.agentIds, 'agentIds');
         assertString(request.controllerId, 'controllerId');
         assertOptionalProjectMode(request.projectMode);
+        assertOptionalString(request.projectRoot, 'projectRoot');
         assertOptionalBoolean(request.removeTaskState, 'removeTaskState');
         assertString(request.taskId, 'taskId');
         assertOptionalString(request.worktreePath, 'worktreePath');
         if (typeof request.worktreePath === 'string') {
           validatePath(request.worktreePath, 'worktreePath');
         }
-        assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+        if (typeof request.projectRoot === 'string') {
+          validatePath(request.projectRoot, 'projectRoot');
+        }
+        const cleanupRuntime = async () => {
+          const cleanupWarnings: TaskCleanupWarning[] = [];
+          if (request.removeTaskState === true) {
+            try {
+              await stopTaskAgentWorkflowsForTask(request.taskId, request.agentIds);
+            } catch (error) {
+              cleanupWarnings.push({
+                kind: 'runners',
+                message: `Failed to clean agent runners while removing task runtime: ${getTaskCleanupErrorMessage(error)}`,
+              });
+            }
 
-        const cleanupResult = cleanupTaskRuntimeWorkflow({
-          agentIds: request.agentIds,
-          ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-          removeTaskState: request.removeTaskState ?? false,
-          taskId: request.taskId,
-          ...(typeof request.worktreePath === 'string'
-            ? { worktreePath: request.worktreePath }
-            : {}),
-        });
-        emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
+            if (
+              typeof request.projectRoot === 'string' &&
+              typeof request.worktreePath === 'string'
+            ) {
+              try {
+                await destroyManagedTaskContainersByLabels({
+                  projectPath: request.projectRoot,
+                  taskId: request.taskId,
+                  worktreePath: request.worktreePath,
+                });
+              } catch (error) {
+                cleanupWarnings.push({
+                  kind: 'containers',
+                  message: `Failed to clean task containers while removing task runtime: ${getTaskCleanupErrorMessage(error)}`,
+                });
+              }
+            }
+          }
+
+          const cleanupResult = cleanupTaskRuntimeWorkflow({
+            agentIds: request.agentIds,
+            ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+            removeTaskState: request.removeTaskState ?? false,
+            taskId: request.taskId,
+            ...(typeof request.worktreePath === 'string'
+              ? { worktreePath: request.worktreePath }
+              : {}),
+          });
+          emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
+
+          if (request.removeTaskState === true) {
+            taskNames.deleteTask(request.taskId);
+            cleanupWarnings.push(
+              ...(await cleanupCoordinatorTaskStateAndOwnedSubtasks(
+                { context, taskNames },
+                request.taskId,
+              )),
+            );
+          }
+
+          return { cleanupWarnings };
+        };
 
         if (request.removeTaskState === true) {
-          taskNames.deleteTask(request.taskId);
-          await cleanupCoordinatorTaskStateAndOwnedSubtasks({ context, taskNames }, request.taskId);
+          return executeTaskLeaseProtectedCoordinatorProducer(context, request, cleanupRuntime);
         }
 
-        return undefined;
+        assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+        return cleanupRuntime();
       },
     ),
 

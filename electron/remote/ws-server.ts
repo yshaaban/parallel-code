@@ -6,7 +6,6 @@ import {
   getAgentScrollback,
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
-  killAgent,
   onPtyEvent,
   pauseAgent,
   resizeAgent,
@@ -15,6 +14,7 @@ import {
   unsubscribeFromAgent,
   writeToAgent,
 } from '../ipc/pty.js';
+import { stopTaskAgentWorkflow } from '../ipc/task-workflows.js';
 import {
   getTaskCommandControllerSnapshot,
   isTaskCommandLeaseHeld,
@@ -209,10 +209,15 @@ export function registerRemoteWebSocketServer(
     client: WebSocket,
     agentId: string,
     action: string,
-    execute: () => void,
+    execute: () => Promise<void> | void,
   ): void {
     try {
-      execute();
+      const result = execute();
+      if (result) {
+        void result.catch((error: unknown) => {
+          sendAgentError(client, agentId, `${action} failed`, error);
+        });
+      }
     } catch (error) {
       sendAgentError(client, agentId, `${action} failed`, error);
     }
@@ -222,7 +227,7 @@ export function registerRemoteWebSocketServer(
     client: WebSocket,
     agentId: string,
     action: string,
-    execute: () => void,
+    execute: () => Promise<void> | void,
     requireControl = true,
   ): void {
     if (requireControl && !claimAgentControlOrSendError(client, agentId, action)) {
@@ -346,9 +351,9 @@ export function registerRemoteWebSocketServer(
         });
       },
       kill: (currentMessage) => {
-        runAgentCommand(client, currentMessage.agentId, 'kill', () => {
-          killAgent(currentMessage.agentId);
-        });
+        runAgentCommand(client, currentMessage.agentId, 'kill', () =>
+          stopTaskAgentWorkflow(currentMessage.agentId),
+        );
       },
       pause: (currentMessage) => {
         runAgentCommand(

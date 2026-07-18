@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import { registerBrowserLatencyDiagnosticsRoutes } from './browser-latency-diagnostics.js';
 
 const TEST_TOKEN = 'latency-diagnostics-test-token';
@@ -55,7 +56,18 @@ async function closeServer(server: import('node:http').Server): Promise<void> {
 
 describe('browser latency diagnostics routes', () => {
   afterEach(async () => {
-    await Promise.all(servers.splice(0).map((server) => closeServer(server)));
+    await runIndependentCleanups(
+      'Browser latency diagnostics test servers',
+      servers
+        .splice(0)
+        .map(
+          (server, index) =>
+            [
+              `close browser latency diagnostics server ${index + 1}`,
+              () => closeServer(server),
+            ] as const,
+        ),
+    );
   });
 
   it('requires auth for the browser-visible latency ping endpoint', async () => {

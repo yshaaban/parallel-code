@@ -13,6 +13,8 @@ import {
   subscribeBackendClientFocusedChannels,
 } from '../electron/ipc/backend-work-queue.js';
 import { IPC } from '../electron/ipc/channels.js';
+import { stopAllAskAboutCodeRequests } from '../electron/ipc/ask-about-code.js';
+import { stopAllTaskAgentWorkflows } from '../electron/ipc/task-workflows.js';
 import {
   loadPersistedDerivedState,
   startDerivedStatePersistence,
@@ -66,6 +68,10 @@ import {
 } from '../electron/ipc/task-ports.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
+import {
+  collectRuntimeCleanupFailures,
+  type RuntimeCleanupFailure,
+} from '../electron/runtime-cleanup.js';
 import { createTaskPortsSnapshotEvent } from '../src/domain/server-state.js';
 import { isRecord } from '../src/lib/type-guards.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
@@ -119,12 +125,72 @@ export interface BrowserServerController {
   cleanup: () => void;
   shutdown: () => void;
   /**
-   * Resolves once the coordinator runtime cleanup (including its async
-   * persistence flush) has settled after cleanup()/shutdown(). Test harnesses
-   * must await this before removing the state directory.
+   * Settles once asynchronous runtime cleanup, including coordinator
+   * persistence and agent-runner teardown, has finished after
+   * cleanup()/shutdown(). Rejects with every owner failure after all owners
+   * have settled. Test harnesses must await this before removing the state
+   * directory.
    */
   whenCoordinatorRuntimeStopped: () => Promise<void>;
 }
+
+type BrowserRuntimeCleanupLabel = 'agent runner' | 'ask about code' | 'coordinator';
+
+export type BrowserRuntimeCleanupFailure = RuntimeCleanupFailure<BrowserRuntimeCleanupLabel>;
+
+export class BrowserRuntimeCleanupError extends Error {
+  readonly failures: BrowserRuntimeCleanupFailure[];
+
+  constructor(failures: BrowserRuntimeCleanupFailure[]) {
+    super(
+      `Browser server runtime cleanup failed: ${failures.map((failure) => failure.label).join(', ')}`,
+    );
+    this.name = 'BrowserRuntimeCleanupError';
+    this.failures = failures;
+  }
+}
+
+function retainObservedRuntimeCleanup(
+  cleanup: Promise<void>,
+  label: BrowserRuntimeCleanupLabel,
+): Promise<void> {
+  void cleanup.catch((error: unknown) => {
+    console.warn(`Browser server ${label} cleanup failed:`, error);
+  });
+  return cleanup;
+}
+
+async function settleBrowserRuntimeCleanupOwners(
+  owners: ReadonlyArray<{
+    cleanup: Promise<void>;
+    label: BrowserRuntimeCleanupLabel;
+  }>,
+): Promise<void> {
+  const failures = await collectRuntimeCleanupFailures(owners);
+  if (failures.length > 0) {
+    throw new BrowserRuntimeCleanupError(failures);
+  }
+}
+
+async function exitAfterBrowserRuntimeCleanup(
+  cleanup: Promise<void>,
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
+  let exitCode = 0;
+  try {
+    await cleanup;
+  } catch (error) {
+    console.error('Browser server shutdown cleanup failed:', error);
+    exitCode = 1;
+  }
+  exit(exitCode);
+}
+
+export const __browserServerTestExports = {
+  exitAfterBrowserRuntimeCleanup,
+  retainObservedRuntimeCleanup,
+  settleBrowserRuntimeCleanupOwners,
+};
 
 function getUpgradePathname(req: IncomingMessage): string | null {
   const value = req.url ?? '/';
@@ -301,14 +367,28 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     });
   }
   let coordinatorRuntimeLoader: CoordinatorRuntimeLoader | null = null;
-  let coordinatorRuntimeCleanupDone: Promise<void> | null = null;
-  let resolveCoordinatorRuntimeStarted: (loader: CoordinatorRuntimeLoader) => void = () => {};
-  const coordinatorRuntimeStarted = new Promise<CoordinatorRuntimeLoader>((resolve) => {
+  let runtimeCleanupDone: Promise<void> | null = null;
+  let coordinatorRuntimeStartSettled = false;
+  let resolveCoordinatorRuntimeStarted: (
+    loader: CoordinatorRuntimeLoader | null,
+  ) => void = () => {};
+  const coordinatorRuntimeStarted = new Promise<CoordinatorRuntimeLoader | null>((resolve) => {
     resolveCoordinatorRuntimeStarted = resolve;
   });
 
+  function settleCoordinatorRuntimeStart(loader: CoordinatorRuntimeLoader | null): void {
+    if (coordinatorRuntimeStartSettled) {
+      return;
+    }
+    coordinatorRuntimeStartSettled = true;
+    resolveCoordinatorRuntimeStarted(loader);
+  }
+
   async function awaitCoordinatorRuntimeReady(): Promise<void> {
     const loader = await coordinatorRuntimeStarted;
+    if (!loader) {
+      throw new Error('Browser server stopped before the coordinator runtime started');
+    }
     await loader.ready;
   }
 
@@ -568,6 +648,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
 
   server.listen(options.port, '0.0.0.0', () => {
+    if (lifecycle.kind !== 'running') {
+      settleCoordinatorRuntimeStart(null);
+      return;
+    }
+
     const address = server.address();
     if (address && typeof address !== 'string') {
       controlPlane.setServerPort(address.port);
@@ -589,7 +674,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       handlerContext,
       taskNames,
     });
-    resolveCoordinatorRuntimeStarted(coordinatorRuntimeLoader);
+    settleCoordinatorRuntimeStart(coordinatorRuntimeLoader);
     releaseBackendBackgroundWork();
   });
 
@@ -604,14 +689,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     closeCallbacks.clear();
 
     if (shouldExit) {
-      // Await the coordinator runtime cleanup before exiting so an async
-      // persistence flush behind the loader handle cannot be dropped at
-      // shutdown.
-      void (coordinatorRuntimeCleanupDone ?? Promise.resolve())
-        .catch(() => {})
-        .finally(() => {
-          process.exit(0);
-        });
+      // Await persistence and runner cleanup so neither state writes nor
+      // external Docker resources are dropped at shutdown. A cleanup failure
+      // is operationally visible through a nonzero process exit after every
+      // independent owner has still been allowed to settle.
+      void exitAfterBrowserRuntimeCleanup(runtimeCleanupDone ?? Promise.resolve());
     }
   });
 
@@ -646,11 +728,33 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupAgentAvailability();
     cleanupAgentSupervision();
     cleanupFocusedChannelConsumer();
-    // cleanup() stays synchronous for its callers, but the coordinator runtime
-    // cleanup is async by contract (CoordinatorRuntimeHandle.cleanup() awaits
-    // future persistence flushes); keep the promise so the exit-on-close path
-    // can wait for the flush instead of dropping it.
-    coordinatorRuntimeCleanupDone = coordinatorRuntimeLoader?.cleanup() ?? null;
+    // cleanup() stays synchronous for its callers, but persistence and runner
+    // teardown are async contracts. Keep both promises so exit-on-close waits
+    // for their ownership to settle instead of dropping work during shutdown.
+    if (!coordinatorRuntimeLoader) {
+      settleCoordinatorRuntimeStart(null);
+    }
+    const coordinatorRuntimeCleanup = retainObservedRuntimeCleanup(
+      coordinatorRuntimeStarted.then((loader) => loader?.cleanup()),
+      'coordinator',
+    );
+    const agentRuntimeCleanup = retainObservedRuntimeCleanup(
+      stopAllTaskAgentWorkflows(),
+      'agent runner',
+    );
+    const askAboutCodeRuntimeCleanup = retainObservedRuntimeCleanup(
+      stopAllAskAboutCodeRequests(),
+      'ask about code',
+    );
+    runtimeCleanupDone = settleBrowserRuntimeCleanupOwners([
+      { cleanup: coordinatorRuntimeCleanup, label: 'coordinator' },
+      { cleanup: agentRuntimeCleanup, label: 'agent runner' },
+      { cleanup: askAboutCodeRuntimeCleanup, label: 'ask about code' },
+    ]);
+    // Preserve the rejecting aggregate for whenCoordinatorRuntimeStopped and
+    // exit-on-close without allowing an ignored cleanup() call to create an
+    // unhandled rejection in the meantime.
+    void runtimeCleanupDone.catch(() => {});
     cancelBackendBackgroundReconciliation();
     cleanupDerivedStatePersistence();
     cleanupTaskConvergence();
@@ -691,8 +795,6 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   return {
     cleanup,
     shutdown,
-    whenCoordinatorRuntimeStopped: async () => {
-      await (coordinatorRuntimeCleanupDone ?? Promise.resolve()).catch(() => {});
-    },
+    whenCoordinatorRuntimeStopped: () => runtimeCleanupDone ?? Promise.resolve(),
   };
 }

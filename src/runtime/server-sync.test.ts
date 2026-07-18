@@ -504,12 +504,8 @@ describe('server-sync reliability contracts', () => {
     const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
     let appliedWorkspaceState = false;
     applyLoadedWorkspaceStateJsonMock.mockImplementation(() => {
-      expect(hydrateAgentGenerationMock).not.toHaveBeenCalled();
       appliedWorkspaceState = true;
       return false;
-    });
-    hydrateAgentGenerationMock.mockImplementation(() => {
-      expect(appliedWorkspaceState).toBe(true);
     });
 
     await syncBrowserStateFromReconnectSnapshot({
@@ -526,7 +522,11 @@ describe('server-sync reliability contracts', () => {
       '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
       0,
     );
+    expect(appliedWorkspaceState).toBe(true);
     expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 7);
+    expect(applyLoadedWorkspaceStateJsonMock.mock.invocationCallOrder[0]).toBeLessThan(
+      hydrateAgentGenerationMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(markAutosaveCleanMock).not.toHaveBeenCalled();

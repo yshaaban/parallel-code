@@ -113,7 +113,7 @@ describe('browser control plane architecture guardrails', () => {
     expect(browserAgentCommandRunnerSource).toContain('TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE');
   });
 
-  it('keeps browser websocket PTY mutations behind the command executor owner', () => {
+  it('keeps browser websocket PTY mutations and agent stop workflow behind the command executor owner', () => {
     expect(browserWebSocketSource).toContain('writeBrowserAgentInput');
     expect(browserWebSocketSource).not.toContain('writeToAgent');
     expect(browserWebSocketSource).not.toContain('resizeAgent');
@@ -124,7 +124,8 @@ describe('browser control plane architecture guardrails', () => {
     expect(browserAgentCommandExecutorSource).toContain('resizeAgent');
     expect(browserAgentCommandExecutorSource).toContain('pauseAgent');
     expect(browserAgentCommandExecutorSource).toContain('resumeAgent');
-    expect(browserAgentCommandExecutorSource).toContain('killAgent');
+    expect(browserAgentCommandExecutorSource).not.toContain('killAgent(');
+    expect(browserAgentCommandExecutorSource).toContain('stopTaskAgentWorkflow');
   });
 
   it('keeps browser terminal input trace diagnostics behind the trace owner', () => {

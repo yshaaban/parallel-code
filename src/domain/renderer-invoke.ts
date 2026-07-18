@@ -50,7 +50,7 @@ import type {
   TaskContainerLogsResult,
 } from './task-containers.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
-import type { DeleteTaskResult } from './task-cleanup.js';
+import type { TaskCleanupResult } from './task-cleanup.js';
 import type { TaskReviewSignalsSnapshot } from './task-review-signals.js';
 import type { TaskStepsSnapshot } from './task-steps.js';
 import type { TaskNotificationRequest } from './task-notification.js';
@@ -306,6 +306,7 @@ export interface RendererInvokeRequestMap {
     agentIds: string[];
     controllerId: string;
     projectMode?: ProjectMode;
+    projectRoot?: string;
     removeTaskState?: boolean;
     taskId: string;
     worktreePath?: string;
@@ -708,8 +709,8 @@ export interface RendererInvokeResponseMap {
   [IPC.ReportClientTaskFocus]: null;
 
   [IPC.CreateTask]: CreateTaskResult;
-  [IPC.DeleteTask]: DeleteTaskResult;
-  [IPC.CleanupTaskRuntime]: undefined;
+  [IPC.DeleteTask]: TaskCleanupResult;
+  [IPC.CleanupTaskRuntime]: TaskCleanupResult;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
     acquired: boolean;
     leaseGeneration: number;
