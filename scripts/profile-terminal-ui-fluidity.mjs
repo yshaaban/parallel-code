@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -12,8 +12,18 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
 import { createBrowserServerClient } from './browser-server-client.mjs';
+import { runIndependentCleanups, runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
 import { getDefaultTerminalUiFluidityGateProfiles } from './terminal-ui-fluidity-gate.mjs';
 import { getTerminalUiFluidityVariant } from './terminal-ui-fluidity-variants.mjs';
+import {
+  cleanupDevelopmentServerData,
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+  waitForStandaloneServerReady,
+} from './lib/standalone-server-process.mjs';
+import { createTestShellEnv } from './lib/test-shell-env.mjs';
+
+export { runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
 
 const GET_AGENT_SCROLLBACK = 'get_agent_scrollback';
 const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
@@ -25,9 +35,6 @@ const APP_SHELL_SELECTOR = '.app-shell';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
 const PROFILE_TERMINAL_OPEN_SHORTCUT = 'Control+Shift+D';
-const SERVER_START_TIMEOUT_MS = 20_000;
-const SERVER_STOP_TIMEOUT_MS = 5_000;
-const STANDALONE_SERVER_READY_BUFFER_MAX_CHARS = 8_192;
 const TERMINAL_ATTACH_TIMEOUT_MS = 15_000;
 const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
@@ -888,82 +895,34 @@ function reservePort() {
   });
 }
 
-function appendServerOutput(previous, chunk) {
-  const next = `${previous}${chunk}`;
-  if (next.length <= STANDALONE_SERVER_READY_BUFFER_MAX_CHARS) {
-    return next;
+export function cleanupUiFluidityOwnedServerData(userDataPath, rootDir, dependencies = {}) {
+  const cleanupServerData =
+    dependencies.cleanupDevelopmentServerData ?? cleanupDevelopmentServerData;
+  const remove = dependencies.remove ?? rm;
+  const cleanupSteps = [];
+
+  if (userDataPath) {
+    cleanupSteps.push(['remove development server data', () => cleanupServerData(userDataPath)]);
+  }
+  if (rootDir) {
+    cleanupSteps.push([
+      'remove seeded profiler workspace',
+      () => remove(rootDir, { force: true, recursive: true }),
+    ]);
   }
 
-  return next.slice(-STANDALONE_SERVER_READY_BUFFER_MAX_CHARS);
+  return runIndependentCleanups('UI fluidity profiler owned server data', cleanupSteps);
 }
 
-function waitForServerReady(serverProcess) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error('Timed out waiting for the standalone server to start'));
-    }, SERVER_START_TIMEOUT_MS);
-
-    let stdoutText = '';
-    let stderrText = '';
-
-    function cleanup() {
-      globalThis.clearTimeout(timeout);
-      serverProcess.stdout.off('data', handleStdout);
-      serverProcess.stderr.off('data', handleStderr);
-      serverProcess.off('exit', handleExit);
-    }
-
-    function handleStdout(chunk) {
-      stdoutText = appendServerOutput(stdoutText, chunk.toString('utf8'));
-      const match = stdoutText.match(/Parallel Code server listening on (https?:\/\/\S+)/u);
-      if (!match) {
-        return;
-      }
-
-      cleanup();
-      resolve(match[1]);
-    }
-
-    function handleStderr(chunk) {
-      stderrText += chunk.toString('utf8');
-    }
-
-    function handleExit(code) {
-      cleanup();
-      reject(
-        new Error(
-          stderrText.trim().length > 0
-            ? `Standalone server exited early with code ${code ?? 'null'}: ${stderrText.trim()}`
-            : `Standalone server exited early with code ${code ?? 'null'}`,
-        ),
-      );
-    }
-
-    serverProcess.stdout.on('data', handleStdout);
-    serverProcess.stderr.on('data', handleStderr);
-    serverProcess.on('exit', handleExit);
-  });
-}
-
-function stopServerProcess(serverProcess) {
-  return new Promise((resolve) => {
-    if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
-      resolve();
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      serverProcess.kill('SIGKILL');
-    }, SERVER_STOP_TIMEOUT_MS);
-
-    serverProcess.once('exit', () => {
-      globalThis.clearTimeout(timeout);
-      resolve();
-    });
-
-    serverProcess.kill('SIGTERM');
-  });
+export async function stopUiFluidityOwnedServer(
+  serverProcess,
+  userDataPath,
+  rootDir,
+  dependencies = {},
+) {
+  const stopProcess = dependencies.stopProcess ?? stopStandaloneServerProcessWithRetry;
+  await stopProcess(serverProcess);
+  await cleanupUiFluidityOwnedServerData(userDataPath, rootDir, dependencies);
 }
 
 async function maybeLaunchServer(options, suiteName) {
@@ -976,44 +935,46 @@ async function maybeLaunchServer(options, suiteName) {
 
   const port = await reservePort();
   const authToken = `ui-fluidity-profiler-${randomBytes(12).toString('hex')}`;
-  const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-ui-fluidity-'));
   let rootDir = null;
+  let serverProcess = null;
   let seededTasks = [];
-  let startGateDir = null;
-  if (options.surface === 'agents') {
-    rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-ui-fluidity-seeded-'));
-    const repoDir = await createSeedRepo(rootDir);
-    const project = createProject('project-ui-fluidity', repoDir);
-    const workloadDurationMs = Math.max(options.durationMs * 3, options.durationMs + 8_000);
-    startGateDir = path.resolve(rootDir, 'start-gates');
-    await mkdir(startGateDir, { recursive: true });
-    const seededState = createSeededState(
-      project,
-      suiteName,
-      options.terminals,
-      workloadDurationMs,
-      startGateDir,
-    );
-    seededTasks = seededState.seededTasks;
-    await writeSeededStateFiles(
-      `${userDataPath}-dev`,
-      seededState.state,
-      seededState.workspaceState,
-    );
-  }
-  const serverProcess = spawn(process.execPath, [STANDALONE_SERVER_ENTRY], {
-    cwd: path.resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      AUTH_TOKEN: authToken,
-      PARALLEL_CODE_USER_DATA_DIR: userDataPath,
-      PORT: String(port),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let userDataPath = null;
 
   try {
-    const baseUrl = await waitForServerReady(serverProcess);
+    userDataPath = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-ui-fluidity-'));
+    if (options.surface === 'agents') {
+      rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-ui-fluidity-seeded-'));
+      const repoDir = await createSeedRepo(rootDir);
+      const project = createProject('project-ui-fluidity', repoDir);
+      const workloadDurationMs = Math.max(options.durationMs * 3, options.durationMs + 8_000);
+      const startGateDir = path.resolve(rootDir, 'start-gates');
+      await mkdir(startGateDir, { recursive: true });
+      const seededState = createSeededState(
+        project,
+        suiteName,
+        options.terminals,
+        workloadDurationMs,
+        startGateDir,
+      );
+      seededTasks = seededState.seededTasks;
+      await writeSeededStateFiles(
+        `${userDataPath}-dev`,
+        seededState.state,
+        seededState.workspaceState,
+      );
+    }
+    serverProcess = spawnStandaloneServerProcess(process.execPath, [STANDALONE_SERVER_ENTRY], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        AUTH_TOKEN: authToken,
+        PARALLEL_CODE_USER_DATA_DIR: userDataPath,
+        ...createTestShellEnv(userDataPath),
+        PORT: String(port),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const { url: baseUrl } = await waitForStandaloneServerReady(serverProcess);
     return {
       authToken,
       baseUrl,
@@ -1033,18 +994,34 @@ async function maybeLaunchServer(options, suiteName) {
           return;
         }
 
-        await stopServerProcess(serverProcess);
-        await rm(userDataPath, { force: true, recursive: true });
-        if (rootDir) {
-          await rm(rootDir, { force: true, recursive: true });
-        }
+        await stopUiFluidityOwnedServer(serverProcess, userDataPath, rootDir);
       },
     };
   } catch (error) {
-    await stopServerProcess(serverProcess).catch(() => {});
-    await rm(userDataPath, { force: true, recursive: true }).catch(() => {});
-    if (rootDir) {
-      await rm(rootDir, { force: true, recursive: true }).catch(() => {});
+    const cleanupErrors = [];
+    let serverStopped = serverProcess === null;
+    if (serverProcess) {
+      try {
+        await stopStandaloneServerProcessWithRetry(serverProcess);
+        serverStopped = true;
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (serverStopped) {
+      try {
+        await cleanupUiFluidityOwnedServerData(userDataPath, rootDir);
+      } catch (cleanupError) {
+        cleanupErrors.push(
+          ...(cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError]),
+        );
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'UI fluidity profiler startup and owned server cleanup failed',
+      );
     }
     throw error;
   }
@@ -1291,10 +1268,9 @@ async function waitForTerminalLatencyStore(page) {
   );
 }
 
-async function openUiFluidityPage(context, suiteName, serverUrl, authToken) {
+async function initializeUiFluidityPage(page, suiteName, serverUrl, authToken) {
   const authedUrl = new globalThis.URL('/', serverUrl);
   authedUrl.searchParams.set('token', authToken);
-  const page = await context.newPage();
   console.log(`[ui-fluidity] opening ${suiteName} on ${authedUrl.toString()}`);
   await page.goto(authedUrl.toString(), {
     timeout: PAGE_GOTO_TIMEOUT_MS,
@@ -1303,7 +1279,6 @@ async function openUiFluidityPage(context, suiteName, serverUrl, authToken) {
   await page.locator(APP_SHELL_SELECTOR).waitFor({ state: 'visible' });
   await waitForUiDiagnosticsStore(page);
   await waitForTerminalLatencyStore(page);
-  return page;
 }
 
 async function resetMeasuredDiagnostics(page, client) {
@@ -2997,219 +2972,232 @@ function createMarkdownSummary(runSummary) {
   return `${lines.join('\n')}\n`;
 }
 
-async function runSuiteAttempt(browser, options, suiteName) {
-  const launchedServer = await maybeLaunchServer(options, suiteName);
-  const serverUrl = launchedServer?.baseUrl ?? options.serverUrl;
-  const authToken = launchedServer?.authToken ?? options.authToken;
-  const client = createBrowserServerClient({
-    authToken,
-    serverUrl,
-  });
-  const viewport = getViewportSizeForVisibleTerminalCount(options.visibleTerminalCount);
-  const context = await browser.newContext(viewport === null ? {} : { viewport });
+export async function runSuiteAttempt(browser, options, suiteName, dependencies = {}) {
+  const launchServer = dependencies.launchServer ?? maybeLaunchServer;
+  const createClient = dependencies.createClient ?? createBrowserServerClient;
+  const initializePage = dependencies.initializePage ?? initializeUiFluidityPage;
+  const launchedServer = await launchServer(options, suiteName);
+  let context;
+  let page;
 
-  await context.addInitScript(
-    ([
-      displayNameStorageKey,
-      clientIdStorageKey,
-      injectedExperimentConfig,
-      injectedHighLoadMode,
-    ]) => {
-      globalThis.localStorage.setItem(displayNameStorageKey, 'UI Fluidity Profiler');
-      globalThis.sessionStorage.setItem(clientIdStorageKey, 'ui-fluidity-profiler-session');
-      globalThis.window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
-      globalThis.window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
-      globalThis.window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = false;
-      globalThis.window.__TERMINAL_PERF__ = true;
-      globalThis.window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
-      globalThis.window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = [];
-      if (injectedHighLoadMode === null) {
-        delete globalThis.window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__;
-      } else {
-        globalThis.window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__ = injectedHighLoadMode;
+  return runOperationWithCleanups(
+    `UI fluidity suite ${suiteName}`,
+    async () => {
+      const serverUrl = launchedServer?.baseUrl ?? options.serverUrl;
+      const authToken = launchedServer?.authToken ?? options.authToken;
+      const client = createClient({
+        authToken,
+        serverUrl,
+      });
+      const viewport = getViewportSizeForVisibleTerminalCount(options.visibleTerminalCount);
+      context = await browser.newContext(viewport === null ? {} : { viewport });
+
+      await context.addInitScript(
+        ([
+          displayNameStorageKey,
+          clientIdStorageKey,
+          injectedExperimentConfig,
+          injectedHighLoadMode,
+        ]) => {
+          globalThis.localStorage.setItem(displayNameStorageKey, 'UI Fluidity Profiler');
+          globalThis.sessionStorage.setItem(clientIdStorageKey, 'ui-fluidity-profiler-session');
+          globalThis.window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
+          globalThis.window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          globalThis.window.__TERMINAL_OUTPUT_VISIBLE_LINE_DIAGNOSTICS__ = false;
+          globalThis.window.__TERMINAL_PERF__ = true;
+          globalThis.window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+          globalThis.window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = [];
+          if (injectedHighLoadMode === null) {
+            delete globalThis.window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__;
+          } else {
+            globalThis.window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__ = injectedHighLoadMode;
+          }
+          if (injectedExperimentConfig === null) {
+            delete globalThis.window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
+          } else {
+            globalThis.window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = injectedExperimentConfig;
+          }
+        },
+        [
+          DISPLAY_NAME_STORAGE_KEY,
+          CLIENT_ID_STORAGE_KEY,
+          options.injectedExperimentConfig,
+          options.injectedHighLoadMode,
+        ],
+      );
+
+      page = await context.newPage();
+      await initializePage(page, suiteName, serverUrl, authToken);
+
+      const terminalEntries =
+        options.surface === 'agents'
+          ? await waitForSeededAgentTerminals(page, launchedServer?.seededTasks ?? [])
+          : (await createTerminals(page, options.terminals)).map((terminalIndex) => ({
+              terminalIndex,
+            }));
+      const focusedTerminalIndex = terminalEntries[0]?.terminalIndex;
+      if (focusedTerminalIndex === undefined) {
+        throw new Error(
+          options.surface === 'agents'
+            ? 'Expected at least one seeded agent terminal'
+            : 'Expected at least one created shell terminal',
+        );
       }
-      if (injectedExperimentConfig === null) {
-        delete globalThis.window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
+      await alignViewportToVisibleTerminalCount(page, options.visibleTerminalCount);
+
+      if (options.surface === 'agents') {
+        await waitForSeededAgentsReady(
+          client,
+          terminalEntries,
+          getSeededAgentReadyTimeoutMs(options),
+        );
       } else {
-        globalThis.window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = injectedExperimentConfig;
+        const workloadDurationMs = Math.max(options.durationMs * 3, options.durationMs + 8_000);
+        await startTerminalWorkloads(
+          page,
+          client,
+          terminalEntries.map((entry) => entry.terminalIndex),
+          suiteName,
+          workloadDurationMs,
+        );
       }
+      const initialRoundTripReady = await waitForRoundTripReady(page, focusedTerminalIndex);
+
+      if (options.surface === 'agents') {
+        await launchedServer?.releaseWorkloads?.();
+        if (suiteName !== 'hidden_render_wake') {
+          await waitForTerminalOutputActivity(page, 8);
+        }
+      }
+      let preparedHiddenSwitchTarget = null;
+      if (
+        suiteName === 'recent_hidden_switch' ||
+        suiteName === 'hidden_render_wake' ||
+        suiteName === 'hidden_session_wake'
+      ) {
+        preparedHiddenSwitchTarget = await waitForHiddenWakePreconditions(
+          page,
+          options,
+          suiteName,
+          terminalEntries,
+        );
+      } else {
+        await page.waitForTimeout(WORKLOAD_WARMUP_MS);
+      }
+
+      if (isActiveVisibleSelectedSuiteName(suiteName)) {
+        if (options.surface !== 'agents') {
+          throw new Error('The active_visible_selected suite only supports the agents surface');
+        }
+
+        const activeVisibleTargetTaskId = terminalEntries[0]?.taskId;
+        if (
+          typeof activeVisibleTargetTaskId !== 'string' ||
+          activeVisibleTargetTaskId.length === 0
+        ) {
+          throw new Error('Expected the active-visible suite to have a selected task target');
+        }
+
+        await prepareActiveVisibleSelectedTask(page, activeVisibleTargetTaskId);
+        await waitForActiveVisibleOutputActivity(page);
+      }
+
+      const inputProbeCount = getInputProbeCount(options, suiteName);
+      let inputProbeSummary;
+      let switchSummary = null;
+      let traceSummary = null;
+      const measureWindow = async () => {
+        const nextInputProbeSummary = await runFocusedInputProbes(
+          page,
+          focusedTerminalIndex,
+          options.durationMs,
+          inputProbeCount,
+          options.inputIntervalMs,
+        );
+        if (nextInputProbeSummary.elapsedMs < options.durationMs) {
+          await page.waitForTimeout(options.durationMs - nextInputProbeSummary.elapsedMs);
+        }
+        await waitForAnimationFrames(page, 2);
+        inputProbeSummary = nextInputProbeSummary;
+        return nextInputProbeSummary;
+      };
+      const measureHiddenSwitch = async () => {
+        if (options.surface !== 'agents') {
+          throw new Error('Hidden wake suites only support the agents surface');
+        }
+
+        const targetEntry =
+          preparedHiddenSwitchTarget ??
+          (suiteName === 'hidden_switch'
+            ? await waitForHiddenWakePreconditions(page, options, suiteName, terminalEntries)
+            : null);
+        if (!targetEntry?.taskId) {
+          throw new Error('Failed to select a hidden task switch target');
+        }
+
+        const nextSwitchSummary = await measureHiddenTaskSwitch(
+          page,
+          options.experimentConfig,
+          targetEntry.taskId,
+          targetEntry.agentId,
+        );
+        switchSummary = {
+          ...nextSwitchSummary,
+          targetTaskId: targetEntry.taskId,
+        };
+        inputProbeSummary = {
+          attemptedCount: 1,
+          echoAfterDispatch: createEmptyDurationSummary(),
+          elapsedMs: Math.round(nextSwitchSummary.inputReadyMs),
+          inputDispatch: createEmptyDurationSummary(),
+          timeoutCount: nextSwitchSummary.roundTripMs < 0 ? 1 : 0,
+        };
+        await waitForAnimationFrames(page, 2);
+        return nextSwitchSummary;
+      };
+
+      await resetMeasuredDiagnostics(page, client);
+
+      if (shouldCaptureTraceForSuite(options, suiteName)) {
+        const traceResult = await captureBrowserPerformanceTrace(
+          page,
+          path.join(options.outDir, `${suiteName}.trace.json`),
+          isHiddenWakeSuiteName(suiteName) ? measureHiddenSwitch : measureWindow,
+        );
+        traceSummary = traceResult.traceSummary;
+      } else if (isHiddenWakeSuiteName(suiteName)) {
+        await measureHiddenSwitch();
+      } else {
+        await measureWindow();
+      }
+
+      const [backendDiagnosticsSnapshot, terminalLatencySnapshot, uiSnapshot] = await Promise.all([
+        collectBackendRuntimeDiagnostics(client),
+        page.evaluate(() => globalThis.window.__parallelCodeTerminalLatency?.getSnapshot() ?? null),
+        collectUiFluiditySnapshot(page),
+      ]);
+
+      if (!backendDiagnosticsSnapshot || !terminalLatencySnapshot || !uiSnapshot) {
+        throw new Error('UI fluidity diagnostics snapshots were not available');
+      }
+
+      return {
+        backendDiagnosticsSnapshot,
+        initialRoundTripReady,
+        inputProbeSummary,
+        switchSummary,
+        suiteName,
+        terminalLatencySnapshot,
+        traceSummary,
+        uiSnapshot,
+      };
     },
     [
-      DISPLAY_NAME_STORAGE_KEY,
-      CLIENT_ID_STORAGE_KEY,
-      options.injectedExperimentConfig,
-      options.injectedHighLoadMode,
+      ['close profiler page', () => page?.close()],
+      ['close profiler browser context', () => context?.close()],
+      ['stop owned standalone server', () => launchedServer?.stop()],
     ],
   );
-
-  let page;
-  try {
-    page = await openUiFluidityPage(context, suiteName, serverUrl, authToken);
-
-    const terminalEntries =
-      options.surface === 'agents'
-        ? await waitForSeededAgentTerminals(page, launchedServer?.seededTasks ?? [])
-        : (await createTerminals(page, options.terminals)).map((terminalIndex) => ({
-            terminalIndex,
-          }));
-    const focusedTerminalIndex = terminalEntries[0]?.terminalIndex;
-    if (focusedTerminalIndex === undefined) {
-      throw new Error(
-        options.surface === 'agents'
-          ? 'Expected at least one seeded agent terminal'
-          : 'Expected at least one created shell terminal',
-      );
-    }
-    await alignViewportToVisibleTerminalCount(page, options.visibleTerminalCount);
-
-    if (options.surface === 'agents') {
-      await waitForSeededAgentsReady(
-        client,
-        terminalEntries,
-        getSeededAgentReadyTimeoutMs(options),
-      );
-    } else {
-      const workloadDurationMs = Math.max(options.durationMs * 3, options.durationMs + 8_000);
-      await startTerminalWorkloads(
-        page,
-        client,
-        terminalEntries.map((entry) => entry.terminalIndex),
-        suiteName,
-        workloadDurationMs,
-      );
-    }
-    const initialRoundTripReady = await waitForRoundTripReady(page, focusedTerminalIndex);
-
-    if (options.surface === 'agents') {
-      await launchedServer?.releaseWorkloads?.();
-      if (suiteName !== 'hidden_render_wake') {
-        await waitForTerminalOutputActivity(page, 8);
-      }
-    }
-    let preparedHiddenSwitchTarget = null;
-    if (
-      suiteName === 'recent_hidden_switch' ||
-      suiteName === 'hidden_render_wake' ||
-      suiteName === 'hidden_session_wake'
-    ) {
-      preparedHiddenSwitchTarget = await waitForHiddenWakePreconditions(
-        page,
-        options,
-        suiteName,
-        terminalEntries,
-      );
-    } else {
-      await page.waitForTimeout(WORKLOAD_WARMUP_MS);
-    }
-
-    if (isActiveVisibleSelectedSuiteName(suiteName)) {
-      if (options.surface !== 'agents') {
-        throw new Error('The active_visible_selected suite only supports the agents surface');
-      }
-
-      const activeVisibleTargetTaskId = terminalEntries[0]?.taskId;
-      if (typeof activeVisibleTargetTaskId !== 'string' || activeVisibleTargetTaskId.length === 0) {
-        throw new Error('Expected the active-visible suite to have a selected task target');
-      }
-
-      await prepareActiveVisibleSelectedTask(page, activeVisibleTargetTaskId);
-      await waitForActiveVisibleOutputActivity(page);
-    }
-
-    const inputProbeCount = getInputProbeCount(options, suiteName);
-    let inputProbeSummary;
-    let switchSummary = null;
-    let traceSummary = null;
-    const measureWindow = async () => {
-      const nextInputProbeSummary = await runFocusedInputProbes(
-        page,
-        focusedTerminalIndex,
-        options.durationMs,
-        inputProbeCount,
-        options.inputIntervalMs,
-      );
-      if (nextInputProbeSummary.elapsedMs < options.durationMs) {
-        await page.waitForTimeout(options.durationMs - nextInputProbeSummary.elapsedMs);
-      }
-      await waitForAnimationFrames(page, 2);
-      inputProbeSummary = nextInputProbeSummary;
-      return nextInputProbeSummary;
-    };
-    const measureHiddenSwitch = async () => {
-      if (options.surface !== 'agents') {
-        throw new Error('Hidden wake suites only support the agents surface');
-      }
-
-      const targetEntry =
-        preparedHiddenSwitchTarget ??
-        (suiteName === 'hidden_switch'
-          ? await waitForHiddenWakePreconditions(page, options, suiteName, terminalEntries)
-          : null);
-      if (!targetEntry?.taskId) {
-        throw new Error('Failed to select a hidden task switch target');
-      }
-
-      const nextSwitchSummary = await measureHiddenTaskSwitch(
-        page,
-        options.experimentConfig,
-        targetEntry.taskId,
-        targetEntry.agentId,
-      );
-      switchSummary = {
-        ...nextSwitchSummary,
-        targetTaskId: targetEntry.taskId,
-      };
-      inputProbeSummary = {
-        attemptedCount: 1,
-        echoAfterDispatch: createEmptyDurationSummary(),
-        elapsedMs: Math.round(nextSwitchSummary.inputReadyMs),
-        inputDispatch: createEmptyDurationSummary(),
-        timeoutCount: nextSwitchSummary.roundTripMs < 0 ? 1 : 0,
-      };
-      await waitForAnimationFrames(page, 2);
-      return nextSwitchSummary;
-    };
-
-    await resetMeasuredDiagnostics(page, client);
-
-    if (shouldCaptureTraceForSuite(options, suiteName)) {
-      const traceResult = await captureBrowserPerformanceTrace(
-        page,
-        path.join(options.outDir, `${suiteName}.trace.json`),
-        isHiddenWakeSuiteName(suiteName) ? measureHiddenSwitch : measureWindow,
-      );
-      traceSummary = traceResult.traceSummary;
-    } else if (isHiddenWakeSuiteName(suiteName)) {
-      await measureHiddenSwitch();
-    } else {
-      await measureWindow();
-    }
-
-    const [backendDiagnosticsSnapshot, terminalLatencySnapshot, uiSnapshot] = await Promise.all([
-      collectBackendRuntimeDiagnostics(client),
-      page.evaluate(() => globalThis.window.__parallelCodeTerminalLatency?.getSnapshot() ?? null),
-      collectUiFluiditySnapshot(page),
-    ]);
-
-    if (!backendDiagnosticsSnapshot || !terminalLatencySnapshot || !uiSnapshot) {
-      throw new Error('UI fluidity diagnostics snapshots were not available');
-    }
-
-    return {
-      backendDiagnosticsSnapshot,
-      initialRoundTripReady,
-      inputProbeSummary,
-      switchSummary,
-      suiteName,
-      terminalLatencySnapshot,
-      traceSummary,
-      uiSnapshot,
-    };
-  } finally {
-    await page?.close().catch(() => {});
-    await context.close().catch(() => {});
-    await launchedServer?.stop().catch(() => {});
-  }
 }
 
 async function runSuite(browser, options, suiteName) {
@@ -3239,52 +3227,56 @@ async function main() {
   await mkdir(options.outDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
 
-  try {
-    const suiteSummaries = [];
-    for (const suiteName of options.profiles) {
-      if (!SUITE_DEFINITIONS[suiteName]) {
-        throw new Error(`Unknown suite profile: ${suiteName}`);
+  await runOperationWithCleanups(
+    'UI fluidity profiler',
+    async () => {
+      const suiteSummaries = [];
+      for (const suiteName of options.profiles) {
+        if (!SUITE_DEFINITIONS[suiteName]) {
+          throw new Error(`Unknown suite profile: ${suiteName}`);
+        }
+
+        const suiteResult = await runSuite(browser, options, suiteName);
+        const suiteSummary = createSuiteSummary(suiteName, suiteResult);
+        suiteSummaries.push(suiteSummary);
+
+        await writeFile(
+          path.join(options.outDir, `${suiteName}.json`),
+          JSON.stringify(suiteResult, null, 2),
+          'utf8',
+        );
+        const roundTripLabel = isHiddenWakeSuiteName(suiteName)
+          ? 'hidden-switch roundtrip'
+          : 'roundtrip';
+        console.log(
+          `[ui-fluidity] ${suiteName} frame-gap p95=${formatMs(suiteSummary.frameGap.p95Ms)} longtask total=${formatMs(suiteSummary.longTasks.totalDurationMs)} ${roundTripLabel} p95=${formatMs(suiteSummary.focusedRoundTrip.p95Ms)}`,
+        );
       }
 
-      const suiteResult = await runSuite(browser, options, suiteName);
-      const suiteSummary = createSuiteSummary(suiteName, suiteResult);
-      suiteSummaries.push(suiteSummary);
-
+      const runSummary = {
+        generatedAt: new Date().toISOString(),
+        options,
+        suites: suiteSummaries,
+      };
       await writeFile(
-        path.join(options.outDir, `${suiteName}.json`),
-        JSON.stringify(suiteResult, null, 2),
+        path.join(options.outDir, 'summary.json'),
+        JSON.stringify(runSummary, null, 2),
         'utf8',
       );
-      const roundTripLabel = isHiddenWakeSuiteName(suiteName)
-        ? 'hidden-switch roundtrip'
-        : 'roundtrip';
-      console.log(
-        `[ui-fluidity] ${suiteName} frame-gap p95=${formatMs(suiteSummary.frameGap.p95Ms)} longtask total=${formatMs(suiteSummary.longTasks.totalDurationMs)} ${roundTripLabel} p95=${formatMs(suiteSummary.focusedRoundTrip.p95Ms)}`,
+      await writeFile(
+        path.join(options.outDir, 'summary.md'),
+        createMarkdownSummary(runSummary),
+        'utf8',
       );
-    }
-
-    const runSummary = {
-      generatedAt: new Date().toISOString(),
-      options,
-      suites: suiteSummaries,
-    };
-    await writeFile(
-      path.join(options.outDir, 'summary.json'),
-      JSON.stringify(runSummary, null, 2),
-      'utf8',
-    );
-    await writeFile(
-      path.join(options.outDir, 'summary.md'),
-      createMarkdownSummary(runSummary),
-      'utf8',
-    );
-    console.log(`[ui-fluidity] wrote artifacts to ${options.outDir}`);
-  } finally {
-    await browser.close().catch(() => {});
-  }
+      console.log(`[ui-fluidity] wrote artifacts to ${options.outDir}`);
+    },
+    [['close profiler browser', () => browser.close()]],
+  );
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import { createInteractiveNodeScenario } from '../browser/harness/scenarios.js';
 import {
   getStandaloneStateDir,
@@ -49,8 +50,17 @@ describe('browser-lab standalone seeded state', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((tempDir) => rm(tempDir, { recursive: true, force: true })),
+    await runIndependentCleanups(
+      'Browser lab state test temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (tempDir, index) =>
+            [
+              `remove browser lab state temporary directory ${index + 1}`,
+              () => rm(tempDir, { recursive: true, force: true }),
+            ] as const,
+        ),
     );
   });
 

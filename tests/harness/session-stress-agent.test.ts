@@ -1,10 +1,14 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
+import {
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+} from '../../scripts/lib/standalone-server-process.mjs';
 import {
   createAgentCliBurstChunks,
   createCodeBurstChunks,
@@ -23,20 +27,24 @@ const SESSION_STRESS_AGENT_ENTRY = path.resolve(
 );
 
 interface SpawnFixtureResult {
-  child: ReturnType<typeof spawn>;
+  child: ReturnType<typeof spawnStandaloneServerProcess>;
   close: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   getStdout: () => string;
 }
 
-const activeChildren = new Set<ReturnType<typeof spawn>>();
+const activeChildren = new Set<ReturnType<typeof spawnStandaloneServerProcess>>();
 
 const textDecoder = new TextDecoder();
 
 function spawnFixture(args: string[]): SpawnFixtureResult {
-  const child = spawn(process.execPath, [SESSION_STRESS_AGENT_ENTRY, ...args], {
-    cwd: PROJECT_ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawnStandaloneServerProcess(
+    process.execPath,
+    [SESSION_STRESS_AGENT_ENTRY, ...args],
+    {
+      cwd: PROJECT_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   activeChildren.add(child);
   let stdout = '';
   let stderr = '';
@@ -68,6 +76,7 @@ function spawnFixture(args: string[]): SpawnFixtureResult {
       });
     },
   );
+  void close.catch(() => {});
 
   return {
     child,
@@ -98,21 +107,19 @@ async function waitForOutputMatch(
 }
 
 afterEach(async () => {
-  await Promise.all(
-    Array.from(activeChildren, (child) => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        activeChildren.delete(child);
-        return Promise.resolve();
-      }
-
-      return new Promise<void>((resolve) => {
-        child.once('close', () => {
-          activeChildren.delete(child);
-          resolve();
-        });
-        child.kill('SIGTERM');
-      });
-    }),
+  await runIndependentCleanups(
+    'Session stress agent test child processes',
+    Array.from(
+      activeChildren,
+      (child, index) =>
+        [
+          `stop session stress agent child ${index + 1}`,
+          async () => {
+            await stopStandaloneServerProcessWithRetry(child);
+            activeChildren.delete(child);
+          },
+        ] as const,
+    ),
   );
 });
 

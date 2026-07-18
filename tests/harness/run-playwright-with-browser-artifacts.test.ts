@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
 import {
   getBrowserBuildArtifactStatus,
   runPlaywrightWithBrowserArtifacts,
@@ -14,8 +15,17 @@ describe('runPlaywrightWithBrowserArtifacts', () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    await runIndependentCleanups(
+      'Playwright artifact runner test temporary directories',
+      tempDirs
+        .splice(0)
+        .map(
+          (directory, index) =>
+            [
+              `remove Playwright artifact runner temporary directory ${index + 1}`,
+              () => rm(directory, { force: true, recursive: true }),
+            ] as const,
+        ),
     );
   });
 

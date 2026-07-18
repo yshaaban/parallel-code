@@ -3,6 +3,8 @@ import path from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
+import { runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
@@ -213,59 +215,69 @@ async function main() {
   assertRequiredOption(options.serverUrl, '--server-url');
   assertRequiredOption(options.authToken, '--auth-token');
 
-  const browser = await chromium.launch(getChromiumLaunchOptions());
-  const context = await browser.newContext({
-    ignoreHTTPSErrors: options.ignoreHttpsErrors,
-  });
-  const page = await context.newPage();
+  let browser;
+  let context;
+  let page;
   const logs = [];
   let sawRemoteWebSocket = false;
 
-  page.on('console', (message) => {
-    logs.push(`console:${message.type()}: ${message.text()}`);
-  });
-  page.on('pageerror', (error) => {
-    logs.push(`pageerror: ${error.stack ?? error.message}`);
-  });
-  page.on('websocket', (socket) => {
-    logs.push(`websocket:open ${socket.url()}`);
-    const url = new URL(socket.url());
-    if (url.pathname === '/ws') {
-      sawRemoteWebSocket = true;
-    }
-  });
+  await runOperationWithCleanups(
+    'Remote bootstrap smoke',
+    async () => {
+      browser = await chromium.launch(getChromiumLaunchOptions());
+      context = await browser.newContext({
+        ignoreHTTPSErrors: options.ignoreHttpsErrors,
+      });
+      page = await context.newPage();
 
-  try {
-    await page.goto(buildRemoteBootstrapUrl(options.serverUrl, options.authToken), {
-      timeout: options.timeoutMs,
-      waitUntil: 'domcontentloaded',
-    });
+      page.on('console', (message) => {
+        logs.push(`console:${message.type()}: ${message.text()}`);
+      });
+      page.on('pageerror', (error) => {
+        logs.push(`pageerror: ${error.stack ?? error.message}`);
+      });
+      page.on('websocket', (socket) => {
+        logs.push(`websocket:open ${socket.url()}`);
+        const url = new URL(socket.url());
+        if (url.pathname === '/ws') {
+          sawRemoteWebSocket = true;
+        }
+      });
 
-    await waitForRemoteShell(page, options.timeoutMs);
-    await waitForRemoteWebSocket(() => sawRemoteWebSocket, page, options.timeoutMs);
+      try {
+        await page.goto(buildRemoteBootstrapUrl(options.serverUrl, options.authToken), {
+          timeout: options.timeoutMs,
+          waitUntil: 'domcontentloaded',
+        });
 
-    writeResult({
-      finalUrl: page.url(),
-      status: 'ok',
-      websocketConnected: sawRemoteWebSocket,
-    });
-  } catch (error) {
-    writeResult(
-      {
-        bodyText: await readPageBodyText(page),
-        error: error instanceof Error ? error.message : String(error),
-        finalUrl: page.url(),
-        logs,
-        status: 'failed',
-        websocketConnected: sawRemoteWebSocket,
-      },
-      'error',
-    );
-    process.exitCode = 1;
-  } finally {
-    await context.close();
-    await browser.close();
-  }
+        await waitForRemoteShell(page, options.timeoutMs);
+        await waitForRemoteWebSocket(() => sawRemoteWebSocket, page, options.timeoutMs);
+
+        writeResult({
+          finalUrl: page.url(),
+          status: 'ok',
+          websocketConnected: sawRemoteWebSocket,
+        });
+      } catch (error) {
+        writeResult(
+          {
+            bodyText: await readPageBodyText(page),
+            error: error instanceof Error ? error.message : String(error),
+            finalUrl: page.url(),
+            logs,
+            status: 'failed',
+            websocketConnected: sawRemoteWebSocket,
+          },
+          'error',
+        );
+        process.exitCode = 1;
+      }
+    },
+    [
+      ['close remote browser context', () => context?.close()],
+      ['close remote browser', () => browser?.close()],
+    ],
+  );
 }
 
 function isCliEntrypoint() {
@@ -277,5 +289,8 @@ function isCliEntrypoint() {
 }
 
 if (isCliEntrypoint()) {
-  void main();
+  void main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

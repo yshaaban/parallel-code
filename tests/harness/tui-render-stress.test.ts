@@ -1,24 +1,29 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { runIndependentCleanups } from '../../scripts/lib/cleanup-outcome.mjs';
+import {
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+} from '../../scripts/lib/standalone-server-process.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const FIXTURE_ENTRY = path.resolve(PROJECT_ROOT, 'scripts', 'fixtures', 'tui-render-stress.mjs');
 
-const activeChildren = new Set<ReturnType<typeof spawn>>();
+const activeChildren = new Set<ReturnType<typeof spawnStandaloneServerProcess>>();
 
 interface SpawnedFixture {
-  child: ReturnType<typeof spawn>;
+  child: ReturnType<typeof spawnStandaloneServerProcess>;
   getStderr: () => string;
   getStdout: () => string;
 }
 
 function spawnFixture(args: string[]): SpawnedFixture {
-  const child = spawn(process.execPath, [FIXTURE_ENTRY, ...args], {
+  const child = spawnStandaloneServerProcess(process.execPath, [FIXTURE_ENTRY, ...args], {
     cwd: PROJECT_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -64,24 +69,20 @@ function waitPatternThroughRestoreCursor(text: string): RegExp {
   return new RegExp(`${escapedText}[\\s\\S]*\\u001b\\[u`, 'u');
 }
 
-async function stopFixture(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    activeChildren.delete(child);
-    return;
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', () => {
-      activeChildren.delete(child);
-      resolve();
-    });
-    child.kill('SIGTERM');
-  });
+async function stopFixture(child: ReturnType<typeof spawnStandaloneServerProcess>): Promise<void> {
+  await stopStandaloneServerProcessWithRetry(child);
+  activeChildren.delete(child);
 }
 
 afterEach(async () => {
-  await Promise.all(Array.from(activeChildren, (child) => stopFixture(child)));
+  await runIndependentCleanups(
+    'TUI render stress test child processes',
+    Array.from(
+      activeChildren,
+      (child, index) =>
+        [`stop TUI render stress child ${index + 1}`, () => stopFixture(child)] as const,
+    ),
+  );
 });
 
 describe('tui-render-stress fixture', () => {

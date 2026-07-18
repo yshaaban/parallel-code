@@ -1,15 +1,23 @@
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createEmptyPhaseMetrics,
   getLocalServerStartupTimeoutMs,
-  parseLocalServerReadyLine,
+  initializeLocalServerTarget,
   summarizeWatcherResults,
-  waitForLocalServerReady,
 } from '../../scripts/session-stress.mjs';
 import { evaluateSessionStressProfile } from '../../scripts/session-stress-profiles.mjs';
+
+class FakeLocalServerProcess extends EventEmitter {
+  exitCode: number | null = null;
+  readonly kill = vi.fn((_signal?: NodeJS.Signals | number) => true);
+  signalCode: NodeJS.Signals | null = null;
+  readonly stderr = new PassThrough();
+  readonly stdout = new PassThrough();
+}
 
 describe('session stress profiles', () => {
   afterEach(() => {
@@ -40,16 +48,6 @@ describe('session stress profiles', () => {
         }),
       ]),
     );
-  });
-
-  it('parses only the explicit local server readiness line', () => {
-    expect(
-      parseLocalServerReadyLine('Parallel Code server listening on http://127.0.0.1:4173'),
-    ).toEqual({
-      port: 4173,
-      url: 'http://127.0.0.1:4173/',
-    });
-    expect(parseLocalServerReadyLine('dependency listening on unix socket')).toBeNull();
   });
 
   it('normalizes invalid local server startup timeouts to the default', () => {
@@ -106,25 +104,97 @@ describe('session stress profiles', () => {
     );
   });
 
-  it('terminates the local server process when startup readiness times out', async () => {
+  it('stops the local server process when startup readiness times out', async () => {
     vi.useFakeTimers();
-    const kill = vi.fn();
-    const serverProcess = Object.assign(new EventEmitter(), {
-      exitCode: null,
-      kill,
-      signalCode: null,
-      stderr: new EventEmitter(),
-      stdout: new EventEmitter(),
+    const serverProcess = new FakeLocalServerProcess();
+    serverProcess.kill.mockImplementationOnce((signal) => {
+      serverProcess.signalCode = signal as NodeJS.Signals;
+      serverProcess.emit('exit', null, serverProcess.signalCode);
+      return true;
     });
 
-    const ready = waitForLocalServerReady(serverProcess, {
-      port: 4111,
-      serverStartupTimeoutMs: 5,
-    });
-    const rejected = expect(ready).rejects.toThrow('Server startup timeout after 5ms');
+    const startup = initializeLocalServerTarget(serverProcess, { serverStartupTimeoutMs: 5 }, 4111);
+    const rejected = expect(startup).rejects.toThrow(
+      'Standalone server did not report readiness within 5ms',
+    );
 
     await vi.advanceTimersByTimeAsync(5);
     await rejected;
-    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    expect(serverProcess.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(serverProcess.listenerCount('error')).toBe(0);
+    expect(serverProcess.listenerCount('exit')).toBe(0);
+  });
+
+  it('stops the local server when client setup fails after readiness', async () => {
+    const serverProcess = new FakeLocalServerProcess();
+    serverProcess.kill.mockReturnValueOnce(false);
+    const createClient = vi.fn(() => {
+      throw new Error('client setup failed');
+    });
+
+    const startup = initializeLocalServerTarget(serverProcess, {}, 4111, { createClient });
+    serverProcess.stdout.emit(
+      'data',
+      Buffer.from('Parallel Code server listening on http://127.0.0.1:4111\n'),
+    );
+
+    await expect(startup).rejects.toThrow('client setup failed');
+    expect(createClient).toHaveBeenCalledWith(
+      expect.objectContaining({ serverUrl: 'http://127.0.0.1:4111' }),
+    );
+    expect(serverProcess.kill).toHaveBeenCalledTimes(1);
+    expect(serverProcess.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(serverProcess.listenerCount('error')).toBe(0);
+    expect(serverProcess.listenerCount('exit')).toBe(0);
+  });
+
+  it('preserves startup and server-stop failures together', async () => {
+    const serverProcess = new FakeLocalServerProcess();
+    const startupError = new Error('readiness failed');
+    const stopError = new Error('server stop failed');
+    const stopProcess = vi.fn().mockRejectedValue(stopError);
+
+    const failure = await initializeLocalServerTarget(serverProcess, {}, 4111, {
+      stopProcess,
+      waitForReady: vi.fn().mockRejectedValue(startupError),
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message).toBe(
+      'Local stress server initialization operation and cleanup failed',
+    );
+    expect((failure as AggregateError).errors).toEqual([
+      startupError,
+      expect.objectContaining({
+        cause: stopError,
+        message: 'stop incomplete local server: server stop failed',
+      }),
+    ]);
+    expect(stopProcess).toHaveBeenCalledOnce();
+  });
+
+  it('handles shutdown errors and detaches post-startup output drains', async () => {
+    const serverProcess = new FakeLocalServerProcess();
+    serverProcess.kill.mockImplementationOnce(() => {
+      serverProcess.emit('error', new Error('signal delivery failed'));
+      return true;
+    });
+
+    const startup = initializeLocalServerTarget(serverProcess, {}, 4111, {
+      createClient: () => ({ baseUrl: 'http://127.0.0.1:4111/' }),
+    });
+    serverProcess.stdout.emit(
+      'data',
+      Buffer.from('Parallel Code server listening on http://127.0.0.1:4111\n'),
+    );
+    const target = await startup;
+
+    expect(serverProcess.stdout.listenerCount('data')).toBe(1);
+    expect(serverProcess.stderr.listenerCount('data')).toBe(1);
+    await expect(target.stop()).resolves.toBeUndefined();
+    expect(serverProcess.stdout.listenerCount('data')).toBe(0);
+    expect(serverProcess.stderr.listenerCount('data')).toBe(0);
+    expect(serverProcess.listenerCount('error')).toBe(0);
+    expect(serverProcess.listenerCount('exit')).toBe(0);
   });
 });

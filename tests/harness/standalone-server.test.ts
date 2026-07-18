@@ -254,25 +254,6 @@ async function fetchRemoteShellWithSession(baseUrl: string, authToken: string): 
   throw new Error('Remote auth bootstrap redirected too many times');
 }
 
-async function waitForCondition(
-  check: () => boolean,
-  timeoutMs: number,
-  failureMessage: string,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) {
-      return;
-    }
-
-    await new Promise((resolve) => {
-      setTimeout(resolve, 25);
-    });
-  }
-
-  throw new Error(failureMessage);
-}
-
 function createPreviewTargetServer(
   options: {
     onUpgrade?: (request: PreviewTargetUpgradeRequest) => void;
@@ -607,6 +588,7 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     expect(parseStandaloneServerReadyOutput(output)).toEqual({
       baseUrl: 'http://127.0.0.1:43123',
       port: 43123,
+      url: 'http://127.0.0.1:43123?token=test-token',
     });
   });
 
@@ -660,9 +642,11 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     const requestId = 'request-shutdown-trace';
     await mkdir(distDir, { recursive: true });
     await mkdir(distRemoteDir, { recursive: true });
-    const exitSpy = vi
-      .spyOn(process, 'exit')
-      .mockImplementation((() => undefined) as typeof process.exit);
+    let diagnosticsAtExit: ReturnType<typeof getBackendRuntimeDiagnosticsSnapshot> | null = null;
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      diagnosticsAtExit = getBackendRuntimeDiagnosticsSnapshot();
+      return undefined;
+    }) as typeof process.exit);
     cleanup.push(async () => {
       exitSpy.mockRestore();
     });
@@ -677,6 +661,7 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     });
     cleanup.push(async () => {
       controller.cleanup();
+      await controller.whenCoordinatorRuntimeStopped();
     });
 
     await waitForBrowserServerIpc(baseUrl, token);
@@ -735,15 +720,12 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     const socketClosed = once(socket, 'close');
     controller.shutdown();
     await socketClosed;
-    await waitForCondition(
-      () => getBackendRuntimeDiagnosticsSnapshot().terminalInputTracing.activeTraceCount === 0,
-      2_000,
-      'Timed out waiting for terminal input trace shutdown finalization',
-    );
+    await controller.whenCoordinatorRuntimeStopped();
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledOnce(), { timeout: 2_000 });
 
-    const diagnostics = getBackendRuntimeDiagnosticsSnapshot();
-    expect(diagnostics.terminalInputTracing.activeTraceCount).toBe(0);
-    expect(diagnostics.terminalInputTracing.completedTraces).toEqual(
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(diagnosticsAtExit?.terminalInputTracing.activeTraceCount).toBe(0);
+    expect(diagnosticsAtExit?.terminalInputTracing.completedTraces).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           clientId,
@@ -754,6 +736,5 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
         }),
       ]),
     );
-    expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 import { Buffer } from 'buffer';
 import fs from 'fs/promises';
 import { createServer } from 'net';
@@ -9,6 +9,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 import { createBrowserServerClient } from './browser-server-client.mjs';
+import { createLabeledCleanupError, runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
+import {
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+  waitForStandaloneServerReady,
+} from './lib/standalone-server-process.mjs';
 import {
   evaluateSessionStressProfile,
   getSessionStressProfile,
@@ -689,75 +695,9 @@ async function reservePort() {
   });
 }
 
-export function parseLocalServerReadyLine(text) {
-  const match = /\bParallel Code server listening on\s+(https?:\/\/[^\s]+)/u.exec(text);
-  if (!match) {
-    return null;
-  }
-
-  try {
-    const url = new globalThis.URL(match[1]);
-    const port = getUrlPort(url);
-    if (!Number.isSafeInteger(port) || port <= 0) {
-      return null;
-    }
-
-    return {
-      port,
-      url: url.toString(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function getUrlPort(url) {
-  if (url.port) {
-    return Number(url.port);
-  }
-
-  if (url.protocol === 'https:') {
-    return 443;
-  }
-
-  return 80;
-}
-
 export function getLocalServerStartupTimeoutMs(options) {
   const timeoutMs = Number(options.serverStartupTimeoutMs);
   return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
-}
-
-function getLineBreakLength(text, newlineIndex) {
-  return text[newlineIndex] === '\r' ? 2 : 1;
-}
-
-function appendTextTail(previous, next, maxLength = 2_000) {
-  const combined = `${previous}${next}`;
-  return combined.length > maxLength ? combined.slice(-maxLength) : combined;
-}
-
-function createStartupTimeoutError(timeoutMs, port, stdoutTail, stderrTail) {
-  const details = [
-    stdoutTail ? `stdout=${JSON.stringify(stdoutTail)}` : null,
-    stderrTail ? `stderr=${JSON.stringify(stderrTail)}` : null,
-  ].filter(Boolean);
-  const detailsText = details.length > 0 ? ` (${details.join(' ')})` : '';
-  return new Error(
-    `Server startup timeout after ${timeoutMs}ms waiting for port ${port}${detailsText}`,
-  );
-}
-
-function terminateLocalServerProcess(serverProcess) {
-  if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
-    return;
-  }
-
-  try {
-    serverProcess.kill('SIGTERM');
-  } catch {
-    // The process may have exited between the status check and signal delivery.
-  }
 }
 
 function writeStressServerStderr(text) {
@@ -769,103 +709,40 @@ function writeStressServerStderr(text) {
 }
 
 function drainLocalServerOutputAfterStartup(serverProcess) {
-  serverProcess.stdout.on('data', () => {});
-  serverProcess.stderr.on('data', (chunk) => {
+  const handleStdout = () => {};
+  const handleStderr = (chunk) => {
     writeStressServerStderr(chunk.toString('utf8'));
-  });
+  };
+
+  serverProcess.stdout.on('data', handleStdout);
+  serverProcess.stderr.on('data', handleStderr);
+
+  return () => {
+    serverProcess.stdout.off('data', handleStdout);
+    serverProcess.stderr.off('data', handleStderr);
+  };
 }
 
 export async function waitForLocalServerReady(serverProcess, options) {
   const timeoutMs = getLocalServerStartupTimeoutMs(options);
   const expectedPort = options.port;
-
-  await new Promise((resolve, reject) => {
-    let stdoutBuffer = '';
-    let stdoutTail = '';
-    let stderrTail = '';
-    let settled = false;
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      terminateLocalServerProcess(serverProcess);
-      reject(createStartupTimeoutError(timeoutMs, expectedPort, stdoutTail, stderrTail));
-    }, timeoutMs);
-
-    function cleanup() {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      globalThis.clearTimeout(timeout);
-      serverProcess.stdout.off('data', onStdout);
-      serverProcess.stderr.off('data', onStderr);
-      serverProcess.off('exit', onExit);
-      serverProcess.off('error', onError);
-    }
-
-    function resolveReady() {
-      cleanup();
-      resolve();
-    }
-
-    function rejectStartup(error) {
-      cleanup();
-      reject(error);
-    }
-
-    function inspectReadyText(text) {
-      const ready = parseLocalServerReadyLine(text);
-      if (ready?.port === expectedPort) {
-        resolveReady();
-      }
-    }
-
-    function onStdout(chunk) {
-      const text = chunk.toString('utf8');
-      stdoutTail = appendTextTail(stdoutTail, text);
-      stdoutBuffer += text;
-
-      let newlineIndex = stdoutBuffer.search(/\r?\n/u);
-      while (newlineIndex >= 0) {
-        const line = stdoutBuffer.slice(0, newlineIndex);
-        stdoutBuffer = stdoutBuffer.slice(
-          newlineIndex + getLineBreakLength(stdoutBuffer, newlineIndex),
-        );
-        inspectReadyText(line);
-        if (settled) {
-          return;
-        }
-        newlineIndex = stdoutBuffer.search(/\r?\n/u);
-      }
-
-      inspectReadyText(stdoutBuffer);
-    }
-
-    function onStderr(chunk) {
-      const text = chunk.toString('utf8');
-      stderrTail = appendTextTail(stderrTail, text);
-      writeStressServerStderr(text);
-    }
-
-    function onExit(code) {
-      rejectStartup(new Error(`Server exited early with code ${code}`));
-    }
-
-    function onError(error) {
-      rejectStartup(error);
-    }
-
-    serverProcess.stdout.on('data', onStdout);
-    serverProcess.stderr.on('data', onStderr);
-    serverProcess.on('exit', onExit);
-    serverProcess.on('error', onError);
+  const ready = await waitForStandaloneServerReady(serverProcess, {
+    onStderr: writeStressServerStderr,
+    timeoutMs,
   });
+
+  if (ready.port !== expectedPort) {
+    throw new Error(
+      `Local server reported readiness on port ${ready.port}; expected reserved port ${expectedPort}`,
+    );
+  }
+
+  return ready;
 }
 
 async function startLocalServer(options) {
   if (!options.skipBuild) {
-    execSync('npx tsc -p server/tsconfig.json', {
+    execSync('npm run build:server', {
       cwd: ROOT_DIR,
       stdio: 'pipe',
     });
@@ -874,41 +751,46 @@ async function startLocalServer(options) {
   const port = await reservePort();
   const env = createLocalServerEnv(options, port);
 
-  const serverProcess = spawn('node', [SERVER_ENTRY], {
+  const serverProcess = spawnStandaloneServerProcess('node', [SERVER_ENTRY], {
     cwd: ROOT_DIR,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  await waitForLocalServerReady(serverProcess, { ...options, port });
-  drainLocalServerOutputAfterStartup(serverProcess);
+  return initializeLocalServerTarget(serverProcess, options, port);
+}
 
-  const client = createBrowserServerClient({
-    authToken: DEFAULT_TOKEN,
-    serverUrl: `http://127.0.0.1:${port}`,
-  });
+export async function initializeLocalServerTarget(serverProcess, options, port, dependencies = {}) {
+  const createClient = dependencies.createClient ?? createBrowserServerClient;
+  const stopProcess = dependencies.stopProcess ?? stopStandaloneServerProcessWithRetry;
+  const waitForReady = dependencies.waitForReady ?? waitForLocalServerReady;
 
-  return createServerTarget({
-    baseUrl: client.baseUrl,
-    client,
-    mode: 'local',
-    port,
-    process: serverProcess,
-    stop: async () => {
-      if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
-        return;
-      }
+  try {
+    const ready = await waitForReady(serverProcess, { ...options, port });
+    const client = createClient({
+      authToken: DEFAULT_TOKEN,
+      serverUrl: ready.baseUrl,
+    });
+    const stopDrainingOutput = drainLocalServerOutputAfterStartup(serverProcess);
 
-      await new Promise((resolve) => {
-        const timeout = setTimeout(resolve, 5_000);
-        serverProcess.once('exit', () => {
-          globalThis.clearTimeout(timeout);
-          resolve();
-        });
-        terminateLocalServerProcess(serverProcess);
-      });
-    },
-  });
+    return createServerTarget({
+      baseUrl: client.baseUrl,
+      client,
+      mode: 'local',
+      port,
+      process: serverProcess,
+      stop: () =>
+        runOperationWithCleanups('Local stress server stop', () => stopProcess(serverProcess), [
+          ['stop draining local server output', () => stopDrainingOutput()],
+        ]),
+    });
+  } catch (error) {
+    return runOperationWithCleanups(
+      'Local stress server initialization',
+      async () => Promise.reject(error),
+      [['stop incomplete local server', () => stopProcess(serverProcess)]],
+    );
+  }
 }
 
 function createRemoteServerTarget(options) {
@@ -1006,43 +888,183 @@ function recordClientLastSeq(clientState, message) {
   }
 }
 
-async function connectClient(serverTarget, clientState) {
-  const ws = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(serverTarget.client.createWebSocketUrl());
-    const timeout = setTimeout(() => {
+function closeFailedClientSocket(socket) {
+  const ignoreError = () => {};
+  const removeIgnoredError = () => {
+    socket.off('error', ignoreError);
+  };
+  socket.on('error', ignoreError);
+  socket.once('close', removeIgnoredError);
+
+  const cleanupErrors = [];
+  let closeRequested = socket.readyState === WebSocket.CLOSED;
+  // This socket has not completed authenticated acquisition, so there is no useful close
+  // handshake to preserve. Force every non-closed state down when ws exposes `terminate`;
+  // limiting this to CONNECTING leaves an OPEN or stuck-CLOSING pre-auth socket unowned as soon
+  // as the connection promise rejects.
+  if (socket.readyState !== WebSocket.CLOSED && typeof socket.terminate === 'function') {
+    try {
+      socket.terminate();
+      closeRequested = true;
+    } catch (error) {
+      cleanupErrors.push(createLabeledCleanupError('terminate failed stress client socket', error));
+    }
+  }
+  if (!closeRequested && socket.readyState !== WebSocket.CLOSED) {
+    try {
       socket.close();
-      reject(new Error(`Timed out connecting client ${clientState.label}`));
-    }, 10_000);
+      closeRequested = true;
+    } catch (error) {
+      cleanupErrors.push(createLabeledCleanupError('close failed stress client socket', error));
+    }
+  }
 
-    socket.on('open', () => {
-      socket.send(
-        JSON.stringify({
-          type: 'auth',
-          token: serverTarget.client.authToken,
-          clientId: clientState.clientId,
-          lastSeq: clientState.lastSeq,
-        }),
-      );
-    });
+  if (!closeRequested || socket.readyState === WebSocket.CLOSED) {
+    removeIgnoredError();
+    socket.off('close', removeIgnoredError);
+  }
 
-    socket.on('message', (data, isBinary) => {
-      const message = parseServerMessage(data, isBinary);
-      recordClientLastSeq(clientState, message);
-      if (message?.type !== 'agents' || !Array.isArray(message.list)) {
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, 'Failed to close stress client socket');
+  }
+}
+
+export function connectSessionStressClient(serverTarget, clientState, dependencies = {}) {
+  const createSocket = dependencies.createSocket ?? ((url) => new WebSocket(url));
+  const timeoutMs = dependencies.timeoutMs ?? 10_000;
+
+  return new Promise((resolve, reject) => {
+    const socket = createSocket(serverTarget.client.createWebSocketUrl());
+    let settled = false;
+
+    const removeStartupListeners = () => {
+      socket.off('open', handleOpen);
+      socket.off('message', handleMessage);
+      socket.off('error', handleError);
+      socket.off('close', handleClose);
+    };
+
+    const fail = (error) => {
+      if (settled) {
         return;
       }
 
+      settled = true;
       globalThis.clearTimeout(timeout);
-      resolve(socket);
-    });
+      removeStartupListeners();
+      try {
+        closeFailedClientSocket(socket);
+        reject(error);
+      } catch (cleanupError) {
+        const cleanupErrors =
+          cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+        reject(
+          new AggregateError(
+            [error, ...cleanupErrors],
+            `Stress client ${clientState.label} connection operation and cleanup failed`,
+          ),
+        );
+      }
+    };
 
-    socket.on('error', (error) => {
-      globalThis.clearTimeout(timeout);
-      reject(error);
-    });
+    const timeout = setTimeout(() => {
+      fail(new Error(`Timed out connecting client ${clientState.label}`));
+    }, timeoutMs);
+
+    function handleOpen() {
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'auth',
+            token: serverTarget.client.authToken,
+            clientId: clientState.clientId,
+            lastSeq: clientState.lastSeq,
+          }),
+        );
+      } catch (error) {
+        fail(error);
+      }
+    }
+
+    function handleMessage(data, isBinary) {
+      try {
+        const message = parseServerMessage(data, isBinary);
+        recordClientLastSeq(clientState, message);
+        if (message?.type !== 'agents' || !Array.isArray(message.list) || settled) {
+          return;
+        }
+
+        settled = true;
+        globalThis.clearTimeout(timeout);
+        socket.off('open', handleOpen);
+        socket.off('close', handleClose);
+        // Keep message sequencing and a no-op post-connect error observer for the live client.
+        resolve(socket);
+      } catch (error) {
+        fail(error);
+      }
+    }
+
+    function handleError(error) {
+      fail(error);
+    }
+
+    function handleClose() {
+      fail(new Error(`Client ${clientState.label} closed before authentication completed`));
+    }
+
+    socket.on('open', handleOpen);
+    socket.on('message', handleMessage);
+    socket.on('error', handleError);
+    socket.on('close', handleClose);
   });
+}
 
-  return ws;
+export function createSessionStressClientOwner() {
+  const clients = new Set();
+
+  return {
+    getClients: () => [...clients],
+    own(client) {
+      clients.add(client);
+      return client;
+    },
+  };
+}
+
+async function settleClientSetups(setups, failureMessage) {
+  const results = await Promise.allSettled(setups);
+  throwCleanupFailures(failureMessage, results);
+  return results.map((result) => result.value);
+}
+
+export async function connectOwnedSessionStressClient(
+  serverTarget,
+  clientState,
+  clientOwner,
+  dependencies = {},
+) {
+  const client = dependencies.connectClient
+    ? await dependencies.connectClient(serverTarget, clientState)
+    : await connectSessionStressClient(serverTarget, clientState, dependencies);
+  return clientOwner.own(client);
+}
+
+export function connectOwnedSessionStressClients(
+  serverTarget,
+  clientStates,
+  clientOwner,
+  dependencies = {},
+) {
+  return settleClientSetups(
+    clientStates.map((clientState) =>
+      connectOwnedSessionStressClient(serverTarget, clientState, clientOwner, dependencies),
+    ),
+    'Failed to connect one or more stress clients',
+  );
 }
 
 async function invokeIpc(serverTarget, channel, body) {
@@ -1601,13 +1623,26 @@ async function runMeasuredPhase(serverTarget, clients, markersByChannel, timeout
   return createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes);
 }
 
-async function connectAndBindClient(serverTarget, clientState, channelIds) {
-  const connectStartedAt = performance.now();
-  const client = await connectClient(serverTarget, clientState);
-  const connectMs = performance.now() - connectStartedAt;
-  const bindStartedAt = performance.now();
-  const resetChannelIds = await bindClientToChannels(client, channelIds);
-  const bindMs = performance.now() - bindStartedAt;
+export async function connectAndBindOwnedSessionStressClient(
+  serverTarget,
+  clientState,
+  channelIds,
+  clientOwner,
+  dependencies = {},
+) {
+  const now = dependencies.now ?? (() => performance.now());
+  const bind = dependencies.bindClientToChannels ?? bindClientToChannels;
+  const connectStartedAt = now();
+  const client = await connectOwnedSessionStressClient(
+    serverTarget,
+    clientState,
+    clientOwner,
+    dependencies,
+  );
+  const connectMs = now() - connectStartedAt;
+  const bindStartedAt = now();
+  const resetChannelIds = await bind(client, channelIds);
+  const bindMs = now() - bindStartedAt;
 
   return {
     bindMs,
@@ -1616,6 +1651,35 @@ async function connectAndBindClient(serverTarget, clientState, channelIds) {
     resetChannelIds,
     totalMs: connectMs + bindMs,
   };
+}
+
+export function connectAndBindOwnedSessionStressClients(
+  serverTarget,
+  clientStates,
+  channelIds,
+  clientOwner,
+  dependencies = {},
+) {
+  return settleClientSetups(
+    clientStates.map((clientState) =>
+      connectAndBindOwnedSessionStressClient(
+        serverTarget,
+        clientState,
+        channelIds,
+        clientOwner,
+        dependencies,
+      ),
+    ),
+    'Failed to connect or bind one or more stress clients',
+  );
+}
+
+export function bindSessionStressClients(clients, channelIds, dependencies = {}) {
+  const bind = dependencies.bindClientToChannels ?? bindClientToChannels;
+  return settleClientSetups(
+    clients.map((client) => Promise.resolve().then(() => bind(client, channelIds))),
+    'Failed to bind one or more stress clients',
+  );
 }
 
 async function getScrollbackBatchResult(serverTarget, agentIds) {
@@ -1721,6 +1785,7 @@ function getWorkloadPhaseTimeoutMs(serverTarget, agentCount, clientCount, style,
 async function runReconnectOutputBurst(
   serverTarget,
   activeClients,
+  clientOwner,
   reconnectingState,
   staleClient,
   agents,
@@ -1733,9 +1798,13 @@ async function runReconnectOutputBurst(
 
   const reconnectStartedAt = performance.now();
   staleClient?.close();
-  const replacement = await connectClient(serverTarget, reconnectingState);
+  const { client: replacement, resetChannelIds } = await connectAndBindOwnedSessionStressClient(
+    serverTarget,
+    reconnectingState,
+    channelIds,
+    clientOwner,
+  );
   activeClients.push(replacement);
-  const resetChannelIds = await bindClientToChannels(replacement, channelIds);
   const replayAgentIds = getReplayAgentIds(agents, resetChannelIds);
 
   const restorePromises = [getBrowserReconnectSnapshot(serverTarget)];
@@ -2058,7 +2127,7 @@ async function runMixedPhase(serverTarget, clients, agents, phaseId, options) {
 async function runLateJoinScrollbackPhase(
   serverTarget,
   existingClients,
-  allClients,
+  clientOwner,
   agents,
   warmScrollbackLineCount,
   lateJoinerCount,
@@ -2104,13 +2173,13 @@ async function runLateJoinScrollbackPhase(
     createClientState(`late-join-${index}`),
   );
   const channelIds = agents.map((agent) => agent.channelId);
-  const connectAndBindResults = await Promise.all(
-    lateJoinStates.map((clientState) =>
-      connectAndBindClient(serverTarget, clientState, channelIds),
-    ),
+  const connectAndBindResults = await connectAndBindOwnedSessionStressClients(
+    serverTarget,
+    lateJoinStates,
+    channelIds,
+    clientOwner,
   );
   const lateJoinClients = connectAndBindResults.map((result) => result.client);
-  allClients.push(...lateJoinClients);
   const lateJoinReplayAgentIdsByClient = connectAndBindResults.map((result) =>
     getReplayAgentIds(agents, result.resetChannelIds),
   );
@@ -2569,71 +2638,258 @@ function formatPhaseTimingSummary(summary) {
   return parts.join(' ');
 }
 
+function throwCleanupFailures(message, results) {
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, message);
+  }
+}
+
+export async function runSessionStressWithCleanup(operation, resources, dependencies = {}) {
+  const killAgentRequest = dependencies.killAgent ?? killAgent;
+  return runOperationWithCleanups('Session stress', operation, [
+    [
+      'stop stress agents',
+      async () => {
+        const results = await Promise.allSettled(
+          resources
+            .getAgents()
+            .map((agent) => killAgentRequest(resources.serverTarget, agent.agentId)),
+        );
+        throwCleanupFailures('Failed to stop one or more stress agents', results);
+      },
+    ],
+    [
+      'close stress clients',
+      async () => {
+        const results = resources.getClients().map((client) => {
+          try {
+            client.close();
+            return { status: 'fulfilled', value: undefined };
+          } catch (reason) {
+            return { reason, status: 'rejected' };
+          }
+        });
+        throwCleanupFailures('Failed to close one or more stress clients', results);
+      },
+    ],
+    ['stop stress server', () => resources.serverTarget.stop()],
+  ]);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const serverTarget = await startServerTarget(options);
-  const taskId = createTaskId();
-  const agents = Array.from({ length: options.terminals }, (_, index) => ({
-    agentId: `stress-agent-${index}-${Date.now()}`,
-    channelId: createChannelId(),
-  }));
-  const summary = {
-    config: options,
-    phases: {},
-    port: serverTarget.port,
-    taskId,
-    target: serverTarget.baseUrl,
-  };
+  const clientOwner = createSessionStressClientOwner();
+  let agents = [];
 
-  const allClients = [];
+  await runSessionStressWithCleanup(
+    async () => {
+      const taskId = createTaskId();
+      agents = Array.from({ length: options.terminals }, (_, index) => ({
+        agentId: `stress-agent-${index}-${Date.now()}`,
+        channelId: createChannelId(),
+      }));
+      const summary = {
+        config: options,
+        phases: {},
+        port: serverTarget.port,
+        taskId,
+        target: serverTarget.baseUrl,
+      };
 
-  try {
-    const authStartedAt = performance.now();
-    const clientStates = Array.from({ length: options.users }, (_, index) =>
-      createClientState(`user-${index}`),
-    );
-    const initialClients = await Promise.all(
-      clientStates.map((clientState) => connectClient(serverTarget, clientState)),
-    );
-    allClients.push(...initialClients);
-    summary.phases.authMs = performance.now() - authStartedAt;
+      const authStartedAt = performance.now();
+      const clientStates = Array.from({ length: options.users }, (_, index) =>
+        createClientState(`user-${index}`),
+      );
+      const initialClients = await connectOwnedSessionStressClients(
+        serverTarget,
+        clientStates,
+        clientOwner,
+      );
+      summary.phases.authMs = performance.now() - authStartedAt;
 
-    const channelIds = agents.map((agent) => agent.channelId);
-    const primaryClient = initialClients[0];
-    const spawnStartedAt = performance.now();
-    if (options.startupSpawnMode === 'batch-ensure') {
-      if (!options.startupOnly) {
-        throw new Error('batch-ensure startup spawn mode is only supported with startupOnly');
+      const channelIds = agents.map((agent) => agent.channelId);
+      const primaryClient = initialClients[0];
+      const spawnStartedAt = performance.now();
+      if (options.startupSpawnMode === 'batch-ensure') {
+        if (!options.startupOnly) {
+          throw new Error('batch-ensure startup spawn mode is only supported with startupOnly');
+        }
+        await ensureAgentSessionsBatch(serverTarget, taskId, agents, 'dispatch-storm');
+        await waitForScrollbackMarkers(serverTarget, agents);
+      } else {
+        await bindClientToChannels(primaryClient, channelIds);
+        for (const agent of agents) {
+          await spawnAgent(serverTarget, taskId, agent);
+          await waitForChannelMarker(
+            primaryClient,
+            agent.channelId,
+            createReadyMarker(agent.agentId),
+          );
+        }
       }
-      await ensureAgentSessionsBatch(serverTarget, taskId, agents, 'dispatch-storm');
-      await waitForScrollbackMarkers(serverTarget, agents);
-    } else {
-      await bindClientToChannels(primaryClient, channelIds);
-      for (const agent of agents) {
-        await spawnAgent(serverTarget, taskId, agent);
-        await waitForChannelMarker(
-          primaryClient,
-          agent.channelId,
-          createReadyMarker(agent.agentId),
+      summary.phases.spawnMs = performance.now() - spawnStartedAt;
+
+      if (options.startupOnly) {
+        summary.phases.initialBindMs = 0;
+        summary.phases.startup = {
+          diagnostics: await getBackendDiagnostics(serverTarget),
+          wallClockMs: summary.phases.spawnMs,
+        };
+        summary.analysis = {
+          diagnosticsRollup: createDiagnosticsRollup(summary),
+          topSuspects: [],
+        };
+        summary.meta = createRunMetadata(options);
+        summary.evaluation = options.profile
+          ? evaluateSessionStressProfile(options.profile, summary)
+          : null;
+
+        let artifactPath = null;
+        if (options.outputJsonPath) {
+          artifactPath = await writeSummaryArtifact(options.outputJsonPath, summary);
+        }
+
+        if (!options.quiet) {
+          console.log(JSON.stringify(summary, null, 2));
+        }
+
+        const budgetSummary = formatBudgetSummary(summary.evaluation);
+        const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
+        console.log(
+          `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=spawn=${formatPhaseDuration(summary.phases.spawnMs)}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
         );
+        if (options.failOnBudget && summary.evaluation && !summary.evaluation.pass) {
+          throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
+        }
+        return;
       }
-    }
-    summary.phases.spawnMs = performance.now() - spawnStartedAt;
 
-    if (options.startupOnly) {
-      summary.phases.initialBindMs = 0;
-      summary.phases.startup = {
-        diagnostics: await getBackendDiagnostics(serverTarget),
-        wallClockMs: summary.phases.spawnMs,
-      };
-      summary.analysis = {
-        diagnosticsRollup: createDiagnosticsRollup(summary),
-        topSuspects: [],
-      };
-      summary.meta = createRunMetadata(options);
-      summary.evaluation = options.profile
+      const bindStartedAt = performance.now();
+      await bindSessionStressClients(initialClients.slice(1), channelIds);
+      summary.phases.initialBindMs = performance.now() - bindStartedAt;
+
+      summary.phases.output = await runOutputPhase(
+        serverTarget,
+        initialClients,
+        agents,
+        'output-1',
+        options,
+      );
+
+      summary.phases.input = await runInputPhase(
+        serverTarget,
+        initialClients,
+        agents,
+        'input-1',
+        options.inputChunks,
+        options.inputChunkBytes,
+      );
+
+      summary.phases.mixed = await runMixedPhase(
+        serverTarget,
+        initialClients,
+        agents,
+        'mixed-1',
+        options,
+      );
+
+      const shouldRunStandaloneVerbosePhases =
+        options.outputWorkloadStyle === DEFAULT_WORKLOAD_STYLE &&
+        options.mixedWorkloadStyle === DEFAULT_WORKLOAD_STYLE;
+
+      summary.phases.bulkText = shouldRunStandaloneVerbosePhases
+        ? await runBulkTextPhase(
+            serverTarget,
+            initialClients,
+            agents,
+            'bulk-text-1',
+            options.bulkTextLines,
+            options.bulkTextLineBytes,
+          )
+        : await createSkippedPhaseSummary(serverTarget);
+
+      summary.phases.redraw = shouldRunStandaloneVerbosePhases
+        ? await runRedrawPhase(
+            serverTarget,
+            initialClients,
+            agents,
+            'redraw-1',
+            options.redrawFrames,
+            options.redrawFrameDelayMs,
+            options.redrawChunkDelayMs,
+            options.redrawFooterTopRow,
+          )
+        : await createSkippedPhaseSummary(serverTarget);
+
+      const reconnectOutputBursts = [];
+      let activeClients = [...initialClients];
+      let activeClientStates = [...clientStates];
+      for (let reconnectIndex = 0; reconnectIndex < options.reconnects; reconnectIndex += 1) {
+        const staleClient = activeClients.pop();
+        const reconnectingState = activeClientStates.pop();
+        if (!reconnectingState) {
+          throw new Error('Missing reconnect client state');
+        }
+        activeClientStates.push(reconnectingState);
+        const reconnectBurst = await runReconnectOutputBurst(
+          serverTarget,
+          activeClients,
+          clientOwner,
+          reconnectingState,
+          staleClient,
+          agents,
+          channelIds,
+          `reconnect-${reconnectIndex + 1}`,
+          options.lines,
+          options.outputLineBytes,
+        );
+
+        reconnectOutputBursts.push(reconnectBurst);
+      }
+      summary.phases.reconnectOutputBursts = reconnectOutputBursts;
+
+      summary.phases.warmScrollback = await runOutputPhase(
+        serverTarget,
+        activeClients,
+        agents,
+        'warm-scrollback',
+        {
+          ...options,
+          bulkTextLines: 0,
+          lines: options.warmScrollbackLines,
+          outputLineBytes: options.warmScrollbackLineBytes,
+          outputWorkloadStyle: DEFAULT_WORKLOAD_STYLE,
+          redrawFrames: 0,
+        },
+      );
+
+      summary.phases.lateJoin = await runLateJoinScrollbackPhase(
+        serverTarget,
+        activeClients,
+        clientOwner,
+        agents,
+        options.warmScrollbackLines,
+        options.lateJoiners,
+        options.lateJoinLiveLines,
+        options.lateJoinLiveLineBytes,
+      );
+
+      const diagnosticsRollup = createDiagnosticsRollup(summary);
+      const topSuspects = createTopSuspects(summary, diagnosticsRollup);
+      const evaluation = options.profile
         ? evaluateSessionStressProfile(options.profile, summary)
         : null;
+
+      summary.analysis = {
+        diagnosticsRollup,
+        topSuspects,
+      };
+      summary.meta = createRunMetadata(options);
+      summary.evaluation = evaluation;
 
       let artifactPath = null;
       if (options.outputJsonPath) {
@@ -2645,180 +2901,28 @@ async function main() {
       }
 
       const budgetSummary = formatBudgetSummary(summary.evaluation);
+      const phaseSummary = formatPhaseTimingSummary(summary);
       const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
       console.log(
-        `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=spawn=${formatPhaseDuration(summary.phases.spawnMs)}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
+        `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=${phaseSummary}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
       );
-      if (options.failOnBudget && summary.evaluation && !summary.evaluation.pass) {
+
+      for (const suspect of topSuspects.slice(0, 3)) {
+        console.log(
+          `[session-stress] suspect area=${suspect.area} metric=${suspect.metric} value=${suspect.value} note=${suspect.note}`,
+        );
+      }
+
+      if (options.failOnBudget && evaluation && !evaluation.pass) {
         throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
       }
-      return;
-    }
-
-    const bindStartedAt = performance.now();
-    await Promise.all(
-      initialClients.slice(1).map((client) => bindClientToChannels(client, channelIds)),
-    );
-    summary.phases.initialBindMs = performance.now() - bindStartedAt;
-
-    summary.phases.output = await runOutputPhase(
+    },
+    {
+      getAgents: () => agents,
+      getClients: () => clientOwner.getClients(),
       serverTarget,
-      initialClients,
-      agents,
-      'output-1',
-      options,
-    );
-
-    summary.phases.input = await runInputPhase(
-      serverTarget,
-      initialClients,
-      agents,
-      'input-1',
-      options.inputChunks,
-      options.inputChunkBytes,
-    );
-
-    summary.phases.mixed = await runMixedPhase(
-      serverTarget,
-      initialClients,
-      agents,
-      'mixed-1',
-      options,
-    );
-
-    const shouldRunStandaloneVerbosePhases =
-      options.outputWorkloadStyle === DEFAULT_WORKLOAD_STYLE &&
-      options.mixedWorkloadStyle === DEFAULT_WORKLOAD_STYLE;
-
-    summary.phases.bulkText = shouldRunStandaloneVerbosePhases
-      ? await runBulkTextPhase(
-          serverTarget,
-          initialClients,
-          agents,
-          'bulk-text-1',
-          options.bulkTextLines,
-          options.bulkTextLineBytes,
-        )
-      : await createSkippedPhaseSummary(serverTarget);
-
-    summary.phases.redraw = shouldRunStandaloneVerbosePhases
-      ? await runRedrawPhase(
-          serverTarget,
-          initialClients,
-          agents,
-          'redraw-1',
-          options.redrawFrames,
-          options.redrawFrameDelayMs,
-          options.redrawChunkDelayMs,
-          options.redrawFooterTopRow,
-        )
-      : await createSkippedPhaseSummary(serverTarget);
-
-    const reconnectOutputBursts = [];
-    let activeClients = [...initialClients];
-    let activeClientStates = [...clientStates];
-    for (let reconnectIndex = 0; reconnectIndex < options.reconnects; reconnectIndex += 1) {
-      const staleClient = activeClients.pop();
-      const reconnectingState = activeClientStates.pop();
-      if (!reconnectingState) {
-        throw new Error('Missing reconnect client state');
-      }
-      activeClientStates.push(reconnectingState);
-      const reconnectBurst = await runReconnectOutputBurst(
-        serverTarget,
-        activeClients,
-        reconnectingState,
-        staleClient,
-        agents,
-        channelIds,
-        `reconnect-${reconnectIndex + 1}`,
-        options.lines,
-        options.outputLineBytes,
-      );
-      const replacementClient = activeClients[activeClients.length - 1];
-      if (replacementClient) {
-        allClients.push(replacementClient);
-      }
-
-      reconnectOutputBursts.push(reconnectBurst);
-    }
-    summary.phases.reconnectOutputBursts = reconnectOutputBursts;
-
-    summary.phases.warmScrollback = await runOutputPhase(
-      serverTarget,
-      activeClients,
-      agents,
-      'warm-scrollback',
-      {
-        ...options,
-        bulkTextLines: 0,
-        lines: options.warmScrollbackLines,
-        outputLineBytes: options.warmScrollbackLineBytes,
-        outputWorkloadStyle: DEFAULT_WORKLOAD_STYLE,
-        redrawFrames: 0,
-      },
-    );
-
-    summary.phases.lateJoin = await runLateJoinScrollbackPhase(
-      serverTarget,
-      activeClients,
-      allClients,
-      agents,
-      options.warmScrollbackLines,
-      options.lateJoiners,
-      options.lateJoinLiveLines,
-      options.lateJoinLiveLineBytes,
-    );
-
-    const diagnosticsRollup = createDiagnosticsRollup(summary);
-    const topSuspects = createTopSuspects(summary, diagnosticsRollup);
-    const evaluation = options.profile
-      ? evaluateSessionStressProfile(options.profile, summary)
-      : null;
-
-    summary.analysis = {
-      diagnosticsRollup,
-      topSuspects,
-    };
-    summary.meta = createRunMetadata(options);
-    summary.evaluation = evaluation;
-
-    let artifactPath = null;
-    if (options.outputJsonPath) {
-      artifactPath = await writeSummaryArtifact(options.outputJsonPath, summary);
-    }
-
-    if (!options.quiet) {
-      console.log(JSON.stringify(summary, null, 2));
-    }
-
-    const budgetSummary = formatBudgetSummary(summary.evaluation);
-    const phaseSummary = formatPhaseTimingSummary(summary);
-    const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
-    console.log(
-      `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=${phaseSummary}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
-    );
-
-    for (const suspect of topSuspects.slice(0, 3)) {
-      console.log(
-        `[session-stress] suspect area=${suspect.area} metric=${suspect.metric} value=${suspect.value} note=${suspect.note}`,
-      );
-    }
-
-    if (options.failOnBudget && evaluation && !evaluation.pass) {
-      throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
-    }
-  } finally {
-    await Promise.allSettled(agents.map((agent) => killAgent(serverTarget, agent.agentId)));
-    for (const client of allClients) {
-      try {
-        client.close();
-      } catch {
-        // Ignore best-effort close failures during teardown.
-      }
-    }
-    await serverTarget.stop();
-  }
+    },
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {

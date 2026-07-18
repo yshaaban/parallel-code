@@ -1,6 +1,5 @@
-import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +9,14 @@ import { fileURLToPath, URL } from 'node:url';
 import { chromium } from '@playwright/test';
 
 import { createBrowserServerClient } from './browser-server-client.mjs';
+import { runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
+import {
+  cleanupDevelopmentServerData,
+  spawnStandaloneServerProcess,
+  stopStandaloneServerProcessWithRetry,
+  waitForStandaloneServerReady,
+} from './lib/standalone-server-process.mjs';
+import { createTestShellEnv } from './lib/test-shell-env.mjs';
 
 const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
 const RESET_BACKEND_RUNTIME_DIAGNOSTICS = 'reset_backend_runtime_diagnostics';
@@ -27,8 +34,6 @@ const CLEAR_LINE_SETTLE_MS = 100;
 const NOISE_START_SETTLE_MS = 250;
 const NOISE_STOP_SETTLE_MS = 150;
 const PROFILE_TERMINAL_OPEN_SHORTCUT = 'Control+Shift+D';
-const SERVER_START_TIMEOUT_MS = 20_000;
-const SERVER_STOP_TIMEOUT_MS = 5_000;
 const TERMINAL_ATTACH_TIMEOUT_MS = 10_000;
 const TERMINAL_READY_TIMEOUT_MS = 20_000;
 const TRACE_POLL_INTERVAL_MS = 100;
@@ -44,6 +49,7 @@ const STANDALONE_SERVER_ENTRY = path.resolve(__dirname, '..', 'dist-server', 'se
 function parseArgs(argv) {
   const options = {
     authToken: process.env.AUTH_TOKEN ?? DEFAULT_AUTH_TOKEN,
+    help: false,
     keepServer: false,
     keepProfileTerminal: false,
     launchServer: false,
@@ -95,10 +101,31 @@ function parseArgs(argv) {
     if (arg === '--settle-ms') {
       options.settleMs = Number.parseInt(argv[index + 1] ?? String(options.settleMs), 10);
       index += 1;
+      continue;
+    }
+
+    if (arg === '--help') {
+      options.help = true;
     }
   }
 
   return options;
+}
+
+function printHelp() {
+  console.log(`Usage: node scripts/profile-terminal-input-latency.mjs [options]
+
+Options:
+  --launch-server             Launch a fresh standalone browser server for the run
+  --keep-server               Keep the launched server alive after profiling
+  --keep-profile-terminal     Keep the profiler shell alive after the run
+  --server-url <url>          Reuse an existing standalone server (default: ${DEFAULT_SERVER_URL})
+  --auth-token <token>        Auth token for an existing server
+  --settle-ms <n>             Trace warmup/settle duration
+  --skip-trace                Skip backend terminal-input tracing
+  --skip-visual-echo          Skip browser-visible echo timing
+  --help                      Print this help and exit
+`);
 }
 
 function formatMs(value) {
@@ -618,66 +645,6 @@ function reservePort() {
   });
 }
 
-function waitForServerReady(serverProcess) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error('Timed out waiting for the standalone server to start'));
-    }, SERVER_START_TIMEOUT_MS);
-
-    function cleanup() {
-      globalThis.clearTimeout(timeout);
-      serverProcess.stdout.off('data', handleStdout);
-      serverProcess.stderr.off('data', handleStderr);
-      serverProcess.off('exit', handleExit);
-    }
-
-    function handleStdout(chunk) {
-      const text = chunk.toString();
-      if (text.includes('Parallel Code server listening on')) {
-        cleanup();
-        resolve();
-      }
-    }
-
-    function handleStderr(chunk) {
-      const text = chunk.toString();
-      if (text.trim().length > 0) {
-        process.stderr.write(text);
-      }
-    }
-
-    function handleExit(code) {
-      cleanup();
-      reject(new Error(`Standalone server exited early with code ${code ?? 'null'}`));
-    }
-
-    serverProcess.stdout.on('data', handleStdout);
-    serverProcess.stderr.on('data', handleStderr);
-    serverProcess.on('exit', handleExit);
-  });
-}
-
-function stopServerProcess(serverProcess) {
-  return new Promise((resolve) => {
-    if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
-      resolve();
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      serverProcess.kill('SIGKILL');
-    }, SERVER_STOP_TIMEOUT_MS);
-
-    serverProcess.once('exit', () => {
-      globalThis.clearTimeout(timeout);
-      resolve();
-    });
-
-    serverProcess.kill('SIGTERM');
-  });
-}
-
 async function maybeLaunchServer(options) {
   if (!options.launchServer) {
     return null;
@@ -685,153 +652,199 @@ async function maybeLaunchServer(options) {
 
   const port = await reservePort();
   const authToken = `terminal-profiler-${randomBytes(12).toString('hex')}`;
-  const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-terminal-profiler-'));
-  const serverProcess = spawn(process.execPath, [STANDALONE_SERVER_ENTRY], {
-    cwd: path.resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      AUTH_TOKEN: authToken,
-      PARALLEL_CODE_USER_DATA_DIR: userDataPath,
-      PORT: String(port),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let serverProcess = null;
+  let userDataPath = null;
 
   try {
-    await waitForServerReady(serverProcess);
+    userDataPath = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-terminal-profiler-'));
+    serverProcess = spawnStandaloneServerProcess(process.execPath, [STANDALONE_SERVER_ENTRY], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        AUTH_TOKEN: authToken,
+        PARALLEL_CODE_USER_DATA_DIR: userDataPath,
+        ...createTestShellEnv(userDataPath),
+        PORT: String(port),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const ready = await waitForStandaloneServerReady(serverProcess, {
+      onStderr: (text) => {
+        if (text.trim().length > 0) {
+          process.stderr.write(text);
+        }
+      },
+    });
+    return {
+      authToken,
+      baseUrl: ready.baseUrl,
+      async stop() {
+        if (options.keepServer) {
+          console.log(`Keeping standalone server alive at ${ready.baseUrl}`);
+          return;
+        }
+
+        await stopStandaloneServerProcessWithRetry(serverProcess);
+        await cleanupDevelopmentServerData(userDataPath);
+      },
+    };
   } catch (error) {
-    await stopServerProcess(serverProcess).catch(() => {});
-    await rm(userDataPath, { force: true, recursive: true }).catch(() => {});
+    const cleanupErrors = [];
+    let serverStopped = serverProcess === null;
+    if (serverProcess) {
+      try {
+        await stopStandaloneServerProcessWithRetry(serverProcess);
+        serverStopped = true;
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (serverStopped && userDataPath) {
+      try {
+        await cleanupDevelopmentServerData(userDataPath);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'Terminal profiler startup and owned server cleanup failed',
+      );
+    }
     throw error;
   }
-
-  return {
-    authToken,
-    baseUrl: `http://127.0.0.1:${port}`,
-    async stop() {
-      if (options.keepServer) {
-        console.log(`Keeping standalone server alive at http://127.0.0.1:${port}`);
-        return;
-      }
-
-      await stopServerProcess(serverProcess);
-      await rm(userDataPath, { force: true, recursive: true });
-    },
-  };
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
   const launchedServer = await maybeLaunchServer(options);
-  const serverUrl = launchedServer?.baseUrl ?? options.serverUrl;
-  const authToken = launchedServer?.authToken ?? options.authToken;
-  const client = createBrowserServerClient({
-    authToken,
-    serverUrl,
-  });
+  let client;
   let browser;
   let context;
   let page;
   let profileTerminalAgentId = null;
-  try {
-    const buildMetadata = await fetchBuildMetadata(client);
-    console.log(`[build] ${JSON.stringify(buildMetadata)}`);
-    const apiRtt = await measureApiRtt(client);
-    console.log(`[api-rtt] ${describeRttSummary(apiRtt.summary)}`);
-
-    browser = await chromium.launch({ headless: true });
-    context = await browser.newContext();
-    await context.addInitScript(
-      ([displayNameStorageKey, clientIdStorageKey]) => {
-        globalThis.localStorage.setItem(displayNameStorageKey, 'Latency Profiler');
-        globalThis.sessionStorage.setItem(clientIdStorageKey, 'latency-profiler-session');
-      },
-      [DISPLAY_NAME_STORAGE_KEY, CLIENT_ID_STORAGE_KEY],
-    );
-    page = await context.newPage();
-    const authedUrl = new URL('/', serverUrl);
-    authedUrl.searchParams.set('token', authToken);
-    console.log(`Opening ${authedUrl.toString()}`);
-    await page.goto(authedUrl.toString());
-    await page.locator(APP_SHELL_SELECTOR).waitFor({ state: 'visible' });
-    const profileTerminalIndex = await createProfileTerminal(page);
-    const terminalStatuses = await readTerminalStatusSnapshot(page);
-    profileTerminalAgentId = terminalStatuses[profileTerminalIndex]?.agentId ?? null;
-    console.log(
-      `[terminal] profile index=${profileTerminalIndex} agent=${profileTerminalAgentId ?? 'unknown'}`,
-    );
-
-    let traceReady = false;
-    if (!options.skipTrace) {
-      try {
-        await waitForTracingReady(page, client, profileTerminalIndex, options.settleMs);
-        traceReady = true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[trace] disabled: ${message}`);
-        await client.invokeIpc(RESET_BACKEND_RUNTIME_DIAGNOSTICS).catch(() => {});
-      }
-    }
-
-    if (!options.skipVisualEcho) {
-      console.log(`\n[suite] visual-echo`);
-      for (const pattern of VISUAL_PATTERNS) {
-        console.log(`\n[pattern] ${pattern.name}`);
-        const result = await runVisualPattern(page, client, profileTerminalIndex, pattern);
-        console.log(
-          `  marker chars=${result.markerLength} submitted=${formatMs(result.inputSubmittedMs)} ` +
-            `visual=${formatMs(result.visualEcho.elapsedMs ?? NaN)} seen=${result.visualEcho.seen} ` +
-            `trace-completed=${result.traceCompleted} trace-active=${result.traceActive} ` +
-            `trace-dropped=${result.traceDropped}`,
-        );
-        if (!result.visualEcho.seen) {
-          console.log(`  tail=${JSON.stringify(result.visualEcho.textTail)}`);
-        }
-      }
-    }
-
-    if (traceReady) {
-      for (const suite of SUITES) {
-        console.log(`\n[suite] ${suite.name}`);
-        let noiseTerminalIndex = null;
-        if (suite.backgroundNoise) {
-          noiseTerminalIndex = await startBackgroundNoise(page);
-        }
-
-        try {
-          for (const pattern of PATTERNS) {
-            console.log(`\n[pattern] ${pattern.name}`);
-            const snapshot = await runPattern(
-              page,
-              client,
-              profileTerminalIndex,
-              pattern,
-              options.settleMs,
-            );
-            console.log(`  ${describeSummary(snapshot.summary)}`);
-            printSlowSamples(snapshot);
-          }
-        } finally {
-          if (noiseTerminalIndex !== null) {
-            await stopBackgroundNoise(page, noiseTerminalIndex);
-          }
-        }
-      }
-    }
-  } finally {
-    if (profileTerminalAgentId && !options.keepProfileTerminal) {
-      await client.invokeIpc('kill_agent', { agentId: profileTerminalAgentId }).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `[cleanup] failed to kill profile terminal ${profileTerminalAgentId}: ${message}`,
-        );
+  await runOperationWithCleanups(
+    'Terminal input latency profiler',
+    async () => {
+      const serverUrl = launchedServer?.baseUrl ?? options.serverUrl;
+      const authToken = launchedServer?.authToken ?? options.authToken;
+      client = createBrowserServerClient({
+        authToken,
+        serverUrl,
       });
-    }
-    await page?.close().catch(() => {});
-    await context?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    await launchedServer?.stop().catch(() => {});
-  }
+      const buildMetadata = await fetchBuildMetadata(client);
+      console.log(`[build] ${JSON.stringify(buildMetadata)}`);
+      const apiRtt = await measureApiRtt(client);
+      console.log(`[api-rtt] ${describeRttSummary(apiRtt.summary)}`);
+
+      browser = await chromium.launch({ headless: true });
+      context = await browser.newContext();
+      await context.addInitScript(
+        ([displayNameStorageKey, clientIdStorageKey]) => {
+          globalThis.localStorage.setItem(displayNameStorageKey, 'Latency Profiler');
+          globalThis.sessionStorage.setItem(clientIdStorageKey, 'latency-profiler-session');
+        },
+        [DISPLAY_NAME_STORAGE_KEY, CLIENT_ID_STORAGE_KEY],
+      );
+      page = await context.newPage();
+      const authedUrl = new URL('/', serverUrl);
+      authedUrl.searchParams.set('token', authToken);
+      console.log(`Opening ${authedUrl.toString()}`);
+      await page.goto(authedUrl.toString());
+      await page.locator(APP_SHELL_SELECTOR).waitFor({ state: 'visible' });
+      const profileTerminalIndex = await createProfileTerminal(page);
+      const terminalStatuses = await readTerminalStatusSnapshot(page);
+      profileTerminalAgentId = terminalStatuses[profileTerminalIndex]?.agentId ?? null;
+      console.log(
+        `[terminal] profile index=${profileTerminalIndex} agent=${profileTerminalAgentId ?? 'unknown'}`,
+      );
+
+      let traceReady = false;
+      if (!options.skipTrace) {
+        try {
+          await waitForTracingReady(page, client, profileTerminalIndex, options.settleMs);
+          traceReady = true;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[trace] disabled: ${message}`);
+          await client.invokeIpc(RESET_BACKEND_RUNTIME_DIAGNOSTICS).catch(() => {});
+        }
+      }
+
+      if (!options.skipVisualEcho) {
+        console.log(`\n[suite] visual-echo`);
+        for (const pattern of VISUAL_PATTERNS) {
+          console.log(`\n[pattern] ${pattern.name}`);
+          const result = await runVisualPattern(page, client, profileTerminalIndex, pattern);
+          console.log(
+            `  marker chars=${result.markerLength} submitted=${formatMs(result.inputSubmittedMs)} ` +
+              `visual=${formatMs(result.visualEcho.elapsedMs ?? NaN)} seen=${result.visualEcho.seen} ` +
+              `trace-completed=${result.traceCompleted} trace-active=${result.traceActive} ` +
+              `trace-dropped=${result.traceDropped}`,
+          );
+          if (!result.visualEcho.seen) {
+            console.log(`  tail=${JSON.stringify(result.visualEcho.textTail)}`);
+          }
+        }
+      }
+
+      if (traceReady) {
+        for (const suite of SUITES) {
+          console.log(`\n[suite] ${suite.name}`);
+          let noiseTerminalIndex = null;
+          if (suite.backgroundNoise) {
+            noiseTerminalIndex = await startBackgroundNoise(page);
+          }
+
+          await runOperationWithCleanups(
+            `Terminal input latency suite ${suite.name}`,
+            async () => {
+              for (const pattern of PATTERNS) {
+                console.log(`\n[pattern] ${pattern.name}`);
+                const snapshot = await runPattern(
+                  page,
+                  client,
+                  profileTerminalIndex,
+                  pattern,
+                  options.settleMs,
+                );
+                console.log(`  ${describeSummary(snapshot.summary)}`);
+                printSlowSamples(snapshot);
+              }
+            },
+            [
+              [
+                'stop background noise',
+                () =>
+                  noiseTerminalIndex === null
+                    ? undefined
+                    : stopBackgroundNoise(page, noiseTerminalIndex),
+              ],
+            ],
+          );
+        }
+      }
+    },
+    [
+      [
+        'kill profile terminal',
+        () =>
+          client && profileTerminalAgentId && !options.keepProfileTerminal
+            ? client.invokeIpc('kill_agent', { agentId: profileTerminalAgentId })
+            : undefined,
+      ],
+      ['close profiler page', () => page?.close()],
+      ['close profiler browser context', () => context?.close()],
+      ['close profiler browser', () => browser?.close()],
+      ['stop owned standalone server', () => launchedServer?.stop()],
+    ],
+  );
 }
 
 main().catch((error) => {

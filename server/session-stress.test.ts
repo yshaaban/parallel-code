@@ -27,7 +27,7 @@ import {
   waitForSocketClose,
   writeToAgentViaHttp,
   type WsMessageData,
-} from './test-utils.js';
+} from './test-utils.test-helper.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -838,7 +838,7 @@ async function runBurst(
 
 describe('Headless session stress', { timeout: 90_000 }, () => {
   beforeAll(async () => {
-    execSync('npx tsc -p server/tsconfig.json', {
+    execSync('npm run build:server', {
       cwd: path.resolve(__dirname, '..'),
       stdio: 'pipe',
     });

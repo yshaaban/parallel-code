@@ -10,11 +10,17 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { spawn, type ChildProcess } from 'child_process';
-import { setTimeout as delay } from 'node:timers/promises';
+import type { ChildProcess } from 'child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import { WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnStandaloneServerProcess } from '../scripts/lib/standalone-server-process.mjs';
+import {
+  runIndependentCleanups,
+  runOperationWithCleanups,
+} from '../scripts/lib/cleanup-outcome.mjs';
 import { IPC } from '../electron/ipc/channels.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
 import {
@@ -23,6 +29,7 @@ import {
   channelMessageContains,
   collectMessages,
   connectWs,
+  cleanupTestServerEnv,
   createChannelId,
   createTestServerEnv,
   detachAgentOutputViaHttp,
@@ -36,17 +43,20 @@ import {
   spawnAgentViaHttp,
   startServer,
   stopServer,
+  stopTestServerProcess,
   TEST_CLIENT_ID,
   TEST_TOKEN,
+  type TestServerProcess,
   trackSocketMessages,
   waitForAgentLifecycleEvent,
   waitForChannelMarkerOccurrences,
   waitForMessage,
   waitForRawMessage,
+  waitForTestServerStartup,
   waitForScrollbackContains,
   waitForSocketClose,
   writeToAgentViaHttp,
-} from './test-utils.js';
+} from './test-utils.test-helper.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,7 +124,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   beforeAll(async () => {
     // Build the server first
     const { execSync } = await import('child_process');
-    execSync('npx tsc -p server/tsconfig.json', {
+    execSync('npm run build:server', {
       cwd: path.resolve(__dirname, '..'),
       stdio: 'pipe',
     });
@@ -938,7 +948,54 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
   describe('Latency Under Simulated Network Conditions', { timeout: 60_000 }, () => {
     let simServerProcess: ChildProcess | null = null;
+    let simServerEnvironment: NodeJS.ProcessEnv | null = null;
+    let simUserDataPath: string | null = null;
     let simPort = 0;
+
+    async function cleanupSimulatedLatencyServer(label: string): Promise<void> {
+      const proc = simServerProcess;
+      const environment = simServerEnvironment;
+      const userDataPath = simUserDataPath;
+
+      await runOperationWithCleanups(label, async () => {}, [
+        [
+          'stop simulated latency server',
+          async () => {
+            if (!proc) {
+              return;
+            }
+            await stopTestServerProcess(proc);
+            if (simServerProcess === proc) {
+              simServerProcess = null;
+            }
+          },
+        ],
+        [
+          'remove simulated latency server data',
+          async () => {
+            if (simServerProcess !== null || !environment || !userDataPath) {
+              return;
+            }
+            await runIndependentCleanups('Simulated latency server data', [
+              [
+                'clean test server environment',
+                () => cleanupTestServerEnv(environment, { defaultUserDataPath: userDataPath }),
+              ],
+              [
+                'remove temporary user data',
+                () => rm(userDataPath, { force: true, recursive: true }),
+              ],
+            ]);
+            if (simServerEnvironment === environment) {
+              simServerEnvironment = null;
+            }
+            if (simUserDataPath === userDataPath) {
+              simUserDataPath = null;
+            }
+          },
+        ],
+      ]);
+    }
 
     function getSimServerUrl(): string {
       return `ws://127.0.0.1:${simPort}`;
@@ -1040,77 +1097,44 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     beforeAll(async () => {
       simPort = await reserveTestPort();
       const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
-      simServerProcess = spawn('node', [serverPath], {
-        env: createTestServerEnv({
-          PORT: String(simPort),
-          PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data-sim'),
-          SIMULATE_JITTER_MS: '20',
-          SIMULATE_LATENCY_MS: '50',
-        }),
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-latency-sim-'));
+      simUserDataPath = userDataPath;
+      const environment = createTestServerEnv({
+        PORT: String(simPort),
+        PARALLEL_CODE_USER_DATA_DIR: userDataPath,
+        SIMULATE_JITTER_MS: '20',
+        SIMULATE_LATENCY_MS: '50',
       });
+      simServerEnvironment = environment;
+      let proc: ChildProcess | null = null;
 
-      const stdout = simServerProcess.stdout;
-      const stderr = simServerProcess.stderr;
-      if (!stdout || !stderr) throw new Error('Sim server stdio unavailable');
+      try {
+        proc = spawnStandaloneServerProcess(process.execPath, [serverPath], {
+          env: environment,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        simServerProcess = proc;
 
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          clearTimeout(timeout);
-          stdout.off('data', handleStdout);
-          stderr.off('data', handleStderr);
-          simServerProcess?.off('error', handleError);
-          simServerProcess?.off('exit', handleExit);
-        };
-        const timeout = setTimeout(() => {
-          cleanup();
-          reject(new Error('Sim server startup timeout'));
-        }, 20_000);
-        const handleStdout = (data: Buffer) => {
-          if (data.toString().includes('listening on')) {
-            cleanup();
-            resolve();
-          }
-        };
-        const handleStderr = () => {};
-        const handleError = (err: Error) => {
-          cleanup();
-          reject(err);
-        };
-        const handleExit = (code: number | null) => {
-          cleanup();
-          reject(
-            new Error(
-              `Sim server exited before startup completed${code === null ? '' : ` (code ${code})`}`,
-            ),
-          );
-        };
+        if (!proc.stdout || !proc.stderr) {
+          throw new Error('Sim server stdio unavailable');
+        }
 
-        stdout.on('data', handleStdout);
-        stderr.on('data', handleStderr);
-        simServerProcess?.once('error', handleError);
-        simServerProcess?.once('exit', handleExit);
-      });
-    }, 20_000);
-
-    afterAll(async () => {
-      const proc = simServerProcess;
-      simServerProcess = null;
-      if (!proc) return;
-      if (proc.exitCode !== null || proc.signalCode !== null) return;
-      const liveProc = proc;
-      const exitPromise = new Promise<void>((resolve) => {
-        liveProc.once('exit', () => resolve());
-      });
-
-      liveProc.kill('SIGTERM');
-      await Promise.race([exitPromise, delay(1_000)]);
-
-      if (liveProc.exitCode === null && liveProc.signalCode === null) {
-        liveProc.kill('SIGKILL');
-        await Promise.race([exitPromise, delay(3_000)]);
+        await waitForTestServerStartup(proc as TestServerProcess, 20_000);
+      } catch (error) {
+        await runOperationWithCleanups(
+          'Simulated latency server setup',
+          () => Promise.reject(error),
+          [
+            [
+              'release incomplete simulated latency server',
+              () => cleanupSimulatedLatencyServer('Incomplete simulated latency server'),
+            ],
+          ],
+        );
       }
-    });
+    }, 35_000);
+
+    afterAll(() => cleanupSimulatedLatencyServer('Simulated latency server teardown'));
 
     it('measures RTT with simulated 50ms+jitter latency', async () => {
       const agentId = `sim-echo-${Date.now()}`;
