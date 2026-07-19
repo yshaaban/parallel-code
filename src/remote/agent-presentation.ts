@@ -393,14 +393,14 @@ export function formatRemoteTaskContext(
     parts.push('Non-git project');
   } else if (branchName) {
     if (directMode) {
-      parts.push(`${branchName} (current branch)`);
+      parts.push(`${branchName} (project root)`);
     } else if (worktreeOwnership === 'external') {
       parts.push(`${branchName} (external worktree)`);
     } else {
       parts.push(branchName);
     }
   } else if (directMode) {
-    parts.push('Current Branch');
+    parts.push('Project root');
   } else if (worktreeOwnership === 'external') {
     parts.push('External Worktree');
   }

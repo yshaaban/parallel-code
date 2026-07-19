@@ -7,6 +7,7 @@ import { isNonGitProject } from '../store/project-mode';
 import { isMac } from '../lib/platform';
 import { theme } from '../lib/theme';
 import type { Project, Task } from '../store/types';
+import { ProjectRootBadge } from './TaskContextBadges';
 
 interface TaskBranchInfoBarProps {
   task: Task;
@@ -42,8 +43,13 @@ function getWorktreeActionTitle(
   editorCommand: string,
   worktreePath: string,
   hasProjectPath: boolean,
+  isProjectRoot: boolean,
 ): string {
-  if (!electronRuntime) return 'Click to copy the worktree path';
+  if (!electronRuntime) {
+    return isProjectRoot
+      ? 'Click to copy the project root path'
+      : 'Click to copy the worktree path';
+  }
   if (!editorCommand) return worktreePath;
   const modifierKey = isMac ? 'Cmd' : 'Ctrl';
   const projectRootShortcut = hasProjectPath
@@ -87,12 +93,16 @@ function getInfoBarButtonStyle(options?: {
 }
 
 export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
+  const isProjectRoot = (): boolean =>
+    !isNonGitProject(props.task) && isCurrentBranchTask(props.task);
+
   function getWorktreeActionTitleText(): string {
     return getWorktreeActionTitle(
       props.electronRuntime,
       props.editorCommand,
       props.task.worktreePath,
       Boolean(props.project?.path),
+      isProjectRoot(),
     );
   }
 
@@ -107,7 +117,7 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
       case 'copy':
         try {
           await navigator.clipboard.writeText(actionPath);
-          showNotification('Worktree path copied');
+          showNotification(isProjectRoot() ? 'Project root path copied' : 'Worktree path copied');
         } catch {
           showNotification(actionPath);
         }
@@ -219,20 +229,8 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
         >
           <span>{props.task.branchName}</span>
         </Show>
-        <Show when={!isNonGitProject(props.task) && isCurrentBranchTask(props.task)}>
-          <span
-            style={{
-              'font-size': '10px',
-              'font-weight': '600',
-              padding: '1px 6px',
-              'border-radius': '4px',
-              background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
-              color: theme.warning,
-              border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
-            }}
-          >
-            {props.task.branchName}
-          </span>
+        <Show when={isProjectRoot()}>
+          <ProjectRootBadge branchName={props.task.branchName} />
         </Show>
         <Show when={!isNonGitProject(props.task) && isExistingWorktreeTask(props.task)}>
           <span

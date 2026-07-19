@@ -288,7 +288,7 @@ describe('task workflow control leases', () => {
 
     await expect(
       createTask({
-        agentDef,
+        launch: { kind: 'agent', agentDef },
         branchPrefixOverride: 'feature',
         name: 'Folder task',
         projectId: 'project-1',
@@ -309,8 +309,51 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenCalledWith(
       IPC.CreateTask,
       expect.objectContaining({
+        operationId: expect.any(String),
         projectMode: 'non-git',
         projectRoot: '/tmp/folder',
+      }),
+    );
+  });
+
+  it('creates terminal-only tasks with one focused shell and no agent runtime', async () => {
+    setStore('projects', [createTestProject({ id: 'project-1', path: '/repo' })]);
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel !== IPC.CreateTask) {
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+      return Promise.resolve({
+        base_branch: 'main',
+        branch_name: 'task/terminal',
+        git_isolation: 'worktree',
+        id: 'task-terminal',
+        worktree_path: '/repo/.worktrees/task-terminal',
+      });
+    });
+
+    await expect(
+      createTask({
+        launch: { kind: 'terminal' },
+        name: 'Terminal',
+        projectId: 'project-1',
+      }),
+    ).resolves.toBe('task-terminal');
+
+    const task = store.tasks['task-terminal'];
+    expect(task).toMatchObject({
+      agentIds: [],
+      shellAgentIds: [expect.any(String)],
+      taskMode: 'terminal',
+    });
+    expect(task?.selectedAgentId).toBeUndefined();
+    expect(store.agents).not.toHaveProperty(task?.shellAgentIds[0] ?? '');
+    expect(store.activeAgentId).toBe(task?.shellAgentIds[0]);
+    expect(store.focusedPanel['task-terminal']).toBe('shell:0');
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.CreateTask,
+      expect.not.objectContaining({
+        agentDefId: expect.anything(),
+        agentDefName: expect.anything(),
       }),
     );
   });
@@ -348,9 +391,12 @@ describe('task workflow control leases', () => {
 
     await expect(
       createTask({
-        agentDef,
-        coordinatorMode: true,
-        initialPrompt: 'Build the coordinator slice',
+        launch: {
+          kind: 'agent',
+          agentDef,
+          coordinatorMode: true,
+          initialPrompt: 'Build the coordinator slice',
+        },
         name: 'Coordinator task',
         projectId: 'project-1',
       }),
@@ -403,8 +449,7 @@ describe('task workflow control leases', () => {
 
     await expect(
       createTask({
-        agentDef,
-        coordinatorMode: true,
+        launch: { kind: 'agent', agentDef, coordinatorMode: true },
         name: 'Coordinator task',
         projectId: 'project-1',
       }),
@@ -473,8 +518,7 @@ describe('task workflow control leases', () => {
 
     await expect(
       createTask({
-        agentDef,
-        coordinatorMode: true,
+        launch: { kind: 'agent', agentDef, coordinatorMode: true },
         name: 'Folder coordinator task',
         projectId: 'project-1',
         projectMode: 'non-git',
@@ -514,8 +558,7 @@ describe('task workflow control leases', () => {
     try {
       await expect(
         createTask({
-          agentDef,
-          coordinatorMode: true,
+          launch: { kind: 'agent', agentDef, coordinatorMode: true },
           name: 'Coordinator task',
           projectId: 'project-1',
         }),
@@ -546,8 +589,7 @@ describe('task workflow control leases', () => {
 
     await expect(
       createTask({
-        agentDef,
-        coordinatorMode: true,
+        launch: { kind: 'agent', agentDef, coordinatorMode: true },
         name: 'Coordinator task',
         projectId: 'project-1',
       }),
@@ -644,7 +686,7 @@ describe('task workflow control leases', () => {
         },
       ],
       expectedMessage:
-        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+        'Task closed, but task process cleanup did not finish. Check server logs before reusing this task.',
       warningScope: 'runner',
     },
     {
@@ -663,7 +705,7 @@ describe('task workflow control leases', () => {
         },
       ],
       expectedMessage:
-        'Task closed, but worktree, agent runner, and container cleanup did not finish. Check server logs before reusing this task branch.',
+        'Task closed, but worktree, task process, and container cleanup did not finish. Check server logs before reusing this task branch.',
       warningScope: 'combined',
     },
   ])('surfaces $warningScope cleanup warnings after task deletion completes', async (testCase) => {
@@ -738,9 +780,10 @@ describe('task workflow control leases', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setStore('tasks', {
       'task-1': createTestTask({
-        agentIds: ['agent-1'],
+        agentIds: [],
         directMode: true,
         shellAgentIds: ['shell-1'],
+        taskMode: 'terminal',
       }),
     });
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
@@ -767,7 +810,7 @@ describe('task workflow control leases', () => {
 
       expect(store.tasks['task-1']).toBeUndefined();
       expect(showNotificationMock).toHaveBeenCalledWith(
-        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+        'Task closed, but task process cleanup did not finish. Check server logs before reusing this task.',
       );
       expect(warnSpy).toHaveBeenCalledWith(
         'Task task-1 closed with cleanup warnings:',
@@ -1173,7 +1216,7 @@ describe('task workflow control leases', () => {
 
       expect(store.tasks['task-1']).toBeUndefined();
       expect(showNotificationMock).toHaveBeenCalledWith(
-        'Task closed, but agent runner cleanup did not finish. Check server logs before reusing this task.',
+        'Task closed, but task process cleanup did not finish. Check server logs before reusing this task.',
       );
       expect(warnSpy).toHaveBeenCalledWith(
         'Task task-1 closed with cleanup warnings:',
@@ -1759,6 +1802,33 @@ describe('task workflow control leases', () => {
       resumed: true,
     });
     expect(store.tasks['task-1']?.agentIds[0]).not.toBe('agent-1');
+  });
+
+  it('restores a collapsed terminal-only task with a fresh primary shell', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        shellAgentIds: [],
+        taskMode: 'terminal',
+      }),
+    });
+    setStore('agents', {});
+
+    await uncollapseTask('task-1');
+
+    const restoredTask = store.tasks['task-1'];
+    expect(restoredTask).toMatchObject({
+      agentIds: [],
+      collapsed: false,
+      shellAgentIds: [expect.any(String)],
+      taskMode: 'terminal',
+    });
+    expect(restoredTask?.savedAgentDef).toBeUndefined();
+    expect(store.activeAgentId).toBe(restoredTask?.shellAgentIds[0]);
+    expect(store.focusedPanel['task-1']).toBe('shell:0');
   });
 
   it('restores every saved agent definition when recycling a multi-agent collapsed task', async () => {

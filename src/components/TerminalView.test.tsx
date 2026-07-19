@@ -67,6 +67,7 @@ const {
   sessionCleanupMock,
   setTaskFocusedPanelStateMock,
   startTerminalSessionMock,
+  syncFocusedTypingTaskCommandLeaseMock,
 } = vi.hoisted(() => ({
   armFocusedTerminalOutputPreemptionMock: vi.fn(),
   getTerminalFontFamilyMock: vi.fn((font: string) => `font:${font}`),
@@ -88,6 +89,7 @@ const {
   sessionCleanupMock: vi.fn(),
   setTaskFocusedPanelStateMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
+  syncFocusedTypingTaskCommandLeaseMock: vi.fn(),
 }));
 
 vi.mock('./terminal-view/terminal-session', () => ({
@@ -124,6 +126,11 @@ vi.mock('../app/terminal-attach-scheduler', () => ({
 vi.mock('../app/terminal-output-scheduler', () => ({
   armFocusedTerminalOutputPreemption: armFocusedTerminalOutputPreemptionMock,
   requestTerminalOutputDrain: requestTerminalOutputDrainMock,
+}));
+
+vi.mock('../app/task-command-lease-session', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../app/task-command-lease-session')>()),
+  syncFocusedTypingTaskCommandLease: syncFocusedTypingTaskCommandLeaseMock,
 }));
 
 vi.mock('../store/store', async () => {
@@ -404,6 +411,31 @@ describe('TerminalView', () => {
     result.unmount();
 
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes task watcher ownership into the loaded terminal session', () => {
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="shell-1"
+        command="bash"
+        args={['-l']}
+        cwd="/tmp/project"
+        isShell
+        startsTaskWatchers
+      />
+    ));
+
+    expect(startTerminalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        props: expect.objectContaining({
+          agentId: 'shell-1',
+          isShell: true,
+          startsTaskWatchers: true,
+          taskId: 'task-1',
+        }),
+      }),
+    );
   });
 
   it('does not read disposed task identity during terminal session cleanup callbacks', () => {
@@ -2441,7 +2473,11 @@ describe('TerminalView', () => {
     expect(getTerminalSwitchWindowSnapshot().active).toBe(false);
   });
 
-  it('moves task focus back to the ai terminal after takeover succeeds', async () => {
+  it.each([
+    { focusPanelId: 'ai-terminal', isShell: false, owner: 'AI terminal' },
+    { focusPanelId: 'shell:1', isShell: true, owner: 'secondary task shell' },
+    { focusPanelId: 'terminal', isShell: true, owner: 'standalone terminal' },
+  ])('restores $owner focus ownership after takeover succeeds', async (testCase) => {
     const session = createMockTerminalSession();
     startTerminalSessionMock.mockReturnValueOnce(session);
     setStore('taskCommandControllers', 'task-1', {
@@ -2456,6 +2492,8 @@ describe('TerminalView', () => {
         command="claude"
         args={[]}
         cwd="/tmp/project"
+        focusPanelId={testCase.focusPanelId}
+        isShell={testCase.isShell}
       />
     ));
 
@@ -2467,7 +2505,11 @@ describe('TerminalView', () => {
     await vi.waitFor(() => {
       expect(requestInputTakeoverMock).toHaveBeenCalledTimes(1);
     });
-    expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
+    expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', testCase.focusPanelId);
+    expect(syncFocusedTypingTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      testCase.focusPanelId,
+    );
     expect(session.term.focus).toHaveBeenCalledTimes(1);
   });
 

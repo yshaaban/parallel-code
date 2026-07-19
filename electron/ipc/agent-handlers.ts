@@ -528,6 +528,7 @@ interface AgentSpawnRequestFields {
   resumeOnStart?: boolean;
   runnerProfile?: unknown;
   rows?: number;
+  startsTaskWatchers?: boolean;
   taskId: string;
 }
 
@@ -549,6 +550,20 @@ function assertAgentSpawnRequestFields(
   }
   if (request.cwd !== undefined) {
     assertString(request.cwd, 'cwd');
+  }
+  if (request.isShell !== undefined && typeof request.isShell !== 'boolean') {
+    throw new BadRequestError('isShell must be a boolean when provided');
+  }
+  if (request.startsTaskWatchers !== undefined && typeof request.startsTaskWatchers !== 'boolean') {
+    throw new BadRequestError('startsTaskWatchers must be a boolean when provided');
+  }
+  if (request.startsTaskWatchers === true) {
+    if (request.isShell !== true) {
+      throw new BadRequestError('startsTaskWatchers requires a shell session');
+    }
+    if (!request.cwd?.trim()) {
+      throw new BadRequestError('startsTaskWatchers requires a non-empty cwd');
+    }
   }
   if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
     throw new BadRequestError('resumeOnStart must be a boolean when provided');
@@ -603,6 +618,7 @@ async function runAgentSpawnRequest(
       ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
       ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
       ...(request.runnerProfile !== undefined ? { runnerProfile: request.runnerProfile } : {}),
+      ...(request.startsTaskWatchers === true ? { startsTaskWatchers: true } : {}),
     });
   }
 

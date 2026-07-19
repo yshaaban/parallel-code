@@ -651,6 +651,7 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
               adapter={sessionAgentDef.adapter}
               baseBranch={sessionTask.baseBranch}
               cwd={sessionTask.worktreePath}
+              focusPanelId="ai-terminal"
               projectMode={sessionTask.projectMode}
               replaceExistingSession={shouldReplaceExistingSession}
               runnerProfile={props.runnerProfile}

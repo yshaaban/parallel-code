@@ -1,6 +1,7 @@
 import { isElectronRuntime } from '../lib/ipc';
 import type { AgentDef } from '../ipc/types';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
+import { isTerminalTask } from '../domain/task-mode';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { store } from './core';
 import { buildElectronLocalShellPreferences } from './local-shell-preferences';
@@ -102,68 +103,78 @@ function buildPersistedTask(
   task: Task,
   options?: { collapsed?: boolean; fallbackAgentDefs?: AgentDef[] },
 ): PersistedTask {
+  const terminalTask = isTerminalTask(task);
   const exposedPorts = buildPersistedExposedPorts(task.id);
   const taskProjectMode = getProjectMode(task);
   const baseBranch = taskProjectMode === 'git' ? normalizeTaskBaseBranch(task) : undefined;
   const gitIsolation = taskProjectMode === 'git' ? getTaskGitIsolation(task) : undefined;
   const worktreeOwnership = taskProjectMode === 'git' ? getTaskWorktreeOwnership(task) : undefined;
-  const fallbackAgentDefs = options?.fallbackAgentDefs ?? [];
-  const agentDefs = getCompleteTaskAgentDefs(task, fallbackAgentDefs);
+  const fallbackAgentDefs = terminalTask ? [] : (options?.fallbackAgentDefs ?? []);
+  const persistedAgentIds = terminalTask ? [] : task.agentIds;
+  const agentDefs = terminalTask ? null : getCompleteTaskAgentDefs(task, fallbackAgentDefs);
   const hasCompleteActiveMultiAgentDefs =
-    task.agentIds.length > 1 && agentDefs?.length === task.agentIds.length;
+    persistedAgentIds.length > 1 && agentDefs?.length === persistedAgentIds.length;
   const hasCompleteCollapsedMultiAgentDefs =
     options?.collapsed === true &&
-    task.agentIds.length === 0 &&
+    persistedAgentIds.length === 0 &&
     fallbackAgentDefs.length > 1 &&
     agentDefs?.length === fallbackAgentDefs.length;
   const shouldPersistAgentDefs =
     hasCompleteActiveMultiAgentDefs || hasCompleteCollapsedMultiAgentDefs;
-  const selectedAgentId =
-    task.agentIds.length <= 1 || hasCompleteActiveMultiAgentDefs
+  const selectedAgentId = terminalTask
+    ? null
+    : persistedAgentIds.length <= 1 || hasCompleteActiveMultiAgentDefs
       ? getSelectedTaskAgentId(task)
       : null;
   const persistedTask: PersistedTask = {
     id: task.id,
+    taskMode: task.taskMode,
     name: task.name,
     projectId: task.projectId,
     branchName: task.branchName,
     worktreePath: task.worktreePath,
     notes: task.notes,
-    lastPrompt: task.lastPrompt,
+    lastPrompt: terminalTask ? '' : task.lastPrompt,
     shellCount: task.shellAgentIds.length,
-    agentId: task.agentIds[0] ?? null,
-    ...(hasCompleteActiveMultiAgentDefs ? { agentIds: [...task.agentIds] } : {}),
+    agentId: persistedAgentIds[0] ?? null,
+    ...(hasCompleteActiveMultiAgentDefs ? { agentIds: [...persistedAgentIds] } : {}),
     ...(shouldPersistAgentDefs && agentDefs ? { agentDefs } : {}),
     ...(selectedAgentId ? { selectedAgentId } : {}),
-    ...(task.terminalLayoutMode !== undefined
+    ...(!terminalTask && task.terminalLayoutMode !== undefined
       ? { terminalLayoutMode: task.terminalLayoutMode }
       : {}),
     shellAgentIds: [...task.shellAgentIds],
-    agentDef: getPrimaryAgentDef(task, fallbackAgentDefs),
+    agentDef: terminalTask ? null : getPrimaryAgentDef(task, fallbackAgentDefs),
     ...buildTaskProjectModeFields(task),
     ...(gitIsolation !== undefined ? { gitIsolation } : {}),
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(worktreeOwnership === 'external' ? { worktreeOwnership } : {}),
-    ...(task.skipPermissions !== undefined ? { skipPermissions: task.skipPermissions } : {}),
+    ...(!terminalTask && task.skipPermissions !== undefined
+      ? { skipPermissions: task.skipPermissions }
+      : {}),
     ...(task.githubUrl !== undefined ? { githubUrl: task.githubUrl } : {}),
-    ...(task.savedInitialPrompt !== undefined
+    ...(!terminalTask && task.savedInitialPrompt !== undefined
       ? { savedInitialPrompt: task.savedInitialPrompt }
       : {}),
-    ...(task.savedSelectedAgentIndex !== undefined
+    ...(!terminalTask && task.savedSelectedAgentIndex !== undefined
       ? { savedSelectedAgentIndex: task.savedSelectedAgentIndex }
       : {}),
     ...(task.planFileName !== undefined ? { planFileName: task.planFileName } : {}),
     ...(task.planRelativePath !== undefined ? { planRelativePath: task.planRelativePath } : {}),
     ...(task.stepsTracking !== undefined ? { stepsTracking: task.stepsTracking } : {}),
-    ...(task.coordinatorCredentialPath !== undefined
+    ...(!terminalTask && task.coordinatorCredentialPath !== undefined
       ? { coordinatorCredentialPath: task.coordinatorCredentialPath }
       : {}),
-    ...(task.coordinatorParentTaskId !== undefined
+    ...(!terminalTask && task.coordinatorParentTaskId !== undefined
       ? { coordinatorParentTaskId: task.coordinatorParentTaskId }
       : {}),
-    ...(task.coordinatorRole !== undefined ? { coordinatorRole: task.coordinatorRole } : {}),
-    ...(task.coordinatorRunId !== undefined ? { coordinatorRunId: task.coordinatorRunId } : {}),
-    ...(task.coordinatorToolCommand !== undefined
+    ...(!terminalTask && task.coordinatorRole !== undefined
+      ? { coordinatorRole: task.coordinatorRole }
+      : {}),
+    ...(!terminalTask && task.coordinatorRunId !== undefined
+      ? { coordinatorRunId: task.coordinatorRunId }
+      : {}),
+    ...(!terminalTask && task.coordinatorToolCommand !== undefined
       ? { coordinatorToolCommand: task.coordinatorToolCommand }
       : {}),
     ...(exposedPorts ? { exposedPorts } : {}),

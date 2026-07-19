@@ -12,6 +12,7 @@ import {
 
 import { openMarkdownViewer } from '../../app/markdown-viewer';
 import { sendPrompt } from '../../app/task-workflows';
+import { isTerminalTask } from '../../domain/task-mode';
 import { lazyNamed } from '../../lib/lazy-named';
 import { warn as logWarn } from '../../lib/log';
 
@@ -372,20 +373,22 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                           ...typography.monoUi,
                         }}
                       />
-                      <button
-                        type="button"
-                        aria-label="Send notes as prompt"
-                        title="Send notes as prompt"
-                        disabled={!canSendNotes()}
-                        onClick={() => {
-                          void sendNotesAsPrompt();
-                        }}
-                        style={getSendNotesButtonStyle()}
-                      >
-                        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M1.75 2.5a.75.75 0 0 1 .98-.7l11.5 4.75a.75.75 0 0 1 0 1.39l-11.5 4.75a.75.75 0 0 1-1.01-.86L2.72 8 1.72 3.36a.75.75 0 0 1 .03-.86Zm2.05 2.06.52 2.44h4.43a.75.75 0 0 1 0 1.5H4.32L3.8 10.94 12 7.75 3.8 4.56Z" />
-                        </svg>
-                      </button>
+                      <Show when={!isTerminalTask(task())}>
+                        <button
+                          type="button"
+                          aria-label="Send notes as prompt"
+                          title="Send notes as prompt"
+                          disabled={!canSendNotes()}
+                          onClick={() => {
+                            void sendNotesAsPrompt();
+                          }}
+                          style={getSendNotesButtonStyle()}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M1.75 2.5a.75.75 0 0 1 .98-.7l11.5 4.75a.75.75 0 0 1 0 1.39l-11.5 4.75a.75.75 0 0 1-1.01-.86L2.72 8 1.72 3.36a.75.75 0 0 1 .03-.86Zm2.05 2.06.52 2.44h4.43a.75.75 0 0 1 0 1.5H4.32L3.8 10.94 12 7.75 3.8 4.56Z" />
+                          </svg>
+                        </button>
+                      </Show>
                     </div>
                   </Show>
 

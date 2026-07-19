@@ -1,6 +1,7 @@
 import type { AgentDef } from '../ipc/types.js';
 import { createRandomId } from '../lib/random-id.js';
 import { isNonEmptyString } from '../lib/type-guards.js';
+import { normalizeTaskMode } from '../domain/task-mode.js';
 import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults.js';
 import { buildTaskProjectModeFields, getProjectMode } from './project-mode.js';
 import {
@@ -57,13 +58,11 @@ function createHydratedShellAgentIds(
   persistedTask: HydratablePersistedTask,
   existingTask: Task | undefined,
 ): string[] {
-  let shellAgentIds = Array.isArray(persistedTask.shellAgentIds)
-    ? persistedTask.shellAgentIds.filter((value): value is string => isNonEmptyString(value))
-    : [];
-
-  if (shellAgentIds.length === 0) {
-    shellAgentIds = [...(existingTask?.shellAgentIds ?? [])];
+  if (Array.isArray(persistedTask.shellAgentIds)) {
+    return persistedTask.shellAgentIds.filter((value): value is string => isNonEmptyString(value));
   }
+
+  const shellAgentIds = [...(existingTask?.shellAgentIds ?? [])];
   if (shellAgentIds.length === 0) {
     for (let index = 0; index < (persistedTask.shellCount ?? 0); index += 1) {
       shellAgentIds.push(createRandomId());
@@ -148,11 +147,11 @@ function getHydratedSavedSelectedAgentIndex(
 }
 
 function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskBase {
-  const agentDefs = getHydratedAgentDefs(
-    options.persistedTask,
-    options.availableAgents,
-    options.hydraCommand,
-  );
+  const taskMode = normalizeTaskMode(options.persistedTask.taskMode);
+  const isTerminalMode = taskMode === 'terminal';
+  const agentDefs = isTerminalMode
+    ? []
+    : getHydratedAgentDefs(options.persistedTask, options.availableAgents, options.hydraCommand);
   const agentIds = createHydratedAgentIds(
     options.persistedTask,
     options.existingTask,
@@ -179,20 +178,23 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
     shellAgentIds,
     taskBase: {
       id: options.persistedTask.id,
+      taskMode,
       name: options.persistedTask.name,
       projectId: options.persistedTask.projectId ?? '',
       branchName: options.persistedTask.branchName,
       worktreePath: options.persistedTask.worktreePath,
       notes: options.persistedTask.notes,
-      lastPrompt: options.persistedTask.lastPrompt,
-      skipPermissions: options.persistedTask.skipPermissions === true,
+      lastPrompt: isTerminalMode ? '' : options.persistedTask.lastPrompt,
+      ...(!isTerminalMode
+        ? { skipPermissions: options.persistedTask.skipPermissions === true }
+        : {}),
       ...buildTaskProjectModeFields(options.persistedTask),
       ...(taskProjectMode === 'git' ? buildTaskGitIsolationFields(options.persistedTask) : {}),
       ...(baseBranch !== undefined ? { baseBranch } : {}),
       ...(options.persistedTask.githubUrl !== undefined
         ? { githubUrl: options.persistedTask.githubUrl }
         : {}),
-      ...(options.persistedTask.savedInitialPrompt !== undefined
+      ...(!isTerminalMode && options.persistedTask.savedInitialPrompt !== undefined
         ? { savedInitialPrompt: options.persistedTask.savedInitialPrompt }
         : {}),
       ...(options.persistedTask.planFileName !== undefined
@@ -204,22 +206,22 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       ...(options.persistedTask.stepsTracking !== undefined
         ? { stepsTracking: options.persistedTask.stepsTracking }
         : {}),
-      ...(options.persistedTask.coordinatorCredentialPath !== undefined
+      ...(!isTerminalMode && options.persistedTask.coordinatorCredentialPath !== undefined
         ? { coordinatorCredentialPath: options.persistedTask.coordinatorCredentialPath }
         : {}),
-      ...(options.persistedTask.coordinatorParentTaskId !== undefined
+      ...(!isTerminalMode && options.persistedTask.coordinatorParentTaskId !== undefined
         ? { coordinatorParentTaskId: options.persistedTask.coordinatorParentTaskId }
         : {}),
-      ...(options.persistedTask.coordinatorRole !== undefined
+      ...(!isTerminalMode && options.persistedTask.coordinatorRole !== undefined
         ? { coordinatorRole: options.persistedTask.coordinatorRole }
         : {}),
-      ...(options.persistedTask.coordinatorRunId !== undefined
+      ...(!isTerminalMode && options.persistedTask.coordinatorRunId !== undefined
         ? { coordinatorRunId: options.persistedTask.coordinatorRunId }
         : {}),
-      ...(options.persistedTask.coordinatorToolCommand !== undefined
+      ...(!isTerminalMode && options.persistedTask.coordinatorToolCommand !== undefined
         ? { coordinatorToolCommand: options.persistedTask.coordinatorToolCommand }
         : {}),
-      ...(options.persistedTask.terminalLayoutMode !== undefined
+      ...(!isTerminalMode && options.persistedTask.terminalLayoutMode !== undefined
         ? { terminalLayoutMode: options.persistedTask.terminalLayoutMode }
         : {}),
     },

@@ -128,6 +128,7 @@ export function BattleScreen() {
                       command={command}
                       args={args}
                       cwd={cwd}
+                      focusPanelId="ai-terminal"
                       onExit={(info) => markBattleCompetitorExited(agentId, info.exit_code)}
                       onBufferReady={(getBuffer) => bufferSerializers.set(competitor.id, getBuffer)}
                     />

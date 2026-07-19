@@ -6,6 +6,7 @@ import { setStore } from '../store/core';
 import {
   createTestAgentDef,
   createTestProject,
+  createTestTask,
   resetStoreForTest,
 } from '../test/store-test-helpers';
 
@@ -114,6 +115,7 @@ vi.mock('../app/task-workflows', () => ({
 }));
 
 import {
+  createTaskOptimistically,
   listPendingTaskCreations,
   resetPendingTaskCreationsForTests,
 } from '../app/task-creation-optimism';
@@ -310,6 +312,243 @@ describe('NewTaskDialog', () => {
     expect(screen.getByText('Selected agent: Claude')).toBeDefined();
   });
 
+  it('creates a project-backed terminal task without requiring or launching an agent', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-terminal');
+    setStore('availableAgents', []);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+
+    expect(screen.queryByText(/Selected agent:/)).toBeNull();
+    expect(screen.queryByPlaceholderText(/Describe the task/i)).toBeNull();
+    expect(screen.queryByText(/Runs without confirmation/i)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launch: { kind: 'terminal' },
+          name: 'Terminal',
+          projectId: 'project-1',
+        }),
+      );
+    });
+    expect(listPendingTaskCreations()).toEqual([]);
+  });
+
+  it('ignores a hidden agent prompt after switching to terminal mode', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-terminal');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.type(
+      await screen.findByPlaceholderText(/Describe the task/i),
+      'Review https://github.com/acme/widget/pull/42',
+    );
+    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(screen.getByPlaceholderText('Terminal')).toBeDefined();
+    expect(screen.getByText('task/terminal')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launch: { kind: 'terminal' },
+          name: 'Terminal',
+        }),
+      );
+    });
+    expect(createTaskMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ githubUrl: expect.any(String) }),
+    );
+  });
+
+  it('chooses a collision-free default terminal name across active, collapsed, and pending tasks', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockResolvedValue('task-terminal-4');
+    setStore('tasks', {
+      'task-terminal': createTestTask({
+        id: 'task-terminal',
+        name: 'Terminal',
+        taskMode: 'terminal',
+      }),
+      'task-terminal-2': createTestTask({
+        branchName: 'task/terminal-2',
+        collapsed: true,
+        id: 'task-terminal-2',
+        name: 'Archived shell',
+        taskMode: 'terminal',
+      }),
+    });
+    setStore('taskOrder', ['task-terminal']);
+    setStore('collapsedTaskOrder', ['task-terminal-2']);
+    createTaskOptimistically({
+      launchLabel: 'Terminal',
+      name: 'Terminal 3',
+      projectId: 'project-1',
+      run: () => new Promise<string>(() => {}),
+      taskMode: 'terminal',
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+
+    expect(screen.getByPlaceholderText('Terminal 4')).toBeDefined();
+    expect(screen.getByText('task/terminal-4')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launch: { kind: 'terminal' },
+          name: 'Terminal 4',
+          projectId: 'project-1',
+        }),
+      );
+    });
+  });
+
+  it('clears stale submission errors whenever the task mode changes', async () => {
+    const user = userEvent.setup();
+    setStore('availableAgents', []);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Coordinator' }));
+    fireEvent.input(screen.getByPlaceholderText('Add user authentication'), {
+      target: { value: 'Coordinate work' },
+    });
+    const form = screen.getByRole('button', { name: 'Create Task' }).closest('form');
+    if (!form) {
+      throw new Error('Expected task creation form');
+    }
+    fireEvent.submit(form);
+    expect(screen.getByText('Select an available agent')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Agent' }));
+    expect(screen.queryByText('Select an available agent')).toBeNull();
+
+    fireEvent.submit(form);
+    expect(screen.getByText('Select an available agent')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+    expect(screen.queryByText('Select an available agent')).toBeNull();
+  });
+
+  it('describes steps tracking without implying that terminal tasks have an agent', async () => {
+    const user = userEvent.setup();
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    await openAdvanced();
+
+    expect(
+      screen.getByTitle(
+        'Watches .claude/steps.json so the task panel can show durable step history and next-step guidance for this terminal task.',
+      ),
+    ).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Agent' }));
+    expect(
+      screen.getByTitle(
+        'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.',
+      ),
+    ).toBeDefined();
+  });
+
+  it('creates a terminal task in the project root through the shared root workflow', async () => {
+    const user = userEvent.setup();
+    createCurrentBranchTaskMock.mockImplementation(() => new Promise<string>(() => {}));
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    await user.click(await screen.findByRole('button', { name: 'Project root' }));
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launch: { kind: 'terminal' },
+          name: 'Terminal',
+          projectId: 'project-1',
+        }),
+      );
+    });
+    expect(listPendingTaskCreations()).toMatchObject([
+      {
+        baseBranch: 'main',
+        gitIsolation: 'current-branch',
+        taskMode: 'terminal',
+      },
+    ]);
+  });
+
+  it('disables project-root creation while a terminal root task is pending', async () => {
+    const user = userEvent.setup();
+    createTaskOptimistically({
+      baseBranch: 'main',
+      gitIsolation: 'current-branch',
+      launchLabel: 'Terminal',
+      name: 'Terminal',
+      projectId: 'project-1',
+      run: () => new Promise<string>(() => {}),
+      taskMode: 'terminal',
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+
+    const projectRootButton = screen.getByRole('button', { name: 'Project root' });
+    expect((projectRootButton as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByText('A project-root task is already being created for this project.'),
+    ).toBeDefined();
+  });
+
+  it('creates a terminal task in an existing worktree through the shared import workflow', async () => {
+    const user = userEvent.setup();
+    createExistingWorktreeTaskMock.mockImplementation(() => new Promise<string>(() => {}));
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    await openAdvanced();
+    await user.click(screen.getByRole('checkbox', { name: /Use existing worktree/i }));
+    await user.type(
+      screen.getByPlaceholderText('/path/to/existing/worktree'),
+      '/repo-worktrees/review',
+    );
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createExistingWorktreeTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          existingWorktreePath: '/repo-worktrees/review',
+          launch: { kind: 'terminal' },
+          name: 'Terminal',
+          projectId: 'project-1',
+        }),
+      );
+    });
+    expect(listPendingTaskCreations()).toMatchObject([
+      {
+        baseBranch: 'main',
+        gitIsolation: 'existing-worktree',
+        taskMode: 'terminal',
+      },
+    ]);
+  });
+
   it('creates a task from a custom command with parsed arguments', async () => {
     const user = userEvent.setup();
     createTaskMock.mockResolvedValue('task-custom');
@@ -325,10 +564,13 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(createTaskMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          agentDef: expect.objectContaining({
-            args: ['--model', 'fast'],
-            command: 'codex',
-            name: 'Terminal: codex --model fast',
+          launch: expect.objectContaining({
+            kind: 'agent',
+            agentDef: expect.objectContaining({
+              args: ['--model', 'fast'],
+              command: 'codex',
+              name: 'Terminal: codex --model fast',
+            }),
           }),
           name: 'codex --model fast',
           projectId: 'project-1',
@@ -370,9 +612,12 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(createTaskMock).toHaveBeenCalledWith(
         expect.objectContaining({
+          launch: expect.objectContaining({
+            kind: 'agent',
+            skipPermissions: true,
+          }),
           name: 'Ship it',
           projectId: 'project-1',
-          skipPermissions: true,
         }),
       );
     });
@@ -674,7 +919,7 @@ describe('NewTaskDialog', () => {
     expect((reopenedCheckbox as HTMLInputElement).checked).toBe(false);
   });
 
-  it('clears current-branch mode when the selected project already has a current-branch task', async () => {
+  it('clears project-root mode when the selected project already has a current-branch task', async () => {
     hasCurrentBranchTaskMock.mockReturnValue(true);
     setStore('projects', [
       createTestProject({
@@ -686,9 +931,12 @@ describe('NewTaskDialog', () => {
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    const currentBranchButton = await screen.findByRole('button', { name: /^Current branch/i });
+    const currentBranchButton = await screen.findByRole('button', { name: /^Project root/i });
     expect((currentBranchButton as HTMLButtonElement).disabled).toBe(true);
     expect(currentBranchButton.getAttribute('aria-pressed')).toBe('false');
+    expect(currentBranchButton.getAttribute('title')).toMatch(
+      /Reuses the project root instead of creating a worktree/i,
+    );
   });
 
   it('widens the dialog when many agents are available', async () => {
@@ -707,7 +955,7 @@ describe('NewTaskDialog', () => {
     expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
   });
 
-  it('widens the dialog and exposes isolation guidance in titles when current-branch mode is active', async () => {
+  it('widens the dialog and exposes isolation guidance in titles when project-root mode is active', async () => {
     setStore('projects', [
       createTestProject({
         defaultTaskGitIsolation: 'current-branch',
@@ -757,7 +1005,7 @@ describe('NewTaskDialog', () => {
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
     await screen.findByRole('button', { name: 'Create Task' });
-    const currentBranchButton = await screen.findByRole('button', { name: /^Current branch/i });
+    const currentBranchButton = await screen.findByRole('button', { name: /^Project root/i });
     await Promise.resolve();
     await user.click(currentBranchButton);
 
@@ -876,7 +1124,7 @@ describe('NewTaskDialog', () => {
 
     await screen.findByRole('button', { name: 'Create Task' });
     expect(screen.queryByLabelText('Base branch')).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Current branch/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Project root/i })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Use existing worktree/i })).toBeNull();
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');
@@ -892,5 +1140,38 @@ describe('NewTaskDialog', () => {
         }),
       );
     });
+  });
+
+  it('creates terminal-only tasks for non-git projects without Git location metadata', async () => {
+    const user = userEvent.setup();
+    createTaskMock.mockImplementation(() => new Promise<string>(() => {}));
+    setStore('projects', [
+      createTestProject({
+        path: '/tmp/folder',
+        projectMode: 'non-git',
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launch: { kind: 'terminal' },
+          name: 'Terminal',
+          projectId: 'project-1',
+          projectMode: 'non-git',
+        }),
+      );
+    });
+    expect(listPendingTaskCreations()).toMatchObject([
+      {
+        taskMode: 'terminal',
+      },
+    ]);
+    expect(listPendingTaskCreations()[0]).not.toHaveProperty('gitIsolation');
   });
 });

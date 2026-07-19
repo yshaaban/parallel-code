@@ -11,6 +11,7 @@ interface TaskPanelFocusRuntimeOptions {
   getPromptRef: () => HTMLTextAreaElement | undefined;
   getStoredTaskFocusedPanel: (taskId: string) => string | null;
   getTitleEditHandle: () => EditableTextHandle | undefined;
+  hasPromptPanel: boolean;
   isActive: Accessor<boolean>;
   notesTab: Accessor<'notes' | 'plan'>;
   registerFocusFn: (id: string, focusFn: () => void) => void;
@@ -48,12 +49,16 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
 
     options.registerFocusFn(titleTargetId, () => options.getTitleEditHandle()?.startEdit());
     options.registerFocusFn(changedFilesTargetId, () => options.getChangedFilesRef()?.focus());
-    options.registerFocusFn(promptTargetId, () => options.getPromptRef()?.focus());
+    if (options.hasPromptPanel) {
+      options.registerFocusFn(promptTargetId, () => options.getPromptRef()?.focus());
+    }
 
     onCleanup(() => {
       options.unregisterFocusFn(titleTargetId);
       options.unregisterFocusFn(changedFilesTargetId);
-      options.unregisterFocusFn(promptTargetId);
+      if (options.hasPromptPanel) {
+        options.unregisterFocusFn(promptTargetId);
+      }
     });
   });
 

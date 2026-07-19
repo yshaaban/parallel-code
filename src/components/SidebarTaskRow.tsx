@@ -8,6 +8,7 @@ import {
 import { requestTerminalPrewarm } from '../app/terminal-prewarm';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
+import { isTerminalTask } from '../domain/task-mode';
 import type { AgentDef } from '../ipc/types';
 import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
@@ -31,6 +32,7 @@ import {
   getTaskReviewBadgeColor,
   getTaskReviewBadgeLabelForState,
 } from './task-review-presentation';
+import { ProjectRootBadge } from './TaskContextBadges';
 
 interface SidebarTaskRowProps {
   dragState: () => { groupId: string; taskId: string } | null;
@@ -255,25 +257,6 @@ function InlineAttentionIndicator(props: InlineAttentionIndicatorProps): JSX.Ele
         </Show>
       </span>
     </Show>
-  );
-}
-
-function TaskBranchBadge(props: { branchName: string }): JSX.Element {
-  return (
-    <span
-      style={{
-        'font-size': sf(10),
-        'font-weight': '600',
-        padding: '1px 5px',
-        'border-radius': '3px',
-        background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
-        color: theme.warning,
-        'flex-shrink': '0',
-        'line-height': '1.5',
-      }}
-    >
-      {props.branchName}
-    </span>
   );
 }
 
@@ -506,9 +489,12 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               }}
             >
               <TaskActivityIndicator status={taskActivityStatus()} size="sm" />
-              <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
+              <AgentGlyph
+                agentDef={getPrimaryTaskAgentDef(props.taskId)}
+                fallbackLabel={isTerminalTask(currentTask()) ? 'Terminal task' : undefined}
+              />
               <Show when={isCurrentBranchTask(currentTask())}>
-                <TaskBranchBadge branchName={currentTask().branchName} />
+                <ProjectRootBadge branchName={currentTask().branchName} compact />
               </Show>
               <span
                 style={{
@@ -601,9 +587,12 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             status={getTaskActivityStatus(props.taskId, taskActivityNow())}
             size="sm"
           />
-          <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
+          <AgentGlyph
+            agentDef={getPrimaryTaskAgentDef(props.taskId)}
+            fallbackLabel={isTerminalTask(currentTask()) ? 'Terminal task' : undefined}
+          />
           <Show when={isCurrentBranchTask(currentTask())}>
-            <TaskBranchBadge branchName={currentTask().branchName} />
+            <ProjectRootBadge branchName={currentTask().branchName} compact />
           </Show>
           <TaskReviewBadge taskId={props.taskId} />
           <TaskTerminalStartupBadge taskId={props.taskId} />

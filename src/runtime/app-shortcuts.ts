@@ -18,6 +18,7 @@ import { showNotification } from '../store/notification';
 import { adjustGlobalScale, resetFontScale, resetGlobalScale, toggleSidebar } from '../store/ui';
 import { closeShell, spawnShellForTask } from '../app/task-shell-workflows';
 import type { KeybindingActionId } from '../domain/keybindings';
+import { parseIndexedTaskPanelId } from '../domain/task-panel-id';
 
 function handleShellShortcutFailure(action: string, error: unknown): void {
   console.warn(`Failed to ${action}:`, error);
@@ -31,11 +32,10 @@ function getFocusedShellId(): { shellId: string; taskId: string } | null {
   }
 
   const panel = getTaskFocusedPanel(taskId);
-  if (!panel.startsWith('shell:')) {
+  const index = parseIndexedTaskPanelId(panel, 'shell');
+  if (index === null) {
     return null;
   }
-
-  const index = Number.parseInt(panel.slice(6), 10);
   const shellId = store.tasks[taskId]?.shellAgentIds[index];
   return shellId ? { shellId, taskId } : null;
 }

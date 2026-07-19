@@ -6,17 +6,12 @@ import {
   isTaskGitStatusFresh,
   refreshTaskGitStatusForTask,
 } from '../store/task-git-status';
-import {
-  isCurrentBranchTask,
-  isExistingWorktreeTask,
-  isManagedWorktreeTask,
-  normalizeTaskBaseBranch,
-} from '../store/task-git-isolation';
-import { isNonGitProject } from '../store/project-mode';
+import { normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
+import { getTaskClosePolicy } from './task-close-policy';
 
 interface CloseTaskDialogProps {
   open: boolean;
@@ -27,6 +22,8 @@ interface CloseTaskDialogProps {
 export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
+  const closePolicy = () => getTaskClosePolicy(props.task, getProject(props.task.projectId));
+  const isManagedWorktree = () => closePolicy().location === 'managed-worktree';
   let gitStatusRefreshGeneration = 0;
 
   onCleanup(invalidateGitStatusRefresh);
@@ -68,7 +65,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   }
 
   createEffect(() => {
-    if (!props.open || !isManagedWorktreeTask(props.task)) {
+    if (!props.open || !isManagedWorktree()) {
       invalidateGitStatusRefresh();
       resetGitStatusValidation();
       return;
@@ -85,13 +82,13 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   const isGitStatusVerified = () =>
     !gitStatusLoading() && gitStatusReady() && isTaskGitStatusFresh(worktreeStatus());
   const gitStatusUnavailable = () =>
-    isManagedWorktreeTask(props.task) &&
+    isManagedWorktree() &&
     !gitStatusLoading() &&
     (!gitStatusReady() || !isTaskGitStatusFresh(worktreeStatus()));
   const hasRiskyGitStatus = () =>
     Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
   const gitStatusErrorMessage = () => worktreeStatus()?.errorMessage ?? '';
-  const closeConfirmDisabled = () => isManagedWorktreeTask(props.task) && gitStatusLoading();
+  const closeConfirmDisabled = () => isManagedWorktree() && gitStatusLoading();
 
   return (
     <ConfirmDialog
@@ -99,25 +96,28 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
       title="Close Task"
       message={
         <div>
-          <Show when={isNonGitProject(props.task)}>
+          <Show when={closePolicy().location === 'non-git'}>
             <p style={{ margin: '0' }}>
-              This will stop all running agents and shells for this non-git task. No git operations
-              will be performed.
+              This will stop all running {closePolicy().runningProcessesLabel} for this non-git
+              task. No git operations will be performed.
             </p>
           </Show>
-          <Show when={!isNonGitProject(props.task) && isCurrentBranchTask(props.task)}>
+          <Show when={closePolicy().location === 'project-root'}>
             <p style={{ margin: '0' }}>
-              This will stop all running agents and shells for this task. No git operations will be
-              performed.
+              This will stop all running {closePolicy().runningProcessesLabel} for this task. No git
+              operations will be performed.
             </p>
           </Show>
-          <Show when={!isNonGitProject(props.task) && isExistingWorktreeTask(props.task)}>
+          <Show when={closePolicy().location === 'existing-worktree'}>
             <p style={{ margin: '0' }}>
-              This will stop all running agents and shells for this task. The existing worktree and
-              branch will be kept.
+              This will stop all running {closePolicy().runningProcessesLabel} for this task. The
+              existing worktree and branch will be kept.
             </p>
           </Show>
-          <Show when={isManagedWorktreeTask(props.task)}>
+          <Show when={isManagedWorktree()}>
+            <p style={{ margin: '0 0 12px' }}>
+              This will stop all running {closePolicy().runningProcessesLabel} for this task.
+            </p>
             <Show when={gitStatusUnavailable()}>
               <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
                 Warning: Unable to verify current git status. Closing may remove uncommitted changes
@@ -148,8 +148,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
               </div>
             </Show>
             {(() => {
-              const project = getProject(props.task.projectId);
-              const willDeleteBranch = project?.deleteBranchOnClose ?? true;
+              const willDeleteBranch = closePolicy().willDeleteBranch;
               return (
                 <>
                   <p style={{ margin: '0 0 8px' }}>
@@ -186,8 +185,8 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
           </Show>
         </div>
       }
-      confirmLabel={isManagedWorktreeTask(props.task) ? 'Delete' : 'Close'}
-      danger={isManagedWorktreeTask(props.task)}
+      confirmLabel={isManagedWorktree() ? 'Delete' : 'Close'}
+      danger={isManagedWorktree()}
       confirmDisabled={closeConfirmDisabled()}
       onConfirm={() => {
         props.onDone();

@@ -1,5 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
 import type { TaskStepEntry, TaskStepsSnapshot } from '../domain/task-steps';
+import { isTerminalTask } from '../domain/task-mode';
 import { invoke } from '../lib/ipc';
 import { clearPrefillPrompt, setPrefillPrompt } from '../store/tasks';
 import { setTaskFocusedPanel } from '../store/focus';
@@ -44,6 +45,13 @@ export async function fetchTaskStepsSnapshotForTask(
 }
 
 export function prefillTaskStepNextAction(taskId: string, text: string): void {
+  const task = store.tasks[taskId];
+  if (task && isTerminalTask(task)) {
+    clearPrefillPrompt(taskId);
+    setTaskFocusedPanel(taskId, task.shellAgentIds.length > 0 ? 'shell:0' : 'shell-toolbar:0');
+    return;
+  }
+
   const normalized = text.trim();
   if (normalized.length === 0) {
     clearPrefillPrompt(taskId);
@@ -57,6 +65,11 @@ export function prefillTaskStepNextAction(taskId: string, text: string): void {
 export function jumpToTaskStepTarget(taskId: string, _step: TaskStepEntry): void {
   const task = store.tasks[taskId];
   if (!task) {
+    return;
+  }
+
+  if (isTerminalTask(task)) {
+    setTaskFocusedPanel(taskId, task.shellAgentIds.length > 0 ? 'shell:0' : 'shell-toolbar:0');
     return;
   }
 

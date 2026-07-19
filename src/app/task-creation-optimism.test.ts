@@ -58,16 +58,25 @@ describe('task-creation-optimism', () => {
     const created: string[] = [];
 
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      baseBranch: 'main',
+      gitIsolation: 'current-branch',
+      launchLabel: 'Claude',
       name: 'New task',
       onCreated: (taskId) => created.push(taskId),
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
     expect(pendingId.startsWith('pending-task:')).toBe(true);
     expect(listPendingTaskCreations()).toMatchObject([
-      { name: 'New task', pendingId, state: { kind: 'creating' } },
+      {
+        baseBranch: 'main',
+        gitIsolation: 'current-branch',
+        name: 'New task',
+        pendingId,
+        state: { kind: 'creating' },
+      },
     ]);
 
     deferred.resolve('task-real');
@@ -80,9 +89,10 @@ describe('task-creation-optimism', () => {
   it('moves the entry to an error state with the failure message when the thunk rejects', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Failing task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -97,9 +107,10 @@ describe('task-creation-optimism', () => {
   it('falls back to a generic message for blank failures', async () => {
     const deferred = createDeferredCreate();
     createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Failing task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -115,9 +126,10 @@ describe('task-creation-optimism', () => {
   it('retry re-runs the captured thunk from the error state and resolves the entry', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Retry task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -137,9 +149,10 @@ describe('task-creation-optimism', () => {
   it('ignores retry for entries that are still creating', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Busy task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -153,9 +166,10 @@ describe('task-creation-optimism', () => {
   it('dismiss removes an error entry and a late rejection cannot revive it', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Dismissed task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -177,9 +191,10 @@ describe('task-creation-optimism', () => {
   it('ignores dismiss while creation is still in flight', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Still creating',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -194,9 +209,10 @@ describe('task-creation-optimism', () => {
   it('never lets pending ids enter canonical task records', async () => {
     const deferred = createDeferredCreate();
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Ghost task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 
@@ -212,9 +228,10 @@ describe('task-creation-optimism', () => {
   it('reset seam clears all pending entries', () => {
     const deferred = createDeferredCreate();
     createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Reset task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: deferred.run,
     });
 

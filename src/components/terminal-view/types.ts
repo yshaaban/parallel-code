@@ -26,10 +26,12 @@ export interface TerminalViewProps {
   onPromptDetected?: (text: string) => void;
   projectMode?: ProjectMode;
   replaceExistingSession?: boolean;
+  startsTaskWatchers?: boolean;
   onReady?: (focusFn: () => void) => void;
   onSpawnResolved?: () => void;
   onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;
+  focusPanelId?: string;
   initialCommand?: string;
   isCommandTarget?: boolean;
   isFocused?: boolean;

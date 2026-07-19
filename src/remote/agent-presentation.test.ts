@@ -122,19 +122,17 @@ describe('formatRemoteTaskContext', () => {
     expect(formatRemoteTaskContext('main', 'my-project', false)).toBe('main \u00B7 my-project');
   });
 
-  it('shows branch with current-branch label', () => {
-    expect(formatRemoteTaskContext('feature/auth', null, true)).toBe(
-      'feature/auth (current branch)',
-    );
+  it('shows branch with project-root label', () => {
+    expect(formatRemoteTaskContext('feature/auth', null, true)).toBe('feature/auth (project root)');
   });
 
   it('shows folder alone when branch is null', () => {
     expect(formatRemoteTaskContext(null, 'my-project', false)).toBe('my-project');
   });
 
-  it('keeps current-branch mode visible when branch metadata is unavailable', () => {
+  it('keeps project-root mode visible when branch metadata is unavailable', () => {
     expect(formatRemoteTaskContext(null, 'my-project', true)).toBe(
-      'Current Branch \u00B7 my-project',
+      'Project root \u00B7 my-project',
     );
   });
 

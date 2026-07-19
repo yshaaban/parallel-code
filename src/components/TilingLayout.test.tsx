@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { For, type JSX } from 'solid-js';
+import { For, untrack, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   beginAppStartupPresentation,
@@ -14,6 +14,12 @@ import { resetWorkspaceShapeCacheForTests } from '../app/workspace-shape-cache';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
+const { closeTaskMock, confirmMock, crashingTaskIds } = vi.hoisted(() => ({
+  closeTaskMock: vi.fn(),
+  confirmMock: vi.fn(),
+  crashingTaskIds: new Set<string>(),
+}));
+
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -24,11 +30,21 @@ vi.mock('../store/store', async () => {
 });
 
 vi.mock('../app/task-workflows', () => ({
-  closeTask: vi.fn(),
+  closeTask: closeTaskMock,
+}));
+
+vi.mock('../lib/dialog', () => ({
+  confirm: confirmMock,
 }));
 
 vi.mock('./TaskPanel', () => ({
-  TaskPanel: (props: { task: { id: string } }) => <div data-test-task-panel={props.task.id} />,
+  TaskPanel: (props: { task: { id: string } }) => {
+    const taskId = untrack(() => props.task.id);
+    if (crashingTaskIds.has(taskId)) {
+      throw new Error('render failed');
+    }
+    return <div data-test-task-panel={taskId} />;
+  },
 }));
 
 vi.mock('./TerminalPanel', () => ({
@@ -72,6 +88,9 @@ function getGhostColumnCount(container: HTMLElement): number {
 
 describe('TilingLayout', () => {
   beforeEach(() => {
+    closeTaskMock.mockReset();
+    confirmMock.mockReset();
+    crashingTaskIds.clear();
     resetStoreForTest();
     resetAppStartupStatusForTests();
     resetPendingTaskCreationsForTests();
@@ -182,9 +201,10 @@ describe('TilingLayout', () => {
     setStore('projects', [createTestProject()]);
     let resolveCreate: (taskId: string) => void = () => {};
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Instant task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: () =>
         new Promise<string>((resolve) => {
           resolveCreate = (taskId) => {
@@ -213,9 +233,10 @@ describe('TilingLayout', () => {
     let rejectCreate: (error: unknown) => void = () => {};
     let attempt = 0;
     const pendingId = createTaskOptimistically({
-      agentDefName: 'Claude',
+      launchLabel: 'Claude',
       name: 'Fragile task',
       projectId: 'project-1',
+      taskMode: 'agent',
       run: () => {
         attempt += 1;
         return new Promise<string>((_resolve, reject) => {
@@ -252,5 +273,62 @@ describe('TilingLayout', () => {
     await waitFor(() => {
       expect(result.container.querySelector(`[data-pending-task-id="${pendingId}"]`)).toBeNull();
     });
+  });
+
+  it('subtly flags project-root intent on a pending task column', () => {
+    const pendingId = createTaskOptimistically({
+      baseBranch: 'main',
+      gitIsolation: 'current-branch',
+      launchLabel: 'Terminal',
+      name: 'Terminal',
+      projectId: 'project-1',
+      run: () => new Promise<string>(() => {}),
+      taskMode: 'terminal',
+    });
+
+    const result = render(() => <TilingLayout />);
+
+    const pendingColumn = result.container.querySelector(`[data-pending-task-id="${pendingId}"]`);
+    expect(pendingColumn).not.toBeNull();
+    expect(screen.getByLabelText('Works directly in the project root on main')).toBeDefined();
+    expect(screen.getByText('root')).toBeDefined();
+  });
+
+  it.each([
+    {
+      expected:
+        'Close this task? Running shells will be stopped. The existing worktree and branch will be kept.',
+      task: createTestTask({
+        agentIds: [],
+        gitIsolation: 'existing-worktree',
+        id: 'task-existing',
+        shellAgentIds: ['shell-1'],
+        taskMode: 'terminal',
+        worktreeOwnership: 'external',
+      }),
+    },
+    {
+      expected:
+        'Close this task? Running shells will be stopped. No git operations will be performed.',
+      task: createTestTask({
+        agentIds: [],
+        gitIsolation: 'current-branch',
+        id: 'task-root',
+        shellAgentIds: ['shell-1'],
+        taskMode: 'terminal',
+      }),
+    },
+  ])('uses truthful emergency-close copy for $task.id', async ({ expected, task }) => {
+    setStore('projects', [createTestProject({ id: task.projectId })]);
+    setStore('tasks', { [task.id]: task });
+    setStore('taskOrder', [task.id]);
+    crashingTaskIds.add(task.id);
+    confirmMock.mockResolvedValue(false);
+
+    render(() => <TilingLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Close Task' }));
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expected));
+    expect(closeTaskMock).not.toHaveBeenCalled();
   });
 });

@@ -127,6 +127,25 @@ describe('SidebarTaskRow', () => {
     vi.useRealTimers();
   });
 
+  it('shows compact, text-based context for terminal tasks in the project root', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        branchName: 'main',
+        gitIsolation: 'current-branch',
+        shellAgentIds: ['shell-1'],
+        taskMode: 'terminal',
+      }),
+    });
+    setStore('agents', {});
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByRole('img', { name: 'Terminal task' })).toBeDefined();
+    expect(screen.getByText('root')).toBeDefined();
+    expect(screen.getByTitle('Works directly in the project root on main')).toBeDefined();
+  });
+
   it('renders waiting-input as a compact inline label without preview noise', () => {
     setStore('agentSupervision', {
       'agent-1': {

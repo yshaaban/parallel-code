@@ -19,6 +19,7 @@ import type { HydraStartupMode } from '../lib/hydra.js';
 import type { LookPreset } from '../lib/look.js';
 import type { PersistedKeybindingOverrides } from '../domain/keybindings.js';
 import type { CoordinatorRunSnapshot } from '../domain/coordinator.js';
+import type { TaskMode } from '../domain/task-mode.js';
 
 export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
 export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
@@ -69,6 +70,7 @@ export type TaskCloseState =
 
 export interface Task {
   id: string;
+  taskMode: TaskMode;
   name: string;
   projectId: string;
   branchName: string;
@@ -114,6 +116,7 @@ export interface Terminal {
 
 export interface PersistedTask {
   id: string;
+  taskMode?: TaskMode;
   name: string;
   projectId: string;
   branchName: string;

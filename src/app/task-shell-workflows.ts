@@ -7,6 +7,7 @@ import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { saveBrowserWorkspaceState } from '../store/persistence';
 import { setTaskFocusedPanel } from '../store/focus';
+import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { setStore, store } from '../store/state';
 import {
   clearAgentActivity,
@@ -116,6 +117,9 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
       const task = state.tasks[taskId];
       if (task) {
         task.shellAgentIds = task.shellAgentIds.filter((id) => id !== shellId);
+        if (state.activeTaskId === taskId && state.activeAgentId === shellId) {
+          state.activeAgentId = getSelectedTaskRuntimeAgentId(task);
+        }
       }
     }),
   );

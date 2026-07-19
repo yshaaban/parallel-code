@@ -327,4 +327,31 @@ describe('TaskNotesFilesSection', () => {
       expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-2', 'summarize this plan');
     });
   });
+
+  it('does not show agent prompt actions for terminal-only tasks', () => {
+    const task = createTestTask({
+      agentIds: [],
+      id: 'task-1',
+      notes: 'terminal notes',
+      shellAgentIds: ['shell-1'],
+      taskMode: 'terminal',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    expect(screen.queryByRole('button', { name: 'Send notes as prompt' })).toBeNull();
+  });
 });

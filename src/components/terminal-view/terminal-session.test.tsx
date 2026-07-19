@@ -820,6 +820,28 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('passes task watcher ownership through the attach request', async () => {
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps({ isShell: true, startsTaskWatchers: true }),
+    });
+
+    await flushSessionStartup(4);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.AttachTerminalSession,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        isShell: true,
+        startsTaskWatchers: true,
+        taskId: 'task-1',
+      }),
+    );
+
+    session.cleanup();
+  });
+
   it('passes one-shot session replacement intent through the spawn request', async () => {
     const onSpawnResolved = vi.fn();
     const session = startTerminalSession({

@@ -47,11 +47,13 @@ import {
   isTaskClosing,
   isTaskRemoving,
 } from '../domain/task-closing';
+import { isTerminalTask } from '../domain/task-mode';
 import {
   clearInitialPrompt,
   clearPendingAction,
   clearPrefillPrompt,
   getProject,
+  getProjectMode,
   getSelectedTaskAgentId,
   getTaskFocusedPanel,
   getTaskActivityStatus,
@@ -99,6 +101,7 @@ interface TaskPanelProps {
 
 export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const taskId = untrack(() => props.task.id);
+  const terminalTask = untrack(() => isTerminalTask(props.task));
   const electronRuntime = isElectronRuntime();
   const taskActivityNow = useTaskActivityNow();
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
@@ -131,9 +134,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     showNotification,
     task: () => props.task,
   });
-  const permissionController = createTaskPanelPermissionController({
-    task: () => props.task,
-  });
+  const permissionController = terminalTask
+    ? null
+    : createTaskPanelPermissionController({
+        task: () => props.task,
+      });
 
   function cancelTaskTerminalSwitchState(): void {
     cancelTerminalSwitchEchoGrace(taskId);
@@ -195,6 +200,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     getPromptRef: () => promptRef,
     getStoredTaskFocusedPanel,
     getTitleEditHandle: () => titleEditHandle,
+    hasPromptPanel: !terminalTask,
     isActive: () => props.isActive,
     notesTab,
     registerFocusFn,
@@ -212,7 +218,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   }
 
   function promptAgentId(): string | null {
-    return selectedTaskAgentId() ?? permissionController.firstAgentId();
+    return selectedTaskAgentId() ?? permissionController?.firstAgentId() ?? null;
   }
 
   function selectedTaskAgent() {
@@ -225,11 +231,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   }
 
   function handleApprovePermissionRequest(requestId: string): void {
-    void permissionController.approvePermissionRequest(requestId);
+    void permissionController?.approvePermissionRequest(requestId);
   }
 
   function handleDenyPermissionRequest(requestId: string): void {
-    void permissionController.denyPermissionRequest(requestId);
+    void permissionController?.denyPermissionRequest(requestId);
   }
 
   function handleTitleMouseDown(event: MouseEvent): void {
@@ -331,7 +337,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
             style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
           >
-            <For each={permissionController.pendingPermissionEntries()}>
+            <For each={permissionController?.pendingPermissionEntries() ?? []}>
               {(entry) => (
                 <PermissionCard
                   request={entry.request}
@@ -387,24 +393,31 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     setNotesTab,
   });
   const shellSection = createTaskShellSection({
+    baseBranch: () => props.task.baseBranch,
     bookmarks: projectBookmarks,
     isActive: () => props.isActive,
+    projectMode: () => getProjectMode(props.task),
     shellAgentIds: () => props.task.shellAgentIds,
     taskId: () => taskId,
     worktreePath: () => props.task.worktreePath,
+    primary: terminalTask,
   });
-  const aiTerminalSection = createTaskAiTerminalSection({
-    isActive: () => props.isActive,
-    onReuseLastPrompt: () => {
-      if (props.task.lastPrompt && promptHandle && !promptHandle.getText()) {
-        promptHandle.setText(props.task.lastPrompt);
-      }
-    },
-    task: () => props.task,
-  });
-  const coordinatorSection = createTaskCoordinatorSection({
-    task: () => props.task,
-  });
+  const agentSections = terminalTask
+    ? null
+    : {
+        aiTerminal: createTaskAiTerminalSection({
+          isActive: () => props.isActive,
+          onReuseLastPrompt: () => {
+            if (props.task.lastPrompt && promptHandle && !promptHandle.getText()) {
+              promptHandle.setText(props.task.lastPrompt);
+            }
+          },
+          task: () => props.task,
+        }),
+        coordinator: createTaskCoordinatorSection({
+          task: () => props.task,
+        }),
+      };
 
   const panelChildren = () => {
     const children: PanelChild[] = [titleBar(), branchInfoBar()];
@@ -417,10 +430,16 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     if (nextStepsSection) {
       children.push(nextStepsSection);
     }
-    if (props.task.coordinatorRole === 'coordinator') {
-      children.push(coordinatorSection);
+    if (terminalTask) {
+      children.push(shellSection);
+      return children;
     }
-    children.push(shellSection, aiTerminalSection, promptInput());
+    if (props.task.coordinatorRole === 'coordinator' && agentSections) {
+      children.push(agentSections.coordinator);
+    }
+    if (agentSections) {
+      children.push(shellSection, agentSections.aiTerminal, promptInput());
+    }
     return children;
   };
 

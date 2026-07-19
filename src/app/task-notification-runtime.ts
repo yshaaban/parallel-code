@@ -6,6 +6,7 @@ import {
   type TaskNotificationKind,
   type TaskNotificationRequest,
 } from '../domain/task-notification';
+import { parseIndexedTaskPanelId } from '../domain/task-panel-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { getTaskFocusedPanel, setTaskFocusedPanel } from '../store/focus';
 import { setActiveTask } from '../store/navigation';
@@ -146,7 +147,7 @@ function getPanelNoun(focusPanel: string | undefined): string {
     return 'steps';
   }
 
-  if (focusPanel.startsWith('shell:')) {
+  if (parseIndexedTaskPanelId(focusPanel, 'shell') !== null) {
     return 'shell';
   }
 

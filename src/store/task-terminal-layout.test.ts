@@ -9,6 +9,7 @@ import type { Task } from './types';
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
     agentIds: ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5'],
+    taskMode: 'agent',
     branchName: 'task/test',
     id: 'task-1',
     lastPrompt: '',

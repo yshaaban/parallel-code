@@ -470,6 +470,22 @@ describe('TaskPanel', () => {
     expect(cancelTerminalSwitchWindowMock).not.toHaveBeenCalled();
   });
 
+  it('composes terminal-only tasks around the task shell without agent surfaces', () => {
+    const task = createTestTask({
+      agentIds: [],
+      shellAgentIds: ['shell-1'],
+      taskMode: 'terminal',
+    });
+    setStore('tasks', { 'task-1': task });
+
+    render(() => <TaskPanel task={task} isActive />);
+
+    expect(screen.getByText('Shell section')).toBeDefined();
+    expect(screen.queryByText('AI terminal')).toBeNull();
+    expect(screen.queryByLabelText('Prompt input')).toBeNull();
+    expect(screen.queryByText('Permission card')).toBeNull();
+  });
+
   it('routes permission responses through the app-layer workflow owner', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 

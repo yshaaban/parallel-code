@@ -1,5 +1,7 @@
 import { createSignal } from 'solid-js';
 import { createRandomId } from '../lib/random-id';
+import type { TaskMode } from '../domain/task-mode';
+import type { TaskGitIsolationMode } from '../store/types';
 
 // Renderer-local optimistic task creation. Pending records render as
 // provisional columns while the backend create round trip is in flight; they
@@ -8,12 +10,15 @@ import { createRandomId } from '../lib/random-id';
 // through the unchanged createTask store insert and the pending ghost is
 // removed in the same resolve continuation.
 export interface PendingTaskCreation {
-  agentDefName: string;
+  baseBranch?: string;
+  gitIsolation?: TaskGitIsolationMode;
+  launchLabel: string;
   name: string;
   pendingId: string;
   projectId: string;
   startedAtMs: number;
   state: { kind: 'creating' } | { kind: 'error'; message: string };
+  taskMode: TaskMode;
 }
 
 interface PendingTaskCreationRuntime {
@@ -80,21 +85,27 @@ function runPendingTaskCreation(pendingId: string): void {
 }
 
 export function createTaskOptimistically(options: {
-  agentDefName: string;
+  baseBranch?: string;
+  gitIsolation?: TaskGitIsolationMode;
+  launchLabel: string;
   name: string;
   onCreated?: (taskId: string) => void;
   projectId: string;
   run: () => Promise<string>;
+  taskMode: TaskMode;
 }): string {
   const pendingId = `pending-task:${createRandomId()}`;
   pendingTaskCreationRuntimes.set(pendingId, {
     entry: {
-      agentDefName: options.agentDefName,
+      ...(options.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
+      ...(options.gitIsolation !== undefined ? { gitIsolation: options.gitIsolation } : {}),
+      launchLabel: options.launchLabel,
       name: options.name,
       pendingId,
       projectId: options.projectId,
       startedAtMs: Date.now(),
       state: { kind: 'creating' },
+      taskMode: options.taskMode,
     },
     onCreated: options.onCreated,
     run: options.run,

@@ -61,6 +61,28 @@ describe('browser IPC task-command args', () => {
     });
   });
 
+  it('preserves task watcher ownership while normalizing a terminal attach', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.AttachTerminalSession,
+        {
+          clientId: 'spoofed-client',
+          controllerId: 'spoofed-client',
+          isShell: true,
+          startsTaskWatchers: true,
+          taskId: 'task-1',
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      clientId: 'browser-client-1',
+      controllerId: 'browser-client-1',
+      isShell: true,
+      startsTaskWatchers: true,
+      taskId: 'task-1',
+    });
+  });
+
   it('injects browser client identity into batch session ensure requests', () => {
     expect(
       normalizeBrowserIpcTaskCommandArgs(

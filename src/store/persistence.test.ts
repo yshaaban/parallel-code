@@ -167,6 +167,88 @@ describe('persistence integration', () => {
     expect(store.activeAgentId).toBe('agent-2');
   });
 
+  it('hydrates legacy tasks without an explicit mode as agent tasks', () => {
+    const persistedJson = JSON.stringify({
+      projects: [createTestProject()],
+      taskOrder: ['task-legacy'],
+      tasks: {
+        'task-legacy': {
+          agentDef: null,
+          branchName: 'task/legacy',
+          id: 'task-legacy',
+          lastPrompt: '',
+          name: 'Legacy task',
+          notes: '',
+          projectId: 'project-1',
+          shellCount: 0,
+          worktreePath: '/tmp/project/task-legacy',
+        },
+      },
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.tasks['task-legacy']?.taskMode).toBe('agent');
+  });
+
+  it('round-trips terminal tasks while excluding agent-only state', () => {
+    setStore('projects', [createTestProject()]);
+    setStore('taskOrder', ['task-terminal']);
+    setStore('activeTaskId', 'task-terminal');
+    setStore('activeAgentId', 'shell-1');
+    setStore('tasks', {
+      'task-terminal': createTestTask({
+        agentIds: ['corrupt-agent'],
+        coordinatorRole: 'coordinator',
+        id: 'task-terminal',
+        planFileName: 'steps.md',
+        planRelativePath: '.claude/steps.md',
+        savedInitialPrompt: 'should not survive',
+        selectedAgentId: 'corrupt-agent',
+        shellAgentIds: ['shell-1'],
+        skipPermissions: true,
+        stepsTracking: true,
+        taskMode: 'terminal',
+        terminalLayoutMode: 'split',
+      }),
+    });
+    setStore('agents', {
+      'corrupt-agent': createTestAgent({ id: 'corrupt-agent', taskId: 'task-terminal' }),
+    });
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    const persisted = JSON.parse(workspaceJson) as {
+      tasks: Record<string, Record<string, unknown>>;
+    };
+    expect(persisted.tasks['task-terminal']).toMatchObject({
+      agentDef: null,
+      agentId: null,
+      planFileName: 'steps.md',
+      planRelativePath: '.claude/steps.md',
+      shellAgentIds: ['shell-1'],
+      stepsTracking: true,
+      taskMode: 'terminal',
+    });
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('agentIds');
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('selectedAgentId');
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('savedInitialPrompt');
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('skipPermissions');
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('terminalLayoutMode');
+    expect(persisted.tasks['task-terminal']).not.toHaveProperty('coordinatorRole');
+
+    resetStoreForTest();
+    isElectronRuntimeMock.mockReturnValue(true);
+
+    expect(applyLoadedStateJson(workspaceJson)).toBe(true);
+    expect(store.tasks['task-terminal']).toMatchObject({
+      agentIds: [],
+      planFileName: 'steps.md',
+      shellAgentIds: ['shell-1'],
+      taskMode: 'terminal',
+    });
+    expect(store.agents).toEqual({});
+    expect(store.activeAgentId).toBe('shell-1');
+  });
+
   it('does not persist incomplete multi-agent definitions as a restorable agent set', () => {
     setStore('projects', [createTestProject()]);
     setStore('taskOrder', ['task-1']);
@@ -686,6 +768,7 @@ describe('persistence integration', () => {
   it('clears transient prompt-dispatch state during a full-state load', () => {
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task',
         projectId: 'project-1',
@@ -753,6 +836,7 @@ describe('persistence integration', () => {
   it('clears stale git-status freshness state when full-state load resets the store', async () => {
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -868,6 +952,7 @@ describe('persistence integration', () => {
     setStore('collapsedTaskOrder', ['task-2']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -884,6 +969,7 @@ describe('persistence integration', () => {
         stepsTracking: true,
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -1109,6 +1195,7 @@ describe('persistence integration', () => {
     setStore('collapsedTaskOrder', ['task-2']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -1120,6 +1207,7 @@ describe('persistence integration', () => {
         lastPrompt: 'last prompt',
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -1276,6 +1364,7 @@ describe('persistence integration', () => {
     setStore('collapsedTaskOrder', ['task-2', 'removed-collapsed-task']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -1287,6 +1376,7 @@ describe('persistence integration', () => {
         lastPrompt: '',
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -1299,6 +1389,7 @@ describe('persistence integration', () => {
         collapsed: true,
       },
       'removed-task': {
+        taskMode: 'agent',
         id: 'removed-task',
         name: 'Removed Task',
         projectId: 'project-1',
@@ -1311,6 +1402,7 @@ describe('persistence integration', () => {
         closeState: { kind: 'removing' },
       },
       'removed-collapsed-task': {
+        taskMode: 'agent',
         id: 'removed-collapsed-task',
         name: 'Removed Collapsed Task',
         projectId: 'project-1',
@@ -1374,6 +1466,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -1522,6 +1615,7 @@ describe('persistence integration', () => {
     setStore('activeAgentId', 'local-agent');
     setStore('tasks', {
       'local-task': {
+        taskMode: 'agent',
         id: 'local-task',
         name: 'Local',
         projectId: 'project-1',
@@ -1568,7 +1662,7 @@ describe('persistence integration', () => {
 
     const persistedJson = JSON.stringify({
       projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
-      taskOrder: ['task-1'],
+      taskOrder: ['task-1', 'local-task'],
       tasks: {
         'task-1': {
           id: 'task-1',
@@ -1587,6 +1681,23 @@ describe('persistence integration', () => {
             args: [],
           },
         },
+        'local-task': {
+          id: 'local-task',
+          name: 'Local',
+          projectId: 'project-1',
+          branchName: 'feature/local',
+          worktreePath: '/tmp/local',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentId: 'local-agent',
+          agentDef: {
+            id: 'claude',
+            name: 'Claude',
+            command: 'claude',
+            args: [],
+          },
+        },
       },
       activeTaskId: 'task-1',
       sidebarVisible: true,
@@ -1597,6 +1708,44 @@ describe('persistence integration', () => {
     expect(store.activeAgentId).toBe('local-agent');
     expect(store.tasks['task-1']?.name).toBe('Remote');
     expect(store.taskGitStatus['task-1']).toBeDefined();
+  });
+
+  it('falls back to the first visible task when incremental sync removes the active task', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('projects', [createTestProject()]);
+    setStore('tasks', {
+      removed: createTestTask({ id: 'removed', taskMode: 'terminal' }),
+    });
+    setStore('taskOrder', ['removed']);
+    setStore('activeTaskId', 'removed');
+    setStore('activeAgentId', 'removed-shell');
+    setStore('focusedPanel', { removed: 'shell:0' });
+
+    const persistedJson = JSON.stringify({
+      projects: [createTestProject()],
+      taskOrder: ['replacement'],
+      tasks: {
+        replacement: {
+          agentDef: null,
+          branchName: 'task/replacement',
+          id: 'replacement',
+          lastPrompt: '',
+          name: 'Replacement',
+          notes: '',
+          projectId: 'project-1',
+          shellAgentIds: [],
+          shellCount: 1,
+          taskMode: 'terminal',
+          worktreePath: '/tmp/project/task-replacement',
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 1)).toBe(true);
+    expect(store.tasks.removed).toBeUndefined();
+    expect(store.activeTaskId).toBe('replacement');
+    expect(store.activeAgentId).toBeNull();
+    expect(store.focusedPanel.replacement).toBe('shell-toolbar:0');
   });
 
   it('loads browser workspace state through the incremental workspace path', async () => {
@@ -1708,6 +1857,47 @@ describe('persistence integration', () => {
     expect(store.agents['agent-1']?.terminalSessionVersion).toBe(2);
   });
 
+  it('honors an explicitly empty shell list during incremental workspace sync', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('projects', [createTestProject()]);
+    setStore('tasks', {
+      'task-terminal': createTestTask({
+        id: 'task-terminal',
+        shellAgentIds: ['shell-stale'],
+        taskMode: 'terminal',
+      }),
+    });
+    setStore('taskOrder', ['task-terminal']);
+    setStore('activeTaskId', 'task-terminal');
+    setStore('activeAgentId', 'shell-stale');
+    setStore('focusedPanel', { 'task-terminal': 'shell:0' });
+
+    const persistedJson = JSON.stringify({
+      projects: [createTestProject()],
+      taskOrder: ['task-terminal'],
+      tasks: {
+        'task-terminal': {
+          agentDef: null,
+          branchName: 'task/terminal',
+          id: 'task-terminal',
+          lastPrompt: '',
+          name: 'Terminal',
+          notes: '',
+          projectId: 'project-1',
+          shellAgentIds: [],
+          shellCount: 1,
+          taskMode: 'terminal',
+          worktreePath: '/tmp/project/task-terminal',
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 1)).toBe(true);
+    expect(store.tasks['task-terminal']?.shellAgentIds).toEqual([]);
+    expect(store.activeAgentId).toBeNull();
+    expect(store.focusedPanel['task-terminal']).toBe('shell-toolbar:0');
+  });
+
   it('surfaces browser workspace load transport failures to the caller', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     invokeMock.mockRejectedValueOnce(new Error('workspace load failed'));
@@ -1719,6 +1909,7 @@ describe('persistence integration', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task',
         projectId: 'project-1',
@@ -1994,6 +2185,7 @@ describe('persistence integration', () => {
     setStore('panelSizes', { 'task-1:terminal': 320 });
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task',
         projectId: 'project-1',
@@ -2216,6 +2408,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2302,6 +2495,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2352,6 +2546,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1', 'task-2']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2363,6 +2558,7 @@ describe('persistence integration', () => {
         lastPrompt: '',
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -2425,6 +2621,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2462,6 +2659,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1', 'task-2']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2473,6 +2671,7 @@ describe('persistence integration', () => {
         lastPrompt: '',
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -2532,6 +2731,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1', 'task-2']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',
@@ -2543,6 +2743,7 @@ describe('persistence integration', () => {
         lastPrompt: '',
       },
       'task-2': {
+        taskMode: 'agent',
         id: 'task-2',
         name: 'Task 2',
         projectId: 'project-1',
@@ -2609,6 +2810,7 @@ describe('persistence integration', () => {
         'task-2': {
           agentIds: [],
           id: 'task-2',
+          taskMode: 'agent' as const,
           name: 'Task 2',
           projectId: 'project-1',
           branchName: 'feature/task-2',
@@ -2650,6 +2852,7 @@ describe('persistence integration', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
+        taskMode: 'agent',
         id: 'task-1',
         name: 'Task 1',
         projectId: 'project-1',

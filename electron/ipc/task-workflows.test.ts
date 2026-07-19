@@ -21,6 +21,7 @@ const {
   createTaskMock,
   importExistingWorktreeTaskMock,
   deleteTaskMock,
+  getGitRepoRootMock,
   getMainBranchMock,
   startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcherMock,
@@ -50,6 +51,7 @@ const {
   createTaskMock: vi.fn(),
   importExistingWorktreeTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
+  getGitRepoRootMock: vi.fn(),
   getMainBranchMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
   stopTaskGitStatusWatcherMock: vi.fn(),
@@ -100,6 +102,7 @@ vi.mock('./tasks.js', () => ({
 }));
 
 vi.mock('./git.js', () => ({
+  getGitRepoRoot: getGitRepoRootMock,
   getMainBranch: getMainBranchMock,
 }));
 
@@ -150,10 +153,12 @@ import {
   countRunningAndPendingTaskAgents,
   createTaskWorkflow,
   deleteTaskWorkflow,
+  findRegisteredTaskIdForWorktreePath,
   spawnTaskAgentWorkflow,
   stopAllTaskAgentWorkflows,
   stopTaskAgentWorkflow,
   syncTaskWorkflowWorktreesFromSavedState,
+  type CreateTaskWorkflowRequest,
   type TaskWorkflowContext,
 } from './task-workflows.js';
 import {
@@ -170,6 +175,71 @@ function createContext(): TaskWorkflowContext {
   };
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason: unknown) => void;
+  resolve: (value: T) => void;
+} {
+  let reject!: (reason: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+type TestGitTaskResult = {
+  base_branch: string;
+  branch_name: string;
+  git_isolation: 'current-branch' | 'existing-worktree';
+  id: string;
+  worktree_path: string;
+};
+
+function createTestGitTaskResult(
+  id: string,
+  worktreePath: string,
+  gitIsolation: TestGitTaskResult['git_isolation'],
+): TestGitTaskResult {
+  return {
+    base_branch: 'main',
+    branch_name: gitIsolation === 'current-branch' ? 'main' : 'task/imported',
+    git_isolation: gitIsolation,
+    id,
+    worktree_path: worktreePath,
+  };
+}
+
+function createCurrentBranchWorkflowRequest(
+  projectRoot: string,
+  name = 'Direct task',
+): CreateTaskWorkflowRequest {
+  return {
+    gitIsolation: 'current-branch',
+    name,
+    projectId: 'project-1',
+    projectRoot,
+    symlinkDirs: [],
+  };
+}
+
+function createExistingWorktreeWorkflowRequest(
+  existingWorktreePath: string,
+  name = 'Imported task',
+): CreateTaskWorkflowRequest {
+  return {
+    baseBranch: 'main',
+    branchPrefix: 'task',
+    existingWorktreePath,
+    gitIsolation: 'existing-worktree',
+    name,
+    projectId: 'project-1',
+    projectRoot: '/tmp/project',
+    symlinkDirs: [],
+  };
+}
+
 describe('task workflows', () => {
   beforeEach(() => {
     clearTaskWorkflowWorktreeRegistryForTests();
@@ -179,6 +249,9 @@ describe('task workflows', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
+    getGitRepoRootMock.mockImplementation((candidatePath: string) =>
+      Promise.resolve(candidatePath),
+    );
     spawnAgentMock.mockReturnValue({
       channelAttached: true,
       kind: 'created-session',
@@ -1237,6 +1310,67 @@ describe('task workflows', () => {
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
 
+  it('starts git task watchers for the watcher-owning shell', async () => {
+    const context = createContext();
+
+    await spawnTaskAgentWorkflow(context, {
+      taskId: 'task-terminal-git',
+      agentId: 'shell-terminal-git',
+      command: 'bash',
+      args: ['-l'],
+      baseBranch: 'release/main',
+      cwd: '/tmp/task-terminal-git',
+      env: {},
+      cols: 80,
+      rows: 24,
+      isShell: true,
+      startsTaskWatchers: true,
+      onOutput: { __CHANNEL_ID__: 'channel-terminal-git' },
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+    expect(ensurePlansDirectoryMock).toHaveBeenCalledWith('/tmp/task-terminal-git');
+    expect(startPlanWatcherMock).toHaveBeenCalledWith(
+      'task-terminal-git',
+      '/tmp/task-terminal-git',
+      expect.any(Function),
+    );
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'release/main',
+      taskId: 'task-terminal-git',
+      worktreePath: '/tmp/task-terminal-git',
+    });
+  });
+
+  it('restores plan watchers when the watcher-owning non-git shell attaches', async () => {
+    const context = createContext();
+    hasAgentSessionMock.mockReturnValue(true);
+
+    await spawnTaskAgentWorkflow(context, {
+      taskId: 'task-terminal-non-git',
+      agentId: 'shell-terminal-non-git',
+      command: 'bash',
+      args: ['-l'],
+      cwd: '/tmp/task-terminal-non-git',
+      env: {},
+      cols: 80,
+      rows: 24,
+      isShell: true,
+      projectMode: 'non-git',
+      startsTaskWatchers: true,
+      onOutput: { __CHANNEL_ID__: 'channel-terminal-non-git' },
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledOnce();
+    expect(ensurePlansDirectoryMock).toHaveBeenCalledWith('/tmp/task-terminal-non-git');
+    expect(startPlanWatcherMock).toHaveBeenCalledWith(
+      'task-terminal-non-git',
+      '/tmp/task-terminal-non-git',
+      expect.any(Function),
+    );
+    expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
+  });
+
   it('starts plan watchers but not git watchers for non-git agents', async () => {
     const context = createContext();
 
@@ -1285,6 +1419,7 @@ describe('task workflows', () => {
       '/tmp/project',
       ['node_modules'],
       'task',
+      'main',
     );
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
       baseBranch: 'main',
@@ -1338,6 +1473,39 @@ describe('task workflows', () => {
       base_branch: 'release/main',
       git_isolation: 'worktree',
     });
+  });
+
+  it('resolves the managed base branch before creation and retries without leaking a worktree', async () => {
+    const context = createContext();
+    const request = {
+      branchPrefix: 'task',
+      name: 'Ordered task',
+      operationId: 'create-operation-base-resolution',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+    };
+    getMainBranchMock
+      .mockRejectedValueOnce(new Error('cannot resolve base branch'))
+      .mockResolvedValueOnce('main');
+    createTaskMock.mockResolvedValueOnce({
+      branch_name: 'task/ordered-task',
+      git_isolation: 'worktree',
+      id: 'task-ordered',
+      worktree_path: '/tmp/project/.worktrees/task/ordered-task',
+    });
+
+    await expect(createTaskWorkflow(context, request)).rejects.toThrow(
+      'cannot resolve base branch',
+    );
+    expect(createTaskMock).not.toHaveBeenCalled();
+
+    await expect(createTaskWorkflow(context, request)).resolves.toMatchObject({
+      base_branch: 'main',
+      id: 'task-ordered',
+    });
+    expect(createTaskMock).toHaveBeenCalledOnce();
+    expect(createTaskMock).toHaveBeenCalledWith('Ordered task', '/tmp/project', [], 'task', 'main');
   });
 
   it('creates non-git task runtime without git metadata or git watchers', async () => {
@@ -1411,6 +1579,103 @@ describe('task workflows', () => {
     });
   });
 
+  it('replays a concurrent task creation operation without repeating side effects', async () => {
+    const context = createContext();
+    const deferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock.mockReturnValue(deferred.promise);
+    const request = {
+      ...createCurrentBranchWorkflowRequest('/tmp/project'),
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      operationId: 'create-operation-1',
+    };
+
+    const first = createTaskWorkflow(context, request);
+    const replay = createTaskWorkflow(context, request);
+    deferred.resolve(createTestGitTaskResult('task-replayed', '/tmp/project', 'current-branch'));
+
+    await expect(Promise.all([first, replay])).resolves.toEqual([
+      createTestGitTaskResult('task-replayed', '/tmp/project', 'current-branch'),
+      createTestGitTaskResult('task-replayed', '/tmp/project', 'current-branch'),
+    ]);
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledTimes(1);
+
+    await expect(createTaskWorkflow(context, request)).resolves.toEqual(
+      createTestGitTaskResult('task-replayed', '/tmp/project', 'current-branch'),
+    );
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects task creation operation ids reused with different inputs', async () => {
+    const context = createContext();
+    const deferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock.mockReturnValue(deferred.promise);
+    const request = {
+      ...createCurrentBranchWorkflowRequest('/tmp/project'),
+      operationId: 'create-operation-conflict',
+    };
+    const first = createTaskWorkflow(context, request);
+
+    await expect(
+      createTaskWorkflow(context, { ...request, name: 'Different task' }),
+    ).rejects.toThrow('was reused with different inputs');
+
+    deferred.resolve(createTestGitTaskResult('task-original', '/tmp/project', 'current-branch'));
+    await expect(first).resolves.toEqual(
+      createTestGitTaskResult('task-original', '/tmp/project', 'current-branch'),
+    );
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases failed task creation operations for a real retry', async () => {
+    const context = createContext();
+    const request = {
+      ...createCurrentBranchWorkflowRequest('/tmp/project'),
+      operationId: 'create-operation-retry',
+    };
+    createCurrentBranchTaskMock
+      .mockRejectedValueOnce(new Error('checkout failed'))
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-retried', '/tmp/project', 'current-branch'),
+      );
+
+    await expect(createTaskWorkflow(context, request)).rejects.toThrow('checkout failed');
+    await expect(createTaskWorkflow(context, request)).resolves.toEqual(
+      createTestGitTaskResult('task-retried', '/tmp/project', 'current-branch'),
+    );
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgets task creation replay state when the task is removed', async () => {
+    const context = createContext();
+    const request = {
+      ...createCurrentBranchWorkflowRequest('/tmp/project'),
+      operationId: 'create-operation-removed',
+    };
+    createCurrentBranchTaskMock
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-first', '/tmp/project', 'current-branch'),
+      )
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-second', '/tmp/project', 'current-branch'),
+      );
+
+    await expect(createTaskWorkflow(context, request)).resolves.toMatchObject({ id: 'task-first' });
+    cleanupTaskRuntimeWorkflow({
+      agentIds: [],
+      projectMode: 'git',
+      removeTaskState: true,
+      taskId: 'task-first',
+      worktreePath: '/tmp/project',
+    });
+    await expect(createTaskWorkflow(context, request)).resolves.toMatchObject({
+      id: 'task-second',
+    });
+
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+  });
+
   it('imports an existing worktree and registers git-backed task metadata', async () => {
     const context = createContext();
     importExistingWorktreeTaskMock.mockResolvedValue({
@@ -1450,6 +1715,136 @@ describe('task workflows', () => {
       base_branch: 'main',
       git_isolation: 'existing-worktree',
     });
+  });
+
+  it('reserves an existing worktree across the asynchronous import boundary', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-pending-'));
+    const worktreePath = path.join(tempRoot, 'imported-worktree');
+    const aliasedWorktreePath = path.join(tempRoot, 'aliased-worktree');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.symlinkSync(worktreePath, aliasedWorktreePath, 'dir');
+    const deferred = createDeferred<TestGitTaskResult>();
+    importExistingWorktreeTaskMock.mockReturnValueOnce(deferred.promise);
+
+    try {
+      const firstCreation = createTaskWorkflow(
+        createContext(),
+        createExistingWorktreeWorkflowRequest(worktreePath),
+      );
+
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createExistingWorktreeWorkflowRequest(aliasedWorktreePath, 'Concurrent imported task'),
+        ),
+      ).rejects.toThrow('already being registered');
+      expect(importExistingWorktreeTaskMock).toHaveBeenCalledTimes(1);
+
+      deferred.resolve(createTestGitTaskResult('task-imported', worktreePath, 'existing-worktree'));
+      await expect(firstCreation).resolves.toMatchObject({ id: 'task-imported' });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a lagging saved snapshot from claiming a reserved worktree mid-import', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-sync-race-'));
+    const worktreePath = path.join(tempRoot, 'imported-worktree');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const deferred = createDeferred<TestGitTaskResult>();
+    importExistingWorktreeTaskMock.mockReturnValueOnce(deferred.promise);
+
+    try {
+      const creation = createTaskWorkflow(
+        createContext(),
+        createExistingWorktreeWorkflowRequest(worktreePath),
+      );
+      await vi.waitFor(() => {
+        expect(importExistingWorktreeTaskMock).toHaveBeenCalledOnce();
+      });
+
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-stale': {
+              id: 'task-stale',
+              worktreePath,
+            },
+          },
+        }),
+      );
+
+      deferred.resolve(createTestGitTaskResult('task-imported', worktreePath, 'existing-worktree'));
+      await expect(creation).resolves.toMatchObject({ id: 'task-imported' });
+      expect(findRegisteredTaskIdForWorktreePath(worktreePath)).toBe('task-imported');
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves existing-worktree subdirectories to their Git root before admission', async () => {
+    getGitRepoRootMock.mockImplementation((candidatePath: string) =>
+      Promise.resolve(
+        candidatePath === '/tmp/project' ? '/tmp/project' : '/repo/.worktrees/imported',
+      ),
+    );
+    importExistingWorktreeTaskMock.mockResolvedValue(
+      createTestGitTaskResult(
+        'task-imported-root',
+        '/repo/.worktrees/imported',
+        'existing-worktree',
+      ),
+    );
+
+    await expect(
+      createTaskWorkflow(
+        createContext(),
+        createExistingWorktreeWorkflowRequest('/repo/.worktrees/imported/src'),
+      ),
+    ).resolves.toMatchObject({ id: 'task-imported-root' });
+
+    expect(getGitRepoRootMock).toHaveBeenCalledWith('/repo/.worktrees/imported/src');
+    expect(importExistingWorktreeTaskMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      '/repo/.worktrees/imported',
+      'main',
+    );
+    await expect(
+      createTaskWorkflow(
+        createContext(),
+        createExistingWorktreeWorkflowRequest('/repo/.worktrees/imported'),
+      ),
+    ).rejects.toThrow('already registered for task task-imported-root');
+    expect(importExistingWorktreeTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an existing-worktree path outside a Git repository before import', async () => {
+    getGitRepoRootMock.mockImplementation((candidatePath: string) =>
+      Promise.resolve(candidatePath === '/tmp/project' ? '/tmp/project' : null),
+    );
+
+    await expect(
+      createTaskWorkflow(
+        createContext(),
+        createExistingWorktreeWorkflowRequest('/tmp/not-a-worktree'),
+      ),
+    ).rejects.toThrow('Existing worktree is not a Git repository');
+    expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects the main checkout when project and imported paths resolve to the same Git root', async () => {
+    getGitRepoRootMock.mockResolvedValue('/repo');
+
+    await expect(
+      createTaskWorkflow(createContext(), {
+        ...createExistingWorktreeWorkflowRequest('/repo'),
+        projectRoot: '/repo/packages/app',
+      }),
+    ).rejects.toThrow('Existing worktree import cannot use the project root');
+
+    expect(getGitRepoRootMock).toHaveBeenCalledWith('/repo/packages/app');
+    expect(getGitRepoRootMock).toHaveBeenCalledWith('/repo');
+    expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate existing-worktree imports across canonical path aliases', async () => {
@@ -1529,6 +1924,126 @@ describe('task workflows', () => {
         }),
       ).rejects.toThrow('already registered for task task-existing');
       expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes a legacy saved worktree subdirectory to its nearest Git root', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-legacy-root-'));
+    const worktreePath = path.join(tempRoot, 'imported-worktree');
+    const nestedPath = path.join(worktreePath, 'packages', 'frontend');
+    fs.mkdirSync(path.join(worktreePath, '.git'), { recursive: true });
+    fs.mkdirSync(nestedPath, { recursive: true });
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-existing': {
+              id: 'task-existing',
+              worktreePath: nestedPath,
+            },
+          },
+        }),
+      );
+
+      expect(findRegisteredTaskIdForWorktreePath(worktreePath)).toBe('task-existing');
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createExistingWorktreeWorkflowRequest(worktreePath, 'Duplicate imported task'),
+        ),
+      ).rejects.toThrow('already registered for task task-existing');
+      expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a nested Git worktree distinct from its parent checkout during saved-state migration', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-nested-root-'));
+    const projectRoot = path.join(tempRoot, 'project');
+    const worktreePath = path.join(projectRoot, '.worktrees', 'feature');
+    const nestedPath = path.join(worktreePath, 'packages', 'frontend');
+    fs.mkdirSync(path.join(projectRoot, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(worktreePath, '.git'), { recursive: true });
+    fs.mkdirSync(nestedPath, { recursive: true });
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-root': {
+              id: 'task-root',
+              worktreePath: projectRoot,
+            },
+            'task-worktree': {
+              id: 'task-worktree',
+              worktreePath: nestedPath,
+            },
+          },
+        }),
+      );
+
+      expect(findRegisteredTaskIdForWorktreePath(projectRoot)).toBe('task-root');
+      expect(findRegisteredTaskIdForWorktreePath(worktreePath)).toBe('task-worktree');
+      expect(findRegisteredTaskIdForWorktreePath(nestedPath)).toBe('task-worktree');
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not map a missing saved worktree onto an ancestor repository', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-missing-root-'));
+    const projectRoot = path.join(tempRoot, 'project');
+    const missingWorktreePath = path.join(projectRoot, '.worktrees', 'missing');
+    fs.mkdirSync(path.join(projectRoot, '.git'), { recursive: true });
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-missing': {
+              id: 'task-missing',
+              worktreePath: missingWorktreePath,
+            },
+          },
+        }),
+      );
+
+      expect(findRegisteredTaskIdForWorktreePath(missingWorktreePath)).toBe('task-missing');
+      expect(findRegisteredTaskIdForWorktreePath(projectRoot)).toBeNull();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('maps registered task worktree descendants to the owning task without matching siblings', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-owner-'));
+    const worktreePath = path.join(tempRoot, 'task');
+    const nestedPath = path.join(worktreePath, 'packages', 'frontend');
+    const dotPrefixedNestedPath = path.join(worktreePath, '..frontend');
+    const siblingPath = path.join(tempRoot, 'task-sibling');
+    fs.mkdirSync(nestedPath, { recursive: true });
+    fs.mkdirSync(dotPrefixedNestedPath, { recursive: true });
+    fs.mkdirSync(siblingPath, { recursive: true });
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-owner': {
+              id: 'task-owner',
+              worktreePath,
+            },
+          },
+        }),
+      );
+
+      expect(findRegisteredTaskIdForWorktreePath(nestedPath)).toBe('task-owner');
+      expect(findRegisteredTaskIdForWorktreePath(dotPrefixedNestedPath)).toBe('task-owner');
+      expect(findRegisteredTaskIdForWorktreePath(siblingPath)).toBeNull();
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -1676,6 +2191,210 @@ describe('task workflows', () => {
         }),
       ).rejects.toThrow('Task steps are already registered for task task-non-git-steps');
       expect(createNonGitTaskMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a current-branch path reserved while creation is pending across saved-state syncs', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-pending-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
+    const deferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock.mockReturnValueOnce(deferred.promise);
+
+    try {
+      const firstCreation = createTaskWorkflow(
+        createContext(),
+        createCurrentBranchWorkflowRequest(folderPath),
+      );
+
+      syncTaskWorkflowWorktreesFromSavedState(JSON.stringify({ tasks: {} }));
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createCurrentBranchWorkflowRequest(aliasedFolderPath, 'Concurrent direct task'),
+        ),
+      ).rejects.toThrow('already being registered');
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+
+      deferred.resolve(createTestGitTaskResult('task-current', folderPath, 'current-branch'));
+      await expect(firstCreation).resolves.toMatchObject({ id: 'task-current' });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves current-branch tasks to the backend Git root before admission or checkout', async () => {
+    getGitRepoRootMock.mockResolvedValue('/repo');
+    createCurrentBranchTaskMock.mockResolvedValue(
+      createTestGitTaskResult('task-current-root', '/repo', 'current-branch'),
+    );
+
+    await expect(
+      createTaskWorkflow(
+        createContext(),
+        createCurrentBranchWorkflowRequest('/repo/packages/frontend'),
+      ),
+    ).resolves.toMatchObject({
+      id: 'task-current-root',
+      worktree_path: '/repo',
+    });
+
+    expect(getGitRepoRootMock).toHaveBeenCalledWith('/repo/packages/frontend');
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledWith('/repo', undefined);
+    await expect(
+      createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest('/repo')),
+    ).rejects.toThrow('already registered for task task-current-root');
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects project-root tasks outside a Git repository before mutation', async () => {
+    getGitRepoRootMock.mockResolvedValue(null);
+
+    await expect(
+      createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest('/tmp/not-a-repo')),
+    ).rejects.toThrow('Project root is not a Git repository');
+    expect(createCurrentBranchTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('releases a current-branch reservation when creation fails', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-retry-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    fs.mkdirSync(folderPath, { recursive: true });
+    const deferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock
+      .mockReturnValueOnce(deferred.promise)
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-current-retry', folderPath, 'current-branch'),
+      );
+
+    try {
+      const failedCreation = createTaskWorkflow(
+        createContext(),
+        createCurrentBranchWorkflowRequest(folderPath),
+      );
+      deferred.reject(new Error('branch switch failed'));
+      await expect(failedCreation).rejects.toThrow('branch switch failed');
+
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createCurrentBranchWorkflowRequest(folderPath, 'Retried direct task'),
+        ),
+      ).resolves.toMatchObject({ id: 'task-current-retry' });
+      await vi.waitFor(() => {
+        expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not serialize current-branch creation for different canonical paths', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-concurrent-'));
+    const firstPath = path.join(tempRoot, 'first');
+    const secondPath = path.join(tempRoot, 'second');
+    fs.mkdirSync(firstPath, { recursive: true });
+    fs.mkdirSync(secondPath, { recursive: true });
+    const firstDeferred = createDeferred<TestGitTaskResult>();
+    const secondDeferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock
+      .mockReturnValueOnce(firstDeferred.promise)
+      .mockReturnValueOnce(secondDeferred.promise);
+
+    try {
+      const firstCreation = createTaskWorkflow(
+        createContext(),
+        createCurrentBranchWorkflowRequest(firstPath, 'First direct task'),
+      );
+      const secondCreation = createTaskWorkflow(createContext(), {
+        ...createCurrentBranchWorkflowRequest(secondPath, 'Second direct task'),
+        projectId: 'project-2',
+      });
+
+      await vi.waitFor(() => {
+        expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+      });
+      firstDeferred.resolve(
+        createTestGitTaskResult('task-current-first', firstPath, 'current-branch'),
+      );
+      secondDeferred.resolve(
+        createTestGitTaskResult('task-current-second', secondPath, 'current-branch'),
+      );
+
+      await expect(Promise.all([firstCreation, secondCreation])).resolves.toHaveLength(2);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps live worktree registrations authoritative over lagging saved snapshots', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-live-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
+    createCurrentBranchTaskMock.mockResolvedValueOnce(
+      createTestGitTaskResult('task-current-live', folderPath, 'current-branch'),
+    );
+
+    try {
+      await createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest(folderPath));
+      syncTaskWorkflowWorktreesFromSavedState(JSON.stringify({ tasks: {} }));
+
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createCurrentBranchWorkflowRequest(aliasedFolderPath, 'Stale snapshot duplicate'),
+        ),
+      ).rejects.toThrow('already registered for task task-current-live');
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resurrect a cleaned worktree registration from a stale saved snapshot', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-removed-'));
+    const folderPath = path.join(tempRoot, 'folder');
+    fs.mkdirSync(folderPath, { recursive: true });
+    createCurrentBranchTaskMock
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-current-removed', folderPath, 'current-branch'),
+      )
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-current-replacement', folderPath, 'current-branch'),
+      );
+
+    try {
+      await createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest(folderPath));
+      cleanupTaskRuntimeWorkflow({
+        agentIds: [],
+        removeTaskState: true,
+        taskId: 'task-current-removed',
+        worktreePath: folderPath,
+      });
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-current-removed': {
+              id: 'task-current-removed',
+              worktreePath: folderPath,
+            },
+          },
+        }),
+      );
+
+      await expect(
+        createTaskWorkflow(
+          createContext(),
+          createCurrentBranchWorkflowRequest(folderPath, 'Replacement direct task'),
+        ),
+      ).resolves.toMatchObject({ id: 'task-current-replacement' });
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

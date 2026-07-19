@@ -111,7 +111,17 @@ vi.mock('../TerminalView', () => ({
   },
 }));
 
-import { TaskShellSection } from './TaskShellSection';
+import {
+  TaskShellSection as TaskShellSectionImpl,
+  type TaskShellSectionProps,
+} from './TaskShellSection';
+
+type TestTaskShellSectionProps = Omit<TaskShellSectionProps, 'baseBranch' | 'projectMode'> &
+  Partial<Pick<TaskShellSectionProps, 'baseBranch' | 'projectMode'>>;
+
+function TaskShellSection(props: TestTaskShellSectionProps): JSX.Element {
+  return <TaskShellSectionImpl baseBranch={() => undefined} projectMode={() => 'git'} {...props} />;
+}
 
 describe('TaskShellSection', () => {
   beforeEach(() => {
@@ -140,6 +150,7 @@ describe('TaskShellSection', () => {
           { id: 'bookmark-2', command: 'npm run test' },
         ]}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => []}
         worktreePath={() => '/tmp/project'}
       />
@@ -177,12 +188,33 @@ describe('TaskShellSection', () => {
           { id: 'bookmark-2', command: 'npm run test' },
         ]}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => []}
         worktreePath={() => '/tmp/project'}
       />
     ));
 
     expect(screen.getByText('Selected index: 2')).toBeDefined();
+  });
+
+  it('does not select a bookmark from a malformed stored toolbar focus id', () => {
+    storeRef.current.focusedPanel = { 'task-1': 'shell-toolbar:2junk' };
+
+    render(() => (
+      <TaskShellSection
+        taskId={() => 'task-1'}
+        bookmarks={() => [
+          { id: 'bookmark-1', command: 'npm run dev' },
+          { id: 'bookmark-2', command: 'npm run test' },
+        ]}
+        isActive={() => true}
+        primary={false}
+        shellAgentIds={() => []}
+        worktreePath={() => '/tmp/project'}
+      />
+    ));
+
+    expect(screen.getByText('Selected index: 0')).toBeDefined();
   });
 
   it('clamps stale stored toolbar focus without triggering interactive focus changes', () => {
@@ -193,6 +225,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => [{ id: 'bookmark-1', command: 'npm run dev' }]}
         isActive={() => false}
+        primary={false}
         shellAgentIds={() => []}
         worktreePath={() => '/tmp/project'}
       />
@@ -208,6 +241,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => [{ id: 'bookmark-1', command: 'npm run dev' }]}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => []}
         worktreePath={() => '/tmp/project'}
       />
@@ -228,6 +262,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => []}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => ['shell-1']}
         worktreePath={() => '/tmp/project'}
       />
@@ -267,6 +302,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => []}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => ['shell-1']}
         worktreePath={() => '/tmp/project'}
       />
@@ -276,12 +312,54 @@ describe('TaskShellSection', () => {
     expect(terminalProps?.manageTaskSwitchWindowLifecycle).toBe(false);
   });
 
+  it('assigns task watcher ownership only to the primary task shell', () => {
+    render(() => (
+      <TaskShellSection
+        baseBranch={() => 'release'}
+        taskId={() => 'task-terminal'}
+        bookmarks={() => []}
+        isActive={() => true}
+        primary
+        projectMode={() => 'git'}
+        shellAgentIds={() => ['shell-1', 'shell-2']}
+        worktreePath={() => '/tmp/project'}
+      />
+    ));
+
+    expect(terminalViewProps.get('shell-1')?.startsTaskWatchers).toBe(true);
+    expect(terminalViewProps.get('shell-2')?.startsTaskWatchers).toBe(false);
+    expect(terminalViewProps.get('shell-1')?.baseBranch).toBe('release');
+    expect(terminalViewProps.get('shell-1')?.projectMode).toBe('git');
+    expect(terminalViewProps.get('shell-1')?.focusPanelId).toBe('shell:0');
+    expect(terminalViewProps.get('shell-2')?.focusPanelId).toBe('shell:1');
+  });
+
+  it('identifies a non-git primary shell when it takes over task watchers', () => {
+    render(() => (
+      <TaskShellSection
+        taskId={() => 'task-folder'}
+        bookmarks={() => []}
+        isActive={() => true}
+        primary
+        projectMode={() => 'non-git'}
+        shellAgentIds={() => ['shell-1']}
+        worktreePath={() => '/tmp/folder'}
+      />
+    ));
+
+    expect(terminalViewProps.get('shell-1')).toMatchObject({
+      projectMode: 'non-git',
+      startsTaskWatchers: true,
+    });
+  });
+
   it('clears shell activity when a shell exits naturally', () => {
     render(() => (
       <TaskShellSection
         taskId={() => 'task-1'}
         bookmarks={() => []}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => ['shell-1']}
         worktreePath={() => '/tmp/project'}
       />
@@ -312,6 +390,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => [{ id: 'bookmark-1', command: 'npm run test' }]}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => []}
         worktreePath={() => '/tmp/project'}
       />
@@ -337,6 +416,7 @@ describe('TaskShellSection', () => {
         taskId={() => 'task-1'}
         bookmarks={() => []}
         isActive={() => true}
+        primary={false}
         shellAgentIds={() => ['shell-1']}
         worktreePath={() => '/tmp/project'}
       />

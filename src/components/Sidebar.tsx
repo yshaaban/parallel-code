@@ -16,6 +16,7 @@ import { removeProjectWithTasks } from '../app/project-workflows';
 import { getCachedWorkspaceShape } from '../app/workspace-shape-cache';
 import { GhostSidebarRows } from './WorkspaceStartupSkeleton';
 import { ConfirmDialog } from './ConfirmDialog';
+import { getProjectRemovalTaskCloseMessage } from './task-close-policy';
 import { IconButton } from './IconButton';
 import { SidebarFooter } from './SidebarFooter';
 import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
@@ -507,7 +508,7 @@ export function Sidebar(): JSX.Element {
           title="Remove project?"
           message={
             confirmRemoveProjectState().taskCount > 0
-              ? `This project has ${confirmRemoveProjectState().taskCount} open task(s). Removing it will also close all tasks, delete their worktrees and branches.`
+              ? getProjectRemovalTaskCloseMessage(confirmRemoveProjectState().taskCount)
               : 'Are you sure you want to remove this project?'
           }
           confirmLabel={confirmRemoveProjectState().taskCount > 0 ? 'Remove all' : 'Remove'}

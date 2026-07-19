@@ -5,6 +5,7 @@ import {
   type PendingTaskCreation,
 } from '../app/task-creation-optimism';
 import { theme } from '../lib/theme';
+import { ProjectRootBadge } from './TaskContextBadges';
 
 interface PendingTaskColumnProps {
   pending: PendingTaskCreation;
@@ -47,16 +48,28 @@ export function PendingTaskColumn(props: PendingTaskColumnProps): JSX.Element {
       >
         <div
           style={{
-            'font-size': '13px',
-            color: theme.fg,
-            'font-weight': '600',
+            display: 'flex',
+            'align-items': 'center',
+            gap: '6px',
             'max-width': '280px',
-            overflow: 'hidden',
-            'text-overflow': 'ellipsis',
-            'white-space': 'nowrap',
           }}
         >
-          {props.pending.name}
+          <span
+            style={{
+              'font-size': '13px',
+              color: theme.fg,
+              'font-weight': '600',
+              'min-width': '0',
+              overflow: 'hidden',
+              'text-overflow': 'ellipsis',
+              'white-space': 'nowrap',
+            }}
+          >
+            {props.pending.name}
+          </span>
+          <Show when={props.pending.gitIsolation === 'current-branch'}>
+            <ProjectRootBadge branchName={props.pending.baseBranch} compact />
+          </Show>
         </div>
         <Show when={props.pending.state.kind === 'creating'}>
           <div
@@ -69,10 +82,12 @@ export function PendingTaskColumn(props: PendingTaskColumnProps): JSX.Element {
             }}
           >
             <span class="inline-spinner" aria-hidden="true" />
-            Creating task...
+            {props.pending.taskMode === 'terminal'
+              ? 'Creating terminal task...'
+              : 'Creating task...'}
           </div>
           <div style={{ 'font-size': '11px', color: theme.fgSubtle }}>
-            {props.pending.agentDefName}
+            {props.pending.launchLabel}
           </div>
         </Show>
         <Show when={props.pending.state.kind === 'error' ? props.pending.state : null}>

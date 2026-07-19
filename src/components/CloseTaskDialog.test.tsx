@@ -145,6 +145,45 @@ describe('CloseTaskDialog', () => {
     expect(screen.queryByText(/will be permanently deleted/u)).toBeNull();
   });
 
+  it.each([
+    {
+      label: 'managed-worktree',
+      task: () => createTestTask(),
+    },
+    {
+      label: 'non-git',
+      task: () => createTestTask({ branchName: '', projectMode: 'non-git' }),
+    },
+    {
+      label: 'project-root',
+      task: () => createTestTask({ gitIsolation: 'current-branch' }),
+    },
+    {
+      label: 'existing-worktree',
+      task: () =>
+        createTestTask({
+          gitIsolation: 'existing-worktree',
+          worktreeOwnership: 'external',
+        }),
+    },
+  ])('uses shell-only close copy for a terminal task in $label mode', ({ task }) => {
+    render(() => (
+      <CloseTaskDialog
+        open
+        task={{
+          ...task(),
+          agentIds: [],
+          shellAgentIds: ['shell-1'],
+          taskMode: 'terminal',
+        }}
+        onDone={() => {}}
+      />
+    ));
+
+    expect(screen.getByText(/stop all running shells/u)).toBeDefined();
+    expect(screen.queryByText(/running agents and shells/u)).toBeNull();
+  });
+
   it('hides stale warning state until the shared git status refresh completes', async () => {
     const deferredRefresh = createDeferredPromise<boolean>();
     refreshTaskGitStatusForTaskMock.mockImplementationOnce(() => deferredRefresh.promise);

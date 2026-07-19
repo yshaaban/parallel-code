@@ -22,6 +22,7 @@ import {
 function buildTask(taskId: string, agentId: string): Task {
   return {
     id: taskId,
+    taskMode: 'agent',
     name: 'Deferred task',
     projectId: 'project-1',
     branchName: `task/${taskId}`,

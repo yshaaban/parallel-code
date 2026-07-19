@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { setStore, store } from './core';
+import { registerFocusFn, resetFocusStateForTests } from './focus';
 import { closeTerminal } from './terminals';
-import { resetStoreForTest } from '../test/store-test-helpers';
+import { createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
 const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -25,6 +26,7 @@ describe('terminal cleanup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    resetFocusStateForTests();
     invokeMock.mockResolvedValue(undefined);
     saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
 
@@ -81,5 +83,25 @@ describe('terminal cleanup', () => {
     expect(store.fontScales['terminal-1:terminal']).toBeUndefined();
     expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
     expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects and focuses a neighboring terminal-only task after closing a standalone terminal', async () => {
+    const focusShell = vi.fn();
+    setStore('tasks', {
+      'task-terminal': createTestTask({
+        agentIds: [],
+        id: 'task-terminal',
+        shellAgentIds: ['task-shell-1'],
+        taskMode: 'terminal',
+      }),
+    });
+    setStore('taskOrder', ['task-terminal', 'terminal-1']);
+    registerFocusFn('task-terminal:shell:0', focusShell);
+
+    await closeTerminal('terminal-1');
+
+    expect(store.activeTaskId).toBe('task-terminal');
+    expect(store.activeAgentId).toBe('task-shell-1');
+    expect(focusShell).toHaveBeenCalledTimes(1);
   });
 });

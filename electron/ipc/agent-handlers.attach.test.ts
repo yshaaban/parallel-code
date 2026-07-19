@@ -161,6 +161,45 @@ describe('AttachTerminalSession', () => {
     });
   });
 
+  it('forwards watcher ownership for a task shell attach', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await handlers[IPC.AttachTerminalSession]?.(
+      buildAttachRequest({ isShell: true, startsTaskWatchers: true }),
+    );
+
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(spawnTaskAgentWorkflowMock.mock.calls[0]?.[1]).toMatchObject({
+      agentId: 'agent-1',
+      cwd: '/tmp/worktree',
+      isShell: true,
+      startsTaskWatchers: true,
+      taskId: 'task-1',
+    });
+  });
+
+  it.each([
+    {
+      expected: 'startsTaskWatchers must be a boolean when provided',
+      overrides: { isShell: true, startsTaskWatchers: 'yes' },
+    },
+    {
+      expected: 'startsTaskWatchers requires a shell session',
+      overrides: { startsTaskWatchers: true },
+    },
+    {
+      expected: 'startsTaskWatchers requires a non-empty cwd',
+      overrides: { cwd: '  ', isShell: true, startsTaskWatchers: true },
+    },
+  ])('rejects invalid watcher ownership requests: $expected', async ({ expected, overrides }) => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(buildAttachRequest(overrides)),
+    ).rejects.toThrow(expected);
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+  });
+
   it('returns same-tick recovery for an existing-session attach under a held batch pause', async () => {
     const handlers = createIpcHandlers(buildContext());
 

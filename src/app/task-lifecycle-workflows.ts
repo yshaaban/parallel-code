@@ -8,6 +8,7 @@ import {
   isTaskCloseInProgress,
   isTaskRemoving,
 } from '../domain/task-closing';
+import { isTerminalTask } from '../domain/task-mode';
 import type { TaskCleanupResult, TaskCleanupWarning } from '../domain/task-cleanup';
 import type { AgentDef } from '../ipc/types';
 import { invoke } from '../lib/ipc';
@@ -32,7 +33,7 @@ import {
   isExistingWorktreeTask,
   isManagedWorktreeTask,
 } from '../store/task-git-isolation';
-import { getSelectedTaskAgentId } from '../store/task-agent-selection';
+import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
 import type { Agent, ProjectMode, Task, TaskGitIsolationMode } from '../store/types';
@@ -204,9 +205,9 @@ function getSelectedRestoredAgent(
 }
 
 function getTaskActiveAgentId(
-  task: Pick<Task, 'agentIds' | 'selectedAgentId'> | null | undefined,
+  task: Pick<Task, 'agentIds' | 'selectedAgentId' | 'shellAgentIds'> | null | undefined,
 ): string | null {
-  return task ? getSelectedTaskAgentId(task) : null;
+  return task ? getSelectedTaskRuntimeAgentId(task) : null;
 }
 
 function syncWindowTitleToActiveSelection(): void {
@@ -274,7 +275,7 @@ function getTaskCleanupWarningMessage(warnings: TaskCleanupWarning[]): string {
   if (hasRunnerWarning) {
     const scopes = [
       ...(hasWorktreeWarning ? ['worktree'] : []),
-      'agent runner',
+      'task process',
       ...(hasContainerWarning ? ['container'] : []),
     ];
     const scopeList =
@@ -306,21 +307,31 @@ function reportTaskCleanupWarnings(taskId: string, warnings: TaskCleanupWarning[
   showNotification(getTaskCleanupWarningMessage(warnings));
 }
 
-export interface CreateTaskOptions {
+export type TaskLaunch =
+  | {
+      kind: 'agent';
+      agentDef: AgentDef;
+      initialPrompt?: string;
+      skipPermissions?: boolean;
+      coordinatorMode?: boolean;
+    }
+  | { kind: 'terminal' };
+
+export interface TaskCreationOptions {
   name: string;
-  agentDef: AgentDef;
   projectId: string;
   baseBranch?: string;
+  githubUrl?: string;
+  launch: TaskLaunch;
+  stepsTracking?: boolean;
+}
+
+export interface CreateTaskOptions extends TaskCreationOptions {
   gitIsolation?: TaskGitIsolationMode;
   existingWorktreePath?: string;
   symlinkDirs?: string[];
-  initialPrompt?: string;
   branchPrefixOverride?: string;
-  githubUrl?: string;
   projectMode?: ProjectMode;
-  skipPermissions?: boolean;
-  stepsTracking?: boolean;
-  coordinatorMode?: boolean;
 }
 
 async function rollbackCreatedTaskAfterCoordinatorFailure(options: {
@@ -383,15 +394,13 @@ async function rollbackCreatedTaskAfterCoordinatorFailure(options: {
 export async function createTask(opts: CreateTaskOptions): Promise<string> {
   const {
     name,
-    agentDef,
     projectId,
     baseBranch,
     gitIsolation = 'worktree',
     existingWorktreePath,
     symlinkDirs = [],
-    initialPrompt,
     githubUrl,
-    skipPermissions,
+    launch,
     stepsTracking,
   } = opts;
   const projectRoot = getProjectPath(projectId);
@@ -404,7 +413,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
 
   const project = getProject(projectId);
   const projectMode = opts.projectMode ?? getProjectMode(project);
-  if (opts.coordinatorMode === true) {
+  if (launch.kind === 'agent' && launch.coordinatorMode === true) {
     if (isElectronRuntime()) {
       throw new Error('Coordinator mode is available in browser server mode.');
     }
@@ -420,10 +429,12 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     projectMode === 'git' ? (baseBranch ?? getProjectBaseBranch(projectId)) : undefined;
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke(IPC.CreateTask, {
-    agentDefId: agentDef.id,
-    agentDefName: agentDef.name,
+    ...(launch.kind === 'agent'
+      ? { agentDefId: launch.agentDef.id, agentDefName: launch.agentDef.name }
+      : {}),
     ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
     name,
+    operationId: createRandomId(),
     ...(projectMode === 'non-git' ? { projectMode } : {}),
     ...(projectMode === 'git' ? { branchPrefix } : {}),
     ...(projectMode === 'git' && gitIsolation !== undefined ? { gitIsolation } : {}),
@@ -437,16 +448,16 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 
-  const agentId = createRandomId();
+  const runtimeId = createRandomId();
   const resolvedGitIsolation = result.git_isolation ?? gitIsolation;
   const resultProjectMode = result.project_mode ?? projectMode;
   const taskBaseBranch =
     resultProjectMode === 'git' ? (result.base_branch ?? resolvedBaseBranch) : undefined;
   let coordinatorRunResult: CoordinatorCreateRunResult | undefined;
-  if (opts.coordinatorMode === true) {
+  if (launch.kind === 'agent' && launch.coordinatorMode === true) {
     try {
       coordinatorRunResult = await invoke(IPC.CoordinatorCreateRun, {
-        coordinatorAgentId: agentId,
+        coordinatorAgentId: runtimeId,
         coordinatorTaskId: result.id,
         projectId,
         projectMode: resultProjectMode,
@@ -465,20 +476,24 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       throw error;
     }
   }
-  const taskInitialPrompt = buildTaskInitialPrompt(
-    initialPrompt,
-    opts.coordinatorMode === true,
-    coordinatorRunResult,
-  );
+  const taskInitialPrompt =
+    launch.kind === 'agent'
+      ? buildTaskInitialPrompt(
+          launch.initialPrompt,
+          launch.coordinatorMode === true,
+          coordinatorRunResult,
+        )
+      : undefined;
   const task: Task = {
     id: result.id,
+    taskMode: launch.kind,
     name,
     projectId,
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
-    agentIds: [agentId],
-    selectedAgentId: agentId,
-    shellAgentIds: [],
+    agentIds: launch.kind === 'agent' ? [runtimeId] : [],
+    ...(launch.kind === 'agent' ? { selectedAgentId: runtimeId } : {}),
+    shellAgentIds: launch.kind === 'terminal' ? [runtimeId] : [],
     notes: '',
     lastPrompt: '',
     ...buildTaskProjectModeFields({ projectMode: resultProjectMode }),
@@ -487,7 +502,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       : {}),
     ...(typeof taskBaseBranch === 'string' ? { baseBranch: taskBaseBranch } : {}),
     ...(taskInitialPrompt ? { initialPrompt: taskInitialPrompt } : {}),
-    ...(skipPermissions ? { skipPermissions: true } : {}),
+    ...(launch.kind === 'agent' && launch.skipPermissions ? { skipPermissions: true } : {}),
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     ...(taskInitialPrompt ? { savedInitialPrompt: taskInitialPrompt } : {}),
@@ -503,61 +518,50 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       : {}),
   };
 
-  const agent: Agent = {
-    id: agentId,
-    taskId: result.id,
-    def: agentDef,
-    resumed: false,
-    status: 'running',
-    exitCode: null,
-    signal: null,
-    lastOutput: [],
-    generation: 0,
-  };
+  const agent: Agent | undefined =
+    launch.kind === 'agent'
+      ? {
+          id: runtimeId,
+          taskId: result.id,
+          def: launch.agentDef,
+          resumed: false,
+          status: 'running',
+          exitCode: null,
+          signal: null,
+          lastOutput: [],
+          generation: 0,
+        }
+      : undefined;
 
   setStore(
     produce((state) => {
       state.tasks[result.id] = task;
-      state.agents[agentId] = agent;
+      if (agent) {
+        state.agents[runtimeId] = agent;
+      } else {
+        state.focusedPanel[result.id] = 'shell:0';
+      }
       state.taskOrder.push(result.id);
       state.activeTaskId = result.id;
-      state.activeAgentId = agentId;
+      state.activeAgentId = runtimeId;
       state.lastProjectId = projectId;
-      state.lastAgentId = agentDef.id;
+      if (agent && launch.kind === 'agent') {
+        state.lastAgentId = launch.agentDef.id;
+      }
     }),
   );
 
-  markAgentSpawned(agentId);
+  markAgentSpawned(runtimeId);
   updateWindowTitle(name);
   return result.id;
 }
 
-export interface CreateCurrentBranchTaskOptions {
-  name: string;
-  agentDef: AgentDef;
-  projectId: string;
-  baseBranch?: string;
-  initialPrompt?: string;
-  githubUrl?: string;
-  skipPermissions?: boolean;
-  stepsTracking?: boolean;
-  coordinatorMode?: boolean;
-}
+export type CreateCurrentBranchTaskOptions = TaskCreationOptions;
 
 export async function createCurrentBranchTask(
   opts: CreateCurrentBranchTaskOptions,
 ): Promise<string> {
-  const {
-    name,
-    agentDef,
-    projectId,
-    baseBranch,
-    initialPrompt,
-    githubUrl,
-    skipPermissions,
-    stepsTracking,
-    coordinatorMode,
-  } = opts;
+  const { name, projectId, baseBranch, githubUrl, launch } = opts;
   if (
     hasProjectCurrentBranchTask(
       [...store.taskOrder, ...store.collapsedTaskOrder],
@@ -565,7 +569,7 @@ export async function createCurrentBranchTask(
       projectId,
     )
   ) {
-    throw new Error('A current-branch task already exists for this project');
+    throw new Error('A project-root task already exists for this project');
   }
 
   const projectRoot = getProjectPath(projectId);
@@ -578,16 +582,13 @@ export async function createCurrentBranchTask(
 
   return createTask({
     name,
-    agentDef,
+    launch,
     projectId,
     ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
     gitIsolation: 'current-branch',
     symlinkDirs: [],
-    ...(initialPrompt !== undefined ? { initialPrompt } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
-    ...(skipPermissions !== undefined ? { skipPermissions } : {}),
-    ...(stepsTracking !== undefined ? { stepsTracking } : {}),
-    ...(coordinatorMode !== undefined ? { coordinatorMode } : {}),
+    ...(opts.stepsTracking !== undefined ? { stepsTracking: opts.stepsTracking } : {}),
   });
 }
 
@@ -603,17 +604,14 @@ export async function createExistingWorktreeTask(
 ): Promise<string> {
   return createTask({
     name: opts.name,
-    agentDef: opts.agentDef,
+    launch: opts.launch,
     projectId: opts.projectId,
     ...(typeof opts.baseBranch === 'string' ? { baseBranch: opts.baseBranch } : {}),
     existingWorktreePath: opts.existingWorktreePath,
     gitIsolation: 'existing-worktree',
     symlinkDirs: [],
-    ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
     ...(opts.githubUrl !== undefined ? { githubUrl: opts.githubUrl } : {}),
-    ...(opts.skipPermissions !== undefined ? { skipPermissions: opts.skipPermissions } : {}),
     ...(opts.stepsTracking !== undefined ? { stepsTracking: opts.stepsTracking } : {}),
-    ...(opts.coordinatorMode !== undefined ? { coordinatorMode: opts.coordinatorMode } : {}),
   });
 }
 
@@ -853,7 +851,10 @@ export async function uncollapseTask(taskId: string): Promise<void> {
   }
 
   const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
-    const savedDefs = task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []);
+    const terminalShellId = isTerminalTask(task) ? createRandomId() : null;
+    const savedDefs = isTerminalTask(task)
+      ? []
+      : (task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []));
     const restoredAgents = savedDefs.map((agentDef) => createRestoredAgent(taskId, agentDef));
     const selectedRestoredAgent = getSelectedRestoredAgent(
       restoredAgents,
@@ -872,7 +873,15 @@ export async function uncollapseTask(taskId: string): Promise<void> {
         state.taskOrder.push(taskId);
         state.activeTaskId = taskId;
 
-        if (restoredAgents.length > 0) {
+        if (terminalShellId) {
+          currentTask.agentIds = [];
+          delete currentTask.selectedAgentId;
+          currentTask.shellAgentIds = [terminalShellId];
+          delete currentTask.savedAgentDef;
+          delete currentTask.savedAgentDefs;
+          delete currentTask.savedSelectedAgentIndex;
+          state.focusedPanel[taskId] = 'shell:0';
+        } else if (restoredAgents.length > 0) {
           for (const agent of restoredAgents) {
             state.agents[agent.id] = agent;
           }
@@ -894,6 +903,9 @@ export async function uncollapseTask(taskId: string): Promise<void> {
 
     for (const agent of restoredAgents) {
       markAgentSpawned(agent.id);
+    }
+    if (terminalShellId) {
+      markAgentSpawned(terminalShellId);
     }
 
     updateWindowTitle(task.name);

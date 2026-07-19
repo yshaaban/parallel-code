@@ -2072,6 +2072,58 @@ describe('Channel', () => {
     }
   });
 
+  it('preserves task creation operation identity across an ambiguous browser retry', async () => {
+    vi.useFakeTimers();
+    bindFakeWindowTimers();
+    const observedBodies: unknown[] = [];
+    const createdTask = {
+      base_branch: 'main',
+      branch_name: 'main',
+      git_isolation: 'current-branch' as const,
+      id: 'task-replayed',
+      worktree_path: '/repo',
+    };
+    let attempt = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      observedBodies.push(body);
+      attempt += 1;
+      if (attempt === 1) {
+        throw new Error('response lost after server commit');
+      }
+      return new Response(JSON.stringify({ result: createdTask }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke } = await import('./ipc');
+    const args = {
+      gitIsolation: 'current-branch' as const,
+      name: 'Root task',
+      operationId: 'create-operation-response-loss',
+      projectId: 'project-1',
+      projectRoot: '/repo',
+      symlinkDirs: [],
+    };
+
+    try {
+      const request = invoke(IPC.CreateTask, args);
+      expect(await getPromiseState(request)).toBe('pending');
+
+      await flushQueuedBrowserHttpDrainTick();
+
+      await expect(request).resolves.toEqual(createdTask);
+      expect(observedBodies).toEqual([args, args]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('replays the current HTTP plane state to late subscribers', async () => {
     vi.useFakeTimers();
     bindFakeWindowTimers();

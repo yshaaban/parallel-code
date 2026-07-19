@@ -12,8 +12,7 @@ import { isAppStartupPresentationPending } from '../app/app-startup-status';
 import { listPendingTaskCreations } from '../app/task-creation-optimism';
 import { closeTask } from '../app/task-workflows';
 import { getCachedWorkspaceShape } from '../app/workspace-shape-cache';
-import { isNonGitProject } from '../store/project-mode';
-import { isCurrentBranchTask } from '../store/task-git-isolation';
+import { getProject } from '../store/projects';
 import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
 import { PendingTaskColumn } from './PendingTaskColumn';
 import { TaskPanel } from './TaskPanel';
@@ -26,6 +25,7 @@ import { typography } from '../lib/typography';
 import { mod } from '../lib/platform';
 import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
 import { confirm } from '../lib/dialog';
+import { getEmergencyTaskCloseMessage } from './task-close-policy';
 
 export function TilingLayout(): JSX.Element {
   let containerRef: HTMLDivElement | undefined;
@@ -156,10 +156,10 @@ export function TilingLayout(): JSX.Element {
                           onClick={async () => {
                             const task = store.tasks[panelId];
                             if (task) {
-                              const msg =
-                                isCurrentBranchTask(task) || isNonGitProject(task)
-                                  ? 'Close this task? Running agents and shells will be stopped.'
-                                  : 'Close this task? The worktree and branch will be deleted.';
+                              const msg = getEmergencyTaskCloseMessage(
+                                task,
+                                getProject(task.projectId),
+                              );
                               if (await confirm(msg)) closeTask(panelId);
                             } else if (store.terminals[panelId]) {
                               closeTerminal(panelId);

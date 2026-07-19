@@ -88,7 +88,7 @@ export function getSavedTaskWatcherRequests(
   const parsed = toSavedStateDocument(savedState).taskLookup;
   const requests: TaskGitWatcherRequest[] = [];
   for (const task of Object.values(parsed.tasks)) {
-    if (!task.id || !task.worktreePath) {
+    if (!task.id || !task.worktreePath || task.projectMode === 'non-git') {
       continue;
     }
 
@@ -179,6 +179,14 @@ export function startTaskGitStatusWatcher(
   context: GitStatusWorkflowContext,
   request: TaskGitWatcherRequest,
 ): Promise<void> {
+  const previousRequest = watcherRequestsByTaskId.get(request.taskId);
+  if (
+    previousRequest &&
+    previousRequest.worktreePath !== request.worktreePath &&
+    taskIdByWatchedWorktreePath.get(previousRequest.worktreePath) === request.taskId
+  ) {
+    taskIdByWatchedWorktreePath.delete(previousRequest.worktreePath);
+  }
   watcherRequestsByTaskId.set(request.taskId, request);
   taskIdByWatchedWorktreePath.set(request.worktreePath, request.taskId);
   return startGitWatcher(request.taskId, request.worktreePath, () => {
@@ -191,6 +199,9 @@ export async function startTaskGitStatusMonitoring(
   request: TaskGitWatcherRequest,
 ): Promise<void> {
   await startTaskGitStatusWatcher(context, request);
+  if (watcherRequestsByTaskId.get(request.taskId) !== request) {
+    return;
+  }
   scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
 }
 

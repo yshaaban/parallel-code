@@ -1,3 +1,5 @@
+import { parseIndexedTaskPanelId } from './task-panel-id';
+
 export function isTypingTaskCommandFocusedSurface(focusedSurface: string | null): boolean {
   if (
     focusedSurface === 'ai-terminal' ||
@@ -7,7 +9,7 @@ export function isTypingTaskCommandFocusedSurface(focusedSurface: string | null)
     return true;
   }
 
-  return focusedSurface?.startsWith('shell:') === true;
+  return parseIndexedTaskPanelId(focusedSurface, 'shell') !== null;
 }
 
 export function getTaskCommandActionForFocusedSurface(

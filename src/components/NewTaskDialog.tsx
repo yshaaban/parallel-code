@@ -27,11 +27,16 @@ import {
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
-import { createTaskOptimistically } from '../app/task-creation-optimism';
+import {
+  createTaskOptimistically,
+  listPendingTaskCreations,
+  type PendingTaskCreation,
+} from '../app/task-creation-optimism';
 import {
   createCurrentBranchTask,
   createExistingWorktreeTask,
   createTask,
+  type TaskLaunch,
 } from '../app/task-workflows';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
@@ -47,7 +52,7 @@ import { SectionLabel } from './SectionLabel';
 import { SymlinkDirPicker } from './SymlinkDirPicker';
 import { typography } from '../lib/typography';
 import { getProjectDefaultTaskGitIsolation } from '../store/task-git-isolation';
-import type { ProjectMode } from '../store/types';
+import type { ProjectMode, TaskGitIsolationMode } from '../store/types';
 import type { AgentDef } from '../ipc/types';
 import { createTaskGitOptionsController } from './new-task-dialog/task-git-options-controller';
 
@@ -55,6 +60,8 @@ interface NewTaskDialogProps {
   open: boolean;
   onClose: () => void;
 }
+
+type TaskCreationMode = 'agent' | 'terminal' | 'coordinator';
 
 export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const titleId = createUniqueId();
@@ -73,10 +80,48 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
   const [existingWorktreePath, setExistingWorktreePath] = createSignal('');
   const [stepsTracking, setStepsTracking] = createSignal(false);
-  const [coordinatorMode, setCoordinatorMode] = createSignal(false);
+  const [creationMode, setCreationMode] = createSignal<TaskCreationMode>('agent');
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
+  const defaultTerminalName = createMemo(() => {
+    if (!props.open) {
+      return 'Terminal';
+    }
+
+    const projectId = selectedProjectId();
+    if (!projectId) {
+      return 'Terminal';
+    }
+
+    const reservedNameSlugs = new Set<string>();
+    const usedBranches = new Set<string>();
+    for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
+      const task = store.tasks[taskId];
+      if (task?.projectId === projectId) {
+        reservedNameSlugs.add(toBranchName(task.name));
+        usedBranches.add(task.branchName.trim().toLowerCase());
+      }
+    }
+    for (const pendingTask of listPendingTaskCreations()) {
+      if (pendingTask.projectId === projectId) {
+        reservedNameSlugs.add(toBranchName(pendingTask.name));
+      }
+    }
+
+    const prefix = sanitizeBranchPrefix(branchPrefix());
+    const candidateIsAvailable = (candidate: string): boolean => {
+      const slug = toBranchName(candidate);
+      return !reservedNameSlugs.has(slug) && !usedBranches.has(`${prefix}/${slug}`.toLowerCase());
+    };
+
+    for (let suffix = 1; ; suffix += 1) {
+      const candidate = suffix === 1 ? 'Terminal' : `Terminal ${suffix}`;
+      if (candidateIsAvailable(candidate)) {
+        return candidate;
+      }
+    }
+  });
   const gitOptions = createTaskGitOptionsController({
     branchPreview,
     projectBaseBranch: selectedProjectBaseBranch,
@@ -85,6 +130,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     projectRoot: selectedProjectPath,
   });
   const coordinatorModeAvailable = !isElectronRuntime();
+  const terminalMode = () => creationMode() === 'terminal';
+  const coordinatorMode = () => creationMode() === 'coordinator';
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
 
@@ -152,7 +199,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setExistingWorktreeMode(false);
     setExistingWorktreePath('');
     setStepsTracking(false);
-    setCoordinatorMode(false);
+    setCreationMode('agent');
     setSkipPermissions(defaultSkipPermissions);
     gitOptions.reset();
     setAdvancedOpen(false);
@@ -231,7 +278,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
     if (existingWorktreeMode()) return;
-    if (hasCurrentBranchTask(pid)) {
+    if (projectRootModeDisabled(pid)) {
       setCurrentBranchMode(false);
       return;
     }
@@ -251,6 +298,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const n = name().trim();
     if (n) {
       return n;
+    }
+
+    if (terminalMode()) {
+      return defaultTerminalName();
     }
 
     const p = prompt().trim();
@@ -296,27 +347,24 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   }
 
   function currentBranchGuidance(): string {
+    const worker = terminalMode() ? 'terminal task' : 'agent';
     if (currentBranchMode()) {
       return 'Reuses the project root without creating a worktree.';
     }
 
     if (selectedProjectIsNonGit()) {
-      return 'Starts the agent in this folder without git review or merge features.';
+      return `Starts the ${worker} in this folder without git review or merge features.`;
     }
 
     if (existingWorktreeMode()) {
       return 'Imports an existing worktree and keeps ownership with you.';
     }
 
-    return 'Creates a git branch and worktree so the agent works in isolation.';
+    return `Creates a git branch and worktree so the ${worker} works in isolation.`;
   }
 
   function currentBranchTooltip(): string {
-    if (currentBranchMode()) {
-      return 'Reuses the project root instead of creating a worktree. The backend switches to the selected base branch before starting if needed.';
-    }
-
-    return 'Creates a git branch and worktree so the agent works in isolation without affecting the base branch.';
+    return 'Reuses the project root instead of creating a worktree. The backend switches to the selected base branch before starting if needed.';
   }
 
   function skipPermissionsTooltip(): string {
@@ -324,16 +372,49 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   }
 
   function stepsTrackingTooltip(): string {
+    if (terminalMode()) {
+      return 'Watches .claude/steps.json so the task panel can show durable step history and next-step guidance for this terminal task.';
+    }
     return 'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.';
   }
 
   function existingWorktreeTooltip(): string {
-    return 'Registers an existing git worktree as a task. Closing the task stops agents but never deletes that worktree or branch.';
+    return 'Registers an existing git worktree as a task. Closing the task stops its running processes but never deletes that worktree or branch.';
   }
 
   function currentBranchModeDisabled(): boolean {
     const pid = selectedProjectId();
-    return pid ? hasCurrentBranchTask(pid) : false;
+    return pid ? projectRootModeDisabled(pid) : false;
+  }
+
+  function getPendingProjectRootTask(projectId: string): PendingTaskCreation | undefined {
+    return listPendingTaskCreations().find(
+      (pendingTask) =>
+        pendingTask.projectId === projectId && pendingTask.gitIsolation === 'current-branch',
+    );
+  }
+
+  function projectRootModeDisabled(projectId: string): boolean {
+    return hasCurrentBranchTask(projectId) || getPendingProjectRootTask(projectId) !== undefined;
+  }
+
+  function projectRootModeDisabledReason(): string {
+    const projectId = selectedProjectId();
+    if (!projectId) {
+      return '';
+    }
+    if (hasCurrentBranchTask(projectId)) {
+      return 'A project-root task already exists for this project.';
+    }
+
+    const pendingTask = getPendingProjectRootTask(projectId);
+    if (pendingTask?.state.kind === 'creating') {
+      return 'A project-root task is already being created for this project.';
+    }
+    if (pendingTask) {
+      return 'Retry or dismiss the pending project-root task before creating another.';
+    }
+    return '';
   }
 
   // True when the selected project has no tasks yet, so we can nudge toward working on the current
@@ -415,7 +496,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
   function canSubmit(): boolean {
     const hasContent = !!effectiveName();
-    const hasLaunchableAgent = getSelectedAgentForSubmit() !== null;
+    const hasLaunchableWorker = terminalMode() || getSelectedAgentForSubmit() !== null;
     const hasRequiredWorktreePath =
       !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
     const canUseSelectedBranch =
@@ -423,7 +504,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       (gitOptions.branchListStatus() !== 'loading' && gitOptions.selectedBaseBranchAvailable());
     return (
       hasContent &&
-      hasLaunchableAgent &&
+      hasLaunchableWorker &&
       !!selectedProjectId() &&
       hasRequiredWorktreePath &&
       canUseSelectedBranch
@@ -440,7 +521,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     if (stepsTracking()) {
       count += 1;
     }
-    if (skipPermissionsActive()) {
+    if (!terminalMode() && skipPermissionsActive()) {
       count += 1;
     }
     if (
@@ -461,7 +542,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       store.availableAgents.length > 8 ||
       currentBranchMode() ||
       existingWorktreeMode() ||
-      agentSupportsSkipPermissions();
+      (!terminalMode() && agentSupportsSkipPermissions());
     return needsWideDialog ? '560px' : '480px';
   }
 
@@ -487,6 +568,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
   }
 
+  function selectCreationMode(mode: TaskCreationMode): void {
+    setCreationMode(mode);
+    setError('');
+  }
+
   function handleSubmit(e: Event): void {
     e.preventDefault();
     const n = effectiveName();
@@ -494,8 +580,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
 
-    const agent = getSelectedAgentForSubmit();
-    if (!agent) {
+    const isTerminalSubmit = terminalMode();
+    const agent = isTerminalSubmit ? null : getSelectedAgentForSubmit();
+    if (!isTerminalSubmit && !agent) {
       if (customAgentMode()) {
         const parsed = customAgentCommandParseResult();
         setError(parsed.ok ? 'Enter a command' : parsed.error.message);
@@ -531,7 +618,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     setError('');
 
-    const p = prompt().trim() || undefined;
+    const p = isTerminalSubmit ? undefined : prompt().trim() || undefined;
     const isFromDrop = !!store.newTaskDropUrl;
     const prefix = sanitizeBranchPrefix(branchPrefix());
     const promptGitHubUrl = p ? extractGitHubUrl(p) : undefined;
@@ -544,51 +631,64 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     const isCurrentBranchSubmit = currentBranchMode();
     const isExistingWorktreeSubmit = existingWorktreeMode();
+    const submitGitIsolation: TaskGitIsolationMode | undefined =
+      projectMode === 'non-git'
+        ? undefined
+        : isCurrentBranchSubmit
+          ? 'current-branch'
+          : isExistingWorktreeSubmit
+            ? 'existing-worktree'
+            : 'worktree';
     const submitExistingWorktreePath = existingWorktreePath().trim();
     const submitSymlinkDirs = [...gitOptions.selectedDirs()];
     const submitStepsTracking = stepsTracking();
     const submitCoordinatorMode = coordinatorMode();
+    const launch: TaskLaunch | null = isTerminalSubmit
+      ? { kind: 'terminal' }
+      : agent
+        ? {
+            kind: 'agent',
+            agentDef: agent,
+            initialPrompt: isFromDrop ? undefined : p,
+            coordinatorMode: submitCoordinatorMode,
+            skipPermissions: shouldSkipPermissions,
+          }
+        : null;
+    if (!launch) {
+      return;
+    }
     const createPendingTask = (): Promise<string> => {
       if (isCurrentBranchSubmit) {
         return createCurrentBranchTask({
           name: n,
-          agentDef: agent,
+          launch,
           projectId,
           ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-          initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: submitStepsTracking,
-          coordinatorMode: submitCoordinatorMode,
-          skipPermissions: shouldSkipPermissions,
         });
       }
       if (isExistingWorktreeSubmit) {
         return createExistingWorktreeTask({
           name: n,
-          agentDef: agent,
+          launch,
           projectId,
           existingWorktreePath: submitExistingWorktreePath,
           ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-          initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           stepsTracking: submitStepsTracking,
-          coordinatorMode: submitCoordinatorMode,
-          skipPermissions: shouldSkipPermissions,
         });
       }
       return createTask({
         name: n,
-        agentDef: agent,
+        launch,
         projectId,
         projectMode,
         symlinkDirs: submitSymlinkDirs,
         ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
-        initialPrompt: isFromDrop ? undefined : p,
         branchPrefixOverride: prefix,
         githubUrl: ghUrl,
         stepsTracking: submitStepsTracking,
-        coordinatorMode: submitCoordinatorMode,
-        skipPermissions: shouldSkipPermissions,
       });
     };
 
@@ -596,15 +696,18 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     // round trip runs behind a provisional task column; failures surface on
     // that column with Retry instead of reopening the dialog.
     createTaskOptimistically({
-      agentDefName: agent.name,
+      ...(configuredBaseBranch !== undefined ? { baseBranch: configuredBaseBranch } : {}),
+      ...(submitGitIsolation !== undefined ? { gitIsolation: submitGitIsolation } : {}),
+      launchLabel: launch.kind === 'terminal' ? 'Terminal' : launch.agentDef.name,
       name: n,
       onCreated: (taskId) => {
         // Drop flow: prefill prompt without auto-sending
-        if (isFromDrop && p) {
+        if (!isTerminalSubmit && isFromDrop && p) {
           setPrefillPrompt(taskId, p);
         }
       },
       projectId,
+      taskMode: isTerminalSubmit ? 'terminal' : 'agent',
       run: createPendingTask,
     });
     toggleNewTaskDialog(false);
@@ -708,53 +811,66 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           titleId={titleId}
         />
 
-        {/* Prompt - the primary input */}
-        <div
-          data-nav-field="prompt"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <SectionLabel as="label">What should the agent work on?</SectionLabel>
-          <textarea
-            ref={promptRef}
-            class="input-field"
-            value={prompt()}
-            onInput={(e) => setPrompt(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (canSubmit()) handleSubmit(e);
-              }
-            }}
-            placeholder="Describe the task, e.g. add user authentication."
-            rows={3}
-            style={{
-              ...fieldInputStyle(),
-              ...typography.monoUi,
-              resize: 'vertical',
-            }}
-          />
-        </div>
+        {/* Prompt - the primary input for agent-backed tasks. */}
+        <Show when={!terminalMode()}>
+          <div
+            data-nav-field="prompt"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <SectionLabel as="label">What should the agent work on?</SectionLabel>
+            <textarea
+              ref={promptRef}
+              class="input-field"
+              value={prompt()}
+              onInput={(e) => setPrompt(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (canSubmit()) handleSubmit(e);
+                }
+              }}
+              placeholder="Describe the task, e.g. add user authentication."
+              rows={3}
+              style={{
+                ...fieldInputStyle(),
+                ...typography.monoUi,
+                resize: 'vertical',
+              }}
+            />
+          </div>
+        </Show>
 
         <div
-          data-nav-field="coordinator-mode"
+          data-nav-field="task-mode"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
           <SectionLabel>Task mode</SectionLabel>
           <div style={{ display: 'flex', gap: '6px' }}>
             <button
               type="button"
-              aria-pressed={!coordinatorMode()}
-              onClick={() => setCoordinatorMode(false)}
-              style={isolationSegmentStyle(!coordinatorMode())}
+              aria-pressed={creationMode() === 'agent'}
+              onClick={() => selectCreationMode('agent')}
+              style={isolationSegmentStyle(creationMode() === 'agent')}
             >
               Agent
             </button>
             <button
               type="button"
+              aria-pressed={terminalMode()}
+              onClick={() => selectCreationMode('terminal')}
+              style={isolationSegmentStyle(terminalMode())}
+              title="Create a project-backed task with shells and no AI agent"
+            >
+              Terminal
+            </button>
+            <button
+              type="button"
               aria-pressed={coordinatorMode()}
               disabled={!coordinatorModeAvailable}
-              onClick={() => setCoordinatorMode(coordinatorModeAvailable)}
+              onClick={() => {
+                if (coordinatorModeAvailable) selectCreationMode('coordinator');
+              }}
               style={isolationSegmentStyle(coordinatorMode(), !coordinatorModeAvailable)}
               title={
                 coordinatorModeAvailable
@@ -770,56 +886,58 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               Spawns and tracks hidden background subtasks from a compact coordinator rail.
             </div>
           </Show>
-          <Show when={!coordinatorModeAvailable}>
+          <Show when={!coordinatorModeAvailable && !terminalMode()}>
             <div style={calloutStyle('muted')}>
               Coordinator mode runs through the browser server tool gateway.
             </div>
           </Show>
         </div>
 
-        {/* Agent - the second primary choice */}
-        <AgentSelector
-          agents={store.availableAgents}
-          selectedAgent={selectedAgent()}
-          onSelect={setSelectedAgent}
-        />
+        <Show when={!terminalMode()}>
+          {/* Agent - the second primary choice */}
+          <AgentSelector
+            agents={store.availableAgents}
+            selectedAgent={selectedAgent()}
+            onSelect={setSelectedAgent}
+          />
 
-        <div
-          data-nav-field="custom-agent-command"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <label style={checkboxLabelStyle()}>
-            <input
-              type="checkbox"
-              checked={customAgentMode()}
-              onChange={(e) => setCustomAgentMode(e.currentTarget.checked)}
-              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-            />
-            Use custom command
-          </label>
-          <Show when={customAgentMode()}>
-            <input
-              class="input-field"
-              type="text"
-              value={customAgentCommand()}
-              onInput={(e) => {
-                setCustomAgentCommand(e.currentTarget.value);
-                setError('');
-              }}
-              placeholder="codex"
-              style={{
-                ...fieldInputStyle(),
-                ...typography.monoUi,
-              }}
-            />
-            <Show when={customAgentCommandError()}>
-              {(message) => <div style={calloutStyle('error')}>{message()}</div>}
+          <div
+            data-nav-field="custom-agent-command"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <label style={checkboxLabelStyle()}>
+              <input
+                type="checkbox"
+                checked={customAgentMode()}
+                onChange={(e) => setCustomAgentMode(e.currentTarget.checked)}
+                style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+              />
+              Use custom command
+            </label>
+            <Show when={customAgentMode()}>
+              <input
+                class="input-field"
+                type="text"
+                value={customAgentCommand()}
+                onInput={(e) => {
+                  setCustomAgentCommand(e.currentTarget.value);
+                  setError('');
+                }}
+                placeholder="codex"
+                style={{
+                  ...fieldInputStyle(),
+                  ...typography.monoUi,
+                }}
+              />
+              <Show when={customAgentCommandError()}>
+                {(message) => <div style={calloutStyle('error')}>{message()}</div>}
+              </Show>
+              <div style={calloutStyle('muted')}>
+                Runs the command directly in the task folder, with any quoted arguments preserved.
+              </div>
             </Show>
-            <div style={calloutStyle('muted')}>
-              Runs the command directly in the task folder, with any quoted arguments preserved.
-            </div>
-          </Show>
-        </div>
+          </div>
+        </Show>
 
         {/* Project */}
         <div
@@ -838,7 +956,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           <SectionLabel as="label">
             Task name{' '}
             <span style={{ opacity: '0.5', 'text-transform': 'none' }}>
-              (optional - derived from prompt)
+              {terminalMode() ? '(optional)' : '(optional - derived from prompt)'}
             </span>
           </SectionLabel>
           <input
@@ -846,7 +964,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             type="text"
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
-            placeholder={effectiveName() || 'Add user authentication'}
+            placeholder={
+              terminalMode() ? defaultTerminalName() : effectiveName() || 'Add user authentication'
+            }
             style={{
               ...fieldInputStyle(),
               ...typography.ui,
@@ -924,7 +1044,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               <button
                 type="button"
                 aria-pressed={createsNewWorktree()}
-                title="Creates a git branch and worktree so the agent works in isolation without affecting the base branch."
+                title={`Creates a git branch and worktree so the ${terminalMode() ? 'terminal task' : 'agent'} works in isolation without affecting the base branch.`}
                 onClick={() => {
                   setCurrentBranchMode(false);
                   setExistingWorktreeMode(false);
@@ -941,12 +1061,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 onClick={() => updateCurrentBranchMode(true)}
                 style={isolationSegmentStyle(currentBranchMode(), currentBranchModeDisabled())}
               >
-                Current branch
+                Project root
               </button>
             </div>
             <Show when={currentBranchModeDisabled()}>
               <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-                A current-branch task already exists for this project.
+                {projectRootModeDisabledReason()}
               </span>
             </Show>
             <Show
@@ -967,7 +1087,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                     ...typography.meta,
                   }}
                 >
-                  work on the current branch
+                  work in the project root
                 </button>{' '}
                 instead of creating a worktree.
               </span>
@@ -990,7 +1110,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           )}
         </Show>
 
-        <Show when={skipPermissionsActive()}>
+        <Show when={!terminalMode() && skipPermissionsActive()}>
           <div role="status" aria-live="polite" style={calloutStyle('warning')}>
             Runs without confirmation. The agent can read, write, delete, and execute commands.
           </div>
@@ -1034,7 +1154,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             </svg>
             <span>Advanced</span>
             <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-              branch, worktree, permissions, files
+              {terminalMode()
+                ? 'branch, worktree, steps, files'
+                : 'branch, worktree, permissions, files'}
             </span>
             <Show when={!advancedOpen() && activeAdvancedCount() > 0}>
               <span
@@ -1232,7 +1354,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 </Show>
               </div>
 
-              <Show when={agentSupportsSkipPermissions()}>
+              <Show when={!terminalMode() && agentSupportsSkipPermissions()}>
                 <div
                   data-nav-field="skip-permissions"
                   style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
@@ -1307,7 +1429,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               ...typography.uiStrong,
             }}
           >
-            Create Task
+            {terminalMode() ? 'Create Terminal Task' : 'Create Task'}
           </button>
         </div>
       </form>

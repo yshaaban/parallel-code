@@ -22,6 +22,7 @@ describe('autosave snapshots', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',

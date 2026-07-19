@@ -34,7 +34,13 @@ vi.mock('./pty.js', () => ({
   notifyAgentListChanged: notifyAgentListChangedMock,
 }));
 
-import { createNonGitTask, createTask, deleteTask, importExistingWorktreeTask } from './tasks.js';
+import {
+  createCurrentBranchTask,
+  createNonGitTask,
+  createTask,
+  deleteTask,
+  importExistingWorktreeTask,
+} from './tasks.js';
 
 function createBranchExistsError(
   branchName: string,
@@ -141,6 +147,40 @@ describe('createNonGitTask', () => {
       project_mode: 'non-git',
       worktree_path: '/tmp/folder',
     });
+  });
+});
+
+describe('createCurrentBranchTask', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getMainBranchMock.mockResolvedValue('main');
+  });
+
+  it('uses the pre-checkout branch when the project root is already on the base branch', async () => {
+    getCurrentBranchMock.mockResolvedValue('main');
+
+    await expect(createCurrentBranchTask('/tmp/project')).resolves.toMatchObject({
+      base_branch: 'main',
+      branch_name: 'main',
+      worktree_path: '/tmp/project',
+    });
+
+    expect(getCurrentBranchMock).toHaveBeenCalledOnce();
+    expect(checkoutBranchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the resolved base branch without a fallible read after checkout', async () => {
+    getCurrentBranchMock.mockResolvedValue('feature/old');
+    checkoutBranchMock.mockResolvedValue(undefined);
+
+    await expect(createCurrentBranchTask('/tmp/project')).resolves.toMatchObject({
+      base_branch: 'main',
+      branch_name: 'main',
+      worktree_path: '/tmp/project',
+    });
+
+    expect(getCurrentBranchMock).toHaveBeenCalledOnce();
+    expect(checkoutBranchMock).toHaveBeenCalledWith('/tmp/project', 'main');
   });
 });
 

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore, store } from './core';
 import {
   getSidebarRestoreTaskActionKey,
+  getStoredTaskFocusedPanel,
   getTaskFocusedPanel,
   navigateColumn,
   navigateRow,
@@ -72,6 +73,17 @@ describe('focus shell toolbar navigation', () => {
     expect(getTaskFocusedPanel(taskId)).toBe('shell-toolbar:2');
   });
 
+  it.each(['shell-toolbar:2junk', 'shell-toolbar:2.5', 'shell-toolbar:-1'])(
+    'normalizes malformed shell toolbar focus %s to the first button',
+    (panelId) => {
+      const { taskId } = setupTaskWithToolbar();
+
+      setStore('focusedPanel', { [taskId]: panelId });
+
+      expect(getStoredTaskFocusedPanel(taskId)).toBe('shell-toolbar:0');
+    },
+  );
+
   it('moves across shell toolbar buttons with column navigation', () => {
     const { taskId } = setupTaskWithToolbar();
 
@@ -96,6 +108,87 @@ describe('focus shell toolbar navigation', () => {
     expect(store.sidebarFocused).toBe(false);
     expect(store.placeholderFocused).toBe(false);
   });
+
+  it('defaults terminal-only tasks to their first shell and selects that runtime', () => {
+    const task = createTestTask({
+      agentIds: [],
+      id: 'task-terminal',
+      shellAgentIds: ['shell-1'],
+      taskMode: 'terminal',
+    });
+    setStore('tasks', { [task.id]: task });
+    setStore('taskOrder', [task.id]);
+
+    setTaskFocusedPanel(task.id, getTaskFocusedPanel(task.id));
+
+    expect(store.focusedPanel[task.id]).toBe('shell:0');
+    expect(store.activeAgentId).toBe('shell-1');
+  });
+
+  it('defaults an empty terminal-only task to its shell toolbar', () => {
+    const task = createTestTask({
+      agentIds: [],
+      id: 'task-terminal',
+      shellAgentIds: [],
+      taskMode: 'terminal',
+    });
+    setStore('tasks', { [task.id]: task });
+
+    expect(getTaskFocusedPanel(task.id)).toBe('shell-toolbar:0');
+  });
+
+  it.each(['ai-terminal', 'coordinator', 'prompt', 'shell:0'])(
+    'normalizes terminal-task panel %s and reconciles runtime selection',
+    (panelId) => {
+      const task = createTestTask({
+        agentIds: [],
+        id: 'task-terminal',
+        shellAgentIds: [],
+        taskMode: 'terminal',
+      });
+      setStore('tasks', { [task.id]: task });
+      setStore('taskOrder', [task.id]);
+      setStore('activeTaskId', task.id);
+      setStore('activeAgentId', 'shell-stale');
+
+      setTaskFocusedPanel(task.id, panelId);
+
+      expect(store.focusedPanel[task.id]).toBe('shell-toolbar:0');
+      expect(store.activeAgentId).toBeNull();
+      expect(getTaskFocusedPanel(task.id)).toBe('shell-toolbar:0');
+    },
+  );
+
+  it('normalizes persisted terminal-task focus before focus runtimes consume it', () => {
+    const task = createTestTask({
+      agentIds: [],
+      id: 'task-terminal',
+      shellAgentIds: [],
+      taskMode: 'terminal',
+    });
+    setStore('tasks', { [task.id]: task });
+
+    for (const panelId of ['ai-terminal', 'coordinator', 'prompt', 'shell:0']) {
+      setStore('focusedPanel', { [task.id]: panelId });
+      expect(getStoredTaskFocusedPanel(task.id)).toBe('shell-toolbar:0');
+    }
+  });
+
+  it.each(['shell:00', 'shell:0junk', 'shell:0.5'])(
+    'canonicalizes malformed terminal shell focus %s',
+    (panelId) => {
+      const task = createTestTask({
+        agentIds: [],
+        id: 'task-terminal',
+        shellAgentIds: ['shell-1'],
+        taskMode: 'terminal',
+      });
+      setStore('tasks', { [task.id]: task });
+      setStore('focusedPanel', { [task.id]: panelId });
+
+      expect(getStoredTaskFocusedPanel(task.id)).toBe('shell:0');
+    },
+  );
 
   it('clamps shell toolbar columns when moving into narrower rows', () => {
     const { taskId } = setupTaskWithToolbar();
@@ -339,6 +432,25 @@ describe('focus shell toolbar navigation', () => {
 
     expect(store.activeTaskId).toBe('task-2');
     expect(store.focusedPanel['task-2']).toBe('shell:0');
+  });
+
+  it('switches from an agent surface to the primary shell of a terminal-only task', () => {
+    setupTwoTaskNavigationState(
+      { agentIds: ['agent-1'] },
+      {
+        agentIds: [],
+        shellAgentIds: ['shell-terminal'],
+        taskMode: 'terminal',
+      },
+    );
+    setStore('activeAgentId', 'agent-1');
+    setStore('focusedPanel', { 'task-1': 'ai-terminal' });
+
+    navigateTask('right');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('shell:0');
+    expect(store.activeAgentId).toBe('shell-terminal');
   });
 
   it('falls back to terminal focus when direct task switching reaches a terminal panel', () => {

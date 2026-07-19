@@ -1821,6 +1821,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         resumeOnStart: props.resumeOnStart === true,
         rows: term.rows,
         runnerProfile: props.runnerProfile,
+        startsTaskWatchers: props.startsTaskWatchers,
         taskId,
       });
       options.onAttachDispatched?.();

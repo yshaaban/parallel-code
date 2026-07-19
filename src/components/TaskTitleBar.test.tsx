@@ -196,6 +196,41 @@ describe('TaskTitleBar', () => {
     expect(screen.queryByTitle('Merge into base branch')).toBeNull();
   });
 
+  it('labels project-root terminal tasks without relying on color alone', () => {
+    render(() => (
+      <TaskTitleBar
+        task={createTestTask({
+          agentIds: [],
+          branchName: 'main',
+          gitIsolation: 'current-branch',
+          shellAgentIds: ['shell-1'],
+          taskMode: 'terminal',
+        })}
+        isActive
+        taskActivityStatus="live"
+        hasPreviewPorts={false}
+        isPreviewVisible={false}
+        pushing={false}
+        pushSuccess={false}
+        onMouseDown={vi.fn()}
+        onPreviewButtonClick={vi.fn()}
+        onUpdateTaskName={vi.fn()}
+        onSetTitleEditHandle={vi.fn()}
+        onOpenMerge={vi.fn()}
+        onOpenPush={vi.fn()}
+        onCollapse={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByText('root · main')).toBeDefined();
+    expect(screen.getByTitle('Works directly in the project root on main')).toBeDefined();
+    expect(screen.getByText('terminal')).toBeDefined();
+    expect(screen.getByTitle('Terminal-only task with no AI agent')).toBeDefined();
+    expect(screen.queryByTitle(/Merge/)).toBeNull();
+    expect(screen.queryByTitle('Push to remote')).toBeNull();
+  });
+
   it('hides the self ownership chip when no peer sessions are connected', () => {
     getTaskCommandOwnerStatusMock.mockReturnValue({
       action: 'type in the terminal',

@@ -14,6 +14,7 @@ interface GlyphPalette {
 
 interface AgentGlyphProps {
   agentDef: AgentDef | null | undefined;
+  fallbackLabel?: string;
   size?: number;
 }
 
@@ -227,13 +228,14 @@ function renderGlyph(kind: AgentGlyphKind, palette: GlyphPalette): JSX.Element {
 export function AgentGlyph(props: AgentGlyphProps): JSX.Element {
   const kind = () => normalizeAgentGlyphKind(props.agentDef);
   const palette = () => getGlyphPalette(kind());
-  const label = () => getAgentGlyphLabel(props.agentDef);
+  const label = () =>
+    props.agentDef ? getAgentGlyphLabel(props.agentDef) : (props.fallbackLabel ?? 'Unknown agent');
   const size = () => props.size ?? 16;
 
   return (
     <span
       role="img"
-      aria-label={`${label()} agent`}
+      aria-label={props.agentDef ? `${label()} agent` : label()}
       title={label()}
       style={{
         width: `${size()}px`,

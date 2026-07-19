@@ -22,6 +22,7 @@ import {
 } from './persistence-terminal-restore';
 import { syncTerminalCounter } from './terminals';
 import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
+import { reconcileTaskFocusedPanelState } from './focus';
 import type { ClientSessionState, ClientSessionTerminalPanels, PersistedTerminal } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
@@ -189,12 +190,22 @@ function reconcileClientSessionSelection(): void {
   const activeTaskId = store.activeTaskId;
   if (hasClientSessionSelection(activeTaskId)) {
     setStore('activeAgentId', getSelectionAgentId(activeTaskId, store.activeAgentId));
+    if (store.tasks[activeTaskId] && store.focusedPanel[activeTaskId] !== undefined) {
+      reconcileTaskFocusedPanelState(activeTaskId);
+    }
     return;
   }
 
   const fallbackActiveTaskId = getFallbackActiveTaskId();
   setStore('activeTaskId', fallbackActiveTaskId);
   setStore('activeAgentId', getSelectionAgentId(fallbackActiveTaskId));
+  if (
+    fallbackActiveTaskId &&
+    store.tasks[fallbackActiveTaskId] &&
+    store.focusedPanel[fallbackActiveTaskId] !== undefined
+  ) {
+    reconcileTaskFocusedPanelState(fallbackActiveTaskId);
+  }
 }
 
 export interface ClientSessionSelectionPeek {

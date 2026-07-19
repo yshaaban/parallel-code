@@ -11,6 +11,7 @@ import {
 import { createStore, reconcile } from 'solid-js/store';
 
 import { consumePendingShellCommand } from '../../lib/bookmarks';
+import { parseIndexedTaskPanelId } from '../../domain/task-panel-id';
 import { sf } from '../../lib/fontScale';
 import { mod } from '../../lib/platform';
 import { theme } from '../../lib/theme';
@@ -28,30 +29,34 @@ import {
   unregisterFocusFn,
 } from '../../store/store';
 import { closeShell, runBookmarkInTask, spawnShellForTask } from '../../app/task-workflows';
-import type { TerminalBookmark } from '../../store/types';
+import type { ProjectMode, TerminalBookmark } from '../../store/types';
 import type { PanelChild } from '../ResizablePanel';
 import { ScalablePanel } from '../ScalablePanel';
 import { TaskShellToolbar } from '../TaskShellToolbar';
 import { TerminalView } from '../TerminalView';
 import { getShellCommand } from './task-panel-helpers';
 
-interface TaskShellSectionProps {
+export interface TaskShellSectionProps {
+  baseBranch: Accessor<string | undefined>;
   bookmarks: Accessor<TerminalBookmark[]>;
   isActive: Accessor<boolean>;
+  primary: boolean;
+  projectMode: Accessor<ProjectMode>;
   shellAgentIds: Accessor<string[]>;
   taskId: Accessor<string>;
   worktreePath: Accessor<string>;
 }
 
 export function createTaskShellSection(props: TaskShellSectionProps): PanelChild {
+  const primary = untrack(() => props.primary);
   return {
     id: 'shell-section',
-    initialSize: 28,
-    minSize: 28,
+    initialSize: primary ? 500 : 28,
+    minSize: primary ? 120 : 28,
     get fixed() {
       return props.shellAgentIds().length === 0;
     },
-    requestSize: () => (props.shellAgentIds().length > 0 ? 200 : 28),
+    requestSize: () => (props.shellAgentIds().length > 0 ? (primary ? 500 : 200) : 28),
     content: () => <TaskShellSection {...props} />,
   };
 }
@@ -288,8 +293,12 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       manageTaskSwitchWindowLifecycle={false}
                       command={getShellCommand()}
                       args={['-l']}
+                      baseBranch={props.baseBranch()}
                       cwd={worktreePath}
+                      focusPanelId={`shell:${index()}`}
                       initialCommand={initialCommand}
+                      projectMode={props.projectMode()}
+                      startsTaskWatchers={props.primary && index() === 0}
                       onData={(data) => {
                         clearShellExit(shellId);
                         markAgentOutput(shellId, data, taskId, 'shell');
@@ -330,8 +339,8 @@ function getStoredShellToolbarIndex(panelId: string | undefined): number | null 
     return null;
   }
 
-  const parsedIndex = Number.parseInt(panelId.slice('shell-toolbar:'.length), 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
+  const parsedIndex = parseIndexedTaskPanelId(panelId, 'shell-toolbar');
+  if (parsedIndex === null) {
     return 0;
   }
 

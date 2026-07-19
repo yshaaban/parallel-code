@@ -51,6 +51,7 @@ export function createTestAgentDef(overrides: Partial<AgentDef> = {}): AgentDef 
 export function createTestTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
+    taskMode: 'agent',
     name: 'Task',
     projectId: 'project-1',
     branchName: 'feature/task-1',

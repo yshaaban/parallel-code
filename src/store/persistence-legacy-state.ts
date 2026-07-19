@@ -1,4 +1,5 @@
 import type { AgentDef } from '../ipc/types.js';
+import { isTaskMode } from '../domain/task-mode.js';
 import {
   isFiniteNumber,
   isNonNegativeInteger,
@@ -114,6 +115,7 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
 
   return (
     typeof value.id === 'string' &&
+    (value.taskMode === undefined || isTaskMode(value.taskMode)) &&
     typeof value.name === 'string' &&
     isOptionalString(value.projectId) &&
     typeof value.branchName === 'string' &&

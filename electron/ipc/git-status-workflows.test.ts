@@ -39,6 +39,7 @@ import { resetBackendWorkQueueForTests } from './backend-work-queue.js';
 import {
   commitAllWorkflow,
   discardUncommittedWorkflow,
+  findRegisteredGitWatcherTaskIdForWorktree,
   loadGitStatusChangedPayload,
   rebaseTaskWorkflow,
   refreshGitStatusWorkflow,
@@ -194,6 +195,42 @@ describe('git status workflows', () => {
     });
   });
 
+  it('removes stale reverse ownership when a task watcher moves worktrees', async () => {
+    const context = createContext();
+
+    await startTaskGitStatusWatcher(context, {
+      taskId: 'task-1',
+      worktreePath: '/tmp/task-old',
+    });
+    await startTaskGitStatusWatcher(context, {
+      taskId: 'task-1',
+      worktreePath: '/tmp/task-new',
+    });
+
+    expect(findRegisteredGitWatcherTaskIdForWorktree('/tmp/task-old')).toBeNull();
+    expect(findRegisteredGitWatcherTaskIdForWorktree('/tmp/task-new')).toBe('task-1');
+  });
+
+  it('does not refresh a task stopped while watcher startup is pending', async () => {
+    let resolveStart!: () => void;
+    startGitWatcherMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+
+    const monitoring = startTaskGitStatusMonitoring(createContext(), {
+      taskId: 'task-1',
+      worktreePath: '/tmp/task-1',
+    });
+    stopTaskGitStatusWatcher('task-1');
+    resolveStart();
+    await monitoring;
+    await flushResolvedPromises();
+
+    expect(getWorktreeStatusMock).not.toHaveBeenCalled();
+  });
+
   it('restores saved-task watchers without scheduling an initial refresh', async () => {
     const emitGitStatusChanged = vi.fn();
 
@@ -205,6 +242,11 @@ describe('git status workflows', () => {
         tasks: {
           one: { id: 'task-1', worktreePath: '/tmp/task-1' },
           two: { id: 'task-2', worktreePath: '/tmp/task-2' },
+          folder: {
+            id: 'task-folder',
+            projectMode: 'non-git',
+            worktreePath: '/tmp/task-folder',
+          },
         },
       }),
     );
@@ -213,6 +255,11 @@ describe('git status workflows', () => {
 
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-2', '/tmp/task-2', expect.any(Function));
+    expect(startGitWatcherMock).not.toHaveBeenCalledWith(
+      'task-folder',
+      expect.any(String),
+      expect.any(Function),
+    );
     expect(getWorktreeStatusMock).not.toHaveBeenCalled();
     expect(emitGitStatusChanged).not.toHaveBeenCalled();
   });

@@ -262,6 +262,12 @@ export function createTaskAndGitIpcHandlers(
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertOptionalString(request.existingWorktreePath, 'existingWorktreePath');
       assertOptionalString(request.githubUrl, 'githubUrl');
+      assertString(request.operationId, 'operationId');
+      if (request.operationId.trim().length === 0 || request.operationId.length > 128) {
+        throw new BadRequestError(
+          'operationId must be a non-empty string no longer than 128 characters',
+        );
+      }
       assertOptionalProjectMode(request.projectMode);
       validateOptionalBranchName(request.branchPrefix, 'branchPrefix');
       assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
@@ -287,8 +293,11 @@ export function createTaskAndGitIpcHandlers(
       }
 
       const result = await createTaskWorkflow(context, {
+        ...(request.agentDefId !== undefined ? { agentDefId: request.agentDefId } : {}),
+        ...(request.agentDefName !== undefined ? { agentDefName: request.agentDefName } : {}),
         ...(typeof request.baseBranch === 'string' ? { baseBranch: request.baseBranch } : {}),
         name: request.name,
+        operationId: request.operationId,
         projectId: request.projectId,
         projectRoot: request.projectRoot,
         ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),

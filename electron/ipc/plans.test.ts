@@ -139,6 +139,33 @@ describe('plans', () => {
     });
   });
 
+  it('keeps pending plan detection intact when the same task watcher is reattached', async () => {
+    const worktreePath = createWorktree();
+    worktrees.push(worktreePath);
+
+    fs.mkdirSync(path.join(worktreePath, '.claude', 'plans'), { recursive: true });
+    const firstListener = vi.fn();
+    const reattachedListener = vi.fn();
+
+    startPlanWatcher('task-1', worktreePath, firstListener);
+    await waitForWatcherSetup();
+    writePlan(worktreePath, '.claude/plans', 'reattached.md', '# Reattached plan');
+    startPlanWatcher('task-1', worktreePath, reattachedListener);
+
+    await vi.waitFor(
+      () => {
+        expect(reattachedListener).toHaveBeenCalledWith({
+          content: '# Reattached plan',
+          fileName: 'reattached.md',
+          relativePath: '.claude/plans/reattached.md',
+          taskId: 'task-1',
+        });
+      },
+      { timeout: 10_000 },
+    );
+    expect(firstListener).not.toHaveBeenCalled();
+  }, 15_000);
+
   it('clears the emitted plan when the generated file is deleted', async () => {
     const worktreePath = createWorktree();
     worktrees.push(worktreePath);

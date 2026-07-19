@@ -36,6 +36,7 @@ import {
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers';
 import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
+import { reconcileTaskFocusedPanelState } from './focus';
 import {
   clearRemovedTaskRuntimeState,
   collectTaskAgentIds,
@@ -154,6 +155,40 @@ function reconcileLoadedActiveSelection(storeState: AppStore, electronRuntime: b
   storeState.activeAgentId = selectedPanelId
     ? getLoadedSelectionAgentId(storeState, selectedPanelId)
     : null;
+}
+
+function reconcileIncrementalWorkspaceActiveTask(): void {
+  const activeTaskId = store.activeTaskId;
+  if (activeTaskId === null) {
+    if (store.activeAgentId !== null) {
+      setStore('activeAgentId', null);
+    }
+    return;
+  }
+
+  const activePanelIsVisible = store.taskOrder.includes(activeTaskId);
+  if (activePanelIsVisible && store.tasks[activeTaskId]) {
+    reconcileTaskFocusedPanelState(activeTaskId);
+    return;
+  }
+
+  const activeTerminal = store.terminals[activeTaskId];
+  if (activePanelIsVisible && activeTerminal) {
+    setStore('activeAgentId', activeTerminal.agentId);
+    return;
+  }
+
+  const fallbackPanelId =
+    store.taskOrder.find((panelId) => store.tasks[panelId] || store.terminals[panelId]) ?? null;
+  setStore('activeTaskId', fallbackPanelId);
+  setStore(
+    'activeAgentId',
+    fallbackPanelId ? getLoadedSelectionAgentId(store, fallbackPanelId) : null,
+  );
+
+  if (fallbackPanelId && store.tasks[fallbackPanelId]) {
+    reconcileTaskFocusedPanelState(fallbackPanelId);
+  }
 }
 
 export function applyLoadedStateJson(json: string): boolean {
@@ -320,6 +355,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
       }),
     );
     clearRemovedTaskRuntimeState(removedTaskIds);
+    reconcileIncrementalWorkspaceActiveTask();
     return false;
   }
 
@@ -435,6 +471,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
     clearAgentActivity(agentId);
   }
   clearRemovedTaskRuntimeState(removedTaskIds);
+  reconcileIncrementalWorkspaceActiveTask();
 
   recordLoadedWorkspaceState(json, revision);
   syncTerminalCounter();

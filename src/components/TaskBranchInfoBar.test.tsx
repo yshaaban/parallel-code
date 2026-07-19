@@ -31,14 +31,17 @@ import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
     agentIds: [],
+    taskMode: 'agent',
     branchName: 'task/example',
     collapsed: false,
     directMode: false,
     githubUrl: 'https://github.com/example/repo',
     id: 'task-1',
     name: 'Task',
+    notes: '',
     projectId: 'project-1',
     shellAgentIds: [],
+    lastPrompt: '',
     worktreePath: '/tmp/worktree',
     ...overrides,
   } as Task;
@@ -214,6 +217,34 @@ describe('TaskBranchInfoBar', () => {
     await waitFor(() => {
       expect(writeTextMock).toHaveBeenCalledTimes(2);
       expect(showNotificationMock).toHaveBeenCalledWith('Worktree path copied');
+    });
+  });
+
+  it('labels and copies project-root task paths consistently in browser mode', async () => {
+    writeTextMock.mockResolvedValue(undefined);
+
+    render(() => (
+      <TaskBranchInfoBar
+        editorCommand=""
+        electronRuntime={false}
+        onEditProject={vi.fn()}
+        project={createProject()}
+        task={createTask({
+          directMode: true,
+          gitIsolation: 'current-branch',
+          worktreePath: '/tmp/project',
+        })}
+      />
+    ));
+
+    const badge = screen.getByLabelText('Works directly in the project root on task/example');
+    expect(badge.textContent).toBe('root · task/example');
+    expect(screen.getAllByTitle('Click to copy the project root path')).toHaveLength(2);
+
+    fireEvent.click(badge);
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith('/tmp/project');
+      expect(showNotificationMock).toHaveBeenCalledWith('Project root path copied');
     });
   });
 });

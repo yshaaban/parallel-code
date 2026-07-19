@@ -227,6 +227,7 @@ function createTask(): Task {
     coordinatorRunId: 'run-1',
     coordinatorToolCommand: 'node scripts/coordinator-tool.mjs',
     id: 'task-coordinator',
+    taskMode: 'agent',
     lastPrompt: '',
     name: 'Coordinator task',
     notes: '',

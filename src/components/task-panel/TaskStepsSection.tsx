@@ -25,7 +25,7 @@ interface TaskStepsSectionProps {
   onFocusSteps: () => void;
   onJumpToStep: (step: TaskStepEntry) => void;
   onNaturalHeight?: (height: number) => void;
-  onNextClick: (text: string) => void;
+  onNextClick: ((text: string) => void) | undefined;
   snapshot: Accessor<TaskStepsSnapshot | null>;
   summary: Accessor<TaskStepsSummarySnapshot | null>;
   taskId: string;
@@ -121,7 +121,7 @@ function StepCard(props: {
   expanded: boolean;
   onFileClick: (filePath: string) => void;
   onJumpToStep: (step: TaskStepEntry) => void;
-  onNextClick: (text: string) => void;
+  onNextClick: ((text: string) => void) | undefined;
   onToggle: () => void;
   step: TaskStepEntry;
 }): JSX.Element {
@@ -180,27 +180,49 @@ function StepCard(props: {
       <div style={{ color: theme.fg, ...typography.uiStrong }}>{props.step.summary}</div>
 
       <Show when={props.step.next}>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onNextClick(props.step.next ?? '');
-          }}
-          style={{
-            display: 'flex',
-            'align-items': 'flex-start',
-            gap: '6px',
-            background: 'transparent',
-            border: 'none',
-            color: theme.accent,
-            cursor: 'pointer',
-            padding: '0',
-            ...typography.ui,
-          }}
+        <Show
+          when={props.onNextClick}
+          fallback={
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'flex-start',
+                gap: '6px',
+                color: theme.fgMuted,
+                ...typography.ui,
+              }}
+            >
+              <span style={{ opacity: '0.7' }}>›</span>
+              <span style={{ 'font-style': 'italic' }}>{props.step.next}</span>
+            </div>
+          }
         >
-          <span style={{ opacity: '0.7' }}>›</span>
-          <span style={{ 'font-style': 'italic', 'text-align': 'left' }}>{props.step.next}</span>
-        </button>
+          {(onNextClick) => (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onNextClick()(props.step.next ?? '');
+              }}
+              style={{
+                display: 'flex',
+                'align-items': 'flex-start',
+                gap: '6px',
+                background: 'transparent',
+                border: 'none',
+                color: theme.accent,
+                cursor: 'pointer',
+                padding: '0',
+                ...typography.ui,
+              }}
+            >
+              <span style={{ opacity: '0.7' }}>›</span>
+              <span style={{ 'font-style': 'italic', 'text-align': 'left' }}>
+                {props.step.next}
+              </span>
+            </button>
+          )}
+        </Show>
       </Show>
 
       <Show when={props.expanded && props.step.detail}>
@@ -420,7 +442,7 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
               ...typography.ui,
             }}
           >
-            Steps tracking is enabled. The agent has not written any step entries yet.
+            Steps tracking is enabled. No step entries have been written yet.
           </div>
         </Show>
 

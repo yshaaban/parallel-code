@@ -3,6 +3,7 @@ export {
   type CreateDirectTaskOptions,
   type CreateExistingWorktreeTaskOptions,
   type CreateTaskOptions,
+  type TaskLaunch,
   closeTask,
   collapseTask,
   createCurrentBranchTask,

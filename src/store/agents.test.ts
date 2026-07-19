@@ -250,6 +250,7 @@ describe('agents store lifecycle guards', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -293,6 +294,7 @@ describe('agents store lifecycle guards', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -330,6 +332,7 @@ describe('agents store lifecycle guards', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -362,6 +365,7 @@ describe('agents store lifecycle guards', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -391,6 +395,7 @@ describe('agents store lifecycle guards', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task',
         projectId: 'project-1',
         branchName: 'feature/task-1',

@@ -143,6 +143,7 @@ export interface RendererInvokeRequestMap {
     resumeOnStart?: boolean;
     runnerProfile?: AgentRunnerProfileConfig;
     rows?: number;
+    startsTaskWatchers?: boolean;
     taskId: string;
   };
   [IPC.AttachTerminalSession]: {
@@ -171,6 +172,7 @@ export interface RendererInvokeRequestMap {
     resumeOnStart?: boolean;
     runnerProfile?: AgentRunnerProfileConfig;
     rows?: number;
+    startsTaskWatchers?: boolean;
     taskId: string;
   };
   [IPC.ReleaseTerminalRecoveryPause]: {
@@ -287,6 +289,7 @@ export interface RendererInvokeRequestMap {
     gitIsolation?: TaskGitIsolationMode;
     githubUrl?: string;
     name: string;
+    operationId: string;
     projectMode?: ProjectMode;
     projectId: string;
     projectRoot: string;

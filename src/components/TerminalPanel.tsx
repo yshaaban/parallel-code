@@ -163,6 +163,7 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
             command=""
             args={['-l']}
             cwd=""
+            focusPanelId="terminal"
             onReady={(focusFn) => registerFocusFn(`${terminalId}:terminal`, focusFn)}
             fontSize={Math.round(store.terminalFontSize * getFontScale(`${terminalId}:terminal`))}
           />

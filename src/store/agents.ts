@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
+import { isTerminalTask } from '../domain/task-mode';
 import type { AgentDef, PtyExitData } from '../ipc/types';
 import { clearTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import { invoke } from '../lib/ipc';
@@ -55,7 +56,7 @@ function canCloseTaskAgent(task: Pick<Task, 'agentIds'>, agentId: string): boole
 
 export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promise<string | null> {
   const task = store.tasks[taskId];
-  if (!task) {
+  if (!task || isTerminalTask(task)) {
     return null;
   }
 

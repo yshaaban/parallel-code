@@ -650,6 +650,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     if (props.runnerProfile !== undefined) {
       snapshot.runnerProfile = props.runnerProfile;
     }
+    if (props.startsTaskWatchers !== undefined) {
+      snapshot.startsTaskWatchers = props.startsTaskWatchers;
+    }
 
     return snapshot;
   }
@@ -685,8 +688,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         return;
       }
 
-      setTaskFocusedPanelState(taskId, 'ai-terminal');
-      syncFocusedTypingTaskCommandLease(taskId, 'ai-terminal');
+      const focusPanelId = props.focusPanelId ?? (props.isShell ? 'terminal' : 'ai-terminal');
+      setTaskFocusedPanelState(taskId, focusPanelId);
+      syncFocusedTypingTaskCommandLease(taskId, focusPanelId);
       void loadTaskCommandControllers();
       currentSession.term.focus();
     } finally {

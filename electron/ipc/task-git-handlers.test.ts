@@ -149,6 +149,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       agentDefName: 'Codex CLI',
       branchPrefix: 'task',
       name: 'Auth Task',
+      operationId: 'create-task-1',
       projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: [],
@@ -157,7 +158,13 @@ describe('createTaskAndGitIpcHandlers', () => {
 
     expect(createTaskWorkflowMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ branchPrefix: 'task', stepsTracking: true }),
+      expect.objectContaining({
+        agentDefId: 'codex',
+        agentDefName: 'Codex CLI',
+        branchPrefix: 'task',
+        operationId: 'create-task-1',
+        stepsTracking: true,
+      }),
     );
     expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-1', {
       agentDefId: 'codex',
@@ -177,6 +184,28 @@ describe('createTaskAndGitIpcHandlers', () => {
       git_isolation: 'worktree',
     });
   });
+
+  it.each(['', '   ', 'x'.repeat(129)])(
+    'rejects malformed task operation id %j',
+    async (operationId) => {
+      const handlers = createTaskAndGitIpcHandlers(createContext(), {
+        deleteTask: vi.fn(),
+        registerCreatedTask: vi.fn(),
+      });
+
+      await expect(
+        handlers[IPC.CreateTask]?.({
+          name: 'Invalid operation',
+          operationId,
+          projectId: 'project-1',
+          projectRoot: '/tmp/project',
+          symlinkDirs: [],
+        }),
+      ).rejects.toThrow('operationId must be a non-empty string no longer than 128 characters');
+
+      expect(createTaskWorkflowMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('routes current-branch task creation through backend workflow metadata', async () => {
     createTaskWorkflowMock.mockResolvedValue({
@@ -199,6 +228,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       gitIsolation: 'current-branch',
       branchPrefix: 'task',
       name: 'Direct Task',
+      operationId: 'create-task-2',
       projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: [],
@@ -252,6 +282,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       existingWorktreePath: '/tmp/imported-worktree',
       gitIsolation: 'existing-worktree',
       name: 'Imported Task',
+      operationId: 'create-task-3',
       projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: [],
@@ -300,6 +331,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       agentDefId: 'codex',
       agentDefName: 'Codex CLI',
       name: 'Folder Task',
+      operationId: 'create-task-4',
       projectId: 'project-1',
       projectMode: 'non-git',
       projectRoot: '/tmp/folder',
@@ -340,6 +372,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       handlers[IPC.CreateTask]?.({
         baseBranch: 'main',
         name: 'Bad Folder Task',
+        operationId: 'invalid-base-operation',
         projectId: 'project-1',
         projectMode: 'non-git',
         projectRoot: '/tmp/folder',
@@ -350,6 +383,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       handlers[IPC.CreateTask]?.({
         branchPrefix: 'task',
         name: 'Bad Folder Task',
+        operationId: 'invalid-prefix-operation',
         projectId: 'project-1',
         projectMode: 'non-git',
         projectRoot: '/tmp/folder',
@@ -371,6 +405,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       handlers[IPC.CreateTask]?.({
         branchPrefix: 'feature..bad',
         name: 'Bad Branch Task',
+        operationId: 'malformed-prefix-operation',
         projectId: 'project-1',
         projectRoot: '/tmp/project',
         symlinkDirs: [],

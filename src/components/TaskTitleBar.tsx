@@ -13,6 +13,7 @@ import {
 import { getCoordinatorRunForTask } from '../store/coordinator';
 import { showNotification } from '../store/notification';
 import { isNonGitProject } from '../store/project-mode';
+import { isTerminalTask } from '../domain/task-mode';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
 import {
@@ -21,6 +22,7 @@ import {
   getTaskCommandOwnerStatus,
   listPeerSessions,
 } from '../store/store';
+import { ProjectRootBadge, TerminalTaskBadge } from './TaskContextBadges';
 
 interface TaskTitleBarProps {
   task: Task;
@@ -197,20 +199,10 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           </button>
         </Show>
         <Show when={isCurrentBranchTask(props.task)}>
-          <span
-            style={{
-              ...typography.metaStrong,
-              padding: '2px 8px',
-              'border-radius': '4px',
-              background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
-              color: theme.warning,
-              border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
-              'flex-shrink': '0',
-              'white-space': 'nowrap',
-            }}
-          >
-            {props.task.branchName}
-          </span>
+          <ProjectRootBadge branchName={props.task.branchName} />
+        </Show>
+        <Show when={isTerminalTask(props.task)}>
+          <TerminalTaskBadge />
         </Show>
         <Show when={isExistingWorktreeTask(props.task)}>
           <span

@@ -68,6 +68,8 @@ describe('EditProjectDialog', () => {
 
     render(() => <EditProjectDialog project={createTestProject()} onClose={onClose} />);
 
+    expect(screen.getByText('Default new tasks to the project root')).toBeDefined();
+
     const baseBranchInput = screen.getByPlaceholderText(
       'Auto-detect from Git (for example: main, trunk, personal/main)',
     );
@@ -116,7 +118,7 @@ describe('EditProjectDialog', () => {
     expect(screen.queryByText('Base branch')).toBeNull();
     expect(screen.queryByText('Branch prefix')).toBeNull();
     expect(screen.queryByText('Always delete branch and worklog on merge')).toBeNull();
-    expect(screen.queryByText('Default new tasks to the current branch')).toBeNull();
+    expect(screen.queryByText('Default new tasks to the project root')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 

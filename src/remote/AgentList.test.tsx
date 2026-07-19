@@ -425,7 +425,7 @@ describe('AgentList', () => {
     expect(screen.queryByText(/^Ivan typing$/u)).toBeNull();
   });
 
-  it('keeps current-branch mode visible when only folder metadata is available', () => {
+  it('keeps project-root mode visible when only folder metadata is available', () => {
     remoteState.agents = [
       {
         agentId: 'agent-direct',
@@ -449,7 +449,7 @@ describe('AgentList', () => {
       <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
     ));
 
-    expect(screen.getAllByText('Current Branch \u00B7 my-project').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Project root \u00B7 my-project').length).toBeGreaterThan(0);
   });
 
   it('uses a meaningful last prompt as compact secondary context when branch metadata is unavailable', () => {
@@ -530,7 +530,7 @@ describe('AgentList', () => {
       <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
     ));
 
-    expect(screen.getByText('master (current branch) \u00B7 one-tool')).toBeDefined();
+    expect(screen.getByText('master (project root) \u00B7 one-tool')).toBeDefined();
     expect(screen.queryByText('Restoring the terminal view')).toBeNull();
   });
 

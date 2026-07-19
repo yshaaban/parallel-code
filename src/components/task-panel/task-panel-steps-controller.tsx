@@ -8,6 +8,7 @@ import {
 import { getTaskStepsSnapshot, getTaskStepsSummary } from '../../store/task-steps';
 import type { Task } from '../../store/types';
 import type { TaskStepEntry } from '../../domain/task-steps';
+import { isTerminalTask } from '../../domain/task-mode';
 import type { PanelChild } from '../ResizablePanel';
 import { TaskStepsSection } from './TaskStepsSection';
 
@@ -121,7 +122,7 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
           onFocusSteps={handleFocusSteps}
           onJumpToStep={handleJumpToStep}
           onNaturalHeight={setNaturalHeight}
-          onNextClick={handleNextClick}
+          onNextClick={isTerminalTask(options.task()) ? undefined : handleNextClick}
           snapshot={snapshot}
           summary={summary}
           taskId={options.task().id}

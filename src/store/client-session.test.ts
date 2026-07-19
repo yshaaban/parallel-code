@@ -61,6 +61,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -76,7 +77,7 @@ describe('client session state', () => {
     setStore('editorCommand', 'code');
     setStore('lastProjectId', 'project-1');
     setStore('lastAgentId', 'agent-1');
-    setStore('focusedPanel', { 'task-1': 'shell:0' });
+    setStore('focusedPanel', { 'task-1': 'prompt' });
     setStore('fontScales', { 'task-1': 1.2 });
     setStore('globalScale', 1.1);
     setStore('inactiveColumnOpacity', 0.75);
@@ -124,6 +125,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -141,7 +143,7 @@ describe('client session state', () => {
     expect(store.editorCommand).toBe('code');
     expect(store.lastProjectId).toBe('project-1');
     expect(store.lastAgentId).toBe('agent-1');
-    expect(store.focusedPanel).toEqual({ 'task-1': 'shell:0' });
+    expect(store.focusedPanel).toEqual({ 'task-1': 'prompt' });
     expect(store.fontScales).toEqual({ 'task-1': 1.2 });
     expect(store.globalScale).toBe(1.1);
     expect(store.inactiveColumnOpacity).toBe(0.75);
@@ -174,6 +176,40 @@ describe('client session state', () => {
     });
   });
 
+  it.each(['ai-terminal', 'coordinator', 'prompt', 'shell:0'])(
+    'repairs terminal-task focus restored from an incompatible %s panel',
+    (focusedPanel) => {
+      setStore('taskOrder', ['task-terminal']);
+      setStore('tasks', {
+        'task-terminal': {
+          agentIds: [],
+          branchName: 'task/terminal',
+          id: 'task-terminal',
+          lastPrompt: '',
+          name: 'Terminal',
+          notes: '',
+          projectId: 'project-1',
+          shellAgentIds: [],
+          taskMode: 'terminal',
+          worktreePath: '/tmp/task-terminal',
+        },
+      });
+      sessionStorage.setItem(
+        'parallel-code-client-session',
+        JSON.stringify({
+          activeAgentId: 'stale-shell',
+          activeTaskId: 'task-terminal',
+          focusedPanel: { 'task-terminal': focusedPanel },
+        }),
+      );
+
+      expect(loadClientSessionState()).toBe(true);
+      expect(store.activeTaskId).toBe('task-terminal');
+      expect(store.activeAgentId).toBeNull();
+      expect(store.focusedPanel['task-terminal']).toBe('shell-toolbar:0');
+    },
+  );
+
   it('preserves current sparse layout entries when the saved browser session omits them', () => {
     setStore('fontScales', { retained: 1.1 });
     setStore('panelSizes', { retained: 0.6 });
@@ -201,6 +237,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -251,6 +288,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -280,6 +318,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -318,6 +357,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -357,6 +397,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -425,6 +466,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -497,6 +539,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -564,6 +607,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',
@@ -639,6 +683,7 @@ describe('client session state', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Task 1',
         projectId: 'project-1',
         branchName: 'feature/task-1',

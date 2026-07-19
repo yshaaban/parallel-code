@@ -20,6 +20,7 @@ function createTask(): Task {
     agentIds: [],
     branchName: 'task/steps',
     id: 'task-1',
+    taskMode: 'agent',
     lastPrompt: '',
     name: 'Tracked task',
     notes: '',

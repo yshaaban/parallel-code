@@ -29,6 +29,7 @@ describe('task steps workflow helpers', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Tracked task',
         projectId: 'project-1',
         branchName: 'task/tracked',
@@ -41,6 +42,7 @@ describe('task steps workflow helpers', () => {
       },
       'task-2': {
         id: 'task-2',
+        taskMode: 'agent',
         name: 'Existing prompt task',
         projectId: 'project-1',
         branchName: 'task/existing',
@@ -87,6 +89,7 @@ describe('task steps workflow helpers', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Tracked task',
         projectId: 'project-1',
         branchName: 'task/tracked',
@@ -106,10 +109,34 @@ describe('task steps workflow helpers', () => {
     expect(store.tasks['task-1']?.prefillPrompt).toBeUndefined();
   });
 
+  it('keeps terminal-task next actions on a real shell surface without hidden prompt state', () => {
+    setStore('tasks', {
+      'task-terminal': {
+        id: 'task-terminal',
+        taskMode: 'terminal',
+        name: 'Terminal task',
+        projectId: 'project-1',
+        branchName: 'task/terminal',
+        worktreePath: '/tmp/task-terminal',
+        agentIds: [],
+        shellAgentIds: ['shell-1'],
+        notes: '',
+        lastPrompt: '',
+        prefillPrompt: 'stale prompt',
+      },
+    });
+
+    prefillTaskStepNextAction('task-terminal', 'Run the verification command');
+
+    expect(store.tasks['task-terminal']?.prefillPrompt).toBeUndefined();
+    expect(store.focusedPanel['task-terminal']).toBe('shell:0');
+  });
+
   it('jumps to the best available task surface for the current task', () => {
     setStore('tasks', {
       'task-1': {
         id: 'task-1',
+        taskMode: 'agent',
         name: 'Agent task',
         projectId: 'project-1',
         branchName: 'task/agent',
@@ -121,6 +148,7 @@ describe('task steps workflow helpers', () => {
       },
       'task-2': {
         id: 'task-2',
+        taskMode: 'agent',
         name: 'Shell task',
         projectId: 'project-1',
         branchName: 'task/shell',
@@ -132,10 +160,23 @@ describe('task steps workflow helpers', () => {
       },
       'task-3': {
         id: 'task-3',
+        taskMode: 'agent',
         name: 'Prompt task',
         projectId: 'project-1',
         branchName: 'task/prompt',
         worktreePath: '/tmp/task-3',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+      'task-4': {
+        id: 'task-4',
+        taskMode: 'terminal',
+        name: 'Empty terminal task',
+        projectId: 'project-1',
+        branchName: 'task/terminal',
+        worktreePath: '/tmp/task-4',
         agentIds: [],
         shellAgentIds: [],
         notes: '',
@@ -157,5 +198,8 @@ describe('task steps workflow helpers', () => {
 
     jumpToTaskStepTarget('task-3', step);
     expect(store.focusedPanel['task-3']).toBe('prompt');
+
+    jumpToTaskStepTarget('task-4', step);
+    expect(store.focusedPanel['task-4']).toBe('shell-toolbar:0');
   });
 });

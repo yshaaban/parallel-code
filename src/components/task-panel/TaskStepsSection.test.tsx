@@ -329,4 +329,26 @@ describe('TaskStepsSection', () => {
     );
     expect(view.getByText('Investigating the failure')).toBeTruthy();
   });
+
+  it('uses mode-neutral empty-state copy', () => {
+    const { container } = render(() => (
+      <TaskStepsSection
+        loadError={() => null}
+        loading={() => false}
+        onFileClick={() => {}}
+        onFocusSteps={() => {}}
+        onJumpToStep={() => {}}
+        onNextClick={undefined}
+        snapshot={() => null}
+        summary={() => null}
+        taskId="task-1"
+      />
+    ));
+    const view = within(container);
+
+    expect(
+      view.getByText('Steps tracking is enabled. No step entries have been written yet.'),
+    ).toBeTruthy();
+    expect(container.textContent).not.toContain('The agent');
+  });
 });

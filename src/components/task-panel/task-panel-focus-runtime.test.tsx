@@ -9,6 +9,7 @@ function FocusRuntimeHarness(props: {
   getPanelRef?: () => HTMLDivElement | undefined;
   getPromptRef?: () => HTMLTextAreaElement | undefined;
   getStoredTaskFocusedPanel?: (taskId: string) => string | null;
+  hasPromptPanel?: boolean;
   isActive?: boolean;
   taskId: () => string;
   registerFocusFn: (id: string, focusFn: () => void) => void;
@@ -21,6 +22,7 @@ function FocusRuntimeHarness(props: {
   const getPanelRef = untrack(() => props.getPanelRef) ?? (() => undefined);
   const getPromptRef = untrack(() => props.getPromptRef) ?? (() => undefined);
   const getStoredTaskFocusedPanel = untrack(() => props.getStoredTaskFocusedPanel) ?? (() => null);
+  const hasPromptPanel = untrack(() => props.hasPromptPanel) ?? true;
   const taskId = untrack(() => props.taskId);
   const triggerFocus = untrack(() => props.triggerFocus);
   const unregisterFocusFn = untrack(() => props.unregisterFocusFn);
@@ -35,6 +37,7 @@ function FocusRuntimeHarness(props: {
     getPromptRef,
     getStoredTaskFocusedPanel,
     getTitleEditHandle: () => undefined,
+    hasPromptPanel,
     isActive: () => props.isActive ?? true,
     notesTab: () => 'notes',
     registerFocusFn,
@@ -97,6 +100,25 @@ describe('task-panel focus runtime', () => {
     await vi.runAllTimersAsync();
 
     expect(triggerFocus).toHaveBeenCalledWith('task-1:ai-terminal');
+  });
+
+  it('does not register a prompt focus target when the panel has no prompt capability', () => {
+    const registerFocusFn = vi.fn();
+    const unregisterFocusFn = vi.fn();
+    const result = render(() => (
+      <FocusRuntimeHarness
+        hasPromptPanel={false}
+        taskId={() => 'task-terminal'}
+        registerFocusFn={registerFocusFn}
+        triggerFocus={() => {}}
+        unregisterFocusFn={unregisterFocusFn}
+      />
+    ));
+
+    expect(registerFocusFn).not.toHaveBeenCalledWith('task-terminal:prompt', expect.any(Function));
+
+    result.unmount();
+    expect(unregisterFocusFn).not.toHaveBeenCalledWith('task-terminal:prompt');
   });
 
   it('does not steal focus from an already focused child control', async () => {

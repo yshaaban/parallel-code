@@ -156,11 +156,9 @@ export async function createCurrentBranchTask(
     await checkoutBranch(projectRoot, baseBranch);
   }
 
-  const branchName = await getCurrentBranch(projectRoot);
-
   return {
     id: randomUUID(),
-    branch_name: branchName,
+    branch_name: baseBranch,
     worktree_path: projectRoot,
     base_branch: baseBranch,
     git_isolation: 'current-branch',

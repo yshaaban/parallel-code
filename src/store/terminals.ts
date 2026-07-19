@@ -7,7 +7,7 @@ import { createRandomId } from '../lib/random-id';
 import { setStore, store, updateWindowTitle } from './core';
 import { getTaskFocusedPanel, triggerFocus } from './focus';
 import { saveCurrentRuntimeState } from './persistence-save';
-import { getSelectedTaskAgentId } from './task-agent-selection';
+import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
 import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
 import { clearAgentActivity } from './taskStatus';
 import type { Task, Terminal } from './types';
@@ -16,9 +16,9 @@ let terminalCounter = 0;
 let lastCreateTime = 0;
 
 function getTaskActiveAgentId(
-  task: Pick<Task, 'agentIds' | 'selectedAgentId'> | null | undefined,
+  task: Pick<Task, 'agentIds' | 'selectedAgentId' | 'shellAgentIds'> | null | undefined,
 ): string | null {
-  return task ? getSelectedTaskAgentId(task) : null;
+  return task ? getSelectedTaskRuntimeAgentId(task) : null;
 }
 
 function scrollPanelIntoView(panelId: string): void {

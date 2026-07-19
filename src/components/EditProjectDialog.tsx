@@ -581,7 +581,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   Always delete branch and worklog on merge
                 </label>
 
-                {/* Default current-branch preference */}
+                {/* Default project-root preference */}
                 <label
                   style={{
                     display: 'flex',
@@ -598,7 +598,7 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                     onChange={(e) => setDefaultCurrentBranchMode(e.currentTarget.checked)}
                     style={{ cursor: 'pointer' }}
                   />
-                  Default new tasks to the current branch
+                  Default new tasks to the project root
                 </label>
               </>
             </Show>

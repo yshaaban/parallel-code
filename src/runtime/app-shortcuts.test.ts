@@ -233,4 +233,16 @@ describe('registerAppShortcuts', () => {
 
     warnSpy.mockRestore();
   });
+
+  it.each(['shell:0junk', 'shell:0.5', 'shell:-1'])(
+    'does not close a shell for malformed focused panel %s',
+    (panelId) => {
+      getTaskFocusedPanelMock.mockReturnValue(panelId);
+
+      registerAppShortcuts();
+      handlers.get('task.close-focused-terminal')?.();
+
+      expect(closeShellMock).not.toHaveBeenCalled();
+    },
+  );
 });

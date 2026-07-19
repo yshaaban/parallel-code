@@ -63,7 +63,7 @@ import {
   deleteTask,
   importExistingWorktreeTask,
 } from './tasks.js';
-import { getMainBranch } from './git.js';
+import { getGitRepoRoot, getMainBranch } from './git.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 import type { AgentRuntimeIdentity } from '../../src/domain/agent-runners.js';
 import type {
@@ -71,6 +71,7 @@ import type {
   DeleteTaskCleanupWarningKind,
 } from '../../src/domain/task-cleanup.js';
 import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js';
+import type { CreateTaskResult } from '../../src/ipc/types.js';
 
 export interface TaskWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -95,16 +96,20 @@ export interface SpawnTaskAgentWorkflowRequest {
   rows: number;
   runnerProfile?: unknown;
   skipExistingSessionAttach?: boolean;
+  startsTaskWatchers?: boolean;
   taskId: string;
 }
 
 export interface CreateTaskWorkflowRequest {
+  agentDefId?: string;
+  agentDefName?: string;
   baseBranch?: string;
   branchPrefix?: string;
   existingWorktreePath?: string;
   gitIsolation?: TaskGitIsolationMode;
   githubUrl?: string;
   name: string;
+  operationId?: string;
   projectId: string;
   projectMode?: ProjectMode;
   projectRoot: string;
@@ -184,8 +189,23 @@ interface CreatedTaskRuntimeMetadata {
   worktree_path: string;
 }
 
-const taskIdByWorktreeIdentity = new Map<string, string>();
-const worktreeIdentityByTaskId = new Map<string, string>();
+interface TaskCreationOperation {
+  fingerprint: string;
+  promise: Promise<CreateTaskResult>;
+}
+
+// Runtime registrations and saved-state registrations have different lifetimes.
+// A renderer save may legitimately lag a task creation or deletion, so replacing
+// runtime state with every saved snapshot can otherwise reopen a worktree while
+// its create workflow is still settling (or resurrect one after cleanup).
+const liveTaskIdByWorktreeIdentity = new Map<string, string>();
+const liveWorktreeIdentityByTaskId = new Map<string, string>();
+const savedTaskIdByWorktreeIdentity = new Map<string, string>();
+const savedWorktreeIdentityByTaskId = new Map<string, string>();
+const removedTaskWorktreeIds = new Set<string>();
+const pendingTaskWorktreeIdentities = new Set<string>();
+const taskCreationOperationsById = new Map<string, TaskCreationOperation>();
+const taskCreationOperationIdsByTaskId = new Map<string, Set<string>>();
 const MAX_CONCURRENT_AGENT_SESSION_SPAWNS = 4;
 const pendingTaskAgentSpawns = new Set<PendingTaskAgentSpawn>();
 const latestTaskAgentSpawnByAgentId = new Map<string, PendingTaskAgentSpawn>();
@@ -461,47 +481,153 @@ function getWorktreeIdentity(worktreePath: string): string {
   }
 }
 
-function assertWorktreeIdentityAvailable(taskId: string | undefined, worktreePath: string): void {
+function getSavedWorktreeIdentity(worktreePath: string): string {
   const identity = getWorktreeIdentity(worktreePath);
-  const existingTaskId = taskIdByWorktreeIdentity.get(identity);
-  if (existingTaskId !== undefined && existingTaskId !== taskId) {
+  try {
+    if (!fs.statSync(identity).isDirectory()) {
+      return identity;
+    }
+  } catch {
+    // Missing worktrees must retain their exact saved identity. Walking to an
+    // ancestor repository would incorrectly claim that repository's root.
+    return identity;
+  }
+
+  let candidate = identity;
+  while (true) {
+    if (fs.existsSync(path.join(candidate, '.git'))) {
+      return candidate;
+    }
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      return identity;
+    }
+    candidate = parent;
+  }
+}
+
+function findExactlyRegisteredTaskIdForWorktreeIdentity(identity: string): string | null {
+  return (
+    liveTaskIdByWorktreeIdentity.get(identity) ??
+    savedTaskIdByWorktreeIdentity.get(identity) ??
+    null
+  );
+}
+
+function isDescendantWorktreeIdentity(parentIdentity: string, candidateIdentity: string): boolean {
+  const relativePath = path.relative(parentIdentity, candidateIdentity);
+  return (
+    relativePath.length > 0 &&
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+function assertWorktreeIdentityAvailable(
+  taskId: string | undefined,
+  identity: string,
+  worktreePath: string,
+): void {
+  const existingTaskId = findExactlyRegisteredTaskIdForWorktreeIdentity(identity);
+  if (existingTaskId !== null && existingTaskId !== taskId) {
     throw new Error(`Worktree is already registered for task ${existingTaskId}: ${worktreePath}`);
   }
 }
 
 export function findRegisteredTaskIdForWorktreePath(worktreePath: string): string | null {
-  return taskIdByWorktreeIdentity.get(getWorktreeIdentity(worktreePath)) ?? null;
+  const identity = getWorktreeIdentity(worktreePath);
+  const exactTaskId = findExactlyRegisteredTaskIdForWorktreeIdentity(identity);
+  if (exactTaskId !== null) {
+    return exactTaskId;
+  }
+
+  let owner: { identity: string; taskId: string } | null = null;
+  for (const registry of [liveTaskIdByWorktreeIdentity, savedTaskIdByWorktreeIdentity]) {
+    for (const [registeredIdentity, taskId] of registry) {
+      if (
+        isDescendantWorktreeIdentity(registeredIdentity, identity) &&
+        (!owner || registeredIdentity.length > owner.identity.length)
+      ) {
+        owner = { identity: registeredIdentity, taskId };
+      }
+    }
+  }
+
+  return owner?.taskId ?? null;
+}
+
+function reserveTaskWorktreeIdentity(worktreePath: string): () => void {
+  const identity = getWorktreeIdentity(worktreePath);
+  assertWorktreeIdentityAvailable(undefined, identity, worktreePath);
+  if (pendingTaskWorktreeIdentities.has(identity)) {
+    throw new Error(`Worktree is already being registered for another task: ${worktreePath}`);
+  }
+
+  pendingTaskWorktreeIdentities.add(identity);
+  return () => {
+    pendingTaskWorktreeIdentities.delete(identity);
+  };
+}
+
+async function withReservedTaskWorktreeIdentity<T>(
+  worktreePath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const release = reserveTaskWorktreeIdentity(worktreePath);
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
 }
 
 function registerTaskWorktreeIdentity(taskId: string, worktreePath: string): void {
-  const previousIdentity = worktreeIdentityByTaskId.get(taskId);
-  if (previousIdentity !== undefined) {
-    taskIdByWorktreeIdentity.delete(previousIdentity);
-  }
-
   const identity = getWorktreeIdentity(worktreePath);
-  const existingTaskId = taskIdByWorktreeIdentity.get(identity);
-  if (existingTaskId !== undefined && existingTaskId !== taskId) {
-    throw new Error(`Worktree is already registered for task ${existingTaskId}: ${worktreePath}`);
+  assertWorktreeIdentityAvailable(taskId, identity, worktreePath);
+
+  const previousIdentity = liveWorktreeIdentityByTaskId.get(taskId);
+  if (previousIdentity !== undefined) {
+    liveTaskIdByWorktreeIdentity.delete(previousIdentity);
+  }
+  const previousSavedIdentity = savedWorktreeIdentityByTaskId.get(taskId);
+  if (previousSavedIdentity !== undefined) {
+    savedWorktreeIdentityByTaskId.delete(taskId);
+    savedTaskIdByWorktreeIdentity.delete(previousSavedIdentity);
   }
 
-  worktreeIdentityByTaskId.set(taskId, identity);
-  taskIdByWorktreeIdentity.set(identity, taskId);
+  removedTaskWorktreeIds.delete(taskId);
+  liveWorktreeIdentityByTaskId.set(taskId, identity);
+  liveTaskIdByWorktreeIdentity.set(identity, taskId);
 }
 
 function removeTaskWorktreeIdentity(taskId: string): void {
-  const identity = worktreeIdentityByTaskId.get(taskId);
-  if (identity === undefined) {
-    return;
+  const liveIdentity = liveWorktreeIdentityByTaskId.get(taskId);
+  if (liveIdentity !== undefined) {
+    liveWorktreeIdentityByTaskId.delete(taskId);
+    liveTaskIdByWorktreeIdentity.delete(liveIdentity);
   }
 
-  worktreeIdentityByTaskId.delete(taskId);
-  taskIdByWorktreeIdentity.delete(identity);
+  const savedIdentity = savedWorktreeIdentityByTaskId.get(taskId);
+  if (savedIdentity !== undefined) {
+    savedWorktreeIdentityByTaskId.delete(taskId);
+    savedTaskIdByWorktreeIdentity.delete(savedIdentity);
+  }
+
+  // Ignore stale client snapshots for this task until the process restarts.
+  // Task ids are unique, so retaining this tombstone cannot mask a new task.
+  removedTaskWorktreeIds.add(taskId);
 }
 
 export function clearTaskWorkflowWorktreeRegistryForTests(): void {
-  taskIdByWorktreeIdentity.clear();
-  worktreeIdentityByTaskId.clear();
+  liveTaskIdByWorktreeIdentity.clear();
+  liveWorktreeIdentityByTaskId.clear();
+  savedTaskIdByWorktreeIdentity.clear();
+  savedWorktreeIdentityByTaskId.clear();
+  removedTaskWorktreeIds.clear();
+  pendingTaskWorktreeIdentities.clear();
+  taskCreationOperationsById.clear();
+  taskCreationOperationIdsByTaskId.clear();
   for (const operation of pendingTaskAgentSpawns) {
     operation.abortController.abort(new Error('Task workflow test state reset'));
   }
@@ -516,11 +642,23 @@ export function clearTaskWorkflowWorktreeRegistryForTests(): void {
   stopAllTaskAgentWorkflowsPromise = null;
 }
 
+function forgetTaskCreationOperations(taskId: string): void {
+  const operationIds = taskCreationOperationIdsByTaskId.get(taskId);
+  if (!operationIds) {
+    return;
+  }
+
+  taskCreationOperationIdsByTaskId.delete(taskId);
+  for (const operationId of operationIds) {
+    taskCreationOperationsById.delete(operationId);
+  }
+}
+
 export function syncTaskWorkflowWorktreesFromSavedState(
   savedState: string | SavedStateDocument,
 ): void {
-  taskIdByWorktreeIdentity.clear();
-  worktreeIdentityByTaskId.clear();
+  savedTaskIdByWorktreeIdentity.clear();
+  savedWorktreeIdentityByTaskId.clear();
 
   const parsed = toSavedStateDocument(savedState).taskLookup;
   for (const task of Object.values(parsed.tasks)) {
@@ -528,17 +666,29 @@ export function syncTaskWorkflowWorktreesFromSavedState(
       continue;
     }
 
-    if (!task.id || !task.worktreePath) {
+    if (!task.id || !task.worktreePath || removedTaskWorktreeIds.has(task.id)) {
+      continue;
+    }
+    if (liveWorktreeIdentityByTaskId.has(task.id) || savedWorktreeIdentityByTaskId.has(task.id)) {
       continue;
     }
 
-    const identity = getWorktreeIdentity(task.worktreePath);
-    if (taskIdByWorktreeIdentity.has(identity)) {
+    const identity = getSavedWorktreeIdentity(task.worktreePath);
+    if (pendingTaskWorktreeIdentities.has(identity)) {
+      continue;
+    }
+    const liveTaskId = liveTaskIdByWorktreeIdentity.get(identity);
+    if (liveTaskId !== undefined) {
+      // Live backend state wins over a lagging renderer snapshot. The matching
+      // task is already represented; a different task is a stale conflict.
+      continue;
+    }
+    if (savedTaskIdByWorktreeIdentity.has(identity)) {
       continue;
     }
 
-    taskIdByWorktreeIdentity.set(identity, task.id);
-    worktreeIdentityByTaskId.set(task.id, identity);
+    savedTaskIdByWorktreeIdentity.set(identity, task.id);
+    savedWorktreeIdentityByTaskId.set(task.id, identity);
   }
 }
 
@@ -750,18 +900,15 @@ function registerCreatedNonGitTaskRuntime(
 
 function createManagedWorktreeTask(
   request: CreateTaskWorkflowRequest,
+  baseBranch: string,
 ): ReturnType<typeof createTask> {
   const branchPrefix = request.branchPrefix ?? 'task';
-  if (request.baseBranch === undefined) {
-    return createTask(request.name, request.projectRoot, request.symlinkDirs, branchPrefix);
-  }
-
   return createTask(
     request.name,
     request.projectRoot,
     request.symlinkDirs,
     branchPrefix,
-    request.baseBranch,
+    baseBranch,
   );
 }
 
@@ -793,6 +940,7 @@ export function cleanupTaskRuntimeWorkflow(
   removeTaskSteps(request.taskId);
   removeTaskPorts(request.taskId);
   removeTaskContainerPreviewTargets(request.taskId);
+  forgetTaskCreationOperations(request.taskId);
   removeTaskWorktreeIdentity(request.taskId);
   if (request.projectMode !== 'non-git' && typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
@@ -895,7 +1043,7 @@ async function executeTaskAgentSpawn(
       rows: getAgentRows(request.agentId),
       taskId: request.taskId,
     });
-    if (request.isShell || !request.cwd) {
+    if ((request.isShell && request.startsTaskWatchers !== true) || !request.cwd) {
       return spawnDisposition;
     }
     if (request.projectMode === 'non-git') {
@@ -973,7 +1121,7 @@ async function executeTaskAgentSpawn(
       }
     }
 
-    if (request.isShell || !request.cwd) {
+    if ((request.isShell && request.startsTaskWatchers !== true) || !request.cwd) {
       return spawnDisposition;
     }
 
@@ -1173,15 +1321,70 @@ export async function stopTaskAgentWorkflowsForTask(
   await cleanupTaskAgentRunners(agentIds, taskId);
 }
 
+function getTaskCreationOperationFingerprint(request: CreateTaskWorkflowRequest): string {
+  return JSON.stringify([
+    request.agentDefId ?? null,
+    request.agentDefName ?? null,
+    request.baseBranch ?? null,
+    request.branchPrefix ?? null,
+    request.existingWorktreePath ?? null,
+    request.gitIsolation ?? null,
+    request.githubUrl ?? null,
+    request.name,
+    request.projectId,
+    request.projectMode ?? null,
+    request.projectRoot,
+    request.stepsTracking ?? null,
+    request.symlinkDirs,
+  ]);
+}
+
+function rememberTaskCreationOperation(taskId: string, operationId: string): void {
+  const operationIds = taskCreationOperationIdsByTaskId.get(taskId) ?? new Set<string>();
+  operationIds.add(operationId);
+  taskCreationOperationIdsByTaskId.set(taskId, operationIds);
+}
+
 export async function createTaskWorkflow(
   context: TaskWorkflowContext,
   request: CreateTaskWorkflowRequest,
-): Promise<
-  | (Awaited<ReturnType<typeof createTask>> & { base_branch: string })
-  | Awaited<ReturnType<typeof createCurrentBranchTask>>
-  | ReturnType<typeof createNonGitTask>
-  | Awaited<ReturnType<typeof importExistingWorktreeTask>>
-> {
+): Promise<CreateTaskResult> {
+  const operationId = request.operationId;
+  if (!operationId || operationId.trim().length === 0) {
+    return executeCreateTaskWorkflow(context, request);
+  }
+
+  const fingerprint = getTaskCreationOperationFingerprint(request);
+  const existingOperation = taskCreationOperationsById.get(operationId);
+  if (existingOperation) {
+    if (existingOperation.fingerprint !== fingerprint) {
+      throw new Error(`Task creation operation ${operationId} was reused with different inputs`);
+    }
+    return existingOperation.promise;
+  }
+
+  const operation: TaskCreationOperation = {
+    fingerprint,
+    promise: executeCreateTaskWorkflow(context, request),
+  };
+  taskCreationOperationsById.set(operationId, operation);
+
+  try {
+    const result = await operation.promise;
+    rememberTaskCreationOperation(result.id, operationId);
+    return result;
+  } catch (error) {
+    if (taskCreationOperationsById.get(operationId) === operation) {
+      taskCreationOperationsById.delete(operationId);
+    }
+    throw error;
+  }
+}
+
+async function executeCreateTaskWorkflow(
+  context: TaskWorkflowContext,
+  request: CreateTaskWorkflowRequest,
+): Promise<CreateTaskResult> {
   if (request.projectMode === 'non-git') {
     if (request.stepsTracking === true) {
       assertTaskStepsPathAvailable(undefined, request.projectRoot);
@@ -1192,33 +1395,61 @@ export async function createTaskWorkflow(
   }
 
   if (request.gitIsolation === 'current-branch') {
-    assertWorktreeIdentityAvailable(undefined, request.projectRoot);
-    const result = await createCurrentBranchTask(request.projectRoot, request.baseBranch);
-    const baseBranch = result.base_branch ?? request.baseBranch;
-    registerCreatedTaskRuntime(context, request, result, baseBranch);
+    const canonicalProjectRoot = await getGitRepoRoot(request.projectRoot);
+    if (!canonicalProjectRoot) {
+      throw new Error(`Project root is not a Git repository: ${request.projectRoot}`);
+    }
+    const canonicalRequest =
+      canonicalProjectRoot === request.projectRoot
+        ? request
+        : { ...request, projectRoot: canonicalProjectRoot };
 
-    return result;
+    return withReservedTaskWorktreeIdentity(canonicalProjectRoot, async () => {
+      const result = await createCurrentBranchTask(canonicalProjectRoot, request.baseBranch);
+      const baseBranch = result.base_branch ?? request.baseBranch;
+      registerCreatedTaskRuntime(context, canonicalRequest, result, baseBranch);
+
+      return result;
+    });
   }
 
   if (request.gitIsolation === 'existing-worktree') {
     if (!request.existingWorktreePath) {
       throw new Error('existingWorktreePath is required for existing-worktree tasks');
     }
+    const [canonicalProjectRoot, existingWorktreePath] = await Promise.all([
+      getGitRepoRoot(request.projectRoot),
+      getGitRepoRoot(request.existingWorktreePath),
+    ]);
+    if (!canonicalProjectRoot) {
+      throw new Error(`Project root is not a Git repository: ${request.projectRoot}`);
+    }
+    if (!existingWorktreePath) {
+      throw new Error(`Existing worktree is not a Git repository: ${request.existingWorktreePath}`);
+    }
+    if (getWorktreeIdentity(canonicalProjectRoot) === getWorktreeIdentity(existingWorktreePath)) {
+      throw new Error('Existing worktree import cannot use the project root.');
+    }
+    const canonicalRequest =
+      canonicalProjectRoot === request.projectRoot
+        ? request
+        : { ...request, projectRoot: canonicalProjectRoot };
 
-    assertWorktreeIdentityAvailable(undefined, request.existingWorktreePath);
-    const result = await importExistingWorktreeTask(
-      request.projectRoot,
-      request.existingWorktreePath,
-      request.baseBranch,
-    );
-    const baseBranch = result.base_branch ?? request.baseBranch;
-    registerCreatedTaskRuntime(context, request, result, baseBranch);
+    return withReservedTaskWorktreeIdentity(existingWorktreePath, async () => {
+      const result = await importExistingWorktreeTask(
+        canonicalProjectRoot,
+        existingWorktreePath,
+        request.baseBranch,
+      );
+      const baseBranch = result.base_branch ?? request.baseBranch;
+      registerCreatedTaskRuntime(context, canonicalRequest, result, baseBranch);
 
-    return result;
+      return result;
+    });
   }
 
-  const result = await createManagedWorktreeTask(request);
   const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
+  const result = await createManagedWorktreeTask(request, baseBranch);
   registerCreatedTaskRuntime(context, request, result, baseBranch);
 
   return {

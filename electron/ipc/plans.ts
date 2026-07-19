@@ -8,6 +8,7 @@ interface PlanWatcher {
   currentRelativePath: string | null;
   fsWatchers: fs.FSWatcher[];
   knownFiles: Set<string>;
+  onPlanContent: ((message: PlanContentMessage) => void) | undefined;
   plansDirs: string[];
   pollTimer: ReturnType<typeof setInterval> | null;
   timeout: ReturnType<typeof setTimeout> | null;
@@ -278,10 +279,7 @@ function watchPlanDir(plansDir: string, onChange: () => void): fs.FSWatcher | nu
   }
 }
 
-function schedulePlanContentUpdate(
-  taskId: string,
-  onPlanContent?: (message: PlanContentMessage) => void,
-): void {
+function schedulePlanContentUpdate(taskId: string): void {
   const entry = watchers.get(taskId);
   if (!entry) {
     return;
@@ -301,7 +299,7 @@ function schedulePlanContentUpdate(
     const nextPlan = readNewestPlanFromDirs(currentEntry.plansDirs, currentEntry.knownFiles);
     if (nextPlan) {
       currentEntry.currentRelativePath = nextPlan.relativePath;
-      onPlanContent?.(createPlanContentMessage(taskId, nextPlan));
+      currentEntry.onPlanContent?.(createPlanContentMessage(taskId, nextPlan));
       return;
     }
 
@@ -318,14 +316,11 @@ function schedulePlanContentUpdate(
     }
 
     currentEntry.currentRelativePath = null;
-    onPlanContent?.(createPlanContentMessage(taskId, null));
+    currentEntry.onPlanContent?.(createPlanContentMessage(taskId, null));
   }, CHANGE_DEBOUNCE_MS);
 }
 
-function startPlanDirPolling(
-  taskId: string,
-  onPlanContent?: (message: PlanContentMessage) => void,
-): ReturnType<typeof setInterval> | null {
+function startPlanDirPolling(taskId: string): ReturnType<typeof setInterval> | null {
   const entry = watchers.get(taskId);
   if (!entry || entry.watchedDirs.size === entry.plansDirs.length) {
     return null;
@@ -344,7 +339,7 @@ function startPlanDirPolling(
       }
 
       const watcher = watchPlanDir(plansDir, () => {
-        schedulePlanContentUpdate(taskId, onPlanContent);
+        schedulePlanContentUpdate(taskId);
       });
       if (!watcher) {
         continue;
@@ -359,7 +354,7 @@ function startPlanDirPolling(
     }
 
     if (addedWatcher) {
-      schedulePlanContentUpdate(taskId, onPlanContent);
+      schedulePlanContentUpdate(taskId);
     }
 
     if (currentEntry.pollTimer && currentEntry.watchedDirs.size === currentEntry.plansDirs.length) {
@@ -379,6 +374,12 @@ export function startPlanWatcher(
   worktreePath: string,
   onPlanContent?: (message: PlanContentMessage) => void,
 ): void {
+  const existingEntry = watchers.get(taskId);
+  if (existingEntry?.worktreePath === worktreePath) {
+    existingEntry.onPlanContent = onPlanContent;
+    return;
+  }
+
   stopPlanWatcher(taskId);
 
   const plansDirs = getPlanDirs(worktreePath);
@@ -391,6 +392,7 @@ export function startPlanWatcher(
     currentRelativePath: null,
     fsWatchers: [],
     knownFiles: snapshotExistingPlanFiles(plansDirs),
+    onPlanContent,
     plansDirs,
     pollTimer: null,
     timeout: null,
@@ -406,7 +408,7 @@ export function startPlanWatcher(
     }
 
     const watcher = watchPlanDir(plansDir, () => {
-      schedulePlanContentUpdate(taskId, onPlanContent);
+      schedulePlanContentUpdate(taskId);
     });
     if (!watcher) {
       continue;
@@ -416,7 +418,7 @@ export function startPlanWatcher(
     entry.fsWatchers.push(watcher);
   }
 
-  entry.pollTimer = startPlanDirPolling(taskId, onPlanContent);
+  entry.pollTimer = startPlanDirPolling(taskId);
 }
 
 /** Stops and removes the plan watcher for a given task. */

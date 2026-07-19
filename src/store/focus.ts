@@ -3,6 +3,9 @@ import { store, setStore } from './core';
 import { setActiveTaskState } from './active-task-selection';
 import { clearSidebarFocusedProjectIfHidden } from './sidebar-sections';
 import { computeSidebarTaskOrder } from './sidebar-order';
+import { isTerminalTask } from '../domain/task-mode';
+import { parseIndexedTaskPanelId } from '../domain/task-panel-id';
+import { getSelectedTaskAgentId, getSelectedTaskRuntimeAgentId } from './task-agent-selection';
 
 // Imperative focus registry: components register focus callbacks on mount
 const focusRegistry = new Map<string, () => void>();
@@ -88,12 +91,29 @@ function getNormalizedTaskPanelId(taskId: string, panelId: string | undefined): 
     return 'shell-toolbar:0';
   }
 
+  const task = store.tasks[taskId];
+  if (
+    task &&
+    isTerminalTask(task) &&
+    (panelId === 'ai-terminal' || panelId === 'coordinator' || panelId === 'prompt')
+  ) {
+    return defaultPanelFor(taskId);
+  }
+
+  if (task && panelId.startsWith('shell:')) {
+    const shellIndex = getShellPanelIndex(panelId);
+    if (shellIndex === null || !task.shellAgentIds[shellIndex]) {
+      return defaultPanelFor(taskId);
+    }
+    return `shell:${shellIndex}`;
+  }
+
   if (!panelId.startsWith('shell-toolbar:')) {
     return panelId;
   }
 
-  const parsedIndex = Number.parseInt(panelId.slice('shell-toolbar:'.length), 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
+  const parsedIndex = parseIndexedTaskPanelId(panelId, 'shell-toolbar');
+  if (parsedIndex === null) {
     return 'shell-toolbar:0';
   }
 
@@ -115,8 +135,10 @@ function buildGrid(taskId: string): string[][] {
     if (task.shellAgentIds.length > 0) {
       grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
     }
-    grid.push(['ai-terminal']);
-    grid.push(['prompt']);
+    if (!isTerminalTask(task)) {
+      grid.push(['ai-terminal']);
+      grid.push(['prompt']);
+    }
     return grid;
   }
 
@@ -126,7 +148,14 @@ function buildGrid(taskId: string): string[][] {
 
 /** The panel to focus when navigating into a task or terminal. */
 function defaultPanelFor(panelId: string): string {
-  return store.tasks[panelId] ? 'ai-terminal' : 'terminal';
+  const task = store.tasks[panelId];
+  if (!task) {
+    return 'terminal';
+  }
+  if (isTerminalTask(task)) {
+    return task.shellAgentIds.length > 0 ? 'shell:0' : 'shell-toolbar:0';
+  }
+  return 'ai-terminal';
 }
 
 export function hasBlockingDialog(): boolean {
@@ -238,18 +267,22 @@ function findInGrid(grid: string[][], cell: string): GridPos | null {
 }
 
 function getShellPanelIndex(panelId: string): number | null {
-  if (!panelId.startsWith('shell:')) {
-    return null;
-  }
-
-  const index = Number.parseInt(panelId.slice('shell:'.length), 10);
-  return Number.isInteger(index) && index >= 0 ? index : null;
+  return parseIndexedTaskPanelId(panelId, 'shell');
 }
 
 function getTerminalFamilyPanelForTask(taskId: string, currentPanel: string): string | null {
   const targetTask = store.tasks[taskId];
   if (!targetTask) {
     return null;
+  }
+
+  if (isTerminalTask(targetTask)) {
+    const shellCount = targetTask.shellAgentIds.length;
+    const shellIndex = getShellPanelIndex(currentPanel);
+    if (shellIndex !== null && shellCount > 0) {
+      return `shell:${Math.min(shellIndex, shellCount - 1)}`;
+    }
+    return defaultPanelFor(taskId);
   }
 
   if (currentPanel === 'ai-terminal') {
@@ -274,7 +307,8 @@ export function getTaskFocusedPanel(taskId: string): string {
 }
 
 export function getStoredTaskFocusedPanel(taskId: string): string | null {
-  return store.focusedPanel[taskId] ?? null;
+  const storedPanel = store.focusedPanel[taskId];
+  return storedPanel === undefined ? null : getNormalizedTaskPanelId(taskId, storedPanel);
 }
 
 export function isTaskPanelFocused(taskId: string, panelId: string): boolean {
@@ -286,6 +320,22 @@ export function setTaskFocusedPanelState(taskId: string, panel: string): void {
   setStore('focusedPanel', taskId, normalizedPanel);
 }
 
+export function reconcileTaskFocusedPanelState(taskId: string): void {
+  const task = store.tasks[taskId];
+  if (!task) {
+    return;
+  }
+
+  const normalizedPanel = getNormalizedTaskPanelId(taskId, store.focusedPanel[taskId]);
+  batch(() => {
+    setStore('focusedPanel', taskId, normalizedPanel);
+    if (store.activeTaskId === taskId) {
+      setStore('activeAgentId', getSelectedTaskRuntimeAgentId(task, store.activeAgentId));
+      selectFocusedTaskRuntime(taskId, normalizedPanel);
+    }
+  });
+}
+
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
   const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
   batch(() => {
@@ -295,9 +345,35 @@ export function setTaskFocusedPanel(taskId: string, panel: string): void {
     if (store.activeTaskId !== taskId) {
       setActiveTaskState(taskId);
     }
+    selectFocusedTaskRuntime(taskId, normalizedPanel);
   });
   triggerFocus(`${taskId}:${normalizedPanel}`);
   scrollTaskIntoView(taskId);
+}
+
+function selectFocusedTaskRuntime(taskId: string, panelId: string): void {
+  const task = store.tasks[taskId];
+  if (!task || store.activeTaskId !== taskId) {
+    return;
+  }
+
+  const shellIndex = getShellPanelIndex(panelId);
+  if (shellIndex !== null) {
+    const shellId = task.shellAgentIds[shellIndex];
+    if (shellId) {
+      setStore('activeAgentId', shellId);
+    }
+    return;
+  }
+
+  if (isTerminalTask(task) && panelId.startsWith('shell-toolbar:')) {
+    setStore('activeAgentId', getSelectedTaskRuntimeAgentId(task, store.activeAgentId));
+    return;
+  }
+
+  if (panelId === 'ai-terminal' || panelId === 'prompt') {
+    setStore('activeAgentId', getSelectedTaskAgentId(task, store.activeAgentId));
+  }
 }
 
 function scrollTaskIntoView(taskId: string): void {
@@ -350,6 +426,7 @@ function focusTaskPanel(taskId: string, panel: string): void {
     setStore('sidebarFocused', false);
     setStore('placeholderFocused', false);
     setActiveTaskState(taskId);
+    selectFocusedTaskRuntime(taskId, normalizedPanel);
   });
   triggerFocus(`${taskId}:${normalizedPanel}`);
 }

@@ -220,7 +220,7 @@ describe('Sidebar', () => {
     expect(await screen.findByText('Remove project?')).toBeDefined();
     expect(
       screen.getByText(
-        'This project has 1 open task(s). Removing it will also close all tasks, delete their worktrees and branches.',
+        'This project has 1 open task. Removing the project will close it. Managed worktrees will be removed. Project-root folders and existing worktrees will be kept; managed branches will be deleted only when configured.',
       ),
     ).toBeDefined();
 
