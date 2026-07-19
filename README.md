@@ -19,15 +19,15 @@
   <img src="screens/longer-video.gif" alt="Parallel Code demo" width="800">
 </p>
 
-**Parallel Code** gives Claude Code, Codex CLI, and Gemini CLI each their own git branch and worktree automatically. Agents work in separate checkouts, terminal state stays in one interface, merge results are visible when they are ready, and you can monitor the work from your phone.
+**Parallel Code** keeps Claude Code, Codex CLI, Gemini CLI, and project shells in one task-centric interface. Isolated agent tasks get their own git branch and worktree by default; when isolation is not what you need, you can explicitly work in the project root, import an existing worktree, or create a terminal-only task with no AI agent. Merge results stay visible when they are ready, and you can monitor agent work from your phone.
 
 ## Screenshots
 
-| Agent working on a task                     | Commit & merge workflow           |
-| ------------------------------------------- | --------------------------------- |
-| ![Agent working](screens/agent-working.png) | ![Workflow](screens/workflow.png) |
-| **Direct mode (main branch)**               | **Themes**                        |
-| ![Direct mode](screens/direct-mode.png)     | ![Themes](screens/themes.png)     |
+| Agent working on a task                       | Commit & merge workflow           |
+| --------------------------------------------- | --------------------------------- |
+| ![Agent working](screens/agent-working.png)   | ![Workflow](screens/workflow.png) |
+| **Project-root task (main branch)**           | **Themes**                        |
+| ![Project-root task](screens/direct-mode.png) | ![Themes](screens/themes.png)     |
 
 ## Why Parallel Code?
 
@@ -43,7 +43,7 @@ Parallel Code puts the GUI, worktree isolation, and multi-agent orchestration in
 
 ## How Parallel Code Solves It
 
-When you create a task, Parallel Code:
+For an isolated agent task—the default—Parallel Code:
 
 1. Creates a new git branch from your main branch
 2. Sets up a [git worktree](https://git-scm.com/docs/git-worktree) so the agent works in a separate directory
@@ -51,6 +51,19 @@ When you create a task, Parallel Code:
 4. Spawns the AI agent in that worktree
 
 This lets five agents work on five features at the same time from the same repo, each on its own branch and worktree. When you're happy with the result, merge the branch back to main from the sidebar.
+
+Task execution and Git location are independent choices.
+
+Choose what runs:
+
+- **Agent** launches the selected AI coding CLI and can also use task-scoped shells.
+- **Terminal-only** starts a task-scoped shell without launching an AI agent.
+
+Choose where it runs:
+
+- **Worktree** is the isolated default. Parallel Code manages the branch and worktree; closing removes the managed worktree and follows the project's branch-cleanup setting.
+- **Project root** works directly in the repository root on the selected branch. It is subtly flagged throughout the UI, the backend permits only one active project-root task for the same canonical repository, and closing keeps the root and branch.
+- **Existing worktree** imports a linked worktree you already manage. Closing stops its runtimes but keeps the worktree and branch.
 
 ## Features
 
@@ -60,7 +73,7 @@ Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](h
 
 ### 5 agents, 5 features, zero conflicts
 
-Every task gets its own git branch and [worktree](https://git-scm.com/docs/git-worktree). Agents work in separate checkouts, so you avoid shared-branch conflicts, stashing, and waiting on one task before starting another. Five agents, five features, one repo. Merge back to main when you're done.
+Every isolated agent task gets its own git branch and [worktree](https://git-scm.com/docs/git-worktree). Agents work in separate checkouts, so you avoid shared-branch conflicts, stashing, and waiting on one task before starting another. Five agents, five features, one repo. Merge back to main when you're done.
 
 ### Walk away — monitor from your phone
 
@@ -90,15 +103,17 @@ Navigate panels, create tasks, send prompts, merge branches, and push to remote 
 
 - Tiled panel layout with drag-to-reorder
 - Built-in diff viewer and changed files list per task
-- Shell terminals per task, scoped to the worktree
-- Direct mode for working on the main branch without isolation
+- Shell terminals per task, scoped to the task's selected Git location
+- Terminal-only tasks with no AI agent
+- Visually flagged project-root tasks for intentional non-isolated work
+- Existing-worktree imports that remain user-owned on close
 - Six themes — Minimal, Graphite, Classic, Indigo, Ember, Glacier
 - State persists across restarts
 - macOS, Linux, and WSL2
 
 ## Getting Started
 
-**Prerequisites:** [Node.js](https://nodejs.org/) v18+ and at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or Antigravity CLI.
+**Prerequisites:** [Node.js](https://nodejs.org/) v18+. Agent tasks also require at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or Antigravity CLI. Terminal-only tasks do not require an AI CLI.
 
 ### Option 0: Docker - comes with prerequisites.
 

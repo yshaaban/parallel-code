@@ -203,6 +203,9 @@ verify:
 - task and terminal close workflows remove renderer state promptly after runtime cleanup and persist
   that removal best-effort, instead of relying on delayed animation timers that can reload stale
   entries
+- retryable task-creation requests carry one client-stable operation id through Electron/browser
+  transport; the backend single-flights matching inputs, replays committed results, rejects id reuse
+  with different inputs, and releases failed or removed operations
 - restore paths only tolerate partial persisted fragments where the canonical parser says they
   should
 - shared transport/domain payload types live in DOM-neutral modules, not in browser runtime files
@@ -467,6 +470,9 @@ codec evolves somewhere else. That silently drops metadata even though the runti
   field shape first and only keeps legacy field names as backward-compatible fallback
 - when workflow-owned create/update paths already know task metadata that the backend mirror needs,
   pass it through the owning request/registry seam instead of hoping persistence catches up later
+- filesystem-backed mirrors must migrate existing legacy subdirectory paths to the nearest real
+  owner root without treating every ancestor/descendant pair as the same identity. Nested Git
+  worktrees remain distinct, and missing paths retain their exact saved identity
 
 ### 23. Remote triage surfaces should show backend-owned actionability, not renderer recency
 
@@ -550,6 +556,22 @@ must never compact, or replay silently drops state transitions.
   must degrade to the `replay-truncated` signal instead of a holey per-event replay, and the
   shared client core adopts that signal's `latestSeq` wholesale — otherwise gap-detecting
   consumers (the remote shell hard-reconnects on gaps) loop forever on their own reconnect churn
+
+### 29. Task execution mode and Git location are orthogonal
+
+An agent task versus a terminal-only task answers what runtime the task owns. Managed worktree,
+project root, existing worktree, or non-git folder answers where that runtime works. Review the two
+axes independently:
+
+- persist and migrate explicit `taskMode`; never infer terminal mode from an empty `agentIds` array
+  because collapsed agent tasks also have no live agents
+- project task-creation form state into a discriminated launch request so agent-only prompt,
+  permission, and coordinator fields cannot leak into terminal launches
+- keep root/existing-worktree admission and canonical filesystem identity backend-owned across
+  Electron and browser transports
+- show subtle but persistent terminal/root context on task surfaces, and derive close/removal copy
+  from the same mode/location policy so it names the runtimes stopped and filesystem state kept or
+  removed truthfully
 
 ### Additional terminal and lifecycle lessons
 

@@ -35,7 +35,8 @@ Current `main` status:
   durable fields
 - current-branch task creation runs through backend/workflow owners, not renderer-owned branch
   preflight
-- primary UI/task surfaces render `Current Branch` terminology instead of `Direct`
+- primary UI/task surfaces render `Project Root` terminology instead of the implementation-facing
+  `current-branch` or legacy `Direct` names
 - legacy compatibility shims still exist for persisted state, remote payloads, and some helper
   paths; later cleanup should remove those once the new model is the only live truth
 
@@ -82,7 +83,7 @@ Projects keep repo defaults:
 
 - `baseBranch?: string`
 - `branchPrefix?: string`
-- `defaultTaskGitIsolation?: TaskGitIsolationMode`
+- `defaultTaskGitIsolation?: DefaultTaskGitIsolationMode`
 
 `Project.baseBranch` remains the repo-scoped default branch used for new task creation and git fallback.
 
@@ -98,7 +99,8 @@ Tasks gain explicit git-isolation fields:
 Where:
 
 ```ts
-export type TaskGitIsolationMode = 'worktree' | 'current-branch';
+export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
+export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
 ```
 
 Task semantics:
@@ -108,16 +110,20 @@ Task semantics:
 - `Task.baseBranch`
   - the branch used as the diff/merge/review base for this task
 - `Task.gitIsolation`
-  - whether the task owns an isolated worktree or reuses the project root/current repo branch
+  - whether the task owns a managed worktree, reuses the project root, or imports an existing
+    worktree
 
 ### Naming and terminology
 
 User-facing labels should prefer:
 
 - `Worktree`
-- `Current Branch`
+- `Project Root`
+- `Existing Worktree`
 
-Do not keep exposing `Direct` after the redesign lands.
+`current-branch` remains the internal Git-isolation value, but its user-facing behavior is working
+in the repository's project root. Do not expose the legacy `Direct` label or describe the location
+as merely a branch choice.
 
 ## Mode Semantics
 
@@ -150,9 +156,30 @@ Behavior:
 
 Invariants:
 
-- at most one `current-branch` task per project may exist at a time
+- at most one `current-branch` task per canonical repository root may exist at a time, even across
+  duplicate project records, symlink aliases, renderer clients, and concurrent requests
+- the backend resolves the Git top-level path and reserves its canonical identity before checkout;
+  renderer project-id guards are presentation feedback, not admission truth
+- task creation has a client-generated operation id that the backend single-flights and replays;
+  losing a browser response after checkout must not execute creation again or strand the root
 - checkout of the requested branch is a backend-owned side effect, not a renderer warning
 - review/diff/merge-base logic must not fall back to implicit "main" semantics when `task.baseBranch` is present
+
+### `existing-worktree`
+
+Behavior:
+
+- imports an existing Git worktree instead of creating or owning one
+- records external worktree ownership and the checked-out branch
+- close stops task runtimes and watchers but never removes the worktree or branch
+
+Invariants:
+
+- the imported path must be a worktree of the selected project repository and cannot be the project
+  root itself
+- at most one task may register a canonical existing-worktree path at a time; aliases and
+  concurrent imports share the backend admission owner
+- multiple distinct linked worktrees from the same repository remain valid concurrent tasks
 
 ## Base-Branch Semantics
 
@@ -251,7 +278,7 @@ Owns:
 
 - explicit isolation-mode selector UI
 - explicit base-branch selector/input UI
-- current-branch labels and help text
+- `Project Root` labels and help text for the internal `current-branch` mode
 - task badges/info bars/title surfaces that reflect `gitIsolation`
 
 Likely files:
@@ -275,6 +302,9 @@ Likely files:
 - `directMode: true` -> `gitIsolation: 'current-branch'`
 - `directMode: false | undefined` -> `gitIsolation: 'worktree'`
 - missing `baseBranch` remains allowed for migrated tasks, but runtime owners must resolve fallback through the backend base-branch owner instead of using `task.branchName` as an implicit base
+- the backend admission mirror registers an existing legacy `worktreePath` below a worktree under
+  its nearest `.git` root; nested worktree roots stay distinct, and missing paths keep their exact
+  saved identity instead of claiming an ancestor checkout
 
 ### UI migration
 
@@ -358,8 +388,8 @@ This is where the spec intentionally allows a staged implementation if the final
 
 Current status:
 
-- steps 1 through 4 are landed on current `main`, along with the primary terminology and task-surface migration
-- explicit selector cleanup and step 7 compatibility removal remain intentionally open
+- steps 1 through 6 are landed on current `main`
+- step 7 compatibility removal remains intentionally open while persisted legacy state is supported
 
 ## Explicit Defers
 

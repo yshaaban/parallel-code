@@ -80,8 +80,11 @@ All three shells operate on the same underlying concepts:
   git projects from non-git projects when git-owned workflows are unavailable
 - `Project.containerConfig` is optional repo-scoped configuration for task-owned container
   environments; it is durable project truth, not live runtime state
-- a `Task` is the user-facing unit of work
-- an `Agent` is the long-lived PTY-backed worker attached to a task
+- a `Task` is the user-facing unit of work and has an explicit execution mode:
+  `taskMode: 'agent'` owns one or more AI-agent runtimes, while `taskMode: 'terminal'` owns
+  project-backed shell runtimes without an AI agent. Missing persisted modes migrate to `agent`;
+  an empty `agentIds` array is never used to infer the mode because collapsed agent tasks are empty
+- an `Agent` is the long-lived PTY-backed AI worker attached to an agent-mode task
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
 - `Coordinator` is the browser-server-only backend owner for orchestration runs, hidden subtasks,
@@ -94,7 +97,8 @@ All three shells operate on the same underlying concepts:
   `execution.budget` projection consumed by the rail, operator approval gates for decision-lane
   workflow actions, run pause/unpause admission control, operator lane retry, and compact
   workflow-state projection
-- a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
+- a `Terminal` is a standalone scratch shell panel in the UI. It is distinct from both an AI
+  `Agent` and the task-scoped shells owned by a terminal-mode `Task`
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - `PeerPresence` is ephemeral per-browser-session identity plus focus/control context
 - a task takeover request is a live control-plane workflow, not persisted workspace state
@@ -216,7 +220,24 @@ Two current ownership splits matter in review:
   project identity, not only repository path or Git configuration, because multiple project records
   may reference the same path. Branch retry must not invalidate ignored-directory suggestions;
   those queries have different failure and refresh reasons even though the form presents them
-  together
+  together. Creation projects the form into one discriminated `TaskLaunch` (`agent` or `terminal`)
+  before calling the app workflow, so agent-only prompt, permission, and coordinator fields cannot
+  leak into terminal tasks. Git location remains an independent axis: managed worktree, project
+  root (`current-branch` internally), or imported existing worktree
+- `src/domain/task-mode.ts` owns the canonical task-mode vocabulary and legacy default;
+  `src/app/task-lifecycle-workflows.ts` owns creation/collapse/restore mode variation;
+  `src/components/TaskPanel.tsx` branches section composition once so terminal tasks never mount AI
+  terminal, prompt, permission, or coordinator surfaces. The first terminal-task shell explicitly
+  owns task watcher restart after restore; ordinary secondary shells do not restart shared watchers
+- project-root admission is backend-owned in `electron/ipc/task-workflows.ts`. The backend resolves
+  the Git top-level path, reserves its canonical filesystem identity across checkout and runtime
+  registration, and keeps live registrations authoritative over lagging renderer snapshots. This
+  makes the invariant independent of renderer project ids and shared by Electron and browser IPC.
+  Its saved-state mirror registers existing legacy subdirectory paths under the nearest `.git`
+  owner root, while preserving nested worktree roots and missing paths as distinct identities.
+  Every renderer `CreateTask` request carries a client-generated operation id; the backend
+  single-flights concurrent retries and replays the committed result until that task is removed, so
+  an ambiguous browser response cannot duplicate a worktree or strand a project-root registration
 - task deletion spans backend cleanup and renderer projection, but the ownership remains explicit
   across both managed-worktree `DeleteTask` and state-removing `CleanupTaskRuntime` routes:
   `electron/ipc/task-workflows.ts` first closes and drains pending agent spawns, then owns
@@ -603,7 +624,7 @@ Another shared workflow boundary is task closing:
 - `src/domain/task-closing.ts`
 
 It centralizes task and terminal closing predicates so workflow modules and screens stop spreading
-raw close-state checks and direct-mode guards independently.
+raw close-state checks and git-isolation guards independently.
 
 Tasks now carry a discriminated `closeState` object instead of a loose `closingStatus` /
 `closingError` pair. Terminals still use the simpler `closingStatus` field because they only need
@@ -1351,8 +1372,8 @@ A project is the persistent repo-level configuration:
 - display name
 - project mode, defaulting to git when omitted
 - branch prefix
-- delete-branch defaults
-- default direct mode
+- default task Git isolation (`worktree` or project root)
+- delete-branch defaults for managed worktrees
 - bookmarks
 
 Projects matter to both task creation and git status lookup.
@@ -1363,18 +1384,20 @@ Defined in `src/store/types.ts` and managed mainly in `src/store/tasks.ts`.
 
 A task is the main desktop-level unit. It carries:
 
+- explicit execution mode (`agent` or `terminal`)
 - human name
 - project association
 - branch name
 - worktree path
-- agent IDs
+- Git isolation, base branch, and worktree ownership
+- agent IDs for agent-mode tasks
 - selected agent ID, which is a projection hint for prompt and terminal targeting
-- shell agent IDs
+- task-scoped shell IDs
 - notes
 - prompt state
 - plan content
 - optional `stepsTracking` config for backend-owned `.claude/steps.json` tracking
-- direct mode and permissions flags
+- agent-mode runtime and permissions config
 
 The UI is task-centric. Agents are mostly viewed through the task that owns them.
 
@@ -1532,6 +1555,8 @@ Shape:
   - `status`
   - `output`
   - `scrollback`
+- the remote/mobile agent list deliberately filters shell PTYs; terminal-only task sessions are not
+  represented there because that surface does not yet have a task/session projection
 - remote/mobile also now participates in the shared collaboration/control stream:
   - `peer-presences`
   - `state-bootstrap`

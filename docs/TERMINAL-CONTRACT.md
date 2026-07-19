@@ -40,6 +40,23 @@ and the owning implementation files.
   payload or save dropped files through that seam, but it must not read native clipboard images
   directly.
 
+## Task And Session Roles
+
+Task execution mode and Git location are independent contracts. Terminal code must preserve that
+distinction instead of inferring either one from the current PTY list:
+
+- `Task.taskMode` is explicit durable truth. Missing legacy values normalize to `agent`; an empty
+  `agentIds` array does not imply `terminal` because collapsed agent tasks also have no live agents.
+- Agent-mode tasks own one or more AI-agent PTYs and may also own auxiliary task shells.
+- Terminal-mode tasks own task-scoped shell PTYs and never mount or spawn an AI-agent runtime.
+- A standalone `Terminal` is scratch-shell state outside a task. It is not a terminal-mode task and
+  does not acquire task-level Git, review, plan, or watcher ownership.
+- `isShell` identifies PTY/session behavior; it does not decide whether task watchers start. The
+  narrow `startsTaskWatchers` attach capability lets the primary shell of a terminal-mode task
+  establish or restore the watcher ownership that an agent attach normally starts. Secondary task
+  shells and standalone terminals must not request it, and backend validation rejects the flag for
+  non-shell sessions or sessions without a working directory.
+
 ## PTY Byte Fidelity
 
 PTY output is byte truth. The backend records bytes before presentation:
@@ -245,6 +262,8 @@ affordances. They must share terminal truth:
   recovery vocabulary and projects a smaller agent-focused UI. It may request structured recovery
   for details, but it must not define its own `noop`/`delta`/`snapshot`/`terminal-state` recovery
   semantics.
+- The remote/mobile agent list must not reinterpret task shells as AI agents. Terminal-only task
+  sessions remain absent until that surface has an explicit task/session projection.
 - Remote/mobile recovery results must be matched to the active request id before they are applied;
   stale startup, reconnect, or continuity responses must not overwrite newer terminal state.
 - Read-only, takeover, controller, and resize authority are shared task-command-control truth across

@@ -519,11 +519,20 @@ The current required state-machine set is:
      - `cleanup-failed`
      - `removed`
    - required transitions:
+     - create agent task -> exactly one AI runtime and no implicit shell
+     - create terminal task -> exactly one task-scoped shell and no AI runtime
      - active -> closing -> removed
      - active -> collapsed
+     - collapsed terminal task -> restored with a fresh primary shell and restarted task watchers
      - cleanup failure -> retained task with visible error state
      - worktree missing during cleanup
      - lease-valid -> lease-lost during destructive action
+     - concurrent canonical project-root admission -> exactly one creator reaches checkout; failure
+       releases admission and lagging saved snapshots neither free live roots nor resurrect removals
+     - legacy saved worktree subdirectory -> canonical registry owner without collapsing a nested
+       worktree root or mapping a missing worktree onto its ancestor checkout
+     - response lost after task creation commit -> retry with the same operation id replays the
+       original task result without repeating checkout, worktree creation, or runtime registration
    - owner:
      - workflow / app
      - backend runtime cleanup seams
