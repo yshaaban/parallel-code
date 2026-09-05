@@ -94,8 +94,12 @@ The terminal stream uses a small vocabulary:
 - `RecoveryRequired` means a client or channel can no longer trust continuous delivery and must ask
   the backend recovery contract for state. It is not permission to replay historical bytes through
   the live `Data` stream.
-- `Exit` carries process exit metadata and a diagnostic tail. It does not replace scrollback or
-  recovery state.
+- The backend PTY owner's internal `Exit` event carries the exact current `taskId`, lifecycle
+  generation, nullable exit code, a signal normalized once to `string | null`, and the bounded
+  diagnostic tail. Native `null`, `undefined`, and node-pty's numeric zero sentinel all normalize
+  to `null`; a real signal normalizes to its string form. Transport adapters may rename fields for
+  their wire schema, but must not infer task identity or renormalize native exit metadata. `Exit`
+  does not replace scrollback or recovery state.
 - `channel-bound` only acknowledges channel binding. It is not terminal readiness.
 
 Transport files validate message shape, reject malformed payloads, route by channel or message
@@ -146,15 +150,29 @@ that split is a terminal contract change.
 
 Recovery request and pause lifetime rules:
 
-- A terminal attach is one pipelined `AttachTerminalSession` round trip: the backend binds the
-  output channel for the requesting client, runs the spawn/attach workflow, and captures the
-  initial recovery entry in the same backend tick. Ordering guarantee: the recovery cursor is
-  captured before any `Data` frame is sent on the newly bound channel, so attach replay never races
-  live output. Because of that ordering guarantee, output queued while the initial attach entry
-  waits for apply is strictly post-cursor continuity: the renderer must keep it and flush it after
-  apply, never drop it. The request carries optimistic geometry (last-known or 80x24);
-  attach-to-existing never resizes, and fresh spawns use the requested geometry. Fit gates paint,
-  never spawn.
+- A terminal attach is one pipelined `AttachTerminalSession` round trip. A managed-agent or
+  managed-primary-shell request is identity-only: it carries no command, args, cwd, environment,
+  resume flag, runner profile, replacement flag, or other renderer-selected process policy. The
+  backend first derives canonical ownership and resolves an exact
+  `(taskId, sessionId, isShell, generation)` attach or an owner-admitted one-shot restore. It binds
+  the output channel only after exact identity validation; an identity, task, or session-state
+  denial performs no bind, spawn, watcher, pause, or identity mutation. A later
+  `channel-unavailable` result can follow an independently admitted backend restore whose process
+  remains backend-owned; it never authorizes a second renderer-selected spawn. An explicit
+  compatibility-shell or Arena-transient
+  request may use the compatibility creation path only after both managed owners classify the
+  identity as unmanaged. The old `SpawnAgent` request is retired and always fails closed.
+- After that ownership decision, the backend captures the initial recovery entry in the same tick.
+  Ordering guarantee: the recovery cursor is captured before any `Data` frame is sent on the newly
+  bound channel, so attach replay never races live output. Because of that ordering guarantee,
+  output queued while the initial attach entry waits for apply is strictly post-cursor continuity:
+  the renderer must keep it and flush it after apply, never drop it. A compatibility/Arena request
+  carries optimistic geometry (last-known or 80x24); attach-to-existing never resizes, and fresh
+  compatibility/Arena spawns use the requested geometry. Fit gates paint, never spawn.
+- Reconnect and background ensure are identity recovery, not restart commands. Clean backend
+  restart is admitted only by a durable one-shot permit written after the global runner stop is
+  proven; crash/unclean exit writes no such permit. A permit is moved to an in-progress phase before
+  process creation, so a second crash is ambiguous and fails closed instead of duplicating a PTY.
 - An initial attach claims the renderer's true rendered cursor (0 on a fresh mount), which keeps
   reload reattach on the non-destructive delta path. Cursor-hit deltas are uncapped by design (live
   continuity must not be truncated), with one exception: a fresh-mount cursor-0 delta has no
@@ -168,10 +186,14 @@ Recovery request and pause lifetime rules:
 - The backend owns the restore pause lifetime for batched recoveries: every batched recovery
   response (and the attach RPC) holds its own request-scoped `restore` pause under a unique
   `batchPauseId`, even when the agent is already paused — restore pause leases stack, so one
-  client's release cannot expose another client's pre-apply window. The client releases every
-  pause id it observed (geometry-mismatch re-fetches and `tail-needed` phase two can each mint
-  one) fire-and-forget (`ReleaseTerminalRecoveryPause`) after applying or abandoning the entry,
-  and a 5s server auto-resume timer covers a lost release. Batched recoveries carry zero
+  client's release cannot expose another client's pre-apply window. On initial attach, the
+  renderer establishes its local output-flush barrier and releases the response's pause before
+  awaiting fit or paint; it keeps all post-cursor `Data` queued until the captured entry applies,
+  then flushes it in order. Fetched recoveries release every pause id they observe
+  (geometry-mismatch re-fetches and `tail-needed` phase two can each mint one) fire-and-forget
+  (`ReleaseTerminalRecoveryPause`) after applying or abandoning the entry. A 5s server
+  auto-resume timer covers a lost release but is never the normal readiness path. Batched
+  recoveries carry zero
   per-terminal `PauseAgent`/`ResumeAgent` round trips; the explicit pause/resume IPC remains for
   non-batched callers (for example renderer-loss blocking flows and scrollback batch reads).
 
@@ -234,7 +256,9 @@ Scrollback and recovery budgets are byte budgets, not line budgets.
 Current budget owners:
 
 - `electron/ipc/pty.ts` owns PTY scrollback retention, output batching, diagnostic tail retention,
-  input batching, startup recovery caps, and backend recovery cursors.
+  input batching, startup recovery caps, and backend recovery cursors. Exit diagnostics retain at
+  most 8 KiB and 50 non-empty lines; UTF-8 decoding must not expand the emitted diagnostic beyond
+  that byte budget.
 - `server/browser-channels.ts` owns browser channel pending-queue budgets, coalescing budgets, and
   degraded-client thresholds.
 - `src/components/terminal-view/terminal-output-pipeline.ts` owns renderer output queue
@@ -273,8 +297,39 @@ affordances. They must share terminal truth:
 
 Desktop-grade terminal capabilities are shared policy, not ad hoc view behavior:
 
+- Terminal Markdown detection is renderer-local and side-effect free. Wrapped-line reconstruction,
+  Unicode cell mapping, lexical same-root filtering, and the 128-row/4,096-cell scan bounds belong
+  in `src/lib/terminal-links.ts`; hover must not probe the filesystem or send IPC.
+- Activation sends only task identity, an optional exact PTY selector, and the relative Markdown
+  path. A task-backed PTY never supplies root authority. Only a backend-issued Arena launch
+  capability may create an immutable `explicit-transient` PTY, and that authority disappears on
+  replacement, kill/termination entry, disposal, or exit. Withdrawal is synchronous and coordinated
+  before process or runner cleanup can yield.
+- Task-content reads bind and recheck a canonical descriptor before committing a one-shot live-root
+  admission. Markdown reads are capped at 5 MiB and plan reads at 2 MiB. Closing/removal must
+  withdraw new admission before asynchronous runner, PTY, or worktree teardown begins.
+- Terminal search is local presentation state owned by
+  `src/components/terminal-view/terminal-search-runtime.ts` and its overlay. The optional
+  `@xterm/addon-search` capability loads only for the first nonempty query, is attached only while
+  that exact session's search overlay is open, and is disposed on close or session cleanup. Query
+  input is capped at 4,096 UTF-16 code units, incremental scans are latest-generation and at most
+  once per animation frame, and close invalidates pending results before returning focus. Search
+  must never write PTY input, acquire task control, enter persistence or transport state, or retain
+  terminal contents after its owner closes.
+
 - Optional xterm add-ons such as WebGL and web-links may improve presentation, but they must be
   lazy-loaded and must not change byte, recovery, input, or resize truth.
+- `src/lib/webglPool.ts` exclusively owns WebGL atlas repair. On macOS it queues current visible
+  generations after a real foreground edge or retained nonvisible-to-visible transition; the
+  remappable `app.redraw-terminals` action queues the same work on every desktop platform. The
+  focused generation runs first, at most one generation runs per animation frame, and every entry
+  is revalidated before `clearTextureAtlas()` followed by one full viewport refresh. Repair never
+  replays bytes, requests recovery, changes renderer ownership, or touches a hidden/DOM/stale
+  surface.
+- Remote/mobile accepted startup or recovery payloads repaint only after the recovery write and the
+  final already-buffered live write have completed. The exact terminal, agent, request, and restore
+  generation must still be current; ordinary live output and watchdog/disconnect completion do not
+  gain refreshes.
 - Terminal keyboard ergonomics belong in `src/lib/terminal-shortcuts.ts`; terminal shells consume
   the returned action instead of open-coding platform chords.
 - Native clipboard-image and dropped-file behavior belongs behind typed IPC seams. Browser and

@@ -56,12 +56,12 @@ pushing; older checkouts may still use `fork` for the writable remote.
 
 ## Current Upstream Sync Status
 
-As of `2026-06-01`, this repo has:
+As of the `2026-08-03` frozen review, this repo has:
 
-- current upstream head: `09c2507dc21b`
-- last reviewed upstream head before the latest intake: `6097655`
-- last shared graph ancestor with upstream: `b250446`
-- latest upstream delta under active catch-up: `6097655..09c2507dc21b` (`28` commits)
+- reviewed upstream head: `054060bad10cc144d054661fd1702b54523c92b0`
+- last reviewed upstream head before that intake: `09c2507dc21b909d473e15ccd207ebbdaaa5a7a7`
+- historical divergence baseline used by the earlier ledgers: `b250446`
+- latest reviewed upstream delta: `09c2507dc21b..054060bad10c` (`145` commits)
 
 Important details:
 
@@ -92,6 +92,9 @@ Important details:
   `6097655..09c2507dc21b`
 - the implementation plan and working decision ledger for that delta was kept under local `tmp/`
   during the catch-up pass; this document owns the durable summary
+- the `2026-08-03` frozen review covers `09c2507dc21b..054060bad10c`; its commit ledger accounts
+  for all `145` commits exactly once, while the selected behavior and current status are recorded
+  below
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
 - the `2026-04-17` catch-up pass is closed except for redesign-only Docker isolation:
@@ -136,11 +139,17 @@ closed. The `2026-05-08` catch-up pass covers `a0f5280..7aaf640`, tracked in
 [UPSTREAM-CATCHUP-2026-05-08.md](./UPSTREAM-CATCHUP-2026-05-08.md), and is also closed as
 selective behavior catch-up work.
 
-The current catch-up review covers `6097655..09c2507dc21b`. After fetching on `2026-06-01`,
-`original/main` was `09c2507dc21b`, so there were `0` unreviewed upstream commits after the
-documented catch-up head. The local branch still reports graph divergence from upstream; that is
-expected because this fork ports upstream behavior into local architecture owners rather than
-merging upstream history directly.
+The latest frozen catch-up review covers `09c2507dc21b..054060bad10c`. The local
+`upstream-review/main` reference used on `2026-08-03` was `054060bad10cc144d054661fd1702b54523c92b0`,
+and the ledger accounts for all `145` commits in that range, so there were `0` unreviewed commits
+inside the frozen range. This does not claim that the live upstream repository has not advanced
+after the review. The local branch still reports graph divergence from upstream; that is expected
+because this fork ports upstream behavior into local architecture owners rather than merging
+upstream history directly.
+
+The selected outcomes from that range are recorded below with their current activation status.
+Commits classified as deferred remain deliberate future product/design choices, not an unfinished
+implementation queue from this catch-up.
 
 The bring/remap queue from `6097655..09c2507dc21b` is being landed locally without merging upstream
 history. The local implementation ports the behavior that fits this fork's browser-first ownership:
@@ -218,6 +227,264 @@ close-agent controls rather than direct upstream component shape. Docker sandbox
 Hydra adapter execution remain intentionally unsupported.
 
 Recently landed locally:
+
+<a id="remote-mobile-task-notes"></a>
+
+- `2026-08-03` remote/mobile task notes:
+  - upstream `26c7ae67`
+  - status: `read/editor path active; writer complete and default-dark pending exact per-surface proof promotion`
+  - reason: the useful Notes tab and explicit remote Save behavior share one backend
+    content-CAS service with the typed desktop editor, D13 task-incarnation/removal admission, and
+    canonical one-record host storage. The direct component/store bridge was rejected because it
+    would preserve a second writer and allow stale broad saves to erase targeted notes. Both remote
+    hosts instead use scoped principal/grant command registration, content-free invalidation, and
+    authoritative reconnect refetch; the terminal remains mounted across the Notes switch. Fresh
+    Issue/Update admission stays unavailable in production until an external clean-tree run proves
+    and independently re-verifies the exact desktop or remote artifact identity. Terminal replay and
+    already-admitted recovery remain enabled under rollback so durable work is not stranded.
+  - proof: task-notes domain/service/handler/controller suites, both websocket/event compositions,
+    the shared direct Notes HTTP adapter/client contract with standalone and Electron-hosted HTTPS
+    parity, the exact Electron-hosted remote persistence/drain integration,
+    `tests/browser/remote-task-notes.spec.ts`, `tests/browser/task-notes-performance.spec.ts`, the
+    lazy-route bundle budget (9 KiB gzip mandatory Notes first-open closure plus a separate 3 KiB
+    incremental on-demand recovery closure), entitlement architecture tests, and the deterministic
+    external proof manifest cover the implemented path. No current dirty-tree result authorizes a
+    production train.
+
+<a id="reliable-initial-prompt-delivery"></a>
+
+- `2026-08-03` reliable initial-prompt delivery:
+  - status: `reimplemented locally and active`
+  - reason: one durable backend owner now binds the saved draft, target agent generation, automatic
+    readiness write, manual-send ambiguity, and removal cleanup. Managed creation queues the exact
+    delivery identity; renderer controls consume correlated projections and remain a lazy UI slice.
+    The generic removal cutover disables legacy prompt writers before the public capability appears.
+  - proof: domain/journal/workflow/activation suites, the production facade tests,
+    `tests/browser/initial-prompt-delivery.spec.ts`, its performance companion, and
+    `tests/harness/initial-prompt-delivery-bundle-budget.test.ts` cover the active path.
+
+<a id="accessibility-focus-and-reduced-motion"></a>
+
+- `2026-08-03` app-wide keyboard focus and reduced motion:
+  - `ff3de963`
+  - `bf220cac`
+  - `48df4d60`
+  - `494ebdc2`
+  - `0bc58068`
+  - status: `reimplemented locally and active`
+  - reason: the local port uses one zero-specificity main focus contract plus explicit remote/Arena
+    boundaries, exact xterm/Monaco wrapper ownership, and system-color fallbacks. Reduced motion is
+    an explicit final named-animation policy that preserves functional spinners and static status/
+    terminal cues; task/sidebar appearance is local one-shot state with no persistence, listener,
+    timer, transport, or backend ownership.
+  - proof: `src/focus-visible-styles.test.ts`, `src/reduced-motion-styles.test.ts`, focused component
+    suites, and `tests/browser/accessibility-preferences.spec.ts` cover the main, remote, and Arena
+    boundaries.
+
+<a id="git-action-capability-feedback"></a>
+
+- `2026-08-03` consistent Git action capability feedback:
+  - `bb0689b2`
+  - status: `reimplemented locally and active`
+  - reason: the upstream silent-shortcut fix is preserved without moving Git policy into the focus
+    store. One app-layer, reason-bearing decision now drives merge/push visibility, shortcut and
+    title intent, dialog churn revalidation, and final workflow admission; denied intent produces
+    one accessible warning while backend Git checks and task-command leases remain authoritative.
+  - proof: `src/app/task-git-action-capability.test.ts`, `src/app/task-workflows.control.test.ts`,
+    `src/components/TaskTitleBar.test.tsx`, and the denial journey in
+    `tests/browser/accessibility-preferences.spec.ts` exercise the shared decision at every entry.
+
+<a id="question-state-drafting-and-focus"></a>
+
+- `2026-08-03` question-state drafting and focus stability:
+  - `a2fa1ef1`
+  - `ba3d4fc9`
+  - status: `reimplemented locally and active`
+  - reason: the local port keeps backend supervision canonical, adds a generation-bound renderer
+    safety blocker, and routes every editor affordance through one pure policy. Ordinary prompt
+    bytes now pass a backend generation/version/question/lease/closing admission gate and a
+    single-attempt semantic transport, so question drafting no longer steals focus or loses edits
+    without making renderer state authoritative or turning ordinary sends into ready-only sends.
+  - proof: the policy, admission, activity, and cross-runtime lifecycle owners have focused tests,
+    including `src/runtime/agent-status-sync.test.ts`; the real interaction and latency lanes live in
+    `tests/browser/prompt-question-drafting.spec.ts` and its performance companion.
+
+<a id="agent-resume-fallback"></a>
+
+- `2026-08-03` one-shot Claude resume-history recovery:
+  - `60d76cbd`
+  - status: `reimplemented locally and active`
+  - reason: the narrow missing-conversation behavior is reimplemented through an explicit trusted
+    built-in capability, bounded exact classifier, deterministic source-generation operation, and
+    one durable backend journal/workflow rather than an exit callback that mutates renderer state.
+    Compact initial/fallback identity survives rich-response eviction; drain/finalizer hooks retain
+    evidence until canonical task absence. The production composition now activates the exact
+    removal epoch, disables legacy generation/spawn writers, routes renderer manual actions through
+    the managed workflow, and owns one backend exit subscription with a short system lease. Fallback
+    trust includes the complete built-in launch tuple, not a same-ID persisted definition. Backend
+    restart also stays owner-controlled: only an exact, durably completed clean-shutdown snapshot
+    creates a one-shot next-generation restore permit; abrupt loss and ambiguous consumed permits
+    fail closed. Canonical pre-journal tasks receive one explicit upgrade admission rather than
+    reopening the removed renderer-config spawn path.
+  - proof: classifier, journal, workflow, activation, retention, lifecycle, facade, status-sync, and
+    lazy manual-action component suites plus `tests/browser/agent-resume-fallback.spec.ts` cover the
+    active cross-runtime path. The shared reliability bundle gate counts the action's complete static
+    closure and rejects eager preload or main-entry regression.
+
+<a id="new-task-draft-preservation"></a>
+
+- `2026-08-03` New Task draft preservation:
+  - `894ce115`
+  - `175654d7`
+  - `a5dcead6`
+  - `0a9f9d45`
+  - status: `manual behavior port active in production`
+  - reason: the local dialog now captures its post-prefill prompt/name baseline once per open
+    generation and owns one guarded Cancel/overlay/Escape policy with nested-dialog focus recovery.
+    The global shortcut owner no longer bypasses that policy, and no draft state enters stores,
+    persistence, transport, or the unrelated upstream form structure.
+  - proof: `src/components/new-task-dialog/new-task-draft.test.ts`,
+    `src/components/NewTaskDialog.test.tsx`, and `tests/browser/new-task-dialog.spec.ts` cover every
+    close route, clean prefills, focus restoration, and successful-submit bypass.
+
+<a id="new-task-defaults"></a>
+
+- `2026-08-03` persistent New Task defaults:
+  - `120a5147`
+  - documentation correction `0cf878c9`
+  - status: `reimplemented locally and active`
+  - reason: the upstream behavior now uses the grouped renderer-local preference owner, persists
+    through Electron full state or browser client session without entering shared workspace state,
+    and is sampled once per dialog open behind submit-time agent capability checks. Upstream's
+    coordinator propagation default remains deliberately omitted because this fork has no matching
+    user-facing policy.
+  - proof: domain, local-shell, browser-session, persistence, Settings, and New Task dialog tests
+    cover detached sampling, malformed-state fallback, storage boundaries, and submit-time capability
+    gating.
+
+<a id="merged-metrics-consistency"></a>
+
+- `2026-08-03` atomic merged-progress consistency foundation:
+  - `bb362aa1`
+  - status: `reimplemented locally and active`
+  - reason: the local port now uses one versioned progress snapshot and one server-issued merge
+    operation through typed Issue/Start/Status channels. The production composition activates the
+    generic removal and managed-creation owners before merge, disables the legacy merge writer, and
+    activates `merge-progress` protection. Git success with cleanup resumes the same generic removal
+    operation and commits task absence/count/line totals once; no-cleanup merges count nothing. The
+    renderer retains recovery access but supplies no paths and performs no cleanup or local deltas.
+    Canonical absence status-joins a lost Start response, durably consumes terminal access once, and
+    preserves pending/manual outcomes while bounding finalizer repair to one notice.
+  - proof: `electron/ipc/task-merge-operation-issuer.test.ts`,
+    `electron/ipc/task-merge-workflow.test.ts`, `electron/ipc/task-git-handlers.test.ts`,
+    `tests/contracts/task-merge.contract.test.ts`, `src/app/task-workflows.control.test.ts`,
+    `src/app/task-merge-operation-recovery.test.ts`, `tests/browser/task-merge-progress.spec.ts`,
+    `tests/browser/task-merge-progress-performance.spec.ts`, and the wired domain/workflow/bundle
+    performance gates.
+
+<a id="remote-mobile-task-creation"></a>
+
+- `2026-08-03` remote/mobile task creation:
+  - `70e8b042`
+  - `99209184`
+  - `b009ea58`
+  - `276d9789`
+  - status: `reimplemented locally and active`
+  - reason: desktop and remote creation now share the durable backend creation workflow, canonical
+    structural writer, operation journal, agent/shell launch owners, and post-response canonical
+    projection. Remote sessions expose bounded catalog/picker data rather than workspace JSON.
+    Generic managed creation, project-root creation, imported-worktree creation, and permission
+    bypass are separate grants; capability results and final request admission enforce the same
+    split. The durable initial-shell owner now also distinguishes a clean backend restart from an
+    unclean absence with a consumed-before-effect, next-generation permit; legacy terminal tasks
+    remain explicitly compatibility-owned. Coordinator creation remains trusted-local only.
+  - proof: the task-creation domain/workflow/journal/runtime/preparation/remote-command suites,
+    `src/remote/NewTaskView.test.tsx`, `tests/browser/remote-task-creation.spec.ts`, its performance
+    companion, and `tests/harness/remote-feature-bundle-budget.test.ts`.
+
+<a id="worktree-symlink-safety"></a>
+
+- `2026-08-03` safe, discoverable ignored-file sharing for managed worktrees:
+  - `c2c416ef`
+  - `0704b8a4`
+  - `72b13d59`
+  - `10ebb904`
+  - `223ff90a`
+  - `630249d9`
+  - `c9fcfff5`
+  - `146578b4`
+  - `054060ba`
+  - broad consolidation commit `0c4f6fee` intentionally not ported
+  - status: `reimplemented locally and active`
+  - reason: one backend worktree-link owner now performs bounded root-only discovery, canonical
+    request admission, fresh eligibility checks, literal common-exclude updates, safe link creation,
+    and postcondition cleanup for both tasks and Arena. The renderer queries only in managed mode,
+    trusts backend default bits rather than recreating policy, exposes bounded loading/failure/retry/
+    truncation states, and summarizes typed optional warnings without treating discovery as
+    authority. The existing wire channel remains for compatibility; upstream's broad Git/IPC file
+    consolidation does not fit the local Electron/browser owner split.
+  - proof: `electron/ipc/git-worktree-symlinks.test.ts`, its integration/cleanup/benchmark companions,
+    controller/UI tests, and `tests/browser/new-task-dialog.spec.ts` cover the backend authority and
+    managed-worktree-only presentation path.
+
+<a id="terminal-search"></a>
+
+- `2026-08-03` terminal-local search:
+  - `47da4c00`
+  - `d1918174`
+  - status: `reimplemented locally and active`
+  - reason: search is an ephemeral capability behind the existing terminal-session facade. The
+    overlay owns only local presentation, the xterm addon loads on the first nonempty query, and
+    focused terminal interception never enters PTY, lease, persistence, recovery, or remote/mobile
+    state. The startup build graph explicitly excludes the search chunk from preload and prefetch.
+  - proof: shortcut/runtime/overlay/session owner tests, the bundle guard, and
+    `tests/browser/terminal-search.spec.ts` plus its deterministic performance companion cover idle
+    zero-cost behavior, session cleanup, focus, byte isolation, and bounded search cost.
+
+<a id="wrapped-terminal-links"></a>
+
+- `2026-08-03` wrapped terminal Markdown links and task-content admission:
+  - `c1037500`
+  - `be340755`
+  - status: `reimplemented locally and active`
+  - reason: one bounded cell-aware mapper supplies the terminal facade, while activation sends only
+    task/PTY identity and a relative path. The backend linearizes canonical-task and
+    explicit-transient PTY authority, binds a canonical descriptor identity, revalidates lifecycle
+    admission, and enforces the Markdown/plan owners' byte and path policies before returning
+    content.
+  - proof: mapper and session tests, task/PTY authority and bounded-file race suites, browser IPC
+    validation, both committed benchmarks, and `tests/browser/terminal-links.spec.ts` cover the
+    active renderer-to-backend path.
+
+<a id="terminal-webgl-repaint-recovery"></a>
+
+- `2026-08-03` terminal WebGL repaint recovery:
+  - `07a027bb`
+  - `6380f304`
+  - `f87550b7`
+  - status: `reimplemented locally and active`
+  - reason: the WebGL pool owns a generation-safe, focused-first, one-per-frame paint repair queue
+    and exact listener lifetime. macOS foreground/newly-visible repair and the lazy cross-platform
+    command clear only the live atlas and viewport; remote restore refresh stays after the accepted
+    write and buffered-output drain. Neither path replays terminal bytes or changes renderer/context
+    ownership.
+  - proof: pool, diagnostics, keybinding/session, and remote-component suites plus
+    `tests/browser/terminal-webgl-repaint.spec.ts` exercise the paint-only contract and explicit DOM
+    fallback evidence.
+
+<a id="dependency-security-refresh"></a>
+
+- `2026-08-03` dependency and supply-chain security refresh:
+  - `613cc8af`, `2152592e`, `d5338956`, `a89dae30`
+  - `7b77d351`, `9432faa6`, `f8db98ab`, `4410849a`, `f539d966`, `8676b49a`
+  - status: `re-resolved locally and active in CI/release`
+  - reason: historical upstream pins were re-resolved as coherent backend, renderer-shipped, and
+    tooling lanes. One installed-lock-node exposure owner feeds both archive verification and the
+    live audit policy; declaration bucket is never treated as exposure, and audit retries only
+    operational failures. CI and release run the same live gate.
+  - proof: exposure/audit/resource/package fixture suites plus `npm run audit:dependencies` provide
+    fail-closed policy evidence; build, browser, package, and terminal gates retain behavior and
+    resource proof.
 
 - `2026-05-24` upstream catch-up (`7aaf640..6097655`):
   - `bafbd61`
@@ -1114,6 +1381,63 @@ Principles applied:
 
 - repo policy should match real ownership
 - external vendored code is not treated as locally maintained source
+
+### Example: wrapped terminal Markdown links
+
+Commits:
+
+- `c1037500` links spanning wrapped terminal rows
+- `be340755` wide-character and phantom-cell correctness
+
+Why this was reimplemented instead of copied:
+
+- upstream colocated terminal parsing, cell mapping, activation, and broad path-opening assumptions
+- this repo shares one terminal facade across Electron/browser surfaces and requires backend task
+  lifecycle authority for task-content reads
+
+How it is aligned here:
+
+- `src/lib/terminal-links.ts` owns one pure, bounded logical-line and cell mapper
+- activation carries task/PTY selectors and a relative path, never a renderer-selected root
+- backend task/PTY generations, canonical descriptor identity, symlink containment, and byte caps
+  decide whether Markdown or plan content can be returned
+- Arena transient roots require a one-shot capability issued by the backend worktree workflow
+
+Principles applied:
+
+- renderer parsing is an affordance, not filesystem authority
+- lifecycle withdrawal wins before asynchronous cleanup
+- one pure mapper and one bounded file primitive keep policy local and independently testable
+
+### Example: terminal WebGL repaint recovery
+
+Commits:
+
+- `07a027bb` clear the xterm WebGL atlas when returning to the foreground and expose manual redraw
+- `6380f304` restore remote terminal painting after scrollback writes
+- `f87550b7` repaint retained WebGL terminals when they become visible
+
+Why this was reimplemented instead of copied:
+
+- app- or component-level redraw listeners would duplicate visibility truth and reach across the
+  existing WebGL context owner
+- replaying output for a paint-only failure would conflate renderer corruption with terminal-byte
+  recovery
+
+How it is aligned here:
+
+- `src/lib/webglPool.ts` owns one bounded, generation-safe, focused-first repair queue and its three
+  listeners; automatic work is macOS-only and the lazy manual action is cross-platform
+- the pool clears only its exact live addon and refreshes at most one eligible surface per frame,
+  without acquiring, evicting, replaying, or requesting recovery
+- remote/mobile repaint remains local to `AgentDetail`: accepted recovery writes drain buffered live
+  writes, then one exact-identity refresh runs; stale and non-write completions do nothing
+
+Principles applied:
+
+- presentation repair stays with the resource owner
+- paint corruption never becomes byte recovery
+- bounded queues, explicit generations, and aggregate diagnostics make failure and cost observable
 
 ## Review Checklist For Future Upstream Ports
 

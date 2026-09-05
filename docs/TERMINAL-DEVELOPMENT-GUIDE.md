@@ -71,9 +71,10 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
    - `npm run benchmark:terminal:steady-state -- --iterations 12`
    - server-side attach/recovery counters live in the backend runtime diagnostics snapshot:
      `terminalRecovery` (per-kind responses including `tailNeededResponses`, returned bytes) and
-     `terminalStateMirror` (enqueue/serialize/drain). Held recovery batch pauses auto-resume after
-     5s, so a stuck-paused terminal after restore points at a lost
-     `ReleaseTerminalRecoveryPause` plus a broken auto-resume timer, in that order
+     `terminalStateMirror` (enqueue/serialize/drain). Initial attach transfers its backend pause to
+     a renderer-local output barrier immediately; other held recovery batch pauses auto-resume
+     after 5s. A stuck-paused terminal therefore points first at a lost
+     `ReleaseTerminalRecoveryPause`, then at a broken auto-resume timer
 5. if the issue is about perceived browser fluidity under real many-terminal load, run the
    browser UI-fluidity gate after the specialized harnesses:
    - `npm run profile:terminal:ui-fluidity:gate`
@@ -134,6 +135,15 @@ development. Browser watch mode writes to `dist-browser-dev/` and `dist-remote-d
 mutate the production/test `dist/` artifacts that browser-lab validation serves. The watch-mode
 server intentionally bypasses the production build-artifact freshness guard, because that guard is
 for built `dist/` outputs and can race the live dev rebuilds.
+
+Use a disposable, run-unique `PARALLEL_CODE_USER_DATA_DIR` when manually testing backend restart.
+For the clean lane, stop the exact owned server normally, wait for its process tree to disappear,
+then restart against the same directory and verify each managed agent or primary task shell is
+restored once at the next generation. For the crash lane, kill that disposable server abruptly
+(`SIGKILL` / `kill -9` on POSIX), restart against the same directory, and verify the missing session
+shows recovery-required UI without a new process or output-channel bind. Never run the abrupt lane
+against a shared development state directory, and do not delete the directory between the two
+halves of either test—the durable shutdown evidence is what distinguishes them.
 
 Browser Playwright entrypoints auto-prepare browser artifacts once when they are stale or missing,
 reject zero-byte artifacts, and snapshot validated static assets into the per-test server directory
@@ -247,6 +257,14 @@ When a terminal looks visually wrong but not obviously broken, prefer the generi
 before chasing an agent-specific repro. The browser-lab diagnostics now expose a terminal anomaly
 snapshot alongside the existing renderer/output counters, so contributors can distinguish real
 steady-state recovery or redraw churn from harmless control-heavy TUI traffic.
+
+For a retained WebGL surface whose glyph atlas looks blank or corrupt while terminal bytes remain
+intact, use the remappable `Redraw terminals (fix rendering glitches)` action (default
+Cmd/Ctrl+Shift+L). This is a paint-only pool operation: a successful repair must not increase
+recovery, renderer acquisition/eviction, resize, or PTY-input counters. Validate changes with the
+pool state-machine suite and `tests/browser/terminal-webgl-repaint.spec.ts`; a browser lane without
+WebGL must report that limitation explicitly and prove the DOM no-context branch instead of passing
+the repair assertion silently.
 
 For real optimization work, do not stop at one baseline browser profile.
 
@@ -783,9 +801,9 @@ payload so the next investigation starts from evidence, not from a partial scree
 For live local repros, enable the shared browser capture surface first and then capture the
 focused terminal from the console:
 
-- `window.__parallelCodeTerminalDiagnosticsCapture?.enable()`
+- `await window.__parallelCodeTerminalDiagnosticsCapture?.enable()`
 - reproduce the issue
-- `window.__parallelCodeTerminalDiagnosticsCapture?.captureFocused()`
+- `await window.__parallelCodeTerminalDiagnosticsCapture?.captureFocused()`
 
 For redraw/flicker debugging, prefer the footer-redraw fixture or an equivalent minimal TUI before
 blaming Hydra-specific behavior. The goal is to prove the renderer policy against a controlled
@@ -800,6 +818,19 @@ For startup/resize flicker work, the preferred deterministic fixture is now
 - large initial scrollback attach (`startup-buffer`)
 - redraw-heavy alternate-screen resize churn (`resize-flicker`)
 - high-volume additive TUI output with in-place statusline churn (`additive-burst`)
+
+Wrapped terminal Markdown paths have a separate narrow proof in
+`tests/browser/terminal-links.spec.ts`. Keep parsing, lexical root filtering, Unicode/cell mapping,
+and the 128-row/4,096-cell bounds in `src/lib/terminal-links.ts`; the session facade should only
+register/dispose the provider, guard exact-session activation, and delegate to the shared viewer.
+
+Terminal search has its own real-xterm behavior and performance proofs in
+`tests/browser/terminal-search.spec.ts` and `tests/browser/terminal-search-performance.spec.ts`.
+When profiling it, begin before the overlay opens and record network entries, addon/listener counts,
+input-to-result samples, and cleanup after close. The unopened and empty-query paths must fetch no
+search addon and create no search owner; the first nonempty query may fetch it once. Use the
+committed 500 KiB/5,000-line fixture for scan latency and the 100-cycle churn fixture for disposal
+rather than a production terminal whose output cannot be reproduced.
 
 Use that synthetic harness to isolate renderer/recovery policy first, then confirm the result on
 the matching real-shell and real-interactive browser acceptance cases in the same spec before you

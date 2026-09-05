@@ -65,6 +65,20 @@ product frustration / owner / validation / browser-lane fields in the notes.
 Do not review a port only by comparing file shape to upstream. Review whether the behavior landed
 in the correct local owner.
 
+## Authored Dialog Review Checklist
+
+When a modal contains costly user-authored text, explicitly verify:
+
+- initialization is keyed to an open transition and does not subscribe to the text or incidental
+  store/runtime reads that can change while the user is typing
+- Cancel, header close, overlay click, Escape, and any global shortcut converge on one local close
+  admission policy instead of mutating visibility independently
+- nested confirmation Escape keeps the underlying form intact and restores a useful connected edit
+  target; destructive confirmation does not receive default focus
+- successful submit has one named bypass after validation, while synchronous validation failure
+  returns to the guarded editing state
+- discard copy is generic and never logs, persists, announces, or interpolates the authored text
+
 ## Browser Runtime Review Checklist
 
 When a change touches browser mode, explicitly verify:
@@ -206,12 +220,64 @@ verify:
 - retryable task-creation requests carry one client-stable operation id through Electron/browser
   transport; the backend single-flights matching inputs, replays committed results, rejects id reuse
   with different inputs, and releases failed or removed operations
+- task-creation retries are journal-first: pure normalization may precede the lookup, but current
+  project/agent/branch/worktree resolution may not. Exact known commits bypass tickets and live
+  selection lookup; only absent first admission spends creation budget and validates current
+  selections before recording or performing an effect. Trusted adapters may reconstruct opaque
+  references deterministically, but may not pre-resolve live selections ahead of that workflow
+- operation subscriptions must not turn absence into an oracle. Register pending identities under
+  bounded principal/workspace limits, compare persisted principal and capability before building a
+  snapshot, publish only after a durable write, and treat current-projection failure as silence.
+  Refresh hooks may reproject persisted records but must preserve those same authority checks
+- a manual-reconciliation state is incomplete unless production composition exposes a reachable
+  trusted-local command, uses the owning workflow's canonical projector, and delegates physical
+  proof to the resource owner. Authority is injected by Electron main or an owning-user CLI adapter;
+  actor/header/grant fields are never accepted from the request, and no reconciliation channel may
+  appear in browser HTTP, remote gateways, or WebSocket protocols
+- paged reconciliation views must describe one journal state. Bind every continuation to the ordered
+  candidate IDs and record versions, then return explicit stale (or use an equivalently bounded
+  snapshot lease) when that set changes; time/order cursors alone can silently skip work
+- every reconciliation conflict key must be among the exact keys durably declared before its first
+  effect. Deterministic managed locations reserve their canonical worktree path and branch before
+  Git and are reverified at preparation; a project-root placeholder is not equivalent. Retained
+  resources release only owner-proven keys, and a transition with no reachable next action is a
+  review blocker
+- adopting a canonical commit must move to a phase that an existing runtime recovery owner can
+  advance. Do not write `starting` after the creation workflow has stopped: replay intentionally does
+  not rerun launch effects. Unsupported recovery proofs fail closed rather than manufacturing
+  success or leaving an apparently actionable dead end
 - restore paths only tolerate partial persisted fragments where the canonical parser says they
   should
 - shared transport/domain payload types live in DOM-neutral modules, not in browser runtime files
+- when one scoped command family has a direct HTTP wire contract, adapt it once after the generic
+  gateway in the shared raw HTTP owner. Keep status policy in the domain/edge owner, preserve the raw
+  handler's common security and no-store headers, and require the client to validate body shape and
+  status together. A standalone mapper imported only by tests, parallel host-specific mappings, or a
+  nested generic-plus-domain envelope are review blockers
+- generation-aware workspace recovery treats only the primary as truth; temp/backup candidates are
+  evidence, never freshness-ranked fallback state, and runtime write errors stay queue-exclusive
+  until exact prior/proposal classification finishes
+- crash-durable atomic replacement means temp write + file fsync + rename + containing-directory
+  fsync; rename success alone must not authorize projection, external effects, or user-visible
+  success
+- full shared saves and backend semantic mutations use the same per-storage-identity transaction;
+  adding a semantic writer must not recreate load/revision/save/event policy in its handler
+- renderer conflict recovery replays named typed intents only against their exact acknowledged field
+  bases; a conflicting intent keeps canonical state, raises one persistent notice, and is retired
+  from the pending queue;
+  generic JSON diff/LWW and replayable task add/remove intents are review blockers
   that touch `window`, `document`, or Solid runtime helpers
 - agent resume behavior stays canonical in the shared agent definition shape instead of drifting
   into UI or workflow heuristics
+- automatic agent resume fallback requires an explicit trusted-catalog classifier, bounded exact
+  finalized-exit evidence, and one deterministic source-generation operation. Persisted/custom
+  definitions cannot self-enable a reserved classifier, and a same-ID definition is trusted only
+  when command, args, resume args, permission args, environment, adapter, and resume strategy match
+  the backend built-in launch tuple. Terminal output, commands, environment, paths, and credentials
+  never enter the operation journal. Write each durable phase before its
+  cleanup/allocation/spawn/publication effect, retain compact one-shot identity evidence after rich
+  replay eviction, and keep every admission path dark unless the generic task-closing epoch and
+  exact hook-set version match and legacy session writers are proven disabled
 - every coordinator mutation producer enters one lifecycle owner, including direct run/activity
   commands and final task deletion/state-removing cleanup; close admission before draining, retain
   deadline-detached rollback work, and bind browser requests to the lifecycle that owns their state
@@ -222,6 +288,13 @@ verify:
 - cleanup boundaries attempt every independent owner, then preserve the aggregate failure for
   callers and process status; logging a rejection while returning a fulfilled public wait or exit
   status `0` is not failure propagation
+- a durable filesystem lease is not released at unlink. Retain the exact local token/identity until
+  parent-directory fsync succeeds, preserve a post-unlink pending-fsync phase for retry, and block
+  same-process replacement while any release phase is uncertain. Record acquisition ownership
+  before its own directory fsync so an ambiguous acquire failure still has an exact cleanup owner
+- an asynchronously composed listener needs one public readiness promise that covers owner
+  activation and socket bind. Entrypoints and direct transport tests must await it; logging startup
+  failure while callers can only observe connection refusal is not a startup contract
 - model operation and cleanup outcomes with an explicit fulfilled/rejected discriminator. `null` or
   `undefined` cannot be a "no failure" sentinel because JavaScript promises may reject with either;
   filtering rejection reasons by value silently converts real cleanup failures into success
@@ -468,6 +541,9 @@ codec evolves somewhere else. That silently drops metadata even though the runti
 
 - when a backend mirror parses persisted task or session state, verify it accepts the current codec
   field shape first and only keeps legacy field names as backward-compatible fallback
+- when more than one runtime reads a persisted discriminant, apply the same missing-field migration
+  at every activation boundary while still rejecting explicit invalid values; a renderer-only
+  default does not protect a backend cutover that reads the legacy document first
 - when workflow-owned create/update paths already know task metadata that the backend mirror needs,
   pass it through the owning request/registry seam instead of hoping persistence catches up later
 - filesystem-backed mirrors must migrate existing legacy subdirectory paths to the nearest real
@@ -569,9 +645,111 @@ axes independently:
   permission, and coordinator fields cannot leak into terminal launches
 - keep root/existing-worktree admission and canonical filesystem identity backend-owned across
   Electron and browser transports
+- shared location is not shared task identity: root tasks may coexist, but leases and cleanup must
+  select exact task membership. Branch-changing Git operations and root admission must share a
+  repository lock; a read-then-check guard alone does not protect concurrent creation
 - show subtle but persistent terminal/root context on task surfaces, and derive close/removal copy
   from the same mode/location policy so it names the runtimes stopped and filesystem state kept or
   removed truthfully
+
+### 30. Ignored-file sharing is advisory in the renderer and authoritative at creation
+
+The New Task picker improves intent; it does not authorize filesystem or Git mutations.
+
+- query candidates only for an open managed-worktree flow. Project-root, imported-worktree, non-Git,
+  closed, and admitted-submit states must clear the list, selection, and loading blocker without an
+  extra candidate request
+- bind each request to dialog/project/mode identity and abort it on transition. A stale completion
+  must not repopulate selection, restore a blocker, or overwrite a newer failure
+- select only entries carrying the backend `isDefault` bit. Do not recreate curated defaults or
+  eligibility rules in renderer code
+- loading may block managed-worktree submit; discovery failure must expose manual Retry and allow an
+  empty selection so an advisory query cannot strand task creation
+- treat submitted names as hostile hints and revalidate them through the backend worktree-link owner
+  after worktree creation. Never let the renderer write excludes or create links
+- preserve successful task creation when optional links fail: return typed warnings, log bounded
+  reason counts without names or file contents, and show one summary rather than one notification per
+  entry
+
+### 31. Related metrics need one snapshot and one commit owner
+
+When several values describe one user-visible event, review them as one invariant rather than a set
+of convenient field updates. Merged-task count and added/removed-line totals either all advance in
+the same durability-healthy task-release mutation or none advance.
+
+- keep arithmetic in one pure reducer and project complete versioned snapshots
+- preserve exact-operation idempotency at the backend commit boundary; never infer it from a
+  renderer response or apply local deltas on replay
+- order merge outcome, progress, removal health, and current catalog truth independently instead of
+  comparing unrelated version clocks
+- activate field protection, the authoritative backend writer, and legacy-writer disable in one
+  cutover; a protected field without its live owner is a release blocker
+- if the structural removal owner is not available, land only the dark reducer/extension contract.
+  Do not emulate cleanup, membership, warnings, or finalizers inside the merge-progress feature
+- once the active cutover lands, require Issue/Start/Status transport, backend-issued access,
+  creation-before-merge activation order, and canonical projection after lease release. Any active
+  renderer `MergeTask`, cleanup call, completion delta, or caller-supplied Git path is a regression
+- treat canonical absence as a reason to Status-join retained merge access, never as terminal proof.
+  Clear only a terminal backend outcome, and let exact-operation durable credential release choose
+  one Start-or-Status notification winner so retries, reloads, and finalizer repair cannot duplicate
+  notices or exhaust bounded recovery slots
+
+Remote creation grants describe effects, not a generic login tier. `task:create` admits managed
+creation only; project-root, imported-worktree, and permission-bypass shapes require
+`task:create-root`, `task:create-imported`, and `task:permission-bypass` respectively. Project these
+as separate capabilities and repeat the check at final gateway admission so a forged client cannot
+bypass disabled UI.
+
+Creation idempotency identities must be allocated by the submission owner, outside any retryable
+closure. Desktop optimistic Retry reuses one adapter identity; remote reload recovery keeps an
+operation blocked until canonical status resolves it or a fresh exact absent lookup occurs after a
+full server ticket-TTL monotonic wait. Never use browser wall time or clear an uncertain credential
+because an earlier lookup was absent: an in-flight request may still admit. Session recovery metadata
+must not persist raw tickets, intents, or prompts.
+
+### 32. Destructive cleanup needs a durable plan, evidence, and cutover barrier
+
+When cleanup spans processes, filesystems, Git refs, runtime state, and canonical membership, review
+it as a recoverable workflow rather than one best-effort function.
+
+- freeze cleanup identity and policy from canonical backend state before the first external effect;
+  renderer paths, ids, and delete flags are hints at most
+- persist ordered, step-specific evidence and resume at the first unfinished step; do not collapse
+  partial completion into one boolean or rerun an acknowledged destructive effect after restart
+- keep canonical membership until required cleanup is durable, then pass the committed revision to
+  finalizers; a pending cleanup result is not permission for the renderer to erase its projection
+- preserve recoverable bytes before releasing names. For Git worktrees, quarantine without force,
+  prove operation ownership, and delete a branch only with an exact observed-OID comparison
+- make legacy-to-owner selection atomic with structural admission. The gate used by old handlers
+  must be the same instance disabled by activation, and activation must drain admitted effects
+  before publishing the new capability
+- model non-Git and root-backed tasks explicitly as Git-preserving plans. Empty branch identity and
+  absent quarantine evidence are invariants, not defaults that cleanup code may reinterpret
+
+### 33. Reconnect is identity-only; restart is a durable backend decision
+
+Review every terminal reconnect, attach, ensure, and restore path together whenever process-writer
+ownership changes. Disabling an old spawn path is incomplete if another reconnect path can still
+recreate the process from renderer-supplied command, arguments, environment, working directory, or
+session classification.
+
+- attach to an existing PTY by exact task, session, generation, and owner class. Attachment must not
+  rewrite `taskId`, shell/agent classification, internal-process classification, generation,
+  geometry, or content authority; reject a mismatch before binding an output channel
+- treat renderer owner discriminants as routing hints only. The backend must derive managed-agent,
+  managed-primary-shell, legacy/compatibility-shell, and transient Arena ownership from canonical
+  task and operation state
+- let identity-only ensure/restore requests carry only stable task and session identities. A
+  renderer-provided launch tuple is never durable restart evidence
+- permit automatic process recreation only after an ordered clean shutdown captured an exact live
+  identity, blocked new admissions, stopped the process and its runner, proved exact absence, and
+  durably stored a one-shot source-to-target generation permit. Consume the permit before spawning;
+  a crash after consumption is ambiguous and fails closed
+- keep legacy upgrade admission explicit and one-shot. A canonical pre-journal task may migrate
+  through its backend-owned launch metadata, but a later absent or uncleanly stopped process must
+  not be mistaken for a fresh initial launch
+- make test storage run-unique and process-unique. Shared fixed temporary paths can turn parallel
+  tests into false restart, corruption, or duplicate-admission failures
 
 ### Additional terminal and lifecycle lessons
 
@@ -625,6 +803,88 @@ and prompt affordances will drift silently.
 Renderer-local typing echo is not prompt readiness: if the renderer knows a specific agent is
 currently receiving local typing echo, prompt-like tails for that same agent must not surface as
 `waiting-input` or `ready-for-next-step` until the typing window clears.
+
+Renderer-local question state must be keyed by the authoritative agent lifecycle generation and a
+monotonic evidence revision. A local blocker may conservatively prevent dispatch before the next
+server snapshot, but it must never authorize a write, drive canonical attention, survive into a
+new generation, or override newer same-generation prompt evidence indefinitely.
+
+Treat prompt policy and prompt authorization as separate reviews. The component policy owns
+editing, keyboard, focus, and explanation behavior; the backend must still revalidate the exact
+task, generation, supervision version, command lease, question state, and task-closing gate at the
+byte-admission boundary. Do not turn ordinary post-start prompts into ready-only sends while adding
+that guard.
+
+Serialization is part of prompt byte authority, not a producer-local implementation detail. One
+server-lifecycle admission service must be injected into ordinary, automatic-initial, and
+manual-initial prompt owners; if each owner constructs its own service, their same-agent queues can
+interleave even when every individual policy check is correct. Pair the composition guard with a
+cross-owner race test that holds a multiline send between frames. The shared service must start
+fail-closed and bind to the structural removal admission projection, not a task-name/catalog mirror:
+the private mutation-drain/fence closes before the durable lifecycle event is publishable. Queue
+sharing also must not erase purpose-specific proof—initial delivery requires live matching PTY
+metadata even where ordinary exited-generation compatibility permits metadata to be absent.
+
+Coalesced presentation events are wake-ups, not durable progress guarantees. If a backend workflow
+can re-read authoritative state and already owns a readiness or verification deadline, give it a
+bounded safety observation within that deadline. Same-state/same-preview output is intentionally
+allowed to suppress renderer-facing events; an effect owner must not wait until its full deadline
+to discover state that was continuously readable.
+
+Deadline authority must survive missing runtime metadata and transient observer failure. Persist the
+deadline epoch at the state transition that actually starts the window, not at an earlier queue
+timestamp; persist any one-shot extension witness beside it. Put expiry in the serialized durable
+owner so it can settle and release resources without fabricating runtime evidence, and rearm both
+typed-unavailable and thrown observation turns. Recheck a pre-effect deadline after every awaited
+draft/lease guard, timestamp post-effect verification from the actual acceptance result, and never
+let absence evidence observed after expiry authorize another write. A durable `writing` record is an
+ambiguous outcome on re-entry, while a deferred retry that loses readiness/runtime becomes
+`retry-not-safe`; neither may fall through a generic ready classifier and write again.
+
+For a durable manual takeover, commit the automation seal before releasing automatic control. Keep
+failed automatic and manual lease releases retained, and retry them only inside the same
+per-delivery serializer that guards admission. A replay outside that serializer can otherwise
+release the active call's lease between its authorization check and final frame.
+
+Put an atomic multi-record mutation in one persistence owner. If revising or clearing a draft also
+updates its delivery journal, callers must delegate the whole transaction and reload afterward;
+re-saving a pre-call record can double-advance the journal or overwrite a newly sealed high-water.
+Validate derived indexes in both directions and validate phase/receipt coherence, because a valid
+forward lookup alone does not prove restart-safe ownership.
+
+Treat durable effect acceptance and response finalization as separate proof states. Background
+finalization may replay only the idempotent acknowledgement for the exact accepted operation. A
+different-operation rejection, temporary authorization failure, or unavailable projection is not
+proof that the accepted operation settled and must not cancel its probe. Clear the probe only on an
+exact same-operation terminal result or a fresh projection proving it is no longer accepted.
+
+Recovery presentation must bind an operation to the draft revision and fingerprint it acknowledged.
+After a proven-before-write failure, editing the draft creates a new send operation; reusing the old
+operation's Retry label with the new derived ID creates a UI action the backend must reject.
+
+Do not automatically replay a non-idempotent side effect after a response may have been lost. For
+PTY prompt input, transport loss or a failure after the adapter boundary is an ambiguous outcome:
+keep the user's draft and ask them to inspect the terminal. Only a typed rejection that proves zero
+bytes may be considered for a bounded, same-generation retry.
+
+When an editable draft remains available during an asynchronous send, capture both its text and a
+monotonic local revision. Clear only when the accepted result still matches both values; equality of
+text alone is insufficient because the user may edit away and back while the request is in flight.
+
+When the same action is exposed by a shortcut, title control, pending dialog, and workflow, require
+one reason-bearing capability owner instead of sibling boolean checks. Passive presentation may hide
+an unsupported control, but explicit denied intent must explain the stable reason once without
+moving focus. Revalidate at each user/lifecycle boundary; renderer capability never replaces the
+backend lease or external-state validation.
+
+Keyboard focus, navigation selection, and motion preference are separate presentation concepts.
+Keep the default focus indicator low-specificity and app-wide; remove inline TSX suppression, and
+allow generated xterm/Monaco nodes to suppress their tiny internal ring only when an exact
+first-party wrapper renders a visible replacement, including forced-colors mode. Reduced motion
+must disable an explicit list of nonessential animations rather than all animation, because
+functional progress spinners still need to communicate work. New-row appearance is component-local
+ephemeral state sampled once from the current preference and cleared on the exact root animation
+end or cancellation; never persist it or add a global media listener.
 
 Task attention and task activity are not the same signal. If the UI exposes both, review them with
 different questions:
@@ -699,14 +959,15 @@ continuity/flicker bug the replacement restore was supposed to prevent.
 Browser restore pauses must be transaction-safe. Batched recovery pauses are server-owned under a
 unique `batchPauseId`, and every request holds its own pause even when the agent is already paused
 (restore pause leases stack), so one client's release cannot expose another client's pre-apply
-window. A stale or duplicate release is a no-op against a newer pause. The client releases each
-held pause exactly once after apply — a single restore can hold several ids when geometry-mismatch
-re-fetches or `tail-needed` phase two mint additional pauses — and the 5s auto-resume is a safety
-net sized above worst-case replay apply (capped snapshots keep apply in the tens of milliseconds),
-not the primary mechanism. The auto-resume bounds stall time, not correctness: initial-attach
-applies can be deferred past the timer by startup paint/fit gates, which is safe only because the
-attach ordering guarantee makes queued output strictly post-cursor and the renderer keeps it
-instead of dropping it. Non-batched scoped pauses still carry a restore lease id and must ignore
+window. A stale or duplicate release is a no-op against a newer pause. Initial attach must first
+establish a renderer-local output barrier, release its server pause before any paint/fit wait, apply
+the captured entry, and only then flush queued post-cursor output. Other batched recovery paths
+release each held pause exactly once after apply — a single restore can hold several ids when
+geometry-mismatch re-fetches or `tail-needed` phase two mint additional pauses — and the 5s
+auto-resume is a safety net sized above worst-case replay apply (capped snapshots keep apply in the
+tens of milliseconds), not the primary mechanism. Releasing initial attach early without the local
+barrier reorders live output; holding it through UI readiness couples process progress to paint and
+recreates a 5s stall. Non-batched scoped pauses still carry a restore lease id and must ignore
 stale resume ids from older restores on the same channel. A fixed timeout alone is not enough
 proof for slow network or large-history recovery.
 
@@ -788,6 +1049,24 @@ exact retained suffix, caller-buffer isolation, replacement followed by many sma
 reads, repeated compaction, and an independently queued small-control-chunk drain. This is a
 storage-shape optimization; it must not change terminal pacing, byte order, flow control, or
 recovery budgets.
+
+Renderer paths are selectors, never task-content authority. Resolve task roots from backend
+lifecycle state, preserve explicit closing/removed/tombstoned dispositions, and withdraw admission
+before asynchronous teardown. If an intentionally transient terminal needs file access, require a
+backend-issued one-shot launch capability bound to the exact root/task/agent tuple; neither a
+missing task lookup nor a renderer-supplied flag may promote a generic PTY. Canonicalize and bind a
+regular-file descriptor, recheck stable identity and containment, commit the still-current
+generation after bind, then read through that descriptor with an owner-specific byte cap. Treat
+kill, kill-all, termination, disposal, and exit as authority transitions: revoke synchronously under
+the shared coordinator before process or runner cleanup can yield.
+
+Whole-task membership is a backend semantic mutation, not a side effect of full-state persistence.
+Every supported creator must construct immutable identity/location and writer provenance through the
+task-structure owner before its metadata is published; every destructive workflow must commit
+canonical absence before deleting registry projections. Renderer `closing`, `removing`, and `error`
+flags are presentation only and must always be echoed by persistence codecs. Activate task-set
+protection only in the same admission pause that stamps extant tasks and switches every current
+creator/remover, then re-read the committed host record before reopening.
 
 ## What To Update With The Code
 

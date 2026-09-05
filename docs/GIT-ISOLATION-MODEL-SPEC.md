@@ -62,7 +62,7 @@ upstream file shape.
 
 - replace the ambiguous boolean `directMode` model with an explicit task git-isolation model
 - make base-branch semantics explicit and durable
-- move current-branch checkout/orchestration out of renderer heuristics and into backend/workflow owners
+- keep current-branch admission in backend/workflow owners without mutating the shared checkout
 - keep project defaults repo-scoped and task runtime semantics task-scoped
 - keep UI labels aligned with the real behavior
 - preserve backward compatibility for persisted local state
@@ -156,13 +156,17 @@ Behavior:
 
 Invariants:
 
-- at most one `current-branch` task per canonical repository root may exist at a time, even across
+- multiple `current-branch` tasks may share one canonical repository root, including through
   duplicate project records, symlink aliases, renderer clients, and concurrent requests
-- the backend resolves the Git top-level path and reserves its canonical identity before checkout;
-  renderer project-id guards are presentation feedback, not admission truth
+- the backend resolves the Git top-level path and records every task's membership in that canonical
+  root; imported and managed worktrees retain exclusive ownership
 - task creation has a client-generated operation id that the backend single-flights and replays;
-  losing a browser response after checkout must not execute creation again or strand the root
-- checkout of the requested branch is a backend-owned side effect, not a renderer warning
+  losing a browser response must not execute creation again or strand the task
+- creation never checks out a branch, stashes files, or mutates the shared Git index; a requested
+  base branch is review metadata, not permission to switch the checkout beneath another task
+- files, index, and checked-out branch are shared; task/agent identity, command leases, lifecycle,
+  and cleanup remain task-scoped. Closing one task must preserve every sibling's root registration
+  and runtimes. Path-only lookup cannot grant authority over an arbitrary shared-root sibling
 - review/diff/merge-base logic must not fall back to implicit "main" semantics when `task.baseBranch` is present
 
 ### `existing-worktree`
@@ -193,6 +197,24 @@ When creating a task:
 4. if the effective base branch is still undefined, resolve it through the backend branch-detection owner
 5. persist the resolved task base branch when known
 
+Automatic detection uses a valid remote HEAD first (`origin`, or the sole configured remote),
+repairing missing/stale remote HEAD metadata with a bounded, offline-tolerant Git request. It then
+checks conventional `main`/`master` refs and the primary checkout's actual branch, including unborn
+custom branches, before consulting `init.defaultBranch`. A managed worktree must not become its own
+comparison base simply because its branch is checked out there. Explicit project/task defaults are
+never silently replaced when unavailable: managed creation reports the invalid selection.
+
+Branch labels resolve through the backend ref owner for creation, status, history, and rebase, so a
+remote-only custom default remains usable without first creating a local branch. Remote-qualified
+review bases preserve their remote identity. Committed review compares a local base with its
+configured tracking remote (not always `origin`), so stale local refs do not resurrect changes already
+landed upstream. Merging requires a resolved local branch: remote refs, tags, raw commit IDs,
+revision expressions, and missing targets are rejected before mutation. The user must create/select
+a local tracking branch rather than unknowingly land changes on detached HEAD; symbolic aliases
+such as `HEAD` are resolved to their local branch name before checkout.
+A merge cannot switch the project checkout while project-root tasks use it; merging into the already
+checked-out branch remains available after the normal clean-tree check.
+
 ### Why task-level `baseBranch` is required
 
 Project defaults can change after a task exists.
@@ -211,9 +233,9 @@ That means task-level `baseBranch` is durable truth, not just a transient dialog
 
 Owns:
 
-- branch listing and validation if current-branch tasks can target non-current branches
+- branch listing and validation for isolated task bases
 - base-branch detection fallback
-- checkout workflow for current-branch task creation
+- canonical shared-root task admission and current-checkout observation
 - merge-base/diff/review semantics keyed by explicit task base branch
 - close/delete semantics that differ by isolation mode
 
@@ -245,7 +267,7 @@ Likely files:
 Owns:
 
 - create-task orchestration
-- current-branch checkout sequencing
+- current-branch creation intent without checkout sequencing
 - mapping repo defaults plus explicit dialog selections into backend requests
 - applying migration-safe defaults when legacy state is opened
 
@@ -316,26 +338,18 @@ Likely files:
 
 ### Current-branch creation
 
-This repo should not keep the old renderer-owned warning path:
-
-- previous behavior: renderer checked current branch and errored with "Please checkout X first"
-- target behavior: workflow requests a backend checkout when the requested current-branch task target is not already checked out
-
-That preserves the same user intent while moving git side effects under backend/workflow ownership.
+Creation observes the current project-root checkout and never switches it. Users who want agents on
+`main`, `master`, or a custom branch check out that branch before starting shared-root work. The
+project base remains independent review metadata. A second task must not be rejected merely because
+another task already uses the root, and must not change the first task's checkout.
 
 ### Branch selection
 
-The local redesign should support a branch selection model for `current-branch` tasks.
-
-Minimum acceptable behavior:
-
-- choose the current project base branch explicitly or by backend detection
-
-Target behavior:
-
-- allow selecting the branch to work on and the base branch to diff against, with sane defaults and explicit fallback rules
-
-This is where the spec intentionally allows a staged implementation if the final UI needs to land in smaller reviewable steps.
+Isolated worktree creation may select a base branch. Project-root creation shows the shared-location
+contract rather than offering a checkout selector. Default-branch detection belongs to the backend
+and must handle custom names, missing or stale remote HEAD metadata, local-only repositories, and
+unborn repositories without inventing a nonexistent `main` branch. Explicit project/task base
+branches remain authoritative; missing refs fail visibly instead of silently choosing a new base.
 
 ## Acceptance Criteria
 
@@ -348,7 +362,7 @@ This is where the spec intentionally allows a staged implementation if the final
 ### Backend correctness
 
 - task diff/review/merge-base logic uses explicit task/project base-branch truth
-- current-branch creation can perform backend-owned checkout when required
+- concurrent current-branch creation leaves the checked-out branch and dirty files unchanged
 - close/delete semantics differ correctly by isolation mode
 
 ### Persistence

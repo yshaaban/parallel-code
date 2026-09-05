@@ -113,6 +113,153 @@ For agent-runner work:
 - keep renderer proof focused on configuration, command-target projection, and visible/passive
   terminal behavior; renderer code must not own Docker lifecycle truth
 
+For ordinary task-prompt and question-state work:
+
+- prove the pure editor policy across every canonical state and blocker precedence: peer control,
+  IME composition, current-generation local question evidence, canonical question state,
+  send-in-flight, and empty draft
+- prove a question leaves the editor focused and editable, makes plain Enter a newline, leaves
+  Shift+Enter unchanged, and blocks button/keyboard/programmatic dispatch; use real Chromium for
+  focus because a component mock cannot prove browser focus stability
+- prove local question evidence ignores stale generations and revisions, resets on lifecycle
+  replacement, and shares prompt/question fixtures with backend supervision
+- prove backend byte admission keeps ordinary non-question states eligible, makes initial delivery
+  ready-only, and rejects task-closing, question, generation, version, control, and lease changes
+  before bytes; separately prove a transition or throw after first-frame admission is ambiguous
+- prove ordinary and initial/manual producers share the same per-agent admission tail with a
+  deterministic cross-owner race: a queued ordinary send cannot interleave between a multiline
+  first frame and submit frame, and must revalidate structural closing plus its captured
+  generation/version when its turn begins; separately prove initial admission rejects when live PTY
+  metadata disappears while a lagging supervision snapshot still looks ready
+- prove Electron and authenticated browser paths capture controller/task identity in the backend,
+  and prove the semantic browser side effect makes exactly one network attempt with zero queued
+  replay after transport loss
+- prove an accepted send clears only the exact dispatched text and revision, while rejection,
+  ambiguity, peer-control loss, and edits made in flight preserve the visible draft
+- keep the O(1) policy and admission p99 budgets executable, and pair component render/focus limits
+  with a noisy real-browser key-to-text latency budget and a compressed bundle budget
+
+For task-notes work:
+
+- prove the pure reducer and transport-neutral controller separately: immutable submitted text,
+  absorbing completed truth, greatest-revision selection, lifecycle ordering, timeout/retry paths,
+  conflict/closing/orphan recovery, invalidation coalescing, and bounded acknowledgement reclamation;
+- prove desktop debounce and mobile explicit Save at the component seam, including edits made while
+  saving, app/task draft retention, unload/discard guards, and send-as-prompt reading the visible
+  draft rather than stale canonical state;
+- prove the remote Terminal/Notes switch does not create, dispose, or resubscribe the terminal, and
+  use real Chromium for input p95, terminal preservation, payload bytes, and mobile accessibility;
+- keep `electron/ipc/task-notes-service.benchmark.test.ts` as the named authenticated coherent-read
+  service-boundary gate for 100 KiB hashing/fingerprints, exact write classes, 10,000 acknowledged
+  saves, bounded operation-segment codec cost, and wire bytes. Keep
+  `tests/browser/task-notes-performance.spec.ts` as the real key-to-input, HTTP payload,
+  issue/save/replay, DOM-commit, and terminal-preservation proof;
+- prove the pre-admission operation snapshot is detached and write-free, does not join the mutation
+  queue, and is revalidated by the next mutation. Hold a commit after rename to prove the
+  identity-shared inspection epoch rejects proposed truth until healthy settlement; pending
+  durability and startup ambiguity must keep both inspection and writes closed;
+- make `tests/harness/remote-feature-bundle-budget.test.ts` traverse the Vite manifest's complete
+  static lazy closure (including CSS and shared static imports after subtracting the eager closure),
+  rather than measuring only a route entry file. D14 accepts at most 9 KiB gzip for the mandatory
+  Notes first-open closure, including its statically owned runtime, and separately at most 3 KiB
+  gzip for the incremental on-demand recovery closure after subtracting already-loaded mandatory
+  assets. The split prevents an immediately fetched runtime from escaping measurement while keeping
+  genuinely conditional recovery bytes explicit;
+- prove the active cutover has one backend service and no store/UI writer: local typed handlers must
+  be present before runtime startup completes, both production roots must defer to the same composed
+  service, and broad full-state saves must reject changed protected notes atomically;
+- keep `electron/remote/task-notes-http.test.ts` as the table-driven owner for direct Notes wire
+  envelopes, exact 400/401/403/409/413/415/429/500/503 status mapping, retry advice, and safe
+  gateway/HTTP-edge normalization. Exercise that adapter through
+  `electron/remote/remote-command-http.test.ts`, validate the direct body and status together in
+  `src/remote/remote-ipc.test.ts`, and retain one real HTTPS assertion in each of
+  `electron/remote/server.test.ts` and `server/browser-server.test.ts`. Generic catalog/creation
+  commands must remain on their existing outer gateway envelope;
+- cover both scoped websocket compositions with content-free invalidation, `notes:read` grant
+  filtering, subscriber cleanup, and mounted-only reconnect refetch. Keep the exact Electron-hosted
+  integration proof for remote save -> `state.json` -> renderer plus remote event, stale full-save
+  rejection, active-mutation drain, new-mutation rejection, and read-only resync during drain;
+- treat `scripts/task-notes-proof-seed.json` as the reviewed ownership/command specification and
+  `scripts/task-notes-proof-manifest.mjs` as the release freshness owner. Generate a source snapshot
+  before the exact command list, require byte-identical source/toolchain state afterward, bind the
+  successful command evidence and built artifact into the external report, and verify that same
+  report again at promotion. Relevant dirty/untracked input, unresolved dynamic dependency, failed
+  command, or any tree/edge/fixture/toolchain/artifact mismatch fails closed; commit ancestry never
+  substitutes for those digests.
+
+The proof report lives outside the candidate tree to avoid self-reference. The proof owner uses this
+three-phase lifecycle, with `task-notes-command-evidence.json` containing exactly the seed's ordered
+commands as `{ "command": string, "exitCode": 0 }` records generated by the external runner:
+
+```sh
+node scripts/task-notes-proof-manifest.mjs --candidate HEAD \
+  --write-snapshot "$RUNNER_TEMP/task-notes-pre.json"
+# Run every command in scripts/task-notes-proof-seed.json, in order, against this clean tree.
+node scripts/task-notes-proof-manifest.mjs --candidate HEAD \
+  --write-report "$RUNNER_TEMP/task-notes-proof.json" \
+  --pre-snapshot "$RUNNER_TEMP/task-notes-pre.json" \
+  --command-evidence "$RUNNER_TEMP/task-notes-command-evidence.json" \
+  --writer-train desktop \
+  --promotion-artifact "release/Parallel-Code.dmg"
+node scripts/task-notes-proof-manifest.mjs --candidate HEAD \
+  --verify-report "$RUNNER_TEMP/task-notes-proof.json"
+```
+
+Use the actual runner-produced relative path in place of `release/Parallel-Code.dmg`, and use
+`--writer-train remote` in a separate complete run for the remote train. The in-tree command manifest
+runs the full release build immediately before package verification. A writer report requires at
+least one approved top-level distributable (`.dmg`, `.AppImage`, `.deb`, `.exe`, `.msi`, `.pkg`,
+`.rpm`, `.snap`, or `.zip`) or canonical `release/**/resources/app.asar`; `app.asar` proves the
+unpacked application payload, not an installer. Report creation and verification hash exact regular
+file bytes, reject unrelated/deceptive names, path escape, non-files, and symlinks in any path
+component, and verification rehashes the report-listed paths. A report without an explicit promoted
+train remains `dark` and cannot mint a desktop or remote entitlement.
+
+The isolated external runner is the provenance/attestation boundary for both command evidence and
+promotion-artifact selection. It must start from a clean release workspace, capture the release
+inventory immediately after the final build and package-verification command, permit no intervening
+writes, and select every `--promotion-artifact` path from that captured inventory. The manifest
+validates the approved path class and rehashes the exact selected bytes; it does not infer which
+process created a file from its suffix and does not parse platform-specific installer containers.
+
+The current production entrypoints intentionally compose the default-dark entitlement: only an
+external clean-tree runner may archive a successful train report, independently verify the promotion
+identity, and pass the resulting immutable entitlement into the matching composition. Repository
+dirtiness, a report for the other surface, unequal identities, or a structurally forged entitlement
+fails closed. Exact terminal replay and recovery of an operation admitted before rollback remain
+available while Issue and first-Update admission are withdrawn.
+
+For renderer Git-action capability work:
+
+- exhaustively prove every merge/push denial reason, deterministic precedence, and managed/imported
+  worktree allowance in the pure app owner
+- add one thin test per intent surface: shortcuts ignore key repeat, title clicks route through the
+  owner, pending dialog consumption revalidates churn, and final workflows acquire no lease or
+  backend command after denial
+- assert reason codes independently from copy and assert side effects independently from the pure
+  evaluator; a denied intent produces one warning and no pending action
+- keep one browser accessibility journey for a shortcut denial: the live-region message is
+  announced once and focus stays where the user was working
+- retain the synchronous 10,000-sample p95 budget and production compressed-bundle comparison; the
+  evaluator must add no IPC, timer, dependency, or reactive effect
+
+For app-wide focus and reduced-motion work:
+
+- pair source contracts with real Chromium evidence: source tests own the complete low-specificity
+  selector, suppression inventory, vendor wrappers, forced-colors fallbacks, and named motion list;
+  the browser owns keyboard-versus-pointer modality and computed output
+- seed new panel/row appearance from one current `matchMedia` read, then prove exact root
+  `animationend` and `animationcancel` cleanup, nested-event rejection, removal precedence, and no
+  stale replay when preferences change
+- test reduced motion by computed animation, transition, and outline values rather than by media
+  query alone. Nonessential named animations must stop, static status/terminal cues must remain,
+  and `.inline-spinner` must keep rotating with adjacent visible or screen-reader progress text
+- exercise the main, remote, and Arena stylesheet boundaries separately. Desktop CSS presence does
+  not prove remote or Arena focus/forced-color behavior, and component mocks do not prove
+  `:focus-visible` modality
+- keep built-in focus and static-status colors in the executable theme contrast matrix, including
+  every adjacent shell/panel surface where the cue can appear
+
 For coordinator-mode work:
 
 - keep run, credential, prompt, landing, and cleanup proof in `node / backend` tests
@@ -331,9 +478,31 @@ Use this split:
   - targeted `node / backend`, `runtime / integration`, and `Solid / UI` tests for the changed
     owner seam
   - the default `npm run test:node` lane runs `server/terminal-latency.test.ts`,
-    `server/session-stress.test.ts`, and coordinator browser-less E2E in separate
-    no-file-parallelism passes; keep strict latency, live WebSocket stress assertions, and
-    standalone-server route harnesses out of the broad Vitest worker pool
+    `server/session-stress.test.ts`, `server/boot-pipeline.test.ts`,
+    `tests/contracts/review-diff.contract.test.ts`, and
+    `tests/harness/standalone-server.test.ts` through the mandatory serial
+    server-integration owner. The public `test:node:server-integration` command prepares fresh
+    browser artifacts before delegating to `test:node:server-integration:run`; the parent
+    `test:node` aggregate prepares once and calls that inner lane directly. Coordinator browser-less
+    E2E keeps its separate serial owner. Keep strict latency, live WebSocket stress assertions,
+    built-standalone route harnesses, and coordinator E2E out of the broad Vitest worker pool.
+    Direct harness, contract, lifecycle, and reliability aggregates that include built-standalone
+    owners must prepare fresh artifacts once, then delegate to a serial build-free inner lane so
+    reuse from a prepared aggregate cannot duplicate builds
+  - checked-in micro-performance and compressed-bundle budgets run through the serial
+    `test:performance-gates` owner after a fresh browser-artifact build. The broad Node worker pool
+    excludes those files so unrelated CPU contention cannot turn an owner-local p95/p99 budget into
+    a flaky regression; `test:node` still invokes the serial gate, so the budgets remain mandatory
+    product proof rather than an opt-in benchmark. The validation inventory must cover
+    `.bench.test.ts`, `.benchmark.test.ts`, `.performance.test.ts`, bundle budgets, and the named
+    mandatory `.benchmark.ts` files from `vitest.benchmark.config.ts`; every gate has exactly one
+    mandatory owner
+  - bundle attribution and final-app regression are different measurements. Preserve a feature's
+    isolated before/after result as historical evidence, and measure a lazy feature's emitted chunk
+    or import closure when the build graph exposes one. Never subtract an old feature baseline from
+    a final bundle that contains later eager features. After features are combined, fresh artifacts
+    use one explicit post-integration baseline plus a bounded drift budget and the strict absolute
+    ceiling; changing that baseline requires recording the reason and exact toolchain
   - the scripted browser terminal matrix when terminal runtime behavior changed
   - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
     changed
@@ -364,6 +533,30 @@ Use this split:
 Profiler and benchmark scripts are support tooling. They are useful for diagnosing or comparing
 performance candidates, but they should not expand the default PR gate unless the change is about
 terminal performance and the chosen script is part of the documented release recipe.
+
+Dependency and toolchain changes use a separate, exposure-aware proof stack:
+
+- Run installs with the exact `packageManager` npm version. It recognizes the project
+  `strict-allow-scripts` setting and applies the reviewed `package.json#allowScripts` identities;
+  an older npm used only to bootstrap that pinned CLI may warn about the newer setting, but must
+  never run `npm ci` or count as install-policy evidence.
+- Keep lock classification and audit-policy fixtures network-independent in the validation-guard
+  lane. Every installed node must be reachable from a declared root; unknown audit nodes, lock
+  shapes, severities, and runtime imports fail closed.
+- After a clean `npm ci`, the live audit is release truth: critical/high findings block every lane,
+  while moderate findings also block backend-runtime and renderer-shipped closures. A valid
+  vulnerability result is not a retryable transport failure.
+- Change direct owners in coherent runtime/packaging, renderer, and build/test lanes. Inspect the
+  regenerated npm-owned lock with `npm ls --all`, then run the behavior seams controlled by those
+  owners; an audit count alone does not prove compatibility.
+- Capture dependency resource baselines and targets with the same scorecard runner, exact Node/npm,
+  machine, protocol, and at least three samples. Missing, stale, non-reproducible, or mismatched
+  artifacts are failed evidence, not permission to skip a budget. The baseline may remain the
+  historical comparison point, but the default compare command hashes the current `package.json`
+  and `package-lock.json` and rejects a target captured from any other dependency inputs; recapture
+  the target only after those inputs are frozen.
+- CI proves the explicit minimum supported Node line; the full quality and release lanes prove the
+  pinned current LTS line. Floating `lts/*` is not evidence for the documented minimum.
 
 Keep the deterministic terminal lane and the soak lane separate. The deterministic lane covers the
 user-visible regression contract. The soak lane runs in its own Playwright invocation so long
@@ -407,6 +600,16 @@ For lifecycle-heavy work, test invariants as well as transitions:
 - terminal render changes should also prove anomaly budgets, not only visible correctness:
   excessive steady-state recovery, repeated viewport refresh, or sustained redraw-control pressure
   should fail the relevant stress seam even if the terminal never fully crashes
+- paint-only WebGL recovery needs both owner-state proof (platform edge, generation, priority,
+  dedupe, one-per-frame drain, failure isolation, listener cleanup) and real-browser cause/effect
+  proof. A DOM-only lane must assert zero queued/applied work, and remote restore repaint tests must
+  prove refresh occurs after the final buffered write while stale/disconnect/live-output paths stay
+  at zero.
+- optional terminal-search addon work needs an idle-zero browser proof: no addon request, instance,
+  listener, or search call before the first nonempty query or after overlay/session cleanup. Pair it
+  with deterministic scan/next/previous latency, query/result caps, stale-generation suppression,
+  and byte-isolation proof so a local presentation capability cannot drift into PTY or transport
+  behavior.
 - when a render or lifecycle issue needs a smoke artifact, capture the composite terminal
   diagnostics bundle first so anomaly, output, runtime, and lifecycle evidence stay together
 - task and standalone-terminal close flows need proof that renderer state is removed immediately
@@ -427,6 +630,15 @@ For lifecycle-heavy work, test invariants as well as transitions:
   rejection reason with the no-failure sentinel
 - independent cleanup batches must start and settle every owner before rejecting, preserve stable
   owner labels, and retain simultaneous or non-`Error` failures instead of exposing only the first
+- browser-server lifecycle tests must await `BrowserServerController.whenReady()` before direct
+  HTTP/websocket access, prove activation failure rejects readiness without opening a port, and
+  prove the production entry point awaits the same contract. Startup bootstrap assertions should
+  consume authoritative `state-bootstrap` categories when compacted control replay can correctly
+  degrade to `replay-truncated`
+- file-lock fault matrices must cover acquisition directory-fsync ambiguity and release failures at
+  exact-token read, unlink, and parent-directory fsync. After every failed release, assert the same
+  owner can retry from the retained phase and an in-process replacement cannot acquire early; test
+  workspace storage and the shared sharded-operation journal owner, not only one consumer
 - session-stress client acquisition tests must prove concurrent connect and bind attempts all settle
   before cleanup snapshots ownership, every authenticated client is owned before later bind or
   restore work, and failed pre-authentication sockets terminate without retaining startup listeners;
@@ -723,6 +935,7 @@ For targeted Vitest runs, prefer the repo wrapper scripts over raw `npm exec vit
 - `npm run test:node:file -- <file> [more files...]`
 - `npm run test:solid:file -- <file> [more files...]`
 - `npm run test:browser:file -- <spec> [more Playwright args...]`
+- `npm run test:browser:active-features`
 
 Those wrappers:
 
@@ -734,6 +947,18 @@ Those wrappers:
 - for browser Playwright runs, prepare browser artifacts once when they are stale or missing, then
   keep the standalone harness freshness check as a backstop instead of silently testing stale
   bundles
+- `test:browser:active-features` is the deterministic, single-worker acceptance owner for the
+  currently shipped upstream-catch-up journeys and their browser-observable performance budgets.
+  CI and release preflight run it after `npm test`; adding a shipped cross-runtime feature requires
+  adding its browser proof here instead of leaving an orphaned ad hoc command. The product-validation
+  guard owns the exact 21-spec inventory, rejects duplicates or extras, requires Chromium with one
+  worker, and verifies the command appears exactly once after `npm test` in both workflows
+
+Shared-root task acceptance includes `parallel-project-root-tasks.spec.ts`: real creation on a
+dirty custom branch with an obsolete project default, subtle shared-location cues, and continued
+terminal use after closing a sibling. Backend proof additionally covers canonical aliases,
+concurrent creation/merge ordering, exact task-command leases, retained watcher/snapshot ownership,
+and single-writer checkout-scoped integrations. Browser success alone does not prove those races.
 
 Standalone server integration helpers, profilers, and stress fixtures use the shared
 `scripts/lib/standalone-server-process.mjs` owner. Keep both sides of its teardown contract under
@@ -777,8 +1002,10 @@ Examples:
 
 - a handler typing change is sufficiently covered when direct node tests prove exact required and
   optional payload behavior
-- a terminal recovery change is sufficiently covered when node tests prove the recovery contract and
-  browser/runtime tests prove the user does not see destructive restore behavior unexpectedly
+- a terminal recovery change is sufficiently covered when node tests prove the recovery contract,
+  initial-attach pause transfer is acknowledged before deferred readiness while local output stays
+  blocked through apply, and browser/runtime tests prove the user does not see destructive restore
+  behavior unexpectedly
 - a terminal startup performance change is sufficiently covered when browser/runtime tests prove the
   end-to-end completion time and measured hot-path phases changed as intended, not only that a
   lower-level scheduler or recovery helper was called; the strongest completion metric is the
@@ -807,10 +1034,14 @@ Examples:
   no longer owns transport/loading orchestration and Solid tests prove selected-file continuity and
   mode switching still work
 - a NewTaskDialog Git-options split is sufficiently covered when the controller tests prove parallel
-  initial reads, stale-response suppression, same-configuration project identity resets, non-git
-  clearing, and branch-only retry, while dialog tests prove the visible Retry affordance restores
-  branch selection without reissuing the independent ignored-directory query and selected
-  ignored-directory suggestions reach task creation
+  managed-worktree reads, stale-response suppression, same-configuration project identity resets,
+  close/mode/non-git clearing, backend-default-only selection, truncation, and independent branch and
+  candidate retries. Dialog tests must prove candidate loading blocks only managed creation,
+  advisory failure retries but still permits empty-selection creation, non-worktree flows issue no
+  candidate request, and selected names reach task creation. Backend tests must separately prove
+  bounded real-Git discovery, canonical request limits, fresh admission, literal shared-exclude
+  handling, destination safety, rollback/postconditions, and typed warning replay; renderer coverage
+  cannot substitute for those authority tests
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
 - a task-steps redesign is sufficiently covered when backend tests prove `.claude/steps.json`
@@ -846,23 +1077,182 @@ Validate these failure patterns:
   shared state
 - full-state restore clears persisted task records but leaves stale backend-projected task-step
   summaries or full snapshots in the renderer
+- workspace write failure is treated as a generic I/O error without rereading the primary and
+  comparing the exact prior/proposed generation plus payload digest
+- rename succeeds but parent-directory fsync fails, then projection/event/success or a later
+  mutation is allowed before exact durability repair
+- startup promotes a valid higher temporary or stale backup over a missing/corrupt canonical
+  primary, or classifies state before the unconditional containing-directory fsync barrier
+- standalone and Electron adapters partition the same logical shared state differently, or Electron
+  creates a second canonical workspace file instead of migrating its one `state.json` in place
+- a stale full save reaches the mutator/projection before revision conflict, an unchanged mutation
+  writes or emits, or a private-only mutation advances the shared revision/event
+- a remote canonical replacement silently loses a pending local rename/reorder/project edit, or a
+  generic JSON diff overwrites a same-field remote edit
 
 Edge cases that are easy to miss:
 
 - legacy persisted fragments
 - corrupt or partial persisted fragments
+- grouped client-local preferences require explicit-`false`, per-field malformed-input, detached
+  snapshot, older-known-key-writer rollback, and negative shared-workspace proofs; a dialog that
+  samples those preferences also needs one-open isolation and submit-time capability-change proof
 - coordinator persistence salvage and compaction: one corrupt run drops only that run, an
   unreadable primary falls back to `.bak` (quarantining the corrupt file), a failed load never
   deletes credential files, and save-time compaction strips terminal-run journals/launches under
   the `COORDINATOR_PERSISTENCE_LIMITS` retention caps (`electron/coordinator/persistence.test.ts`)
 - background terminal attach resuming before the selected surface is ready
 - cleanup before startup fully completes
+- workspace-owner recomposition with changed callback identities or storage kind, a pre-supplied
+  external host, cross-map reconnect-cache invalidation, first-failure/second-success lazy
+  initialization, cleanup after an initialization that produced no service, and cleanup called in
+  the same turn as deferred structural initialization
 - controller/version state surviving a full-state restore incorrectly
 - cleanup authority clearing some task-scoped owners but not others
+- canonical uint64 boundaries (`0`, leading zero/sign rejection, max, overflow), canonical payload
+  hashing excluding only the digest, and generation-0-to-1 legacy migration
+- every temp-write/file-fsync/rename/directory-fsync/lost-response boundary, with exact-prior,
+  exact-proposal, and neither-witness outcomes asserted separately
+- agent-session journals need the same real-file fault matrix plus component ceilings: active
+  records are never evicted, rich responses are independently bounded, compact initial/fallback
+  identity survives response eviction, a missing/corrupt primary is never replaced by an older
+  valid backup, and an unacknowledged directory fsync authorizes zero next effect until exact repair
+- agent-session activation fixtures must cover the dark-to-active boundary, missing/unavailable owner, closing gate,
+  cutover-epoch mismatch, hook-version mismatch, and unhealthy journal with zero operation/identity
+  mutation, timer, generation allocation, runner cleanup/spawn, or lifecycle publication. Probe,
+  drain, and exact-task finalizer tests are separate: probing never activates admission; drain is
+  idempotent and retains evidence; finalization requires the matching committed-removal witness
+- automatic resume fallback needs captured ANSI/redraw, near-match, final-frame, 16 KiB/50-line,
+  exit/signal, trusted capability, forged persistence, deterministic ID, duplicate observation,
+  compact-marker replay, dark-workflow tests, lifecycle correlation, and a real browser process
+  proof (`tests/browser/agent-resume-fallback.spec.ts`). No component-only test can substitute for
+  the backend classifier, operation workflow, journal, and active composition proof
+- managed agent and primary-shell restart proof must cross clean shutdown, abrupt process loss, and
+  first upgrade. A clean shutdown may restore exactly one process at the next generation; an
+  unclean absence, consumed/ambiguous permit, identity mismatch, or corrupt journal must bind no
+  channel and create no process. Repeat the clean cycle to prove generation high-water advances,
+  and exercise the canonical pre-journal migration once without turning later absence into another
+  initial launch. Exact attach tests must also prove task/session/classification metadata is
+  immutable on both success and mismatch
+- managed initial-prompt delivery needs exact-generation queue/write proof, missed-event safety
+  observation for runtime discovery/readiness/post-write evidence, manual ambiguity and
+  draft-conflict coverage, exact lost-response draft replay before one coalesced trailing edit,
+  correlated facade responses, a real browser delivery journey, and its acknowledgement performance
+  companion (`tests/browser/initial-prompt-delivery*.spec.ts`). Fresh artifacts must also keep the
+  eager-main plus exact lazy-control gzip closure below its aggregate ceiling, keep the control chunk
+  independently bounded, and prove it is not module-preloaded
+- initial-prompt deadline tests must prove that no-session time is unbounded, the first admitted
+  generation receives a full 45 seconds, only its first pre-write generation change extends that
+  deadline, asynchronous draft/lease work cannot cross it, and the five-second verification window
+  starts at actual write acceptance. They must also cover late absence without retry, missing-runtime
+  `writing`/`retry-wait` recovery, transient journal/projection failures, queue-time projection
+  failure, no-runtime queue and terminal publication retry after a throw or null projection without
+  another status change, exact-once lease release with a rejected first release, and corrupt durable records
+  (timestamps, deadline pairs, generation-scoped candidates, fingerprints, attempts/write intent,
+  and sealed-state consistency)
+- manual initial-prompt takeover tests must prove seal persistence precedes automatic-lease release,
+  a rejected release resumes the same sealed operation without another automatic write, and a
+  rejected manual-lease release is retried before replay without reacquisition or readmission. A
+  concurrent replay must remain behind the in-flight delivery turn and cannot release its lease.
+  Production persistence tests must prove one edit produces exactly one journal transition, exact
+  replay preserves record bytes/version/storage generation, and accepted-send plus observed-send
+  reconciliation preserve sealed edit high-water across restart. The record decoder must reject
+  missing reverse indexes and phase/receipt contradictions. If accepted PTY bytes outlive a
+  transient draft-clear failure, same-session background finalization must clear the exact operation
+  with zero additional byte admissions; stale competing operations and a proof-to-temporary-gate
+  race must reschedule rather than cancel it. Closing the runtime must cancel and await those probes
+- initial-prompt presentation tests must compare operation identity to the acknowledged current
+  draft. Failure followed by edit offers a fresh `send` with the revised fingerprint/revision and
+  derived operation ID, never a retry action for the superseded operation; write-accepted and
+  ambiguous outcomes remain blocking
+- missing/invalid primary crossed with missing/invalid/stale/equal/higher temp and backup evidence;
+  no test may assert automatic candidate promotion
+- inactive and independently activated protected-policy fixtures, including stale-revision-before-
+  forgery precedence, exact echo, omission, and difference
+- the structural cutover stamps every immediately previous-schema task and the host writer epoch in
+  one transaction, is idempotent without another generation, and re-reads the committed record
+  before reopening admission
+- current and stale full-save attempts cannot add/omit task IDs, smuggle membership through either
+  order, replace a same-ID task root/location, or delete nested writer provenance; semantic add and
+  remove each produce at most one shared commit and exact retries are unchanged
+- closing, removing, and error presentation rows remain present in both app and shared persistence;
+  tests must not use renderer lifecycle flags as proof of canonical removal
+- typed-intent acknowledgement by operation ID or exact canonical result, bounded/coalesced queues,
+  unrelated-field rebase, deterministic retirement plus a persistent notice for same-field conflicts
+  and missing targets, and the absence of add/remove intent variants
+- remote task-creation tests must vary `task:create-root`, `task:create-imported`, and
+  `task:permission-bypass` independently. Assert both the returned capability and final create/picker
+  admission, and prove the workflow is never called on denial
+- Electron-hosted remote task-creation assembly proof must instantiate `startRemoteServer` with its
+  real HTTPS/WSS transport, scoped session authority, command gateway, and operation-event adapter.
+  Stub only the backend workflow; prove grant denial, capability non-echo, Issue/Create-or-status/
+  Cancel, duplicate-effect safety, logout or equivalent revocation, and subscription cleanup
+- desktop creation lost-response tests must prove the optimistic retry calls every location facade
+  with the same `adapterOperationId`, while a separately admitted/changed submission gets a new ID;
+  the trusted-local backend test then proves that ID replays one canonical operation/task. Workflow
+  tests must also prove authorization/lookup throttling/journal readiness and known lookup precede
+  every live selection read; a committed exact retry still replays after its project, agent, base
+  branch, or existing worktree disappears; changed semantics still conflict; and an invalid fresh
+  selection consumes bounded first-admission capacity while producing no journal, preparation,
+  workspace, shell, or agent-session effect. Operation-event tests cover a silent pending
+  pre-record subscription, post-durable publication, failed-write silence, bounded cleanup,
+  unavailable-current silence, and refresh isolation across both principal and capability
+- task-creation conflict tests must use the real serialized journal admission path: active and
+  retained overlap reject before effects, restart rebuilds the same barriers, exact terminalization
+  releases them, and unrelated resources still admit. Managed preparation tests must assert the
+  pre-effect key contains the deterministic worktree path (plus its branch), that preparation
+  rejects a changed plan before Git, and that commit ambiguity retains only keys declared by the
+  original record
+- production reconciliation proof must cover one composition-owned service and canonical snapshot
+  projector, restart discovery, record-version CAS, content-free actor audit, malformed/forged actor
+  rejection, exact mapping and absence classification, and retained-quarantine terminalization.
+  List pagination must return `stale` after any candidate record version/set change. Electron tests
+  must exercise the direct local handlers and browser facade fail-before-transport behavior; source
+  guards must prove the channels are absent from shared HTTP, gateway, and WebSocket registration
+- mapping-adoption tests must assert the next durable phase is recoverable
+  `created-needs-attention`—agent mode with retry-launch metadata and terminal mode with projection
+  repair—not `starting`. Unsupported restore/unlock/ref operations must remain proof-insufficient,
+  with no filesystem or Git effect, until their exact production proof owner exists
+- remote reload recovery must cover exact absence before expiry, denied Start-over, a second exact
+  absence lookup after a full monotonic ticket-TTL wait, safe credential release despite forward
+  browser wall-clock jumps, and the absence of raw ticket/prompt/intent text from session storage
+- merge cutover proof must cover hashed server-issued access, lost-response Status recovery,
+  pending-removal resume, lease loss before Git, finalizer repair, no caller paths, no renderer
+  cleanup/deltas, creation-before-merge production activation, and projection after lease release
+- D09 browser proof owns only browser-observable risk: real managed-worktree UI admission, every
+  Start reply lost after one successful backend result, terminal Status join and credential release,
+  two-client canonical removal/progress convergence, zero-line and no-cleanup semantics, public
+  response redaction, one progress render batch per version, and a reconnect metadata delta below
+  1 KiB. Deterministic backend suites remain the owner for exhaustive Git, fsync, crash-phase,
+  cleanup-step, and finalizer fault matrices; do not duplicate those faults with Playwright timing
+- run the D09 browser lanes with
+  `npm run test:browser:file -- tests/browser/task-merge-progress.spec.ts --project chromium --workers=1`
+  and
+  `npm run test:browser:file -- tests/browser/task-merge-progress-performance.spec.ts --project chromium --workers=1`
+- `npm run test:performance-gates:run` is the serial owner for every applicable active-design
+  micro/resource/bundle gate: D01 initial delivery/readiness/bundle; D02 prompt policy, backend
+  admission, agent-output activity, and bundle; D03 deterministic-owner and real-Git worktree
+  links; D04 terminal-search bundle; D05 task-content-authority and wrapped-link mapping; D06 WebGL
+  repair; D07 draft comparison; D08 Git-action capability; D09 merge reducer/workflow/bundle; D11
+  session/recovery; D12 New Task default sampling; D13 catalog/gateway/remote-feature bundle; and
+  D14 notes service/controller. Bundle checks require freshly compressed production artifacts.
+  D10 has no independent microbenchmark because it adds no runtime loop: its reduced-motion/focus
+  contract is owned by deterministic style tests and the active-feature browser lane. D14's
+  performance gates exercise the implemented writer without promoting either production writer
+  entitlement; only the separate exact clean-artifact proof may do that. Browser-observable
+  performance companions remain in `test:browser:active-features`. D01/D11's shared reliability
+  bundle proof traverses and deduplicates each lazy entry's complete static JavaScript closure and
+  rejects preload/prefetch; measuring only the named entry is insufficient. Planned generic
+  recovery-center and creation/removal/shell stress suites are not release proof until their
+  executable files and commands are committed
 
 Preferred proof:
 
 - `node / backend` for parser, reconciliation, and lifecycle contracts
+- real temporary-directory node tests for fsync-safe host storage and fault classification; mocked
+  collaborator calls do not prove primary bytes, candidate preservation, or one-file migration
+- adapter contract tests should run the same logical shared mutation against standalone and
+  Electron, then compare decoded shared state/revision rather than disk layout bytes
 - `runtime / integration` when reconnect/bootstrap ordering is part of the risk
 
 ### Review Diff Semantics And Performance
@@ -928,6 +1318,36 @@ Validate these failure patterns:
   `src/runtime/browser-session.runtime.test.ts` (no wall-clock warm window remains)
 - a zombie-OPEN socket after sleep/wake must be detected by the wake liveness probe
   (`probeLiveness` cases in `src/lib/websocket-client.test.ts`), not by waiting out heartbeats
+- related progress values must be tested as one full versioned projection, not as independent
+  renderer deltas. For merged progress, prove zero-line counting, commit-date rollover, safe-integer
+  overflow rejection, legacy seeding, same-operation idempotency, stale/equal-divergent renderer
+  delivery, and the structural precondition that the task and both order lists are already absent
+- keep the pure merge-progress proof separate from effectful removal qualification. The current dark
+  foundation is covered by `src/domain/task-merge.test.ts`,
+  `src/domain/task-merge.performance.test.ts`, `electron/ipc/merge-progress.test.ts`,
+  `src/app/merge-progress.test.ts`, and the inactive-versus-active host policy/storage tests.
+  Browser replay, two-client, cleanup, and finalizer tests become required only when the single
+  generic removal owner and its activation epoch exist; a test-only cleanup substitute is not an
+  acceptable enablement proof
+- generic task-removal qualification must exercise the production cleanup-step participant, not an
+  aggregate cleanup substitute. Prove that each completed step and its evidence survive restart,
+  retry begins at the first unfinished step, canonical membership remains present while cleanup is
+  pending, and absence commits before ordered finalizers. Include managed-terminal shell
+  prepare/finalize identities and the committed workspace revision
+- cover root-backed terminal and agent tasks in both Git-preserving and non-Git modes. Their frozen
+  plans must never schedule worktree quarantine or branch release, and a restart/replay must not
+  repeat already completed runtime effects
+- cutover tests must hold an admitted legacy cleanup open while activation begins, then prove the
+  activation waits, the legacy effect and canonical membership removal finish once, and the shared
+  gate disables before the generic capability publishes. Handler tests must separately prove that
+  active generic removal ignores renderer cleanup hints and does not invoke legacy workflows
+- real-Git quarantine tests must preserve uncommitted bytes, refuse foreign/symlink recovery targets,
+  replay the same operation, reject evidence from another operation, and refuse branch release
+  after the ref moves. Recovery ownership witnesses must also survive strict creation-journal
+  save/restart validation
+- renderer close tests must treat `cleanup-pending` and `awaiting-linked-proof` as non-removal:
+  retain the task, persist no local absence, and expose a retryable close error. `complete` and
+  `finalizer-repair-pending` may remove the local projection because canonical absence has committed
 
 Edge cases that are easy to miss:
 
@@ -1220,6 +1640,13 @@ Examples:
 - a remote/mobile collaboration change implicitly includes first-run naming and submit-focus
   release
 - a terminal recovery change implicitly includes typing during recovery and large-history churn
+- a task-content read change implicitly includes renderer-root substitution, lexical and symlink
+  escapes, requested/canonical extension mismatch, descriptor replacement, exact/max-plus-one byte
+  limits, close/delete between admission and descriptor bind, generation ABA, and descriptor cleanup
+- a transient terminal-root change implicitly includes missing/mismatched/task-backed PTYs,
+  invented or replayed Arena launch capabilities, PTY replacement/exit, kill/kill-all/termination
+  with delayed process exit, Arena kill-before-worktree-removal ordering, and every intervening
+  canonical unknown-to-known transition
 
 If the chosen seam does not make those edge cases visible, add another seam.
 

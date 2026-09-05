@@ -30,6 +30,16 @@ Anti-direction:
 - Visual noise that obscures hierarchy or slows scanning
 - Clever interactions that reduce predictability
 
+### Shipped Workflow Commitments
+
+- Task notes are readable from desktop and authenticated remote task details. The conflict-safe
+  desktop debounce and explicit remote Save implementation is complete, but production writes stay
+  unavailable until the exact clean committed artifact for each surface receives its own verified
+  promotion entitlement. Once promoted, concurrent changes preserve the complete local draft and
+  expose review/use-latest/overwrite recovery instead of silently choosing a winner.
+- Switching a remote task between Terminal and Notes keeps the existing terminal session mounted,
+  and reconnect reloads canonical notes without placing note content in bootstrap or live events.
+
 ### Design Principles
 
 1. Optimize for felt speed, not just technical speed. Interactions should feel immediate, especially task switching, terminal use, file selection, diff viewing, and panel changes.

@@ -127,6 +127,20 @@ parses launch intent, `src/lib/agent-spawn-config.ts` projects `AgentDef.env`, b
 resolution stays in `electron/ipc/command-resolver.ts`, and PTY spawn/env filtering stays in the
 backend PTY owner.
 
+Task-content reads use a separate backend authority seam. `server/task-names.ts` owns the canonical
+task-root disposition and runtime-local generation; renderer state synchronization may update task
+presentation metadata but cannot insert, replace, or resurrect a root. A live task can begin a
+one-shot root admission. Closing, removed, tombstoned, and unknown tasks fail closed. The only
+unknown-task exception is an exact active Arena PTY whose launch consumed a backend-issued,
+one-shot capability bound to the backend-created worktree plus exact task and agent identities.
+`server/task-content-authority-coordinator.ts` linearizes task and PTY authority, while
+`electron/ipc/task-file-access.ts` binds a canonical in-root regular-file descriptor, rechecks its
+identity and path, commits the still-current admission, and performs a bounded read. Markdown and
+plan owners add their own extension/directory limits on top; renderer requests carry task identity
+and a relative path, never an authorization root. The PTY owner advances an immutable revocation
+transition under the same coordinator before kill, termination, disposal, or exit teardown; delayed
+process exit therefore cannot keep a transient root readable.
+
 ## High-Level Layers
 
 ### 1. UI Shell Layer
@@ -159,6 +173,12 @@ The UI shell now also has a small shared presentation-primitives seam for repeat
 - `src/lib/typography.ts` owns the semantic typography roles shared by the desktop shell and the
   remote/mobile shell, while `src/styles.css` and `src/remote/index.html` define the actual root
   type tokens
+- `src/styles.css` owns the low-specificity app-wide keyboard-focus and reduced-motion contracts;
+  remote and Arena builds keep equivalent rules in their own stylesheet boundaries. Generated
+  xterm/Monaco focus nodes may suppress their internal outline only beneath a first-party shell
+  that renders the replacement perimeter. `src/lib/reduced-motion.ts` samples the current local
+  preference once for each newly mounted task panel/sidebar row so appearance classes never enter
+  shared state, persistence, media listeners, timers, transport, or backend work.
 
 Use these when the structure and behavior already match. Do not force context-specific workflow or
 state policy into them.
@@ -175,6 +195,10 @@ Two current ownership splits matter in review:
   chip resumes once the dialog is gone
 - `src/store/local-shell-preferences.ts` owns canonical defaults, resolution, detached snapshots,
   and boundary-specific encoding for the shared renderer-local shell preference shape.
+  `src/domain/new-task-defaults.ts` owns the grouped New Task default value and exact per-field
+  migration. Settings is its only durable writer; `NewTaskDialog.tsx` samples a detached value once
+  per open and recomputes skip-permission capability at submit. Electron full-state and browser
+  client-session persistence include the value, while workspace snapshots and peer sync exclude it.
   `src/store/sidebar-section-state.ts` owns the sidebar collapse sub-fragment defaults and
   normalization, while `src/store/sidebar-sections.ts` owns the live store toggle helpers. Browser
   session storage stays in `src/store/client-session.ts`, browser cold-bootstrap resets apply the
@@ -215,15 +239,27 @@ Two current ownership splits matter in review:
   `src/store/navigation.ts` focused on pure dialog state toggles
 - `src/components/NewTaskDialog.tsx` owns form and DOM interaction state, while
   `src/components/new-task-dialog/task-git-options-controller.ts` owns the form-local Git metadata
-  lifecycle: parallel branch and ignored-directory reads, stale-response suppression, independent
-  branch retry, selection defaults, and branch-conflict projection. The lifecycle is keyed by
-  project identity, not only repository path or Git configuration, because multiple project records
-  may reference the same path. Branch retry must not invalidate ignored-directory suggestions;
-  those queries have different failure and refresh reasons even though the form presents them
-  together. Creation projects the form into one discriminated `TaskLaunch` (`agent` or `terminal`)
-  before calling the app workflow, so agent-only prompt, permission, and coordinator fields cannot
-  leak into terminal tasks. Git location remains an independent axis: managed worktree, project
-  root (`current-branch` internally), or imported existing worktree
+  lifecycle. Branch metadata and retry stay independent from ignored-file discovery. The latter is
+  active only while an open dialog can create a managed worktree, clears and aborts on project/mode/
+  close changes, selects only backend-marked defaults, and exposes bounded loading, unavailable,
+  retry, and truncation state to `SymlinkDirPicker.tsx`. Its loading state blocks only managed-
+  worktree submit; an advisory failure submits an empty selection. The lifecycle is keyed by project
+  identity, not only repository path or Git configuration, because multiple project records may
+  reference the same path. Creation projects the form into one discriminated `TaskLaunch` (`agent`
+  or `terminal`) before calling the app workflow, so agent-only prompt, permission, and coordinator
+  fields cannot leak into terminal tasks. Git location remains an independent axis: managed
+  worktree, project root (`current-branch` internally), or imported existing worktree.
+  `src/components/new-task-dialog/new-task-draft.ts` owns semantic prompt/name comparison. The
+  dialog initializes those fields and their baseline once per open transition, routes Cancel,
+  overlay, and Escape through one local discard policy, and bypasses that guard only after a valid
+  submit has entered its explicit submitting state
+- ignored-file sharing policy is backend-owned by `electron/ipc/git-worktree-symlinks.ts`. It owns
+  bounded candidate discovery, canonical request bytes, final fresh admission, source/destination
+  checks, common `.git/info/exclude` updates, link creation, and postcondition cleanup. The existing
+  `get_gitignored_dirs` wire channel returns typed candidates for compatibility; renderer names stay
+  untrusted hints. Managed task and Arena creation call the same owner. Optional failures return
+  typed `symlink_warnings`; `src/app/task-lifecycle-workflows.ts` keeps the successful task, logs
+  bounded reason counts without filenames, and shows one user-facing summary
 - `src/domain/task-mode.ts` owns the canonical task-mode vocabulary and legacy default;
   `src/app/task-lifecycle-workflows.ts` owns creation/collapse/restore mode variation;
   `src/components/TaskPanel.tsx` branches section composition once so terminal tasks never mount AI
@@ -238,19 +274,33 @@ Two current ownership splits matter in review:
   Every renderer `CreateTask` request carries a client-generated operation id; the backend
   single-flights concurrent retries and replays the committed result until that task is removed, so
   an ambiguous browser response cannot duplicate a worktree or strand a project-root registration
-- task deletion spans backend cleanup and renderer projection, but the ownership remains explicit
-  across both managed-worktree `DeleteTask` and state-removing `CleanupTaskRuntime` routes:
-  `electron/ipc/task-workflows.ts` first closes and drains pending agent spawns, then owns
-  best-effort runner, runtime, worktree, branch, and container cleanup;
-  `src/domain/task-cleanup.ts` owns the typed cleanup-warning result shared by both routes across
-  Electron and browser IPC transports;
-  `src/app/task-lifecycle-workflows.ts` owns user-facing close sequencing, notification of partial
-  cleanup warnings, immediate task removal from renderer state, and best-effort persistence after
-  removal. A failed cleanup step may warn the user, but it must not leave the task stuck in a
-  transitional UI state once the backend has released the runtime owner state. Docker label cleanup
-  on this path has one backend-owned deadline propagated into its subprocesses, so a wedged Docker
-  runtime becomes a cleanup warning instead of blocking task deletion indefinitely; an unavailable
-  runtime still skips the optional container cleanup without blocking the remaining deletion steps
+- task deletion is backend-owned across both managed-worktree `DeleteTask` and state-removing
+  `CleanupTaskRuntime`. `electron/ipc/task-removal-owner.ts` freezes canonical task identity and
+  cleanup inputs before the first external effect, persists ordered evidence for runner, container,
+  runtime-state, coordinator, optional worktree quarantine, optional exact-OID branch release, and
+  shell-preparation steps, and removes canonical membership only after every required step is
+  durable. A restart resumes at the first unfinished step. Root-backed Git and non-Git tasks use the
+  same owner with Git cleanup explicitly preserved; renderer-supplied paths, branches, agent ids,
+  and delete preferences never select generic-owner effects
+- `electron/ipc/task-runtime-removal-participant.ts` owns infrastructure effects and the terminal
+  shell lifecycle. Managed terminal removal prepares the exact launch operation before canonical
+  absence and finalizes it with the committed workspace revision afterward; agent and legacy
+  terminal tasks durably record that shell cleanup is not required. Owned worktrees are moved under
+  a deterministic, operation-locked `.parallel-code-recovery` quarantine. Dirty bytes are retained,
+  foreign or symlink targets are refused, and branch release uses the quarantined HEAD as an exact
+  compare-and-delete proof; the recovery quarantine is never recursively deleted by removal
+- ordinary legacy deletion remains available only through one process-local
+  `WorkspaceTaskRemovalLegacyWriterGate`. `TaskStructureMutationService` chooses the generic owner
+  or executes that gated legacy effect while holding one structural admission, so cutover drains an
+  admitted request before disabling the old writer and cannot pause it between destructive cleanup
+  and canonical membership removal. Production participant activation and IPC handlers obtain the
+  exact same gate from `WorkspaceMutationHost`
+- `src/domain/task-cleanup.ts` owns the typed result shared by Electron and browser transports.
+  Generic removal reports a durable `removalState`; `src/app/task-lifecycle-workflows.ts` removes and
+  persists its local projection only for `complete` or post-commit `finalizer-repair-pending`.
+  `cleanup-pending` and `awaiting-linked-proof` retain the task with a retryable close error. Legacy
+  cleanup warnings remain compatibility output during the cutover, while generic cleanup failures
+  remain durable pending work instead of being converted into false-success warnings
 - task container lifecycle is backend-owned. `electron/ipc/task-containers.ts` and
   `electron/ipc/task-container-identity.ts` own Compose support detection, identity, lifecycle, and
   logs; `electron/ipc/task-container-handlers.ts` is the typed IPC seam;
@@ -463,6 +513,9 @@ Files:
 - `src/app/task-workflows.ts`
 - `src/app/task-lifecycle-workflows.ts`
 - `src/app/task-prompt-workflows.ts`
+- `src/app/prompt-input-policy.ts`
+- `src/app/task-git-action-capability.ts`
+- `src/domain/task-prompt-input-admission.ts`
 - `src/app/task-shell-workflows.ts`
 - `src/app/task-convergence.ts`
 - `src/app/remote-access.ts`
@@ -491,6 +544,23 @@ Responsibilities:
 This layer is newer than the others, but it is now part of the architecture. It addresses the
 earlier problem where end-to-end behavior was scattered across handlers, services, store slices,
 and runtime shells.
+
+Ordinary task prompts use a semantic, single-attempt command rather than exposing raw PTY framing
+to the renderer. `src/app/prompt-input-policy.ts` is the pure presentation policy for editing,
+Enter behavior, and focus preservation; it is not an authorization boundary. The Electron owner
+captures the current agent lifecycle generation, monotonic supervision version, task-command lease,
+and task-closing state, fixes the trusted purpose to `ordinary-post-start`, and revalidates those
+facts in `electron/ipc/task-prompt-input-admission.ts` immediately before admitting materialized
+bytes. Every non-question supervision state remains eligible for an ordinary send. A rejection is
+reported as definitely pre-write only while zero bytes are proven; a failure after the adapter
+boundary is explicitly ambiguous and is never automatically replayed by browser transport.
+
+`task-git-action-capability.ts` is the single renderer-side product-capability owner for merge and
+push affordances. Its pure decision returns stable reasons for missing, closing, collapsed,
+unavailable-project, non-Git, and project-root tasks. The same decision drives title-bar visibility,
+shortcut/title intent admission, pending-dialog revalidation, and final workflow revalidation.
+Denied explicit intent produces one client-local warning; an allowed decision remains only an
+affordance and never replaces backend Git validation or task-command lease authority.
 
 One workflow split worth calling out explicitly now:
 
@@ -525,7 +595,6 @@ Files:
 - `src/store/task-command-takeovers.ts`
 - `src/store/keyed-snapshot-record.ts`
 - `src/store/projects.ts`
-- `src/store/remote.ts`
 - `src/store/persistence.ts`
 - `src/store/persistence-codecs.ts`
 - `src/store/persistence-save.ts`
@@ -547,6 +616,13 @@ Responsibilities:
 - own persistence loading/saving logic
 - project ephemeral browser presence and takeover request state
 - derive task/agent status for presentation
+
+The renderer's question detector is a fast safety blocker, not a second canonical status owner.
+`agent-question-state.ts` keys its bounded local observation by the authoritative agent generation
+and monotonically increasing output-evidence revision. Stale-generation output cannot block a new
+session. Backend supervision remains the replayable source for task attention and
+`awaiting-input`; the prompt policy conservatively ORs a matching-generation local blocker only for
+dispatch safety.
 
 This layer is cleaner than it was, but it is still not "just state". Some store modules still act
 as workflow facades, especially around task and agent behavior.
@@ -701,7 +777,7 @@ Derived backend snapshots are persisted by their backend owner:
   ~2s, atomic) from the five snapshot sources: git status, task convergence, task review, task
   review signals, and task step summaries
 - `electron/ipc/saved-state-restore.ts` is the shared shell-agnostic boot restore composed by both
-  `server/browser-server.ts` and `electron/main.ts`: it syncs metadata registries from one parsed
+  `server/browser-server.ts` and `electron/application.ts`: it syncs metadata registries from one parsed
   `SavedStateDocument`, starts watchers without scheduling blanket refreshes, hydrates the
   persisted derived snapshots behind exact identity filters (taskId + worktreePath + branchName +
   projectId; git-status entries must belong to a registered watcher worktree), and registers every
@@ -847,6 +923,9 @@ Prompt and question classification inside supervision must stay tail-local and c
   tail instead of falling back to a generic `active` state
 - shared renderer helpers that expose question/prompt state must reuse the same interpretation
   instead of inventing a separate prompt-cancels-question shortcut
+- supervision snapshots carry the PTY lifecycle generation and a per-agent monotonic
+  `supervisionVersion`; prompt byte admission rejects a stale generation/version even when the
+  renderer's immediate policy check previously passed
 
 Another newer backend service is task port tracking:
 
@@ -939,6 +1018,71 @@ This split matters for multi-client behavior:
 1. foreign shared-workspace updates should not overwrite local selection or view state
 2. reconnect should restore shared workspace state and active task command controllers explicitly
 3. conflicting task mutations should use typed control leases instead of silent last-write-wins races
+
+### Canonical task-notes editor
+
+Task notes have one implemented semantic writer shared by every production composition.
+`TaskNotesService` uses the canonical workspace mutation authority plus D13's shared
+structural/removal authority for Get/Issue/Update, content-version comparison, task-incarnation
+binding, durable operation receipts, and mutation admission. `Task.notes` is protected from broad
+renderer saves, and the old public store setter and direct desktop writer no longer exist.
+
+The read/editor path is active and the writer implementation is complete, but the writer cutover is
+intentionally default-dark. Desktop and remote each require a distinct,
+immutable entitlement whose archived full-gate report identity exactly equals the independently
+recomputed promotion identity for that surface. Missing, malformed, cross-surface, unequal, or
+structurally forged evidence leaves that surface dark. The current production entrypoints load no
+report or environment boolean and therefore advertise no fresh write capability. Both real
+composition roots accept immutable entitlements from an external verified promoter; the local
+capability query reflects the desktop entitlement, while the scoped gateway advertises the remote
+command set. The external browser-test launcher alone composes explicit test entitlements. A dark surface rejects Issue and
+first-Update admission without a mutation or lease, while exact terminal replay and already-admitted
+recovery remain callable so rollback does not strand durable operations.
+
+`WorkspaceMutationService` also owns Notes' narrow `WorkspacePrivateSnapshotAuthority`. It returns
+only a detached, tentative host snapshot for operation classification before structural admission;
+every issued/admitted write is revalidated in the queued mutation. An identity-scoped odd/even
+inspection epoch spans mutation, durability repair, and close, and a shared pending-durability gate
+rejects inspection before or after the load if a write is in flight, the epoch changed, or a renamed
+proposal is not yet directory-durable. This lets terminal receipts replay without a new admission
+while a new or resumed write loses to task closing before entering the host queue.
+
+The renderer path has one transport-neutral owner:
+
+- `src/components/task-notes/task-notes-draft.ts` owns pure conflict and recovery transitions;
+- `task-notes-controller.ts` executes typed Get/Issue/Update effects, timeouts, retries, lifecycle
+  ordering, invalidation coalescing, and saved/slow presentation timers;
+- `task-notes-registry.ts` retains app/task-scoped drafts and bounded acknowledgement proofs in
+  memory and installs `beforeunload` protection only while a draft is unsafe;
+- desktop uses a one-second UI debounce, while the lazy remote Notes tab uses explicit Save; neither
+  surface owns operation identity or lifecycle truth;
+- `task_notes_changed` contains only task id, revision, and source id. Both shells validate it and
+  publish it through `src/runtime/task-notes-invalidation.ts`; note content is fetched on demand.
+
+Electron desktop and browser desktop install the same typed handler table before asynchronous
+runtime startup. Their trusted local principal and read/write grants are fixed by composition; the
+handler awaits the one production task-experience runtime on first use, so startup cannot expose a
+missing-channel race or a second service. Authenticated remote clients reach the same service only
+through the scoped command gateway. Read and write visibility come from the exact frozen remote
+command/admission snapshot, not request JSON or a UI default.
+
+Both remote hosts compose the same raw command HTTP handler through `ScopedRemoteCommandRuntime`.
+The gateway retains its generic authorization, grant, queue, and result contract; the transport edge
+in `electron/remote/task-notes-http.ts` is the sole owner that unwraps successful Notes dispatches to
+a direct, method-guarded `TaskNotesWireResponse`, assigns the documented HTTP status, and carries
+bounded retry advice into `Retry-After`. Other scoped commands retain the generic gateway envelope.
+`src/remote/remote-ipc.ts` shares one authenticated fetch owner, then validates Notes' direct body and
+status together before returning it to the transport-neutral controller. A nested gateway-plus-Notes
+success envelope or a status/body mismatch is a protocol failure, not an alternate compatibility
+path.
+
+Each host has one content-free Notes event stream beside its renderer event projection. Electron
+publishes to its BrowserWindow and Electron-hosted scoped websocket; standalone publishes to the
+browser control plane and its scoped remote websocket. Websocket fanout is limited to current
+`notes:read` sessions, subscription cleanup is host-owned, and reconnect performs an authoritative
+Get for mounted editors instead of replaying note content. Shutdown closes mutation admission and
+drains active commands before revoking the scoped runtime; reads remain available while admission is
+draining.
 
 Relevant files:
 
@@ -1058,6 +1202,7 @@ Relevant files:
 - `src/components/terminal-view/terminal-input-pipeline.ts`
 - `src/components/terminal-view/terminal-output-pipeline.ts`
 - `src/components/terminal-view/terminal-recovery-runtime.ts`
+- `src/components/terminal-view/terminal-search-runtime.ts`
 - `src/lib/terminalFitLifecycle.ts`
 - `src/lib/terminal-output-priority.ts`
 - `src/lib/webglPool.ts`
@@ -1075,11 +1220,19 @@ Current shape:
    (`onAttachDispatched`), so slots only guard renderer CPU phases, never backend round trips
 4. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
-5. a terminal attach is one pipelined backend round trip: `AttachTerminalSession` binds the output
-   channel for the requesting client, runs the spawn/attach workflow, and captures the initial
-   recovery entry in the same backend tick, so no Data frame on the new channel can precede the
-   recovery cursor; the spawn uses optimistic geometry (last-known or 80x24) and never resizes an
-   existing session, and fit gates paint, never spawn. Reconnect and non-startup recovery still go
+5. a terminal attach is one pipelined backend round trip. Managed-agent and canonical primary-shell
+   requests carry only `(taskId, agentId/sessionId)` plus channel/recovery transport fields; the
+   backend derives launch policy from canonical state, resolves the exact generation, and performs
+   either an immutable exact attach or an explicitly admitted one-shot restore. It validates that
+   identity before binding the output channel, so an unavailable or stale managed identity creates
+   no channel, process, watcher, pause, or mutation side effect. Compatibility shells and transient
+   Arena competitors are separately discriminated legacy owners and cannot downgrade a canonical
+   managed identity into a generic spawn. The retired renderer-owned `SpawnAgent` endpoint remains
+   wire-visible only to return a stable migration error. After a successful exact decision,
+   `AttachTerminalSession` captures the initial recovery entry in the same backend tick, so no Data
+   frame on the new channel can precede the recovery cursor. A fresh compatibility/Arena spawn uses
+   optimistic geometry (last-known or 80x24), an existing session is never resized by attach, and
+   fit gates paint, never process creation. Reconnect and non-startup recovery still go
    through the shared `GetTerminalRecoveryBatch` coalescing path, while visible non-shell startup
    attach uses the backend-owned `GetTerminalStartupRecoveryBatch` path; non-attach recoveries are
    cursor-first (no rendered-tail upload) with capped snapshots, and a `tail-needed` response asks
@@ -1116,13 +1269,24 @@ Current shape:
     Hidden, startup, and restore-blocked paths stay on the real DOM xterm surface unless they are
     explicitly promoted later. Focused terminals that already own WebGL keep it through committed
     resize churn so large-buffer resize replay does not fall back to the slow DOM repaint path.
-13. queued/background terminal startup now has a shared renderer-side activity owner in
+    The same pool is the only desktop owner of paint-only atlas recovery: macOS foreground and
+    retained-visibility edges plus the cross-platform manual redraw action enqueue exact current
+    generations, focused/recent first and one per animation frame. Eligibility is rechecked before
+    atlas clear plus viewport refresh, so this cosmetic repair cannot become output replay,
+    terminal recovery, context acquisition, or component-owned global listeners.
+13. terminal-local search stays behind the session facade. Its runtime lazily imports and attaches
+    `@xterm/addon-search` only for an open overlay with a nonempty query, owns latest-generation
+    result ordering and frame-bounded incremental scans, and disposes the addon/listener with that
+    exact overlay or terminal session. The overlay owns query, result counter, focus, and inline
+    load failure only; no search state enters PTY input, task-command control, persistence, or a
+    remote/backend projection.
+14. queued/background terminal startup now has a shared renderer-side activity owner in
     `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
     compact per-task sidebar hints without each `TerminalView` inventing its own global status view
-14. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
+15. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
     output/write flow control, and recovery/rebind behavior live behind the named terminal-view
     owners instead of re-accumulating in one file
-15. experimental many-terminal heavy-load policy is split cleanly:
+16. experimental many-terminal heavy-load policy is split cleanly:
     - `src/app/terminal-high-load-mode.ts` owns the runtime-facing mirror for the product setting
     - `src/app/terminal-frame-pressure.ts` and `src/app/terminal-dense-overload.ts` own measured
       pressure and guarded overload detection
@@ -1319,10 +1483,11 @@ directory layout. The rule is:
 - bundled tools should either work everywhere the product claims they work
 - or fail with a concrete reason that the UI can surface
 - `electron/ipc/hydra-adapter.ts` remains the protocol owner for its intentionally long-lived
-  daemon and operator children: bounded health and HTTP shutdown requests drive the normal
-  lifecycle, while the shared bounded subprocess owner runs with no automatic child deadline and
-  owns process-group/tree termination, escalation, exit waiting, and stream cleanup when shutdown
-  or adapter signals fail. Adapter failure and signal paths settle daemon and operator cleanup
+  daemon and operator children: bounded health requests validate the launched process and checkout,
+  while the shared bounded subprocess owner runs with no automatic child deadline and owns
+  process-group/tree termination, escalation, exit waiting, and stream cleanup. Cleanup never sends
+  shutdown commands to a possibly replaced TCP listener. Adapter failure and signal paths settle
+  daemon and operator cleanup
   together; a requested termination is successful only after tree release is confirmed, and any
   independent operation/cleanup failures remain composed for the nonzero adapter exit.
 
@@ -1330,7 +1495,18 @@ Electron package dependencies follow the same ownership boundary. Packages impor
 `src/**` are Vite build inputs and belong in `devDependencies`; their code is already emitted into
 `dist` and `dist-remote`, so copying their source trees into the Electron Node runtime only adds
 size and duplicate authority. `dependencies` is reserved for Electron/backend runtime imports and
-the vendored Hydra runtime. `scripts/verify-electron-package.mjs` rejects renderer-bundled package
+the vendored Hydra runtime. Declaration bucket is not a security-exposure boundary:
+`scripts/lib/dependency-exposure.mjs` owns the renderer-bundled direct-root set and classifies every
+concrete lockfile node through npm's installed nearest-ancestor graph as `backend-runtime`,
+`renderer-shipped`, or `tooling`, retaining every membership and one deterministic shortest path.
+The package verifier and dependency-audit command consume that owner rather than maintaining
+parallel lists. The frontend/remote runtime-import architecture guard derives the actual Vite
+closure, rejects unresolved or computed runtime loads, and requires its renderer-only roots to
+match the owner exactly. The pinned npm version also enforces `strict-allow-scripts`; only exact,
+reviewed dependency versions in `package.json#allowScripts` may execute native/build install
+lifecycles, so a lock refresh cannot silently skip or introduce executable setup code.
+
+`scripts/verify-electron-package.mjs` rejects renderer-bundled package
 trees, requires the unique locked name/version identities represented by all non-development,
 non-optional package-lock entries plus every declared direct runtime dependency in each produced
 archive (so legitimate package-manager hoisting is layout-independent), recursively checks every
@@ -1356,9 +1532,11 @@ Browser static delivery is precompressed and cache-aware:
   `Cache-Control: public, max-age=31536000, immutable` for hashed `/assets/` files, and keeps HTML
   `no-store`
 - the Vite build injects modulepreload links for the lazily imported terminal-session chunk and its
-  static import closure (plus prefetch hints for its dynamic xterm addon chunks), computed from the
-  bundle graph in `electron/vite.config.electron.ts`; the remote bundle is a single chunk and needs
-  no equivalent injection
+  static import closure, plus prefetch hints only for the explicitly startup-relevant
+  `addon-web-links` and `addon-webgl` chunks. The terminal-search addon is intentionally excluded so
+  it has zero network cost until the first nonempty query. The graph is computed in
+  `electron/vite.config.electron.ts`; the remote bundle is a single chunk and needs no equivalent
+  injection
 
 ## Core Concepts
 
@@ -1377,6 +1555,12 @@ A project is the persistent repo-level configuration:
 - bookmarks
 
 Projects matter to both task creation and git status lookup.
+
+Project-root tasks are shared-checkout memberships, not exclusive worktree owners. Their backend
+registry retains every task ID for a canonical root; exact task identity still selects command
+leases, runtime cleanup, and content authority. Creation observes the current checkout without
+switching branches. The Git-isolation contract and default-branch rules live in
+[GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
 
 ### Tasks
 
@@ -1428,6 +1612,9 @@ Status is partly authoritative from the backend and partly interpreted on the fr
 One ownership rule matters here now:
 
 - agent definitions declare `resume_strategy`
+- the trusted built-in catalog alone may declare `resume_failure_classifier` and
+  `resume_failure_fallback`; persistence strips those reserved capabilities and restores them only
+  from the separately retained trusted catalog
 - CLI-style agents resume through launch arguments
 - Hydra resumes through backend-owned startup recovery in the vendored operator runtime
 - renderer code may request a resumed spawn, but it must not recreate Hydra's `:resume` workflow or
@@ -1438,9 +1625,121 @@ restart, the first attach still owns the real recovery decision. For Hydra, that
 worktree-scoped and serialized in the backend/vendored runtime instead of being approximated in the
 renderer.
 
+Hydra's durable coordination files remain checkout-scoped. The task-agent spawn owner reserves the
+canonical checkout across pending and live Hydra launches and rejects a second Hydra writer there;
+ordinary CLI agents remain eligible to share it. The adapter also refuses to shut down an existing
+same-checkout daemon while choosing a port. Distinct worktrees keep independent Hydra sessions.
+
 Runner identity follows the same ownership rule: a project may configure the preferred runner, but
 the active runner instance is backend PTY/supervision metadata. Browser and mobile clients consume
 that projection; they do not decide whether a Docker container is live by reading project settings.
+
+The managed agent-session owner is active in the production task-experience composition:
+
+- `src/lib/agent-resume.ts` owns bounded, exact output classification; it retains at most the final
+  16 KiB / 50 logical lines and currently recognizes only Claude's exact missing-conversation line
+- `src/domain/agent-session-operation.ts` owns transport-neutral request, phase, replay, action, and
+  removal-hook contracts
+- `electron/ipc/agent-session-operation-journal.ts` owns the versioned operation/identity journal,
+  queue-exclusive exact-prior/exact-proposal durability classification, bounded rich replay, and
+  exact-task record deletion
+- `electron/ipc/agent-session-workflow.ts` owns generation/lease admission, phase-before-effect
+  ordering, spawn acknowledgement, replay, and the versioned removal drain/finalizer hooks
+- `electron/ipc/agent-session-recovery.ts` is the backend-only finalized-exit adapter; the production
+  runtime owns its single exit subscription, short system lease, and deterministic fallback request
+- `src/app/agent-session-action.ts` owns the small renderer restart/resume/switch intent contract;
+  `src/app/agent-session-workflows.ts` is its sole effect adapter. It retains one bounded operation
+  identity across lost responses and applies only correlated backend projections. The terminal tile
+  loads the effect adapter only after an explicit user action, keeping the reliability facade
+  outside the default renderer startup path
+
+Renderer reconnect is therefore identity recovery, not process policy. `EnsureAgentSessionsBatch`
+and managed `AttachTerminalSession` requests never accept command, argument, environment, working
+directory, resume, runner, or replacement material. The D11 owner classifies canonical agent
+identity and the D13 task-shell owner classifies canonical primary-shell identity; only an explicit
+compatibility-shell or Arena owner may reach the bounded compatibility spawn workflow. Exact attach
+validates `(taskId, sessionId, isShell, generation)` without mutating PTY metadata and binds the
+channel only after that validation succeeds.
+
+`electron/ipc/task-experience-runtime-composition.ts` starts the journal owners dark, activates the
+generic task-removal cutover and exact `agent-session-owner-hooks-v1` epoch, disables legacy process
+writers, then enables initial/manual/fallback admission. Missing journal health, gate, epoch, hook,
+or trusted built-in launch semantics returns unavailable before a generation or process effect.
+Lifecycle events carry the backend generation, operation identity, launch reason, and resumed bit;
+the renderer uses those fields only to hydrate authoritative status and explain a successful fresh
+fallback.
+
+Activation and close use the same explicit ownership boundary. A failed activation attempts every
+owner acquired so far; simultaneous activation and rollback failures remain paired, and a failed
+rollback retains an exact retry callback instead of allowing replacement acquisition over uncertain
+state. Normal close is single-flight while pending and retryable after failure. Electron window
+cleanup and standalone browser cleanup both close task-experience admission, then settle task
+experience and workspace-storage owners with stable labels. Every owner is attempted, failures stay
+observable to the desktop/browser shutdown aggregate, and desktop shutdown exits nonzero after the
+aggregate settles.
+
+Clean shutdown uses one ordered process boundary shared by desktop and browser hosts: D11 closes
+agent-session admission and snapshots exact managed-agent identities while D13 closes primary-shell
+admission and issues in-memory candidates; the global runner owner then stops and drains every PTY,
+pending spawn, and prepared runner while keeping admission permanently closed; only after that stop
+is proven may D11 atomically persist its marker batch and D13 persist every candidate as a prepared
+one-shot permit; journals and remaining task-experience owners close last. A preparation or stop
+failure persists no new permit, aborts unpersisted shell candidates, remains labeled in the host
+shutdown aggregate, and keeps process admission closed. Crash/SIGKILL has no clean permit. On the
+next process, `available -> restoring -> restored` (D11) and `pending -> spawning -> terminal`
+(D13) make restoration single-flight and fail closed across another crash; generations advance
+monotonically and a consumed permit is never recreated by renderer reconnect.
+
+Initial prompts use the same composition boundary. `electron/ipc/task-initial-prompt-runtime.ts`
+owns the durable draft/delivery/manual-send state and removal hooks. Managed task creation queues the
+delivery against the allocated agent generation, and `InitialPromptDeliveryControl` is a lazy
+renderer projection/editor rather than a second delivery owner. Automatic/manual writes and draft
+clearing occur only through the backend owner after the matching removal cutover epoch is active.
+Supervision events wake this owner but do not solely drive it: a bounded safety observation polls
+pending readiness, runtime discovery, and post-write evidence through their existing deadlines, so
+presentation-event coalescing cannot strand an otherwise observable delivery. A delivery without a
+running agent remains in `waiting-agent-session` without consuming its readiness window. The durable
+45-second readiness deadline begins only when the first running generation is admitted and permits
+one persisted pre-write extension for a generation change. The backend service, rather than the
+runtime timer, owns expiry; it can settle missing-runtime `writing`, `retry-wait`, readiness, and
+five-second post-acceptance verification states, release the command lease, and retry a failed lease
+release. Runtime observation serializes those core turns, uses the same injected clock, and rearms
+nonterminal work after typed unavailability or thrown persistence/projection work.
+Projection fanout has one runtime-owned pending obligation per delivery. A thrown or temporarily
+null projection keeps that obligation dirty, and a later safety turn retries it even when durable
+status did not change. With no listeners the obligation is complete because subscribers bootstrap
+from an explicit current-projection read rather than historical events.
+Manual takeover persists the automation seal before releasing the automatic command lease. Both
+automatic and manual leases remain retained until release succeeds; same-delivery replays retry
+that release inside the delivery serializer before they may resume or return a durable result, so a
+concurrent replay cannot revoke control from an in-flight manual write.
+The production persistence repository owns the atomic cross-record mutations: revising a draft
+also advances its journal edit high-water, while clearing an accepted draft also seals and compacts
+that high-water. The service never repeats those writes from a stale pre-mutation record; it reloads
+the committed record before any following transition. Decoder validation checks both directions of
+the delivery/manual-operation indexes and requires each phase to agree with its terminal receipt, so
+a forward-only index or half-settled operation cannot reopen admission after restart.
+An accepted manual write whose compare-clear acknowledgement is transiently unavailable remains a
+durable `write-accepted` operation. The runtime schedules bounded same-session finalization that
+first proves that exact operation is still accepted and then replays only its idempotent clear/seal
+transition. A competing operation, temporary gate rejection, or unavailable projection reschedules
+proof; it cannot cancel the accepted operation or admit another PTY write.
+Its draft controller retains at most one exact failed/in-flight edit request and one latest trailing
+text snapshot: an unknown response replays the same operation ID and request before the trailing edit
+receives a new ID against the acknowledged result.
+
+PTY byte admission is a separate server-lifecycle owner shared by every task-prompt producer.
+`createIpcHandlers` creates one `TaskPromptInputAdmissionService`, stores it on the host's
+`HandlerContext`, and injects that exact instance into both the ordinary prompt IPC handler and the
+initial-prompt runtime. Its per-agent tail therefore serializes ordinary, automatic-initial, and
+manual-initial frames through one generation/version/lease/question/closing recheck boundary in
+both Electron and standalone browser mode. Producer modules cannot construct fallback admission
+services of their own. The service starts fail-closed; the production task-experience runtime binds
+it once to `TaskStructureMutationService.isTaskMutationAdmissionClosed` and releases that binding on
+shutdown or failed activation. That O(1) structural projection includes the private removal
+mutation-drain/fence window as well as durable closing and absence, so byte admission does not lag
+the catalog lifecycle event. Initial delivery additionally requires live matching PTY metadata;
+ordinary exited-generation sends retain their explicit metadata-free compatibility behavior.
 
 ### Terminals
 
@@ -1481,7 +1780,8 @@ These now use replayable sequencing in `electron/remote/ws-transport.ts`.
 
 Main files:
 
-- `electron/main.ts`
+- `electron/main.ts` (default-dark entry shim)
+- `electron/application.ts` (side-effect-free, one-shot composition root)
 - `electron/ipc/register.ts`
 - `src/App.tsx`
 - `src/lib/ipc.ts`
@@ -1547,16 +1847,35 @@ Main files:
 Shape:
 
 - a separate mobile SPA is served from the remote server
+- the mobile SPA has two explicit host compositions: Electron's dedicated remote server uses the
+  default `/auth/bootstrap` + `/api/auth/*` session routes, while standalone browser mode
+  namespaces the scoped principal under `/remote/auth/bootstrap` + `/api/remote/auth/*` and its
+  socket under `/remote-ws`
+- standalone browser mode keeps the full browser administrator and scoped remote principals
+  separate: distinct long-lived tokens, distinct cookies/routes, generic `/api/ipc` authority only
+  for the full browser principal, and `/remote/*` static authorization only for the scoped remote
+  principal. Remote status/QR projection carries the scoped HTTPS bootstrap URL targeting
+  `/remote/`; startup output prints the full-browser HTTPS bootstrap separately
+- coordinator agents that self-call a standalone HTTPS host receive the configured public
+  certificate in their mode-0600 per-run credential, so the loopback tool URL verifies that exact
+  trust anchor without globally disabling TLS verification
 - remote UI talks directly to the shared websocket transport
 - remote mode does not reuse the full desktop store
-- remote mode operates against a smaller agent-oriented projection of the system
-- remote/mobile still receives the agent-focused stream:
+- legacy remote/mobile compatibility operates against the smaller agent-focused stream:
   - `agents`
   - `status`
   - `output`
   - `scrollback`
-- the remote/mobile agent list deliberately filters shell PTYs; terminal-only task sessions are not
-  represented there because that surface does not yet have a task/session projection
+- scoped remote/mobile composes a separately versioned task catalog and task-first list/detail
+  route. A task detail opens the exact catalog `sessionId`; shell sessions therefore remain usable
+  without being copied into the broad agent projection, while an optional catalog `agentId` supplies
+  presentation metadata only.
+- secure-session bootstrap validates and freezes an exact command/admission capability snapshot.
+  Malformed or stale bootstrap responses retain no client authority; Notes, terminal control, kill,
+  and task creation UI derive independently from that snapshot and still rely on backend admission.
+- Task Notes content stays out of catalog/bootstrap and loads through the lazy Notes route. The
+  common editor/controller owns draft and conflict behavior, while recovery-only controls are a
+  nested lazy boundary and the terminal DOM/session remains mounted across Terminal/Notes switches.
 - remote/mobile also now participates in the shared collaboration/control stream:
   - `peer-presences`
   - `state-bootstrap`
@@ -1612,6 +1931,11 @@ Flow:
 
 1. `server/main.ts` bootstraps `server/browser-server.ts`; boot is snapshot-first and
    demand-driven:
+   - `startBrowserServer` activates the one production task-experience runtime before opening any
+     HTTP or websocket surface. `BrowserServerController.whenReady()` resolves only after that
+     owner is active and the listener is accepting requests; activation, transport composition,
+     and listen failures reject it. `server/main.ts` awaits this contract, so failed startup is an
+     observable nonzero process outcome rather than a process that stays alive without a port
    - persisted state is parsed once into a `SavedStateDocument`
      (`electron/ipc/saved-state-document.ts`) shared by the registry sync, restore, and
      save/load/reconnect consumers instead of re-parsing the JSON per consumer
@@ -1686,6 +2010,8 @@ Flow:
    - agent cards and previews
    - ownership chips and read-only states
    - takeover dialogs and result notices
+   - an identity-safe post-restore paint step after accepted recovery bytes and buffered live bytes
+     have both reached xterm; stale/disposed callbacks and non-write completion remain no-ops
 
 Important property:
 
@@ -2039,22 +2365,155 @@ Files:
 - `src/store/persistence-load.ts`
 - `src/store/persistence-codecs.ts`
 - `src/store/persistence-session.ts`
+- `src/domain/workspace-edit-intents.ts`
 - `electron/ipc/storage.ts`
+- `electron/ipc/workspace-state-storage.ts`
+- `electron/ipc/workspace-state-mutations.ts`
+- `electron/ipc/task-structure-mutations.ts`
+- `electron/ipc/merge-progress.ts`
+- `src/domain/task-creation-provenance.ts`
+- `src/domain/task-merge.ts`
+- `src/app/merge-progress.ts`
 - `src/runtime/server-sync.ts`
 - `src/runtime/window-session.ts`
 
 Flow:
 
-1. the frontend periodically saves app state
-2. backend storage persists it
-3. on startup, saved state is loaded back into the store
-4. runtime reconciliation then checks live backend state against loaded store state
-5. missing agents are marked exited and notifications may be shown
+1. the frontend periodically submits a full shared-state proposal with its last acknowledged
+   workspace revision
+2. `workspace-state-mutations.ts` serializes the load/CAS/pure-mutation/commit/publication turn by
+   canonical host-storage identity
+3. before structural admission, `task-structure-mutations.ts` atomically stamps legacy tasks with
+   `pre-managed-v1`, records the active backend writer epoch, and activates task-set,
+   identity/location, and writer-provenance protection
+4. semantic create/delete handlers add or remove membership through that owner; renderer full saves
+   can edit fields and order canonical IDs but cannot manufacture, omit, or relocate a task
+5. `workspace-state-storage.ts` commits one generation/digest-guarded host record: standalone uses
+   `workspace-state.json`; Electron keeps adapter-local fields and revisioned shared truth together
+   in its existing `state.json`
+6. a changed shared write increments the shared revision once; every shared, private, or local write
+   increments the canonical unsigned-decimal uint64 storage generation once
+7. projection preparation happens before the write; cache invalidation, complete projection
+   publication, and `WorkspaceStateChanged` happen only after an exact durability-healthy commit
+8. on startup, the adapter holds its instance lock, fsyncs the containing directory, re-enumerates
+   fixed candidates, and rereads the primary before enabling mutation
+9. saved state is loaded back into the store and runtime reconciliation checks live backend state
+   against it; missing agents are marked exited and notifications may be shown
 
 Non-obvious current rule:
 
+- `system-handlers.ts` creates exactly one workspace-mutation runtime per `HandlerContext`: the
+  mutation host, reconnect saved-state cache, storage kind, projection callbacks, and removal
+  lifecycle callback share that owner. Recomposition must retain the same storage kind and callback
+  identities; a pre-supplied host is rejected instead of creating an untracked second authority.
+  Lazy storage and structural-cutover failures remain retryable while admission is open. Shutdown
+  closes admission first, settles any in-flight structural initialization, releases any subscription
+  installed by that attempt, and then closes only a service that was actually created.
 - full-state loads and workspace-state loads now reuse the same canonical project and task hydration
   helpers instead of maintaining parallel ad hoc parsing paths in `src/store/persistence.ts`
+- only the canonical primary is a commit witness; temporary and backup files are validated recovery
+  evidence and are never automatically promoted over a missing or invalid generation-aware primary
+- runtime write failure is classified while the mutation queue is still exclusive: exact prior is
+  proven not committed, exact proposal after acknowledged parent-directory fsync is committed,
+  exact proposal without that acknowledgement is durability-pending, and anything else enters
+  typed host recovery
+- workspace and sharded-journal instance locks use retryable two-phase ownership. Acquisition
+  records the exact process/token identity before its parent-directory fsync, so an ambiguous fsync
+  failure remains closeable. Release retains that identity through exact-token reread, unlink, and
+  parent-directory fsync; after unlink it records a pending-fsync phase and retries from there.
+  Same-process replacement remains blocked until the exact release settles, and a missing parent
+  directory during fsync is a visible durability failure rather than inferred success
+- the protected-workspace policy registry and server-merge/rejection machinery initialize every
+  policy at version `0`; the structural admission cutover stamps every extant task and atomically
+  activates only `task-structure`, `task-identity-location`, and `creation-writer-epoch`. Other
+  semantic owners activate their named policies only with their writer cutovers; no policy is
+  inferred from task shape
+- task creation, generic removal, and merge are active backend owners in one production composition
+  for Electron and standalone browser mode. Activation establishes the generic removal epoch first,
+  then the managed creation writer, then the merge owner; merge activation refuses to start if either
+  prerequisite is absent. A source guard keeps both hosts on that shared ordering
+- local and remote creation resolve projects, locations, agent definitions, runtime identities, and
+  coordinator metadata backend-side. The renderer applies the returned canonical workspace revision
+  and never constructs the committed `Task` or `Agent`. Remote managed creation needs `task:create`;
+  project-root, imported-worktree, and permission-bypass requests additionally require their exact
+  independent grants at both capability projection and final gateway admission
+- desktop optimistic creation allocates one `adapterOperationId` when a submit is admitted, outside
+  the retry thunk. Managed local creation derives its private operation ID/capability from that
+  adapter identity, so a lost renderer response and Retry replay one backend operation instead of
+  creating another task. A distinct admitted form submission always gets a new adapter identity
+- task-creation Create admission is journal-first. Authorization, the lookup-lane limiter, journal
+  readiness, pure semantic normalization/fingerprinting, and the known-operation lookup all precede
+  live project, agent, branch, or worktree resolution. An exact committed operation replays without
+  its expired ticket or vanished selections; changed semantics conflict. Only an absent operation
+  consumes first-admission capacity and resolves current canonical selections, and a rejected
+  selection creates no record or filesystem, workspace, session, or shell effect
+- the trusted-local adapter reconstructs deterministic opaque branch/worktree references without
+  reading canonical state. It checks for the derived known operation before issuing another local
+  ticket, then relies on the shared workflow for the same fingerprint comparison and fresh-only
+  selection validation as remote creation
+- task-creation operation events are a bounded, capability-bound workflow projection. A client may
+  subscribe before the first record without learning whether the operation exists. Successful
+  durable record writes schedule snapshots only for an exact principal/capability match; unavailable
+  current state emits nothing. `refreshOperation` republishes that same persisted record after
+  catalog/current changes and cannot cross either authority boundary
+- fresh task-creation admission and journal replacement share one serialized conflict-index commit.
+  Every managed worktree is deterministically planned from operation ID plus normalized intent before
+  effects, reserves its exact worktree-path and branch keys, and rechecks that same plan before
+  preparation. Active or retained overlap rejects the fresh record; reconciliation may later release
+  only the exact predeclared keys that its owner proves resolved
+- production composition owns one task-creation reconciliation service. It projects records through
+  the active creation workflow and delegates exact canonical/worktree/quarantine proof to the
+  preparation owner instead of rebuilding either policy. Two closure-bound commands inject
+  `electron-main` or `owning-user-cli` authority; request data cannot name an actor. The current
+  desktop adapter registers bounded List and Execute directly with Electron main only—never in the
+  shared handler map, browser HTTP, remote gateway, or WebSocket protocols—and the renderer facade
+  fails before transport outside Electron
+- reconciliation List pages are tied to a fingerprint of the ordered operation-ID/record-version
+  candidate set. A mutation between pages returns explicit `stale`, requiring a fresh first page,
+  rather than splicing two journal states. Mapping adoption clears the scoped barrier into
+  `created-needs-attention` with mode-appropriate launch/projection recovery; it never strands a
+  committed task in the creation workflow's non-resumable `starting` phase
+- failed-creation quarantine deliberately preserves its detached branch, so production records mark
+  branch cleanup `not-applicable`. Exact quarantine absence can therefore terminalize the record and
+  release its worktree key. Restore, unlock, and branch mutation remain proof-insufficient until
+  their physical owners can supply the exact witnesses required by those transitions
+- remote creation stores only the operation access pair in session storage. It deliberately does
+  not persist the raw ticket, semantic request, or prompt, so reload recovery is tracking-only. On
+  receipt and again after every reload it starts a full ticket-TTL wait on a monotonic clock; browser
+  wall-clock skew cannot shorten that wait. Only a fresh exact-absence lookup after the conservative
+  wait releases the credential and permits a new request
+- top-level coordinator tasks use the same managed creation owner. Coordinator `spawn_subtask`
+  remains an explicit compound-runtime exception in `electron/coordinator/tool-gateway.ts`: it owns
+  a transient hidden worktree task plus a separately configured coordinator agent/credential, so it
+  does not call the top-level trusted-local facade or claim `coordinatorMode`. Its gateway tests own
+  dedupe, late-admission, launch, and cleanup behavior
+- merge uses server-issued operation access and typed Issue/Start/Status channels. The renderer
+  retains only the access pair and semantic options for lost-response recovery; it sends no project,
+  worktree, branch, cleanup-plan, or Git evidence authority. The backend performs Git, delegates
+  cleanup to the generic removal owner, advances the full progress snapshot in the removal commit,
+  and disables the legacy merge writer before activating `merge-progress` protection
+- if canonical task absence arrives while every Start response is lost, startup/workspace
+  reconciliation status-joins the retained access pair. Status may terminalize
+  `merged-awaiting-removal` only from the generic removal owner's durable commit evidence; pending or
+  manual outcomes remain retained. A terminal join applies the fresh progress/removal projection and
+  clears the credential, so repeated lost replies cannot strand the renderer's 32-entry recovery
+  cap. Exact-operation durable credential release is single-consumer: whichever of Start completion or
+  Status recovery wins may surface finalizer repair, preventing duplicate notices across their race
+- canonical task absence is projected after the renderer's command lease releases. This preserves
+  the lease protocol while ensuring no renderer cleanup, local completion delta, best-effort save,
+  or second removal owner can race the backend result
+- `src/app/merge-progress.ts` accepts only newer complete snapshots; duplicate Status/workspace
+  delivery is inert. `SidebarFooter.tsx` renders that projection through one atomic polite status
+  region, giving each accepted version one visual update and one accessible announcement
+- `Task.closeState` and terminal `closingStatus` remain presentation-only. Persistence codecs echo
+  closing, removing, and error rows; only the backend structural owner may change canonical task
+  membership
+- renderer rename, active/collapsed reorder, project-setting, task-setting, and shared workspace
+  edits use a bounded typed intent queue. Incoming canonical replacement replays only when the exact
+  target still equals the intent's acknowledged base. Same-field changes and removed targets keep
+  the canonical value, retire the conflicting local intent, and raise a persistent warning; safe
+  unrelated intents remain queued against the new revision. Task addition/removal, prompt drafts,
+  and note drafts are not generic replayable JSON edits
 
 Important property:
 
@@ -2062,6 +2521,10 @@ Important property:
 - runtime reconciliation is a second pass that repairs persisted assumptions using live backend data
 - `src/store/persistence.ts` is now a thin facade; save, load/reconcile, codec, and sync-session
   changes should stay in their dedicated owners instead of re-accumulating in one file
+- `SaveWorkspaceState` keeps its existing `{ revision }` response and
+  `WorkspaceStateChanged` notification shape while delegating transaction ownership; Electron
+  `SaveAppState` keeps its `undefined` response and performs the legacy unversioned-to-generation-1
+  migration in place on its first acknowledged save
 
 The backend additionally persists its own derived external-state snapshots:
 
@@ -2079,7 +2542,6 @@ The backend additionally persists its own derived external-state snapshots:
 Files:
 
 - `src/app/remote-access.ts`
-- `src/store/remote.ts`
 - `src/runtime/browser-session.ts`
 - `server/browser-control-plane.ts`
 - `electron/ipc/remote-access-workflows.ts`
@@ -2206,14 +2668,18 @@ Why this matters:
 
 ### 5. The Protocol Is Shared, But The Projections Are Still Different By Design
 
-The desktop UI is task-centric. The remote/mobile UI is agent-centric. Browser mode adds channel framing for terminal output.
+The desktop UI and authenticated scoped remote/mobile UI are task-centric. Scoped remote consumes a
+bounded task catalog and opens task detail by exact session identity; it does not load the desktop
+store. The legacy remote compatibility stream remains agent-centric. Browser mode additionally adds
+channel framing for terminal output.
 
-That is not a bug. It reflects the product surfaces. The remaining challenge is keeping the shared
-concepts consistent across those projections.
+Those distinct projections are intentional. The remaining challenge is keeping shared concepts
+consistent without expanding the legacy agent stream or copying desktop state into scoped remote.
 
 Why this matters:
 
-- new features must decide whether they belong to the shared concept, the desktop projection, the remote projection, or only one transport plane
+- new features must decide whether they belong to the shared concept, the desktop projection, the
+  scoped task-centric remote projection, the legacy agent projection, or only one transport plane
 
 ### 6. Canonical Derivation Is Better, But Not Fully Closed
 

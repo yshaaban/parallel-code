@@ -45,9 +45,10 @@ Parallel Code puts the GUI, worktree isolation, and multi-agent orchestration in
 
 For an isolated agent task—the default—Parallel Code:
 
-1. Creates a new git branch from your main branch
+1. Creates a new git branch from your configured or detected base branch
 2. Sets up a [git worktree](https://git-scm.com/docs/git-worktree) so the agent works in a separate directory
-3. Symlinks `node_modules` and other gitignored directories into the worktree
+3. Offers eligible ignored root entries such as `node_modules` to share, then revalidates the
+   selection and safely links entries that remain eligible into the worktree
 4. Spawns the AI agent in that worktree
 
 This lets five agents work on five features at the same time from the same repo, each on its own branch and worktree. When you're happy with the result, merge the branch back to main from the sidebar.
@@ -62,8 +63,17 @@ Choose what runs:
 Choose where it runs:
 
 - **Worktree** is the isolated default. Parallel Code manages the branch and worktree; closing removes the managed worktree and follows the project's branch-cleanup setting.
-- **Project root** works directly in the repository root on the selected branch. It is subtly flagged throughout the UI, the backend permits only one active project-root task for the same canonical repository, and closing keeps the root and branch.
+- **Project root** works directly in the repository root on its currently checked-out branch. Run multiple agent or terminal-only tasks there without creating worktrees. The UI flags the shared location: tasks share files, the Git index, and branch, so coordinate overlapping edits. Creation never switches branches; closing stops only that task's runtimes and keeps the checkout.
 - **Existing worktree** imports a linked worktree you already manage. Closing stops its runtimes but keeps the worktree and branch.
+
+Projects can use `main`, `master`, `trunk`, or another default branch. Set a project base branch
+explicitly when needed; otherwise the backend detects it from repository metadata. This base is
+used for isolated task creation and review, not to switch a shared project-root checkout.
+
+Checkout-scoped integrations retain their safety limits: only one task can own task-step tracking
+for a shared checkout, and only one Hydra agent can write its checkout-scoped coordination state.
+Use separate worktrees for parallel Hydra sessions. These limits do not prevent ordinary agent
+tasks or terminal-only tasks from sharing the root.
 
 ## Features
 
@@ -113,7 +123,7 @@ Navigate panels, create tasks, send prompts, merge branches, and push to remote 
 
 ## Getting Started
 
-**Prerequisites:** [Node.js](https://nodejs.org/) v18+. Agent tasks also require at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or Antigravity CLI. Terminal-only tasks do not require an AI CLI.
+**Prerequisites:** [Node.js](https://nodejs.org/) 22.23.2+ on the Node 22 LTS line, or 24.18.1+ on the Node 24 LTS line, with npm 11.17.0. The repository's `.nvmrc` selects Node 24.19.0; `packageManager` records the tested npm version, which CI installs explicitly before dependency installation. Agent tasks also require at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or Antigravity CLI. Terminal-only tasks do not require an AI CLI.
 
 ### Option 0: Docker - comes with prerequisites.
 
@@ -187,6 +197,22 @@ The mobile-optimized remote app is available at `/remote` — installable as a P
 Before exposing browser mode outside localhost, read [PRIVACY.md](PRIVACY.md). Authenticated
 browser clients can interact with live terminals, project state, and explicitly exposed previews.
 
+For the scoped HTTPS remote surface, configure the certificate, private key, trusted interface,
+and trusted peer ranges documented in `.env.example`. Browser administration and remote/mobile
+access deliberately use different credentials: `AUTH_TOKEN` remains the full browser admin token,
+while `PARALLEL_CODE_REMOTE_ACCESS_TOKEN` is exchange-only for the scoped remote session (or is
+generated at startup). The server prints a separate admin URL and remote share URL; the remote URL
+always exchanges into a short-lived cookie and opens `/remote/`.
+
+Scoped remote sessions are read-only by default (`catalog:read,terminal:read`). Opt into write
+effects explicitly with `PARALLEL_CODE_REMOTE_GRANTS`: `task:create` enables managed-worktree task
+creation, while `task:create-root`, `task:create-imported`, and `task:permission-bypass` separately
+enable project-root tasks, imported worktrees, and agent permission bypass. Notes use independent
+`notes:read` / `notes:write` grants, and terminal input/control uses `terminal:control`. A
+`notes:write` grant is necessary but not sufficient: production Notes writers remain dark until the
+matching desktop or remote artifact has an exact externally verified promotion entitlement. The
+backend projects the same split into UI capabilities and rechecks it at final command admission.
+
 For active browser UI development, use watch mode instead of `npm run server`:
 
 ```sh
@@ -222,18 +248,19 @@ Useful operational commands:
 <details>
 <summary><strong>All commands</strong></summary>
 
-| Command                | Description                                        |
-| ---------------------- | -------------------------------------------------- |
-| `npm run browser:dev`  | Browser-mode dev server with isolated auto rebuild |
-| `npm run dev`          | Start Electron app in dev mode                     |
-| `npm run server`       | Build and start standalone server (port 43117)     |
-| `npm run dev:server`   | Server dev mode with hot reload                    |
-| `npm run build`        | Build browser/server artifacts and Electron        |
-| `npm run build:remote` | Build remote mobile app to `dist-remote/`          |
-| `npm run typecheck`    | Run app, lifecycle, and server type checking       |
-| `npm test`             | Run the full node + Solid test suites              |
-| `npm run test:node`    | Run node/transport/backend tests                   |
-| `npm run test:solid`   | Run Solid/jsdom screen behavior tests              |
+| Command                      | Description                                          |
+| ---------------------------- | ---------------------------------------------------- |
+| `npm run browser:dev`        | Browser-mode dev server with isolated auto rebuild   |
+| `npm run dev`                | Start Electron app in dev mode                       |
+| `npm run server`             | Build and start standalone server (port 43117)       |
+| `npm run dev:server`         | Server dev mode with hot reload                      |
+| `npm run build`              | Build browser/server artifacts and Electron          |
+| `npm run build:remote`       | Build remote mobile app to `dist-remote/`            |
+| `npm run audit:dependencies` | Audit every installed dependency by shipped exposure |
+| `npm run typecheck`          | Run app, lifecycle, and server type checking         |
+| `npm test`                   | Run the full node + Solid test suites                |
+| `npm run test:node`          | Run node/transport/backend tests                     |
+| `npm run test:solid`         | Run Solid/jsdom screen behavior tests                |
 
 </details>
 
@@ -259,6 +286,7 @@ Useful operational commands:
 | **Terminals**           |                                |
 | `Ctrl+Shift+T`          | New shell terminal             |
 | `Ctrl+Shift+D`          | New standalone terminal        |
+| `Ctrl+Shift+L`          | Redraw visible terminals       |
 | **App**                 |                                |
 | `Ctrl+,`                | Open settings                  |
 | `Ctrl+/` or `F1`        | Show all shortcuts             |
@@ -270,12 +298,19 @@ Useful operational commands:
 
 ## Remote Mobile App
 
-The `/remote` route serves a dedicated mobile-optimized terminal interface:
+The `/remote` route serves a dedicated mobile-optimized, task-first interface:
 
+- **Task list and detail** — bounded task catalog with exact agent or shell session selection
+- **Task creation** — create agent or terminal-only tasks in a managed worktree, project root, or
+  existing worktree when the selected project supports it
+- **Task notes** — switch between Terminal and Notes without remounting the terminal; the explicit,
+  conflict-safe remote writer is implemented but remains unavailable until its exact clean artifact
+  proof is promoted
 - **Full terminal interaction** — native keyboard input, not just monitoring
 - **Quick-action button bar** — grouped by category (Keys, Navigation, Signals) with long-press repeat on arrow keys
-- **Swipe gestures** — swipe from the left edge to go back to the agent list
-- **Agent management** — kill running agents with confirmation dialog
+- **Swipe gestures** — swipe from the left edge to return to the task list
+- **Session management** — control or stop supported running sessions with confirmation and scoped
+  capability checks
 - **Terminal controls** — adjustable font size (A+/A-) with toast indicator, scroll-to-bottom FAB
 - **PWA installable** — add to home screen
 - **Accessibility** — full ARIA labels, reduced-motion support, focus-visible indicators
@@ -330,7 +365,7 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 ### Performance Optimizations
 
 - **Binary WebSocket frames** for terminal output — 25% bandwidth reduction vs base64
-- **WebGL context pooling** — LRU pool of 6 contexts prevents context loss flicker
+- **WebGL context pooling** — LRU pool of 6 contexts prevents context loss flicker and repairs retained visible atlases one surface per frame
 - **Flow control via WebSocket** — pause/resume through the socket, not HTTP POST
 - **Optimized output scheduling** — synchronous fast path for small chunks, RAF batching for large output
 - **Terminal latency measurement** — built-in RTT probes and throughput benchmarks
