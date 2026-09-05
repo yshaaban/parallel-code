@@ -208,7 +208,7 @@ export function TaskActivityIndicator(props: TaskActivityIndicatorProps): JSX.El
     props.status === 'restoring' ||
     props.status === 'starting' ||
     props.status === 'sending'
-      ? 'status-dot-pulse'
+      ? 'status-dot-pulse status-dot-ring'
       : undefined,
   );
 

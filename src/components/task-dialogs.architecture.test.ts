@@ -18,11 +18,31 @@ const newTaskDialogSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/NewTaskDialog.tsx'),
   'utf8',
 );
+const settingsDialogSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/SettingsDialog.tsx'),
+  'utf8',
+);
+const symlinkDirPickerSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/SymlinkDirPicker.tsx'),
+  'utf8',
+);
+const newTaskDefaultsSettingsSectionSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/settings/NewTaskDefaultsSettingsSection.tsx'),
+  'utf8',
+);
 const taskGitOptionsControllerSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/new-task-dialog/task-git-options-controller.ts'),
   'utf8',
 );
+const newTaskDraftSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/new-task-dialog/new-task-draft.ts'),
+  'utf8',
+);
 const appSource = readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+const appShortcutsSource = readFileSync(
+  path.resolve(process.cwd(), 'src/runtime/app-shortcuts.ts'),
+  'utf8',
+);
 const sidebarSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/Sidebar.tsx'),
   'utf8',
@@ -68,10 +88,33 @@ describe('task dialog architecture guardrails', () => {
 
   it('keeps new-task Git option queries behind their form-local controller', () => {
     expect(newTaskDialogSource).toContain('createTaskGitOptionsController');
+    expect(newTaskDialogSource).toContain('createsManagedWorktree: createsNewWorktree');
     expect(newTaskDialogSource).not.toContain('IPC.GetGitignoredDirs');
     expect(newTaskDialogSource).not.toContain('IPC.ListBranches');
     expect(taskGitOptionsControllerSource).toContain('IPC.GetGitignoredDirs');
     expect(taskGitOptionsControllerSource).toContain('IPC.ListBranches');
+    expect(taskGitOptionsControllerSource).toContain('options.createsManagedWorktree()');
+    expect(taskGitOptionsControllerSource).toContain('candidate.isDefault');
+    expect(symlinkDirPickerSource).not.toContain('IPC.');
+  });
+
+  it('keeps durable new-task defaults separate from each dialog-open form snapshot', () => {
+    expect(newTaskDialogSource).toContain("from '../domain/new-task-defaults'");
+    expect(newTaskDialogSource).toContain('copyNewTaskDefaults(store.newTaskDefaults)');
+    expect(newTaskDialogSource).not.toContain('defaultSkipPermissions');
+    expect(newTaskDialogSource).not.toContain('setNewTaskDefault');
+    expect(settingsDialogSource).toContain('<NewTaskDefaultsSettingsSection');
+    expect(newTaskDefaultsSettingsSectionSource).not.toMatch(/from ['"]\.\.\/\.\.\/store\//u);
+  });
+
+  it('keeps New Task initialization and every user close route behind local draft policy', () => {
+    expect(newTaskDialogSource).toMatch(/on\(\s*\(\) => props\.open,/u);
+    expect(newTaskDialogSource).toContain('draftBaseline = createNewTaskDraftBaseline');
+    expect(newTaskDialogSource).toContain('onClose={requestClose}');
+    expect(newTaskDialogSource).toContain('onClick={requestClose}');
+    expect(newTaskDialogSource).toContain('<ConfirmDialog');
+    expect(appShortcutsSource).not.toContain('toggleNewTaskDialog');
+    expect(newTaskDraftSource).not.toMatch(/from ['"].*(?:solid|store|ipc)/u);
   });
 
   it('keeps closed app surfaces out of the eager startup path', () => {

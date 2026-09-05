@@ -60,7 +60,13 @@ describe('registerAgentLifecycleBroadcasts', () => {
     });
 
     ptyListeners.get('spawn')?.('agent-1');
-    ptyListeners.get('exit')?.('agent-1', { exitCode: 9, generation: 4, signal: 'SIGTERM' });
+    ptyListeners.get('exit')?.('agent-1', {
+      exitCode: 9,
+      generation: 4,
+      lastOutput: [],
+      signal: 'SIGTERM',
+      taskId: 'task-at-exit',
+    });
 
     expect(broadcastControl).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -77,6 +83,7 @@ describe('registerAgentLifecycleBroadcasts', () => {
         exitCode: 9,
         generation: 4,
         signal: 'SIGTERM',
+        taskId: 'task-at-exit',
         type: 'agent-lifecycle',
       }),
     );
@@ -101,6 +108,9 @@ describe('registerAgentLifecycleBroadcasts', () => {
 
     getAgentMetaMock.mockReturnValue({
       agentId: 'agent-1',
+      agentSessionLaunchReason: 'resume-fallback',
+      agentSessionOperationId: 'operation-1',
+      agentSessionResumed: false,
       generation: 7,
       isShell: true,
       taskId: 'task-1',
@@ -118,7 +128,16 @@ describe('registerAgentLifecycleBroadcasts', () => {
     ptyListeners.get('spawn')?.('agent-1');
     ptyListeners.get('pause')?.('agent-1');
     ptyListeners.get('resume')?.('agent-1');
-    ptyListeners.get('exit')?.('agent-1', { exitCode: 0, generation: 11, signal: null });
+    ptyListeners.get('exit')?.('agent-1', {
+      exitCode: 0,
+      generation: 11,
+      lastOutput: [],
+      launchReason: 'resume-fallback',
+      operationId: 'operation-1',
+      resumed: false,
+      signal: null,
+      taskId: 'task-1',
+    });
 
     expect(broadcastAgentList).toHaveBeenCalledTimes(3);
     expect(releaseAgentControl).toHaveBeenCalledWith('agent-1');
@@ -130,6 +149,9 @@ describe('registerAgentLifecycleBroadcasts', () => {
             event: 'spawn',
             generation: 7,
             isShell: true,
+            launchReason: 'resume-fallback',
+            operationId: 'operation-1',
+            resumed: false,
             status: 'running',
             taskId: 'task-1',
             type: 'agent-lifecycle',
@@ -141,6 +163,9 @@ describe('registerAgentLifecycleBroadcasts', () => {
             event: 'pause',
             generation: 7,
             isShell: true,
+            launchReason: 'resume-fallback',
+            operationId: 'operation-1',
+            resumed: false,
             status: 'paused',
             taskId: 'task-1',
             type: 'agent-lifecycle',
@@ -152,6 +177,9 @@ describe('registerAgentLifecycleBroadcasts', () => {
             event: 'resume',
             generation: 7,
             isShell: true,
+            launchReason: 'resume-fallback',
+            operationId: 'operation-1',
+            resumed: false,
             status: 'running',
             taskId: 'task-1',
             type: 'agent-lifecycle',
@@ -164,6 +192,9 @@ describe('registerAgentLifecycleBroadcasts', () => {
             exitCode: 0,
             generation: 11,
             isShell: true,
+            launchReason: 'resume-fallback',
+            operationId: 'operation-1',
+            resumed: false,
             signal: null,
             status: 'exited',
             taskId: 'task-1',
@@ -211,7 +242,13 @@ describe('registerAgentLifecycleBroadcasts', () => {
       setTimer,
     });
 
-    ptyListeners.get('exit')?.('agent-1', { exitCode: 1, generation: 4, signal: 'SIGTERM' });
+    ptyListeners.get('exit')?.('agent-1', {
+      exitCode: 1,
+      generation: 4,
+      lastOutput: [],
+      signal: 'SIGTERM',
+      taskId: 'task-1',
+    });
     expect(scheduledTimers.size).toBe(1);
 
     cleanup();

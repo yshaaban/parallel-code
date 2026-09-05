@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getTerminalShortcutAction } from './terminal-shortcuts';
+import { getTerminalShortcutAction, isPrimaryTerminalFindShortcut } from './terminal-shortcuts';
 
 function createShortcutEvent(
   key: string,
@@ -81,17 +81,38 @@ describe('terminal shortcuts', () => {
     });
   });
 
-  it('keeps browser find available in browser mode', () => {
+  it.each([
+    { browserMode: true, isMac: false, modifiers: { ctrlKey: true } },
+    { browserMode: false, isMac: false, modifiers: { ctrlKey: true } },
+    { browserMode: true, isMac: true, modifiers: { metaKey: true } },
+    { browserMode: false, isMac: true, modifiers: { metaKey: true } },
+  ])('owns primary find inside a $browserMode/$isMac terminal', (testCase) => {
+    const event = createShortcutEvent('f', testCase.modifiers);
+
+    expect(isPrimaryTerminalFindShortcut(event, testCase.isMac)).toBe(true);
     expect(
-      getTerminalShortcutAction(createShortcutEvent('f', { ctrlKey: true }), {
-        browserMode: true,
+      getTerminalShortcutAction(event, {
+        browserMode: testCase.browserMode,
         hasSelection: false,
-        isMac: false,
+        isMac: testCase.isMac,
       }),
     ).toEqual({
-      kind: 'block',
-      preventDefault: false,
+      kind: 'find',
+      preventDefault: true,
     });
+  });
+
+  it.each([
+    { isMac: false, modifiers: { ctrlKey: true, type: 'keyup' } },
+    { isMac: false, modifiers: { ctrlKey: true, shiftKey: true } },
+    { isMac: false, modifiers: { ctrlKey: true, altKey: true } },
+    { isMac: false, modifiers: { metaKey: true } },
+    { isMac: true, modifiers: { ctrlKey: true } },
+    { isMac: true, modifiers: { metaKey: true, ctrlKey: true } },
+  ])('does not classify a non-primary find chord as terminal find', (testCase) => {
+    expect(
+      isPrimaryTerminalFindShortcut(createShortcutEvent('f', testCase.modifiers), testCase.isMac),
+    ).toBe(false);
   });
 
   it('keeps non-browser primary paste working on Windows/Linux', () => {

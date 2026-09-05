@@ -54,6 +54,35 @@ const mocks = vi.hoisted(() => {
   const supervisionListeners = new Set<(event: unknown) => void>();
   const writes: Array<{ agentId: string; data: string }> = [];
 
+  const spawnOwnedTaskAgentWorkflowMock = vi.fn(
+    async (
+      _context: unknown,
+      _ownership: { operationId: string; purpose: string },
+      options: {
+        agentId: string;
+        command: string;
+        isShell: boolean;
+        taskId: string;
+      },
+    ) => {
+      agentSessionIds.add(options.agentId);
+      agentMetaById.set(options.agentId, {
+        agentId: options.agentId,
+        generation: 1,
+        isShell: options.isShell,
+        taskId: options.taskId,
+      });
+      supervisionByAgentId.set(options.agentId, createSupervisionSnapshot(options));
+      if (options.command === 'codex') {
+        scrollbackByAgentId.set(
+          options.agentId,
+          Buffer.from('› Investigate coordinator E2E behavior.'),
+        );
+      }
+      return { channelAttached: false, kind: 'created-session' as const };
+    },
+  );
+
   return {
     agentMetaById,
     agentSessionIds,
@@ -86,33 +115,10 @@ const mocks = vi.hoisted(() => {
     ),
     normalizeAgentRunnerProfileConfigMock: vi.fn(() => undefined),
     scrollbackByAgentId,
-    spawnTaskAgentWorkflowMock: vi.fn(
-      (
-        _context: unknown,
-        options: {
-          agentId: string;
-          command: string;
-          isShell: boolean;
-          taskId: string;
-        },
-      ) => {
-        agentSessionIds.add(options.agentId);
-        agentMetaById.set(options.agentId, {
-          agentId: options.agentId,
-          generation: 1,
-          isShell: options.isShell,
-          taskId: options.taskId,
-        });
-        supervisionByAgentId.set(options.agentId, createSupervisionSnapshot(options));
-        if (options.command === 'codex') {
-          scrollbackByAgentId.set(
-            options.agentId,
-            Buffer.from('› Investigate coordinator E2E behavior.'),
-          );
-        }
-        return false;
-      },
-    ),
+    spawnOwnedTaskAgentWorkflowMock,
+    spawnTaskAgentWorkflowMock: vi.fn(() => {
+      throw new Error('Coordinator production code bypassed the owned agent-session spawn seam');
+    }),
     subscribeAgentSupervisionMock: vi.fn((listener: (event: unknown) => void) => {
       supervisionListeners.add(listener);
       return () => supervisionListeners.delete(listener);
@@ -176,6 +182,7 @@ vi.mock('../../electron/ipc/task-workflows.js', async () => {
     cleanupTaskRuntimeWorkflow: mocks.cleanupTaskRuntimeWorkflowMock,
     createTaskWorkflow: mocks.createTaskWorkflowMock,
     deleteTaskWorkflow: mocks.deleteTaskWorkflowMock,
+    spawnOwnedTaskAgentWorkflow: mocks.spawnOwnedTaskAgentWorkflowMock,
     spawnTaskAgentWorkflow: mocks.spawnTaskAgentWorkflowMock,
   };
 });
@@ -188,6 +195,11 @@ interface SpawnedAgentOptions {
   env: Record<string, string>;
   projectMode?: 'git' | 'non-git';
   taskId: string;
+}
+
+interface SpawnedAgentOwnership {
+  operationId: string;
+  purpose: string;
 }
 
 interface MockCreateTaskWorkflowOptions {
@@ -350,12 +362,21 @@ function createCoordinatorStateBootstrapPredicate(
 }
 
 function getSpawnedAgentOptions(index = 0): SpawnedAgentOptions {
-  const call = mocks.spawnTaskAgentWorkflowMock.mock.calls[index];
+  const call = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls[index];
   if (!call) {
     throw new Error(`Expected spawned agent call at index ${index}`);
   }
 
-  return call[1] as SpawnedAgentOptions;
+  return call[2] as SpawnedAgentOptions;
+}
+
+function getSpawnedAgentOwnership(index = 0): SpawnedAgentOwnership {
+  const call = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls[index];
+  if (!call) {
+    throw new Error(`Expected owned spawned agent call at index ${index}`);
+  }
+
+  return call[1] as SpawnedAgentOwnership;
 }
 
 function setAgentSupervision(
@@ -678,6 +699,10 @@ describe('browser-less coordinator E2E', () => {
       const spawnedAgent = getSpawnedAgentOptions();
 
       expect(subtask.status).toBe('running');
+      expect(getSpawnedAgentOwnership()).toStrictEqual({
+        operationId: expect.stringMatching(/^coordinator-session:v1:[A-Za-z0-9_-]{43}$/u),
+        purpose: 'coordinator-session',
+      });
       expect(spawnedAgent).toMatchObject({
         args: [
           '--model',
@@ -1675,7 +1700,7 @@ describe('browser-less coordinator E2E', () => {
     expect(createWorkflowCallsBeforeRelease).toBe(1);
     expect(second.taskId).toBe(first.taskId);
     expect(mocks.createTaskWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(mocks.spawnOwnedTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
     expect(getSpawnedAgentOptions()).toMatchObject({
       args: ['--profile', 'fast', '--no-confirm'],
       command: 'custom-agent',
@@ -2102,7 +2127,7 @@ describe('browser-less coordinator E2E', () => {
     });
     expect(heldWorkflow.lanes.find((lane) => lane.name === 'Decide')?.resultId).toBeUndefined();
     expect(heldWorkflow.stages.map((stage) => stage.id)).toEqual(['scout', 'decide']);
-    expect(mocks.spawnTaskAgentWorkflowMock.mock.calls).toHaveLength(2);
+    expect(mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls).toHaveLength(2);
 
     const noLeaseApprove = await harness.ipcResponse(
       IPC.CoordinatorUiToolCall,
@@ -2857,6 +2882,8 @@ describe('browser-less coordinator E2E', () => {
       false,
       'Merge coordinator child',
       false,
+      undefined,
+      expect.any(Function),
     );
 
     const warningSubtask = await spawnCoordinatorSubtask(harness, run, credential.token, {
@@ -3018,11 +3045,11 @@ describe('browser-less coordinator E2E', () => {
       throw new Error('Expected spawned workflow lanes before restart');
     }
 
-    const laneASpawn = mocks.spawnTaskAgentWorkflowMock.mock.calls
-      .map((call) => call[1] as SpawnedAgentOptions)
+    const laneASpawn = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls
+      .map((call) => call[2] as SpawnedAgentOptions)
       .find((options) => options.taskId === laneATaskId);
-    const laneBSpawn = mocks.spawnTaskAgentWorkflowMock.mock.calls
-      .map((call) => call[1] as SpawnedAgentOptions)
+    const laneBSpawn = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls
+      .map((call) => call[2] as SpawnedAgentOptions)
       .find((options) => options.taskId === laneBTaskId);
     if (!laneASpawn || !laneBSpawn) {
       throw new Error('Expected lane agent spawns before restart');
@@ -3057,7 +3084,7 @@ describe('browser-less coordinator E2E', () => {
     resetCoordinatorRuntimeForTests();
     resetTaskCommandLeasesForTest();
     resetMockState();
-    const spawnCallCountBeforeResume = mocks.spawnTaskAgentWorkflowMock.mock.calls.length;
+    const spawnCallCountBeforeResume = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls.length;
 
     const restoredHarness = await createCoordinatorBrowserlessHarness({
       userDataPath: path.join(persistedRoot, 'user-data'),
@@ -3141,9 +3168,9 @@ describe('browser-less coordinator E2E', () => {
         getEventPayloadRecord({ event: { payload: (await runningEvent).event.payload } }),
       ).toMatchObject({ id: run.id, status: 'running' });
 
-      const respawnCalls = mocks.spawnTaskAgentWorkflowMock.mock.calls
+      const respawnCalls = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls
         .slice(spawnCallCountBeforeResume)
-        .map((call) => call[1] as SpawnedAgentOptions);
+        .map((call) => call[2] as SpawnedAgentOptions);
       expect(respawnCalls).toHaveLength(2);
       const laneBRespawn = respawnCalls.find((options) => options.taskId === laneBTaskId);
       expect(laneBRespawn).toMatchObject({
@@ -3189,7 +3216,7 @@ describe('browser-less coordinator E2E', () => {
         { clientId: 'resume-client' },
       );
       expect(replayResponse).toEqual(resumeResponse);
-      expect(mocks.spawnTaskAgentWorkflowMock.mock.calls.length).toBe(
+      expect(mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls.length).toBe(
         spawnCallCountBeforeResume + 2,
       );
 

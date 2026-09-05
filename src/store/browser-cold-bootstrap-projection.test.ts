@@ -4,6 +4,12 @@ import {
   isTerminalHighLoadModeEnabled,
   syncTerminalHighLoadMode,
 } from '../app/terminal-high-load-mode.js';
+import {
+  getCanonicalMergeProgressPersistenceProjection,
+  getCurrentMergeProgressSnapshot,
+  resetMergeProgressProjectionForTests,
+} from '../app/merge-progress.js';
+import { MERGE_PROGRESS_SCHEMA_VERSION } from '../domain/task-merge.js';
 import { createTestAgentDef, resetStoreForTest } from '../test/store-test-helpers.js';
 import { createInitialAppStore, setStore, store } from './core.js';
 import {
@@ -17,6 +23,7 @@ describe('browser-cold-bootstrap-projection', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-03T12:00:00Z'));
     resetStoreForTest();
+    resetMergeProgressProjectionForTests();
   });
 
   afterEach(() => {
@@ -185,6 +192,50 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.activeTaskId).toBeNull();
     expect(store.activeAgentId).toBeNull();
     expect(store.peerSessions).toEqual({});
+  });
+
+  it('hydrates one validated canonical merge-progress snapshot through cold bootstrap', () => {
+    const mergeProgress = {
+      schemaVersion: MERGE_PROGRESS_SCHEMA_VERSION,
+      version: 7,
+      dateKey: '2026-04-03',
+      tasksToday: 3,
+      linesAdded: 21,
+      linesRemoved: 8,
+      updatedAt: '2026-04-03T10:00:00.000Z',
+    } as const;
+    const mergeOperation = {
+      committedAt: mergeProgress.updatedAt,
+      operationId: 'merge-operation-7',
+      progressVersion: mergeProgress.version,
+      taskId: 'task-merged',
+    } as const;
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        committedMergeOperationId: mergeOperation.operationId,
+        completedTaskCount: 99,
+        mergeOperation,
+        mergeProgress,
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
+    expect(projection.committedMergeOperationId).toBe(mergeOperation.operationId);
+    expect(projection.mergeOperation).toEqual(mergeOperation);
+    expect(projection.mergeProgress).toEqual(mergeProgress);
+    expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
+    expect(getCurrentMergeProgressSnapshot()).toEqual(mergeProgress);
+    expect(getCanonicalMergeProgressPersistenceProjection()).toEqual({
+      committedMergeOperationId: mergeOperation.operationId,
+      mergeOperation,
+      mergeProgress,
+    });
   });
 
   it('hydrates every active multi-agent task terminal during browser cold bootstrap', () => {

@@ -372,7 +372,6 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
               padding: '0.82rem 0.92rem',
               color: props.disabled ? 'var(--text-muted)' : 'var(--text-primary)',
               'font-family': 'var(--font-mono)',
-              outline: 'none',
             }}
           />
           <button

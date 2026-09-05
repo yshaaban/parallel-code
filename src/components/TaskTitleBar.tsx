@@ -26,6 +26,8 @@ import { ProjectRootBadge, TerminalTaskBadge } from './TaskContextBadges';
 
 interface TaskTitleBarProps {
   task: Task;
+  mergeAvailable: boolean;
+  pushAvailable: boolean;
   isActive: boolean;
   taskActivityStatus: TaskActivityStatus;
   hasPreviewPorts: boolean;
@@ -287,13 +289,27 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             </span>
           )}
         </Show>
-        <EditableText
-          value={props.task.name}
-          onCommit={(value) => props.onUpdateTaskName(value)}
-          class="editable-text"
-          title={props.task.savedInitialPrompt}
-          onHandle={(handle) => props.onSetTitleEditHandle(handle)}
-        />
+        <h2
+          aria-label={props.task.name}
+          style={{
+            margin: '0',
+            'min-width': '0',
+            overflow: 'hidden',
+            'text-overflow': 'ellipsis',
+            'white-space': 'nowrap',
+            'font-size': 'inherit',
+            'font-weight': 'inherit',
+            'line-height': 'inherit',
+          }}
+        >
+          <EditableText
+            value={props.task.name}
+            onCommit={(value) => props.onUpdateTaskName(value)}
+            class="editable-text"
+            title={props.task.savedInitialPrompt}
+            onHandle={(handle) => props.onSetTitleEditHandle(handle)}
+          />
+        </h2>
       </div>
       <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>
         <div style={{ position: 'relative', display: 'inline-flex' }}>
@@ -321,7 +337,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             />
           </Show>
         </div>
-        <Show when={!isCurrentBranchTask(props.task) && !isNonGitProject(props.task)}>
+        <Show when={props.mergeAvailable}>
           <IconButton
             icon={
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -331,11 +347,16 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             onClick={() => props.onOpenMerge()}
             title={mergeButtonTitle()}
           />
+        </Show>
+        <Show when={props.pushAvailable}>
           <div style={{ position: 'relative', display: 'inline-flex' }}>
             <Show
               when={!props.pushing}
               fallback={
                 <div
+                  role="status"
+                  aria-live="polite"
+                  aria-label="Pushing changes"
                   style={{
                     display: 'inline-flex',
                     'align-items': 'center',
@@ -345,7 +366,11 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
                     'border-radius': '6px',
                   }}
                 >
-                  <span class="inline-spinner" style={{ width: '14px', height: '14px' }} />
+                  <span
+                    class="inline-spinner"
+                    aria-hidden="true"
+                    style={{ width: '14px', height: '14px' }}
+                  />
                 </div>
               }
             >

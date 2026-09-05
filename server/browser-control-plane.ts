@@ -40,6 +40,7 @@ import type { TaskReviewEvent } from '../src/domain/task-review.js';
 import type { TaskReviewSignalsEvent } from '../src/domain/task-review-signals.js';
 import { assertNever } from '../src/lib/assert-never.js';
 import { isNonNegativeInteger } from '../src/lib/type-guards.js';
+import type { SecureSessionBootstrapUrlOptions } from '../electron/remote/network.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -134,6 +135,10 @@ export interface CreateBrowserControlPlaneOptions {
   heartbeatIntervalMs?: number;
   maxMissedPongs?: number;
   port: number;
+  remoteAccess?: {
+    secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
+    token: string;
+  };
   simulateJitterMs?: number;
   simulateLatencyMs?: number;
   simulatePacketLoss?: number;
@@ -335,12 +340,16 @@ export function createBrowserControlPlane(
     ...createTransportTuningOptions(options),
   });
 
+  const remoteAccess = options.remoteAccess ?? { token: options.token };
   const controlState = createBrowserControlState({
     getPeerPresenceSnapshots: peerPresence.getPeerPresenceSnapshots,
     getPeerPresenceVersion: peerPresence.getPeerPresenceVersion,
     getAuthenticatedClientCount: () => transport.getAuthenticatedClientCount(),
     port: options.port,
-    token: options.token,
+    ...(remoteAccess.secureSessionBootstrap
+      ? { secureSessionBootstrap: remoteAccess.secureSessionBootstrap }
+      : {}),
+    token: remoteAccess.token,
   });
 
   const taskCommandTakeovers = createBrowserTaskCommandTakeovers({

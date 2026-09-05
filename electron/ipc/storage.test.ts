@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadAppStateForEnv,
+  loadElectronWorkspaceStateForEnv,
   loadTaskRegistryStateForEnv,
   loadWorkspaceStateForEnv,
   saveAppStateForEnv,
@@ -11,6 +12,11 @@ import {
   saveWorkspaceStateForEnv,
   type StorageEnv,
 } from './storage.js';
+import {
+  createWorkspaceHostRecord,
+  encodeWorkspaceHostRecord,
+  parseCanonicalUint64,
+} from './workspace-state-storage.js';
 
 function createStorageEnv(): StorageEnv {
   return {
@@ -295,5 +301,79 @@ describe('loadTaskRegistryStateForEnv', () => {
       json: JSON.stringify({ tasks: { one: { id: 'task-1', name: 'Backup' } } }),
       revision: 8,
     });
+  });
+
+  it('loads generation-aware standalone state without exposing the host envelope', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const record = createWorkspaceHostRecord({
+      adapterKind: 'standalone',
+      privateState: { protectedWorkspacePolicyVersions: {} },
+      sharedRevision: 5,
+      sharedState: { projects: [], taskOrder: [], tasks: {} },
+      storageGeneration: parseCanonicalUint64('9'),
+    });
+    const statePath = getDevStoragePath(env, 'workspace-state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, encodeWorkspaceHostRecord(record));
+
+    expect(loadWorkspaceStateForEnv(env)).toEqual({
+      json: JSON.stringify({ projects: [], taskOrder: [], tasks: {} }),
+      revision: 5,
+    });
+  });
+
+  it('loads Electron local and shared views from one generation-aware state.json', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const record = createWorkspaceHostRecord({
+      adapterKind: 'electron',
+      localState: { activeTaskId: 'task-1', windowState: { height: 600, width: 800 } },
+      sharedRevision: 3,
+      sharedState: {
+        projects: [],
+        taskOrder: ['task-1'],
+        tasks: { 'task-1': { id: 'task-1' } },
+      },
+      storageGeneration: parseCanonicalUint64('3'),
+    });
+    const statePath = getDevStoragePath(env, 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, encodeWorkspaceHostRecord(record));
+
+    expect(JSON.parse(loadAppStateForEnv(env) ?? '{}')).toEqual({
+      activeTaskId: 'task-1',
+      projects: [],
+      taskOrder: ['task-1'],
+      tasks: { 'task-1': { id: 'task-1' } },
+      windowState: { height: 600, width: 800 },
+    });
+    expect(loadElectronWorkspaceStateForEnv(env)).toEqual({
+      json: JSON.stringify({
+        projects: [],
+        taskOrder: ['task-1'],
+        tasks: { 'task-1': { id: 'task-1' } },
+      }),
+      revision: 3,
+    });
+  });
+
+  it('never promotes a valid generation-aware backup over a missing or corrupt primary', () => {
+    const env = createStorageEnv();
+    envs.push(env);
+    const record = createWorkspaceHostRecord({
+      adapterKind: 'standalone',
+      sharedRevision: 6,
+      sharedState: { tasks: { stale: { id: 'stale' } } },
+      storageGeneration: parseCanonicalUint64('6'),
+    });
+    const statePath = getDevStoragePath(env, 'workspace-state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(`${statePath}.bak`, encodeWorkspaceHostRecord(record));
+
+    expect(loadWorkspaceStateForEnv(env)).toBeNull();
+    fs.writeFileSync(statePath, '{corrupt-primary');
+    expect(loadWorkspaceStateForEnv(env)).toBeNull();
+    expect(fs.existsSync(statePath)).toBe(true);
   });
 });

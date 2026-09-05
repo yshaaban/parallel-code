@@ -7,6 +7,8 @@ export default defineConfig({
   root: path.resolve(__dirname),
   plugins: [solid()],
   build: {
+    manifest: true,
+    modulePreload: false,
     outDir: path.resolve(
       __dirname,
       '../..',

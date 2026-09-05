@@ -6,11 +6,11 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 
 import {
-  isServerMessage,
   type ServerMessage,
   type TaskCommandLeaseCommand,
   type TaskCommandLeaseResultMessage,
 } from '../../electron/remote/protocol.js';
+import { isRemoteServerMessage } from '../../electron/remote/remote-message.js';
 import type { BrowserServerController } from '../../server/browser-server.js';
 import { startBrowserServer } from '../../server/browser-server.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../../src/domain/browser-ipc.js';
@@ -21,8 +21,6 @@ import type {
 } from '../../src/domain/coordinator.js';
 import { IPC } from '../../electron/ipc/channels.js';
 
-const REQUEST_RETRY_MS = 25;
-const REQUEST_TIMEOUT_MS = 5_000;
 const SOCKET_TIMEOUT_MS = 5_000;
 
 type CoordinatorSocketEventMessage = Extract<ServerMessage, { type: 'coordinator-event' }> & {
@@ -132,20 +130,12 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
 }
 
-function createRetryError(channel: IPC, lastError: unknown): Error {
-  if (lastError instanceof Error) {
-    return lastError;
-  }
-
-  return new Error(`Timed out waiting for browser IPC channel ${channel}`);
-}
-
 function isTaskCommandLeaseResultForRequest(
   value: unknown,
   requestId: string,
 ): value is TaskCommandLeaseResultMessage {
   return (
-    isServerMessage(value) &&
+    isRemoteServerMessage(value) &&
     value.type === 'task-command-lease-result' &&
     value.requestId === requestId
   );
@@ -178,6 +168,30 @@ export async function createCoordinatorBrowserlessHarness(
     userDataPath,
   });
   const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    await controller.whenReady();
+  } catch (startupError) {
+    const cleanupErrors: unknown[] = [];
+    try {
+      await waitForServerControllerClose(controller);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length === 0) {
+      try {
+        await rm(rootDir, { force: true, recursive: true });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [startupError, ...cleanupErrors],
+        'Coordinator browserless harness startup and cleanup failed',
+      );
+    }
+    throw startupError;
+  }
 
   async function ipcResponse(
     channel: IPC,
@@ -204,27 +218,12 @@ export async function createCoordinatorBrowserlessHarness(
     body: unknown,
     requestOptions: BrowserRequestOptions = {},
   ): Promise<T> {
-    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-    let lastError: unknown = null;
-
-    while (Date.now() < deadline) {
-      try {
-        const response = await ipcResponse(channel, body, requestOptions);
-        const payload = await parseJsonResponse<{ error?: string; result?: T }>(response);
-        if (!response.ok) {
-          throw new Error(payload.error ?? `IPC ${channel} failed with ${response.status}`);
-        }
-
-        return payload.result as T;
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => {
-          setTimeout(resolve, REQUEST_RETRY_MS);
-        });
-      }
+    const response = await ipcResponse(channel, body, requestOptions);
+    const payload = await parseJsonResponse<{ error?: string; result?: T }>(response);
+    if (!response.ok) {
+      throw new Error(payload.error ?? `IPC ${channel} failed with ${response.status}`);
     }
-
-    throw createRetryError(channel, lastError);
+    return payload.result as T;
   }
 
   async function toolCallResponse(envelope: CoordinatorToolCallRequest): Promise<Response> {
@@ -309,41 +308,27 @@ export async function createCoordinatorBrowserlessHarness(
   }
 
   async function openWebSocket(): Promise<WebSocket> {
-    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-    let lastError: unknown = null;
-
-    while (Date.now() < deadline) {
-      try {
-        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-        await new Promise<void>((resolve, reject) => {
-          function cleanup(): void {
-            socket.off('open', handleOpen);
-            socket.off('error', handleError);
-          }
-
-          function handleOpen(): void {
-            cleanup();
-            resolve();
-          }
-
-          function handleError(error: Error): void {
-            cleanup();
-            reject(error);
-          }
-
-          socket.once('open', handleOpen);
-          socket.once('error', handleError);
-        });
-        return socket;
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => {
-          setTimeout(resolve, REQUEST_RETRY_MS);
-        });
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      function cleanup(): void {
+        socket.off('open', handleOpen);
+        socket.off('error', handleError);
       }
-    }
 
-    throw lastError instanceof Error ? lastError : new Error('Timed out opening websocket');
+      function handleOpen(): void {
+        cleanup();
+        resolve();
+      }
+
+      function handleError(error: Error): void {
+        cleanup();
+        reject(error);
+      }
+
+      socket.once('open', handleOpen);
+      socket.once('error', handleError);
+    });
+    return socket;
   }
 
   function sendAuth(socket: WebSocket, clientId: string, lastSeq: number): void {
@@ -423,5 +408,5 @@ export async function createCoordinatorBrowserlessHarness(
 }
 
 export function isCoordinatorEventMessage(value: unknown): value is CoordinatorSocketEventMessage {
-  return isServerMessage(value) && value.type === 'coordinator-event';
+  return isRemoteServerMessage(value) && value.type === 'coordinator-event';
 }

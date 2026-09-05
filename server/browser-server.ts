@@ -1,10 +1,19 @@
 import express from 'express';
-import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'http';
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'http';
+import { createServer as createHttpsServer } from 'https';
 import type { Duplex } from 'stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { subscribeAgentAvailability } from '../electron/ipc/agent-availability-state.js';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
-import { requestAgentCatalogAvailabilityRevalidation } from '../electron/ipc/agents.js';
+import {
+  getAgentDefsWithLastKnownAvailability,
+  requestAgentCatalogAvailabilityRevalidation,
+} from '../electron/ipc/agents.js';
 import {
   cancelBackendBackgroundReconciliation,
   clearBackendClientFocus,
@@ -14,13 +23,17 @@ import {
 } from '../electron/ipc/backend-work-queue.js';
 import { IPC } from '../electron/ipc/channels.js';
 import { stopAllAskAboutCodeRequests } from '../electron/ipc/ask-about-code.js';
-import { stopAllTaskAgentWorkflows } from '../electron/ipc/task-workflows.js';
 import {
   loadPersistedDerivedState,
   startDerivedStatePersistence,
 } from '../electron/ipc/derived-state-persistence.js';
 import type { HandlerContext } from '../electron/ipc/handler-context.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import type {
+  RemoteCommandRegistrationTable,
+  RemoteGrant,
+} from '../electron/ipc/remote-command-gateway.js';
+import { mergeRemoteCommandRegistrationTables } from '../electron/ipc/remote-command-gateway.js';
 import { restoreBackendDerivedState } from '../electron/ipc/saved-state-restore.js';
 import {
   getTaskConvergenceSnapshots,
@@ -52,6 +65,32 @@ import {
   loadAppStateDocumentForEnv,
   loadTaskRegistryStateDocumentForEnv,
 } from '../electron/ipc/storage.js';
+import type { SavedStateDocument } from '../electron/ipc/saved-state-document.js';
+import { getServerInstanceId } from '../electron/ipc/server-instance.js';
+import { buildTaskCatalogAgentChoices } from '../electron/ipc/task-catalog-agent-choices.js';
+import {
+  getCurrentTaskCatalogSessionRuntime,
+  subscribeTaskCatalogPtyRuntime,
+} from '../electron/ipc/task-catalog-runtime-composition.js';
+import { createTaskCatalogState } from '../electron/ipc/task-catalog-state.js';
+import { createTaskExperienceRemoteCommandRegistrations } from '../electron/ipc/task-experience-remote-registrations.js';
+import { createRemoteTaskCreationOperationSource } from '../electron/ipc/task-creation-remote-commands.js';
+import {
+  createProductionTaskExperienceRuntime,
+  stopAgentRunnersAfterTaskExperience,
+  TaskExperienceRuntimeActivationError,
+  type ProductionTaskExperienceRuntime,
+} from '../electron/ipc/task-experience-runtime-composition.js';
+import { createTaskNotesEventStream } from '../src/runtime/task-notes-event-stream.js';
+import {
+  snapshotTaskNotesWriterEntitlements,
+  type TaskNotesWriterEntitlements,
+} from '../electron/ipc/task-notes-writer-entitlements.js';
+import {
+  createActiveTaskReliabilityIpcHandlers,
+  subscribeActiveTaskReliabilityRuntime,
+} from '../electron/ipc/task-reliability-ipc.js';
+import type { JsonObject } from '../electron/ipc/workspace-state-storage.js';
 import {
   clearTaskContainerPreviewTargets,
   hasTaskContainerPreviewTarget,
@@ -69,7 +108,17 @@ import {
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
 import {
+  buildSecureSessionBootstrapUrl,
+  type RemotePeerTrustPolicy,
+} from '../electron/remote/network.js';
+import type { RemoteAuthHttpPaths } from '../electron/remote/remote-auth-http.js';
+import {
+  createScopedRemoteCommandRuntime,
+  type ScopedRemoteCommandRuntime,
+} from '../electron/remote/scoped-command-runtime.js';
+import {
   collectRuntimeCleanupFailures,
+  settleWorkspaceStorageCleanupOwners,
   type RuntimeCleanupFailure,
 } from '../electron/runtime-cleanup.js';
 import { createTaskPortsSnapshotEvent } from '../src/domain/server-state.js';
@@ -78,6 +127,7 @@ import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserAuthController } from './browser-auth.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
+import type { BrowserServerInfo } from './browser-server-info.js';
 import { registerBrowserIpcRoutes } from './browser-ipc.js';
 import { registerBrowserLatencyDiagnosticsRoutes } from './browser-latency-diagnostics.js';
 import { registerBrowserPreviewRoutes } from './browser-preview.js';
@@ -91,6 +141,10 @@ import {
   type CoordinatorRuntimeLoader,
 } from './coordinator-runtime-loader.js';
 import { createTaskNameRegistry } from './task-names.js';
+import {
+  createStandaloneScopedRemoteWebSocket,
+  type StandaloneScopedRemoteWebSocket,
+} from './scoped-remote-websocket.js';
 
 type BrowserServerLifecycle =
   | { kind: 'running' }
@@ -98,6 +152,12 @@ type BrowserServerLifecycle =
   | { kind: 'closed' };
 
 const CONTROL_SOCKET_PATH = '/ws';
+const SCOPED_REMOTE_SOCKET_PATH = '/remote-ws';
+const STANDALONE_REMOTE_AUTH_HTTP_PATHS = Object.freeze({
+  bootstrap: '/remote/auth/bootstrap',
+  logout: '/api/remote/auth/logout',
+  session: '/api/remote/auth/session',
+}) satisfies RemoteAuthHttpPaths;
 const COORDINATOR_TOOL_CALL_PATH = '/api/coordinator/tool-call';
 const PREVIEW_SOCKET_PATH_PREFIXES = ['/_preview/', '/_container_preview/'] as const;
 const REQUEST_URL_BASE = 'http://localhost';
@@ -117,6 +177,16 @@ export interface StartBrowserServerOptions {
   simulateJitterMs?: number;
   simulateLatencyMs?: number;
   simulatePacketLoss?: number;
+  taskNotesWriterEntitlements?: TaskNotesWriterEntitlements;
+  scopedCommands?: {
+    accessToken: string;
+    grants: ReadonlySet<RemoteGrant>;
+    mutationAdmissionInitiallyOpen?: boolean;
+    peerTrustPolicy: RemotePeerTrustPolicy;
+    registrations?: RemoteCommandRegistrationTable;
+    tls: { cert: Buffer | string; key: Buffer | string };
+    workspacePrincipalId?: string;
+  };
   token: string;
   userDataPath: string;
 }
@@ -124,6 +194,11 @@ export interface StartBrowserServerOptions {
 export interface BrowserServerController {
   cleanup: () => void;
   shutdown: () => void;
+  /**
+   * Settles only after the task-experience owner is active and the HTTP/WS
+   * listener is accepting requests. Startup failures reject this promise.
+   */
+  whenReady: () => Promise<void>;
   /**
    * Settles once asynchronous runtime cleanup, including coordinator
    * persistence and agent-runner teardown, has finished after
@@ -134,7 +209,13 @@ export interface BrowserServerController {
   whenCoordinatorRuntimeStopped: () => Promise<void>;
 }
 
-type BrowserRuntimeCleanupLabel = 'agent runner' | 'ask about code' | 'coordinator';
+type BrowserRuntimeCleanupLabel =
+  | 'agent runner'
+  | 'ask about code'
+  | 'coordinator'
+  | 'scoped remote'
+  | 'task experience'
+  | 'workspace storage';
 
 export type BrowserRuntimeCleanupFailure = RuntimeCleanupFailure<BrowserRuntimeCleanupLabel>;
 
@@ -187,6 +268,7 @@ async function exitAfterBrowserRuntimeCleanup(
 }
 
 export const __browserServerTestExports = {
+  getBrowserServerStartupMessages,
   exitAfterBrowserRuntimeCleanup,
   retainObservedRuntimeCleanup,
   settleBrowserRuntimeCleanupOwners,
@@ -213,8 +295,33 @@ function createBrowserRemoteAccessController(
   };
 }
 
-function getCoordinatorToolCallUrl(port: number): string {
-  return `http://127.0.0.1:${port}${COORDINATOR_TOOL_CALL_PATH}`;
+function getCoordinatorToolCallUrl(port: number, secure: boolean): string {
+  return `${secure ? 'https' : 'http'}://127.0.0.1:${port}${COORDINATOR_TOOL_CALL_PATH}`;
+}
+
+function getBrowserServerStartupMessages(
+  info: BrowserServerInfo,
+  browserToken: string,
+  scopedRemoteEnabled: boolean,
+): string[] {
+  if (!scopedRemoteEnabled) {
+    return [
+      `Parallel Code server listening on ${info.url}`,
+      ...(info.wifiUrl ? [`WiFi: ${info.wifiUrl}`] : []),
+      ...(info.tailscaleUrl ? [`Tailscale: ${info.tailscaleUrl}`] : []),
+    ];
+  }
+
+  return [
+    `Parallel Code browser admin: ${buildSecureSessionBootstrapUrl(
+      '127.0.0.1',
+      info.port,
+      browserToken,
+    )}`,
+    `Parallel Code remote: ${info.url}`,
+    ...(info.wifiUrl ? [`Remote WiFi: ${info.wifiUrl}`] : []),
+    ...(info.tailscaleUrl ? [`Remote Tailscale: ${info.tailscaleUrl}`] : []),
+  ];
 }
 
 // Browser-mode composition root. The browser server wires together:
@@ -224,13 +331,41 @@ function getCoordinatorToolCallUrl(port: number): string {
 // - browser-control-plane.ts for presence, control broadcasts, and lifecycle glue
 
 export function startBrowserServer(options: StartBrowserServerOptions): BrowserServerController {
+  const taskNotesWriterEntitlements = snapshotTaskNotesWriterEntitlements(
+    options.taskNotesWriterEntitlements,
+  );
+  if (options.scopedCommands) {
+    if (!options.scopedCommands.accessToken) {
+      throw new TypeError('Scoped remote access token cannot be empty');
+    }
+    if (options.scopedCommands.accessToken === options.token) {
+      throw new TypeError('Scoped remote and full browser access tokens must be distinct');
+    }
+  }
   const { safeCompare } = createTokenComparator(options.token);
   const app = express();
-  const server = createServer(app);
+  let scopedRuntime: ScopedRemoteCommandRuntime | null = null;
+  const dispatchHttpRequest = (request: IncomingMessage, response: ServerResponse): void => {
+    const runtime = scopedRuntime;
+    if (runtime?.authHttpHandler(request, response)) return;
+    if (runtime) {
+      void runtime.commandHttpHandler(request, response).then((handled) => {
+        if (!handled) app(request, response);
+      });
+      return;
+    }
+    app(request, response);
+  };
+  const server = options.scopedCommands
+    ? createHttpsServer(options.scopedCommands.tls, dispatchHttpRequest)
+    : createServer(dispatchHttpRequest);
   const wss = new WebSocketServer({
     maxPayload: 256 * 1024,
     noServer: true,
   });
+  const scopedRemoteWss = options.scopedCommands
+    ? new WebSocketServer({ maxPayload: 256 * 1024, noServer: true })
+    : null;
   const handleControlSocketUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     const pathname = getUpgradePathname(req);
     if (pathname !== CONTROL_SOCKET_PATH) {
@@ -242,9 +377,24 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     });
   };
   server.on('upgrade', handleControlSocketUpgrade);
+  const handleScopedRemoteSocketUpgrade = (
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): void => {
+    if (!scopedRemoteWss || getUpgradePathname(req) !== SCOPED_REMOTE_SOCKET_PATH) return;
+    scopedRemoteWss.handleUpgrade(req, socket, head, (client) => {
+      scopedRemoteWss.emit('connection', client, req);
+    });
+  };
+  server.on('upgrade', handleScopedRemoteSocketUpgrade);
   const handleUnknownSocketUpgrade = (req: IncomingMessage, socket: Duplex): void => {
     const pathname = getUpgradePathname(req);
-    if (pathname === CONTROL_SOCKET_PATH || (pathname && isPreviewSocketPath(pathname))) {
+    if (
+      pathname === CONTROL_SOCKET_PATH ||
+      pathname === SCOPED_REMOTE_SOCKET_PATH ||
+      (pathname && isPreviewSocketPath(pathname))
+    ) {
       return;
     }
 
@@ -256,12 +406,44 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const storageEnv = { userDataPath: options.userDataPath, isPackaged: false } as const;
   const savedAppState = loadAppStateDocumentForEnv(storageEnv);
   const savedTaskRegistryState = loadTaskRegistryStateDocumentForEnv(storageEnv);
+  const serverInstanceId = getServerInstanceId();
+  const taskCatalog = createTaskCatalogState({ serverInstanceId });
+  const stopTaskCatalogPtyRuntime = subscribeTaskCatalogPtyRuntime(taskCatalog);
+  const defaultAgentDefinitions = getAgentDefsWithLastKnownAvailability();
+  const syncTaskCatalogFromJson = (state: SavedStateDocument): void => {
+    try {
+      taskCatalog.replace({
+        sharedState: (state.root ?? {}) as JsonObject,
+        sessionRuntime: getCurrentTaskCatalogSessionRuntime(),
+        staticAgents: buildTaskCatalogAgentChoices(
+          (state.root ?? {}) as JsonObject,
+          defaultAgentDefinitions,
+        ),
+      });
+    } catch {
+      // The catalog publishes its own typed unavailable state. Canonical
+      // workspace truth must not be rolled back by projection failure.
+    }
+  };
   const browserAuth = createBrowserAuthController({
     token: options.token,
   });
 
+  taskNames.restoreAuthorizedTaskRoots(savedTaskRegistryState ?? '{"tasks":{}}');
   if (savedTaskRegistryState) {
     taskNames.syncFromSavedState(savedTaskRegistryState);
+    syncTaskCatalogFromJson(savedTaskRegistryState);
+  } else {
+    taskCatalog.replace({
+      sharedState: {
+        collapsedTaskOrder: [],
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+      },
+      sessionRuntime: getCurrentTaskCatalogSessionRuntime(),
+      staticAgents: buildTaskCatalogAgentChoices({}, defaultAgentDefinitions),
+    });
   }
 
   if (savedAppState) {
@@ -269,7 +451,19 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   }
 
   let browserSocketServer: BrowserWebSocketServer | null = null;
+  let scopedRemoteSocket: StandaloneScopedRemoteWebSocket | null = null;
   let lifecycle: BrowserServerLifecycle = { kind: 'running' };
+  let serverListenPending = false;
+  let browserServerReadySettled = false;
+  let resolveBrowserServerReady: () => void = () => {};
+  let rejectBrowserServerReady: (error: unknown) => void = () => {};
+  const browserServerReady = new Promise<void>((resolve, reject) => {
+    resolveBrowserServerReady = resolve;
+    rejectBrowserServerReady = reject;
+  });
+  // startBrowserServer is intentionally synchronous. Keep startup rejection
+  // observed even for legacy callers that only use the lifecycle methods.
+  void browserServerReady.catch(() => {});
   const closeCallbacks = new Set<() => void>();
   let browserSocketInfrastructureCleaned = false;
   let processHandlersRemoved = false;
@@ -283,6 +477,18 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   function shouldDropSimulatedClientMessage(): boolean {
     const packetLoss = Math.min(1, Math.max(0, options.simulatePacketLoss ?? 0));
     return packetLoss > 0 && Math.random() < packetLoss;
+  }
+
+  function settleBrowserServerReady(): void {
+    if (browserServerReadySettled) return;
+    browserServerReadySettled = true;
+    resolveBrowserServerReady();
+  }
+
+  function settleBrowserServerStartupFailure(error: unknown): void {
+    if (browserServerReadySettled) return;
+    browserServerReadySettled = true;
+    rejectBrowserServerReady(error);
   }
 
   function isAuthorizedRequest(req: {
@@ -303,16 +509,38 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     return browserAuth.isAuthenticatedRequest(req);
   }
 
+  function isAuthorizedRemoteRequest(req: {
+    header?: (name: string) => string | undefined;
+    headers: IncomingHttpHeaders;
+    url?: string | undefined;
+  }): boolean {
+    return scopedRuntime
+      ? scopedRuntime.authenticateReadRequest(req as IncomingMessage) !== null
+      : isAuthorizedRequest(req);
+  }
+
+  const getRemoteAgentList = () =>
+    buildRemoteAgentList({
+      getTaskMetadata: taskNames.getTaskMetadata,
+      getTaskName: taskNames.getTaskName,
+    });
   const controlPlane = createBrowserControlPlane({
-    buildAgentList: () =>
-      buildRemoteAgentList({
-        getTaskMetadata: taskNames.getTaskMetadata,
-        getTaskName: taskNames.getTaskName,
-      }),
+    buildAgentList: getRemoteAgentList,
     cleanupSocketClient: (client) => {
       browserSocketServer?.cleanupClient(client);
     },
     port: options.port,
+    ...(options.scopedCommands
+      ? {
+          remoteAccess: {
+            secureSessionBootstrap: {
+              bootstrapPath: STANDALONE_REMOTE_AUTH_HTTP_PATHS.bootstrap,
+              nextPath: '/remote/',
+            },
+            token: options.scopedCommands.accessToken,
+          },
+        }
+      : {}),
     token: options.token,
     ...(options.browserControlHeartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: options.browserControlHeartbeatIntervalMs }
@@ -367,6 +595,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     });
   }
   let coordinatorRuntimeLoader: CoordinatorRuntimeLoader | null = null;
+  const workspaceMutationCleanups = new Set<() => Promise<void>>();
   let runtimeCleanupDone: Promise<void> | null = null;
   let coordinatorRuntimeStartSettled = false;
   let resolveCoordinatorRuntimeStarted: (
@@ -392,9 +621,13 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     await loader.ready;
   }
 
+  const taskNotesEvents = createTaskNotesEventStream();
   const handlerContext: HandlerContext = {
     userDataPath: options.userDataPath,
     isPackaged: false,
+    workspaceStorageKind: 'standalone',
+    taskNotesWriterEntitlements,
+    registerWorkspaceMutationCleanup: (cleanup) => workspaceMutationCleanups.add(cleanup),
     awaitCoordinatorRuntimeReady,
     bindChannelForClient: (clientId, channelId) => {
       if (!clientId) {
@@ -411,16 +644,94 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       }
       return true;
     },
-    coordinatorToolCallUrl: () => getCoordinatorToolCallUrl(controlPlane.getServerInfo().port),
+    ...(options.scopedCommands
+      ? { coordinatorToolCallTlsCertificate: options.scopedCommands.tls.cert.toString('utf8') }
+      : {}),
+    coordinatorToolCallUrl: () =>
+      getCoordinatorToolCallUrl(
+        controlPlane.getServerInfo().port,
+        options.scopedCommands !== undefined,
+      ),
     sendToChannel: (channelId, message) => {
       channelManager.sendChannelMessage(channelId, message);
     },
     isChannelActive: (channelId) => channelManager.hasActiveSubscriber(channelId),
-    emitIpcEvent: controlPlane.emitIpcEvent,
+    emitIpcEvent: (channel, payload) => {
+      controlPlane.emitIpcEvent(channel, payload);
+      if (channel === IPC.TaskNotesChanged) taskNotesEvents.publish(payload);
+    },
     emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
   };
-  const handlers = createIpcHandlers(handlerContext, taskNames, savedTaskRegistryState);
+  handlerContext.getTaskNotesService = async () => (await taskExperienceRuntimeStarted).notes;
+  handlerContext.restoreCanonicalAgentSession = async (request) =>
+    (await taskExperienceRuntimeStarted).agentSession.restoreCanonicalSession(request);
+  handlerContext.classifyCanonicalAgentSessionIdentity = async (request) =>
+    (await taskExperienceRuntimeStarted).agentSession.classifyCanonicalSessionIdentity(request);
+  handlerContext.restoreCanonicalTaskShellSession = async (request, options) =>
+    (await taskExperienceRuntimeStarted).shell.restoreCanonicalTaskShellSession(request, options);
+  const handlers = createIpcHandlers(handlerContext, taskNames, savedTaskRegistryState, {
+    onTaskRemovalLifecycle: ({ taskId, closing }) => {
+      taskCatalog.setTaskClosing(taskId, closing);
+    },
+    syncTaskCatalogFromJson,
+  });
+  let stopTaskReliabilitySubscription: (() => void) | null = null;
+
+  function activateTaskExperienceTransports(runtime: ProductionTaskExperienceRuntime): void {
+    Object.assign(handlers, createActiveTaskReliabilityIpcHandlers(runtime));
+    stopTaskReliabilitySubscription = subscribeActiveTaskReliabilityRuntime(runtime, (event) => {
+      controlPlane.emitIpcEvent(IPC.TaskReliabilityChanged, event);
+    });
+    if (!options.scopedCommands || !scopedRemoteWss) return;
+    const registrations = mergeRemoteCommandRegistrationTables(
+      createTaskExperienceRemoteCommandRegistrations({
+        catalog: taskCatalog,
+        getRuntime: async () => runtime,
+        writerEntitlement: taskNotesWriterEntitlements.remote,
+      }),
+      options.scopedCommands.registrations ?? {},
+    );
+    const grants = options.scopedCommands.grants;
+    scopedRuntime = createScopedRemoteCommandRuntime({
+      accessToken: options.scopedCommands.accessToken,
+      authHttpPaths: STANDALONE_REMOTE_AUTH_HTTP_PATHS,
+      grants,
+      ...(options.scopedCommands.mutationAdmissionInitiallyOpen !== undefined
+        ? {
+            mutationAdmissionInitiallyOpen: options.scopedCommands.mutationAdmissionInitiallyOpen,
+          }
+        : {
+            mutationAdmissionInitiallyOpen: [...grants].some(
+              (grant) =>
+                grant === 'notes:write' || grant === 'task:create' || grant === 'terminal:control',
+            ),
+          }),
+      onInternalError: (error) => console.error('[server] Scoped command failed:', error),
+      peerTrustPolicy: options.scopedCommands.peerTrustPolicy,
+      registrations,
+      workspacePrincipalId: options.scopedCommands.workspacePrincipalId ?? 'standalone-owner',
+    });
+    scopedRemoteSocket = createStandaloneScopedRemoteWebSocket({
+      getAgentList: getRemoteAgentList,
+      runtime: scopedRuntime,
+      subscribeTaskCatalog: (listener) => taskCatalog.subscribe(listener),
+      subscribeTaskNotesChanged: taskNotesEvents.subscribe,
+      taskCreationOperations: createRemoteTaskCreationOperationSource(runtime.creation),
+      wss: scopedRemoteWss,
+    });
+  }
+
+  const taskExperienceRuntimeStarted = createProductionTaskExperienceRuntime({
+    catalog: taskCatalog,
+    context: handlerContext,
+    serverInstanceId,
+    taskNames,
+  });
+  handlerContext.getTaskCreationCommand = async () =>
+    (await taskExperienceRuntimeStarted).localCreation;
+  handlerContext.getTaskMergeWorkflow = async () =>
+    (await taskExperienceRuntimeStarted).merge.workflow;
 
   if (savedAppState) {
     restoreBackendDerivedState({
@@ -535,6 +846,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     distDir: options.distDir,
     distRemoteDir: options.distRemoteDir,
     isAuthorizedRequest,
+    isAuthorizedRemoteRequest,
+    ...(options.scopedCommands ? { remoteAuthGatePath: null } : {}),
   });
 
   const cleanupAgentLifecycleBroadcasts = registerAgentLifecycleBroadcasts({
@@ -647,38 +960,73 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupBrowserSocketInfrastructure();
   });
 
-  server.listen(options.port, '0.0.0.0', () => {
-    if (lifecycle.kind !== 'running') {
-      settleCoordinatorRuntimeStart(null);
-      return;
-    }
+  void taskExperienceRuntimeStarted
+    .then((runtime) => {
+      if (lifecycle.kind !== 'running') return;
+      activateTaskExperienceTransports(runtime);
+      const handleListenError = (error: Error): void => {
+        serverListenPending = false;
+        settleBrowserServerStartupFailure(error);
+        cleanup();
+      };
+      server.once('error', handleListenError);
+      serverListenPending = true;
+      try {
+        server.listen(options.port, '0.0.0.0', () => {
+          serverListenPending = false;
+          server.off('error', handleListenError);
+          if (lifecycle.kind !== 'running') {
+            settleBrowserServerStartupFailure(
+              new Error('Browser server stopped before its listener became ready'),
+            );
+            settleCoordinatorRuntimeStart(null);
+            server.close();
+            return;
+          }
+          try {
+            const address = server.address();
+            if (address && typeof address !== 'string') {
+              controlPlane.setServerPort(address.port);
+            }
 
-    const address = server.address();
-    if (address && typeof address !== 'string') {
-      controlPlane.setServerPort(address.port);
-    }
-
-    const info = controlPlane.getServerInfo();
-    process.stdout.write(`Parallel Code server listening on ${info.url}\n`);
-    if (info.wifiUrl) {
-      process.stdout.write(`WiFi: ${info.wifiUrl}\n`);
-    }
-    if (info.tailscaleUrl) {
-      process.stdout.write(`Tailscale: ${info.tailscaleUrl}\n`);
-    }
-    controlPlane.startHeartbeat();
-    coordinatorRuntimeLoader = startCoordinatorRuntimeLoad({
-      emitCoordinatorChanged: (event) => {
-        controlPlane.emitCoordinatorChanged(event);
-      },
-      handlerContext,
-      taskNames,
+            const info = controlPlane.getServerInfo();
+            for (const message of getBrowserServerStartupMessages(
+              info,
+              options.token,
+              options.scopedCommands !== undefined,
+            )) {
+              process.stdout.write(`${message}\n`);
+            }
+            controlPlane.startHeartbeat();
+            scopedRemoteSocket?.startHeartbeat();
+            coordinatorRuntimeLoader = startCoordinatorRuntimeLoad({
+              emitCoordinatorChanged: (event) => {
+                controlPlane.emitCoordinatorChanged(event);
+              },
+              handlerContext,
+              taskNames,
+            });
+            settleCoordinatorRuntimeStart(coordinatorRuntimeLoader);
+            releaseBackendBackgroundWork();
+            settleBrowserServerReady();
+          } catch (error) {
+            settleBrowserServerStartupFailure(error);
+            cleanup();
+          }
+        });
+      } catch (error) {
+        serverListenPending = false;
+        server.off('error', handleListenError);
+        throw error;
+      }
+    })
+    .catch((error: unknown) => {
+      console.error('[server] Task-experience activation failed:', error);
+      settleBrowserServerStartupFailure(error);
+      cleanup();
     });
-    settleCoordinatorRuntimeStart(coordinatorRuntimeLoader);
-    releaseBackendBackgroundWork();
-  });
 
-  server.on('close', () => {
+  function finalizeServerClose(): void {
     const shouldExit = lifecycle.kind === 'closing' ? lifecycle.exitOnClose : false;
     lifecycle = { kind: 'closed' };
     removeProcessHandlers();
@@ -695,7 +1043,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       // independent owner has still been allowed to settle.
       void exitAfterBrowserRuntimeCleanup(runtimeCleanupDone ?? Promise.resolve());
     }
-  });
+  }
+
+  server.on('close', finalizeServerClose);
 
   function requestServerClose(exitOnClose = false, onClosed?: () => void): void {
     if (lifecycle.kind === 'closed') {
@@ -715,15 +1065,22 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     }
 
     lifecycle = { kind: 'closing', exitOnClose };
+    if (!server.listening) {
+      if (serverListenPending) return;
+      finalizeServerClose();
+      return;
+    }
     server.close();
   }
 
-  function cleanup(): void {
+  function cleanup(exitOnClose = false): void {
     if (lifecycle.kind !== 'running') {
+      if (exitOnClose) requestServerClose(true);
       return;
     }
 
     removeProcessHandlers();
+    settleBrowserServerStartupFailure(new Error('Browser server stopped before startup completed'));
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentAvailability();
     cleanupAgentSupervision();
@@ -738,18 +1095,47 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       coordinatorRuntimeStarted.then((loader) => loader?.cleanup()),
       'coordinator',
     );
-    const agentRuntimeCleanup = retainObservedRuntimeCleanup(
-      stopAllTaskAgentWorkflows(),
-      'agent runner',
-    );
     const askAboutCodeRuntimeCleanup = retainObservedRuntimeCleanup(
       stopAllAskAboutCodeRequests(),
       'ask about code',
+    );
+    const scopedRuntimeAtClose = scopedRuntime;
+    const scopedRemoteRuntimeCleanup = retainObservedRuntimeCleanup(
+      scopedRuntimeAtClose
+        ? scopedRuntimeAtClose.closeAndDrain().then(() => scopedRuntimeAtClose.revokeAll())
+        : Promise.resolve(),
+      'scoped remote',
+    );
+    stopTaskReliabilitySubscription?.();
+    stopTaskReliabilitySubscription = null;
+    const taskExperienceRuntimeCleanup = retainObservedRuntimeCleanup(
+      taskExperienceRuntimeStarted.then(
+        (runtime) => runtime.close(),
+        (error: unknown) =>
+          error instanceof TaskExperienceRuntimeActivationError
+            ? error.retryCleanup()
+            : Promise.reject(error),
+      ),
+      'task experience',
+    );
+    const agentRuntimeCleanup = retainObservedRuntimeCleanup(
+      stopAgentRunnersAfterTaskExperience(taskExperienceRuntimeCleanup),
+      'agent runner',
+    );
+    const workspaceOwnersAtClose = [...workspaceMutationCleanups];
+    workspaceMutationCleanups.clear();
+    const closeWorkspaceOwners = () => settleWorkspaceStorageCleanupOwners(workspaceOwnersAtClose);
+    const workspaceStorageCleanup = retainObservedRuntimeCleanup(
+      taskExperienceRuntimeCleanup.then(closeWorkspaceOwners, closeWorkspaceOwners),
+      'workspace storage',
     );
     runtimeCleanupDone = settleBrowserRuntimeCleanupOwners([
       { cleanup: coordinatorRuntimeCleanup, label: 'coordinator' },
       { cleanup: agentRuntimeCleanup, label: 'agent runner' },
       { cleanup: askAboutCodeRuntimeCleanup, label: 'ask about code' },
+      { cleanup: scopedRemoteRuntimeCleanup, label: 'scoped remote' },
+      { cleanup: taskExperienceRuntimeCleanup, label: 'task experience' },
+      { cleanup: workspaceStorageCleanup, label: 'workspace storage' },
     ]);
     // Preserve the rejecting aggregate for whenCoordinatorRuntimeStopped and
     // exit-on-close without allowing an ignored cleanup() call to create an
@@ -762,7 +1148,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupTaskReviewSignals();
     cleanupTaskSteps();
     cleanupTaskPorts();
+    stopTaskCatalogPtyRuntime();
     server.off('upgrade', handleControlSocketUpgrade);
+    server.off('upgrade', handleScopedRemoteSocketUpgrade);
     server.off('upgrade', handleUnknownSocketUpgrade);
     cleanupPreviewRoutes();
     clearTaskContainerPreviewTargets();
@@ -773,7 +1161,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     }
     cleanupBrowserSocketInfrastructure();
     wss.close();
-    requestServerClose(false);
+    scopedRemoteSocket?.cleanup();
+    scopedRemoteSocket = null;
+    scopedRemoteWss?.close();
+    requestServerClose(exitOnClose);
   }
 
   function shutdown(): void {
@@ -781,8 +1172,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       return;
     }
 
-    cleanup();
-    requestServerClose(true);
+    cleanup(true);
   }
 
   if (options.registerProcessHandlers ?? true) {
@@ -796,5 +1186,6 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanup,
     shutdown,
     whenCoordinatorRuntimeStopped: () => runtimeCleanupDone ?? Promise.resolve(),
+    whenReady: () => browserServerReady,
   };
 }

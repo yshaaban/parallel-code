@@ -247,6 +247,7 @@ type TerminalRecoveryState =
   | { kind: 'idle' }
   | {
       generation: number;
+      holdOutputThroughApply: boolean;
       kind: 'restoring';
       phase: TerminalRecoveryPhase;
       reason: TerminalRecoveryReason;
@@ -350,6 +351,12 @@ export function createTerminalRecoveryRuntime(
 
   function isRuntimeDisposed(): boolean {
     return runtimeDisposed || options.isDisposed();
+  }
+
+  function releaseBatchPause(batchPauseId: string): void {
+    // The backend auto-resume timer is only a safety net. Once this runtime
+    // receives a pause token, every local exit path owns releasing it.
+    fireAndForget(IPC.ReleaseTerminalRecoveryPause, { batchPauseId }, () => {});
   }
 
   function registerPendingRecoveryWaitCleanup(cleanup: () => void): () => void {
@@ -476,6 +483,7 @@ export function createTerminalRecoveryRuntime(
 
     switch (recoveryState.phase) {
       case 'waiting-output-idle':
+        return recoveryState.holdOutputThroughApply;
       case 'waiting-post-drain':
         return false;
       case 'applying-recovery':
@@ -1588,12 +1596,16 @@ export function createTerminalRecoveryRuntime(
     initialAttachEntry: TerminalRecoveryBatchEntry | null = null,
   ): Promise<void> {
     if (isRuntimeDisposed() || isRecoveryInFlight()) {
+      if (initialAttachEntry?.batchPauseId !== undefined) {
+        releaseBatchPause(initialAttachEntry.batchPauseId);
+      }
       return;
     }
 
     const generation = ++restoreGeneration;
     recoveryState = {
       generation,
+      holdOutputThroughApply: initialAttachEntry !== null,
       kind: 'restoring',
       phase: reason === 'renderer-loss' ? 'renderer-refresh' : 'ensure-fit-ready',
       reason,
@@ -1619,11 +1631,10 @@ export function createTerminalRecoveryRuntime(
     let shouldRestartQueuedRestore = false;
     let shouldExitAfterFinally = false;
     let blockingRecoveryStarted = false;
-    // A single restore can observe more than one server-held batch pause id
+    // Fetched recoveries can observe more than one server-held batch pause id
     // (geometry-aligned re-fetches and tail-needed phase two each mint their
     // own pause when the server is not already restore-paused); every claimed
-    // id must be released after apply or the PTY stalls until the server
-    // auto-resume timer fires.
+    // id must be released after apply.
     const pendingBatchPauseIds = new Set<string>();
     const selectedRecoveryProtected = options.isSelectedRecoveryProtected();
     const startupRecoveryRole = getVisibleStartupRecoveryRole(
@@ -1655,11 +1666,21 @@ export function createTerminalRecoveryRuntime(
 
     function releasePendingBatchPauses(): void {
       for (const batchPauseId of pendingBatchPauseIds) {
-        // Fire-and-forget: the backend auto-resume timer is the safety net if
-        // this release is lost in transit.
-        fireAndForget(IPC.ReleaseTerminalRecoveryPause, { batchPauseId }, () => {});
+        releaseBatchPause(batchPauseId);
       }
       pendingBatchPauseIds.clear();
+    }
+
+    if (initialAttachEntry !== null) {
+      // The attach response already captured the recovery cursor. Move the
+      // continuity barrier into the renderer immediately, then release the
+      // backend pause before fit/paint gates. New Data remains queued locally
+      // until the captured entry is applied, so UI readiness can never keep
+      // the agent process paused or reorder post-cursor output.
+      startBlockingRecovery();
+      if (initialAttachEntry.batchPauseId !== undefined) {
+        releaseBatchPause(initialAttachEntry.batchPauseId);
+      }
     }
 
     try {
@@ -1715,13 +1736,8 @@ export function createTerminalRecoveryRuntime(
       let recoveryEntry: TerminalRecoveryBatchEntry | null;
       if (initialAttachEntry !== null) {
         // The entry was captured server-side inside the AttachTerminalSession
-        // RPC; no pause or fetch round trips remain on the client. Claim the
-        // server-held pause before the geometry decision so every exit path
-        // (including a failed geometry adoption) releases it instead of
-        // stalling the PTY until the server auto-resume timer.
-        if (initialAttachEntry.batchPauseId !== undefined) {
-          claimBatchPauseId(initialAttachEntry.batchPauseId);
-        }
+        // RPC; no pause or fetch round trips remain on the client. The server
+        // pause was already replaced by the local output barrier above.
         // Geometry mismatches adopt the backend geometry (reattach never
         // resizes the shared PTY).
         recoveryEntry =
@@ -1748,9 +1764,6 @@ export function createTerminalRecoveryRuntime(
           claimBatchPauseId,
         );
         recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
-      }
-      if (recoveryEntry?.batchPauseId !== undefined) {
-        claimBatchPauseId(recoveryEntry.batchPauseId);
       }
       if (!recoveryEntry || !isActiveRestoreGeneration(generation)) {
         return;
@@ -1875,6 +1888,7 @@ export function createTerminalRecoveryRuntime(
         if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
           recoveryState = {
             generation,
+            holdOutputThroughApply: false,
             kind: 'restoring',
             phase: 'waiting-post-drain',
             reason,

@@ -1,4 +1,4 @@
-import { Show, createEffect, createMemo, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from 'solid-js';
 import { useTaskActivityNow } from '../app/task-activity-clock';
 import {
   getTaskActivityStatus,
@@ -11,6 +11,7 @@ import { isTaskRemoving } from '../domain/task-closing';
 import { isTerminalTask } from '../domain/task-mode';
 import type { AgentDef } from '../ipc/types';
 import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
+import { shouldAnimateTaskAppearance } from '../lib/reduced-motion';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import { getTaskTerminalSlateSnapshot } from '../store/task-terminal-slate';
 import {
@@ -313,6 +314,7 @@ function getTaskTerminalStartupBadgeState(taskId: string): TaskTerminalStartupBa
 
 export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
   let prewarmHoverTimer: number | undefined;
+  const [appearancePending, setAppearancePending] = createSignal(shouldAnimateTaskAppearance());
   const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
   const taskActivityStatus = createMemo(() =>
@@ -335,7 +337,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     if (isTaskRemoving(currentTask)) {
       return 'task-item task-item-removing';
     }
-    return 'task-item task-item-appearing';
+    return appearancePending() ? 'task-item task-item-appearing' : 'task-item';
   };
   const border = () => {
     if (isFocused()) {
@@ -461,6 +463,22 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             }}
             onPointerEnter={armSidebarIntentPrewarm}
             onPointerLeave={clearPrewarmHoverTimer}
+            onAnimationEnd={(event) => {
+              if (
+                event.currentTarget === event.target &&
+                event.animationName === 'taskItemAppear'
+              ) {
+                setAppearancePending(false);
+              }
+            }}
+            onAnimationCancel={(event) => {
+              if (
+                event.currentTarget === event.target &&
+                event.animationName === 'taskItemAppear'
+              ) {
+                setAppearancePending(false);
+              }
+            }}
             style={{
               padding: '7px 10px',
               'border-radius': '8px',
@@ -518,6 +536,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
 }
 
 export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JSX.Element {
+  const [appearancePending, setAppearancePending] = createSignal(shouldAnimateTaskAppearance());
   const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
@@ -542,7 +561,13 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
     <Show when={task()}>
       {(currentTask) => (
         <div
-          class="task-item task-item-appearing"
+          class={
+            isTaskRemoving(currentTask())
+              ? 'task-item task-item-removing'
+              : appearancePending()
+                ? 'task-item task-item-appearing'
+                : 'task-item'
+          }
           role="button"
           tabIndex={0}
           data-sidebar-task-id={props.taskId}
@@ -553,6 +578,16 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               uncollapseTask(props.taskId);
+            }
+          }}
+          onAnimationEnd={(event) => {
+            if (event.currentTarget === event.target && event.animationName === 'taskItemAppear') {
+              setAppearancePending(false);
+            }
+          }}
+          onAnimationCancel={(event) => {
+            if (event.currentTarget === event.target && event.animationName === 'taskItemAppear') {
+              setAppearancePending(false);
             }
           }}
           title="Click to restore"

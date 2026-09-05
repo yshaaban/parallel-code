@@ -26,14 +26,37 @@ function createBrowserWorkspaceStateSaveRequest(json: string): {
   };
 }
 
+function isWorkspaceRevisionConflict(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('Workspace state revision conflict');
+}
+
+async function refreshCanonicalWorkspaceAfterConflict(): Promise<void> {
+  const payload = await invoke(IPC.LoadWorkspaceState);
+  if (!payload?.json) return;
+  const { applyLoadedWorkspaceStateJson } = await import('./persistence-load');
+  applyLoadedWorkspaceStateJson(payload.json, payload.revision);
+}
+
 export async function saveState(): Promise<void> {
   const json = JSON.stringify(buildPersistedState());
-  recordLoadedStateJson(json);
+  const sharedJson = JSON.stringify(buildWorkspaceSharedState());
+  const baseRevision = getLoadedWorkspaceRevision();
 
-  await invoke(IPC.SaveAppState, {
-    json,
-    sourceId: getStateSyncSourceId(),
-  }).catch((error) => console.warn('Failed to save state:', error));
+  try {
+    await invoke(IPC.SaveAppState, {
+      baseRevision,
+      json,
+      sourceId: getStateSyncSourceId(),
+    });
+    recordLoadedStateJson(json);
+    recordLoadedWorkspaceState(sharedJson, baseRevision + 1);
+  } catch (error) {
+    if (isWorkspaceRevisionConflict(error)) {
+      await refreshCanonicalWorkspaceAfterConflict();
+      throw error;
+    }
+    console.warn('Failed to save state:', error);
+  }
 }
 
 export async function saveBrowserWorkspaceState(): Promise<void> {

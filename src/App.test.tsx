@@ -75,6 +75,7 @@ const {
     showSettingsDialog: false,
     sidebarVisible: true,
     taskOrder: [],
+    tasks: {},
     themePreset: 'minimal',
   },
 }));

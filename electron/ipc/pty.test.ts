@@ -22,23 +22,34 @@ vi.mock('./task-ports.js', () => ({
 }));
 
 import {
+  attachExistingAgentSessionExact,
   clearAutoPauseReasonsForChannel,
+  configurePtyContentAuthorityCoordinator,
   countRunningAgents,
   detachAgentOutput,
+  getAgentLifecycleGeneration,
   getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
   getAgentTerminalStartupRecovery,
+  killAgent,
   killAgentAndWaitForRunnerCleanup,
   killAllAgents,
+  killAllAgentsAndWaitForRunnerCleanup,
+  killTaskAgentsAndWaitForRunnerCleanup,
   onPtyEvent,
   pauseAgent,
   resizeAgent,
   resumeAgent,
   spawnAgent,
+  PTY_EXIT_DIAGNOSTIC_MAX_BYTES,
+  PTY_EXIT_DIAGNOSTIC_MAX_LINES,
+  type PtyExitEventData,
   validateCommand,
   writeToAgent,
 } from './pty.js';
+import { createTerminalContentRootAuthority } from './terminal-root-authority.js';
+import { createTaskNameRegistry } from '../../server/task-names.js';
 
 const existingAbsoluteCommand =
   process.platform === 'win32'
@@ -156,6 +167,100 @@ function createFakeExecutable(directoryPath: string, fileName: string): string {
   fs.chmodSync(commandPath, 0o755);
   return commandPath;
 }
+
+describe('PTY content-authority withdrawal', () => {
+  it('stops and revokes only the selected task when two agent sessions share a checkout', async () => {
+    vi.useFakeTimers();
+    const first = createMockProc();
+    const second = createMockProc();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    for (const suffix of ['1', '2']) {
+      spawnAgent(vi.fn(), {
+        agentId: `root-agent-${suffix}`,
+        taskId: `root-task-${suffix}`,
+        args: [],
+        cols: 80,
+        rows: 24,
+        command: existingAbsoluteCommand,
+        cwd: '/tmp/shared-project',
+        env: {},
+      });
+    }
+    await killTaskAgentsAndWaitForRunnerCleanup('root-task-1', ['root-agent-1']);
+    expect(first.kill).toHaveBeenCalledOnce();
+    expect(second.kill).not.toHaveBeenCalled();
+    expect(getAgentMeta('root-agent-2')).toMatchObject({ taskId: 'root-task-2' });
+    writeToAgent('root-agent-2', 'still running');
+    vi.runOnlyPendingTimers();
+    expect(second.write).toHaveBeenCalledWith('still running');
+  });
+  function spawnTransientSession(
+    agentId: string,
+    taskId: string,
+  ): {
+    authority: ReturnType<typeof createTerminalContentRootAuthority>;
+    proc: MockProc;
+  } {
+    const taskNames = createTaskNameRegistry();
+    configurePtyContentAuthorityCoordinator(taskNames.taskContentAuthorityCoordinator);
+    const authority = createTerminalContentRootAuthority(taskNames);
+    const proc = createMockProc();
+    proc.kill = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+    spawnAgent(vi.fn(), {
+      agentId,
+      args: [],
+      cols: 80,
+      command: existingAbsoluteCommand,
+      contentAuthorityClass: 'explicit-transient',
+      cwd: '/tmp/arena-worktree',
+      env: {},
+      rows: 24,
+      taskId,
+    });
+    return { authority, proc };
+  }
+
+  it.each([
+    {
+      name: 'killAgent',
+      stop: (agentId: string, _taskId: string) => killAgent(agentId),
+    },
+    {
+      name: 'killAgentAndWaitForRunnerCleanup',
+      stop: (agentId: string, _taskId: string) => killAgentAndWaitForRunnerCleanup(agentId),
+    },
+    {
+      name: 'killAllAgents',
+      stop: (_agentId: string, _taskId: string) => killAllAgents(),
+    },
+    {
+      name: 'killAllAgentsAndWaitForRunnerCleanup',
+      stop: (_agentId: string, _taskId: string) => killAllAgentsAndWaitForRunnerCleanup(),
+    },
+    {
+      name: 'killTaskAgentsAndWaitForRunnerCleanup',
+      stop: (agentId: string, taskId: string) =>
+        killTaskAgentsAndWaitForRunnerCleanup(taskId, [agentId]),
+    },
+  ])(
+    'withdraws authority synchronously when $name begins, before delayed process exit',
+    async ({ name, stop }) => {
+      const agentId = `agent-${name}`;
+      const taskId = `task-${name}`;
+      const { authority, proc } = spawnTransientSession(agentId, taskId);
+      const pendingAdmission = authority.beginTerminalAdmission({ agentId, taskId });
+      expect(pendingAdmission?.kind).toBe('explicit-transient-pty');
+
+      const completion = Promise.resolve(stop(agentId, taskId));
+
+      expect(authority.beginTerminalAdmission({ agentId, taskId })).toBeNull();
+      expect(pendingAdmission?.commitAfterDescriptorBind()).toBe(false);
+      proc.emitExit({ exitCode: 0, signal: null });
+      await completion;
+    },
+  );
+});
 
 describe('validateCommand', () => {
   let originalPath = '';
@@ -987,7 +1092,7 @@ describe('spawnAgent', () => {
     const firstProc = createMockProc();
     const secondProc = createMockProc();
     spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
-    const onExit = vi.fn();
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
     const offExit = onPtyEvent('exit', onExit);
 
     try {
@@ -1042,6 +1147,7 @@ describe('spawnAgent', () => {
         generation: 0,
         lastOutput: [],
         signal: null,
+        taskId: 'task-1',
       });
       expect(getAgentMeta('agent-same')).toEqual({
         agentId: 'agent-same',
@@ -1054,7 +1160,87 @@ describe('spawnAgent', () => {
     }
   });
 
-  it('reattach updates task metadata and output routing without changing lifecycle generation or emitting extra lifecycle events', () => {
+  it('reports the active and most recently allocated lifecycle generation', () => {
+    const agentId = 'agent-lifecycle-generation-reader';
+    const firstProc = createMockProc();
+    const secondProc = createMockProc();
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    expect(getAgentLifecycleGeneration(agentId)).toBeNull();
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-lifecycle-generation-reader',
+      agentId,
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'generation-one' },
+    });
+    expect(getAgentLifecycleGeneration(agentId)).toBe(0);
+
+    firstProc.emitExit({ exitCode: 0, signal: null });
+    expect(getAgentMeta(agentId)).toBeNull();
+    expect(getAgentLifecycleGeneration(agentId)).toBe(0);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-lifecycle-generation-reader',
+      agentId,
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'generation-two' },
+    });
+    expect(getAgentLifecycleGeneration(agentId)).toBe(1);
+
+    secondProc.emitExit({ exitCode: 0, signal: null });
+    expect(getAgentLifecycleGeneration(agentId)).toBe(1);
+  });
+
+  it('seeds an exact durable lifecycle generation only when a real PTY is spawned', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const agentId = 'agent-startup-generation-floor';
+
+    expect(
+      spawnAgent(vi.fn(), {
+        agentId,
+        args: [],
+        cols: 80,
+        command: '/bin/sh',
+        cwd: '/',
+        env: {},
+        lifecycleGeneration: 7,
+        rows: 24,
+        taskId: 'task-startup-generation-floor',
+      }),
+    ).toMatchObject({ kind: 'created-session' });
+    expect(getAgentLifecycleGeneration(agentId)).toBe(7);
+
+    proc.emitExit({ exitCode: 0, signal: null });
+    expect(() =>
+      spawnAgent(vi.fn(), {
+        agentId,
+        args: [],
+        cols: 80,
+        command: '/bin/sh',
+        cwd: '/',
+        env: {},
+        lifecycleGeneration: 7,
+        rows: 24,
+        taskId: 'task-startup-generation-floor',
+      }),
+    ).toThrow('does not match the reserved generation');
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(getAgentLifecycleGeneration(agentId)).toBe(7);
+  });
+
+  it('reattach preserves exact session identity while updating output routing', () => {
     vi.useFakeTimers();
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -1064,7 +1250,7 @@ describe('spawnAgent', () => {
     const onSpawn = vi.fn();
     const onPause = vi.fn();
     const onResume = vi.fn();
-    const onExit = vi.fn();
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
 
     const offSpawn = onPtyEvent('spawn', onSpawn);
     const offPause = onPtyEvent('pause', onPause);
@@ -1099,7 +1285,7 @@ describe('spawnAgent', () => {
       expect(onSpawn).toHaveBeenCalledTimes(1);
       expect(onSpawn).toHaveBeenCalledWith('agent-reattach-metadata', { generation: 0 });
 
-      expect(
+      expect(() =>
         spawnAgent(reattachedSendToChannel, {
           taskId: 'task-reattach-next',
           agentId: 'agent-reattach-metadata',
@@ -1112,6 +1298,21 @@ describe('spawnAgent', () => {
           isShell: true,
           onOutput: { __CHANNEL_ID__: 'channel-two' },
         }),
+      ).toThrow('Exact agent session is unavailable for attach');
+
+      expect(
+        spawnAgent(reattachedSendToChannel, {
+          taskId: 'task-reattach-initial',
+          agentId: 'agent-reattach-metadata',
+          command: '/bin/sh',
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 100,
+          rows: 30,
+          isShell: false,
+          onOutput: { __CHANNEL_ID__: 'channel-two' },
+        }),
       ).toEqual({
         channelAttached: true,
         kind: 'attached-existing',
@@ -1122,8 +1323,8 @@ describe('spawnAgent', () => {
       expect(getAgentMeta('agent-reattach-metadata')).toEqual({
         agentId: 'agent-reattach-metadata',
         generation: 0,
-        isShell: true,
-        taskId: 'task-reattach-next',
+        isShell: false,
+        taskId: 'task-reattach-initial',
       });
       expect(onSpawn).toHaveBeenCalledTimes(1);
       expect(onPause).not.toHaveBeenCalled();
@@ -1143,7 +1344,7 @@ describe('spawnAgent', () => {
       expect(reattachedSendToChannel).toHaveBeenNthCalledWith(1, 'channel-one', dataMessage);
       expect(reattachedSendToChannel).toHaveBeenNthCalledWith(2, 'channel-two', dataMessage);
       expect(observeTaskPortsFromOutputMock).toHaveBeenLastCalledWith(
-        'task-reattach-next',
+        'task-reattach-initial',
         'hello',
       );
 
@@ -1155,6 +1356,7 @@ describe('spawnAgent', () => {
         generation: 0,
         lastOutput: ['hello'],
         signal: null,
+        taskId: 'task-reattach-initial',
       });
     } finally {
       offSpawn();
@@ -1164,10 +1366,52 @@ describe('spawnAgent', () => {
     }
   });
 
+  it('validates the complete immutable tuple before binding a reattach channel', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    spawnAgent(vi.fn(), {
+      agentId: 'agent-exact-bind',
+      args: [],
+      cols: 80,
+      command: '/bin/sh',
+      cwd: '/',
+      env: {},
+      isShell: false,
+      lifecycleGeneration: 4,
+      rows: 24,
+      taskId: 'task-exact-bind',
+    });
+    const bindChannel = vi.fn(() => true);
+
+    expect(() =>
+      attachExistingAgentSessionExact(vi.fn(), {
+        agentId: 'agent-exact-bind',
+        bindChannel,
+        generation: 4,
+        isShell: true,
+        onOutput: { __CHANNEL_ID__: 'rejected-channel' },
+        taskId: 'task-exact-bind',
+      }),
+    ).toThrow('Exact agent session is unavailable for attach');
+    expect(bindChannel).not.toHaveBeenCalled();
+
+    expect(
+      attachExistingAgentSessionExact(vi.fn(), {
+        agentId: 'agent-exact-bind',
+        bindChannel,
+        generation: 4,
+        isShell: false,
+        onOutput: { __CHANNEL_ID__: 'accepted-channel' },
+        taskId: 'task-exact-bind',
+      }),
+    ).toMatchObject({ channelBound: true, kind: 'attached-existing' });
+    expect(bindChannel).toHaveBeenCalledOnce();
+  });
+
   it('keeps wrapped exit diagnostics in chronological order across small PTY chunks', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
-    const onExit = vi.fn();
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
     const offExit = onPtyEvent('exit', onExit);
 
     const outputLines = Array.from(
@@ -1199,6 +1443,56 @@ describe('spawnAgent', () => {
         generation: 0,
         lastOutput: outputLines.slice(-50),
         signal: null,
+        taskId: 'task-wrapped-exit-tail',
+      });
+    } finally {
+      offExit();
+    }
+  });
+
+  it('normalizes node-pty signal zero as an ordinary exit at every PTY boundary', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const sendToChannel = vi.fn();
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
+    const offExit = onPtyEvent('exit', onExit);
+
+    try {
+      spawnAgent(sendToChannel, {
+        agentId: 'agent-zero-exit-signal',
+        agentSessionLaunchReason: 'manual-resume',
+        agentSessionOperationId: 'resume-operation',
+        agentSessionResumed: true,
+        args: [],
+        cols: 80,
+        command: '/bin/sh',
+        cwd: '/',
+        env: {},
+        onOutput: { __CHANNEL_ID__: 'zero-exit-signal' },
+        rows: 24,
+        taskId: 'task-zero-exit-signal',
+      });
+
+      proc.emitData('No conversation found to continue\n');
+      proc.emitExit({ exitCode: 1, signal: 0 });
+
+      expect(sendToChannel).toHaveBeenCalledWith('zero-exit-signal', {
+        data: {
+          exit_code: 1,
+          last_output: ['No conversation found to continue'],
+          signal: null,
+        },
+        type: 'Exit',
+      });
+      expect(onExit).toHaveBeenCalledWith('agent-zero-exit-signal', {
+        exitCode: 1,
+        generation: 0,
+        lastOutput: ['No conversation found to continue'],
+        launchReason: 'manual-resume',
+        operationId: 'resume-operation',
+        resumed: true,
+        signal: null,
+        taskId: 'task-zero-exit-signal',
       });
     } finally {
       offExit();
@@ -1208,7 +1502,7 @@ describe('spawnAgent', () => {
   it('keeps only the diagnostic suffix from a PTY chunk larger than the tail capacity', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
-    const onExit = vi.fn();
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
     const offExit = onPtyEvent('exit', onExit);
 
     try {
@@ -1232,11 +1526,53 @@ describe('spawnAgent', () => {
         expect.objectContaining({
           exitCode: 2,
           lastOutput: expect.arrayContaining(['kept-one', 'kept-two']),
-          signal: 15,
+          signal: '15',
+          taskId: 'task-oversized-exit-tail',
         }),
       );
-      const exitEvent = onExit.mock.calls[0]?.[1] as { lastOutput?: string[] } | undefined;
-      expect(exitEvent?.lastOutput?.slice(-2)).toEqual(['kept-one', 'kept-two']);
+      const exitEvent = onExit.mock.calls[0]?.[1];
+      expect(exitEvent?.lastOutput.slice(-2)).toEqual(['kept-one', 'kept-two']);
+      expect(exitEvent?.lastOutput.length).toBeLessThanOrEqual(PTY_EXIT_DIAGNOSTIC_MAX_LINES);
+      expect(Buffer.byteLength(exitEvent?.lastOutput.join('\n') ?? '', 'utf8')).toBeLessThanOrEqual(
+        PTY_EXIT_DIAGNOSTIC_MAX_BYTES,
+      );
+    } finally {
+      offExit();
+    }
+  });
+
+  it('bounds decoded exit diagnostics when invalid PTY bytes expand during UTF-8 replacement', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const onExit = vi.fn<(agentId: string, data: PtyExitEventData) => void>();
+    const offExit = onPtyEvent('exit', onExit);
+
+    try {
+      spawnAgent(vi.fn(), {
+        taskId: 'task-invalid-exit-tail',
+        agentId: 'agent-invalid-exit-tail',
+        command: '/bin/sh',
+        args: [],
+        cwd: '/',
+        env: {},
+        cols: 80,
+        rows: 24,
+        onOutput: { __CHANNEL_ID__: 'invalid-exit-tail' },
+      });
+
+      proc.emitData(Buffer.alloc(PTY_EXIT_DIAGNOSTIC_MAX_BYTES, 0xff));
+      proc.emitExit({ exitCode: 1, signal: null });
+
+      const exitEvent = onExit.mock.calls[0]?.[1];
+      expect(exitEvent).toMatchObject({
+        exitCode: 1,
+        signal: null,
+        taskId: 'task-invalid-exit-tail',
+      });
+      expect(exitEvent?.lastOutput.length).toBeLessThanOrEqual(PTY_EXIT_DIAGNOSTIC_MAX_LINES);
+      expect(Buffer.byteLength(exitEvent?.lastOutput.join('\n') ?? '', 'utf8')).toBeLessThanOrEqual(
+        PTY_EXIT_DIAGNOSTIC_MAX_BYTES,
+      );
     } finally {
       offExit();
     }

@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from '@solidjs/testing-library';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MERGE_PROGRESS_SCHEMA_VERSION } from '../domain/task-merge';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
+import { getLocalDateKey } from '../lib/date';
 import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -43,11 +45,16 @@ vi.mock('../store/store', async () => {
 });
 
 import { SidebarFooter } from './SidebarFooter';
+import {
+  applyMergeProgressSnapshot,
+  resetMergeProgressProjectionForTests,
+} from '../app/merge-progress';
 
 describe('SidebarFooter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    resetMergeProgressProjectionForTests();
     getRuntimeClientIdMock.mockReturnValue('browser-client');
     listPeerSessionsMock.mockReturnValue([]);
   });
@@ -72,6 +79,29 @@ describe('SidebarFooter', () => {
 
     expect(screen.getByText('Merged tasks today')).toBeDefined();
     expect(screen.getByText('Merged (total)')).toBeDefined();
+    const progressStatus = screen.getByRole('status', { name: 'Merge progress' });
+    expect(progressStatus.getAttribute('aria-atomic')).toBe('true');
+    expect(progressStatus.getAttribute('aria-live')).toBe('polite');
+  });
+
+  it('renders one canonical full progress projection when available', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    applyMergeProgressSnapshot({
+      schemaVersion: MERGE_PROGRESS_SCHEMA_VERSION,
+      version: 1,
+      dateKey: getLocalDateKey(),
+      tasksToday: 7,
+      linesAdded: 20,
+      linesRemoved: 4,
+      updatedAt: '2026-08-04T10:00:00.000Z',
+    });
+
+    render(() => <SidebarFooter />);
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
+
+    expect(screen.getByText('7')).toBeDefined();
+    expect(screen.getByText('+20')).toBeDefined();
+    expect(screen.getByText('-4')).toBeDefined();
   });
 
   it('shows the browser build stamp outside Electron after expanding tips', () => {

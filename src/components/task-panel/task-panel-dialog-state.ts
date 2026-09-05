@@ -1,7 +1,9 @@
 import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
+import {
+  getCurrentTaskGitActionDecision,
+  notifyTaskGitActionDenial,
+} from '../../app/task-git-action-capability';
 import type { ChangedFile } from '../../ipc/types';
-import { isNonGitProject } from '../../store/project-mode';
-import { isCurrentBranchTask } from '../../store/task-git-isolation';
 import type { PendingAction, Task } from '../../store/types';
 
 interface PushDialogRun {
@@ -22,8 +24,6 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
   handlePushFinished: (success: boolean, run?: PushDialogRun) => void;
   handlePushStarted: (run: PushDialogRun) => void;
   openCloseConfirm: () => void;
-  openMergeConfirm: () => void;
-  openPushConfirm: () => void;
   pushSuccess: Accessor<boolean>;
   pushing: Accessor<boolean>;
   setDiffFile: (file: ChangedFile | null) => void;
@@ -47,10 +47,6 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(pushSuccessTimer));
 
-  function canOpenGitActionDialog(task = options.task()): boolean {
-    return !isCurrentBranchTask(task) && !isNonGitProject(task);
-  }
-
   createEffect(() => {
     const action = options.pendingAction();
     const task = options.task();
@@ -63,16 +59,24 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
       case 'close':
         setShowCloseConfirm(true);
         break;
-      case 'merge':
-        if (canOpenGitActionDialog(task)) {
+      case 'merge': {
+        const decision = getCurrentTaskGitActionDecision('merge', task.id);
+        if (decision.allowed) {
           setShowMergeConfirm(true);
+        } else {
+          notifyTaskGitActionDenial(decision);
         }
         break;
-      case 'push':
-        if (canOpenGitActionDialog(task)) {
+      }
+      case 'push': {
+        const decision = getCurrentTaskGitActionDecision('push', task.id);
+        if (decision.allowed) {
           setShowPushConfirm(true);
+        } else {
+          notifyTaskGitActionDenial(decision);
         }
         break;
+      }
     }
   });
 
@@ -131,16 +135,6 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
     handlePushFinished,
     handlePushStarted,
     openCloseConfirm: () => setShowCloseConfirm(true),
-    openMergeConfirm: () => {
-      if (canOpenGitActionDialog()) {
-        setShowMergeConfirm(true);
-      }
-    },
-    openPushConfirm: () => {
-      if (canOpenGitActionDialog()) {
-        setShowPushConfirm(true);
-      }
-    },
     pushSuccess,
     pushing,
     setDiffFile,

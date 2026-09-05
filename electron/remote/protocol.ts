@@ -9,6 +9,10 @@ import type {
   TaskCommandControllerSnapshot,
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
+import {
+  AGENT_SESSION_OPERATION_ID_MAX_LENGTH,
+  isAgentSessionLaunchReason,
+} from '../../src/domain/agent-session-operation.js';
 import type { CoordinatorEventEnvelope } from '../../src/domain/coordinator.js';
 import type { PresencePayload } from '../../src/domain/presence.js';
 import type {
@@ -49,6 +53,14 @@ import {
 } from '../../src/lib/type-guards.js';
 import { assertNever } from '../../src/lib/assert-never.js';
 import { isValidBase64 } from '../../src/lib/base64.js';
+import type { TaskCatalogDeltaBatch } from '../../src/domain/task-catalog.js';
+import type { TaskCreationOperationSnapshot } from '../../src/domain/task-creation.js';
+import {
+  isTaskCreationOperationCapability,
+  isTaskCreationOperationId,
+  type TaskCreationOperationCapability,
+  type TaskCreationOperationId,
+} from '../../src/domain/task-creation-ticket.js';
 
 export type {
   AgentLifecycleEvent,
@@ -308,6 +320,24 @@ export interface ControlReplayBatchMessage {
   events: unknown[];
 }
 
+/** Independently versioned, bounded task-catalog delta. */
+export interface TaskCatalogDeltaMessage {
+  type: 'task-catalog-delta';
+  batch: TaskCatalogDeltaBatch;
+}
+
+/** Capability-authorized point update. The capability is deliberately never echoed. */
+export interface TaskCreationOperationSnapshotMessage {
+  type: 'task-creation-operation-snapshot';
+  snapshot: TaskCreationOperationSnapshot;
+}
+
+export interface TaskCreationOperationSubscriptionStateMessage {
+  type: 'task-creation-operation-subscription-state';
+  operationId: TaskCreationOperationId;
+  state: 'degraded' | 'ready';
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -336,7 +366,17 @@ export type ServerMessage =
   | TerminalInputTraceClockSyncMessage
   | TaskCommandTakeoverRequestMessage
   | TaskCommandTakeoverResultMessage
-  | TaskCommandLeaseResultMessage;
+  | TaskCommandLeaseResultMessage
+  | TaskCatalogDeltaMessage
+  | TaskCreationOperationSnapshotMessage
+  | TaskCreationOperationSubscriptionStateMessage;
+
+export type RemoteExtensionServerMessage =
+  | TaskCatalogDeltaMessage
+  | TaskCreationOperationSnapshotMessage
+  | TaskCreationOperationSubscriptionStateMessage;
+
+export type CoreServerMessage = Exclude<ServerMessage, RemoteExtensionServerMessage>;
 
 const AGENT_LIFECYCLE_EVENT_VALUES = {
   exit: true,
@@ -551,6 +591,9 @@ function isAgentLifecycleMessage(value: unknown): value is AgentLifecycleMessage
     isNullableString(value.taskId) &&
     (value.isShell === null || typeof value.isShell === 'boolean') &&
     isOptionalFiniteNumber(value.generation) &&
+    (value.launchReason === undefined || isAgentSessionLaunchReason(value.launchReason)) &&
+    isOptionalStringWithMaxLength(value.operationId, AGENT_SESSION_OPERATION_ID_MAX_LENGTH) &&
+    (value.resumed === undefined || typeof value.resumed === 'boolean') &&
     (value.status === undefined || isRemoteAgentStatus(value.status)) &&
     (value.exitCode === undefined || isNullableNonNegativeInteger(value.exitCode)) &&
     (value.signal === undefined || isNullableString(value.signal)) &&
@@ -794,10 +837,10 @@ const SERVER_MESSAGE_GUARDS = {
   'task-ports-changed': isTaskPortsChangedMessage,
   'terminal-input-trace-clock-sync': isTerminalInputTraceClockSyncMessage,
 } as const satisfies {
-  [TType in ServerMessage['type']]: ServerMessageGuard<TType>;
+  [TType in CoreServerMessage['type']]: ServerMessageGuard<TType>;
 };
 
-export function isServerMessage(value: unknown): value is ServerMessage {
+export function isCoreServerMessage(value: unknown): value is CoreServerMessage {
   if (!isRecord(value) || !isStringKeyOf(value.type, SERVER_MESSAGE_GUARDS)) {
     return false;
   }
@@ -987,6 +1030,17 @@ export interface TerminalStartupRecoveryRequestCommand {
   visibleTerminalCount: number;
 }
 
+export interface SubscribeTaskCreationOperationCommand {
+  type: 'subscribe-task-creation-operation';
+  operationCapability: TaskCreationOperationCapability;
+  operationId: TaskCreationOperationId;
+}
+
+export interface UnsubscribeTaskCreationOperationCommand {
+  type: 'unsubscribe-task-creation-operation';
+  operationId: TaskCreationOperationId;
+}
+
 export type ClientMessage =
   | AuthCommand
   | PingCommand
@@ -1008,7 +1062,9 @@ export type ClientMessage =
   | TerminalRecoveryRequestCommand
   | TerminalStartupRecoveryRequestCommand
   | TerminalInputTraceCommand
-  | TerminalInputTraceClockSyncCommand;
+  | TerminalInputTraceClockSyncCommand
+  | SubscribeTaskCreationOperationCommand
+  | UnsubscribeTaskCreationOperationCommand;
 
 export const MAX_CLIENT_INPUT_DATA_LENGTH = 64 * 1024;
 
@@ -1026,6 +1082,7 @@ const CLIENT_MESSAGE_TYPE_VALUES = {
   'respond-task-command-takeover': true,
   resume: true,
   subscribe: true,
+  'subscribe-task-creation-operation': true,
   'task-command-lease': true,
   'terminal-recovery-request': true,
   'terminal-startup-recovery-request': true,
@@ -1033,6 +1090,7 @@ const CLIENT_MESSAGE_TYPE_VALUES = {
   'terminal-input-trace-clock-sync': true,
   'unbind-channel': true,
   unsubscribe: true,
+  'unsubscribe-task-creation-operation': true,
   'update-presence': true,
 } as const satisfies Record<ClientMessage['type'], true>;
 
@@ -1288,6 +1346,36 @@ function parseSubscribeCommand(message: Record<string, unknown>): SubscribeComma
   };
 }
 
+function parseTaskCreationOperationSubscriptionCommand(
+  type: SubscribeTaskCreationOperationCommand['type'],
+  message: Record<string, unknown>,
+): SubscribeTaskCreationOperationCommand | null {
+  if (
+    Object.keys(message).length !== 3 ||
+    !isTaskCreationOperationId(message.operationId) ||
+    !isTaskCreationOperationCapability(message.operationCapability)
+  ) {
+    return null;
+  }
+  return {
+    type,
+    operationCapability: message.operationCapability,
+    operationId: message.operationId,
+  };
+}
+
+function parseTaskCreationOperationUnsubscribeCommand(
+  message: Record<string, unknown>,
+): UnsubscribeTaskCreationOperationCommand | null {
+  if (Object.keys(message).length !== 2 || !isTaskCreationOperationId(message.operationId)) {
+    return null;
+  }
+  return {
+    type: 'unsubscribe-task-creation-operation',
+    operationId: message.operationId,
+  };
+}
+
 function parsePauseResumeCommand(
   type: PauseResumeCommand['type'],
   message: Record<string, unknown>,
@@ -1521,6 +1609,12 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
       case 'subscribe':
         return parseSubscribeCommand(msg);
+
+      case 'subscribe-task-creation-operation':
+        return parseTaskCreationOperationSubscriptionCommand(messageType, msg);
+
+      case 'unsubscribe-task-creation-operation':
+        return parseTaskCreationOperationUnsubscribeCommand(msg);
 
       case 'pause':
       case 'resume':

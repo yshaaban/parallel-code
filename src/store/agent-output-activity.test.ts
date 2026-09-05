@@ -20,8 +20,12 @@ import {
   resetAgentOutputActivityRuntimeState,
 } from './agent-output-activity';
 import { onAgentReady } from './agent-ready-callbacks';
-import { isAgentAskingQuestion } from './agent-question-state';
+import { isLocalAgentQuestionActive } from './agent-question-state';
 import { createTestAgent } from '../test/store-test-helpers';
+
+function isCurrentAgentQuestionActive(agentId: string): boolean {
+  return isLocalAgentQuestionActive(agentId, store.agents[agentId]?.generation ?? 0);
+}
 
 describe('agent-output-activity diagnostics', () => {
   const originalPerformance = globalThis.performance;
@@ -169,7 +173,7 @@ describe('agent-output-activity diagnostics', () => {
     markAgentOutput('agent-ansi', encoder.encode('31mProceed? [y/N]'), 'task-1');
     vi.advanceTimersByTime(250);
 
-    expect(isAgentAskingQuestion('agent-ansi')).toBe(true);
+    expect(isCurrentAgentQuestionActive('agent-ansi')).toBe(true);
   });
 
   it('does not clear question state for question-like prompt lines on the fast path', () => {
@@ -179,7 +183,7 @@ describe('agent-output-activity diagnostics', () => {
 
     markAgentOutput('agent-question', encoder.encode('Proceed with trust? [y/N]'), 'task-1');
 
-    expect(isAgentAskingQuestion('agent-question')).toBe(true);
+    expect(isCurrentAgentQuestionActive('agent-question')).toBe(true);
     expect(isAgentIdle('agent-question')).toBe(false);
   });
 
@@ -196,7 +200,7 @@ describe('agent-output-activity diagnostics', () => {
       'task-1',
     );
 
-    expect(isAgentAskingQuestion('agent-ready')).toBe(false);
+    expect(isCurrentAgentQuestionActive('agent-ready')).toBe(false);
     expect(isAgentIdle('agent-ready')).toBe(true);
   });
 
@@ -209,7 +213,7 @@ describe('agent-output-activity diagnostics', () => {
     markAgentOutput('agent-question', encoder.encode('Proceed with trust? [y/N]'), 'task-1');
     vi.advanceTimersByTime(250);
 
-    expect(isAgentAskingQuestion('agent-question')).toBe(false);
+    expect(isCurrentAgentQuestionActive('agent-question')).toBe(false);
     expect(isAgentIdle('agent-question')).toBe(false);
   });
 
@@ -307,7 +311,8 @@ describe('agent-output-activity diagnostics', () => {
     expect(getAgentOutputTail('agent-1')).toBe('current output\n');
     expect(getAgentLastOutputAt('agent-1')).toBe(lastOutputAtBeforeStaleChunk);
     expect(isAgentIdle('agent-1')).toBe(true);
-    expect(isAgentAskingQuestion('agent-1')).toBe(false);
+    expect(isCurrentAgentQuestionActive('agent-1')).toBe(false);
+    expect(getRendererRuntimeDiagnosticsSnapshot().promptQuestion.staleGenerationDrops).toBe(1);
   });
 
   it('does not fire ready callbacks for stale-generation prompt output', () => {

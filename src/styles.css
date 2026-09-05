@@ -110,6 +110,34 @@ select {
   font: inherit;
 }
 
+:where(
+  button,
+  input,
+  select,
+  textarea,
+  a[href],
+  summary,
+  [contenteditable]:not([contenteditable='false']),
+  [tabindex]:not([tabindex^='-']),
+  [role='button'],
+  [role='switch'],
+  [role='checkbox'],
+  [role='link'],
+  [role='menuitem'],
+  [role='menuitemradio'],
+  [role='menuitemcheckbox'],
+  [role='tab'],
+  [role='option'],
+  [role='combobox'],
+  [role='radio'],
+  [role='slider'],
+  [role='treeitem'],
+  [role='textbox']
+):focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
 .app-shell {
   position: relative;
   isolation: isolate;
@@ -446,30 +474,6 @@ textarea::placeholder {
   outline-offset: 1.5px;
 }
 
-.dialog-panel
-  :is(
-    button,
-    input,
-    select,
-    textarea,
-    a[href],
-    [tabindex],
-    [role='button'],
-    [role='switch'],
-    [role='checkbox'],
-    [role='link'],
-    [role='menuitem'],
-    [role='menuitemradio'],
-    [role='menuitemcheckbox'],
-    [role='tab'],
-    [role='option'],
-    [role='combobox'],
-    [role='radio']
-  ):focus-visible {
-  outline: 2.5px solid var(--border-focus);
-  outline-offset: 2px;
-}
-
 .dialog-sr-only {
   position: absolute;
   width: 1px;
@@ -698,6 +702,25 @@ textarea::placeholder {
   z-index: 10;
 }
 
+/* xterm and Monaco create internal keyboard targets. Their first-party shells
+   own the visible focus perimeter so generated textareas do not show a tiny,
+   misplaced ring. */
+.focusable-panel .xterm textarea:focus-visible,
+.focusable-panel .xterm [tabindex]:focus-visible,
+.monaco-diff-focus-shell .monaco-editor .inputarea:focus-visible,
+.monaco-diff-focus-shell .monaco-editor [tabindex]:focus-visible {
+  outline: none;
+}
+
+.monaco-diff-focus-shell {
+  position: relative;
+}
+
+.monaco-diff-focus-shell:focus-within {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
 /* Prompt input already has its own textarea focus treatment */
 .prompt-input-panel:focus-within::after {
   content: none;
@@ -712,11 +735,6 @@ textarea::placeholder {
   animation: fadeIn 0.16s ease;
   background: color-mix(in srgb, #000 44%, transparent);
   backdrop-filter: blur(6px) saturate(1.15);
-}
-
-.dialog-overlay > form,
-.dialog-overlay > .dialog-content {
-  animation: slideUp 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 .file-row:hover {
@@ -735,6 +753,20 @@ textarea::placeholder {
 
 .status-dot-pulse {
   animation: statusPulse 1.9s ease-in-out infinite;
+}
+
+@keyframes askCodeLoadingPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.askcode-loading-pulse {
+  animation: askCodeLoadingPulse var(--askcode-pulse-duration, 1.5s) ease-in-out infinite;
 }
 
 @keyframes fadeIn {
@@ -760,17 +792,6 @@ textarea::placeholder {
   border-top-color: currentColor;
   animation: spinnerSpin 0.75s linear infinite;
   flex-shrink: 0;
-}
-
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 .exit-badge {
@@ -814,10 +835,6 @@ textarea::placeholder {
     background 0.15s ease;
 }
 
-.new-task-placeholder:focus-visible {
-  outline: none;
-}
-
 .new-task-placeholder:hover {
   border-color: var(--accent) !important;
   color: var(--accent) !important;
@@ -845,6 +862,108 @@ textarea::placeholder {
   -webkit-font-variant-ligatures: none;
   text-rendering: optimizeSpeed;
   contain: content;
+}
+
+.terminal-search-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 14;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: min(440px, calc(100% - 16px));
+  min-height: 36px;
+  padding: 4px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, black);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.32);
+  color: var(--fg);
+}
+
+.terminal-search-input {
+  flex: 1 1 150px;
+  min-width: 96px;
+  height: 28px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-ui-size);
+  line-height: var(--text-ui-line-height);
+}
+
+.terminal-search-input:focus-visible,
+.terminal-search-button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+.terminal-search-status {
+  flex: 0 1 auto;
+  min-width: 56px;
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-meta-size);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-meta-line-height);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-search-status[data-terminal-search-result='No results'],
+.terminal-search-status[data-terminal-search-unavailable='true'] {
+  color: var(--warning);
+}
+
+.terminal-search-button {
+  display: inline-grid;
+  flex: 0 0 28px;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.terminal-search-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.terminal-search-button:active:not(:disabled) {
+  background: var(--bg-selected-subtle);
+}
+
+.terminal-search-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (max-width: 520px) {
+  .terminal-search-overlay {
+    width: calc(100% - 16px);
+  }
+
+  .terminal-search-status {
+    max-width: 92px;
+  }
 }
 
 @keyframes terminalInputAcknowledgementFramePulseEven {
@@ -884,13 +1003,6 @@ textarea::placeholder {
 [data-terminal-input-ack='true'][data-terminal-input-ack-phase='odd'] {
   animation: terminalInputAcknowledgementFramePulseOdd var(--terminal-input-ack-duration, 180ms)
     cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-terminal-input-ack='true'] {
-    animation: none;
-    outline-color: color-mix(in srgb, var(--accent) 44%, transparent);
-  }
 }
 
 .drop-indicator {
@@ -978,6 +1090,94 @@ body.dragging-task * {
 
 .prompt-send-btn:active:not(:disabled) {
   transform: translateY(0);
+}
+
+.initial-prompt-delivery {
+  display: grid;
+  gap: 6px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+
+.initial-prompt-delivery__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.initial-prompt-delivery__heading > :first-child {
+  color: var(--fg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.initial-prompt-delivery__state {
+  min-width: 0;
+  text-align: right;
+}
+
+.initial-prompt-delivery__state[data-tone='success'] {
+  color: var(--success);
+}
+
+.initial-prompt-delivery__state[data-tone='warning'],
+.initial-prompt-delivery__notice[data-tone='warning'] {
+  color: var(--warning);
+}
+
+.initial-prompt-delivery__draft {
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 9px;
+  resize: vertical;
+  color: var(--fg);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.initial-prompt-delivery__save-state,
+.initial-prompt-delivery__notice {
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.initial-prompt-delivery__conflict,
+.initial-prompt-delivery__actions,
+.initial-prompt-delivery__recovery-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.initial-prompt-delivery__conflict {
+  color: var(--warning);
+  font-size: 10px;
+}
+
+.initial-prompt-delivery__actions {
+  justify-content: flex-end;
+}
+
+.initial-prompt-delivery__recovery-actions {
+  margin-top: 6px;
+}
+
+.initial-prompt-delivery__actions .btn-primary,
+.initial-prompt-delivery__actions .btn-secondary,
+.initial-prompt-delivery__recovery-actions .btn-secondary,
+.initial-prompt-delivery__conflict .btn-secondary {
+  min-height: 26px;
+  padding: 4px 8px;
+  font-size: 10px;
 }
 
 .settings-theme-grid {
@@ -1327,4 +1527,84 @@ body.dragging-task * {
   border: none;
   border-top: 1px solid rgba(255, 255, 255, 0.15);
   margin: 0.5em 0;
+}
+
+@media (forced-colors: active) {
+  :where(
+    button,
+    input,
+    select,
+    textarea,
+    a[href],
+    summary,
+    [contenteditable]:not([contenteditable='false']),
+    [tabindex]:not([tabindex^='-']),
+    [role='button'],
+    [role='switch'],
+    [role='checkbox'],
+    [role='link'],
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='menuitemcheckbox'],
+    [role='tab'],
+    [role='option'],
+    [role='combobox'],
+    [role='radio'],
+    [role='slider'],
+    [role='treeitem'],
+    [role='textbox']
+  ):focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+    box-shadow: none !important;
+  }
+
+  .focusable-panel .xterm textarea:focus-visible,
+  .focusable-panel .xterm [tabindex]:focus-visible,
+  .monaco-diff-focus-shell .monaco-editor .inputarea:focus-visible,
+  .monaco-diff-focus-shell .monaco-editor [tabindex]:focus-visible {
+    outline: none !important;
+  }
+
+  .focusable-panel:focus-within::after {
+    border-color: Highlight;
+  }
+
+  .monaco-diff-focus-shell:focus-within {
+    outline-color: Highlight;
+  }
+}
+
+/* Keep this final so later component rules cannot accidentally restore
+   nonessential motion for users who requested reduction. Functional progress
+   spinners are intentionally absent from the animation list. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .task-appearing,
+  .task-item-appearing,
+  .task-removing,
+  .task-item-removing,
+  .dialog-overlay,
+  .exit-badge,
+  .status-dot-pulse,
+  .askcode-loading-pulse {
+    animation: none !important;
+  }
+
+  .status-dot-ring {
+    outline: 1px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  [data-terminal-input-ack='true'] {
+    animation: none !important;
+    outline-color: color-mix(in srgb, var(--accent) 44%, transparent);
+  }
 }

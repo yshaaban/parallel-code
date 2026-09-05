@@ -180,7 +180,6 @@ export function AddProjectDialog(props: AddProjectDialogProps): JSX.Element {
               'border-radius': '8px',
               padding: '8px 11px',
               color: theme.fg,
-              outline: 'none',
               ...typography.ui,
             }}
           />

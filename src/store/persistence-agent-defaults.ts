@@ -25,7 +25,12 @@ function normalizeAgentEnvironment(value: unknown): Record<string, string> | und
 }
 
 function normalizePersistedAgentDef(agentDef: AgentDef, hydraCommand: string): AgentDef {
-  const { env, ...baseAgentDef } = agentDef;
+  const {
+    env,
+    resume_failure_classifier: _persistedResumeFailureClassifier,
+    resume_failure_fallback: _persistedResumeFailureFallback,
+    ...baseAgentDef
+  } = agentDef;
   const normalizedEnv = normalizeAgentEnvironment(env);
   const normalizedAgent: AgentDef = {
     ...baseAgentDef,
@@ -55,10 +60,16 @@ export function hydratePersistedAgentDef(
   agentDef: AgentDef | null | undefined,
   availableAgents: AgentDef[],
   hydraCommand: string,
+  trustedCapabilityAgents: ReadonlyArray<AgentDef> = [],
 ): void {
   if (!agentDef) {
     return;
   }
+
+  // Reserved recovery capability is restored only from the current trusted
+  // built-in catalog. Persisted/custom definitions cannot opt themselves in.
+  delete agentDef.resume_failure_classifier;
+  delete agentDef.resume_failure_fallback;
 
   agentDef.args = normalizeAgentArgList(agentDef.args);
   agentDef.description =
@@ -72,6 +83,7 @@ export function hydratePersistedAgentDef(
   agentDef.resume_args = normalizeAgentArgList(agentDef.resume_args);
   agentDef.skip_permissions_args = normalizeAgentArgList(agentDef.skip_permissions_args);
   const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
+  const trustedCapability = trustedCapabilityAgents.find((agent) => agent.id === agentDef.id);
   if (!agentDef.adapter && agentDef.id === 'hydra') {
     agentDef.adapter = 'hydra';
   }
@@ -79,6 +91,14 @@ export function hydratePersistedAgentDef(
     agentDef.adapter = fresh.adapter;
   }
   agentDef.resume_strategy = getAgentResumeStrategy(fresh ?? agentDef);
+  if (trustedCapability) {
+    if (trustedCapability.resume_failure_classifier !== undefined) {
+      agentDef.resume_failure_classifier = trustedCapability.resume_failure_classifier;
+    }
+    if (trustedCapability.resume_failure_fallback !== undefined) {
+      agentDef.resume_failure_fallback = trustedCapability.resume_failure_fallback;
+    }
+  }
   if (fresh) {
     if (!Array.isArray(agentDef.args) || (agentDef.args.length === 0 && fresh.args.length > 0)) {
       agentDef.args = [...fresh.args];
@@ -107,6 +127,7 @@ export function createWorkspaceStateBaseAgents(
 ): {
   availableAgents: AgentDef[];
   customAgents: AgentDef[];
+  trustedAvailableAgents: AgentDef[];
 } {
   const currentCustomAgentIds = new Set(currentCustomAgents.map((agent) => agent.id));
   const defaultAvailableAgents = currentAvailableAgents.filter(
@@ -134,5 +155,8 @@ export function createWorkspaceStateBaseAgents(
   return {
     availableAgents,
     customAgents,
+    trustedAvailableAgents: defaultAvailableAgents.map((agent) =>
+      applyHydraCommandOverride(agent, restoredHydraCommand),
+    ),
   };
 }

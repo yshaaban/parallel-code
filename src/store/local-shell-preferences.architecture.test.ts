@@ -11,6 +11,7 @@ const localShellPreferenceKeys = [
   'globalScale',
   'inactiveColumnOpacity',
   'keybindings',
+  'newTaskDefaults',
   'panelSizes',
   'showPlans',
   'sidebarSectionCollapsed',

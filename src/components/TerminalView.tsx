@@ -11,10 +11,9 @@ import {
 } from 'solid-js';
 
 import { getTerminalFontFamily } from '../lib/fonts';
-import { getTerminalTheme } from '../lib/theme';
+import { getTerminalSearchDecorationTheme, getTerminalTheme, theme } from '../lib/theme';
 import { markDirty } from '../lib/terminalFitManager';
 import { assertNever } from '../lib/assert-never';
-import { theme } from '../lib/theme';
 import {
   getTerminalExperimentInputAcknowledgementDurationMs,
   getTerminalExperimentInputAcknowledgementMode,
@@ -58,6 +57,7 @@ import {
 } from '../app/terminal-startup-paint';
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
+import { TerminalSearchOverlay } from './TerminalSearchOverlay';
 import { createTaskControlVisualState } from './task-control-visual-state';
 import { ensureAgentSessionForDeferredTerminal } from '../app/agent-session-ensure';
 import {
@@ -112,13 +112,16 @@ import {
 import { getVisibleTerminalCount, registerTerminalVisibility } from '../app/terminal-visible-set';
 import { startLoadedTerminalSession } from './terminal-view/terminal-session-loader';
 import type { TerminalAttachMilestone, TerminalSession } from './terminal-view/terminal-session';
-import type {
-  TerminalPresentationMode,
-  TerminalViewProps,
-  TerminalViewStatus,
+import {
+  getTerminalRestoreUnavailableMessage,
+  type TerminalSessionAttachUnavailableReason,
+  type TerminalPresentationMode,
+  type TerminalViewProps,
+  type TerminalViewStatus,
 } from './terminal-view/types';
 import { getTerminalOutputPriority } from '../lib/terminal-output-priority';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { TERMINAL_SEARCH_QUERY_LIMIT, type TerminalSearchResult } from '../lib/terminal-search';
 
 let nextTerminalViewInstanceId = 1;
 
@@ -142,6 +145,7 @@ function isElementVisibleInViewport(element: Element): boolean {
 
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const POST_RECOVERY_INPUT_CAPTURE_GRACE_MS = 750;
+const EMPTY_TERMINAL_SEARCH_RESULT: TerminalSearchResult = { count: 0, index: -1 };
 
 function getTerminalFocusElement(root: HTMLElement | undefined): HTMLElement | null {
   if (!root) {
@@ -209,6 +213,8 @@ interface TerminalAttachTraceEntry {
   recoverySettledAtMs: number | null;
   recoveryStartedAtMs: number | null;
   selectedInteractiveAtMs: number | null;
+  // Frozen browser-scorecard wire names. These measure the whole attach RPC,
+  // which may restore or bind an existing process without spawning one.
   spawnRequestedAtMs: number | null;
   spawnResolvedAtMs: number | null;
   status: TerminalAttachTraceStatus;
@@ -291,11 +297,11 @@ function recordTerminalAttachMilestone(key: string, milestone: TerminalAttachMil
         entry.attachFitReadyAtMs = atMs;
         entry.status = 'fit-ready';
         return;
-      case 'spawn-requested':
+      case 'attach-requested':
         entry.spawnRequestedAtMs = atMs;
         entry.status = 'spawning';
         return;
-      case 'spawn-resolved':
+      case 'attach-resolved':
         entry.spawnResolvedAtMs = atMs;
         entry.status = 'spawned';
         return;
@@ -463,6 +469,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let terminalInputCaptureGraceUntilMs = 0;
   let takeOverGeneration = 0;
   let sessionStartGeneration = 0;
+  let activeSessionIdentity: string | undefined;
+  let activeSearchIdentity: string | undefined;
+  let activeSearchCapability: TerminalSession['search'] | undefined;
   let pendingRecoveryFocusRestore = false;
   let previousFocusRestoreIntent = false;
   let previousXtermFocusIntent: boolean | undefined;
@@ -504,6 +513,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let previouslyVisible = typeof IntersectionObserver !== 'function';
   let lastPanelResizeRefreshEpoch = untrack(getPanelResizeDragEpoch);
   const [sessionStatus, setSessionStatus] = createSignal<TerminalViewStatus>('binding');
+  const [attachUnavailableReason, setAttachUnavailableReason] =
+    createSignal<TerminalSessionAttachUnavailableReason | null>(null);
   const [sessionDormant, setSessionDormant] = createSignal(false);
   const [renderHibernating, setRenderHibernating] = createSignal(false);
   const [restoreBlocked, setRestoreBlocked] = createSignal(false);
@@ -522,6 +533,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   );
   const [inputAcknowledgementVisible, setInputAcknowledgementVisible] = createSignal(false);
   const [sessionVersion, setSessionVersion] = createSignal(0);
+  const [searchOpen, setSearchOpen] = createSignal(false);
+  const [searchQuery, setSearchQuery] = createSignal('');
+  const [searchResult, setSearchResult] = createSignal<TerminalSearchResult>(
+    EMPTY_TERMINAL_SEARCH_RESULT,
+  );
+  const [searchLoading, setSearchLoading] = createSignal(false);
+  const [searchUnavailable, setSearchUnavailable] = createSignal(false);
+  const [searchFocusVersion, setSearchFocusVersion] = createSignal(0);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
     const registeredTier = getTerminalSurfaceTier(terminalStartupKey);
@@ -596,6 +615,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     if (props.adapter !== undefined) {
       snapshot.adapter = props.adapter;
     }
+    if (props.arenaLaunchToken !== undefined) {
+      snapshot.arenaLaunchToken = props.arenaLaunchToken;
+    }
     if (props.baseBranch !== undefined) {
       snapshot.baseBranch = props.baseBranch;
     }
@@ -635,9 +657,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     if (props.onReady !== undefined) {
       snapshot.onReady = props.onReady;
     }
-    if (props.onSpawnResolved !== undefined) {
-      snapshot.onSpawnResolved = props.onSpawnResolved;
-    }
     if (props.projectMode !== undefined) {
       snapshot.projectMode = props.projectMode;
     }
@@ -649,6 +668,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
     if (props.runnerProfile !== undefined) {
       snapshot.runnerProfile = props.runnerProfile;
+    }
+    if (props.sessionOwner !== undefined) {
+      snapshot.sessionOwner = props.sessionOwner;
     }
     if (props.startsTaskWatchers !== undefined) {
       snapshot.startsTaskWatchers = props.startsTaskWatchers;
@@ -1372,6 +1394,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     );
   }
 
+  function isOwnedTerminalInputElement(element: Element): boolean {
+    const terminalInput = element.closest(TERMINAL_INPUT_SELECTOR);
+    return terminalInput !== null && shellRef?.contains(terminalInput) === true;
+  }
+
   function shouldHandleTerminalInputCapture(event: Event): boolean {
     if (!shouldBufferPendingTerminalInputEvent()) {
       return false;
@@ -1382,12 +1409,20 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return true;
     }
 
-    if (shellRef?.contains(target)) {
-      return true;
+    // xterm disables its own textarea while resize/recovery blocks direct
+    // stdin. Keep capturing that owned textarea so keys enter the ordered
+    // pending-input path instead of disappearing. Other editors, including
+    // terminal search and controls outside this surface, retain normal input.
+    if (
+      target instanceof Element &&
+      isEditableElement(target) &&
+      !isOwnedTerminalInputElement(target)
+    ) {
+      return false;
     }
 
-    if (target instanceof Element && isEditableElement(target)) {
-      return false;
+    if (shellRef?.contains(target)) {
+      return true;
     }
 
     return target === document.body || target === document.documentElement;
@@ -1670,6 +1705,171 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     session?.prewarmRenderHibernation?.();
   }
 
+  function getTerminalSessionIdentity(generation: number): string {
+    return `${terminalStartupKey}:${generation}`;
+  }
+
+  function isCurrentSearchBinding(
+    identity: string | undefined,
+    capability: TerminalSession['search'] | undefined,
+  ): boolean {
+    return (
+      identity !== undefined &&
+      capability !== undefined &&
+      identity === activeSessionIdentity &&
+      identity === activeSearchIdentity &&
+      capability === activeSearchCapability &&
+      capability === session?.search
+    );
+  }
+
+  function resetTerminalSearchPresentation(): void {
+    if (terminalViewUnmounting) {
+      return;
+    }
+
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult(EMPTY_TERMINAL_SEARCH_RESULT);
+    setSearchLoading(false);
+    setSearchUnavailable(false);
+  }
+
+  function closeTerminalSearch(restoreFocus: boolean): void {
+    const identity = activeSearchIdentity;
+    const capability = activeSearchCapability;
+    activeSearchIdentity = undefined;
+    activeSearchCapability = undefined;
+    resetTerminalSearchPresentation();
+    capability?.close();
+
+    if (!restoreFocus || !identity || !capability) {
+      return;
+    }
+
+    queueMicrotask(() =>
+      untrack(() => {
+        if (
+          terminalViewUnmounting ||
+          activeSessionIdentity !== identity ||
+          session?.search !== capability ||
+          sessionDormant() ||
+          sessionStatus() !== 'ready' ||
+          !isVisible()
+        ) {
+          return;
+        }
+
+        session.term.focus();
+      }),
+    );
+  }
+
+  function handleSearchRequested(identity: string, capability: TerminalSession['search']): void {
+    if (
+      terminalViewUnmounting ||
+      identity !== activeSessionIdentity ||
+      capability !== session?.search ||
+      sessionDormant()
+    ) {
+      return;
+    }
+
+    if (
+      searchOpen() &&
+      activeSearchIdentity === identity &&
+      activeSearchCapability === capability
+    ) {
+      setSearchFocusVersion((version) => version + 1);
+      return;
+    }
+
+    if (searchOpen()) {
+      closeTerminalSearch(false);
+    }
+
+    const selectionSeed = capability.getSelectionSeed();
+    activeSearchIdentity = identity;
+    activeSearchCapability = capability;
+    setSearchQuery(selectionSeed);
+    setSearchResult(EMPTY_TERMINAL_SEARCH_RESULT);
+    setSearchUnavailable(false);
+    setSearchLoading(selectionSeed.length > 0);
+    setSearchOpen(true);
+    setSearchFocusVersion((version) => version + 1);
+    capability.setDecorationTheme(getTerminalSearchDecorationTheme(store.themePreset));
+    if (selectionSeed.length === 0) {
+      capability.clear();
+      return;
+    }
+
+    capability.find(selectionSeed, { direction: 'next', incremental: true });
+  }
+
+  function handleSearchResult(
+    identity: string,
+    capability: TerminalSession['search'],
+    result: TerminalSearchResult,
+  ): void {
+    if (!searchOpen() || !isCurrentSearchBinding(identity, capability)) {
+      return;
+    }
+
+    setSearchResult(result);
+    setSearchLoading(false);
+  }
+
+  function handleSearchUnavailable(identity: string, capability: TerminalSession['search']): void {
+    if (!searchOpen() || !isCurrentSearchBinding(identity, capability)) {
+      return;
+    }
+
+    setSearchLoading(false);
+    setSearchUnavailable(true);
+  }
+
+  function handleSearchQueryChange(query: string): void {
+    const capability = activeSearchCapability;
+    const identity = activeSearchIdentity;
+    if (!searchOpen() || !isCurrentSearchBinding(identity, capability) || !capability) {
+      return;
+    }
+
+    const boundedQuery = query.slice(0, TERMINAL_SEARCH_QUERY_LIMIT);
+    setSearchQuery(boundedQuery);
+    setSearchResult(EMPTY_TERMINAL_SEARCH_RESULT);
+    if (boundedQuery.length === 0) {
+      setSearchLoading(false);
+      capability.clear();
+      return;
+    }
+
+    if (searchUnavailable()) {
+      return;
+    }
+
+    setSearchLoading(true);
+    capability.find(boundedQuery, { direction: 'next', incremental: true });
+  }
+
+  function handleSearchNavigate(direction: 'next' | 'previous'): void {
+    const capability = activeSearchCapability;
+    const identity = activeSearchIdentity;
+    const query = searchQuery();
+    if (
+      query.length === 0 ||
+      searchUnavailable() ||
+      !searchOpen() ||
+      !isCurrentSearchBinding(identity, capability) ||
+      !capability
+    ) {
+      return;
+    }
+
+    setSearchLoading(true);
+    capability.find(query, { direction, incremental: false });
+  }
+
   function cleanupTerminalSessionLifetime(): void {
     sessionStartGeneration += 1;
     takeOverGeneration += 1;
@@ -1684,8 +1884,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       setRestoreBlocked(false);
       setResizeTransactionActive(false);
     }
+    closeTerminalSearch(false);
     const currentSession = session;
     session = undefined;
+    activeSessionIdentity = undefined;
     currentSession?.cleanup();
     previousXtermFocusIntent = undefined;
     if (!terminalViewUnmounting) {
@@ -1703,6 +1905,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     terminalAttachInProgress = false;
     session = nextSession;
+    activeSessionIdentity = getTerminalSessionIdentity(generation);
     // Drain pre-session keystrokes into the session input pipeline before any
     // other input so focus-to-ready typing keeps its order relative to keys
     // typed after the session exists.
@@ -1749,11 +1952,21 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     if (status !== 'ready') {
       clearInputAcknowledgement();
+    } else {
+      setAttachUnavailableReason(null);
     }
     setSessionStatus(status);
     armTerminalInputCaptureGraceIfPaintReady();
     syncCurrentSessionRuntimeState();
     schedulePendingTerminalKeyCaptureReleaseIfReady();
+  }
+
+  function retryUnavailableTerminalAttach(): void {
+    const currentSession = session;
+    if (!currentSession || attachUnavailableReason() === null) return;
+    pendingRecoveryFocusRestore = true;
+    setAttachUnavailableReason(null);
+    currentSession.retryAttach();
   }
 
   function handleSessionPaintReadyChange(nextPaintReady: boolean): void {
@@ -1864,9 +2077,15 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               // the backend resolves it.
               attachRegistration?.release();
             },
+            onAttachSettledWithoutDispatch: () => {
+              // Lease refusal/cancellation still settles this queued attempt,
+              // even though no backend attach RPC was dispatched.
+              attachRegistration?.release();
+            },
             onAttachMilestone: (milestone) => {
               recordTerminalAttachMilestone(terminalStartupKey, milestone);
             },
+            onAttachUnavailable: setAttachUnavailableReason,
             onBlockedInputAttempt: () => {
               recordTerminalPresentationBlockedInput(presentationMode().kind);
               anomalyMonitorRegistration?.recordInteraction('blocked-input');
@@ -1886,6 +2105,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             },
             onRestoreBlockedChange: handleSessionRestoreBlockedChange,
             onResizeTransactionChange: handleSessionResizeTransactionChange,
+            onSearchRequested: handleSearchRequested,
+            onSearchResult: handleSearchResult,
+            onSearchUnavailable: handleSearchUnavailable,
             onSelectedRecoverySettle: () => {
               markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
               requestTerminalOutputDrain();
@@ -1896,6 +2118,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
             onStatusChange: handleSessionStatusChange,
             props: getTerminalSessionPropsSnapshot(),
+            sessionIdentity: getTerminalSessionIdentity(generation),
             subscribeStartupPaintCoordinationChanges:
               subscribeTerminalStartupPaintCoordinationChanges,
             shouldCommitResize: shouldKeepTerminalGeometryLive,
@@ -2402,6 +2625,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const preset = store.themePreset;
     if (!session) return;
     session.term.options.theme = getTerminalTheme(preset);
+    session.search.setDecorationTheme(getTerminalSearchDecorationTheme(preset));
     markDirty(agentId, 'theme');
   });
 
@@ -2531,6 +2755,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       data-terminal-input-ack-phase={getInputAcknowledgementPulsePhase()}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
       data-terminal-restore-blocked={restoreBlocked() ? 'true' : undefined}
+      data-terminal-search-open={searchOpen() ? 'true' : undefined}
       data-terminal-live-render-ready={isLiveRenderReady() ? 'true' : undefined}
       data-terminal-paint-ready={isPaintSettledReady() ? 'true' : undefined}
       data-terminal-presentation-mode={presentationMode().kind}
@@ -2658,6 +2883,35 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           </div>
         )}
       </Show>
+      <Show when={attachUnavailableReason()}>
+        {(reason) => (
+          <div
+            data-terminal-restore-unavailable={reason()}
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'absolute',
+              right: '12px',
+              bottom: '12px',
+              display: 'flex',
+              'align-items': 'center',
+              gap: '8px',
+              padding: '6px 8px',
+              'border-radius': '8px',
+              border: `1px solid ${theme.border}`,
+              background: 'color-mix(in srgb, var(--island-bg) 92%, transparent)',
+              color: theme.fgMuted,
+              'font-size': '12px',
+              'z-index': '12',
+            }}
+          >
+            <span>{getTerminalRestoreUnavailableMessage(reason())}</span>
+            <button type="button" onClick={retryUnavailableTerminalAttach}>
+              Retry restore
+            </button>
+          </div>
+        )}
+      </Show>
       <Show
         when={
           !loadingLabel() && !controlVisualState.isBannerVisible() && controlVisualState.status()
@@ -2667,7 +2921,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           <div
             style={{
               position: 'absolute',
-              top: '8px',
+              top: searchOpen() ? '52px' : '8px',
               right: '8px',
               'z-index': '11',
             }}
@@ -2698,7 +2952,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             }}
             style={{
               position: 'absolute',
-              top: '8px',
+              top: searchOpen() ? '52px' : '8px',
               left: '8px',
               right: '8px',
               'z-index': '12',
@@ -2706,6 +2960,18 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             }}
           />
         )}
+      </Show>
+      <Show when={searchOpen()}>
+        <TerminalSearchOverlay
+          focusVersion={searchFocusVersion()}
+          loading={searchLoading()}
+          query={searchQuery()}
+          result={searchResult()}
+          unavailable={searchUnavailable()}
+          onClose={() => closeTerminalSearch(true)}
+          onNavigate={handleSearchNavigate}
+          onQueryChange={handleSearchQueryChange}
+        />
       </Show>
       <Show when={isTerminalAnomalyMonitorEnabled() && terminalAnomalyPresentation().label}>
         {(label) => (

@@ -85,6 +85,7 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
           <span style={{ ...typography.meta, color: 'var(--text-muted)' }}>Session name</span>
           <input
             ref={inputRef}
+            class="remote-session-name-input"
             type="text"
             value={value()}
             maxLength={40}
@@ -102,7 +103,6 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
               padding: '12px 14px',
               color: 'var(--text-primary)',
               ...typography.body,
-              outline: 'none',
             }}
           />
         </label>

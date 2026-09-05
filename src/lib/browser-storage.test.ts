@@ -47,6 +47,9 @@ describe('browser-storage', () => {
 
     expect(getSafeLocalStorage()).toBe(localStorage);
     expect(getSafeSessionStorage()).toBe(sessionStorage);
+    sessionStorage.setItem('credential', 'value');
+    expect(removeSafeStorageItem(sessionStorage, 'credential')).toBe(true);
+    expect(sessionStorage.getItem('credential')).toBeNull();
   });
 
   it('returns null when browser storage access throws a security error', () => {
@@ -90,6 +93,6 @@ describe('browser-storage', () => {
 
     expect(getSafeStorageItem(throwingStorage, 'key')).toBeNull();
     expect(setSafeStorageItem(throwingStorage, 'key', 'value')).toBe(false);
-    expect(() => removeSafeStorageItem(throwingStorage, 'key')).not.toThrow();
+    expect(removeSafeStorageItem(throwingStorage, 'key')).toBe(false);
   });
 });

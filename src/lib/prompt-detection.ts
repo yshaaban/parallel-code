@@ -220,8 +220,13 @@ export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
     return false;
   }
 
-  const lastCodexPromptIndex = getLastMatchingLineIndex(lines, looksLikeCodexPromptLine);
-  if (lastCodexPromptIndex > lastQuestionIndex) {
+  // A real prompt observed after stale question prose is newer evidence. This
+  // scans the bounded visible tail rather than only the final few lines, so a
+  // carriage-return redraw or deep status footer cannot latch question state.
+  // Prompt-adjacent selection dialogs are recovered by the dedicated choice
+  // check below and therefore remain conservative blockers.
+  const lastPromptIndex = getLastMatchingLineIndex(lines, looksLikePromptLine);
+  if (lastPromptIndex > lastQuestionIndex) {
     return false;
   }
 
@@ -241,14 +246,8 @@ export function hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail: str
     return false;
   }
 
-  let index = lines.length - 1;
-  while (index >= 0) {
-    const currentLine = lines[index];
-    if (!currentLine || !isBarePromptLine(currentLine)) {
-      break;
-    }
-    index -= 1;
-  }
+  const lastPromptIndex = getLastMatchingLineIndex(lines, isBarePromptLine);
+  const index = lastPromptIndex >= 0 ? lastPromptIndex - 1 : lines.length - 1;
 
   if (index < 0) {
     return false;
@@ -264,11 +263,11 @@ export function hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail: str
 
 export function looksLikeQuestion(tail: string): boolean {
   const visibleTail = getVisibleTerminalTextForDetection(tail);
-  if (looksLikeQuestionInVisibleTail(visibleTail)) {
+  if (hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail)) {
     return true;
   }
 
-  return hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail);
+  return looksLikeQuestionInVisibleTail(visibleTail);
 }
 
 export function looksLikeTrustDialogInVisibleTail(visibleTail: string): boolean {

@@ -2,10 +2,12 @@ import fs from 'fs';
 import path from 'path';
 
 import { detectMainBranch, getCurrentBranchName, listBranches } from './git-branch.js';
+import { resolveBranchRef } from './git-branch-ref.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { execGit } from './git-exec.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
-import { listGitWorktrees, worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
+import { listGitWorktrees, worktreeExists } from './git-worktree.js';
+import { getDefaultWorktreeSymlinkCandidateNames } from './git-worktree-symlinks.js';
 import type { ImportableWorktree } from '../../src/ipc/types.js';
 
 export { invalidateGitQueryCacheForPath, invalidateWorktreeStatusCache } from './git-cache.js';
@@ -33,24 +35,7 @@ export {
 } from './git-mutation-ops.js';
 
 export async function getGitIgnoredDirs(projectRoot: string): Promise<string[]> {
-  const results: string[] = [];
-  for (const name of SYMLINK_CANDIDATES) {
-    const dirPath = path.join(projectRoot, name);
-    try {
-      fs.statSync(dirPath);
-    } catch {
-      continue;
-    }
-
-    try {
-      await execGit(['check-ignore', '-q', name], { cwd: projectRoot });
-      results.push(name);
-    } catch {
-      // directory is not ignored
-    }
-  }
-
-  return results;
+  return getDefaultWorktreeSymlinkCandidateNames(projectRoot);
 }
 
 export async function getMainBranch(
@@ -119,7 +104,8 @@ export async function getGitCommonDirectory(candidatePath: string): Promise<stri
 }
 
 async function getMergeBaseForHead(worktreePath: string, mainBranch: string): Promise<string> {
-  return getMergeBaseOrFallback(worktreePath, mainBranch, 'HEAD', mainBranch);
+  const { refName } = await resolveBranchRef(worktreePath, mainBranch);
+  return getMergeBaseOrFallback(worktreePath, refName, 'HEAD', refName);
 }
 
 export async function getWorktreeStatus(

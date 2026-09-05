@@ -1,7 +1,10 @@
 import {
   buildAccessUrl as buildRemoteAccessUrl,
   buildOptionalAccessUrl as buildOptionalRemoteAccessUrl,
+  buildOptionalSecureSessionBootstrapUrl,
+  buildSecureSessionBootstrapUrl,
   getNetworkIps,
+  type SecureSessionBootstrapUrlOptions,
 } from '../electron/remote/network.js';
 import type { EnabledRemoteAccessStatus } from '../src/domain/server-state.js';
 
@@ -18,6 +21,7 @@ export type BrowserRemoteStatus = EnabledRemoteAccessStatus;
 export interface CreateBrowserServerInfoOptions {
   getAuthenticatedClientCount: () => number;
   getPort: () => number;
+  secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
   token: string;
 }
 
@@ -32,11 +36,25 @@ export function createBrowserServerInfo(
   options: CreateBrowserServerInfoOptions,
 ): BrowserServerInfoService {
   function buildAccessUrl(host: string): string {
-    return buildRemoteAccessUrl(host, options.getPort(), options.token);
+    return options.secureSessionBootstrap
+      ? buildSecureSessionBootstrapUrl(
+          host,
+          options.getPort(),
+          options.token,
+          options.secureSessionBootstrap,
+        )
+      : buildRemoteAccessUrl(host, options.getPort(), options.token);
   }
 
   function buildOptionalAccessUrl(host: string | null): string | null {
-    return buildOptionalRemoteAccessUrl(host, options.getPort(), options.token);
+    return options.secureSessionBootstrap
+      ? buildOptionalSecureSessionBootstrapUrl(
+          host,
+          options.getPort(),
+          options.token,
+          options.secureSessionBootstrap,
+        )
+      : buildOptionalRemoteAccessUrl(host, options.getPort(), options.token);
   }
 
   function getServerInfo(): BrowserServerInfo {

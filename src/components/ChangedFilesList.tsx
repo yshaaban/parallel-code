@@ -543,7 +543,6 @@ export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
         'flex-direction': 'column',
         height: '100%',
         overflow: 'hidden',
-        outline: 'none',
         ...typography.monoMeta,
       }}
     >

@@ -77,6 +77,7 @@ function createEmptyProjection(): BrowserColdBootstrapProjection {
     lastProjectId: null,
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
+    mergeProgress: null,
     projects: [],
     taskOrder: [],
     tasks: {},

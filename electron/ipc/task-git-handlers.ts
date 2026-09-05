@@ -12,7 +12,6 @@ import {
   getCurrentBranch,
   getFileDiff,
   getFileDiffFromBranch,
-  getGitIgnoredDirs,
   getGitRepoRoot,
   listBranches,
   listImportableWorktrees,
@@ -35,6 +34,7 @@ import {
   createTaskWorkflow,
   deleteTaskWorkflow,
   findRegisteredTaskIdForWorktreePath,
+  hasRegisteredSharedRootTask,
   stopTaskAgentWorkflowsForTask,
 } from './task-workflows.js';
 import {
@@ -59,6 +59,10 @@ import {
 } from './path-utils.js';
 import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
+import {
+  encodeTaskWorktreeLinkRequestV1,
+  getWorktreeSymlinkCandidates,
+} from './git-worktree-symlinks.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { isChangedFileStatus, type ChangedFileStatus } from '../../src/domain/git-status.js';
 import {
@@ -69,8 +73,21 @@ import {
 } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
-import type { TaskCleanupWarning } from '../../src/domain/task-cleanup.js';
+import type { TaskCleanupResult, TaskCleanupWarning } from '../../src/domain/task-cleanup.js';
 import type { MergeResult } from '../../src/ipc/types.js';
+import {
+  registerArenaTerminalLaunch,
+  revokeArenaTerminalLaunches,
+} from './arena-terminal-launches.js';
+import {
+  TaskStructureConflictError,
+  type AddPreparedTaskRequest,
+} from './task-structure-mutations.js';
+import type { TaskMergeGitRequest, TaskMergeGitResult } from './task-merge-workflow.js';
+import {
+  isTaskMergeOperationAccess,
+  isTaskMergeSemanticRequest,
+} from '../../src/domain/task-merge.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (typeof value !== 'string' || !isReviewDiffMode(value)) {
@@ -143,6 +160,15 @@ function assertArenaBranchName(branchName: string): void {
   }
 }
 
+async function resolveArenaProjectRoot(projectRoot: string): Promise<string> {
+  const canonicalProjectRoot = await getGitRepoRoot(projectRoot);
+  if (!canonicalProjectRoot) {
+    throw new BadRequestError('projectRoot must identify a Git repository');
+  }
+
+  return canonicalProjectRoot;
+}
+
 function createOutputHandler(
   context: HandlerContext,
   channelId: string | undefined,
@@ -160,6 +186,20 @@ function assertTaskCommandLeaseHeld(taskId: string, controllerId: string): void 
   if (!isTaskCommandLeaseHeld(taskId, controllerId)) {
     throw new BadRequestError('Task is controlled by another client');
   }
+}
+
+function assertExactRequestKeys(value: object, keys: readonly string[]): void {
+  const actual = Object.keys(value);
+  if (actual.length !== keys.length || keys.some((key) => !(key in value))) {
+    throw new BadRequestError('Request contains unsupported fields');
+  }
+}
+
+async function requireTaskMergeWorkflow(context: HandlerContext) {
+  if (!context.getTaskMergeWorkflow) {
+    throw new Error('The canonical task merge workflow is unavailable');
+  }
+  return context.getTaskMergeWorkflow();
 }
 
 function executeTaskLeaseProtectedCoordinatorProducer<T>(
@@ -185,7 +225,10 @@ function assertRegisteredTaskGitMutationLease(request: {
   taskId?: string;
   worktreePath: string;
 }): void {
-  const registeredTaskId = findRegisteredTaskIdForWorktreePath(request.worktreePath);
+  const registeredTaskId = findRegisteredTaskIdForWorktreePath(
+    request.worktreePath,
+    request.taskId,
+  );
   if (!registeredTaskId) {
     if (request.taskId !== undefined || request.controllerId !== undefined) {
       throw new BadRequestError('taskId and controllerId require a registered task worktree');
@@ -225,6 +268,7 @@ function mergeBranchAndRefreshGitStatus(request: MergeBranchRequest): Promise<Me
     request.message ?? null,
     request.cleanup ?? false,
     request.baseBranch,
+    hasRegisteredSharedRootTask,
   ).finally(() => {
     scheduleTaskConvergenceRefreshForGitTarget({
       projectRoot: request.projectRoot,
@@ -233,6 +277,22 @@ function mergeBranchAndRefreshGitStatus(request: MergeBranchRequest): Promise<Me
       projectRoot: request.projectRoot,
     });
   });
+}
+
+/** Trusted D09 low-level adapter. Generic removal owns every cleanup effect. */
+export async function executeBackendTaskMergeGit(
+  request: TaskMergeGitRequest,
+): Promise<TaskMergeGitResult> {
+  const result = await mergeBranchAndRefreshGitStatus({
+    ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+    branchName: request.branchName,
+    cleanup: false,
+    ...(request.message !== undefined ? { message: request.message } : {}),
+    projectRoot: request.projectRoot,
+    squash: request.squash,
+    worktreePath: request.worktreePath,
+  });
+  return { linesAdded: result.lines_added, linesRemoved: result.lines_removed };
 }
 
 function getCreatedTaskWorktreeOwnership(result: {
@@ -246,9 +306,120 @@ function getCreatedTaskWorktreeOwnership(result: {
   return result.git_isolation === 'existing-worktree' ? 'external' : 'managed';
 }
 
+async function addPreparedTaskToWorkspace(
+  context: HandlerContext,
+  request: {
+    agentDefId?: string;
+    baseBranch?: string;
+    githubUrl?: string;
+    name: string;
+    operationId: string;
+    projectId: string;
+    projectMode?: ProjectMode;
+    projectRoot: string;
+    stepsTracking?: boolean;
+    gitIsolation?: TaskGitIsolationMode;
+  },
+  result: {
+    base_branch?: string;
+    branch_name: string;
+    git_isolation?: TaskGitIsolationMode;
+    id: string;
+    project_mode?: ProjectMode;
+    worktree_path: string;
+  },
+): Promise<void> {
+  const host = context.workspaceMutations;
+  if (!host) return;
+
+  const projectMode = result.project_mode ?? request.projectMode ?? 'git';
+  const gitIsolation =
+    projectMode === 'git'
+      ? (result.git_isolation ?? request.gitIsolation ?? 'worktree')
+      : undefined;
+  const prepared: AddPreparedTaskRequest = {
+    branchName: result.branch_name,
+    name: request.name,
+    projectId: request.projectId,
+    projectMode,
+    projectRoot: request.projectRoot,
+    taskId: result.id,
+    taskMode: request.agentDefId === undefined ? 'terminal' : 'agent',
+    worktreePath: result.worktree_path,
+    ...(projectMode === 'git' && gitIsolation !== undefined ? { gitIsolation } : {}),
+    ...((result.base_branch ?? request.baseBranch)
+      ? { baseBranch: result.base_branch ?? request.baseBranch }
+      : {}),
+    ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
+    ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
+  };
+
+  try {
+    await (
+      await host.getTaskStructureService()
+    ).addTask({ operation: `create-task:${request.operationId}` }, prepared);
+  } catch (error) {
+    if (error instanceof TaskStructureConflictError) {
+      throw new BadRequestError(error.message);
+    }
+    throw error;
+  }
+}
+
+type TaskRemovalHandlerDispatch<TResult> =
+  | { cleanupResult: TaskCleanupResult; kind: 'generic-owner' }
+  | { effectResult: TResult; kind: 'legacy-fallback' };
+
+async function removeTaskUsingOwnerOrLegacy<TResult>(
+  context: HandlerContext,
+  taskId: string,
+  operation: string,
+  legacyEffect: () => Promise<TResult>,
+): Promise<TaskRemovalHandlerDispatch<TResult>> {
+  const host = context.workspaceMutations;
+  if (!host) {
+    return { effectResult: await legacyEffect(), kind: 'legacy-fallback' };
+  }
+  try {
+    const [structure, legacyGate] = await Promise.all([
+      host.getTaskStructureService(),
+      host.getTaskRemovalLegacyWriterGate(),
+    ]);
+    const dispatch = await structure.removeTaskWithLegacyFallback({ operation }, taskId, () =>
+      legacyGate.runLegacyRemoval(legacyEffect),
+    );
+    if (dispatch.kind === 'legacy-fallback') {
+      return { effectResult: dispatch.effectResult, kind: 'legacy-fallback' };
+    }
+    const removalState = dispatch.removal.result.removalState;
+    if (removalState === undefined) {
+      throw new Error('Generic task removal returned no durable removal state');
+    }
+    return {
+      cleanupResult: { cleanupWarnings: [], removalState },
+      kind: 'generic-owner',
+    };
+  } catch (error) {
+    if (error instanceof TaskStructureConflictError) {
+      throw new BadRequestError(error.message);
+    }
+    throw error;
+  }
+}
+
+async function runLegacyTaskMerge<TResult>(
+  context: HandlerContext,
+  effect: () => Promise<TResult>,
+): Promise<TResult> {
+  const host = context.workspaceMutations;
+  if (!host) return effect();
+  return (await host.getTaskMergeLegacyWriterGate()).runLegacyMerge(effect);
+}
+
 export function createTaskAndGitIpcHandlers(
   context: HandlerContext,
-  taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
+  taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> &
+    Partial<Pick<TaskNameRegistry, 'markTaskClosing'>>,
 ): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.CreateTask]: defineIpcHandler<IPC.CreateTask>(IPC.CreateTask, async (args) => {
@@ -260,8 +431,10 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.agentDefId, 'agentDefId');
       assertOptionalString(request.agentDefName, 'agentDefName');
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
+      assertOptionalBoolean(request.coordinatorMode, 'coordinatorMode');
       assertOptionalString(request.existingWorktreePath, 'existingWorktreePath');
       assertOptionalString(request.githubUrl, 'githubUrl');
+      assertOptionalString(request.initialPrompt, 'initialPrompt');
       assertString(request.operationId, 'operationId');
       if (request.operationId.trim().length === 0 || request.operationId.length > 128) {
         throw new BadRequestError(
@@ -271,7 +444,16 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalProjectMode(request.projectMode);
       validateOptionalBranchName(request.branchPrefix, 'branchPrefix');
       assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
+      assertOptionalBoolean(request.skipPermissions, 'skipPermissions');
       assertOptionalTaskGitIsolation(request.gitIsolation);
+      if (
+        request.agentDefId === undefined &&
+        (request.coordinatorMode === true ||
+          request.initialPrompt !== undefined ||
+          request.skipPermissions !== undefined)
+      ) {
+        throw new BadRequestError('Agent-only task creation fields require agentDefId');
+      }
       if (request.projectMode === 'non-git') {
         if (request.gitIsolation !== undefined) {
           throw new BadRequestError('gitIsolation is not valid for non-git tasks');
@@ -292,37 +474,91 @@ export function createTaskAndGitIpcHandlers(
         throw new BadRequestError('existingWorktreePath is only valid for existing-worktree tasks');
       }
 
-      const result = await createTaskWorkflow(context, {
-        ...(request.agentDefId !== undefined ? { agentDefId: request.agentDefId } : {}),
-        ...(request.agentDefName !== undefined ? { agentDefName: request.agentDefName } : {}),
-        ...(typeof request.baseBranch === 'string' ? { baseBranch: request.baseBranch } : {}),
-        name: request.name,
-        operationId: request.operationId,
-        projectId: request.projectId,
-        projectRoot: request.projectRoot,
-        ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
-        ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-        symlinkDirs: request.symlinkDirs,
-        ...(request.projectMode !== 'non-git'
-          ? { branchPrefix: request.branchPrefix ?? 'task' }
-          : {}),
-        ...(request.existingWorktreePath !== undefined
-          ? { existingWorktreePath: request.existingWorktreePath }
-          : {}),
-        ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
-        ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
-      });
+      const getManagedCreationCommand = context.getTaskCreationCommand;
+      const usesManagedCreationCommand = getManagedCreationCommand !== undefined;
+      const result = getManagedCreationCommand
+        ? await (
+            await getManagedCreationCommand()
+          ).create({
+            adapterOperationId: request.operationId,
+            ...(request.agentDefId !== undefined ? { agentDefId: request.agentDefId } : {}),
+            ...(typeof request.baseBranch === 'string' ? { baseBranch: request.baseBranch } : {}),
+            ...(request.projectMode !== 'non-git'
+              ? { branchPrefix: request.branchPrefix ?? 'task' }
+              : {}),
+            ...(request.coordinatorMode !== undefined
+              ? { coordinatorMode: request.coordinatorMode }
+              : {}),
+            ...(request.existingWorktreePath !== undefined
+              ? { existingWorktreePath: request.existingWorktreePath }
+              : {}),
+            ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
+            ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
+            ...(request.initialPrompt !== undefined
+              ? { initialPrompt: request.initialPrompt }
+              : {}),
+            name: request.name,
+            projectId: request.projectId,
+            ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+            projectRoot: request.projectRoot,
+            ...(request.skipPermissions !== undefined
+              ? { skipPermissions: request.skipPermissions }
+              : {}),
+            ...(request.stepsTracking !== undefined
+              ? { stepsTracking: request.stepsTracking }
+              : {}),
+            symlinkDirs: request.symlinkDirs,
+          })
+        : await createTaskWorkflow(context, {
+            ...(request.agentDefId !== undefined ? { agentDefId: request.agentDefId } : {}),
+            ...(request.agentDefName !== undefined ? { agentDefName: request.agentDefName } : {}),
+            ...(typeof request.baseBranch === 'string' ? { baseBranch: request.baseBranch } : {}),
+            name: request.name,
+            operationId: request.operationId,
+            projectId: request.projectId,
+            projectRoot: request.projectRoot,
+            ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
+            ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+            symlinkDirs: request.symlinkDirs,
+            ...(request.projectMode !== 'non-git'
+              ? { branchPrefix: request.branchPrefix ?? 'task' }
+              : {}),
+            ...(request.existingWorktreePath !== undefined
+              ? { existingWorktreePath: request.existingWorktreePath }
+              : {}),
+            ...(request.stepsTracking !== undefined
+              ? { stepsTracking: request.stepsTracking }
+              : {}),
+            ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
+          });
       const gitIsolation = 'git_isolation' in result ? result.git_isolation : undefined;
       const projectMode = 'project_mode' in result ? result.project_mode : undefined;
 
+      if (
+        usesManagedCreationCommand &&
+        (typeof result.task_name !== 'string' ||
+          (request.agentDefId !== undefined &&
+            (typeof result.agent_def_id !== 'string' || typeof result.agent_def_name !== 'string')))
+      ) {
+        throw new Error('Managed task creation returned incomplete canonical registry metadata');
+      }
+
+      if (!usesManagedCreationCommand) {
+        await addPreparedTaskToWorkspace(context, request, result);
+      }
+
       taskNames.registerCreatedTask(result.id, {
-        agentDefId: request.agentDefId ?? null,
-        agentDefName: request.agentDefName ?? null,
+        agentDefId: usesManagedCreationCommand
+          ? (result.agent_def_id ?? null)
+          : (request.agentDefId ?? null),
+        agentDefName: usesManagedCreationCommand
+          ? (result.agent_def_name ?? null)
+          : (request.agentDefName ?? null),
         branchName: result.branch_name,
         directMode: gitIsolation === 'current-branch',
         ...(gitIsolation !== undefined ? { gitIsolation } : {}),
         ...(projectMode !== undefined ? { projectMode } : {}),
-        taskName: request.name,
+        taskName: usesManagedCreationCommand ? (result.task_name ?? null) : request.name,
         worktreePath: result.worktree_path,
         worktreeOwnership: getCreatedTaskWorktreeOwnership(result),
       });
@@ -340,25 +576,33 @@ export function createTaskAndGitIpcHandlers(
       assertString(request.taskId, 'taskId');
 
       return executeTaskLeaseProtectedCoordinatorProducer(context, request, async () => {
-        const cleanupResult = await deleteTaskWorkflow({
-          agentIds: request.agentIds,
-          branchName: request.branchName,
-          deleteBranch: request.deleteBranch,
-          projectRoot: request.projectRoot,
-          taskId: request.taskId,
-          worktreePath: request.worktreePath,
-        });
-        emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
-
-        taskNames.deleteTask(request.taskId);
-        const coordinatorCleanupWarnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
-          { context, taskNames },
+        taskNames.markTaskClosing?.(request.taskId);
+        const removal = await removeTaskUsingOwnerOrLegacy(
+          context,
           request.taskId,
+          `delete-task:${request.taskId}`,
+          async () => {
+            const cleanupResult = await deleteTaskWorkflow({
+              agentIds: request.agentIds,
+              branchName: request.branchName,
+              deleteBranch: request.deleteBranch,
+              projectRoot: request.projectRoot,
+              taskId: request.taskId,
+              worktreePath: request.worktreePath,
+            });
+            emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
+            const coordinatorCleanupWarnings = await cleanupCoordinatorTaskStateAndOwnedSubtasks(
+              { context, taskNames },
+              request.taskId,
+            );
+            return {
+              cleanupWarnings: [...cleanupResult.cleanupWarnings, ...coordinatorCleanupWarnings],
+            };
+          },
         );
-
-        return {
-          cleanupWarnings: [...cleanupResult.cleanupWarnings, ...coordinatorCleanupWarnings],
-        };
+        if (removal.kind === 'generic-owner') return removal.cleanupResult;
+        taskNames.deleteTask(request.taskId);
+        return removal.effectResult;
       });
     }),
 
@@ -379,9 +623,9 @@ export function createTaskAndGitIpcHandlers(
         if (typeof request.projectRoot === 'string') {
           validatePath(request.projectRoot, 'projectRoot');
         }
-        const cleanupRuntime = async () => {
+        const cleanupLegacyRuntime = async (removeTaskState: boolean) => {
           const cleanupWarnings: TaskCleanupWarning[] = [];
-          if (request.removeTaskState === true) {
+          if (removeTaskState) {
             try {
               await stopTaskAgentWorkflowsForTask(request.taskId, request.agentIds);
             } catch (error) {
@@ -413,7 +657,7 @@ export function createTaskAndGitIpcHandlers(
           const cleanupResult = cleanupTaskRuntimeWorkflow({
             agentIds: request.agentIds,
             ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-            removeTaskState: request.removeTaskState ?? false,
+            removeTaskState,
             taskId: request.taskId,
             ...(typeof request.worktreePath === 'string'
               ? { worktreePath: request.worktreePath }
@@ -421,8 +665,7 @@ export function createTaskAndGitIpcHandlers(
           });
           emitReleasedTaskCommandController(context, cleanupResult.releasedTaskCommandController);
 
-          if (request.removeTaskState === true) {
-            taskNames.deleteTask(request.taskId);
+          if (removeTaskState) {
             cleanupWarnings.push(
               ...(await cleanupCoordinatorTaskStateAndOwnedSubtasks(
                 { context, taskNames },
@@ -435,11 +678,22 @@ export function createTaskAndGitIpcHandlers(
         };
 
         if (request.removeTaskState === true) {
-          return executeTaskLeaseProtectedCoordinatorProducer(context, request, cleanupRuntime);
+          return executeTaskLeaseProtectedCoordinatorProducer(context, request, async () => {
+            taskNames.markTaskClosing?.(request.taskId);
+            const removal = await removeTaskUsingOwnerOrLegacy(
+              context,
+              request.taskId,
+              `cleanup-task-runtime:${request.taskId}`,
+              () => cleanupLegacyRuntime(true),
+            );
+            if (removal.kind === 'generic-owner') return removal.cleanupResult;
+            taskNames.deleteTask(request.taskId);
+            return removal.effectResult;
+          });
         }
 
         assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
-        return cleanupRuntime();
+        return cleanupLegacyRuntime(false);
       },
     ),
 
@@ -535,7 +789,7 @@ export function createTaskAndGitIpcHandlers(
       (args) => {
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
-        return getGitIgnoredDirs(request.projectRoot);
+        return getWorktreeSymlinkCandidates(request.projectRoot);
       },
     ),
 
@@ -623,6 +877,61 @@ export function createTaskAndGitIpcHandlers(
       return checkMergeStatus(request.worktreePath, request.baseBranch);
     }),
 
+    [IPC.IssueTaskMergeOperation]: defineIpcHandler<IPC.IssueTaskMergeOperation>(
+      IPC.IssueTaskMergeOperation,
+      async (args) => {
+        const request = args;
+        assertExactRequestKeys(request, ['controllerId', 'taskId']);
+        assertString(request.controllerId, 'controllerId');
+        assertString(request.taskId, 'taskId');
+        assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+        const workflow = await requireTaskMergeWorkflow(context);
+        // Activation can wait for durable owner cutovers. Revalidate at the
+        // operation-admission boundary after that wait.
+        assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+        return workflow.issue({ principalId: request.controllerId, taskId: request.taskId });
+      },
+    ),
+
+    [IPC.StartTaskMergeOperation]: defineIpcHandler<IPC.StartTaskMergeOperation>(
+      IPC.StartTaskMergeOperation,
+      async (args) => {
+        const request = args;
+        assertExactRequestKeys(request, ['access', 'controllerId', 'semanticRequest']);
+        assertString(request.controllerId, 'controllerId');
+        if (!isTaskMergeOperationAccess(request.access)) {
+          throw new BadRequestError('access must identify an issued task merge operation');
+        }
+        if (!isTaskMergeSemanticRequest(request.semanticRequest)) {
+          throw new BadRequestError('semanticRequest must be a valid task merge request');
+        }
+        assertTaskCommandLeaseHeld(request.semanticRequest.taskId, request.controllerId);
+        const workflow = await requireTaskMergeWorkflow(context);
+        assertTaskCommandLeaseHeld(request.semanticRequest.taskId, request.controllerId);
+        return workflow.start({
+          access: request.access,
+          principalId: request.controllerId,
+          semanticRequest: request.semanticRequest,
+        });
+      },
+    ),
+
+    [IPC.GetTaskMergeOperationStatus]: defineIpcHandler<IPC.GetTaskMergeOperationStatus>(
+      IPC.GetTaskMergeOperationStatus,
+      async (args) => {
+        const request = args;
+        assertExactRequestKeys(request, ['access', 'controllerId']);
+        assertString(request.controllerId, 'controllerId');
+        if (!isTaskMergeOperationAccess(request.access)) {
+          throw new BadRequestError('access must identify an issued task merge operation');
+        }
+        return (await requireTaskMergeWorkflow(context)).status({
+          access: request.access,
+          principalId: request.controllerId,
+        });
+      },
+    ),
+
     [IPC.MergeTask]: defineIpcHandler<IPC.MergeTask>(IPC.MergeTask, (args) => {
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
@@ -635,7 +944,7 @@ export function createTaskAndGitIpcHandlers(
       validateOptionalBranchName(request.baseBranch, 'baseBranch');
       assertString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
-      return mergeBranchAndRefreshGitStatus(request);
+      return runLegacyTaskMerge(context, () => mergeBranchAndRefreshGitStatus(request));
     }),
 
     [IPC.MergeArenaWorktree]: defineIpcHandler<IPC.MergeArenaWorktree>(
@@ -735,19 +1044,33 @@ export function createTaskAndGitIpcHandlers(
 
     [IPC.CreateArenaWorktree]: defineIpcHandler<IPC.CreateArenaWorktree>(
       IPC.CreateArenaWorktree,
-      (args) => {
+      async (args) => {
         const request = args;
+        assertString(request.agentId, 'agentId');
+        assertString(request.taskId, 'taskId');
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
+        assertArenaBranchName(request.branchName);
         if (request.symlinkDirs !== undefined) {
           assertStringArray(request.symlinkDirs, 'symlinkDirs');
         }
-        return createWorktree(
-          request.projectRoot,
+        const canonicalProjectRoot = await resolveArenaProjectRoot(request.projectRoot);
+        const result = await createWorktree(
+          canonicalProjectRoot,
           request.branchName,
-          request.symlinkDirs ?? [],
+          encodeTaskWorktreeLinkRequestV1(request.symlinkDirs ?? []),
           true,
         );
+        return {
+          ...result,
+          launchToken: registerArenaTerminalLaunch({
+            agentId: request.agentId,
+            branchName: request.branchName,
+            projectRoot: canonicalProjectRoot,
+            root: result.path,
+            taskId: request.taskId,
+          }),
+        };
       },
     ),
 
@@ -757,7 +1080,10 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        await removeWorktree(request.projectRoot, request.branchName, true);
+        assertArenaBranchName(request.branchName);
+        const canonicalProjectRoot = await resolveArenaProjectRoot(request.projectRoot);
+        revokeArenaTerminalLaunches(canonicalProjectRoot, request.branchName);
+        await removeWorktree(canonicalProjectRoot, request.branchName, true);
         return undefined;
       },
     ),

@@ -14,6 +14,15 @@ import {
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 import { acquireTaskCommandLease, resetTaskCommandLeasesForTest } from './task-command-leases.js';
+import { createTaskNameRegistry } from '../../server/task-names.js';
+import { createTerminalContentRootAuthority } from './terminal-root-authority.js';
+import { getServerInstanceId } from './server-instance.js';
+import type { TaskRemovalOwnerParticipant } from './task-removal-owner.js';
+import { TaskStructureMutationService } from './task-structure-mutations.js';
+import {
+  decodeWorkspaceHostRecord,
+  WORKSPACE_HOST_ENVELOPE_KEY,
+} from './workspace-state-storage.js';
 
 const {
   inspectArenaCompetitorMock,
@@ -24,7 +33,7 @@ const {
   discoverProjectsMock,
   loadAppStateForEnvMock,
   loadWorkspaceStateForEnvMock,
-  readPlanForWorktreeMock,
+  readPlanMock,
 } = vi.hoisted(() => ({
   inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
@@ -34,7 +43,7 @@ const {
   discoverProjectsMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
   loadWorkspaceStateForEnvMock: vi.fn(),
-  readPlanForWorktreeMock: vi.fn(),
+  readPlanMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -83,7 +92,7 @@ vi.mock('./plans.js', async () => {
   const actual = await vi.importActual<typeof import('./plans.js')>('./plans.js');
   return {
     ...actual,
-    readPlanForWorktree: readPlanForWorktreeMock,
+    readPlan: readPlanMock,
   };
 });
 
@@ -119,6 +128,8 @@ function buildContext(): HandlerContext {
 }
 
 function buildOptions(): {
+  beginTaskContentRootAdmission: (taskId: string) => null;
+  beginTerminalContentRootAdmission: (request: { agentId?: string; taskId: string }) => null;
   getTaskName: (taskId: string) => string;
   syncProjectBaseBranchesFromJson: (state: SavedStateDocument) => void;
   syncTaskConvergenceFromJson: (state: SavedStateDocument) => void;
@@ -128,6 +139,8 @@ function buildOptions(): {
   syncTaskWorkflowWorktreesFromJson: (state: SavedStateDocument) => void;
 } {
   return {
+    beginTaskContentRootAdmission: () => null,
+    beginTerminalContentRootAdmission: () => null,
     getTaskName: (taskId: string) => taskId,
     syncProjectBaseBranchesFromJson: vi.fn(),
     syncTaskConvergenceFromJson: vi.fn(),
@@ -155,6 +168,38 @@ function getTestAgentGeneration(agentId: string): number {
   return 1;
 }
 
+function createRemovalParticipant(
+  id: 'agent-session' | 'initial-prompt' | 'task-runtime',
+  hookSetVersion: string,
+): TaskRemovalOwnerParticipant {
+  return {
+    async activateLegacyEffectCutover() {},
+    async drainTaskForRemoval() {
+      return { kind: 'complete' };
+    },
+    ...(id === 'task-runtime'
+      ? {
+          async cleanupTaskRuntimeStep(request) {
+            return {
+              evidence: { state: 'test-complete' },
+              kind: 'step-complete' as const,
+              step: request.step,
+            };
+          },
+        }
+      : {}),
+    async finalizeRemovedTaskState() {
+      return { kind: 'complete' };
+    },
+    hookSetVersion,
+    id,
+    async probe() {
+      return { hookSetVersion, kind: 'ready' };
+    },
+    async verifyLegacyEffectCutover() {},
+  };
+}
+
 describe('system handlers', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -167,7 +212,7 @@ describe('system handlers', () => {
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
     getAgentDefsWithLastKnownAvailabilityMock.mockReturnValue([]);
-    readPlanForWorktreeMock.mockReturnValue(null);
+    readPlanMock.mockReturnValue(null);
     discoverProjectsMock.mockResolvedValue([]);
     getRecentProjectPathsMock.mockResolvedValue([]);
     resetTaskCommandLeasesForTest();
@@ -177,6 +222,343 @@ describe('system handlers', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     resetTaskCommandLeasesForTest();
+  });
+
+  it('reuses one workspace mutation authority and cleanup across handler composition', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-composition-'));
+    const cleanups: Array<() => Promise<void>> = [];
+    const context: HandlerContext = {
+      ...buildContext(),
+      registerWorkspaceMutationCleanup: (cleanup) => cleanups.push(cleanup),
+      userDataPath,
+      workspaceStorageKind: 'standalone',
+    };
+
+    try {
+      const options = buildOptions();
+      const firstHandlers = createSystemIpcHandlers(context, options);
+      const host = context.workspaceMutations;
+      if (!host) throw new Error('workspace mutation host was not composed');
+      const firstRemovalGate = await host.getTaskRemovalLegacyWriterGate();
+      const service = await host.getWorkspaceService();
+      const replaceSharedState = vi.spyOn(service, 'replaceSharedState');
+      const close = vi.spyOn(service, 'close');
+
+      const secondHandlers = createSystemIpcHandlers(context, options);
+      const recomposedRemovalGate =
+        await context.workspaceMutations?.getTaskRemovalLegacyWriterGate();
+
+      await expect(
+        firstHandlers[IPC.SaveWorkspaceState]?.({
+          baseRevision: 0,
+          json: '{"projects":[],"taskOrder":[],"tasks":{}}',
+          sourceId: 'first-composition',
+        }),
+      ).resolves.toEqual({ revision: 1 });
+      await expect(
+        secondHandlers[IPC.SaveWorkspaceState]?.({
+          baseRevision: 1,
+          json: '{"projects":[],"taskOrder":[],"tasks":{}}',
+          sourceId: 'second-composition',
+        }),
+      ).resolves.toEqual({ revision: 2 });
+
+      expect(recomposedRemovalGate).toBe(firstRemovalGate);
+      expect(replaceSharedState).toHaveBeenCalledTimes(2);
+      expect(options.syncTaskNamesFromJson).toHaveBeenCalledTimes(2);
+      expect(cleanups).toHaveLength(1);
+      const cleanup = cleanups[0];
+      if (!cleanup) throw new Error('workspace cleanup was not composed');
+
+      await expect(cleanup()).resolves.toBeUndefined();
+      await expect(cleanup()).resolves.toBeUndefined();
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects recomposition with different saved-state callback identities', () => {
+    const context = buildContext();
+    const options = buildOptions();
+    createSystemIpcHandlers(context, options);
+
+    expect(() =>
+      createSystemIpcHandlers(context, {
+        ...options,
+        syncTaskNamesFromJson: vi.fn(),
+      }),
+    ).toThrow(
+      'System handler recomposition requires the same saved-state callback identity: syncTaskNamesFromJson',
+    );
+  });
+
+  it('rejects recomposition after the context storage kind changes', () => {
+    const context = buildContext();
+    const options = buildOptions();
+    createSystemIpcHandlers(context, options);
+    context.workspaceStorageKind = 'electron';
+
+    expect(() => createSystemIpcHandlers(context, options)).toThrow(
+      'System handler recomposition cannot change the workspace storage kind',
+    );
+  });
+
+  it('rejects an externally supplied workspace mutation host before composition', () => {
+    const context: HandlerContext = {
+      ...buildContext(),
+      workspaceMutations: {
+        getTaskMergeLegacyWriterGate: vi.fn(),
+        getTaskRemovalLegacyWriterGate: vi.fn(),
+        getTaskStructureService: vi.fn(),
+        getWorkspaceService: vi.fn(),
+      },
+    };
+
+    expect(() => createSystemIpcHandlers(context, buildOptions())).toThrow(
+      'System handlers do not accept an externally supplied workspace mutation host',
+    );
+  });
+
+  it('retries raw workspace-service initialization after a transient factory failure', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-init-retry-'));
+    const userDataPath = path.join(root, 'user-data');
+    const cleanups: Array<() => Promise<void>> = [];
+    fs.writeFileSync(userDataPath, 'blocks directory creation');
+    const context: HandlerContext = {
+      ...buildContext(),
+      isPackaged: true,
+      registerWorkspaceMutationCleanup: (cleanup) => cleanups.push(cleanup),
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, buildOptions());
+      const host = context.workspaceMutations;
+      if (!host) throw new Error('workspace mutation host was not composed');
+
+      await expect(host.getWorkspaceService()).rejects.toThrow();
+      fs.rmSync(userDataPath, { force: true });
+      fs.mkdirSync(userDataPath);
+      await expect(host.getWorkspaceService()).resolves.toBeDefined();
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('cleans up idempotently when raw initialization rejected before creating a service', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-init-cleanup-'));
+    const userDataPath = path.join(root, 'user-data');
+    const cleanups: Array<() => Promise<void>> = [];
+    fs.writeFileSync(userDataPath, 'blocks directory creation');
+    const context: HandlerContext = {
+      ...buildContext(),
+      isPackaged: true,
+      registerWorkspaceMutationCleanup: (cleanup) => cleanups.push(cleanup),
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, buildOptions());
+      const host = context.workspaceMutations;
+      const cleanup = cleanups[0];
+      if (!host || !cleanup) throw new Error('workspace cleanup was not composed');
+
+      await expect(host.getTaskMergeLegacyWriterGate()).rejects.toThrow();
+      await expect(cleanup()).resolves.toBeUndefined();
+      await expect(cleanup()).resolves.toBeUndefined();
+      await expect(host.getWorkspaceService()).rejects.toThrow('closing or closed');
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('retries structure readiness on the retained owner after a transient cutover failure', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-cutover-retry-'));
+    const cleanups: Array<() => Promise<void>> = [];
+    const unsubscribe = vi.fn();
+    const ensureSpy = vi
+      .spyOn(TaskStructureMutationService.prototype, 'ensurePreManagedWriterCutover')
+      .mockRejectedValueOnce(new Error('transient cutover failure'))
+      .mockResolvedValue(undefined);
+    const subscribeSpy = vi
+      .spyOn(TaskStructureMutationService.prototype, 'subscribeTaskRemovalLifecycle')
+      .mockReturnValue(unsubscribe);
+    const context: HandlerContext = {
+      ...buildContext(),
+      registerWorkspaceMutationCleanup: (cleanup) => cleanups.push(cleanup),
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, {
+        ...buildOptions(),
+        onTaskRemovalLifecycle: vi.fn(),
+      });
+      const host = context.workspaceMutations;
+      if (!host) throw new Error('workspace mutation host was not composed');
+
+      await expect(host.getWorkspaceService()).rejects.toThrow('transient cutover failure');
+      await expect(host.getWorkspaceService()).resolves.toBeDefined();
+      expect(ensureSpy).toHaveBeenCalledTimes(2);
+      expect(subscribeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      ensureSpy.mockRestore();
+      subscribeSpy.mockRestore();
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('closes admission before deferred structure initialization can install a late subscription', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-init-cleanup-'));
+    const cleanups: Array<() => Promise<void>> = [];
+    const unsubscribe = vi.fn();
+    let resolveCutover: () => void = () => {};
+    const cutover = new Promise<void>((resolve) => {
+      resolveCutover = resolve;
+    });
+    const ensureSpy = vi
+      .spyOn(TaskStructureMutationService.prototype, 'ensurePreManagedWriterCutover')
+      .mockReturnValue(cutover);
+    const subscribeSpy = vi
+      .spyOn(TaskStructureMutationService.prototype, 'subscribeTaskRemovalLifecycle')
+      .mockReturnValue(unsubscribe);
+    const context: HandlerContext = {
+      ...buildContext(),
+      registerWorkspaceMutationCleanup: (cleanup) => cleanups.push(cleanup),
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, {
+        ...buildOptions(),
+        onTaskRemovalLifecycle: vi.fn(),
+      });
+      const host = context.workspaceMutations;
+      const cleanup = cleanups[0];
+      if (!host || !cleanup) throw new Error('workspace cleanup was not composed');
+
+      const initialization = host.getTaskStructureService();
+      expect(subscribeSpy).not.toHaveBeenCalled();
+      const cleanupAttempt = cleanup();
+      resolveCutover();
+      await expect(initialization).rejects.toThrow('closing or closed');
+      await expect(cleanupAttempt).resolves.toBeUndefined();
+      expect(ensureSpy).not.toHaveBeenCalled();
+      expect(subscribeSpy).not.toHaveBeenCalled();
+      expect(unsubscribe).not.toHaveBeenCalled();
+      await expect(host.getWorkspaceService()).rejects.toThrow('closing or closed');
+    } finally {
+      resolveCutover();
+      await cleanups[0]?.().catch(() => undefined);
+      ensureSpy.mockRestore();
+      subscribeSpy.mockRestore();
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('shares the process server identity with task-removal projections', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-identity-'));
+    const context: HandlerContext = { ...buildContext(), userDataPath };
+    let workspace: Awaited<
+      ReturnType<NonNullable<HandlerContext['workspaceMutations']>['getWorkspaceService']>
+    > | null = null;
+
+    try {
+      createSystemIpcHandlers(context, buildOptions());
+      const host = context.workspaceMutations;
+      if (!host) throw new Error('workspace mutation host was not composed');
+      const structure = await host.getTaskStructureService();
+      workspace = await host.getWorkspaceService();
+      await structure.activateTaskRemovalOwner([
+        createRemovalParticipant('initial-prompt', 'prompt-hooks-v1'),
+        createRemovalParticipant('agent-session', 'agent-hooks-v1'),
+        createRemovalParticipant('task-runtime', 'runtime-hooks-v1'),
+      ]);
+
+      const gate = structure.createTaskRemovalParticipantGate('initial-prompt', 'prompt-hooks-v1');
+      expect(gate.getTaskSnapshot('not-visible-task')).toMatchObject({
+        current: { serverInstanceId: getServerInstanceId() },
+        kind: 'active',
+      });
+    } finally {
+      await workspace?.close();
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('retains workspace cleanup ownership after close failure and retries exactly', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-cleanup-'));
+    const cleanups: Array<() => Promise<void>> = [];
+    const context: HandlerContext = {
+      ...buildContext(),
+      registerWorkspaceMutationCleanup: (registeredCleanup) => {
+        cleanups.push(registeredCleanup);
+      },
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, buildOptions());
+      const host = context.workspaceMutations;
+      const cleanup = cleanups[0];
+      if (!host || !cleanup) throw new Error('workspace cleanup was not composed');
+      const service = await host.getWorkspaceService();
+      const closeSpy = vi
+        .spyOn(service, 'close')
+        .mockRejectedValueOnce(new Error('transient workspace close failure'));
+
+      await expect(cleanup()).rejects.toThrow('transient workspace close failure');
+      await expect(host.getWorkspaceService()).rejects.toThrow('closing or closed');
+
+      await expect(cleanup()).resolves.toBeUndefined();
+      await expect(cleanup()).resolves.toBeUndefined();
+      expect(closeSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('retains task-removal subscription ownership when unsubscribe must be retried', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-unsubscribe-'));
+    const cleanups: Array<() => Promise<void>> = [];
+    const unsubscribe = vi.fn().mockImplementationOnce(() => {
+      throw new Error('transient unsubscribe failure');
+    });
+    const subscribeSpy = vi
+      .spyOn(TaskStructureMutationService.prototype, 'subscribeTaskRemovalLifecycle')
+      .mockReturnValue(unsubscribe);
+    const context: HandlerContext = {
+      ...buildContext(),
+      registerWorkspaceMutationCleanup: (registeredCleanup) => {
+        cleanups.push(registeredCleanup);
+      },
+      userDataPath,
+    };
+
+    try {
+      createSystemIpcHandlers(context, {
+        ...buildOptions(),
+        onTaskRemovalLifecycle: vi.fn(),
+      });
+      const host = context.workspaceMutations;
+      const cleanup = cleanups[0];
+      if (!host || !cleanup) throw new Error('workspace cleanup was not composed');
+      await host.getTaskStructureService();
+
+      await expect(cleanup()).rejects.toThrow('transient unsubscribe failure');
+      await expect(cleanup()).resolves.toBeUndefined();
+      expect(unsubscribe).toHaveBeenCalledTimes(2);
+    } finally {
+      await cleanups[0]?.().catch(() => undefined);
+      subscribeSpy.mockRestore();
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
   });
 
   it('returns null for clipboard-image paste when clipboard runtime support is unavailable', async () => {
@@ -376,23 +758,62 @@ describe('system handlers', () => {
     warnSpy.mockRestore();
   });
 
-  it('reads markdown files through the worktree-scoped handler', () => {
+  it('reads markdown files through backend task-root authority', async () => {
     const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-md-'));
     const markdownPath = path.join(worktreePath, 'docs', 'guide.md');
     fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
     fs.writeFileSync(markdownPath, '# Guide\n');
 
-    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
-    const result = handlers[IPC.ReadMarkdownFile]?.({
+    const registry = createTaskNameRegistry();
+    registry.registerCreatedTask('task-1', { worktreePath });
+    const authority = createTerminalContentRootAuthority(registry);
+    const handlers = createSystemIpcHandlers(buildContext(), {
+      ...buildOptions(),
+      beginTaskContentRootAdmission: authority.beginCanonicalTaskAdmission,
+      beginTerminalContentRootAdmission: authority.beginTerminalAdmission,
+    });
+    const result = await handlers[IPC.ReadMarkdownFile]?.({
       relativePath: 'docs/guide.md',
-      worktreePath,
+      taskId: 'task-1',
     });
 
     expect(result).toEqual({
       content: '# Guide\n',
       fileName: 'guide.md',
       relativePath: 'docs/guide.md',
+      worktreePath,
     });
+  });
+
+  it('fails closed for unknown task-content identities', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    await expect(
+      handlers[IPC.ReadMarkdownFile]?.({ relativePath: 'docs/guide.md', taskId: 'unknown' }),
+    ).resolves.toBeNull();
+    expect(
+      handlers[IPC.ReadPlanContent]?.({
+        relativePath: 'docs/plans/plan.md',
+        taskId: 'unknown',
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects legacy renderer-selected task-content roots', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    await expect(
+      handlers[IPC.ReadMarkdownFile]?.({
+        relativePath: 'docs/guide.md',
+        taskId: 'task-1',
+        worktreePath: '/renderer/root',
+      } as never),
+    ).rejects.toThrow('worktreePath is not accepted');
+    expect(() =>
+      handlers[IPC.ReadPlanContent]?.({
+        relativePath: 'docs/plans/plan.md',
+        taskId: 'task-1',
+        worktreePath: '/renderer/root',
+      } as never),
+    ).toThrow('worktreePath is not accepted');
   });
 
   it('forwards arena competitor inspection through the typed backend seam', async () => {
@@ -480,22 +901,27 @@ describe('system handlers', () => {
     });
   });
 
-  it('keeps reconnect snapshot caches scoped to each handler instance', async () => {
+  it('shares one reconnect cache across recomposed maps and invalidates it from legacy SaveAppState', async () => {
     const context = buildContext();
-    const firstHandlers = createSystemIpcHandlers(context, buildOptions());
-    const secondHandlers = createSystemIpcHandlers(context, buildOptions());
+    const options = buildOptions();
+    const firstHandlers = createSystemIpcHandlers(context, options);
+    const secondHandlers = createSystemIpcHandlers(context, options);
     loadAppStateForEnvMock
       .mockReturnValueOnce('{"version":1}')
       .mockReturnValueOnce('{"version":2}');
 
     const firstSnapshot = await getBrowserReconnectSnapshot(firstHandlers);
     const secondSnapshot = await getBrowserReconnectSnapshot(secondHandlers);
+    await secondHandlers[IPC.SaveAppState]?.({ json: '{"version":2}' });
+    const refreshedFirstSnapshot = await getBrowserReconnectSnapshot(firstHandlers);
 
     expect(firstSnapshot.appStateJson).toBe('{"version":1}');
-    expect(secondSnapshot.appStateJson).toBe('{"version":2}');
+    expect(secondSnapshot.appStateJson).toBe('{"version":1}');
+    expect(refreshedFirstSnapshot.appStateJson).toBe('{"version":2}');
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
     expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
-      cacheHits: 0,
+      cacheHits: 1,
+      cacheInvalidations: 1,
       cacheMisses: 2,
     });
   });
@@ -730,6 +1156,135 @@ describe('system handlers', () => {
     });
   });
 
+  it('delegates SaveWorkspaceState through the durable transaction with compatible result and event', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-workspace-'));
+    const emitIpcEvent = vi.fn();
+    const options = buildOptions();
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        emitIpcEvent,
+        isPackaged: true,
+        userDataPath,
+        workspaceStorageKind: 'standalone',
+      },
+      options,
+    );
+
+    try {
+      await expect(
+        handlers[IPC.SaveWorkspaceState]?.({
+          baseRevision: 0,
+          json: '{"tasks":{},"taskOrder":[],"projects":[]}',
+          sourceId: 'tab-1',
+        }),
+      ).resolves.toEqual({ revision: 1 });
+
+      const decoded = decodeWorkspaceHostRecord(
+        fs.readFileSync(path.join(userDataPath, 'workspace-state.json'), 'utf8'),
+        'standalone',
+      );
+      expect(decoded.record).toMatchObject({
+        sharedRevision: 1,
+        sharedState: { projects: [], taskOrder: [], tasks: {} },
+        storageGeneration: '2',
+      });
+      expect(options.syncTaskNamesFromJson).toHaveBeenCalledOnce();
+      expect(options.syncProjectBaseBranchesFromJson).toHaveBeenCalledOnce();
+      expect(emitIpcEvent).toHaveBeenCalledWith(IPC.WorkspaceStateChanged, {
+        revision: 1,
+        savedAt: Date.now(),
+        sourceId: 'tab-1',
+      });
+    } finally {
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('returns the existing SaveWorkspaceState conflict before syncing or emitting', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-conflict-'));
+    const emitIpcEvent = vi.fn();
+    const options = buildOptions();
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        emitIpcEvent,
+        isPackaged: true,
+        userDataPath,
+        workspaceStorageKind: 'standalone',
+      },
+      options,
+    );
+
+    try {
+      await handlers[IPC.SaveWorkspaceState]?.({ baseRevision: 0, json: '{"tasks":{}}' });
+      vi.clearAllMocks();
+      await expect(
+        handlers[IPC.SaveWorkspaceState]?.({ baseRevision: 0, json: '{"tasks":{}}' }),
+      ).rejects.toThrow('Workspace state revision conflict');
+      expect(options.syncTaskNamesFromJson).not.toHaveBeenCalled();
+      expect(emitIpcEvent).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('migrates Electron SaveAppState in one state.json while preserving its wire result and local fields', async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-system-electron-'));
+    fs.writeFileSync(
+      path.join(userDataPath, 'state.json'),
+      JSON.stringify({ activeTaskId: null, projects: [], taskOrder: [], tasks: {} }),
+    );
+    const emitIpcEvent = vi.fn();
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        emitIpcEvent,
+        isPackaged: true,
+        userDataPath,
+        workspaceStorageKind: 'electron',
+      },
+      buildOptions(),
+    );
+
+    try {
+      await expect(
+        handlers[IPC.SaveAppState]?.({
+          baseRevision: 0,
+          json: JSON.stringify({
+            activeTaskId: 'task-1',
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            windowState: { height: 600, width: 800 },
+          }),
+          sourceId: 'desktop-1',
+        }),
+      ).resolves.toBeUndefined();
+
+      const root = JSON.parse(
+        fs.readFileSync(path.join(userDataPath, 'state.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      expect(root).toMatchObject({
+        activeTaskId: 'task-1',
+        taskOrder: [],
+        windowState: { height: 600, width: 800 },
+      });
+      expect(root[WORKSPACE_HOST_ENVELOPE_KEY]).toBeDefined();
+      expect(fs.existsSync(path.join(userDataPath, 'workspace-state.json'))).toBe(false);
+      expect(emitIpcEvent).toHaveBeenCalledWith(
+        IPC.SaveAppState,
+        expect.objectContaining({ sourceId: 'desktop-1' }),
+      );
+      expect(emitIpcEvent).toHaveBeenCalledWith(
+        IPC.WorkspaceStateChanged,
+        expect.objectContaining({ revision: 1, sourceId: 'desktop-1' }),
+      );
+    } finally {
+      fs.rmSync(userDataPath, { force: true, recursive: true });
+    }
+  });
+
   it('omits both saved-state payloads when knownWorkspaceRevision matches the current revision', async () => {
     const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
     loadWorkspaceStateForEnvMock.mockReturnValue({
@@ -910,12 +1465,18 @@ describe('system handlers', () => {
       json: buildPlanWorkspaceJson(existingProjectPath, missingProjectPath),
       revision: 3,
     });
-    readPlanForWorktreeMock.mockImplementation((worktreePath: string, relativePath: string) => ({
-      content: `plan for ${worktreePath}`,
-      fileName: path.basename(relativePath),
-      relativePath,
-    }));
-    const handlers = createSystemIpcHandlers(buildRemoteAccessContext(), buildOptions());
+    readPlanMock.mockImplementation(
+      (beginAdmission: () => { root: string }, relativePath: string) => ({
+        content: `plan for ${beginAdmission().root}`,
+        fileName: path.basename(relativePath),
+        relativePath,
+      }),
+    );
+    const handlers = createSystemIpcHandlers(buildRemoteAccessContext(), {
+      ...buildOptions(),
+      beginTaskContentRootAdmission: (taskId) =>
+        ({ root: `/tmp/worktree-${taskId.slice(-1)}` }) as never,
+    });
 
     const snapshot = (await handlers[IPC.GetBrowserColdBootstrap]?.()) as
       | BrowserColdBootstrapSnapshot
@@ -929,11 +1490,8 @@ describe('system handlers', () => {
         taskId: 'task-1',
       },
     ]);
-    expect(readPlanForWorktreeMock).toHaveBeenCalledTimes(1);
-    expect(readPlanForWorktreeMock).toHaveBeenCalledWith(
-      '/tmp/worktree-1',
-      '.claude/plans/plan-1.md',
-    );
+    expect(readPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPlanMock).toHaveBeenCalledWith(expect.any(Function), '.claude/plans/plan-1.md');
     expect(snapshot?.projectPathsExist).toEqual({
       [existingProjectPath]: true,
       [missingProjectPath]: false,
@@ -973,7 +1531,7 @@ describe('system handlers', () => {
       },
     });
     loadWorkspaceStateForEnvMock.mockReturnValue({ json: workspaceJson, revision: 1 });
-    readPlanForWorktreeMock.mockImplementation((_worktreePath: string, relativePath: string) => ({
+    readPlanMock.mockImplementation((_beginAdmission: unknown, relativePath: string) => ({
       content: 'x'.repeat(1_500_000),
       fileName: path.basename(relativePath),
       relativePath,

@@ -322,6 +322,12 @@ describe('TaskShellSection', () => {
         primary
         projectMode={() => 'git'}
         shellAgentIds={() => ['shell-1', 'shell-2']}
+        taskInitialShellOwnership={() => ({
+          expectedGeneration: 1,
+          kind: 'managed-terminal-v1',
+          launchOperationId: 'launch-1',
+          sessionId: 'shell-1',
+        })}
         worktreePath={() => '/tmp/project'}
       />
     ));
@@ -332,6 +338,8 @@ describe('TaskShellSection', () => {
     expect(terminalViewProps.get('shell-1')?.projectMode).toBe('git');
     expect(terminalViewProps.get('shell-1')?.focusPanelId).toBe('shell:0');
     expect(terminalViewProps.get('shell-2')?.focusPanelId).toBe('shell:1');
+    expect(terminalViewProps.get('shell-1')?.sessionOwner).toBe('managed-task-shell');
+    expect(terminalViewProps.get('shell-2')?.sessionOwner).toBe('compatibility-shell');
   });
 
   it('identifies a non-git primary shell when it takes over task watchers', () => {
@@ -349,8 +357,30 @@ describe('TaskShellSection', () => {
 
     expect(terminalViewProps.get('shell-1')).toMatchObject({
       projectMode: 'non-git',
+      sessionOwner: 'compatibility-shell',
       startsTaskWatchers: true,
     });
+  });
+
+  it('does not infer managed ownership when the canonical session id differs', () => {
+    render(() => (
+      <TaskShellSection
+        taskId={() => 'task-terminal'}
+        bookmarks={() => []}
+        isActive={() => true}
+        primary
+        shellAgentIds={() => ['shell-1']}
+        taskInitialShellOwnership={() => ({
+          expectedGeneration: 1,
+          kind: 'managed-terminal-v1',
+          launchOperationId: 'launch-1',
+          sessionId: 'shell-other',
+        })}
+        worktreePath={() => '/tmp/project'}
+      />
+    ));
+
+    expect(terminalViewProps.get('shell-1')?.sessionOwner).toBe('compatibility-shell');
   });
 
   it('clears shell activity when a shell exits naturally', () => {

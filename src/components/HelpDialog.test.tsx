@@ -25,5 +25,7 @@ describe('HelpDialog', () => {
     expect(screen.getByText('Move task left')).toBeDefined();
     expect(screen.getByText('Move task right')).toBeDefined();
     expect(screen.queryByText('Reorder tasks/terminals')).toBeNull();
+    expect(screen.getByText('Redraw terminals (fix rendering glitches)')).toBeDefined();
+    expect(screen.getByText('Cmd/Ctrl + Shift + L')).toBeDefined();
   });
 });

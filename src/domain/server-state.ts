@@ -1,5 +1,6 @@
 import { assertNever } from '../lib/assert-never.js';
 import { isAgentRunnerProvider, type AgentRunnerProvider } from './agent-runners.js';
+import type { AgentSessionLaunchReason } from './agent-session-operation.js';
 import { isRemovedTaskScopedKindEvent } from './removed-task-event.js';
 import {
   isArrayOf,
@@ -423,12 +424,14 @@ export function isAgentSupervisionSnapshot(value: unknown): value is AgentSuperv
   return (
     typeof value.agentId === 'string' &&
     (value.attentionReason === null || isTaskAttentionReason(value.attentionReason)) &&
+    isOptionalNonNegativeInteger(value.generation) &&
     typeof value.isShell === 'boolean' &&
     isNullableNonNegativeInteger(value.lastOutputAt) &&
     typeof value.preview === 'string' &&
     (value.runnerInstanceId === undefined || typeof value.runnerInstanceId === 'string') &&
     (value.runnerProvider === undefined || isAgentRunnerProvider(value.runnerProvider)) &&
     isAgentSupervisionState(value.state) &&
+    isOptionalNonNegativeInteger(value.supervisionVersion) &&
     typeof value.taskId === 'string' &&
     isNonNegativeInteger(value.updatedAt)
   );
@@ -437,12 +440,16 @@ export function isAgentSupervisionSnapshot(value: unknown): value is AgentSuperv
 export interface AgentSupervisionSnapshot {
   agentId: string;
   attentionReason: TaskAttentionReason | null;
+  /** Present on generation-aware backends; absent only during rolling compatibility. */
+  generation?: number;
   isShell: boolean;
   lastOutputAt: number | null;
   preview: string;
   runnerInstanceId?: string;
   runnerProvider?: AgentRunnerProvider;
   state: AgentSupervisionState;
+  /** Per-agent monotonic version used by backend input admission. */
+  supervisionVersion?: number;
   taskId: string;
   updatedAt: number;
 }
@@ -564,6 +571,9 @@ export interface AgentLifecycleEvent {
   event: 'spawn' | 'exit' | 'pause' | 'resume';
   agentId: string;
   generation?: number;
+  launchReason?: AgentSessionLaunchReason;
+  operationId?: string;
+  resumed?: boolean;
   taskId: string | null;
   isShell: boolean | null;
   status?: RemoteAgentStatus;

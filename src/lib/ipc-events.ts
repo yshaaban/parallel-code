@@ -77,6 +77,12 @@ export function listenTaskStepsChanged(
   return listenRendererEvent(IPC.TaskStepsChanged, listener);
 }
 
+export function listenTaskNotesChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.TaskNotesChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.TaskNotesChanged, listener);
+}
+
 export function listenPlanContent(
   listener: (payload: RendererIpcEventPayloads[IPC.PlanContent]) => void,
 ): () => void {

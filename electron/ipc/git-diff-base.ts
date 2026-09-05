@@ -1,5 +1,6 @@
 import { MAX_BUFFER } from './git-cache.js';
 import { execGit } from './git-exec.js';
+import { getBranchUpstreamRef } from './git-branch-ref.js';
 
 export interface PickedDiffBase {
   ref: string;
@@ -56,10 +57,12 @@ async function pickClosestDiffBase(
   headRef: string,
 ): Promise<PickedDiffBase> {
   const localRef = mainBranch;
-  const remoteRef = `origin/${mainBranch}`;
+  const remoteRef = await getBranchUpstreamRef(repoRoot, mainBranch);
   const [hasLocalRef, hasRemoteRef] = await Promise.all([
-    gitRefExists(repoRoot, `refs/heads/${mainBranch}`),
-    gitRefExists(repoRoot, `refs/remotes/origin/${mainBranch}`),
+    gitRefExists(repoRoot, `refs/heads/${mainBranch}`).then(async (exists) =>
+      exists ? true : gitRefExists(repoRoot, `refs/remotes/${mainBranch}`),
+    ),
+    gitRefExists(repoRoot, remoteRef.startsWith('refs/') ? remoteRef : `refs/remotes/${remoteRef}`),
   ]);
 
   const [localMergeBase, remoteMergeBase] = await Promise.all([

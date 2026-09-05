@@ -67,7 +67,6 @@ export function SidebarTaskList(props: SidebarTaskListProps): JSX.Element {
         gap: 'var(--space-xs)',
         flex: '1',
         overflow: 'auto',
-        outline: 'none',
         padding: '0 0 var(--space-2xs)',
       }}
     >

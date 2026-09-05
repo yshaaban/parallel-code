@@ -26,6 +26,7 @@ import { getAgentSpawnCommand, getAgentSpawnEnvironment } from '../../lib/agent-
 import { sf } from '../../lib/fontScale';
 import { warn as logWarn } from '../../lib/log';
 import { theme } from '../../lib/theme';
+import type { ManualAgentSessionAction } from '../../app/agent-session-action';
 import {
   getFontScale,
   getAgentTerminalSessionVersion,
@@ -35,21 +36,19 @@ import {
   getTaskVisibleAiTerminalAgentIds,
   isTaskPanelFocused,
   addAgentToTask,
-  clearAgentTerminalSessionReplacement,
   closeAgentInTask,
   markAgentExited,
   markAgentOutput,
   registerFocusFn,
-  restartAgent,
   setActiveTask,
   setActiveAgent,
   setLastPrompt,
   setTaskFocusedPanel,
   setTaskTerminalLayoutMode,
   store,
-  switchAgent,
   unregisterFocusFn,
 } from '../../store/store';
+import { showNotification } from '../../store/notification';
 import type { Agent, Task, TaskTerminalLayoutMode } from '../../store/types';
 import { AgentSwitchMenu } from '../AgentSwitchMenu';
 import { InfoBar } from '../InfoBar';
@@ -494,6 +493,7 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
     store.availableAgents.filter((agentDef) => agentDef.available !== false),
   );
   const panelId = `${taskId}:ai-terminal`;
+  const [sessionActionPending, setSessionActionPending] = createSignal(false);
   let currentFocusFn: (() => void) | undefined;
 
   onCleanup(() => props.onDispose(agentId, currentFocusFn));
@@ -503,6 +503,35 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
       setActiveAgent(agentId);
     }
     setTaskFocusedPanel(taskId, 'ai-terminal');
+  }
+
+  function runSessionAction(action: ManualAgentSessionAction): void {
+    if (sessionActionPending()) return;
+    setSessionActionPending(true);
+    void import('../../app/agent-session-workflows')
+      .then(({ runManualAgentSessionAction }) => runManualAgentSessionAction(agentId, action))
+      .then((started) => {
+        if (!started) {
+          showNotification(
+            'The agent session was not changed because this task is controlled elsewhere.',
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        logWarn('task-ai-terminal.session-action', 'Managed agent session action failed', {
+          action: action.kind,
+          agentId,
+          error,
+          taskId,
+        });
+        showNotification(
+          error instanceof Error ? error.message : 'Failed to change agent session',
+          {
+            kind: 'error',
+          },
+        );
+      })
+      .finally(() => setSessionActionPending(false));
   }
 
   return (
@@ -565,21 +594,23 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
           <AgentSwitchMenu
             currentAgentDefId={props.agent.def.id}
             availableAgents={availableAgents()}
-            onRestartCurrent={() => restartAgent(props.agent.id, false)}
+            disabled={sessionActionPending()}
+            onRestartCurrent={() => runSessionAction({ kind: 'restart' })}
             onSelectAgent={(agentDef) => {
               if (agentDef.id === props.agent.def.id) {
-                restartAgent(props.agent.id, false);
+                runSessionAction({ kind: 'restart' });
                 return;
               }
-              switchAgent(props.agent.id, agentDef);
+              runSessionAction({ agentDef, kind: 'switch' });
             }}
           />
           <Show when={canResumeAgent()}>
             <button
               onClick={(event) => {
                 event.stopPropagation();
-                restartAgent(props.agent.id, true);
+                runSessionAction({ kind: 'resume' });
               }}
+              disabled={sessionActionPending()}
               style={{
                 background: theme.bgElevated,
                 border: `1px solid ${theme.border}`,
@@ -621,8 +652,6 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
           const sessionGeneration = props.agent.generation;
           const sessionAgentDef = props.agent.def;
           const sessionAgentResumed = props.agent.resumed;
-          const shouldReplaceExistingSession =
-            props.agent.replaceTerminalSessionOnNextAttach === true;
           const sessionTask = props.task;
           const sessionPanelId = panelId;
           let mountedFocusFn: (() => void) | undefined;
@@ -653,8 +682,8 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
               cwd={sessionTask.worktreePath}
               focusPanelId="ai-terminal"
               projectMode={sessionTask.projectMode}
-              replaceExistingSession={shouldReplaceExistingSession}
               runnerProfile={props.runnerProfile}
+              sessionOwner="managed-agent"
               env={getCoordinatorAgentEnvironment(sessionAgentDef, sessionTask)}
               resumeOnStart={shouldResumeAgentOnSpawn(sessionAgentDef, sessionAgentResumed)}
               onExit={createAgentExitHandler(sessionAgentId, sessionGeneration)}
@@ -673,11 +702,6 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
                 mountedFocusFn = focusFn;
                 currentFocusFn = focusFn;
                 props.onReady(sessionAgentId, focusFn);
-              }}
-              onSpawnResolved={() => {
-                if (shouldReplaceExistingSession) {
-                  clearAgentTerminalSessionReplacement(sessionAgentId, sessionGeneration);
-                }
               }}
               fontSize={Math.round(store.terminalFontSize * getFontScale(sessionPanelId))}
             />

@@ -66,6 +66,13 @@
   border-color: var(--border-focus);
 }
 
+.arena-competitor-input:focus-visible,
+.arena-prompt-area:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-color: var(--border-focus);
+}
+
 .arena-competitor-input::placeholder {
   color: var(--fg-subtle);
 }
@@ -194,6 +201,14 @@
 
 .arena-prompt-area:focus {
   border-color: var(--border-focus);
+}
+
+@media (forced-colors: active) {
+  .arena-competitor-input:focus-visible,
+  .arena-prompt-area:focus-visible {
+    outline-color: Highlight;
+    border-color: Highlight;
+  }
 }
 
 .arena-prompt-area::placeholder {

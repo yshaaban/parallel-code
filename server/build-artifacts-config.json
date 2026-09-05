@@ -36,9 +36,12 @@
     "remote": {
       "artifactRelativePath": "dist-remote/index.html",
       "sourceRelativePaths": [
+        "src/app/task-notes-capability.ts",
+        "src/components/task-notes",
         "src/remote",
         "src/domain",
         "src/lib",
+        "src/runtime/task-notes-invalidation.ts",
         "src/store/server-state-versioning.ts",
         "electron/ipc/channels.ts",
         "electron/remote",
@@ -61,6 +64,7 @@
         "src/ipc",
         "src/domain",
         "src/lib",
+        "src/runtime/task-notes-event-stream.ts",
         "src/store/browser-cold-bootstrap-projection-types.ts",
         "src/store/persistence-agent-defaults.ts",
         "src/store/persistence-legacy-state.ts",

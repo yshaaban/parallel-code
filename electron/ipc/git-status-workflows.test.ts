@@ -231,6 +231,20 @@ describe('git status workflows', () => {
     expect(getWorktreeStatusMock).not.toHaveBeenCalled();
   });
 
+  it('keeps a surviving shared-root watcher addressable when its peer stops or moves', async () => {
+    const context = createContext();
+    await startTaskGitStatusWatcher(context, { taskId: 'root-1', worktreePath: '/repo' });
+    await startTaskGitStatusWatcher(context, { taskId: 'root-2', worktreePath: '/repo' });
+    stopTaskGitStatusWatcher('root-2');
+    expect(findRegisteredGitWatcherTaskIdForWorktree('/repo')).toBe('root-1');
+    expect(stopGitWatcherMock).toHaveBeenCalledWith('root-2');
+    expect(stopGitWatcherMock).not.toHaveBeenCalledWith('root-1');
+    await startTaskGitStatusWatcher(context, { taskId: 'root-2', worktreePath: '/repo' });
+    await startTaskGitStatusWatcher(context, { taskId: 'root-2', worktreePath: '/other' });
+    expect(findRegisteredGitWatcherTaskIdForWorktree('/repo')).toBe('root-1');
+    expect(findRegisteredGitWatcherTaskIdForWorktree('/other')).toBe('root-2');
+  });
+
   it('restores saved-task watchers without scheduling an initial refresh', async () => {
     const emitGitStatusChanged = vi.fn();
 

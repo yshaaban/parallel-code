@@ -404,7 +404,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   }
 
   async function handleMarkdownLinkClick(event: MouseEvent): Promise<void> {
-    if (!(event.target instanceof Element) || !props.worktreePath) {
+    if (!(event.target instanceof Element) || !props.taskId || !props.worktreePath) {
       return;
     }
 
@@ -428,7 +428,6 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
       agentId: props.agentId,
       relativePath,
       taskId: props.taskId,
-      worktreePath: props.worktreePath,
     });
   }
 
@@ -576,7 +575,6 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                 color: theme.fg,
                 'font-size': '17px',
                 'font-family': 'var(--font-mono)',
-                outline: 'none',
               }}
             >
               <Show when={props.planContent.trim()} fallback={<EmptyPlanState />}>

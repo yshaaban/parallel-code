@@ -1,4 +1,9 @@
 import type { AgentDef } from '../ipc/types.js';
+import {
+  isTaskCreationOperationLink,
+  isTaskCreationProvenance,
+  isTaskInitialShellOwnership,
+} from '../domain/task-creation-provenance.js';
 import { isTaskMode } from '../domain/task-mode.js';
 import {
   isFiniteNumber,
@@ -6,6 +11,7 @@ import {
   isRecord,
   isStringArray,
 } from '../lib/type-guards.js';
+import type { CommittedMergeOperationMarker, MergeProgressSnapshot } from '../domain/task-merge.js';
 import type { PersistedTask, PersistedWindowState, Project } from './types.js';
 
 export type HydratablePersistedTask = Omit<
@@ -34,6 +40,10 @@ export interface LegacyPersistedState {
   completedTaskCount?: unknown;
   mergedLinesAdded?: unknown;
   mergedLinesRemoved?: unknown;
+  /** Backend-owned canonical projection; legacy metric fields above are compatibility mirrors. */
+  mergeProgress?: MergeProgressSnapshot | unknown;
+  committedMergeOperationId?: string | unknown;
+  mergeOperation?: CommittedMergeOperationMarker | unknown;
   terminalFontSize?: unknown;
   terminalFont?: unknown;
   fontSmoothing?: unknown;
@@ -65,6 +75,12 @@ function isOptionalBoolean(value: unknown): value is boolean | undefined {
 
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === 'string';
+}
+
+function isOptionalInitialPromptDeliveryMode(
+  value: unknown,
+): value is 'automatic' | 'manual-only' | undefined {
+  return value === undefined || value === 'automatic' || value === 'manual-only';
 }
 
 function isOptionalProjectMode(value: unknown): value is 'git' | 'non-git' | undefined {
@@ -137,6 +153,9 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     isOptionalBoolean(value.directMode) &&
     isOptionalBoolean(value.skipPermissions) &&
     isOptionalString(value.githubUrl) &&
+    isOptionalString(value.initialPrompt) &&
+    isOptionalString(value.initialPromptDeliveryId) &&
+    isOptionalInitialPromptDeliveryMode(value.initialPromptDeliveryMode) &&
     isOptionalString(value.savedInitialPrompt) &&
     (value.savedSelectedAgentIndex === undefined ||
       isNonNegativeInteger(value.savedSelectedAgentIndex)) &&
@@ -148,6 +167,12 @@ export function isPersistedTask(value: unknown): value is HydratablePersistedTas
     isOptionalCoordinatorRole(value.coordinatorRole) &&
     isOptionalString(value.coordinatorRunId) &&
     isOptionalString(value.coordinatorToolCommand) &&
+    (value.taskCreationProvenance === undefined ||
+      isTaskCreationProvenance(value.taskCreationProvenance)) &&
+    (value.taskCreationOperationLink === undefined ||
+      isTaskCreationOperationLink(value.taskCreationOperationLink)) &&
+    (value.taskInitialShellOwnership === undefined ||
+      isTaskInitialShellOwnership(value.taskInitialShellOwnership)) &&
     isOptionalBoolean(value.collapsed)
   );
 }

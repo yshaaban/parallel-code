@@ -9,6 +9,7 @@ import type {
   ResyncVersionMap,
   ServerStateBootstrapCategory,
 } from '../src/domain/server-state-bootstrap.js';
+import type { SecureSessionBootstrapUrlOptions } from '../electron/remote/network.js';
 import type { PeerPresenceSnapshot, RemotePresence } from '../src/domain/server-state.js';
 import {
   createBrowserServerInfo,
@@ -38,6 +39,7 @@ export interface CreateBrowserControlStateOptions {
   getPeerPresenceVersion: () => number;
   getAuthenticatedClientCount: () => number;
   port: number;
+  secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
   token: string;
 }
 
@@ -48,6 +50,9 @@ export function createBrowserControlState(
   const serverInfo = createBrowserServerInfo({
     getAuthenticatedClientCount: options.getAuthenticatedClientCount,
     getPort: () => serverPort,
+    ...(options.secureSessionBootstrap
+      ? { secureSessionBootstrap: options.secureSessionBootstrap }
+      : {}),
     token: options.token,
   });
   let remoteStatusVersion = 0;

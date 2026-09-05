@@ -220,7 +220,11 @@ describe('browser agent output subscriptions', () => {
 
     subscriptions.registerClient(client);
     subscriptions.subscribe(client, 'agent-1');
-    subscriptions.emitExit('agent-1');
+    subscriptions.emitExit('agent-1', {
+      exitCode: 0,
+      lastOutput: [],
+      signal: null,
+    });
     subscriptions.subscribe(client, 'agent-1');
 
     expect(subscribeToAgent).toHaveBeenCalledTimes(2);

@@ -25,6 +25,10 @@ import {
   stopTaskContainersForTask,
 } from '../app/task-containers';
 import { useTaskActivityNow } from '../app/task-activity-clock';
+import {
+  getCurrentTaskGitActionDecision,
+  requestTaskGitAction,
+} from '../app/task-git-action-capability';
 import { cancelTerminalSwitchEchoGrace } from '../app/terminal-switch-echo-grace';
 import {
   beginTerminalSwitchWindow,
@@ -49,7 +53,6 @@ import {
 } from '../domain/task-closing';
 import { isTerminalTask } from '../domain/task-mode';
 import {
-  clearInitialPrompt,
   clearPendingAction,
   clearPrefillPrompt,
   getProject,
@@ -83,7 +86,7 @@ import { createTaskCoordinatorSection } from './task-panel/TaskCoordinatorSectio
 import { createTaskPanelDialogState } from './task-panel/task-panel-dialog-state';
 import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runtime';
 import { createTaskPanelPermissionController } from './task-panel/task-panel-permission-controller';
-import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
+import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSectionEntry';
 import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
 import { createTaskPanelStepsController } from './task-panel/task-panel-steps-controller';
@@ -105,6 +108,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const electronRuntime = isElectronRuntime();
   const taskActivityNow = useTaskActivityNow();
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+  const [initialPromptUnsaved, setInitialPromptUnsaved] = createSignal(false);
   let previouslyActive = false;
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
@@ -286,6 +290,8 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       content: () => (
         <TaskTitleBar
           task={props.task}
+          mergeAvailable={getCurrentTaskGitActionDecision('merge', props.task.id).allowed}
+          pushAvailable={getCurrentTaskGitActionDecision('push', props.task.id).allowed}
           isActive={props.isActive}
           taskActivityStatus={getTaskActivityStatus(props.task.id, taskActivityNow())}
           hasPreviewPorts={previewController.hasPreviewPorts()}
@@ -298,9 +304,17 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           onSetTitleEditHandle={(handle) => {
             titleEditHandle = handle;
           }}
-          onOpenMerge={dialogState.openMergeConfirm}
-          onOpenPush={dialogState.openPushConfirm}
-          onCollapse={() => collapseTask(props.task.id)}
+          onOpenMerge={() => requestTaskGitAction('merge', props.task.id, 'title-bar')}
+          onOpenPush={() => requestTaskGitAction('push', props.task.id, 'title-bar')}
+          onCollapse={() => {
+            if (initialPromptUnsaved()) {
+              showNotification(
+                'Wait for the initial prompt draft to finish saving before collapsing.',
+              );
+              return;
+            }
+            void collapseTask(props.task.id);
+          }}
           onClose={dialogState.openCloseConfirm}
         />
       ),
@@ -327,9 +341,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   function promptInput(): PanelChild {
     return {
       id: 'prompt',
-      initialSize: 72,
+      initialSize: props.task.initialPromptDeliveryId ? 150 : 72,
       stable: true,
-      minSize: 54,
+      minSize: props.task.initialPromptDeliveryId ? 112 : 54,
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
@@ -352,13 +366,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                 <PromptInput
                   taskId={props.task.id}
                   agentId={agentId}
-                  initialPrompt={props.task.initialPrompt}
+                  initialPromptDeliveryId={props.task.initialPromptDeliveryId}
+                  onInitialPromptUnsavedChange={setInitialPromptUnsaved}
                   prefillPrompt={props.task.prefillPrompt}
-                  onSend={() => {
-                    if (props.task.initialPrompt) {
-                      clearInitialPrompt(props.task.id);
-                    }
-                  }}
                   onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
                   setTextareaRef={(element) => {
                     promptRef = element;
@@ -399,6 +409,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     projectMode: () => getProjectMode(props.task),
     shellAgentIds: () => props.task.shellAgentIds,
     taskId: () => taskId,
+    taskInitialShellOwnership: () => props.task.taskInitialShellOwnership,
     worktreePath: () => props.task.worktreePath,
     primary: terminalTask,
   });
@@ -525,6 +536,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           <CloseTaskDialog
             open
             task={props.task}
+            unsavedInitialPrompt={initialPromptUnsaved()}
             onDone={() => dialogState.setShowCloseConfirm(false)}
           />
         </Show>

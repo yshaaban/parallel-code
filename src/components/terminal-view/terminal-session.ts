@@ -3,7 +3,16 @@ import { Terminal, type ITerminalAddon } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
 import { openMarkdownViewer } from '../../app/markdown-viewer';
+import {
+  isTaskCommandLeaseSkipped,
+  runWithTaskCommandLease,
+} from '../../app/task-command-lease-session';
 import { isFailedProcessExit } from '../../domain/process-exit';
+import type {
+  AttachTerminalSessionResult,
+  AttachTerminalSessionRequest,
+  TerminalSessionOwner,
+} from '../../domain/renderer-invoke';
 import {
   Channel,
   fireAndForget,
@@ -52,7 +61,8 @@ import {
 } from '../../lib/terminal-drop';
 import { matchesDialogSafeShortcut, matchesGlobalShortcut } from '../../lib/shortcuts';
 import { alignTerminalDomRendererWidthMetricsWithWebgl } from '../../lib/terminal-renderer-metrics';
-import { getTerminalTheme } from '../../lib/theme';
+import { computeTerminalMarkdownLinks } from '../../lib/terminal-links';
+import { getTerminalSearchDecorationTheme, getTerminalTheme } from '../../lib/theme';
 import {
   acquireWebglAddon,
   isWebglAddonRuntimeReady,
@@ -87,6 +97,15 @@ import {
   subscribeTaskCommandControllerChanges,
 } from '../../store/task-command-controllers';
 import { getRuntimeClientId } from '../../lib/runtime-client-id';
+import {
+  completeCompatibilityTerminalCreation,
+  isCompatibilityTerminalCreationPending,
+} from '../../runtime/compatibility-terminal-creation';
+import {
+  createTerminalSearchRuntime,
+  type TerminalSearchCapability,
+  type TerminalSearchResult,
+} from './terminal-search-runtime';
 import type { PtyExitData, PtyOutput } from '../../ipc/types';
 import { createTerminalInputPipeline } from './terminal-input-pipeline';
 import { createTerminalOutputPipeline } from './terminal-output-pipeline';
@@ -95,7 +114,12 @@ import {
   createTerminalRecoveryRuntime,
   type TerminalRecoveryRuntime,
 } from './terminal-recovery-runtime';
-import type { TerminalViewProps, TerminalViewStatus } from './types';
+import {
+  getTerminalRestoreUnavailableMessage,
+  type TerminalSessionAttachUnavailableReason,
+  type TerminalViewProps,
+  type TerminalViewStatus,
+} from './types';
 import {
   getTerminalWebglPriority,
   type TerminalOutputPriority,
@@ -105,8 +129,6 @@ const INITIAL_COMMAND_DELAY_MS = 50;
 const DEFAULT_READY_FALLBACK_DELAY_MS = 500;
 const SELECTED_READY_FALLBACK_DELAY_MS = 150;
 const PROBE_TEXT_DECODER = new TextDecoder();
-const TERMINAL_MARKDOWN_LINK_PATTERN =
-  /(?:file:\/\/\/?[^\s<>()"'`]+|(?:~?\/|\.{1,2}\/)?[^\s<>()"'`]+\.md(?:[?#][^\s<>()"'`]*)?(?::\d+(?::\d+)?)?)/giu;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const TERMINAL_LETTER_SPACING = 0;
 const TERMINAL_LINE_HEIGHT = 1;
@@ -117,6 +139,16 @@ type TerminalWebLinksAddonConstructor = new (
 interface TerminalGeometry {
   cols: number;
   rows: number;
+}
+
+function resolveTerminalSessionOwner(
+  sessionOwner: TerminalSessionOwner | undefined,
+  arenaLaunchToken: string | undefined,
+  isShell: boolean | undefined,
+): TerminalSessionOwner {
+  if (sessionOwner) return sessionOwner;
+  if (arenaLaunchToken !== undefined) return 'arena-transient';
+  return isShell === true ? 'compatibility-shell' : 'managed-agent';
 }
 
 let terminalWebLinksAddonConstructor: TerminalWebLinksAddonConstructor | null = null;
@@ -269,207 +301,23 @@ function shouldOpenTerminalLink(event: MouseEvent): boolean {
   return isMac ? event.metaKey : event.ctrlKey;
 }
 
-function normalizeTerminalPathSeparators(filePath: string): string {
-  return filePath.replace(/\\/g, '/');
-}
-
-function hasFileUrlPrefix(filePath: string): boolean {
-  return /^file:\/\//iu.test(filePath);
-}
-
-function shouldResolveTerminalMarkdownLinkAsFileUrl(linkText: string): boolean {
-  return hasFileUrlPrefix(linkText) || isWindowsDrivePath(linkText);
-}
-
-function isWindowsDrivePath(filePath: string): boolean {
-  return /^[a-zA-Z]:\//u.test(normalizeTerminalPathSeparators(filePath));
-}
-
-function isWindowsDriveSegment(pathSegment: string | undefined): boolean {
-  return pathSegment !== undefined && /^[a-zA-Z]:$/u.test(pathSegment);
-}
-
-function stripTerminalMarkdownLinkSuffix(linkText: string): string {
-  const trimmedText = linkText.trim().replace(/^[('"`]+|[)',.;:!?`]+$/gu, '');
-  const textWithoutFragment = trimmedText.split('#', 1)[0] ?? '';
-  const textWithoutQuery = textWithoutFragment.split('?', 1)[0] ?? '';
-  return textWithoutQuery.replace(/:\d+(?::\d+)?$/u, '');
-}
-
-function toFileUrlInput(filePath: string): string {
-  const normalizedPath = normalizeTerminalPathSeparators(filePath);
-  if (hasFileUrlPrefix(normalizedPath)) {
-    return normalizedPath;
-  }
-
-  if (isWindowsDrivePath(normalizedPath)) {
-    return `file:///${normalizedPath}`;
-  }
-
-  if (normalizedPath.startsWith('/')) {
-    return `file://${normalizedPath}`;
-  }
-
-  return normalizedPath;
-}
-
-function getDirectoryFileUrl(directoryPath: string): URL | null {
-  const normalizedPath = normalizeTerminalPathSeparators(directoryPath).trim();
-  if (normalizedPath.length === 0) {
-    return null;
-  }
-
-  const suffixedPath = normalizedPath.endsWith('/') ? normalizedPath : `${normalizedPath}/`;
-  try {
-    return new URL(toFileUrlInput(suffixedPath));
-  } catch {
-    return null;
-  }
-}
-
-function getDecodedFileUrlSegments(fileUrl: URL): string[] {
-  return decodeURIComponent(fileUrl.pathname)
-    .split('/')
-    .filter((segment) => segment.length > 0);
-}
-
-function getComparableFileUrlHost(fileUrl: URL, caseInsensitive: boolean): string {
-  const decodedHost = decodeURIComponent(fileUrl.host);
-  return caseInsensitive ? decodedHost.toLowerCase() : decodedHost;
-}
-
-function getComparableFileUrlSegments(fileUrl: URL, caseInsensitive: boolean): string[] {
-  const decodedSegments = getDecodedFileUrlSegments(fileUrl);
-  if (!caseInsensitive) {
-    return decodedSegments;
-  }
-
-  return decodedSegments.map((segment) => segment.toLowerCase());
-}
-
-function shouldCompareFileUrlPathCaseInsensitively(fileUrl: URL): boolean {
-  const decodedSegments = getDecodedFileUrlSegments(fileUrl);
-  return fileUrl.host.length > 0 || isWindowsDriveSegment(decodedSegments[0]);
-}
-
-function resolveTerminalMarkdownFileUrl(worktreeUrl: URL, normalizedLinkText: string): URL | null {
-  try {
-    if (shouldResolveTerminalMarkdownLinkAsFileUrl(normalizedLinkText)) {
-      return new URL(toFileUrlInput(normalizedLinkText));
-    }
-
-    return new URL(normalizedLinkText, worktreeUrl);
-  } catch {
-    return null;
-  }
-}
-
-function getMarkdownViewerRelativePath(worktreePath: string, linkText: string): string | null {
-  const worktreeUrl = getDirectoryFileUrl(worktreePath);
-  if (!worktreeUrl) {
-    return null;
-  }
-
-  const sanitizedLinkText = stripTerminalMarkdownLinkSuffix(linkText);
-  if (sanitizedLinkText.length === 0 || sanitizedLinkText.startsWith('~/')) {
-    return null;
-  }
-
-  const normalizedLinkText = normalizeTerminalPathSeparators(sanitizedLinkText);
-  if (!normalizedLinkText.toLowerCase().endsWith('.md')) {
-    return null;
-  }
-
-  const hasExplicitScheme =
-    /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(normalizedLinkText) &&
-    !isWindowsDrivePath(normalizedLinkText);
-  if (hasExplicitScheme && !hasFileUrlPrefix(normalizedLinkText)) {
-    return null;
-  }
-
-  const resolvedFileUrl = resolveTerminalMarkdownFileUrl(worktreeUrl, normalizedLinkText);
-  if (!resolvedFileUrl) {
-    return null;
-  }
-
-  if (resolvedFileUrl.protocol !== 'file:') {
-    return null;
-  }
-
-  const compareCaseInsensitively =
-    shouldCompareFileUrlPathCaseInsensitively(worktreeUrl) ||
-    shouldCompareFileUrlPathCaseInsensitively(resolvedFileUrl);
-  if (
-    getComparableFileUrlHost(worktreeUrl, compareCaseInsensitively) !==
-    getComparableFileUrlHost(resolvedFileUrl, compareCaseInsensitively)
-  ) {
-    return null;
-  }
-
-  const worktreeSegments = getComparableFileUrlSegments(worktreeUrl, compareCaseInsensitively);
-  const targetComparableSegments = getComparableFileUrlSegments(
-    resolvedFileUrl,
-    compareCaseInsensitively,
-  );
-  const targetRelativeSegments = getDecodedFileUrlSegments(resolvedFileUrl);
-  if (targetComparableSegments.length <= worktreeSegments.length) {
-    return null;
-  }
-
-  for (let index = 0; index < worktreeSegments.length; index += 1) {
-    if (targetComparableSegments[index] !== worktreeSegments[index]) {
-      return null;
-    }
-  }
-
-  return targetRelativeSegments.slice(worktreeSegments.length).join('/');
-}
-
-function getTerminalMarkdownLinks(
-  lineText: string,
-  worktreePath: string,
-): Array<{ length: number; relativePath: string; startIndex: number; text: string }> {
-  const links: Array<{ length: number; relativePath: string; startIndex: number; text: string }> =
-    [];
-  let match: RegExpExecArray | null;
-  TERMINAL_MARKDOWN_LINK_PATTERN.lastIndex = 0;
-  while ((match = TERMINAL_MARKDOWN_LINK_PATTERN.exec(lineText)) !== null) {
-    const rawText = match[0];
-    const relativePath = getMarkdownViewerRelativePath(worktreePath, rawText);
-    if (!relativePath) {
-      continue;
-    }
-
-    const displayText = stripTerminalMarkdownLinkSuffix(rawText);
-    if (displayText.length === 0) {
-      continue;
-    }
-
-    links.push({
-      length: displayText.length,
-      relativePath,
-      startIndex: match.index,
-      text: displayText,
-    });
-  }
-
-  return links;
-}
-
 function registerTerminalMarkdownLinkProvider(
   term: Terminal,
   props: TerminalViewProps,
+  isCurrentSession: () => boolean,
 ): { dispose: () => void } {
+  const agentId = props.agentId;
+  const taskId = props.taskId;
+  const worktreePath = props.cwd.trim();
+
   return term.registerLinkProvider({
     provideLinks(lineNumber, callback): void {
-      const worktreePath = props.cwd.trim();
-      if (worktreePath.length === 0) {
+      if (!isCurrentSession() || worktreePath.length === 0) {
         callback(undefined);
         return;
       }
 
-      const lineText = term.buffer.active.getLine(lineNumber - 1)?.translateToString(true) ?? '';
-      const links = getTerminalMarkdownLinks(lineText, worktreePath);
+      const links = computeTerminalMarkdownLinks(term.buffer.active, lineNumber, worktreePath);
       if (links.length === 0) {
         callback(undefined);
         return;
@@ -478,21 +326,17 @@ function registerTerminalMarkdownLinkProvider(
       callback(
         links.map((link) => ({
           activate(event: MouseEvent): void {
-            if (!shouldOpenTerminalLink(event)) {
+            if (!shouldOpenTerminalLink(event) || !isCurrentSession()) {
               return;
             }
 
             void openMarkdownViewer({
-              agentId: props.agentId,
+              agentId,
               relativePath: link.relativePath,
-              taskId: props.taskId,
-              worktreePath,
+              taskId,
             });
           },
-          range: {
-            end: { x: link.startIndex + link.length + 1, y: lineNumber },
-            start: { x: link.startIndex + 1, y: lineNumber },
-          },
+          range: link.range,
           text: link.text,
         })),
       );
@@ -520,17 +364,23 @@ export interface TerminalSession {
   prefetchInputLease(): void;
   prewarmRenderHibernation(): void;
   requestInputTakeover(): Promise<boolean>;
+  retryAttach(): void;
+  search: TerminalSearchCapability;
   term: Terminal;
   updateOutputPriority(): void;
 }
 
 export type TerminalAttachMilestone =
+  | 'attach-requested'
+  | 'attach-resolved'
   | 'attach-fit-ready'
   | 'attach-recovery-settled'
   | 'attach-recovery-started'
-  | 'channel-ready'
-  | 'spawn-requested'
-  | 'spawn-resolved';
+  | 'channel-ready';
+
+type TerminalAttachInvocation =
+  | { kind: 'dispatched'; result: unknown }
+  | { kind: 'settled-without-dispatch'; reason: 'cancelled' | 'task-control-unavailable' };
 
 export interface StartTerminalSessionOptions {
   canAcceptInput?: () => boolean;
@@ -554,7 +404,11 @@ export interface StartTerminalSessionOptions {
   // scheduler releases its slot here so slots only guard CPU phases, never
   // network waits.
   onAttachDispatched?: () => void;
+  // A lease refusal or pre-dispatch cancellation settles the scheduler slot
+  // without claiming that an RPC was sent.
+  onAttachSettledWithoutDispatch?: () => void;
   onAttachMilestone?: (milestone: TerminalAttachMilestone) => void;
+  onAttachUnavailable?: (reason: TerminalSessionAttachUnavailableReason | null) => void;
   onBlockedInputAttempt?: () => void;
   onInputAccepted?: () => void;
   onLocalInputFeedback?: (data: string) => void;
@@ -571,11 +425,19 @@ export interface StartTerminalSessionOptions {
   onReadOnlyInputAttempt?: () => void;
   onRestoreBlockedChange?: (isBlocked: boolean) => void;
   onResizeTransactionChange?: (isActive: boolean) => void;
+  onSearchRequested?: (sessionIdentity: string, capability: TerminalSearchCapability) => void;
+  onSearchResult?: (
+    sessionIdentity: string,
+    capability: TerminalSearchCapability,
+    result: TerminalSearchResult,
+  ) => void;
+  onSearchUnavailable?: (sessionIdentity: string, capability: TerminalSearchCapability) => void;
   onSelectedRecoverySettle?: () => void;
   onSelectedRecoveryStart?: () => void;
   onShouldKeepRenderLive?: () => boolean;
   onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
+  sessionIdentity?: string;
   subscribeStartupPaintCoordinationChanges?: (listener: () => void) => () => void;
   shouldCommitResize?: () => boolean;
 }
@@ -615,6 +477,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const initialFontSize = props.fontSize ?? store.terminalFontSize;
   const browserMode = !isElectronRuntime();
   const runtimeClientId = getRuntimeClientId();
+  const sessionOwner = resolveTerminalSessionOwner(
+    props.sessionOwner,
+    props.arenaLaunchToken,
+    props.isShell,
+  );
+  const sessionIdentity = options.sessionIdentity ?? `${taskId}:${agentId}`;
   const cleanupCallbacks: Array<() => void> = [];
   const outputChannel = options.outputChannel ?? new Channel<PtyOutput>();
 
@@ -633,6 +501,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     theme: getTerminalTheme(store.themePreset),
   });
   const fitAddon = new FitAddon();
+  const searchRuntime = createTerminalSearchRuntime({
+    onResult: (result) => {
+      options.onSearchResult?.(sessionIdentity, searchRuntime, result);
+    },
+    onUnavailable: () => {
+      options.onSearchUnavailable?.(sessionIdentity, searchRuntime);
+    },
+    term,
+  });
+  searchRuntime.setDecorationTheme(getTerminalSearchDecorationTheme(store.themePreset));
 
   let browserTransportCleanup: (() => void) | undefined;
   let browserTransportConnectionState:
@@ -652,7 +530,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let readyFallbackTimer: number | undefined;
   let readyRequested = false;
   let hasObservedLocalInput = false;
-  let spawnFailed = false;
   let spawnReady = false;
   let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
@@ -821,13 +698,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function flushReadyState(): void {
-    if (
-      disposed ||
-      spawnFailed ||
-      !readyRequested ||
-      !fitReady ||
-      isRestoreBlockingRenderHibernation()
-    ) {
+    if (disposed || !readyRequested || !fitReady || isRestoreBlockingRenderHibernation()) {
       return;
     }
 
@@ -1100,7 +971,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   async function waitForTerminalFitReady(reason: TerminalFitEnsureReason): Promise<boolean> {
-    while (!disposed && !spawnFailed) {
+    while (!disposed) {
       if (await ensureTerminalFitReady(reason)) {
         return true;
       }
@@ -1110,7 +981,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function markTerminalReady(): void {
-    if (disposed || spawnFailed) {
+    if (disposed) {
       return;
     }
 
@@ -1171,7 +1042,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function scheduleReadyFallback(): void {
-    if (readyFallbackTimer !== undefined || disposed || spawnFailed) {
+    if (readyFallbackTimer !== undefined || disposed) {
       return;
     }
 
@@ -1348,7 +1219,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     getOutputPriority,
     hasObservedLocalInput: () => hasObservedLocalInput,
     isDisposed: () => disposed,
-    isSpawnFailed: () => spawnFailed,
+    // Attach uncertainty is retryable and never proves that a process spawn failed.
+    isSpawnFailed: () => false,
     markTerminalReady,
     onChunkRendered: (outputRenderedAtMs, _renderedOutputCursor, byteLength) => {
       inputPipeline.finalizePendingInputTraceEchoes(outputRenderedAtMs);
@@ -1370,7 +1242,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     hasWriteInFlight: () => outputPipeline.hasWriteInFlight(),
     isDisposed: () => disposed,
     isRestoreBlocked: isRestoreBlockingRenderHibernation,
-    isSpawnFailed: () => spawnFailed,
+    isSpawnFailed: () => false,
     isSpawnReady: () => spawnReady,
     onRenderHibernationChange: (isHibernating) => {
       if (isHibernating) {
@@ -1398,7 +1270,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isDisposed: () => disposed,
     isProcessExited: () => processExited,
     isRestoreBlocked: isRestoreBlockingRenderHibernation,
-    isSpawnFailed: () => spawnFailed,
+    isSpawnFailed: () => false,
     isSpawnReady: () => spawnReady,
     onBlockedInputAttempt: options.onBlockedInputAttempt,
     onInputAccepted: options.onInputAccepted,
@@ -1431,7 +1303,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isShell: props.isShell === true,
     isRenderHibernating: () => renderHibernation.isRecoveryVisible(),
     isDisposed: () => disposed,
-    isSpawnFailed: () => spawnFailed,
+    isSpawnFailed: () => false,
     isSpawnReady: () => spawnReady,
     markTerminalReady,
     onRestoreBlockedChange: (isBlocked) => {
@@ -1586,7 +1458,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     })
     .catch(() => {});
   term.open(containerRef);
-  const markdownLinkProvider = registerTerminalMarkdownLinkProvider(term, props);
+  const markdownLinkProvider = registerTerminalMarkdownLinkProvider(term, props, () => !disposed);
   cleanupCallbacks.push(() => {
     markdownLinkProvider.dispose();
   });
@@ -1612,10 +1484,40 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   containerRef.addEventListener('copy', handleCopy, true);
   containerRef.addEventListener('dragover', handleDragOver, true);
   containerRef.addEventListener('drop', handleDrop, true);
+
+  // xterm marks its textarea readonly while stdin is disabled. Keep terminal-local
+  // Find available in that state (for example, while a peer owns the input lease)
+  // without re-enabling any PTY input path. Capturing at the terminal boundary also
+  // keeps browser-native Find untouched everywhere outside this xterm surface.
+  function handleStdinDisabledKeyDown(event: KeyboardEvent): void {
+    if (
+      term.options.disableStdin !== true ||
+      matchesGlobalShortcut(event) ||
+      matchesDialogSafeShortcut(event)
+    ) {
+      return;
+    }
+
+    const shortcutAction = getTerminalShortcutAction(event, {
+      browserMode,
+      hasSelection: term.hasSelection(),
+      isMac,
+    });
+    if (shortcutAction.kind !== 'find') {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    options.onSearchRequested?.(sessionIdentity, searchRuntime);
+  }
+
+  containerRef.addEventListener('keydown', handleStdinDisabledKeyDown, true);
   cleanupCallbacks.push(() => {
     containerRef.removeEventListener('copy', handleCopy, true);
     containerRef.removeEventListener('dragover', handleDragOver, true);
     containerRef.removeEventListener('drop', handleDrop, true);
+    containerRef.removeEventListener('keydown', handleStdinDisabledKeyDown, true);
   });
 
   term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
@@ -1650,6 +1552,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return false;
       case 'copy':
         void copySelectionToClipboard();
+        return false;
+      case 'find':
+        options.onSearchRequested?.(sessionIdentity, searchRuntime);
         return false;
       case 'paste':
         void pasteFromClipboard();
@@ -1795,47 +1700,179 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     );
   }
 
-  void (async () => {
+  let attachInFlight = false;
+  let attachUnavailableReason: TerminalSessionAttachUnavailableReason | null = null;
+
+  function markAttachUnavailable(reason: TerminalSessionAttachUnavailableReason): void {
+    attachUnavailableReason = reason;
+    setStatus('error');
+    const message = getTerminalRestoreUnavailableMessage(attachUnavailableReason);
+    const retryGuidance =
+      reason === 'task-control-unavailable'
+        ? 'Retry when task control is available.'
+        : 'Retry when the backend is ready.';
+    term.write(`\x1b[33m${message} ${retryGuidance}\x1b[0m\r\n`);
+    options.onAttachUnavailable?.(attachUnavailableReason);
+  }
+
+  function buildAttachRequest(
+    activeRecoveryRuntime: TerminalRecoveryRuntime,
+  ): AttachTerminalSessionRequest {
+    const common = {
+      agentId,
+      initialRecovery: activeRecoveryRuntime.getInitialAttachRecoveryDescriptor(),
+      onOutput: outputChannel,
+      taskId,
+    };
+    if (sessionOwner === 'managed-agent' || sessionOwner === 'managed-task-shell') {
+      return { ...common, sessionOwner };
+    }
+    return {
+      ...common,
+      adapter: props.adapter,
+      ...(props.arenaLaunchToken !== undefined ? { arenaLaunchToken: props.arenaLaunchToken } : {}),
+      args: props.args,
+      baseBranch: props.baseBranch,
+      cols: term.cols,
+      command: props.command,
+      ...(sessionOwner === 'compatibility-shell' &&
+      isCompatibilityTerminalCreationPending(taskId, agentId)
+        ? { compatibilityIntent: 'create' as const }
+        : {}),
+      ...(browserMode ? { controllerId: runtimeClientId } : {}),
+      cwd: props.cwd,
+      env: props.env ?? {},
+      isShell: props.isShell,
+      projectMode: props.projectMode,
+      replaceExistingSession: props.replaceExistingSession === true,
+      resumeOnStart: props.resumeOnStart === true,
+      rows: term.rows,
+      runnerProfile: props.runnerProfile,
+      sessionOwner,
+      startsTaskWatchers: props.startsTaskWatchers,
+    };
+  }
+
+  async function invokeAttachRequest(
+    request: AttachTerminalSessionRequest,
+  ): Promise<TerminalAttachInvocation> {
+    let dispatched = false;
+    const dispatch = async (): Promise<TerminalAttachInvocation> => {
+      const attachPromise = invoke(IPC.AttachTerminalSession, request);
+      dispatched = true;
+      options.onAttachDispatched?.();
+      return { kind: 'dispatched' as const, result: await attachPromise };
+    };
+
     try {
-      // Single-round-trip attach: bind + spawn/attach + initial recovery in
+      if (
+        browserMode &&
+        sessionOwner === 'compatibility-shell' &&
+        isCompatibilityTerminalCreationPending(taskId, agentId)
+      ) {
+        const result = await runWithTaskCommandLease<TerminalAttachInvocation>(
+          taskId,
+          'open a terminal',
+          () => {
+            if (disposed || !isCompatibilityTerminalCreationPending(taskId, agentId)) {
+              return Promise.resolve({
+                kind: 'settled-without-dispatch',
+                reason: 'cancelled',
+              });
+            }
+            return dispatch();
+          },
+        );
+        if (isTaskCommandLeaseSkipped(result)) {
+          return {
+            kind: 'settled-without-dispatch',
+            reason: 'task-control-unavailable',
+          };
+        }
+        return result;
+      }
+      return dispatch();
+    } catch (error) {
+      if (!dispatched) {
+        options.onAttachSettledWithoutDispatch?.();
+      }
+      throw error;
+    }
+  }
+
+  function isAttachTerminalSessionResult(value: unknown): value is AttachTerminalSessionResult {
+    if (typeof value !== 'object' || value === null || !('kind' in value)) {
+      return false;
+    }
+    return value.kind === 'attached' || value.kind === 'unavailable';
+  }
+
+  async function attachTerminalSession(): Promise<void> {
+    if (disposed || attachInFlight || spawnReady) return;
+    const activeRecoveryRuntime = recoveryRuntime;
+    if (!activeRecoveryRuntime) return;
+    attachInFlight = true;
+    attachUnavailableReason = null;
+    options.onAttachUnavailable?.(null);
+    try {
+      // Single-round-trip attach: validate + restore/create + bind + initial recovery in
       // one RPC, dispatched immediately with optimistic geometry (last-known
       // or the 80x24 xterm default). Fit gates paint via the recovery-apply
-      // path, never spawn, and the scheduler slot is released at dispatch.
+      // path, never process admission, and the scheduler slot is released at dispatch.
       setStatus('attaching');
-      options.onAttachMilestone?.('spawn-requested');
-      const attachPromise = invoke(IPC.AttachTerminalSession, {
-        adapter: props.adapter,
-        agentId,
-        args: props.args,
-        baseBranch: props.baseBranch,
-        cols: term.cols,
-        command: props.command,
-        controllerId: runtimeClientId,
-        cwd: props.cwd,
-        env: props.env ?? {},
-        initialRecovery: recoveryRuntime.getInitialAttachRecoveryDescriptor(),
-        isShell: props.isShell,
-        onOutput: outputChannel,
-        projectMode: props.projectMode,
-        replaceExistingSession: props.replaceExistingSession === true,
-        resumeOnStart: props.resumeOnStart === true,
-        rows: term.rows,
-        runnerProfile: props.runnerProfile,
-        startsTaskWatchers: props.startsTaskWatchers,
-        taskId,
-      });
-      options.onAttachDispatched?.();
-      const attachResult = await attachPromise;
-      props.onSpawnResolved?.();
-      if (disposed) {
+      options.onAttachMilestone?.('attach-requested');
+      let attachInvocation: Awaited<ReturnType<typeof invokeAttachRequest>>;
+      try {
+        attachInvocation = await invokeAttachRequest(buildAttachRequest(activeRecoveryRuntime));
+      } catch {
+        if (!disposed) markAttachUnavailable('attach-transport-unavailable');
+        return;
+      }
+      if (attachInvocation.kind === 'settled-without-dispatch') {
+        options.onAttachSettledWithoutDispatch?.();
+        if (!disposed && attachInvocation.reason === 'task-control-unavailable') {
+          markAttachUnavailable(attachInvocation.reason);
+        }
+        return;
+      }
+      const attachResult = attachInvocation.result;
+      if (!isAttachTerminalSessionResult(attachResult)) {
+        if (!disposed) markAttachUnavailable('attach-transport-unavailable');
         return;
       }
 
-      if (browserMode && attachResult.channelBound) {
+      if (attachResult.kind === 'unavailable') {
+        if (disposed) return;
+        attachUnavailableReason = attachResult.reason;
+        setStatus('error');
+        const message = getTerminalRestoreUnavailableMessage(attachResult.reason);
+        term.write(`\x1b[33m${message} Retry when the backend is ready.\x1b[0m\r\n`);
+        options.onAttachUnavailable?.(attachResult.reason);
+        return;
+      }
+
+      if (disposed) {
+        // An existing-session attach can return a held recovery pause after
+        // this view has unmounted. Hand the entry to the disposed recovery
+        // owner anyway; its early-exit path releases the pause without
+        // applying terminal state or reviving the session.
+        if (attachResult.disposition !== 'created' && attachResult.recovery) {
+          await activeRecoveryRuntime
+            .applyInitialAttachRecoveryEntry(attachResult.recovery)
+            .catch(() => undefined);
+        }
+        return;
+      }
+
+      if (sessionOwner === 'compatibility-shell') {
+        completeCompatibilityTerminalCreation(taskId, agentId);
+      }
+
+      if (browserMode) {
         markBrowserChannelBound(outputChannel.id);
       }
       options.onAttachMilestone?.('channel-ready');
-      options.onAttachMilestone?.('spawn-resolved');
+      options.onAttachMilestone?.('attach-resolved');
       spawnReady = true;
       markAttachBound();
       void waitForTerminalFitReady('spawn-ready').then((fitBecameReady) => {
@@ -1848,7 +1885,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           scheduleTerminalFitStabilization('spawn-ready');
         }
       });
-      if (attachResult.attachedExistingSession && attachResult.recovery) {
+      if (attachResult.disposition !== 'created' && attachResult.recovery) {
         const shouldPrioritizeSelectedAttachRecovery =
           options.isSelectedRecoveryProtected?.() === true;
         if (shouldPrioritizeSelectedAttachRecovery) {
@@ -1856,7 +1893,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         }
         try {
           options.onAttachMilestone?.('attach-recovery-started');
-          await recoveryRuntime.applyInitialAttachRecoveryEntry(attachResult.recovery);
+          await activeRecoveryRuntime.applyInitialAttachRecoveryEntry(attachResult.recovery);
+        } catch {
+          const message = getTerminalRestoreUnavailableMessage('restore-failed');
+          term.write(`\x1b[33m${message} Live terminal output will continue.\x1b[0m\r\n`);
         } finally {
           options.onAttachMilestone?.('attach-recovery-settled');
           if (shouldPrioritizeSelectedAttachRecovery && !disposed) {
@@ -1868,30 +1908,19 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return;
       }
 
-      recoveryRuntime.notifySpawnReady();
+      activeRecoveryRuntime.notifySpawnReady();
       outputPipeline.recoverFlowControlIfIdle();
       scheduleReadyFallback();
       void inputPipeline.flushPendingResize();
       inputPipeline.flushPendingInput();
       inputPipeline.drainInputQueue();
       renderHibernation.sync();
-    } catch (error) {
-      if (disposed) {
-        return;
-      }
-
-      spawnFailed = true;
-      setStatus('error');
-      // eslint-disable-next-line no-control-regex -- intentionally stripping control characters from terminal error output
-      const safeError = String(error).replace(/[\x00-\x1f\x7f]/g, '');
-      term.write(`\x1b[31mFailed to spawn: ${safeError}\x1b[0m\r\n`);
-      props.onExit?.({
-        exit_code: null,
-        last_output: [`Failed to spawn: ${safeError}`],
-        signal: 'spawn_failed',
-      });
+    } finally {
+      attachInFlight = false;
     }
-  })();
+  }
+
+  void attachTerminalSession();
 
   return {
     cleanup(): void {
@@ -1906,20 +1935,23 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       clearReadyFallback();
       inputPipeline.cleanup();
       outputPipeline.cleanup();
-      if (browserMode && isBrowserPagehidePending()) {
-        sendPagehideInvoke(IPC.ResumeAgent, {
-          agentId,
-          channelId: outputChannel.id,
-          reason: 'flow-control',
-        });
-        sendPagehideInvoke(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
-      } else {
-        fireAndForget(IPC.ResumeAgent, {
-          agentId,
-          channelId: outputChannel.id,
-          reason: 'flow-control',
-        });
-        fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+      searchRuntime.dispose();
+      if (attachBound) {
+        if (browserMode && isBrowserPagehidePending()) {
+          sendPagehideInvoke(IPC.ResumeAgent, {
+            agentId,
+            channelId: outputChannel.id,
+            reason: 'flow-control',
+          });
+          sendPagehideInvoke(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+        } else {
+          fireAndForget(IPC.ResumeAgent, {
+            agentId,
+            channelId: outputChannel.id,
+            reason: 'flow-control',
+          });
+          fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+        }
       }
       outputChannel.cleanup?.();
       browserTransportCleanup?.();
@@ -1952,6 +1984,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     requestInputTakeover(): Promise<boolean> {
       return inputPipeline.requestInputTakeover();
     },
+    retryAttach(): void {
+      if (attachUnavailableReason === null || disposed) return;
+      void attachTerminalSession();
+    },
+    search: searchRuntime,
     term,
     updateOutputPriority(): void {
       outputPipeline.updateOutputPriority();

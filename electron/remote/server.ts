@@ -1,6 +1,7 @@
 // electron/remote/server.ts
 
 import { createServer, type IncomingMessage } from 'http';
+import { createServer as createHttpsServer, type ServerOptions as HttpsServerOptions } from 'https';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes } from 'crypto';
 import { getAgentMeta, getAgentScrollback } from '../ipc/pty.js';
@@ -9,11 +10,19 @@ import { createRemoteHttpHandler } from './http-handler.js';
 import {
   buildAccessUrl as buildRemoteAccessUrl,
   buildOptionalAccessUrl as buildOptionalRemoteAccessUrl,
+  buildOptionalSecureSessionBootstrapUrl,
+  buildSecureSessionBootstrapUrl,
   getNetworkIps,
+  type RemotePeerTrustPolicy,
 } from './network.js';
 import { createTokenComparator } from './token-auth.js';
 import { registerRemoteWebSocketServer } from './ws-server.js';
 import { createWebSocketTransport, type SendTextResult } from './ws-transport.js';
+import type { RemoteCommandRegistrationTable, RemoteGrant } from '../ipc/remote-command-gateway.js';
+import type { TaskCatalogDeltaBatch } from '../../src/domain/task-catalog.js';
+import type { TaskNotesChangedNotification } from '../../src/domain/task-notes.js';
+import type { RemoteTaskCreationOperationSource } from '../ipc/task-creation-remote-commands.js';
+import { createScopedRemoteCommandRuntime } from './scoped-command-runtime.js';
 
 interface RemoteServer {
   stop: () => Promise<void>;
@@ -39,8 +48,36 @@ export async function startRemoteServer(opts: {
     agentId: string,
   ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
   onAuthenticatedClientCountChanged?: (count: number) => void;
+  scopedCommands?: {
+    grants: ReadonlySet<RemoteGrant>;
+    mutationAdmissionInitiallyOpen?: boolean;
+    peerTrustPolicy: RemotePeerTrustPolicy;
+    registrations: RemoteCommandRegistrationTable;
+    subscribeTaskCatalog?: (listener: (batch: TaskCatalogDeltaBatch) => void) => () => void;
+    subscribeTaskNotesChanged?: (
+      listener: (notification: TaskNotesChangedNotification) => void,
+    ) => () => void;
+    taskCreationOperations?: RemoteTaskCreationOperationSource;
+    tls: Pick<HttpsServerOptions, 'cert' | 'key'>;
+    workspacePrincipalId: string;
+  };
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
+  const scopedCommands = opts.scopedCommands;
+  const scopedRuntime = scopedCommands
+    ? createScopedRemoteCommandRuntime({
+        accessToken: token,
+        grants: scopedCommands.grants,
+        ...(scopedCommands.mutationAdmissionInitiallyOpen !== undefined
+          ? { mutationAdmissionInitiallyOpen: scopedCommands.mutationAdmissionInitiallyOpen }
+          : {}),
+        onInternalError: (error) => console.error('[remote] Scoped command failed:', error),
+        peerTrustPolicy: scopedCommands.peerTrustPolicy,
+        registrations: scopedCommands.registrations,
+        workspacePrincipalId: scopedCommands.workspacePrincipalId,
+      })
+    : null;
+  const gateway = scopedRuntime?.gateway ?? null;
   const ips = getNetworkIps();
   const { safeCompare } = createTokenComparator(token);
   let stopped = false;
@@ -51,32 +88,52 @@ export async function startRemoteServer(opts: {
       getTaskName: opts.getTaskName,
     });
 
-  function checkAuth(req: IncomingMessage): boolean {
+  function checkAuth(req: IncomingMessage): boolean | { terminalRead: boolean } {
+    if (scopedRuntime) {
+      const url = new URL(req.url ?? '/', `https://${req.headers.host ?? 'localhost'}`);
+      if (url.searchParams.has('token')) return false;
+      const access = scopedRuntime.authenticateReadRequest(req);
+      return access ? { terminalRead: access.terminalRead } : false;
+    }
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ') && safeCompare(auth.slice(7))) return true;
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     return safeCompare(url.searchParams.get('token'));
   }
 
-  const server = createServer(
-    createRemoteHttpHandler({
-      checkAuth,
-      getAgentDetail: (agentId) => {
-        const scrollback = getAgentScrollback(agentId);
-        if (scrollback === null) return null;
+  const legacyHttpHandler = createRemoteHttpHandler({
+    checkAuth,
+    getAgentDetail: (agentId) => {
+      const scrollback = getAgentScrollback(agentId);
+      if (scrollback === null) return null;
 
-        const meta = getAgentMeta(agentId);
-        const info = meta ? opts.getAgentStatus(agentId) : null;
-        return {
-          exitCode: info?.exitCode ?? null,
-          scrollback,
-          status: info?.status ?? 'exited',
-        };
-      },
-      getAgentList,
-      staticDir: opts.staticDir,
-    }),
-  );
+      const meta = getAgentMeta(agentId);
+      const info = meta ? opts.getAgentStatus(agentId) : null;
+      return {
+        exitCode: info?.exitCode ?? null,
+        scrollback,
+        status: info?.status ?? 'exited',
+      };
+    },
+    getAgentList,
+    staticDir: opts.staticDir,
+  });
+  const authHttpHandler = scopedRuntime?.authHttpHandler ?? null;
+  const commandHttpHandler = scopedRuntime?.commandHttpHandler ?? null;
+
+  const requestHandler = (request: IncomingMessage, response: import('http').ServerResponse) => {
+    if (authHttpHandler?.(request, response)) return;
+    if (commandHttpHandler) {
+      void commandHttpHandler(request, response).then((handled) => {
+        if (!handled) legacyHttpHandler(request, response);
+      });
+      return;
+    }
+    legacyHttpHandler(request, response);
+  };
+  const server = scopedCommands
+    ? createHttpsServer(scopedCommands.tls, requestHandler)
+    : createServer(requestHandler);
 
   // --- WebSocket server ---
   const wss = new WebSocketServer({
@@ -115,31 +172,66 @@ export async function startRemoteServer(opts: {
     },
   });
 
-  function authenticateConnection(ws: WebSocket, clientId?: string, lastSeq?: number): boolean {
-    const authResult = transport.authenticateClient(ws, clientId);
+  function authenticateConnection(
+    ws: WebSocket,
+    clientId?: string,
+    lastSeq?: number,
+    access: { terminalRead: boolean } = { terminalRead: true },
+  ): boolean {
+    const authResult = transport.authenticateClient(ws, clientId, {
+      receiveControlEvents: access.terminalRead,
+    });
     if (!authResult.ok) return false;
-    if (lastSeq !== undefined) {
+    if (lastSeq !== undefined && access.terminalRead) {
       transport.replayControlEvents(ws, lastSeq);
     }
-    transport.sendMessage(ws, {
-      type: 'agents',
-      list: getAgentList(),
-    });
-    transport.sendAgentControllers(ws);
+    if (access.terminalRead) {
+      transport.sendMessage(ws, {
+        type: 'agents',
+        list: getAgentList(),
+      });
+      transport.sendAgentControllers(ws);
+    }
     return true;
   }
 
   function buildAccessUrl(host: string): string {
-    return buildRemoteAccessUrl(host, opts.port, token);
+    return scopedCommands
+      ? buildSecureSessionBootstrapUrl(host, opts.port, token)
+      : buildRemoteAccessUrl(host, opts.port, token);
   }
 
   function buildOptionalAccessUrl(host: string | null): string | null {
-    return buildOptionalRemoteAccessUrl(host, opts.port, token);
+    return scopedCommands
+      ? buildOptionalSecureSessionBootstrapUrl(host, opts.port, token)
+      : buildOptionalRemoteAccessUrl(host, opts.port, token);
   }
 
   const remoteSocketServer = registerRemoteWebSocketServer({
     authenticateConnection,
+    ...(scopedCommands && scopedRuntime
+      ? {
+          authenticateScopedConnection: (request: IncomingMessage) =>
+            scopedRuntime.authenticateSocket(request),
+          getCurrentScopedAuthentication: (authentication) =>
+            scopedRuntime.getCurrentAuthentication(authentication),
+          refreshScopedAuthentication: (authentication) =>
+            scopedRuntime.refreshSocketAuthentication(authentication),
+          subscribeScopedAuthenticationInvalidation: (listener) =>
+            scopedRuntime.subscribeAuthenticationInvalidation(listener),
+        }
+      : {}),
     getAgentList,
+    ...(gateway ? { remoteCommandGateway: gateway } : {}),
+    ...(scopedCommands?.subscribeTaskCatalog
+      ? { subscribeTaskCatalog: scopedCommands.subscribeTaskCatalog }
+      : {}),
+    ...(scopedCommands?.subscribeTaskNotesChanged
+      ? { subscribeTaskNotesChanged: scopedCommands.subscribeTaskNotesChanged }
+      : {}),
+    ...(scopedCommands?.taskCreationOperations
+      ? { taskCreationOperations: scopedCommands.taskCreationOperations }
+      : {}),
     safeCompareToken: safeCompare,
     transport,
     wss,
@@ -192,8 +284,12 @@ export async function startRemoteServer(opts: {
       return buildOptionalAccessUrl(getNetworkIps().tailscale);
     },
     connectedClients: () => transport.getAuthenticatedClientCount(),
-    stop: () =>
-      new Promise<void>((resolve) => {
+    stop: async () => {
+      if (gateway) {
+        await gateway.closeAndDrainMutations();
+      }
+      scopedRuntime?.revokeAll();
+      await new Promise<void>((resolve) => {
         if (stopped) {
           resolve();
           return;
@@ -207,6 +303,7 @@ export async function startRemoteServer(opts: {
           clearTimeout(timeout);
           resolve();
         });
-      }),
+      });
+    },
   };
 }

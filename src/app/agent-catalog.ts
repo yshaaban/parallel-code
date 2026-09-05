@@ -4,6 +4,7 @@ import { isAgentResumeStrategy } from '../lib/agent-resume';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
 import { setStore, store } from '../store/state';
+import { enqueueWorkspaceFieldEdit } from '../store/persistence-session';
 import { applyKnownAgentAvailability } from './agent-availability';
 
 const FALLBACK_AGENT_DEFS: AgentDef[] = [
@@ -150,18 +151,24 @@ export async function loadAgents(options: { signal?: AbortSignal } = {}): Promis
 }
 
 export function addCustomAgent(agent: AgentDef): void {
+  const previous = [...store.customAgents];
   setStore('customAgents', (agents) => [...agents, agent]);
+  enqueueWorkspaceFieldEdit('customAgents', previous, [...store.customAgents]);
   refreshAvailableAgents();
 }
 
 export function removeCustomAgent(agentId: string): void {
+  const previous = [...store.customAgents];
   setStore('customAgents', (agents) => agents.filter((agent) => agent.id !== agentId));
+  enqueueWorkspaceFieldEdit('customAgents', previous, [...store.customAgents]);
   refreshAvailableAgents();
 }
 
 export function updateCustomAgent(agentId: string, updated: AgentDef): void {
+  const previous = [...store.customAgents];
   setStore('customAgents', (agents) =>
     agents.map((agent) => (agent.id === agentId ? updated : agent)),
   );
+  enqueueWorkspaceFieldEdit('customAgents', previous, [...store.customAgents]);
   refreshAvailableAgents();
 }

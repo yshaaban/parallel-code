@@ -1,14 +1,24 @@
-import { batch, createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js';
+import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js';
 import { IPC } from '../../../electron/ipc/channels';
-import type { GitBranchInfo } from '../../ipc/types';
+import type { GitBranchInfo, WorktreeSymlinkCandidate } from '../../ipc/types';
 import { findBranchRefPrefixConflict, formatBranchRefPrefixConflict } from '../../lib/branch-name';
 import { invokeWithAbortSignal } from '../../lib/ipc';
 import type { ProjectMode } from '../../store/types';
 
 type TaskBranchListStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type TaskIgnoredDirsStatus = 'idle' | 'loading' | 'ready' | 'unavailable';
+
+interface IgnoredDirDiscoveryState {
+  candidates: WorktreeSymlinkCandidate[];
+  error: string | null;
+  status: TaskIgnoredDirsStatus;
+  truncated: boolean;
+}
 
 interface CreateTaskGitOptionsControllerOptions {
+  active: Accessor<boolean>;
   branchPreview: Accessor<string>;
+  createsManagedWorktree: Accessor<boolean>;
   projectBaseBranch: Accessor<string | undefined>;
   projectId: Accessor<string | null>;
   projectMode: Accessor<ProjectMode>;
@@ -23,8 +33,10 @@ interface TaskGitOptionsController {
   formatBranchOption: (branch: GitBranchInfo) => string;
   ignoredDirs: Accessor<string[]>;
   ignoredDirsError: Accessor<string | null>;
+  ignoredDirsStatus: Accessor<TaskIgnoredDirsStatus>;
+  ignoredDirsTruncated: Accessor<boolean>;
   reloadBranches: () => void;
-  reset: () => void;
+  reloadIgnoredDirs: () => void;
   selectedBaseBranch: Accessor<string | null>;
   selectedBaseBranchAvailable: Accessor<boolean>;
   selectedBaseBranchForSubmit: Accessor<string | undefined>;
@@ -51,13 +63,18 @@ export function createTaskGitOptionsController(
   const [branchQuery, setBranchQuery] = createSignal('');
   const [selectedBaseBranch, setSelectedBaseBranch] = createSignal<string | null>(null);
   const [branchReloadId, setBranchReloadId] = createSignal(0);
-  const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
-  const [ignoredDirsError, setIgnoredDirsError] = createSignal<string | null>(null);
+  const [ignoredDirDiscovery, setIgnoredDirDiscovery] = createSignal<IgnoredDirDiscoveryState>({
+    candidates: [],
+    error: null,
+    status: 'idle',
+    truncated: false,
+  });
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [ignoredDirsReloadId, setIgnoredDirsReloadId] = createSignal(0);
 
   createEffect(() => {
     branchReloadId();
+    const active = options.active();
     const projectId = options.projectId();
     const projectRoot = options.projectRoot();
     const projectMode = options.projectMode();
@@ -67,7 +84,7 @@ export function createTaskGitOptionsController(
     setBranchOptions([]);
     setBranchListError(null);
 
-    if (!projectId || !projectRoot || projectMode === 'non-git') {
+    if (!active || !projectId || !projectRoot || projectMode === 'non-git') {
       setBranchListStatus('idle');
       return;
     }
@@ -100,38 +117,64 @@ export function createTaskGitOptionsController(
 
   createEffect(() => {
     ignoredDirsReloadId();
+    const active = options.active();
     const projectId = options.projectId();
     const projectRoot = options.projectRoot();
     const projectMode = options.projectMode();
-    setIgnoredDirs([]);
-    setIgnoredDirsError(null);
+    const createsManagedWorktree = options.createsManagedWorktree();
+    setIgnoredDirDiscovery({ candidates: [], error: null, status: 'idle', truncated: false });
     setSelectedDirs(new Set<string>());
 
-    if (!projectId || !projectRoot || projectMode === 'non-git') {
+    if (
+      !active ||
+      !projectId ||
+      !projectRoot ||
+      projectMode === 'non-git' ||
+      !createsManagedWorktree
+    ) {
       return;
     }
 
     const requestController = new AbortController();
+    setIgnoredDirDiscovery({ candidates: [], error: null, status: 'loading', truncated: false });
     void invokeWithAbortSignal(IPC.GetGitignoredDirs, requestController.signal, { projectRoot })
-      .then((dirs) => {
+      .then((result) => {
         if (requestController.signal.aborted) return;
 
-        setIgnoredDirs(dirs);
-        setSelectedDirs(new Set(dirs));
-        setIgnoredDirsError(null);
+        const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+        setIgnoredDirDiscovery({
+          candidates,
+          error: null,
+          status: 'ready',
+          truncated: result.truncated === true,
+        });
+        setSelectedDirs(
+          new Set(candidates.filter((candidate) => candidate.isDefault).map(({ name }) => name)),
+        );
       })
       .catch((error: unknown) => {
         if (requestController.signal.aborted) return;
 
-        setIgnoredDirs([]);
         setSelectedDirs(new Set<string>());
-        setIgnoredDirsError(getBackendErrorMessage(error));
+        setIgnoredDirDiscovery({
+          candidates: [],
+          error: getBackendErrorMessage(error),
+          status: 'unavailable',
+          truncated: false,
+        });
       });
 
     onCleanup(() => {
       requestController.abort();
     });
   });
+
+  const ignoredDirs = createMemo(() =>
+    ignoredDirDiscovery().candidates.map((candidate) => candidate.name),
+  );
+  const ignoredDirsError = createMemo(() => ignoredDirDiscovery().error);
+  const ignoredDirsStatus = createMemo(() => ignoredDirDiscovery().status);
+  const ignoredDirsTruncated = createMemo(() => ignoredDirDiscovery().truncated);
 
   const filteredBranchOptions = createMemo(() => {
     const query = branchQuery().trim().toLowerCase();
@@ -220,22 +263,18 @@ export function createTaskGitOptionsController(
     setBranchReloadId((id) => id + 1);
   }
 
-  function reset(): void {
-    batch(() => {
-      setBranchOptions([]);
-      setBranchListStatus('idle');
-      setBranchListError(null);
-      setBranchQuery('');
-      setSelectedBaseBranch(null);
-      setIgnoredDirs([]);
-      setIgnoredDirsError(null);
-      setSelectedDirs(new Set<string>());
-      setBranchReloadId((id) => id + 1);
-      setIgnoredDirsReloadId((id) => id + 1);
-    });
+  function reloadIgnoredDirs(): void {
+    setIgnoredDirsReloadId((id) => id + 1);
   }
 
   function toggleSelectedDir(dir: string): void {
+    if (
+      ignoredDirDiscovery().status !== 'ready' ||
+      !ignoredDirDiscovery().candidates.some((candidate) => candidate.name === dir)
+    ) {
+      return;
+    }
+
     const next = new Set(selectedDirs());
     if (next.has(dir)) {
       next.delete(dir);
@@ -253,8 +292,10 @@ export function createTaskGitOptionsController(
     formatBranchOption,
     ignoredDirs,
     ignoredDirsError,
+    ignoredDirsStatus,
+    ignoredDirsTruncated,
     reloadBranches,
-    reset,
+    reloadIgnoredDirs,
     selectedBaseBranch,
     selectedBaseBranchAvailable,
     selectedBaseBranchForSubmit,

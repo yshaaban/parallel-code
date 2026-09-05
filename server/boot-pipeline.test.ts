@@ -181,24 +181,6 @@ async function invokeIpc<T>(channel: string, body: unknown = {}): Promise<T> {
   return payload.result as T;
 }
 
-async function waitForServerListening(): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  let lastError: unknown = null;
-  while (Date.now() < deadline) {
-    try {
-      await invokeIpc('get_backend_runtime_diagnostics');
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => {
-        setTimeout(resolve, 25);
-      });
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('Server did not start listening');
-}
-
 async function fetchColdBootstrapCategories(): Promise<BootstrapCategorySnapshot[]> {
   const snapshot = await invokeIpc<{
     serverStateBootstrap: AnyServerStateBootstrapSnapshot[];
@@ -231,7 +213,7 @@ describe('boot pipeline (12-task snapshot-first server boot)', () => {
       userDataPath,
     });
     baseUrl = `http://127.0.0.1:${port}`;
-    await waitForServerListening();
+    await serverController.whenReady();
     gitSubprocessCountAtListen = getGitSubprocessCount();
   }, 120_000);
 

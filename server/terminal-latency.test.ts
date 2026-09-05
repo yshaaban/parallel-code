@@ -40,7 +40,7 @@ import {
   measureEchoRoundTrip,
   reserveTestPort,
   sendJson,
-  spawnAgentViaHttp,
+  createSyntheticTerminalViaHttp,
   startServer,
   stopServer,
   stopTestServerProcess,
@@ -191,7 +191,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
       // Spawn a shell
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: 'test-task',
         agentId,
         command: '/bin/sh',
@@ -278,7 +278,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await waitForMessage(ws, (m) => m.type === 'agents');
         sendJson(ws, { type: 'bind-channel', channelId });
         await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'format-task',
           agentId,
           command: '/bin/sh',
@@ -333,7 +333,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       await waitForMessage(ws, (m) => m.type === 'agents');
       sendJson(ws, { type: 'bind-channel', channelId });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId,
         agentId,
         command: '/bin/sh',
@@ -428,7 +428,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         sendJson(ws, { type: 'bind-channel', channelId });
         await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'ack-input-task',
           agentId,
           command: '/bin/sh',
@@ -481,7 +481,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         sendJson(ws, { type: 'bind-channel', channelId });
         await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'ack-shared-task',
           agentId,
           command: '/bin/sh',
@@ -565,7 +565,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
         await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'multi-pause-task',
           agentId,
           command: '/bin/sh',
@@ -634,7 +634,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
         await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -750,7 +750,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
         await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -807,11 +807,14 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const agentId = `resize-lease-${Date.now()}`;
       const taskId = 'resize-lease-task';
       const ownerWs = await connectWs('');
+      const observerWs = await connectWs('');
 
       try {
         const ownerReady = waitForMessage(ownerWs, (m) => m.type === 'agents');
+        const observerReady = waitForMessage(observerWs, (m) => m.type === 'agents');
         sendJson(ownerWs, { type: 'auth', token: TEST_TOKEN, clientId: 'client-a' });
-        await ownerReady;
+        sendJson(observerWs, { type: 'auth', token: TEST_TOKEN, clientId: 'client-b' });
+        await Promise.all([ownerReady, observerReady]);
 
         await invokeIpcViaHttp('acquire_task_command_lease', {
           action: 'type in the terminal',
@@ -820,7 +823,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           taskId,
         });
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -829,7 +832,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           rows: 40,
         });
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -868,6 +871,12 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         if (ownerWs.readyState === WebSocket.OPEN || ownerWs.readyState === WebSocket.CONNECTING) {
           ownerWs.close();
         }
+        if (
+          observerWs.readyState === WebSocket.OPEN ||
+          observerWs.readyState === WebSocket.CONNECTING
+        ) {
+          observerWs.close();
+        }
       }
     });
   });
@@ -890,7 +899,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           ws,
           (m) => m.type === 'channel-bound' && m.channelId === agent.channelId,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'multi-task',
           agentId: agent.agentId,
           command: '/bin/sh',
@@ -1044,7 +1053,6 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       command: string;
       args?: string[];
       channelId?: string;
-      isShell?: boolean;
     }): Promise<void> {
       const acquireResponse = await fetch(
         `http://127.0.0.1:${simPort}/api/ipc/acquire_task_command_lease`,
@@ -1071,16 +1079,24 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         taskId: opts.taskId,
         agentId: opts.agentId,
         command: opts.command,
+        compatibilityIntent: 'create',
         args: opts.args ?? [],
         controllerId: TEST_CLIENT_ID,
         cwd: '/tmp',
         env: {},
         cols: 80,
         rows: 24,
-        isShell: opts.isShell ?? true,
+        initialRecovery: {
+          outputCursor: null,
+          role: null,
+          snapshotByteLimit: null,
+          visibleTerminalCount: 1,
+        },
+        isShell: true,
         onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
+        sessionOwner: 'compatibility-shell',
       };
-      const res = await fetch(`http://127.0.0.1:${simPort}/api/ipc/spawn_agent`, {
+      const res = await fetch(`http://127.0.0.1:${simPort}/api/ipc/${IPC.AttachTerminalSession}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1090,7 +1106,15 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        throw new Error(`Spawn failed (${res.status}): ${await res.text()}`);
+        throw new Error(`Attach failed (${res.status}): ${await res.text()}`);
+      }
+      const payload = (await res.json()) as {
+        result?: { channelBound?: boolean; kind?: string; reason?: string };
+      };
+      if (payload.result?.kind !== 'attached' || payload.result.channelBound !== true) {
+        throw new Error(
+          `Attach unavailable for ${opts.taskId}/${opts.agentId}: ${payload.result?.reason ?? 'invalid response'}`,
+        );
       }
     }
 
@@ -1158,7 +1182,6 @@ process.stdin.resume();
           command: process.execPath,
           args: ['-e', echoAgentSource],
           channelId,
-          isShell: false,
         });
         await waitForAgentLifecycleEvent(ws, agentId, 'spawn', 10_000);
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1234,7 +1257,12 @@ process.stdin.resume();
       await waitForMessage(ws1, (m) => m.type === 'agents');
       sendJson(ws1, { type: 'bind-channel', channelId });
       await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({ taskId: 'recon-task', agentId, command: '/bin/sh', channelId });
+      await createSyntheticTerminalViaHttp({
+        taskId: 'recon-task',
+        agentId,
+        command: '/bin/sh',
+        channelId,
+      });
       await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
       const ws1Closed = waitForSocketClose(ws1);
       ws1.close();
@@ -1270,13 +1298,23 @@ process.stdin.resume();
       const ws1 = await connectWs('');
       try {
         const initialAgents = waitForMessage(ws1, (m) => m.type === 'agents');
-        sendJson(ws1, { type: 'auth', token: TEST_TOKEN, lastSeq: -1 });
+        sendJson(ws1, {
+          type: 'auth',
+          token: TEST_TOKEN,
+          clientId: TEST_CLIENT_ID,
+          lastSeq: -1,
+        });
         await initialAgents;
 
         sendJson(ws1, { type: 'bind-channel', channelId });
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({ taskId: 'cursor-task', agentId, command: '/bin/sh', channelId });
+        await createSyntheticTerminalViaHttp({
+          taskId: 'cursor-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
         const spawnEvent = await waitForAgentLifecycleEvent(ws1, agentId, 'spawn');
         const lastSeq = (spawnEvent as { seq?: unknown }).seq;
 
@@ -1289,7 +1327,7 @@ process.stdin.resume();
         const ws2 = await connectWs('');
         try {
           const nextAgents = waitForMessage(ws2, (m) => m.type === 'agents');
-          sendJson(ws2, { type: 'auth', token: TEST_TOKEN, lastSeq });
+          sendJson(ws2, { type: 'auth', token: TEST_TOKEN, clientId: TEST_CLIENT_ID, lastSeq });
           await nextAgents;
 
           await expectNoMessage(
@@ -1325,7 +1363,7 @@ process.stdin.resume();
         sendJson(ws1, { type: 'bind-channel', channelId });
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
 
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'replay-order-task',
           agentId,
           command: '/bin/sh',
@@ -1391,16 +1429,14 @@ process.stdin.resume();
       const channelId = createChannelId();
       const marker = `__PQ_FLUSH_${Date.now()}__`;
 
-      const controlWs = await connectWsForClientId(controllerId);
       let ws2: WebSocket | null = null;
 
       // First connection: spawn agent and bind channel
-      const ws1 = await connectWs();
+      const ws1 = await connectWsForClientId(controllerId);
       try {
-        await waitForMessage(ws1, (m) => m.type === 'agents');
         sendJson(ws1, { type: 'bind-channel', channelId });
         await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -1421,8 +1457,7 @@ process.stdin.resume();
         // IMPORTANT: Register the data handler BEFORE sending bind-channel,
         // because the server flushes queued messages synchronously before
         // sending the channel-bound response.
-        ws2 = await connectWs();
-        await waitForMessage(ws2, (m) => m.type === 'agents');
+        ws2 = await connectWsForClientId(controllerId);
 
         const flushPromise = waitForChannelMarkerOccurrences(ws2, channelId, marker, 1, 10_000);
 
@@ -1434,7 +1469,6 @@ process.stdin.resume();
         await killAgentViaHttp(agentId).catch(() => {});
         await closeWebSocket(ws2);
         await closeWebSocket(ws1);
-        await closeWebSocket(controlWs);
       }
     });
 
@@ -1446,18 +1480,16 @@ process.stdin.resume();
       const oldMarker = `__PQ_OLD_${Date.now()}__`;
       const newMarker = `__PQ_NEW_${Date.now()}__`;
       const tailMarker = `__PQ_TAIL_${Date.now()}__`;
-      const controlWs = await connectWsForClientId(controllerId);
-      const ws1 = await connectWs();
+      const ws1 = await connectWsForClientId(controllerId);
 
       try {
-        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
         sendJson(ws1, { type: 'bind-channel', channelId });
         await waitForMessage(
           ws1,
           (m) => m.type === 'channel-bound' && m.channelId === channelId,
           10_000,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -1481,9 +1513,8 @@ process.stdin.resume();
         );
         await waitForScrollbackContains(agentId, tailMarker, 20_000);
 
-        const ws2 = await connectWs();
+        const ws2 = await connectWsForClientId(controllerId);
         try {
-          await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
           const resetPromise = waitForMessage(
             ws2,
             (msg) =>
@@ -1511,7 +1542,6 @@ process.stdin.resume();
       } finally {
         await killAgentViaHttp(agentId).catch(() => {});
         await closeWebSocket(ws1);
-        await closeWebSocket(controlWs);
       }
     });
 
@@ -1521,18 +1551,16 @@ process.stdin.resume();
       const controllerId = `${agentId}-http-controller`;
       const channelId = createChannelId();
       const marker = `__PQ_BINARY_${Date.now()}__`;
-      const controlWs = await connectWsForClientId(controllerId);
-      const ws1 = await connectWs();
+      const ws1 = await connectWsForClientId(controllerId);
 
       try {
-        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
         sendJson(ws1, { type: 'bind-channel', channelId });
         await waitForMessage(
           ws1,
           (m) => m.type === 'channel-bound' && m.channelId === channelId,
           10_000,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId,
           agentId,
           command: '/bin/sh',
@@ -1549,9 +1577,8 @@ process.stdin.resume();
         await writeToAgentViaHttp(agentId, 'echo "$PENDING_BINARY_MARKER"\n');
         await waitForScrollbackContains(agentId, marker, 20_000);
 
-        const ws2 = await connectWs();
+        const ws2 = await connectWsForClientId(controllerId);
         try {
-          await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
           const flushPromise = waitForRawMessage(
             ws2,
             (msg, isBinary) =>
@@ -1572,7 +1599,6 @@ process.stdin.resume();
       } finally {
         await killAgentViaHttp(agentId).catch(() => {});
         await closeWebSocket(ws1);
-        await closeWebSocket(controlWs);
       }
     });
   });
@@ -1586,7 +1612,12 @@ process.stdin.resume();
       await waitForMessage(ws, (m) => m.type === 'agents');
       sendJson(ws, { type: 'bind-channel', channelId });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({ taskId: 'scroll-task', agentId, command: '/bin/sh', channelId });
+      await createSyntheticTerminalViaHttp({
+        taskId: 'scroll-task',
+        agentId,
+        command: '/bin/sh',
+        channelId,
+      });
       await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
 
       // Generate some output to fill the scrollback buffer
@@ -1616,7 +1647,7 @@ process.stdin.resume();
           (m) => m.type === 'channel-bound' && m.channelId === channelId,
           10_000,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'wrap-fixture-task',
           agentId,
           command: '/bin/sh',
@@ -1655,7 +1686,7 @@ process.stdin.resume();
           (m) => m.type === 'channel-bound' && m.channelId === firstChannelId,
           10_000,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: 'scrollback-fixture-task',
           agentId,
           command: '/bin/sh',
@@ -1684,7 +1715,7 @@ process.stdin.resume();
             10_000,
           );
 
-          await spawnAgentViaHttp({
+          await createSyntheticTerminalViaHttp({
             taskId: 'scrollback-fixture-task',
             agentId,
             command: '/bin/sh',
@@ -1731,7 +1762,7 @@ process.stdin.resume();
       // Bind first channel and spawn
       sendJson(ws, { type: 'bind-channel', channelId: channelId1 });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId1);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: 'detach-task',
         agentId,
         command: '/bin/sh',
@@ -1745,7 +1776,7 @@ process.stdin.resume();
       // Reattach with a new channel (re-spawn binds new channel)
       sendJson(ws, { type: 'bind-channel', channelId: channelId2 });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId2);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: 'detach-task',
         agentId,
         command: '/bin/sh',
@@ -1782,7 +1813,7 @@ process.stdin.resume();
       await waitForMessage(ws, (m) => m.type === 'agents');
       sendJson(ws, { type: 'bind-channel', channelId });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: 'stress-task',
         agentId,
         command: '/bin/sh',
@@ -1915,13 +1946,12 @@ process.stdin.resume();
       await waitForMessage(ws, (m) => m.type === 'agents');
       sendJson(ws, { type: 'bind-channel', channelId });
       await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: 'bench-task',
         agentId,
         command: process.execPath,
         args: [getFixturePath('terminal-input-echo.mjs')],
         channelId,
-        isShell: false,
       });
       await waitForMessage(ws, (m) => channelMessageContains(m, channelId, 'echo-ready'), 5_000);
     });

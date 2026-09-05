@@ -147,27 +147,6 @@ async function invokeIpcViaHttp<T>(
   return payload.result;
 }
 
-async function waitForBrowserServerIpc(baseUrl: string, authToken: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  let lastError: unknown = null;
-
-  while (Date.now() < deadline) {
-    try {
-      await invokeIpcViaHttp(baseUrl, authToken, IPC.LoadAppState, {});
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => {
-        setTimeout(resolve, 25);
-      });
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Timed out waiting for the browser server IPC endpoint');
-}
-
 async function waitForWebSocketOpen(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.OPEN) {
     return;
@@ -634,7 +613,6 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
     const distRemoteDir = path.join(rootDir, 'dist-remote');
     const port = await getAvailablePort();
     const token = 'shutdown-trace-token';
-    const baseUrl = `http://127.0.0.1:${port}`;
     const userDataPath = path.join(rootDir, 'user-data');
     const taskId = 'task-shutdown-trace';
     const agentId = 'agent-shutdown-trace';
@@ -664,7 +642,7 @@ describe('browser-lab standalone server startup', { timeout: 15_000 }, () => {
       await controller.whenCoordinatorRuntimeStopped();
     });
 
-    await waitForBrowserServerIpc(baseUrl, token);
+    await controller.whenReady();
 
     spawnAgent(() => {}, {
       agentId,

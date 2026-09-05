@@ -1,4 +1,9 @@
-import { getAgentMeta, getAgentPauseState, onPtyEvent } from '../electron/ipc/pty.js';
+import {
+  getAgentMeta,
+  getAgentPauseState,
+  onPtyEvent,
+  type PtySpawnEventData,
+} from '../electron/ipc/pty.js';
 import { getRemoteAgentStatus, type ServerMessage } from '../electron/remote/protocol.js';
 
 interface RegisterAgentLifecycleBroadcastsOptions {
@@ -13,6 +18,36 @@ function getLifecycleGenerationField(
   generation: number | undefined,
 ): { generation: number } | Record<never, never> {
   return generation !== undefined ? { generation } : {};
+}
+
+function getAgentSessionLifecycleFields(
+  meta: ReturnType<typeof getAgentMeta>,
+): Pick<
+  import('../src/domain/server-state.js').AgentLifecycleEvent,
+  'launchReason' | 'operationId' | 'resumed'
+> {
+  return {
+    ...(meta?.agentSessionLaunchReason !== undefined
+      ? { launchReason: meta.agentSessionLaunchReason }
+      : {}),
+    ...(meta?.agentSessionOperationId !== undefined
+      ? { operationId: meta.agentSessionOperationId }
+      : {}),
+    ...(meta?.agentSessionResumed !== undefined ? { resumed: meta.agentSessionResumed } : {}),
+  };
+}
+
+function getExitSessionLifecycleFields(
+  data: PtySpawnEventData,
+): Pick<
+  import('../src/domain/server-state.js').AgentLifecycleEvent,
+  'launchReason' | 'operationId' | 'resumed'
+> {
+  return {
+    ...(data.launchReason !== undefined ? { launchReason: data.launchReason } : {}),
+    ...(data.operationId !== undefined ? { operationId: data.operationId } : {}),
+    ...(data.resumed !== undefined ? { resumed: data.resumed } : {}),
+  };
 }
 
 export function registerAgentLifecycleBroadcasts(
@@ -35,6 +70,7 @@ export function registerAgentLifecycleBroadcasts(
       event: 'spawn',
       agentId,
       ...getLifecycleGenerationField(meta?.generation),
+      ...getAgentSessionLifecycleFields(meta),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: 'running',
@@ -53,6 +89,7 @@ export function registerAgentLifecycleBroadcasts(
       event: 'pause',
       agentId,
       ...getLifecycleGenerationField(meta?.generation),
+      ...getAgentSessionLifecycleFields(meta),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: getRemoteAgentStatus(getAgentPauseState(agentId), 'paused'),
@@ -67,6 +104,7 @@ export function registerAgentLifecycleBroadcasts(
       event: 'resume',
       agentId,
       ...getLifecycleGenerationField(meta?.generation),
+      ...getAgentSessionLifecycleFields(meta),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: 'running',
@@ -75,28 +113,24 @@ export function registerAgentLifecycleBroadcasts(
 
   const unsubExit = onPtyEvent('exit', (agentId, data) => {
     const meta = getAgentMeta(agentId);
-    const { exitCode, generation, signal } = (data ?? {}) as {
-      exitCode?: number | null;
-      generation?: number;
-      signal?: string | null;
-    };
     releaseAgentControl(agentId);
     broadcastControl({
       type: 'status',
       agentId,
       status: 'exited',
-      exitCode: exitCode ?? null,
+      exitCode: data.exitCode,
     });
     broadcastControl({
       type: 'agent-lifecycle',
       event: 'exit',
       agentId,
-      ...getLifecycleGenerationField(generation ?? meta?.generation),
-      taskId: meta?.taskId ?? null,
+      generation: data.generation,
+      ...getExitSessionLifecycleFields(data),
+      taskId: data.taskId,
       isShell: meta?.isShell ?? null,
       status: 'exited',
-      exitCode: exitCode ?? null,
-      signal: signal ?? null,
+      exitCode: data.exitCode,
+      signal: data.signal,
     });
     const timer = setTimer(() => {
       exitBroadcastTimers.delete(timer);

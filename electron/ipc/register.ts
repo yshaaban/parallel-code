@@ -17,11 +17,15 @@ import { subscribeCoordinatorEvents } from '../coordinator/runtime.js';
 import { ensureCoordinatorServiceLoaded } from '../coordinator/service.js';
 import { subscribeAgentAvailability } from './agent-availability-state.js';
 import { subscribeAgentSupervision } from './agent-supervision.js';
-import { requestAgentCatalogAvailabilityRevalidation } from './agents.js';
+import {
+  getAgentDefsWithLastKnownAvailability,
+  requestAgentCatalogAvailabilityRevalidation,
+} from './agents.js';
 import {
   createIpcHandlers,
   type ClipboardController,
   type DialogController,
+  type HandlerContext,
   type ShellController,
   type WindowController,
 } from './handlers.js';
@@ -33,6 +37,39 @@ import { subscribeTaskReviewSignals } from './task-review-signals.js';
 import { subscribeTaskSteps } from './task-steps.js';
 import { subscribeTaskPorts } from './task-ports.js';
 import { decodeBase64ToUint8Array, getBase64DecodedByteLength } from '../../src/lib/base64.js';
+import { createTaskCatalogState } from './task-catalog-state.js';
+import { buildTaskCatalogAgentChoices } from './task-catalog-agent-choices.js';
+import { getServerInstanceId } from './server-instance.js';
+import { loadTaskRegistryStateDocumentForEnv } from './storage.js';
+import type { SavedStateDocument } from './saved-state-document.js';
+import type { JsonObject } from './workspace-state-storage.js';
+import { loadRemoteScopedCommandSecurityConfig } from '../remote/scoped-command-security-config.js';
+import {
+  getCurrentTaskCatalogSessionRuntime,
+  subscribeTaskCatalogPtyRuntime,
+} from './task-catalog-runtime-composition.js';
+import { createTaskNameRegistry } from '../../server/task-names.js';
+import { createTaskExperienceRemoteCommandRegistrations } from './task-experience-remote-registrations.js';
+import { createRemoteTaskCreationOperationSource } from './task-creation-remote-commands.js';
+import {
+  createProductionTaskExperienceRuntime,
+  TaskExperienceRuntimeActivationError,
+  type ProductionTaskExperienceRuntime,
+} from './task-experience-runtime-composition.js';
+import {
+  createActiveTaskReliabilityIpcHandlers,
+  subscribeActiveTaskReliabilityRuntime,
+} from './task-reliability-ipc.js';
+import { createTaskCreationLocalReconciliationIpcHandlers } from './task-creation-local-reconciliation-handlers.js';
+import { createTaskNotesEventStream } from '../../src/runtime/task-notes-event-stream.js';
+import {
+  snapshotTaskNotesWriterEntitlements,
+  type TaskNotesWriterEntitlements,
+} from './task-notes-writer-entitlements.js';
+import {
+  settleDesktopRuntimeCleanupOwners,
+  settleWorkspaceStorageCleanupOwners,
+} from '../runtime-cleanup.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
   if (!win.isDestroyed()) {
@@ -309,9 +346,135 @@ function createClipboardController(): ClipboardController {
   };
 }
 
-export function registerAllHandlers(win: BrowserWindow): void {
-  const remoteAccess = createRemoteAccessController();
+export interface RegisteredIpcRuntime {
+  cleanup(): Promise<void>;
+}
+
+export function registerAllHandlers(
+  win: BrowserWindow,
+  options: { taskNotesWriterEntitlements?: TaskNotesWriterEntitlements } = {},
+): RegisteredIpcRuntime {
+  const taskNotesWriterEntitlements = snapshotTaskNotesWriterEntitlements(
+    options.taskNotesWriterEntitlements,
+  );
+  const storageEnvironment = {
+    isPackaged: app.isPackaged,
+    userDataPath: app.getPath('userData'),
+  } as const;
+  const savedTaskRegistryState = loadTaskRegistryStateDocumentForEnv(storageEnvironment);
+  const serverInstanceId = getServerInstanceId();
+  const taskCatalog = createTaskCatalogState({ serverInstanceId });
+  const taskRegistry = createTaskNameRegistry();
+  const stopTaskCatalogPtyRuntime = subscribeTaskCatalogPtyRuntime(taskCatalog);
+  const defaultAgentDefinitions = getAgentDefsWithLastKnownAvailability();
+  const syncTaskCatalogFromJson = (state: SavedStateDocument): void => {
+    try {
+      taskCatalog.replace({
+        sharedState: (state.root ?? {}) as JsonObject,
+        sessionRuntime: getCurrentTaskCatalogSessionRuntime(),
+        staticAgents: buildTaskCatalogAgentChoices(
+          (state.root ?? {}) as JsonObject,
+          defaultAgentDefinitions,
+        ),
+      });
+    } catch {
+      // The catalog owner records the typed unavailable/capacity state. A
+      // public projection failure must never roll back canonical workspace truth.
+    }
+  };
+  const workspaceMutationCleanups = new Set<() => Promise<void>>();
+  const taskNotesEvents = createTaskNotesEventStream();
+  let taskExperiencePromise: Promise<ProductionTaskExperienceRuntime> | null = null;
   let closeFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let windowClosed = false;
+  const context: HandlerContext = {
+    userDataPath: app.getPath('userData'),
+    isPackaged: app.isPackaged,
+    workspaceStorageKind: 'electron',
+    taskNotesWriterEntitlements,
+    registerWorkspaceMutationCleanup: (cleanup) => workspaceMutationCleanups.add(cleanup),
+    sendToChannel: (channelId, msg) => sendToWindow(win, channelId, msg),
+    emitIpcEvent: (channel, payload) => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+      if (channel === IPC.TaskNotesChanged) taskNotesEvents.publish(payload);
+    },
+    emitGitStatusChanged: (payload) => {
+      if (!win.isDestroyed()) {
+        emitRendererEvent(win.webContents, IPC.GitStatusChanged, payload);
+      }
+    },
+    window: createWindowController(win, clearCloseFallbackTimer),
+    dialog: createDialogController(win),
+    shell: createShellController(),
+    clipboard: createClipboardController(),
+  };
+
+  function getTaskExperienceRuntime(): Promise<ProductionTaskExperienceRuntime> {
+    if (windowClosed) {
+      return Promise.reject(new Error('Task-experience runtime is unavailable after window close'));
+    }
+    taskExperiencePromise ??= createProductionTaskExperienceRuntime({
+      catalog: taskCatalog,
+      context,
+      serverInstanceId,
+      taskNames: taskRegistry,
+    }).catch((error: unknown) => {
+      if (!(error instanceof TaskExperienceRuntimeActivationError)) {
+        taskExperiencePromise = null;
+      }
+      throw error;
+    });
+    return taskExperiencePromise;
+  }
+  context.getTaskCreationCommand = async () => (await getTaskExperienceRuntime()).localCreation;
+  context.getTaskMergeWorkflow = async () => (await getTaskExperienceRuntime()).merge.workflow;
+  context.getTaskNotesService = async () => (await getTaskExperienceRuntime()).notes;
+  context.restoreCanonicalAgentSession = async (request) =>
+    (await getTaskExperienceRuntime()).agentSession.restoreCanonicalSession(request);
+  context.classifyCanonicalAgentSessionIdentity = async (request) =>
+    (await getTaskExperienceRuntime()).agentSession.classifyCanonicalSessionIdentity(request);
+  context.restoreCanonicalTaskShellSession = async (request, options) =>
+    (await getTaskExperienceRuntime()).shell.restoreCanonicalTaskShellSession(request, options);
+
+  const remoteSecurity = loadRemoteScopedCommandSecurityConfig();
+  if (remoteSecurity.kind === 'invalid') {
+    console.warn(`[remote] Secure remote access is disabled (${remoteSecurity.code})`);
+  }
+  const remoteAccess =
+    remoteSecurity.kind === 'configured'
+      ? createRemoteAccessController({
+          resolveScopedCommands: async () => {
+            const runtime = await getTaskExperienceRuntime();
+            return {
+              grants: remoteSecurity.grants,
+              mutationAdmissionInitiallyOpen: [...remoteSecurity.grants].some(
+                (grant) =>
+                  grant === 'notes:write' ||
+                  grant === 'task:create' ||
+                  grant === 'terminal:control',
+              ),
+              peerTrustPolicy: remoteSecurity.peerTrustPolicy,
+              registrations: createTaskExperienceRemoteCommandRegistrations({
+                catalog: taskCatalog,
+                getRuntime: async () => runtime,
+                writerEntitlement: taskNotesWriterEntitlements.remote,
+              }),
+              subscribeTaskCatalog: (listener) => taskCatalog.subscribe(listener),
+              subscribeTaskNotesChanged: taskNotesEvents.subscribe,
+              taskCreationOperations: createRemoteTaskCreationOperationSource(runtime.creation),
+              tls: remoteSecurity.tls,
+              workspacePrincipalId: 'desktop-owner',
+            };
+          },
+        })
+      : remoteSecurity.kind === 'invalid'
+        ? createRemoteAccessController({
+            startServer: async () => {
+              throw new Error('Secure remote access configuration is invalid');
+            },
+          })
+        : createRemoteAccessController();
+  context.remoteAccess = remoteAccess;
 
   function clearCloseFallbackTimer(): void {
     if (closeFallbackTimer === undefined) {
@@ -389,23 +552,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
     userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged,
   });
-  const handlers = createIpcHandlers({
-    userDataPath: app.getPath('userData'),
-    isPackaged: app.isPackaged,
-    sendToChannel: (channelId, msg) => sendToWindow(win, channelId, msg),
-    emitIpcEvent: (channel, payload) => {
-      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  const handlers = createIpcHandlers(context, taskRegistry, savedTaskRegistryState, {
+    onTaskRemovalLifecycle: ({ taskId, closing }) => {
+      taskCatalog.setTaskClosing(taskId, closing);
     },
-    emitGitStatusChanged: (payload) => {
-      if (!win.isDestroyed()) {
-        emitRendererEvent(win.webContents, IPC.GitStatusChanged, payload);
-      }
-    },
-    window: createWindowController(win, clearCloseFallbackTimer),
-    dialog: createDialogController(win),
-    shell: createShellController(),
-    clipboard: createClipboardController(),
-    remoteAccess,
+    syncTaskCatalogFromJson,
   });
 
   for (const channel of Object.values(IPC)) {
@@ -416,6 +567,36 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
     ipcMain.handle(channel, (_event, args) => handler(args));
   }
+
+  let stopTaskReliabilitySubscription: (() => void) | null = null;
+  let registeredTaskReliabilityChannels: IPC[] = [];
+  let registeredTaskCreationReconciliationChannels: IPC[] = [];
+  void getTaskExperienceRuntime()
+    .then((runtime) => {
+      if (windowClosed || win.isDestroyed()) {
+        return runtime.close();
+      }
+      const reliabilityHandlers = createActiveTaskReliabilityIpcHandlers(runtime);
+      registeredTaskReliabilityChannels = Object.keys(reliabilityHandlers) as IPC[];
+      for (const channel of registeredTaskReliabilityChannels) {
+        const handler = reliabilityHandlers[channel];
+        if (handler) ipcMain.handle(channel, (_event, args) => handler(args));
+      }
+      const reconciliationHandlers = createTaskCreationLocalReconciliationIpcHandlers(runtime);
+      registeredTaskCreationReconciliationChannels = Object.keys(reconciliationHandlers) as IPC[];
+      for (const channel of registeredTaskCreationReconciliationChannels) {
+        const handler = reconciliationHandlers[channel];
+        if (handler) ipcMain.handle(channel, (_event, args) => handler(args));
+      }
+      stopTaskReliabilitySubscription = subscribeActiveTaskReliabilityRuntime(runtime, (event) => {
+        if (!win.isDestroyed()) {
+          emitRendererEvent(win.webContents, IPC.TaskReliabilityChanged, event);
+        }
+      });
+    })
+    .catch((error: unknown) => {
+      console.error('[task-experience] Production activation failed', error);
+    });
 
   win.on('focus', () => emitWindowEvent(win, IPC.WindowFocus));
   win.on('blur', () => emitWindowEvent(win, IPC.WindowBlur));
@@ -430,16 +611,70 @@ export function registerAllHandlers(win: BrowserWindow): void {
     }
   });
 
+  let cleanupPromise: Promise<void> | null = null;
+  let windowRuntimeStopped = false;
+  let workspaceOwnersAtClose: Array<() => Promise<void>> | null = null;
+
+  function cleanupWindowRuntime(): Promise<void> {
+    if (cleanupPromise) return cleanupPromise;
+    windowClosed = true;
+    if (!windowRuntimeStopped) {
+      windowRuntimeStopped = true;
+      clearCloseFallbackTimer();
+      stopAgentAvailabilitySubscription();
+      stopAgentSupervisionSubscription();
+      stopCoordinatorSubscription();
+      stopRemoteStatusSubscription();
+      stopTaskConvergenceSubscription();
+      stopTaskReviewSubscription();
+      stopTaskReviewSignalsSubscription();
+      stopTaskStepsSubscription();
+      stopTaskPortsSubscription();
+      stopTaskCatalogPtyRuntime();
+      stopTaskReliabilitySubscription?.();
+      stopTaskReliabilitySubscription = null;
+      for (const channel of registeredTaskReliabilityChannels) ipcMain.removeHandler(channel);
+      registeredTaskReliabilityChannels = [];
+      for (const channel of registeredTaskCreationReconciliationChannels) {
+        ipcMain.removeHandler(channel);
+      }
+      registeredTaskCreationReconciliationChannels = [];
+    }
+    const runtimeAtClose = taskExperiencePromise;
+    if (!workspaceOwnersAtClose) {
+      workspaceOwnersAtClose = [...workspaceMutationCleanups];
+      workspaceMutationCleanups.clear();
+    }
+    const taskExperienceCleanup = Promise.resolve(runtimeAtClose).then(
+      (runtime) => runtime?.close(),
+      (error: unknown) =>
+        error instanceof TaskExperienceRuntimeActivationError
+          ? error.retryCleanup()
+          : Promise.reject(error),
+    );
+    const closeWorkspaceOwners = (): Promise<void> =>
+      settleWorkspaceStorageCleanupOwners(workspaceOwnersAtClose ?? []);
+    const workspaceStorageCleanup = taskExperienceCleanup.then(
+      closeWorkspaceOwners,
+      closeWorkspaceOwners,
+    );
+    const attempt = settleDesktopRuntimeCleanupOwners([
+      { cleanup: taskExperienceCleanup, label: 'task experience' },
+      { cleanup: workspaceStorageCleanup, label: 'workspace storage' },
+    ]);
+    cleanupPromise = attempt;
+    void attempt.catch(() => {
+      if (cleanupPromise === attempt) cleanupPromise = null;
+    });
+    return attempt;
+  }
+
   win.on('closed', () => {
-    clearCloseFallbackTimer();
-    stopAgentAvailabilitySubscription();
-    stopAgentSupervisionSubscription();
-    stopCoordinatorSubscription();
-    stopRemoteStatusSubscription();
-    stopTaskConvergenceSubscription();
-    stopTaskReviewSubscription();
-    stopTaskReviewSignalsSubscription();
-    stopTaskStepsSubscription();
-    stopTaskPortsSubscription();
+    const cleanup = cleanupWindowRuntime();
+    void cleanup.catch((error: unknown) => {
+      console.warn('[task-experience] Window runtime cleanup failed', error);
+    });
   });
+
+  return { cleanup: cleanupWindowRuntime };
 }

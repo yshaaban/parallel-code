@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  encodeTaskWorktreeLinkRequestV1,
+  type TaskWorktreeLinkRequestV1,
+} from './git-worktree-symlinks.js';
 
 const { execGitMock } = vi.hoisted(() => ({
   execGitMock: vi.fn(),
@@ -22,12 +26,37 @@ function mockExecGit(
 
 describe('git-worktree', () => {
   beforeEach(() => {
-    vi.resetModules();
     execGitMock.mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('rejects a forged canonical request before any Git or filesystem work', async () => {
+    const { createWorktree } = await import('./git-worktree.js');
+    const forgedRequest = {
+      encodedBytes: Uint8Array.from([0x01, 0x00]),
+      encodedLength: 2,
+      format: 1,
+      names: [],
+    } as unknown as TaskWorktreeLinkRequestV1;
+
+    await expect(createWorktree('/repo', 'task/forged', forgedRequest)).rejects.toThrow(
+      'Invalid canonical TaskWorktreeLinkRequestV1',
+    );
+    expect(execGitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects mutated canonical bytes before any Git or filesystem work', async () => {
+    const { createWorktree } = await import('./git-worktree.js');
+    const request = encodeTaskWorktreeLinkRequestV1(['cache']);
+    (request.encodedBytes as Uint8Array)[4] = 'X'.charCodeAt(0);
+
+    await expect(createWorktree('/repo', 'task/mutated', request)).rejects.toThrow(
+      'Invalid canonical TaskWorktreeLinkRequestV1',
+    );
+    expect(execGitMock).not.toHaveBeenCalled();
   });
 
   it('rejects worktree creation in an empty repository with a clear error', async () => {
@@ -49,7 +78,9 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'task/test', [])).rejects.toThrow(
+    await expect(
+      createWorktree('/repo', 'task/test', encodeTaskWorktreeLinkRequestV1([])),
+    ).rejects.toThrow(
       'Cannot create a worktree in a repository with no commits. Please make an initial commit first.',
     );
   });
@@ -77,7 +108,15 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).rejects.toThrow(
+    await expect(
+      createWorktree(
+        '/repo',
+        'task/test',
+        encodeTaskWorktreeLinkRequestV1([]),
+        false,
+        'feature/base',
+      ),
+    ).rejects.toThrow(
       'Branch "feature/base" does not exist. Please select a valid base branch or create the branch first.',
     );
   });
@@ -116,7 +155,15 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).resolves.toEqual({
+    await expect(
+      createWorktree(
+        '/repo',
+        'task/test',
+        encodeTaskWorktreeLinkRequestV1([]),
+        false,
+        'feature/base',
+      ),
+    ).resolves.toEqual({
       branch: 'task/test',
       path: '/repo/.worktrees/task/test',
     });
@@ -152,7 +199,15 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'task/test', [], false, 'feature/base')).resolves.toEqual({
+    await expect(
+      createWorktree(
+        '/repo',
+        'task/test',
+        encodeTaskWorktreeLinkRequestV1([]),
+        false,
+        'feature/base',
+      ),
+    ).resolves.toEqual({
       branch: 'task/test',
       path: '/repo/.worktrees/task/test',
     });
@@ -177,7 +232,9 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'feature/task', [])).rejects.toThrow(
+    await expect(
+      createWorktree('/repo', 'feature/task', encodeTaskWorktreeLinkRequestV1([])),
+    ).rejects.toThrow(
       'Cannot create branch "feature/task" because local branch "feature" already uses that ref path.',
     );
     expect(
@@ -206,7 +263,9 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'feature', [])).rejects.toThrow(
+    await expect(
+      createWorktree('/repo', 'feature', encodeTaskWorktreeLinkRequestV1([])),
+    ).rejects.toThrow(
       'Cannot create branch "feature" because it would block existing local branch "feature/task".',
     );
     expect(
@@ -244,7 +303,9 @@ describe('git-worktree', () => {
 
     const { createWorktree } = await import('./git-worktree.js');
 
-    await expect(createWorktree('/repo', 'task/test', [])).resolves.toEqual({
+    await expect(
+      createWorktree('/repo', 'task/test', encodeTaskWorktreeLinkRequestV1([])),
+    ).resolves.toEqual({
       branch: 'task/test',
       path: '/repo/.worktrees/task/test',
     });

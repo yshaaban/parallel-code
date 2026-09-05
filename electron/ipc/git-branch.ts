@@ -63,11 +63,11 @@ export async function detectMainBranch(
   return result;
 }
 
-async function resolveOriginHead(repoRoot: string): Promise<string | null> {
-  const prefix = 'refs/remotes/origin/';
+async function resolveRemoteHead(repoRoot: string, remote = 'origin'): Promise<string | null> {
+  const prefix = `refs/remotes/${remote}/`;
 
   try {
-    const { stdout } = await execGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], {
+    const { stdout } = await execGit(['symbolic-ref', `${prefix}HEAD`], {
       cwd: repoRoot,
     });
     const refname = stdout.trim();
@@ -77,9 +77,13 @@ async function resolveOriginHead(repoRoot: string): Promise<string | null> {
   }
 }
 
-async function remoteTrackingRefExists(repoRoot: string, branch: string): Promise<boolean> {
+async function remoteTrackingRefExists(
+  repoRoot: string,
+  branch: string,
+  remote = 'origin',
+): Promise<boolean> {
   try {
-    await execGit(['rev-parse', '--verify', `refs/remotes/origin/${branch}`], {
+    await execGit(['rev-parse', '--verify', `refs/remotes/${remote}/${branch}`], {
       cwd: repoRoot,
     });
     return true;
@@ -100,24 +104,45 @@ async function localBranchExists(repoRoot: string, branch: string): Promise<bool
 }
 
 async function detectMainBranchUncached(repoRoot: string): Promise<string> {
-  const originHeadBranch = await resolveOriginHead(repoRoot);
-  if (originHeadBranch) {
-    if (await remoteTrackingRefExists(repoRoot, originHeadBranch)) {
-      return originHeadBranch;
+  const originHeadBranch = await resolveRemoteHead(repoRoot);
+  if (originHeadBranch && (await remoteTrackingRefExists(repoRoot, originHeadBranch))) {
+    return originHeadBranch;
+  }
+
+  // A locally initialized repository followed by `remote add`/`fetch` has no remote HEAD.
+  // Only contact an actual configured remote, and retain the bounded offline fallback.
+  const remotes = await execGit(['remote'], { cwd: repoRoot })
+    .then(({ stdout }) => stdout.trim().split('\n').filter(Boolean))
+    .catch((): string[] => []);
+  const remote =
+    originHeadBranch || remotes.includes('origin')
+      ? 'origin'
+      : remotes.length === 1
+        ? remotes[0]
+        : undefined;
+  if (remote) {
+    const existingHead =
+      remote === 'origin' ? originHeadBranch : await resolveRemoteHead(repoRoot, remote);
+    const branchLabel = async (branch: string): Promise<string> =>
+      remote === 'origin' || (await localBranchExists(repoRoot, branch))
+        ? branch
+        : `${remote}/${branch}`;
+    if (existingHead && (await remoteTrackingRefExists(repoRoot, existingHead, remote))) {
+      return branchLabel(existingHead);
     }
 
     try {
-      await execGit(['remote', 'set-head', 'origin', '--auto'], {
+      await execGit(['remote', 'set-head', remote, '--auto'], {
         cwd: repoRoot,
         timeout: 5_000,
       });
-      const refreshedBranch = await resolveOriginHead(repoRoot);
-      if (refreshedBranch && (await remoteTrackingRefExists(repoRoot, refreshedBranch))) {
-        return refreshedBranch;
+      const refreshedBranch = await resolveRemoteHead(repoRoot, remote);
+      if (refreshedBranch && (await remoteTrackingRefExists(repoRoot, refreshedBranch, remote))) {
+        return branchLabel(refreshedBranch);
       }
     } catch {
       // Fall through to default branch heuristics when the remote is unavailable
-      // or the local repo cannot refresh its origin HEAD symref.
+      // or the local repo cannot refresh its remote HEAD symref.
     }
   }
 
@@ -133,7 +158,20 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
     }
   }
 
-  // Empty repo (no commits yet) — use configured default branch or fall back to "main"
+  // Prefer the primary checkout's real branch, including an unborn custom branch. Looking at
+  // this worktree's HEAD instead would incorrectly make a managed task its own comparison base.
+  try {
+    const { stdout } = await execGit(['worktree', 'list', '--porcelain'], { cwd: repoRoot });
+    const primaryEntry = stdout.split('\n\n')[0];
+    const branch = primaryEntry?.split('\n').find((line) => line.startsWith('branch refs/heads/'));
+    if (branch) return branch.slice('branch refs/heads/'.length);
+  } catch {
+    // Older Git or unavailable worktree metadata can still expose the current symbolic HEAD.
+  }
+  const currentBranch = await getCurrentBranchName(repoRoot).catch(() => null);
+  if (currentBranch) return currentBranch;
+
+  // No symbolic branch is available (for example detached HEAD in a repository without defaults).
   try {
     const { stdout } = await execGit(['config', '--get', 'init.defaultBranch'], {
       cwd: repoRoot,

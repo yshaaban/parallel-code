@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { performance } from 'node:perf_hooks';
+import type { AgentSessionLaunchReason } from '../../src/domain/agent-session-operation.js';
 
 import { IPC } from './channels.js';
 import { normalizeAgentRunnerProfileConfig } from './agent-runner-handlers.js';
@@ -14,13 +15,17 @@ import { removeGitStatusSnapshot } from './git-status-state.js';
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import {
+  attachExistingAgentSessionExact,
   countRunningAgents,
-  getAgentCols,
-  getAgentRows,
+  getAgentLifecycleGeneration,
+  getAgentMeta,
   hasAgentSession,
   killAllAgentsAndWaitForRunnerCleanup,
   killAgentAndWaitForRunnerCleanup,
   killTaskAgentsAndWaitForRunnerCleanup,
+  revokeAgentContentAuthority,
+  revokeAllAgentContentAuthorities,
+  revokeTaskAgentContentAuthorities,
   spawnAgent as spawnPtyAgent,
   type AgentSpawnDisposition,
 } from './pty.js';
@@ -64,6 +69,16 @@ import {
   importExistingWorktreeTask,
 } from './tasks.js';
 import { getGitRepoRoot, getMainBranch } from './git.js';
+import { withRepositoryWorktreeLock } from './git-worktree-lock.js';
+import {
+  hasPreparedSharedRootTask,
+  releasePreparedSharedRootTask,
+  resetPreparedSharedRootTasksForTests,
+} from './task-shared-root-admission.js';
+import {
+  encodeTaskWorktreeLinkRequestV1,
+  type TaskWorktreeLinkRequestV1,
+} from './git-worktree-symlinks.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 import type { AgentRuntimeIdentity } from '../../src/domain/agent-runners.js';
 import type {
@@ -72,20 +87,34 @@ import type {
 } from '../../src/domain/task-cleanup.js';
 import type { ProjectMode, TaskGitIsolationMode } from '../../src/store/types.js';
 import type { CreateTaskResult } from '../../src/ipc/types.js';
+import type { PendingTaskContentRootAdmission } from './terminal-root-authority.js';
+import type {
+  AgentSessionSpawnPermit,
+  AgentSessionWriterPurpose,
+  AgentSessionWriterRuntime,
+} from './agent-session-writer-authority.js';
 
 export interface TaskWorkflowContext {
+  agentSessionWriter?: AgentSessionWriterRuntime;
+  beginTaskContentRootAdmission?: (taskId: string) => PendingTaskContentRootAdmission | null;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
   sendToChannel: (channelId: string, msg: unknown) => void;
 }
 
 export interface SpawnTaskAgentWorkflowRequest {
   adapter?: 'hydra';
+  agentSessionLaunchReason?: AgentSessionLaunchReason;
+  agentSessionOperationId?: string;
+  agentSessionResumed?: boolean;
   agentId: string;
   args: string[];
   assertSpawnAdmitted?: () => void;
   baseBranch?: string;
+  bindOutputChannel?: () => boolean;
   cols: number;
   command: string;
+  contentAuthorityClass?: 'explicit-transient';
+  contentAuthorityRoot?: string;
   cwd: string;
   env: unknown;
   isShell?: boolean;
@@ -98,6 +127,12 @@ export interface SpawnTaskAgentWorkflowRequest {
   skipExistingSessionAttach?: boolean;
   startsTaskWatchers?: boolean;
   taskId: string;
+  writerPermit?: AgentSessionSpawnPermit;
+}
+
+export interface OwnedTaskAgentSpawnRequest {
+  operationId: string;
+  purpose: Exclude<AgentSessionWriterPurpose, 'agent-session-operation'>;
 }
 
 export interface CreateTaskWorkflowRequest {
@@ -140,6 +175,17 @@ export interface CleanupTaskRuntimeWorkflowResult {
 
 export interface DeleteTaskWorkflowResult extends CleanupTaskRuntimeWorkflowResult {
   cleanupWarnings: DeleteTaskCleanupWarning[];
+}
+
+interface LegacyTaskInfrastructureCleanupRequest {
+  agentIds: string[];
+  branchName: string;
+  deleteBranch: boolean;
+  gitCleanup: 'managed-worktree' | 'preserve';
+  projectMode: 'git' | 'non-git';
+  projectRoot: string;
+  taskId: string;
+  worktreePath: string;
 }
 
 interface ResolvedSpawnLaunch {
@@ -198,10 +244,11 @@ interface TaskCreationOperation {
 // A renderer save may legitimately lag a task creation or deletion, so replacing
 // runtime state with every saved snapshot can otherwise reopen a worktree while
 // its create workflow is still settling (or resurrect one after cleanup).
-const liveTaskIdByWorktreeIdentity = new Map<string, string>();
+const liveTaskIdByWorktreeIdentity = new Map<string, Set<string>>();
 const liveWorktreeIdentityByTaskId = new Map<string, string>();
-const savedTaskIdByWorktreeIdentity = new Map<string, string>();
+const savedTaskIdByWorktreeIdentity = new Map<string, Set<string>>();
 const savedWorktreeIdentityByTaskId = new Map<string, string>();
+const sharedRootTaskIds = new Set<string>();
 const removedTaskWorktreeIds = new Set<string>();
 const pendingTaskWorktreeIdentities = new Set<string>();
 const taskCreationOperationsById = new Map<string, TaskCreationOperation>();
@@ -209,12 +256,16 @@ const taskCreationOperationIdsByTaskId = new Map<string, Set<string>>();
 const MAX_CONCURRENT_AGENT_SESSION_SPAWNS = 4;
 const pendingTaskAgentSpawns = new Set<PendingTaskAgentSpawn>();
 const latestTaskAgentSpawnByAgentId = new Map<string, PendingTaskAgentSpawn>();
+// Hydra's daemon and durable coordination files belong to a checkout, not an agent.
+// Ordinary CLI agents may share that checkout; two Hydra writers may not.
+const hydraWorkspaceByAgentId = new Map<string, string>();
 const pendingSpawnAdmissions: PendingSpawnAdmission[] = [];
 const closingTaskSpawnIds = new Set<string>();
 const preparedRunnerCleanups = new Set<PreparedRunnerCleanup>();
 const taskAgentStopWorkflowsByAgentId = new Map<string, TaskAgentStopWorkflowOwner>();
 let activeSpawnAdmissions = 0;
 let stoppingAllTaskAgentSpawns = false;
+let keepTaskAgentSpawnAdmissionClosed = false;
 let stopAllTaskAgentWorkflowsPromise: Promise<void> | null = null;
 
 function getSpawnAbortError(operation: PendingTaskAgentSpawn): Error {
@@ -248,6 +299,42 @@ function assertTaskAgentSpawnAdmitted(operation: PendingTaskAgentSpawn): void {
   if (admissionError) {
     throw admissionError;
   }
+}
+
+function assertExactExistingSession(request: SpawnTaskAgentWorkflowRequest): void {
+  const metadata = getAgentMeta(request.agentId);
+  if (
+    !metadata ||
+    metadata.agentId !== request.agentId ||
+    metadata.taskId !== request.taskId ||
+    metadata.isShell !== (request.isShell === true)
+  ) {
+    throw new Error('Exact agent session is unavailable for attach');
+  }
+}
+
+function attachExistingTaskAgentSession(
+  context: TaskWorkflowContext,
+  request: SpawnTaskAgentWorkflowRequest,
+): AgentSpawnDisposition {
+  if (request.contentAuthorityClass === 'explicit-transient') {
+    throw new Error('A transient Arena launch cannot attach to an existing PTY session');
+  }
+  if (request.skipExistingSessionAttach === true) {
+    assertExactExistingSession(request);
+    return { channelAttached: false, kind: 'attached-existing' };
+  }
+  const disposition = attachExistingAgentSessionExact(context.sendToChannel, {
+    agentId: request.agentId,
+    ...(request.bindOutputChannel !== undefined ? { bindChannel: request.bindOutputChannel } : {}),
+    isShell: request.isShell === true,
+    ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
+    taskId: request.taskId,
+  });
+  if (disposition.channelBound === false) {
+    throw new Error('Agent output channel is unavailable');
+  }
+  return finishTaskAgentSpawn(context, request, disposition);
 }
 
 function recordSpawnAdmissionState(): void {
@@ -506,12 +593,40 @@ function getSavedWorktreeIdentity(worktreePath: string): string {
   }
 }
 
-function findExactlyRegisteredTaskIdForWorktreeIdentity(identity: string): string | null {
+function registeredTaskIds(identity: string): Set<string> {
+  return new Set([
+    ...(liveTaskIdByWorktreeIdentity.get(identity) ?? []),
+    ...(savedTaskIdByWorktreeIdentity.get(identity) ?? []),
+  ]);
+}
+
+export function hasRegisteredSharedRootTask(worktreePath: string): boolean {
   return (
-    liveTaskIdByWorktreeIdentity.get(identity) ??
-    savedTaskIdByWorktreeIdentity.get(identity) ??
-    null
+    hasPreparedSharedRootTask(worktreePath) ||
+    [...registeredTaskIds(getWorktreeIdentity(worktreePath))].some((id) =>
+      sharedRootTaskIds.has(id),
+    )
   );
+}
+
+function addWorktreeTask(
+  registry: Map<string, Set<string>>,
+  identity: string,
+  taskId: string,
+): void {
+  const tasks = registry.get(identity) ?? new Set<string>();
+  tasks.add(taskId);
+  registry.set(identity, tasks);
+}
+
+function removeWorktreeTask(
+  registry: Map<string, Set<string>>,
+  identity: string,
+  taskId: string,
+): void {
+  const tasks = registry.get(identity);
+  tasks?.delete(taskId);
+  if (tasks?.size === 0) registry.delete(identity);
 }
 
 function isDescendantWorktreeIdentity(parentIdentity: string, candidateIdentity: string): boolean {
@@ -528,38 +643,48 @@ function assertWorktreeIdentityAvailable(
   taskId: string | undefined,
   identity: string,
   worktreePath: string,
+  sharedRoot = false,
 ): void {
-  const existingTaskId = findExactlyRegisteredTaskIdForWorktreeIdentity(identity);
-  if (existingTaskId !== null && existingTaskId !== taskId) {
+  const existingTaskId = [...registeredTaskIds(identity)].find(
+    (id) => id !== taskId && (!sharedRoot || !sharedRootTaskIds.has(id)),
+  );
+  if (existingTaskId !== undefined) {
     throw new Error(`Worktree is already registered for task ${existingTaskId}: ${worktreePath}`);
   }
 }
 
-export function findRegisteredTaskIdForWorktreePath(worktreePath: string): string | null {
+export function findRegisteredTaskIdForWorktreePath(
+  worktreePath: string,
+  preferredTaskId?: string,
+): string | null {
   const identity = getWorktreeIdentity(worktreePath);
-  const exactTaskId = findExactlyRegisteredTaskIdForWorktreeIdentity(identity);
-  if (exactTaskId !== null) {
-    return exactTaskId;
+  const exactTasks = registeredTaskIds(identity);
+  if (exactTasks.size > 0) {
+    return preferredTaskId !== undefined && exactTasks.has(preferredTaskId)
+      ? preferredTaskId
+      : (exactTasks.values().next().value ?? null);
   }
 
-  let owner: { identity: string; taskId: string } | null = null;
+  let owner: { identity: string; taskIds: Set<string> } | null = null;
   for (const registry of [liveTaskIdByWorktreeIdentity, savedTaskIdByWorktreeIdentity]) {
-    for (const [registeredIdentity, taskId] of registry) {
+    for (const registeredIdentity of registry.keys()) {
       if (
         isDescendantWorktreeIdentity(registeredIdentity, identity) &&
         (!owner || registeredIdentity.length > owner.identity.length)
       ) {
-        owner = { identity: registeredIdentity, taskId };
+        owner = { identity: registeredIdentity, taskIds: registeredTaskIds(registeredIdentity) };
       }
     }
   }
 
-  return owner?.taskId ?? null;
+  return preferredTaskId !== undefined && owner?.taskIds.has(preferredTaskId)
+    ? preferredTaskId
+    : (owner?.taskIds.values().next().value ?? null);
 }
 
-function reserveTaskWorktreeIdentity(worktreePath: string): () => void {
+function reserveTaskWorktreeIdentity(worktreePath: string, sharedRoot = false): () => void {
   const identity = getWorktreeIdentity(worktreePath);
-  assertWorktreeIdentityAvailable(undefined, identity, worktreePath);
+  assertWorktreeIdentityAvailable(undefined, identity, worktreePath, sharedRoot);
   if (pendingTaskWorktreeIdentities.has(identity)) {
     throw new Error(`Worktree is already being registered for another task: ${worktreePath}`);
   }
@@ -573,8 +698,9 @@ function reserveTaskWorktreeIdentity(worktreePath: string): () => void {
 async function withReservedTaskWorktreeIdentity<T>(
   worktreePath: string,
   operation: () => Promise<T>,
+  sharedRoot = false,
 ): Promise<T> {
-  const release = reserveTaskWorktreeIdentity(worktreePath);
+  const release = reserveTaskWorktreeIdentity(worktreePath, sharedRoot);
   try {
     return await operation();
   } finally {
@@ -582,48 +708,58 @@ async function withReservedTaskWorktreeIdentity<T>(
   }
 }
 
-function registerTaskWorktreeIdentity(taskId: string, worktreePath: string): void {
+function registerTaskWorktreeIdentity(
+  taskId: string,
+  worktreePath: string,
+  sharedRoot = false,
+): void {
   const identity = getWorktreeIdentity(worktreePath);
-  assertWorktreeIdentityAvailable(taskId, identity, worktreePath);
+  assertWorktreeIdentityAvailable(taskId, identity, worktreePath, sharedRoot);
 
   const previousIdentity = liveWorktreeIdentityByTaskId.get(taskId);
   if (previousIdentity !== undefined) {
-    liveTaskIdByWorktreeIdentity.delete(previousIdentity);
+    removeWorktreeTask(liveTaskIdByWorktreeIdentity, previousIdentity, taskId);
   }
   const previousSavedIdentity = savedWorktreeIdentityByTaskId.get(taskId);
   if (previousSavedIdentity !== undefined) {
     savedWorktreeIdentityByTaskId.delete(taskId);
-    savedTaskIdByWorktreeIdentity.delete(previousSavedIdentity);
+    removeWorktreeTask(savedTaskIdByWorktreeIdentity, previousSavedIdentity, taskId);
   }
 
   removedTaskWorktreeIds.delete(taskId);
+  if (sharedRoot) sharedRootTaskIds.add(taskId);
+  else sharedRootTaskIds.delete(taskId);
   liveWorktreeIdentityByTaskId.set(taskId, identity);
-  liveTaskIdByWorktreeIdentity.set(identity, taskId);
+  addWorktreeTask(liveTaskIdByWorktreeIdentity, identity, taskId);
 }
 
 function removeTaskWorktreeIdentity(taskId: string): void {
+  releasePreparedSharedRootTask(taskId);
   const liveIdentity = liveWorktreeIdentityByTaskId.get(taskId);
   if (liveIdentity !== undefined) {
     liveWorktreeIdentityByTaskId.delete(taskId);
-    liveTaskIdByWorktreeIdentity.delete(liveIdentity);
+    removeWorktreeTask(liveTaskIdByWorktreeIdentity, liveIdentity, taskId);
   }
 
   const savedIdentity = savedWorktreeIdentityByTaskId.get(taskId);
   if (savedIdentity !== undefined) {
     savedWorktreeIdentityByTaskId.delete(taskId);
-    savedTaskIdByWorktreeIdentity.delete(savedIdentity);
+    removeWorktreeTask(savedTaskIdByWorktreeIdentity, savedIdentity, taskId);
   }
 
   // Ignore stale client snapshots for this task until the process restarts.
   // Task ids are unique, so retaining this tombstone cannot mask a new task.
   removedTaskWorktreeIds.add(taskId);
+  sharedRootTaskIds.delete(taskId);
 }
 
 export function clearTaskWorkflowWorktreeRegistryForTests(): void {
+  resetPreparedSharedRootTasksForTests();
   liveTaskIdByWorktreeIdentity.clear();
   liveWorktreeIdentityByTaskId.clear();
   savedTaskIdByWorktreeIdentity.clear();
   savedWorktreeIdentityByTaskId.clear();
+  sharedRootTaskIds.clear();
   removedTaskWorktreeIds.clear();
   pendingTaskWorktreeIdentities.clear();
   taskCreationOperationsById.clear();
@@ -633,12 +769,14 @@ export function clearTaskWorkflowWorktreeRegistryForTests(): void {
   }
   pendingTaskAgentSpawns.clear();
   latestTaskAgentSpawnByAgentId.clear();
+  hydraWorkspaceByAgentId.clear();
   pendingSpawnAdmissions.splice(0, pendingSpawnAdmissions.length);
   closingTaskSpawnIds.clear();
   preparedRunnerCleanups.clear();
   taskAgentStopWorkflowsByAgentId.clear();
   activeSpawnAdmissions = 0;
   stoppingAllTaskAgentSpawns = false;
+  keepTaskAgentSpawnAdmissionClosed = false;
   stopAllTaskAgentWorkflowsPromise = null;
 }
 
@@ -657,6 +795,7 @@ function forgetTaskCreationOperations(taskId: string): void {
 export function syncTaskWorkflowWorktreesFromSavedState(
   savedState: string | SavedStateDocument,
 ): void {
+  for (const taskId of savedWorktreeIdentityByTaskId.keys()) sharedRootTaskIds.delete(taskId);
   savedTaskIdByWorktreeIdentity.clear();
   savedWorktreeIdentityByTaskId.clear();
 
@@ -674,20 +813,18 @@ export function syncTaskWorkflowWorktreesFromSavedState(
     }
 
     const identity = getSavedWorktreeIdentity(task.worktreePath);
-    if (pendingTaskWorktreeIdentities.has(identity)) {
+    if (pendingTaskWorktreeIdentities.has(identity) && task.gitIsolation !== 'current-branch') {
       continue;
     }
-    const liveTaskId = liveTaskIdByWorktreeIdentity.get(identity);
-    if (liveTaskId !== undefined) {
+    const sharedRoot = task.gitIsolation === 'current-branch';
+    const existingIds = registeredTaskIds(identity);
+    if ([...existingIds].some((id) => !sharedRoot || !sharedRootTaskIds.has(id))) {
       // Live backend state wins over a lagging renderer snapshot. The matching
       // task is already represented; a different task is a stale conflict.
       continue;
     }
-    if (savedTaskIdByWorktreeIdentity.has(identity)) {
-      continue;
-    }
-
-    savedTaskIdByWorktreeIdentity.set(identity, task.id);
+    if (sharedRoot) sharedRootTaskIds.add(task.id);
+    addWorktreeTask(savedTaskIdByWorktreeIdentity, identity, task.id);
     savedWorktreeIdentityByTaskId.set(task.id, identity);
   }
 }
@@ -758,10 +895,19 @@ function startPlanWatcherSafely(
   taskId: string,
   worktreePath: string,
 ): void {
+  const beginContentAdmission = context.beginTaskContentRootAdmission;
+  if (!beginContentAdmission) {
+    return;
+  }
   runWorkflowStep(() => {
-    startPlanWatcher(taskId, worktreePath, (message) => {
-      context.emitIpcEvent?.(IPC.PlanContent, message);
-    });
+    startPlanWatcher(
+      taskId,
+      worktreePath,
+      () => beginContentAdmission(taskId),
+      (message) => {
+        context.emitIpcEvent?.(IPC.PlanContent, message);
+      },
+    );
   }, 'Failed to start plan watcher:');
 }
 
@@ -861,8 +1007,15 @@ function registerCreatedTaskRuntime(
   result: CreatedTaskRuntimeMetadata,
   baseBranch: string | undefined,
 ): void {
+  if (request.stepsTracking === true) {
+    assertTaskStepsPathAvailable(result.id, result.worktree_path);
+  }
   closingTaskSpawnIds.delete(result.id);
-  registerTaskWorktreeIdentity(result.id, result.worktree_path);
+  registerTaskWorktreeIdentity(
+    result.id,
+    result.worktree_path,
+    request.gitIsolation === 'current-branch',
+  );
 
   registerTaskGitMetadata({
     ...(baseBranch !== undefined ? { baseBranch } : {}),
@@ -900,13 +1053,14 @@ function registerCreatedNonGitTaskRuntime(
 
 function createManagedWorktreeTask(
   request: CreateTaskWorkflowRequest,
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
   baseBranch: string,
 ): ReturnType<typeof createTask> {
   const branchPrefix = request.branchPrefix ?? 'task';
   return createTask(
     request.name,
     request.projectRoot,
-    request.symlinkDirs,
+    worktreeLinkRequest,
     branchPrefix,
     baseBranch,
   );
@@ -942,7 +1096,11 @@ export function cleanupTaskRuntimeWorkflow(
   removeTaskContainerPreviewTargets(request.taskId);
   forgetTaskCreationOperations(request.taskId);
   removeTaskWorktreeIdentity(request.taskId);
-  if (request.projectMode !== 'non-git' && typeof request.worktreePath === 'string') {
+  if (
+    request.projectMode !== 'non-git' &&
+    typeof request.worktreePath === 'string' &&
+    registeredTaskIds(getWorktreeIdentity(request.worktreePath)).size === 0
+  ) {
     removeGitStatusSnapshot(request.worktreePath);
   }
 
@@ -1023,36 +1181,30 @@ async function executeTaskAgentSpawn(
     assertTaskAgentSpawnAdmitted(operation);
     request.assertSpawnAdmitted?.();
   };
+  const assertWriterAdmitted = (): void => {
+    context.agentSessionWriter?.assertSpawnPermit(request.writerPermit, {
+      agentId: request.agentId,
+      taskId: request.taskId,
+    });
+  };
+  const assertProcessWriterAdmitted = (): void => {
+    assertAdmitted();
+    assertWriterAdmitted();
+  };
   assertAdmitted();
+  if (
+    (request.contentAuthorityClass === undefined) !==
+    (request.contentAuthorityRoot === undefined)
+  ) {
+    throw new Error('Transient PTY authority requires one exact backend root');
+  }
   if (
     request.replaceExistingSession !== true &&
     (existingSessionKnown || hasAgentSession(request.agentId))
   ) {
-    if (request.skipExistingSessionAttach === true) {
-      return { channelAttached: false, kind: 'attached-existing' };
-    }
-    const spawnDisposition = spawnPtyAgent(context.sendToChannel, {
-      agentId: request.agentId,
-      args: request.args,
-      cols: getAgentCols(request.agentId),
-      command: request.command,
-      cwd: request.cwd,
-      env: filterStringEnvironment(request.env),
-      isShell: request.isShell === true,
-      ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
-      rows: getAgentRows(request.agentId),
-      taskId: request.taskId,
-    });
-    if ((request.isShell && request.startsTaskWatchers !== true) || !request.cwd) {
-      return spawnDisposition;
-    }
-    if (request.projectMode === 'non-git') {
-      startTaskPlanWatchers(context, request.taskId, request.cwd);
-      return spawnDisposition;
-    }
-    startTaskWorktreeWatchers(context, request.baseBranch, request.taskId, request.cwd);
-    return spawnDisposition;
+    return attachExistingTaskAgentSession(context, request);
   }
+  assertWriterAdmitted();
   const resolvedLaunch = await resolveRunnerLaunch(
     request,
     resolveSpawnLaunch(request),
@@ -1064,18 +1216,50 @@ async function executeTaskAgentSpawn(
   let runnerCleanupTransferred = false;
 
   try {
-    assertAdmitted();
-    const spawnDisposition = spawnPtyAgent(context.sendToChannel, {
+    assertProcessWriterAdmitted();
+    // Runner resolution may await external setup. Recheck the exact tuple
+    // after that await so a raced session is identity-validated before the
+    // output channel is bound; the synchronous PTY create follows directly.
+    if (request.replaceExistingSession !== true && hasAgentSession(request.agentId)) {
+      const disposition = attachExistingTaskAgentSession(context, request);
+      if (preparedCleanup) await runPreparedRunnerCleanup(preparedCleanup);
+      return disposition;
+    }
+    const spawnCwd = resolvedLaunch.cwd ?? request.cwd;
+    if (
+      request.contentAuthorityClass === 'explicit-transient' &&
+      path.resolve(spawnCwd) !== request.contentAuthorityRoot
+    ) {
+      throw new Error('Transient PTY launch root changed before process spawn');
+    }
+    const channelBound = request.bindOutputChannel?.();
+    if (channelBound === false) throw new Error('Agent output channel is unavailable');
+    const spawned = spawnPtyAgent(context.sendToChannel, {
       taskId: request.taskId,
       agentId: request.agentId,
+      ...(request.agentSessionLaunchReason !== undefined
+        ? { agentSessionLaunchReason: request.agentSessionLaunchReason }
+        : {}),
+      ...(request.agentSessionOperationId !== undefined
+        ? { agentSessionOperationId: request.agentSessionOperationId }
+        : {}),
+      ...(request.agentSessionResumed !== undefined
+        ? { agentSessionResumed: request.agentSessionResumed }
+        : {}),
       command: resolvedLaunch.command,
+      ...(request.contentAuthorityClass !== undefined
+        ? { contentAuthorityClass: request.contentAuthorityClass }
+        : {}),
       args: resolvedLaunch.args,
-      cwd: resolvedLaunch.cwd ?? request.cwd,
+      cwd: spawnCwd,
       env: resolvedLaunch.env,
       cols: request.cols,
       rows: request.rows,
       isShell: request.isShell === true,
       isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
+      ...(request.writerPermit !== undefined
+        ? { lifecycleGeneration: request.writerPermit.targetGeneration }
+        : {}),
       replaceExistingSession: request.replaceExistingSession === true,
       ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
       ...(resolvedLaunch.runnerIdentity !== undefined
@@ -1085,6 +1269,7 @@ async function executeTaskAgentSpawn(
         ? { onExitCleanup: resolvedLaunch.onExitCleanup }
         : {}),
     });
+    const spawnDisposition = channelBound === undefined ? spawned : { ...spawned, channelBound };
 
     if (spawnDisposition.kind === 'created-session') {
       if (preparedCleanup) {
@@ -1121,17 +1306,7 @@ async function executeTaskAgentSpawn(
       }
     }
 
-    if ((request.isShell && request.startsTaskWatchers !== true) || !request.cwd) {
-      return spawnDisposition;
-    }
-
-    if (request.projectMode === 'non-git') {
-      startTaskPlanWatchers(context, request.taskId, request.cwd);
-      return spawnDisposition;
-    }
-
-    startTaskWorktreeWatchers(context, request.baseBranch, request.taskId, request.cwd);
-    return spawnDisposition;
+    return finishTaskAgentSpawn(context, request, spawnDisposition);
   } catch (error) {
     if (!preparedCleanup || runnerCleanupTransferred) {
       throw error;
@@ -1146,6 +1321,40 @@ async function executeTaskAgentSpawn(
     }
     throw error;
   }
+}
+
+function finishTaskAgentSpawn(
+  context: TaskWorkflowContext,
+  request: SpawnTaskAgentWorkflowRequest,
+  disposition: AgentSpawnDisposition,
+): AgentSpawnDisposition {
+  if ((request.isShell && request.startsTaskWatchers !== true) || !request.cwd) {
+    return disposition;
+  }
+  if (request.projectMode === 'non-git') {
+    startTaskPlanWatchers(context, request.taskId, request.cwd);
+    return disposition;
+  }
+  startTaskWorktreeWatchers(context, request.baseBranch, request.taskId, request.cwd);
+  return disposition;
+}
+
+function reserveHydraWorkspace(request: SpawnTaskAgentWorkflowRequest): void {
+  if (request.adapter !== 'hydra') return;
+  const workspace = getWorktreeIdentity(request.cwd);
+  for (const [agentId, existingWorkspace] of hydraWorkspaceByAgentId) {
+    if (agentId === request.agentId) continue;
+    if (!hasAgentSession(agentId) && !latestTaskAgentSpawnByAgentId.has(agentId)) {
+      hydraWorkspaceByAgentId.delete(agentId);
+      continue;
+    }
+    if (existingWorkspace === workspace) {
+      throw new Error(
+        'Hydra is already running or starting in this checkout. Stop that Hydra agent or use an isolated worktree; other agent types can share the project root.',
+      );
+    }
+  }
+  hydraWorkspaceByAgentId.set(request.agentId, workspace);
 }
 
 export function spawnTaskAgentWorkflow(
@@ -1178,8 +1387,12 @@ export function spawnTaskAgentWorkflow(
     const startedAt = performance.now();
     try {
       assertTaskAgentSpawnAdmitted(operation);
-      return await executeTaskAgentSpawn(context, request, operation);
+      reserveHydraWorkspace(request);
+      const disposition = await executeTaskAgentSpawn(context, request, operation);
+      if (request.adapter !== 'hydra') hydraWorkspaceByAgentId.delete(request.agentId);
+      return disposition;
     } finally {
+      if (!hasAgentSession(request.agentId)) hydraWorkspaceByAgentId.delete(request.agentId);
       recordAgentSessionSpawnDuration(performance.now() - startedAt);
       releaseTaskAgentSpawnAdmission();
     }
@@ -1188,6 +1401,99 @@ export function spawnTaskAgentWorkflow(
   });
   operation.completion = completion;
   return completion;
+}
+
+/**
+ * Process-effect seam for a durable owner that already reserved the exact
+ * generation. The permit remains a separate argument so ordinary request
+ * construction cannot accidentally manufacture an admitted spawn.
+ */
+export function spawnAllocatedTaskAgentWorkflow(
+  context: TaskWorkflowContext,
+  request: SpawnTaskAgentWorkflowRequest,
+  writerPermit: AgentSessionSpawnPermit,
+): Promise<AgentSpawnDisposition> {
+  if (!context.agentSessionWriter?.isActive()) {
+    return Promise.reject(new Error('Agent-session managed writer is not active'));
+  }
+  context.agentSessionWriter.assertSpawnPermit(writerPermit, {
+    agentId: request.agentId,
+    taskId: request.taskId,
+  });
+  return spawnTaskAgentWorkflow(context, { ...request, writerPermit });
+}
+
+/**
+ * Compatibility writers use the same generation reservation/permit authority
+ * as the durable D11 workflow. Before cutover it preserves legacy behavior;
+ * after cutover it is the only legal path for a process-creating legacy call.
+ */
+export function spawnOwnedTaskAgentWorkflow(
+  context: TaskWorkflowContext,
+  ownership: OwnedTaskAgentSpawnRequest,
+  request: SpawnTaskAgentWorkflowRequest,
+): Promise<AgentSpawnDisposition> {
+  const writer = context.agentSessionWriter;
+  if (!writer?.isActive()) {
+    return spawnTaskAgentWorkflow(context, request);
+  }
+  if (
+    (request.contentAuthorityClass === undefined) !==
+    (request.contentAuthorityRoot === undefined)
+  ) {
+    return Promise.reject(new Error('Transient PTY authority requires one exact backend root'));
+  }
+  if (request.replaceExistingSession !== true && hasAgentSession(request.agentId)) {
+    if (request.contentAuthorityClass === 'explicit-transient') {
+      return Promise.reject(
+        new Error('A transient Arena launch cannot attach to an existing PTY session'),
+      );
+    }
+    if (request.skipExistingSessionAttach === true) {
+      assertExactExistingSession(request);
+      return Promise.resolve({ channelAttached: false, kind: 'attached-existing' });
+    }
+    try {
+      const disposition = attachExistingAgentSessionExact(context.sendToChannel, {
+        agentId: request.agentId,
+        ...(request.bindOutputChannel !== undefined
+          ? { bindChannel: request.bindOutputChannel }
+          : {}),
+        isShell: request.isShell === true,
+        ...(request.onOutput !== undefined ? { onOutput: request.onOutput } : {}),
+        taskId: request.taskId,
+      });
+      if (disposition.channelBound === false) {
+        return Promise.reject(new Error('Agent output channel is unavailable'));
+      }
+      return Promise.resolve(finishTaskAgentSpawn(context, request, disposition));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  const expectedSourceGeneration = getAgentLifecycleGeneration(request.agentId);
+  const targetGeneration = (expectedSourceGeneration ?? -1) + 1;
+  const allocation = writer.allocate({
+    agentId: request.agentId,
+    expectedSourceGeneration,
+    operationId: ownership.operationId,
+    purpose: ownership.purpose,
+    targetGeneration,
+    taskId: request.taskId,
+  });
+  if (allocation === 'stale') {
+    return Promise.reject(new Error('Agent-session generation admission is stale'));
+  }
+  return writer.executeAllocated(ownership.operationId, async (writerPermit) => {
+    const result = await spawnAllocatedTaskAgentWorkflow(context, request, writerPermit);
+    if (result.kind === 'created-session') {
+      const observed = getAgentLifecycleGeneration(request.agentId);
+      if (observed !== targetGeneration) {
+        throw new Error('Agent-session process generation differs from its reservation');
+      }
+    }
+    return result;
+  });
 }
 
 function settleIndependentWorkflowSteps(
@@ -1227,6 +1533,7 @@ async function runTaskAgentStopWorkflow(agentId: string): Promise<void> {
 }
 
 export function stopTaskAgentWorkflow(agentId: string): Promise<void> {
+  revokeAgentContentAuthority(agentId);
   const existingOwner = taskAgentStopWorkflowsByAgentId.get(agentId);
   if (existingOwner?.status === 'stopping') {
     return existingOwner.completion;
@@ -1254,7 +1561,14 @@ export function stopTaskAgentWorkflow(agentId: string): Promise<void> {
   return completion;
 }
 
-export function stopAllTaskAgentWorkflows(): Promise<void> {
+export function stopAllTaskAgentWorkflows(
+  options: { keepAdmissionClosed?: boolean } = {},
+): Promise<void> {
+  revokeAllAgentContentAuthorities();
+  if (options.keepAdmissionClosed === true) {
+    keepTaskAgentSpawnAdmissionClosed = true;
+    stoppingAllTaskAgentSpawns = true;
+  }
   if (stopAllTaskAgentWorkflowsPromise) {
     return stopAllTaskAgentWorkflowsPromise;
   }
@@ -1282,7 +1596,7 @@ export function stopAllTaskAgentWorkflows(): Promise<void> {
       completedSuccessfully = true;
     } finally {
       stopAllTaskAgentWorkflowsPromise = null;
-      if (completedSuccessfully) {
+      if (completedSuccessfully && !keepTaskAgentSpawnAdmissionClosed) {
         stoppingAllTaskAgentSpawns = false;
       }
     }
@@ -1317,11 +1631,15 @@ export async function stopTaskAgentWorkflowsForTask(
   taskId: string,
   agentIds: readonly string[],
 ): Promise<void> {
+  revokeTaskAgentContentAuthorities(taskId, agentIds);
   await closeTaskAgentSpawns(taskId);
   await cleanupTaskAgentRunners(agentIds, taskId);
 }
 
-function getTaskCreationOperationFingerprint(request: CreateTaskWorkflowRequest): string {
+function getTaskCreationOperationFingerprint(
+  request: CreateTaskWorkflowRequest,
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
+): string {
   return JSON.stringify([
     request.agentDefId ?? null,
     request.agentDefName ?? null,
@@ -1335,7 +1653,11 @@ function getTaskCreationOperationFingerprint(request: CreateTaskWorkflowRequest)
     request.projectMode ?? null,
     request.projectRoot,
     request.stepsTracking ?? null,
-    request.symlinkDirs,
+    Buffer.from(
+      worktreeLinkRequest.encodedBytes.buffer,
+      worktreeLinkRequest.encodedBytes.byteOffset,
+      worktreeLinkRequest.encodedBytes.byteLength,
+    ).toString('base64'),
   ]);
 }
 
@@ -1349,12 +1671,13 @@ export async function createTaskWorkflow(
   context: TaskWorkflowContext,
   request: CreateTaskWorkflowRequest,
 ): Promise<CreateTaskResult> {
+  const worktreeLinkRequest = encodeTaskWorktreeLinkRequestV1(request.symlinkDirs);
   const operationId = request.operationId;
   if (!operationId || operationId.trim().length === 0) {
-    return executeCreateTaskWorkflow(context, request);
+    return executeCreateTaskWorkflow(context, request, worktreeLinkRequest);
   }
 
-  const fingerprint = getTaskCreationOperationFingerprint(request);
+  const fingerprint = getTaskCreationOperationFingerprint(request, worktreeLinkRequest);
   const existingOperation = taskCreationOperationsById.get(operationId);
   if (existingOperation) {
     if (existingOperation.fingerprint !== fingerprint) {
@@ -1365,7 +1688,7 @@ export async function createTaskWorkflow(
 
   const operation: TaskCreationOperation = {
     fingerprint,
-    promise: executeCreateTaskWorkflow(context, request),
+    promise: executeCreateTaskWorkflow(context, request, worktreeLinkRequest),
   };
   taskCreationOperationsById.set(operationId, operation);
 
@@ -1384,6 +1707,7 @@ export async function createTaskWorkflow(
 async function executeCreateTaskWorkflow(
   context: TaskWorkflowContext,
   request: CreateTaskWorkflowRequest,
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
 ): Promise<CreateTaskResult> {
   if (request.projectMode === 'non-git') {
     if (request.stepsTracking === true) {
@@ -1404,13 +1728,26 @@ async function executeCreateTaskWorkflow(
         ? request
         : { ...request, projectRoot: canonicalProjectRoot };
 
-    return withReservedTaskWorktreeIdentity(canonicalProjectRoot, async () => {
-      const result = await createCurrentBranchTask(canonicalProjectRoot, request.baseBranch);
-      const baseBranch = result.base_branch ?? request.baseBranch;
-      registerCreatedTaskRuntime(context, canonicalRequest, result, baseBranch);
-
-      return result;
-    });
+    assertWorktreeIdentityAvailable(
+      undefined,
+      getWorktreeIdentity(canonicalProjectRoot),
+      canonicalProjectRoot,
+      true,
+    );
+    const createSharedRootTask = (): Promise<CreateTaskResult> =>
+      withRepositoryWorktreeLock(canonicalProjectRoot, async () => {
+        if (request.stepsTracking === true)
+          assertTaskStepsPathAvailable(undefined, canonicalProjectRoot);
+        const result = await createCurrentBranchTask(canonicalProjectRoot, request.baseBranch);
+        const baseBranch = result.base_branch ?? request.baseBranch;
+        registerCreatedTaskRuntime(context, canonicalRequest, result, baseBranch);
+        return result;
+      });
+    // Only the shared steps file needs exclusive admission; ordinary root tasks are read-only
+    // at this boundary and may be prepared concurrently.
+    return request.stepsTracking === true
+      ? withReservedTaskWorktreeIdentity(canonicalProjectRoot, createSharedRootTask, true)
+      : createSharedRootTask();
   }
 
   if (request.gitIsolation === 'existing-worktree') {
@@ -1448,9 +1785,17 @@ async function executeCreateTaskWorkflow(
     });
   }
 
-  const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
-  const result = await createManagedWorktreeTask(request, baseBranch);
-  registerCreatedTaskRuntime(context, request, result, baseBranch);
+  const canonicalProjectRoot = await getGitRepoRoot(request.projectRoot);
+  if (!canonicalProjectRoot) {
+    throw new Error(`Project root is not a Git repository: ${request.projectRoot}`);
+  }
+  const canonicalRequest =
+    canonicalProjectRoot === request.projectRoot
+      ? request
+      : { ...request, projectRoot: canonicalProjectRoot };
+  const baseBranch = await getMainBranch(canonicalProjectRoot, request.baseBranch);
+  const result = await createManagedWorktreeTask(canonicalRequest, worktreeLinkRequest, baseBranch);
+  registerCreatedTaskRuntime(context, canonicalRequest, result, baseBranch);
 
   return {
     ...result,
@@ -1460,6 +1805,22 @@ async function executeCreateTaskWorkflow(
 
 export async function deleteTaskWorkflow(
   request: DeleteTaskWorkflowRequest,
+): Promise<DeleteTaskWorkflowResult> {
+  return cleanupTaskInfrastructureWorkflow({
+    agentIds: [...request.agentIds],
+    branchName: request.branchName,
+    deleteBranch: request.deleteBranch,
+    gitCleanup: 'managed-worktree',
+    projectMode: 'git',
+    projectRoot: request.projectRoot,
+    taskId: request.taskId,
+    worktreePath: request.worktreePath,
+  });
+}
+
+/** Compatibility workflow for pre-cutover callers and failed-creation rollback. */
+export async function cleanupTaskInfrastructureWorkflow(
+  request: Readonly<LegacyTaskInfrastructureCleanupRequest>,
 ): Promise<DeleteTaskWorkflowResult> {
   const cleanupWarnings: DeleteTaskCleanupWarning[] = [];
   await closeTaskAgentSpawns(request.taskId);
@@ -1488,7 +1849,15 @@ export async function deleteTaskWorkflow(
 
   const worktreeCleanupWarning = await runDeleteCleanupStep(
     'worktree',
-    () => deleteTask(request.branchName, request.deleteBranch, request.projectRoot),
+    () =>
+      request.gitCleanup === 'managed-worktree'
+        ? deleteTask(
+            request.branchName,
+            request.deleteBranch,
+            request.projectRoot,
+            request.worktreePath,
+          )
+        : Promise.resolve(),
     'Failed to clean task worktree while deleting task:',
   );
   if (worktreeCleanupWarning !== null) {
@@ -1496,7 +1865,8 @@ export async function deleteTaskWorkflow(
   }
 
   const cleanupResult = cleanupTaskRuntimeWorkflow({
-    agentIds: request.agentIds,
+    agentIds: [...request.agentIds],
+    projectMode: request.projectMode,
     removeTaskState: true,
     taskId: request.taskId,
     worktreePath: request.worktreePath,

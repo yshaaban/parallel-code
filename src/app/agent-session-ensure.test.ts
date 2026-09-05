@@ -73,7 +73,18 @@ describe('deferred terminal agent session ensure', () => {
     resetDeferredAgentSessionEnsureForTests();
     setStore('tasks', { 'task-1': buildTask('task-1', 'agent-1') });
     setStore('agents', { 'agent-1': buildAgent('agent-1', 'task-1') });
-    invokeMock.mockResolvedValue({ results: [] });
+    invokeMock.mockResolvedValue({
+      results: [
+        {
+          agentId: 'agent-1',
+          cols: 80,
+          generation: 2,
+          kind: 'restored',
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
   });
 
   it('dedupes repeated deferred ensures per agent', async () => {
@@ -83,6 +94,10 @@ describe('deferred terminal agent session ensure', () => {
     await flushMicrotasks();
 
     expect(getEnsureBatchCalls()).toHaveLength(1);
+    expect(getEnsureBatchCalls()[0]?.[1]).toEqual({
+      reason: 'startup-restore',
+      requests: [{ agentId: 'agent-1', taskId: 'task-1' }],
+    });
   });
 
   it('re-issues the ensure for previously ensured agents after a full reconnect restore', async () => {
@@ -128,5 +143,42 @@ describe('deferred terminal agent session ensure', () => {
     // The failed ensure never entered the ensured set; the reconnect-restore
     // pass only re-issues ensures it previously confirmed.
     expect(getEnsureBatchCalls()).toHaveLength(1);
+  });
+
+  it('does not cache a late success after the agent is remapped', async () => {
+    let resolveEnsure!: (value: unknown) => void;
+    invokeMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveEnsure = resolve;
+      }),
+    );
+    ensureAgentSessionForDeferredTerminal('task-1', 'agent-1');
+    setStore('tasks', {
+      'task-1': { ...buildTask('task-1', 'agent-1'), agentIds: [] },
+      'task-2': buildTask('task-2', 'agent-1'),
+    });
+    setStore('agents', { 'agent-1': buildAgent('agent-1', 'task-2') });
+    resolveEnsure({
+      results: [
+        {
+          agentId: 'agent-1',
+          cols: 80,
+          generation: 2,
+          kind: 'restored',
+          rows: 24,
+          taskId: 'task-1',
+        },
+      ],
+    });
+    await flushMicrotasks();
+
+    ensureAgentSessionForDeferredTerminal('task-2', 'agent-1');
+    await flushMicrotasks();
+
+    expect(getEnsureBatchCalls()).toHaveLength(2);
+    expect(getEnsureBatchCalls()[1]?.[1]).toEqual({
+      reason: 'startup-restore',
+      requests: [{ agentId: 'agent-1', taskId: 'task-2' }],
+    });
   });
 });

@@ -6,8 +6,40 @@ import {
   type PauseReason,
 } from '../../src/domain/server-state.js';
 import type { StorageEnv } from './storage.js';
+import type { WorkspaceStorageKind } from './workspace-state-storage.js';
 import type { RemoteAccessController } from './remote-access-workflows.js';
 import type { AppUpdateStatus } from '../../src/domain/app-update.js';
+import type { TaskStructureMutationService } from './task-structure-mutations.js';
+import type { WorkspaceTaskMergeLegacyWriterGate } from './task-merge-legacy-writer-gate.js';
+import type { WorkspaceTaskRemovalLegacyWriterGate } from './task-removal-legacy-writer-gate.js';
+import type { WorkspaceMutationService } from './workspace-state-mutations.js';
+import type { AgentSessionWriterRuntime } from './agent-session-writer-authority.js';
+import type { TrustedLocalTaskCreationCommand } from './task-creation-local-command.js';
+import type { TaskMergeWorkflow } from './task-merge-workflow.js';
+import type { TaskNotesService } from './task-notes-service.js';
+import type { TaskNotesWriterEntitlements } from './task-notes-writer-entitlements.js';
+import type { TaskPromptInputAdmissionService } from './task-prompt-input-admission.js';
+import type {
+  ManagedAgentSessionRestoreRequest,
+  ManagedAgentSessionRestoreResult,
+} from '../../src/domain/agent-session-operation.js';
+import type {
+  ManagedTaskShellSessionRestoreRequest,
+  ManagedTaskShellSessionRestoreResult,
+} from '../../src/domain/task-shell-session-operation.js';
+
+export type ActiveTaskMergeWorkflow = Pick<TaskMergeWorkflow, 'issue' | 'start' | 'status'>;
+export type ActiveTaskNotesService = Pick<
+  TaskNotesService,
+  'getTaskNotes' | 'issueTaskNotesOperation' | 'updateTaskNotes'
+>;
+
+export interface WorkspaceMutationHost {
+  getTaskMergeLegacyWriterGate: () => Promise<WorkspaceTaskMergeLegacyWriterGate>;
+  getTaskRemovalLegacyWriterGate: () => Promise<WorkspaceTaskRemovalLegacyWriterGate>;
+  getTaskStructureService: () => Promise<TaskStructureMutationService>;
+  getWorkspaceService: () => Promise<WorkspaceMutationService>;
+}
 
 export type HandlerArgs = Record<string, unknown> | undefined;
 export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
@@ -75,6 +107,30 @@ export interface UpdateController {
 }
 
 export interface HandlerContext extends StorageEnv {
+  agentSessionWriter?: AgentSessionWriterRuntime;
+  /** Identity-only bridge to the canonical managed agent-session owner. */
+  restoreCanonicalAgentSession?: (
+    request: Readonly<ManagedAgentSessionRestoreRequest>,
+  ) => Promise<ManagedAgentSessionRestoreResult>;
+  /** Read-only canonical identity check used before any compatibility spawn. */
+  classifyCanonicalAgentSessionIdentity?: (
+    request: Readonly<ManagedAgentSessionRestoreRequest>,
+  ) => Promise<'managed-agent' | 'unmanaged' | 'unavailable'>;
+  /** Identity-only bridge to the canonical terminal-task initial-shell owner. */
+  restoreCanonicalTaskShellSession?: (
+    request: Readonly<ManagedTaskShellSessionRestoreRequest>,
+    options?: Readonly<{ compatibilityIntent: 'create' }>,
+  ) => Promise<ManagedTaskShellSessionRestoreResult>;
+  /** One server-lifecycle queue owns byte admission for every task-prompt producer. */
+  taskPromptInputAdmission?: TaskPromptInputAdmissionService;
+  /** Awaits managed creation activation before any task-creation effect. */
+  getTaskCreationCommand?: () => Promise<TrustedLocalTaskCreationCommand>;
+  /** Awaits the merge-owner cutover before any typed task-merge admission. */
+  getTaskMergeWorkflow?: () => Promise<ActiveTaskMergeWorkflow>;
+  /** Awaits the single canonical notes owner; adapters never accept caller-supplied authority. */
+  getTaskNotesService?: () => Promise<ActiveTaskNotesService>;
+  /** Immutable, proof-bound desktop/remote writer cutovers; absent means both surfaces stay dark. */
+  taskNotesWriterEntitlements?: TaskNotesWriterEntitlements;
   sendToChannel: (channelId: string, msg: unknown) => void;
   awaitCoordinatorRuntimeReady?: () => Promise<void>;
   // Binds the output channel for the requesting client as part of the
@@ -82,16 +138,20 @@ export interface HandlerContext extends StorageEnv {
   // via the channel manager plus the control-plane clientId lookup; Electron
   // leaves it undefined (channel binding is implicit in the IPC bridge).
   bindChannelForClient?: (clientId: string | null, channelId: string) => boolean;
+  coordinatorToolCallTlsCertificate?: string | (() => string);
   coordinatorToolCallUrl?: string | (() => string);
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
   emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;
   isChannelActive?: (channelId: string) => boolean;
   remoteAccess?: RemoteAccessController;
+  registerWorkspaceMutationCleanup?: (cleanup: () => Promise<void>) => void;
   window?: WindowController;
   dialog?: DialogController;
   shell?: ShellController;
   clipboard?: ClipboardController;
   update?: UpdateController;
+  workspaceMutations?: WorkspaceMutationHost;
+  workspaceStorageKind?: WorkspaceStorageKind;
 }
 
 function requireContextFeature<K extends keyof HandlerContext>(

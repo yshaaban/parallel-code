@@ -23,6 +23,10 @@ const taskNotesFilesSectionSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskNotesFilesSection.tsx'),
   'utf8',
 );
+const taskNotesFilesSectionEntrySource = readFileSync(
+  path.resolve(projectRoot, 'src/components/task-panel/TaskNotesFilesSectionEntry.tsx'),
+  'utf8',
+);
 const taskCoordinatorSectionEntrySource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskCoordinatorSectionEntry.tsx'),
   'utf8',
@@ -41,6 +45,34 @@ const taskPlanContentSource = readFileSync(
 );
 const taskStepsSectionSource = readFileSync(
   path.resolve(projectRoot, 'src/components/task-panel/TaskStepsSection.tsx'),
+  'utf8',
+);
+const taskTitleBarSource = readFileSync(
+  path.resolve(projectRoot, 'src/components/TaskTitleBar.tsx'),
+  'utf8',
+);
+const taskPanelDialogStateSource = readFileSync(
+  path.resolve(projectRoot, 'src/components/task-panel/task-panel-dialog-state.ts'),
+  'utf8',
+);
+const taskGitActionCapabilitySource = readFileSync(
+  path.resolve(projectRoot, 'src/app/task-git-action-capability.ts'),
+  'utf8',
+);
+const appShortcutsSource = readFileSync(
+  path.resolve(projectRoot, 'src/runtime/app-shortcuts.ts'),
+  'utf8',
+);
+const taskLifecycleWorkflowsSource = readFileSync(
+  path.resolve(projectRoot, 'src/app/task-lifecycle-workflows.ts'),
+  'utf8',
+);
+const projectWorkflowsSource = readFileSync(
+  path.resolve(projectRoot, 'src/app/project-workflows.ts'),
+  'utf8',
+);
+const taskNotesRecoveryChannelSource = readFileSync(
+  path.resolve(projectRoot, 'src/app/task-notes-recovery-channel.ts'),
   'utf8',
 );
 
@@ -82,6 +114,30 @@ describe('task panel architecture guardrails', () => {
     expect(taskPlanContentSource).toContain('renderMarkdownSafely');
   });
 
+  it('keeps typed task-note conflict and autosave policy out of the default task panel path', () => {
+    expect(taskNotesFilesSectionSource).toContain("import('./TypedTaskNotesEditor')");
+    expect(taskNotesFilesSectionSource).not.toContain('getTaskNotesPresentation');
+    expect(taskNotesFilesSectionSource).not.toContain("import('../../app/task-notes-runtime')");
+  });
+
+  it('keeps structural task-note retirement behind the lightweight lazy-runtime channel', () => {
+    expect(taskLifecycleWorkflowsSource).toContain("from './task-notes-recovery-channel'");
+    expect(projectWorkflowsSource).toContain("from './task-notes-recovery-channel'");
+    expect(taskLifecycleWorkflowsSource).not.toContain("from './task-notes-runtime'");
+    expect(projectWorkflowsSource).not.toContain("from './task-notes-runtime'");
+    expect(taskNotesRecoveryChannelSource).not.toContain('task-notes-controller');
+    expect(taskNotesRecoveryChannelSource).not.toContain('task-notes-runtime');
+    expect(taskNotesRecoveryChannelSource).not.toContain('task-notes-transport');
+  });
+
+  it('keeps the secondary notes and changed-files surface out of the first-parse task path', () => {
+    expect(taskPanelSource).toContain("from './task-panel/TaskNotesFilesSectionEntry'");
+    expect(taskNotesFilesSectionEntrySource).toContain("import('./TaskNotesFilesSection')");
+    expect(taskNotesFilesSectionEntrySource).toContain('ErrorBoundary');
+    expect(taskNotesFilesSectionEntrySource).toContain('Suspense');
+    expect(taskPanelSource).not.toContain("from './task-panel/TaskNotesFilesSection'");
+  });
+
   it('keeps the embedded review panel out of the default task panel startup path', () => {
     expect(taskNotesFilesSectionSource).toContain('lazyNamed(() =>');
     expect(taskNotesFilesSectionSource).toContain("import('../ReviewPanel')");
@@ -109,5 +165,22 @@ describe('task panel architecture guardrails', () => {
     expect(taskStepsSectionSource).not.toContain('setPrefillPrompt');
     expect(taskStepsSectionSource).not.toContain('setTaskFocusedPanel');
     expect(taskStepsSectionSource).not.toContain('invoke(');
+  });
+
+  it('keeps merge and push capability in one app-layer owner', () => {
+    expect(taskGitActionCapabilitySource).toContain('getTaskGitActionDecision');
+    expect(taskGitActionCapabilitySource).toContain('requestTaskGitAction');
+    expect(taskPanelSource).toContain('getCurrentTaskGitActionDecision');
+    expect(taskPanelSource).toContain('requestTaskGitAction');
+    expect(taskPanelDialogStateSource).toContain('getCurrentTaskGitActionDecision');
+    expect(taskPanelDialogStateSource).not.toContain('isCurrentBranchTask');
+    expect(taskPanelDialogStateSource).not.toContain('isNonGitProject');
+    expect(taskTitleBarSource).toContain('props.mergeAvailable');
+    expect(taskTitleBarSource).toContain('props.pushAvailable');
+    expect(taskTitleBarSource).not.toContain(
+      '!isCurrentBranchTask(props.task) && !isNonGitProject(props.task)',
+    );
+    expect(appShortcutsSource).toContain("requestTaskGitAction('merge'");
+    expect(appShortcutsSource).toContain("requestTaskGitAction('push'");
   });
 });

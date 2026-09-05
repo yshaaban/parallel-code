@@ -142,7 +142,6 @@ export function InlineInput(props: InlineInputProps): JSX.Element {
           'font-size': sf(12),
           'font-family': "'JetBrains Mono', monospace",
           padding: '4px 8px',
-          outline: 'none',
         }}
       />
 

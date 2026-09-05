@@ -1,4 +1,5 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { subscribeDesktopTaskNotesUnsaved } from '../app/task-notes-recovery-channel';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import {
@@ -16,12 +17,14 @@ import { getTaskClosePolicy } from './task-close-policy';
 interface CloseTaskDialogProps {
   open: boolean;
   task: Task;
+  unsavedInitialPrompt?: boolean;
   onDone: () => void;
 }
 
 export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
+  const [unsavedTaskNotes, setUnsavedTaskNotes] = createSignal(false);
   const closePolicy = () => getTaskClosePolicy(props.task, getProject(props.task.projectId));
   const isManagedWorktree = () => closePolicy().location === 'managed-worktree';
   let gitStatusRefreshGeneration = 0;
@@ -74,6 +77,15 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
     refreshDialogGitStatus(props.task.id);
   });
 
+  createEffect(() => {
+    if (!props.open) {
+      setUnsavedTaskNotes(false);
+      return;
+    }
+    const unsubscribe = subscribeDesktopTaskNotesUnsaved(props.task.id, setUnsavedTaskNotes);
+    onCleanup(unsubscribe);
+  });
+
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
   const targetBranchLabel = () =>
     normalizeTaskBaseBranch(props.task) ??
@@ -96,6 +108,17 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
       title="Close Task"
       message={
         <div>
+          <Show when={props.unsavedInitialPrompt}>
+            <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
+              The latest initial prompt edit has not been saved. Closing now will discard that local
+              text.
+            </InlineNotice>
+          </Show>
+          <Show when={unsavedTaskNotes()}>
+            <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
+              Unsaved task notes will also be discarded.
+            </InlineNotice>
+          </Show>
           <Show when={closePolicy().location === 'non-git'}>
             <p style={{ margin: '0' }}>
               This will stop all running {closePolicy().runningProcessesLabel} for this non-git
@@ -189,8 +212,9 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
       danger={isManagedWorktree()}
       confirmDisabled={closeConfirmDisabled()}
       onConfirm={() => {
+        const taskNotesDiscardConfirmed = unsavedTaskNotes();
         props.onDone();
-        closeTask(props.task.id);
+        void closeTask(props.task.id, { taskNotesDiscardConfirmed });
       }}
       onCancel={() => props.onDone()}
     />

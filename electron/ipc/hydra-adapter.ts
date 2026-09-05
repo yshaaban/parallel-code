@@ -571,59 +571,50 @@ async function fetchHydraHealth(url: string): Promise<HydraHealthResponse> {
   );
 }
 
-async function requestHydraShutdown(url: string): Promise<void> {
-  await withHydraRequestDeadline(
-    'Hydra shutdown request',
-    HYDRA_HTTP_REQUEST_TIMEOUT_MS,
-    async (signal) => {
-      const response = await fetch(`${url}/shutdown`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: '{}',
-        signal,
-      });
-      const body = await response.text();
-      if (!response.ok) {
-        throw new Error(`Hydra shutdown failed (${response.status}): ${body}`);
-      }
-    },
-  );
-}
-
-async function waitForPortRelease(port: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isPortAvailable(port)) return true;
-    await sleep(HYDRA_HEALTH_POLL_INTERVAL_MS);
+function hydraWorkspaceIdentity(root: string): string {
+  try {
+    return fs.realpathSync.native(root);
+  } catch {
+    return path.resolve(root);
   }
-  return isPortAvailable(port);
 }
 
 async function pickHydraPort(worktreePath: string): Promise<number> {
   const preferred = deriveHydraPortFromWorktree(worktreePath);
-  for (let offset = 0; offset < HYDRA_PORT_PROBE_ATTEMPTS; offset += 1) {
-    const candidate = HYDRA_PORT_MIN + ((preferred - HYDRA_PORT_MIN + offset) % HYDRA_PORT_SPAN);
-    if (await isPortAvailable(candidate)) {
-      return candidate;
-    }
-
-    const url = buildHydraUrl(candidate);
-    try {
-      const health = await fetchHydraHealth(url);
-      const daemonProjectRoot = typeof health.projectRoot === 'string' ? health.projectRoot : '';
-      if (daemonProjectRoot && path.resolve(daemonProjectRoot) === path.resolve(worktreePath)) {
-        await requestHydraShutdown(url);
-        if (await waitForPortRelease(candidate, HYDRA_SHUTDOWN_TIMEOUT_MS)) {
-          return candidate;
-        }
+  const workspace = hydraWorkspaceIdentity(worktreePath);
+  // Check the whole bounded range: a previous daemon may occupy a later offset even after
+  // the preferred port becomes free. Parallel probes retain one bounded HTTP timeout.
+  const candidates = await Promise.all(
+    Array.from({ length: HYDRA_PORT_PROBE_ATTEMPTS }, async (_, offset) => {
+      const candidate = HYDRA_PORT_MIN + ((preferred - HYDRA_PORT_MIN + offset) % HYDRA_PORT_SPAN);
+      if (await isPortAvailable(candidate)) {
+        return { port: candidate, available: true, sameWorkspace: false };
       }
-    } catch {
-      // Non-Hydra listener or unreachable service; try the next port.
-    }
+
+      const url = buildHydraUrl(candidate);
+      let health: HydraHealthResponse;
+      try {
+        health = await fetchHydraHealth(url);
+      } catch {
+        // Non-Hydra listener or unreachable service; try the next port.
+        return { port: candidate, available: false, sameWorkspace: false };
+      }
+      const daemonProjectRoot = typeof health.projectRoot === 'string' ? health.projectRoot : '';
+      return {
+        port: candidate,
+        available: false,
+        sameWorkspace:
+          Boolean(daemonProjectRoot) && hydraWorkspaceIdentity(daemonProjectRoot) === workspace,
+      };
+    }),
+  );
+  if (candidates.some((candidate) => candidate.sameWorkspace)) {
+    throw new Error(
+      'Hydra is already running in this checkout. Stop the existing Hydra session or use an isolated worktree; it will not be shut down automatically.',
+    );
   }
+  const available = candidates.find((candidate) => candidate.available);
+  if (available) return available.port;
 
   throw new Error(`Could not allocate a Hydra daemon port for ${worktreePath}`);
 }
@@ -803,6 +794,7 @@ async function waitForHydraHealth(
   daemon: BoundedSpawn['child'],
   daemonOutput: string[],
   daemonFailure: { current: Error | null },
+  worktreePath: string,
 ): Promise<void> {
   const deadline = Date.now() + HYDRA_HEALTH_TIMEOUT_MS;
   let lastError = 'Hydra daemon did not report healthy status.';
@@ -821,7 +813,19 @@ async function waitForHydraHealth(
 
     try {
       const health = await fetchHydraHealth(url);
-      if (health.running) return;
+      if (health.running) {
+        if (
+          typeof daemon.pid !== 'number' ||
+          health.pid !== daemon.pid ||
+          typeof health.projectRoot !== 'string' ||
+          hydraWorkspaceIdentity(health.projectRoot) !== hydraWorkspaceIdentity(worktreePath)
+        ) {
+          throw new Error(
+            'Hydra health endpoint does not belong to the launched daemon and checkout.',
+          );
+        }
+        return;
+      }
       lastError = 'Hydra daemon responded without reporting a running state.';
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -837,23 +841,12 @@ async function waitForHydraHealth(
   throw buildHydraDaemonFailure(lastError, daemonOutput);
 }
 
-async function shutdownHydraDaemon(url: string, daemon: BoundedSpawn | null): Promise<void> {
+async function shutdownHydraDaemon(daemon: BoundedSpawn | null): Promise<void> {
   if (!daemon) return;
 
   try {
-    try {
-      await requestHydraShutdown(url);
-    } catch {
-      // Fall back to direct termination below.
-    }
-
-    try {
-      await waitForHydraChildExit(daemon, HYDRA_SHUTDOWN_TIMEOUT_MS);
-      return;
-    } catch {
-      // Fall back to direct termination below.
-    }
-
+    // A TCP port is not process ownership: bind races and replacement listeners must never
+    // let cleanup send a shutdown request to somebody else's daemon.
     await terminateHydraChild(daemon);
   } finally {
     destroyHydraChildStreams(daemon);
@@ -862,7 +855,7 @@ async function shutdownHydraDaemon(url: string, daemon: BoundedSpawn | null): Pr
 
 async function runHydraAdapter(): Promise<number> {
   const options = parseAdapterArgs(process.argv.slice(2));
-  const worktreePath = process.cwd();
+  const worktreePath = fs.realpathSync.native(process.cwd());
   if (!fs.existsSync(worktreePath)) {
     throw new Error(`Hydra worktree does not exist: ${worktreePath}`);
   }
@@ -926,7 +919,7 @@ async function runHydraAdapter(): Promise<number> {
 
     cleaningUp = (async () => {
       try {
-        await shutdownHydraDaemon(url, daemon);
+        await shutdownHydraDaemon(daemon);
         cleanedUp = true;
       } finally {
         detachDaemonOutput();
@@ -960,7 +953,7 @@ async function runHydraAdapter(): Promise<number> {
   try {
     let operatorResult: SubprocessExit;
     try {
-      await waitForHydraHealth(url, daemon.child, daemonOutput, daemonFailure);
+      await waitForHydraHealth(url, daemon.child, daemonOutput, daemonFailure, worktreePath);
       if (signalCleanupPromise) {
         await signalCleanupPromise;
         return signalExitCode ?? 1;
@@ -1006,6 +999,8 @@ async function runHydraAdapter(): Promise<number> {
 }
 
 export const __hydraAdapterTestExports = {
+  pickHydraPort,
+  shutdownHydraDaemon,
   forwardHydraOperatorResize,
   handleHydraDaemonStreamError,
   spawnHydraChild,

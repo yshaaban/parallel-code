@@ -1,47 +1,44 @@
-import fs from 'fs';
 import path from 'path';
 
-interface MarkdownFileContent {
+import type { PendingTaskContentRootAdmission } from './terminal-root-authority.js';
+import { readBoundedTaskTextFile } from './task-file-access.js';
+
+export interface MarkdownFileContent {
   content: string;
   fileName: string;
   relativePath: string;
+  worktreePath: string;
 }
 
-function isMarkdownRelativePath(relativePath: string): boolean {
-  return relativePath.toLowerCase().endsWith('.md');
+export const MARKDOWN_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+function isMarkdownPath(filePath: string): boolean {
+  return path.extname(filePath).toLowerCase() === '.md';
 }
 
-export function readMarkdownFileForWorktree(
-  worktreePath: string,
+export async function readMarkdownFile(
+  admission: PendingTaskContentRootAdmission,
   relativePath: string,
-): MarkdownFileContent | null {
-  if (!isMarkdownRelativePath(relativePath)) {
+): Promise<MarkdownFileContent | null> {
+  if (!isMarkdownPath(relativePath)) {
     return null;
   }
 
-  const resolvedWorktreePath = path.resolve(worktreePath);
-  const resolvedFilePath = path.resolve(resolvedWorktreePath, relativePath);
-  const relativeToWorktree = path.relative(resolvedWorktreePath, resolvedFilePath);
-  if (
-    relativeToWorktree.startsWith('..') ||
-    path.isAbsolute(relativeToWorktree) ||
-    relativeToWorktree.length === 0
-  ) {
+  const result = await readBoundedTaskTextFile({
+    admission,
+    allowedRoots: [admission.root],
+    maxBytes: MARKDOWN_FILE_MAX_BYTES,
+    relativePath,
+    acceptCanonicalPath: isMarkdownPath,
+  });
+  if (!result) {
     return null;
   }
 
-  try {
-    const stats = fs.statSync(resolvedFilePath);
-    if (!stats.isFile()) {
-      return null;
-    }
-
-    return {
-      content: fs.readFileSync(resolvedFilePath, 'utf8'),
-      fileName: path.basename(resolvedFilePath),
-      relativePath: relativeToWorktree,
-    };
-  } catch {
-    return null;
-  }
+  return {
+    content: result.content,
+    fileName: path.basename(result.canonicalPath),
+    relativePath: result.relativePath,
+    worktreePath: admission.root,
+  };
 }

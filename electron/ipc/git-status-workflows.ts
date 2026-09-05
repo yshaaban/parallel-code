@@ -55,6 +55,17 @@ export interface WorktreeWorkflowRequest {
 const watcherRequestsByTaskId = new Map<string, TaskGitWatcherRequest>();
 const taskIdByWatchedWorktreePath = new Map<string, string>();
 
+function removeTaskWatcherRequest(taskId: string): void {
+  const request = watcherRequestsByTaskId.get(taskId);
+  watcherRequestsByTaskId.delete(taskId);
+  if (!request || taskIdByWatchedWorktreePath.get(request.worktreePath) !== taskId) return;
+  const remaining = [...watcherRequestsByTaskId.values()].find(
+    (candidate) => candidate.worktreePath === request.worktreePath,
+  );
+  if (remaining) taskIdByWatchedWorktreePath.set(request.worktreePath, remaining.taskId);
+  else taskIdByWatchedWorktreePath.delete(request.worktreePath);
+}
+
 function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
   payload: GitStatusSyncEvent,
@@ -179,14 +190,7 @@ export function startTaskGitStatusWatcher(
   context: GitStatusWorkflowContext,
   request: TaskGitWatcherRequest,
 ): Promise<void> {
-  const previousRequest = watcherRequestsByTaskId.get(request.taskId);
-  if (
-    previousRequest &&
-    previousRequest.worktreePath !== request.worktreePath &&
-    taskIdByWatchedWorktreePath.get(previousRequest.worktreePath) === request.taskId
-  ) {
-    taskIdByWatchedWorktreePath.delete(previousRequest.worktreePath);
-  }
+  removeTaskWatcherRequest(request.taskId);
   watcherRequestsByTaskId.set(request.taskId, request);
   taskIdByWatchedWorktreePath.set(request.worktreePath, request.taskId);
   return startGitWatcher(request.taskId, request.worktreePath, () => {
@@ -215,11 +219,7 @@ export function restoreSavedTaskGitStatusMonitoring(
 }
 
 export function stopTaskGitStatusWatcher(taskId: string): void {
-  const request = watcherRequestsByTaskId.get(taskId);
-  if (request && taskIdByWatchedWorktreePath.get(request.worktreePath) === taskId) {
-    taskIdByWatchedWorktreePath.delete(request.worktreePath);
-  }
-  watcherRequestsByTaskId.delete(taskId);
+  removeTaskWatcherRequest(taskId);
   stopGitWatcher(taskId);
 }
 

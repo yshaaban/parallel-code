@@ -47,6 +47,32 @@ describe('ResizablePanel', () => {
     expect(handles.at(-1)).toBeUndefined();
   });
 
+  it('preserves panel content when descriptors with the same id are regenerated', async () => {
+    const [revision, setRevision] = createSignal(0);
+    const panelChildren = () => {
+      revision();
+      return [
+        {
+          id: 'prompt',
+          content: () => <textarea aria-label="Prompt draft" />,
+        },
+      ];
+    };
+
+    render(() => <ResizablePanel direction="vertical" children={panelChildren()} />);
+
+    const textarea = screen.getByLabelText<HTMLTextAreaElement>('Prompt draft');
+    fireEvent.input(textarea, { target: { value: 'draft before reactive update' } });
+    expect(textarea.value).toBe('draft before reactive update');
+
+    setRevision(1);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Prompt draft')).toBe(textarea);
+      expect(textarea.value).toBe('draft before reactive update');
+    });
+  });
+
   it('ends panel resize drag state when unmounted mid-drag', () => {
     const result = render(() => (
       <ResizablePanel

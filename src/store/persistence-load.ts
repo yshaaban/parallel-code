@@ -30,10 +30,13 @@ import {
   getLoadedStateJson,
   getLoadedWorkspaceRevision,
   getLoadedWorkspaceStateJson,
+  getRebasedWorkspaceStateJson,
   recordLoadedStateJson,
   recordLoadedWorkspaceState,
 } from './persistence-session';
+import { showNotification } from './notification';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
+import { applyPersistedMergeProgressProjection } from '../app/merge-progress.js';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers';
 import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
 import { reconcileTaskFocusedPanelState } from './focus';
@@ -127,6 +130,13 @@ function getLocalTerminalPanelOrder(): {
     collapsedTaskOrder: collapsedTerminalTaskOrder,
     taskOrder: activeTerminalTaskOrder,
   };
+}
+
+function getWorkspaceEditConflictMessage(conflictCount: number): string {
+  if (conflictCount === 1) {
+    return 'A local workspace edit conflicted with a newer workspace change and was not applied. The newer value was kept.';
+  }
+  return `${conflictCount} local workspace edits conflicted with newer workspace changes and were not applied. The newer values were kept.`;
 }
 
 function getLoadedSelectionAgentId(storeState: AppStore, panelId: string): string | null {
@@ -321,6 +331,8 @@ export function applyLoadedStateJson(json: string): boolean {
     }),
   );
 
+  applyPersistedMergeProgressProjection(raw);
+
   syncTerminalHighLoadMode(store.terminalHighLoadMode);
 
   for (const agentId of restoredRunningAgentIds) {
@@ -337,7 +349,8 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
   const repeatedLoadedWorkspaceState =
     json === getLoadedWorkspaceStateJson() && revision === getLoadedWorkspaceRevision();
 
-  const context = parsePersistedLoadContext(json, {
+  const rebasedJson = getRebasedWorkspaceStateJson(json);
+  const context = parsePersistedLoadContext(rebasedJson, {
     currentAvailableAgents: store.availableAgents,
     currentCustomAgents: store.customAgents,
     invalidMessage: 'Invalid persisted workspace state structure, skipping load',
@@ -467,13 +480,21 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
     }),
   );
 
+  applyPersistedMergeProgressProjection(context.raw);
+
   for (const agentId of removedAgentIds) {
     clearAgentActivity(agentId);
   }
   clearRemovedTaskRuntimeState(removedTaskIds);
   reconcileIncrementalWorkspaceActiveTask();
 
-  recordLoadedWorkspaceState(json, revision);
+  const workspaceEditConflicts = recordLoadedWorkspaceState(json, revision);
+  if (workspaceEditConflicts.length > 0) {
+    showNotification(getWorkspaceEditConflictMessage(workspaceEditConflicts.length), {
+      kind: 'warning',
+      persistent: true,
+    });
+  }
   syncTerminalCounter();
   return true;
 }
@@ -509,5 +530,25 @@ export async function loadState(): Promise<boolean> {
     return false;
   }
 
-  return applyLoadedStateJson(json);
+  const applied = applyLoadedStateJson(json);
+  if (!applied || !isElectronRuntime()) {
+    return applied;
+  }
+
+  // Electron keeps local and revisioned shared state in one state.json. The
+  // compatibility LoadAppState response remains a plain JSON string, so read
+  // the shared view once to seed stale-save CAS without exposing host metadata.
+  let workspace: Awaited<ReturnType<typeof invoke<IPC.LoadWorkspaceState>>> | null = null;
+  try {
+    workspace = await invoke(IPC.LoadWorkspaceState);
+  } catch {
+    // Older desktop hosts expose only the legacy LoadAppState response. They
+    // remain generation-zero writers until the host-side migration is present.
+  }
+  if (workspace?.json) {
+    recordLoadedWorkspaceState(workspace.json, workspace.revision);
+  } else if (getLoadedWorkspaceStateJson() === null) {
+    recordLoadedWorkspaceState(JSON.stringify(buildWorkspaceSharedState()), 0);
+  }
+  return true;
 }

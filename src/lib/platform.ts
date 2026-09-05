@@ -1,5 +1,9 @@
+export function isMacUserAgent(userAgent: string): boolean {
+  return userAgent.includes('Mac');
+}
+
 const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-const isApplePlatform = userAgent.includes('Mac');
+const isApplePlatform = isMacUserAgent(userAgent);
 const modifierLabels = isApplePlatform ? { mod: 'Cmd', alt: 'Opt' } : { mod: 'Ctrl', alt: 'Alt' };
 
 export const isMac = isApplePlatform;

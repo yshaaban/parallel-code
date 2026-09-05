@@ -475,7 +475,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   color: theme.fg,
                   padding: '2px 6px',
                   width: '180px',
-                  outline: 'none',
                   ...typography.monoUi,
                 }}
               />

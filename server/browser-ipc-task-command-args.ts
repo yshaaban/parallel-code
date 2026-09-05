@@ -1,17 +1,22 @@
 import { IPC } from '../electron/ipc/channels.js';
+import { BadRequestError } from '../electron/ipc/errors.js';
+import { getAgentSupervisionSnapshot } from '../electron/ipc/agent-supervision.js';
 import { getAgentMeta } from '../electron/ipc/pty.js';
 import { findRegisteredTaskIdForWorktreePath } from '../electron/ipc/task-workflows.js';
 import { hasOwnKey } from '../src/lib/type-guards.js';
 
 type BrowserIpcArgs = Record<string, unknown> | undefined;
 type GetAgentTaskId = (agentId: string) => string | undefined;
-type GetWorktreeTaskId = (worktreePath: string) => string | null;
+type GetWorktreeTaskId = (worktreePath: string, preferredTaskId?: string) => string | null;
 type BrowserIpcTaskMutationArgChannel =
   | IPC.CleanupTaskRuntime
   | IPC.DeleteTask
+  | IPC.GetTaskMergeOperationStatus
+  | IPC.IssueTaskMergeOperation
   | IPC.MergeTask
   | IPC.PushTask
-  | IPC.RebaseTask;
+  | IPC.RebaseTask
+  | IPC.StartTaskMergeOperation;
 type BrowserIpcTaskCommandArgChannel =
   | BrowserIpcTaskMutationArgChannel
   | IPC.AcquireTaskCommandLease
@@ -28,6 +33,7 @@ type BrowserIpcTaskCommandArgChannel =
   | IPC.RenewTaskCommandLease
   | IPC.ReportClientTaskFocus
   | IPC.ResizeAgent
+  | IPC.SendTaskPromptInput
   | IPC.SpawnAgent
   | IPC.WriteToAgent;
 type BrowserIpcTaskCommandArgNormalizer = (
@@ -38,7 +44,7 @@ type BrowserIpcTaskCommandArgNormalizer = (
 ) => Record<string, unknown>;
 
 function getBackendAgentTaskId(agentId: string): string | undefined {
-  return getAgentMeta(agentId)?.taskId;
+  return getAgentMeta(agentId)?.taskId ?? getAgentSupervisionSnapshot(agentId)?.taskId;
 }
 
 function resolveTaskCommandTaskId(
@@ -80,14 +86,17 @@ function normalizeAttachTerminalSessionArgs(
   args: Record<string, unknown>,
   browserClientId: string,
 ): Record<string, unknown> {
-  // The attach RPC needs both the task-command controller identity and the
-  // transport client identity (for channel binding); both come from the
-  // authenticated browser client-id header, never request JSON.
-  return {
+  // Managed restore is identity-only and never borrows task-command authority.
+  // Compatibility launches still receive both authenticated identities.
+  const normalized: Record<string, unknown> = {
     ...args,
     clientId: browserClientId,
-    controllerId: browserClientId,
   };
+  if (args.sessionOwner === 'managed-agent' || args.sessionOwner === 'managed-task-shell') {
+    delete normalized.controllerId;
+    return normalized;
+  }
+  return { ...normalized, controllerId: browserClientId };
 }
 
 function normalizeTaskCommandLeaseArgs(
@@ -130,7 +139,10 @@ function normalizeRegisteredWorktreeMutationArgs(
     return rest;
   }
 
-  const taskId = getWorktreeTaskId(args.worktreePath);
+  const taskId = getWorktreeTaskId(
+    args.worktreePath,
+    typeof args.taskId === 'string' ? args.taskId : undefined,
+  );
   if (!taskId) {
     return rest;
   }
@@ -149,31 +161,6 @@ function stripTaskCommandIdentity(args: Record<string, unknown>): Record<string,
   return rest;
 }
 
-function stripEnsureAgentSessionsBatchIdentity(
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const rest = stripTaskCommandIdentity(args);
-  delete rest.clientId;
-
-  if (!Array.isArray(rest.requests)) {
-    return rest;
-  }
-
-  return {
-    ...rest,
-    requests: rest.requests.map((request) => {
-      if (!request || typeof request !== 'object' || Array.isArray(request)) {
-        return request;
-      }
-
-      const sanitizedRequest = { ...(request as Record<string, unknown>) };
-      delete sanitizedRequest.taskId;
-      delete sanitizedRequest.controllerId;
-      return sanitizedRequest;
-    }),
-  };
-}
-
 function stripTaskCommandLeaseIdentity(args: Record<string, unknown>): Record<string, unknown> {
   const rest = { ...args };
   delete rest.clientId;
@@ -183,9 +170,12 @@ function stripTaskCommandLeaseIdentity(args: Record<string, unknown>): Record<st
 const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
   [IPC.CleanupTaskRuntime]: normalizeBrowserOwnedTaskArgs,
   [IPC.DeleteTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.GetTaskMergeOperationStatus]: normalizeBrowserOwnedTaskArgs,
+  [IPC.IssueTaskMergeOperation]: normalizeBrowserOwnedTaskArgs,
   [IPC.MergeTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.PushTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.RebaseTask]: normalizeBrowserOwnedTaskArgs,
+  [IPC.StartTaskMergeOperation]: normalizeBrowserOwnedTaskArgs,
 } satisfies Record<BrowserIpcTaskMutationArgChannel, BrowserIpcTaskCommandArgNormalizer>;
 
 const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
@@ -204,6 +194,7 @@ const BROWSER_IPC_TASK_COMMAND_ARG_NORMALIZERS = {
   [IPC.RenewTaskCommandLease]: normalizeTaskCommandLeaseArgs,
   [IPC.ReportClientTaskFocus]: normalizeTaskCommandLeaseArgs,
   [IPC.ResizeAgent]: normalizeTerminalCommandArgs,
+  [IPC.SendTaskPromptInput]: normalizeTerminalCommandArgs,
   [IPC.SpawnAgent]: normalizeBrowserOwnedTaskArgs,
   [IPC.WriteToAgent]: normalizeTerminalCommandArgs,
 } satisfies Record<BrowserIpcTaskCommandArgChannel, BrowserIpcTaskCommandArgNormalizer>;
@@ -226,16 +217,15 @@ export function normalizeBrowserIpcTaskCommandArgs(
   }
 
   if (!browserClientId) {
-    if (channel === IPC.EnsureAgentSessionsBatch) {
-      return stripEnsureAgentSessionsBatchIdentity(args);
+    if (
+      channel === IPC.SpawnAgent ||
+      channel === IPC.AttachTerminalSession ||
+      channel === IPC.EnsureAgentSessionsBatch
+    ) {
+      throw new BadRequestError(
+        'Browser client identity is required for terminal session admission',
+      );
     }
-
-    if (channel === IPC.AttachTerminalSession) {
-      const rest = stripTaskCommandIdentity(args);
-      delete rest.clientId;
-      return rest;
-    }
-
     if (
       channel === IPC.AcquireTaskCommandLease ||
       channel === IPC.RenewTaskCommandLease ||

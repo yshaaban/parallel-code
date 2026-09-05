@@ -7,18 +7,21 @@ import {
   listPendingTaskCreations,
   resetPendingTaskCreationsForTests,
   retryPendingTaskCreation,
+  type PendingTaskCreationAttempt,
 } from './task-creation-optimism';
 
 interface DeferredCreate {
   reject: (error: unknown) => void;
   resolve: (taskId: string) => void;
-  run: () => Promise<string>;
+  operationIds: () => string[];
+  run: (attempt: Readonly<PendingTaskCreationAttempt>) => Promise<string>;
   runCount: () => number;
 }
 
 function createDeferredCreate(): DeferredCreate {
   let settle: { reject: (error: unknown) => void; resolve: (taskId: string) => void } | null = null;
   let runCount = 0;
+  const operationIds: string[] = [];
 
   return {
     reject(error: unknown): void {
@@ -27,8 +30,10 @@ function createDeferredCreate(): DeferredCreate {
     resolve(taskId: string): void {
       settle?.resolve(taskId);
     },
-    run(): Promise<string> {
+    operationIds: () => [...operationIds],
+    run(attempt): Promise<string> {
       runCount += 1;
+      operationIds.push(attempt.adapterOperationId);
       return new Promise<string>((resolve, reject) => {
         settle = { reject, resolve };
       });
@@ -140,10 +145,38 @@ describe('task-creation-optimism', () => {
     retryPendingTaskCreation(pendingId);
     expect(listPendingTaskCreations()[0]?.state).toEqual({ kind: 'creating' });
     expect(deferred.runCount()).toBe(2);
+    expect(deferred.operationIds()).toHaveLength(2);
+    expect(new Set(deferred.operationIds()).size).toBe(1);
 
     deferred.resolve('task-real');
     await flushMicrotasks();
     expect(listPendingTaskCreations()).toEqual([]);
+  });
+
+  it('allocates a new adapter operation identity for a changed submission', () => {
+    const operationIds: string[] = [];
+    const run = (attempt: Readonly<PendingTaskCreationAttempt>): Promise<string> => {
+      operationIds.push(attempt.adapterOperationId);
+      return new Promise<string>(() => undefined);
+    };
+
+    createTaskOptimistically({
+      launchLabel: 'Claude',
+      name: 'First semantics',
+      projectId: 'project-1',
+      run,
+      taskMode: 'agent',
+    });
+    createTaskOptimistically({
+      launchLabel: 'Claude',
+      name: 'Changed semantics',
+      projectId: 'project-1',
+      run,
+      taskMode: 'agent',
+    });
+
+    expect(operationIds).toHaveLength(2);
+    expect(new Set(operationIds).size).toBe(2);
   });
 
   it('ignores retry for entries that are still creating', async () => {

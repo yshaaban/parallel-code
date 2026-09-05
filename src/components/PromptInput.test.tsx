@@ -3,34 +3,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../app/runtime-diagnostics';
 
 const {
-  getAgentOutputTailMock,
-  hasReadyPromptInTailMock,
+  localQuestionGenerationMock,
   leaseCleanupMock,
-  offAgentReadyMock,
-  onAgentReadyMock,
-  normalizeForComparisonMock,
   registerActionMock,
   registerFocusFnMock,
-  sendAgentEnterMock,
   sendPromptMock,
+  setActiveAgentMock,
   setTaskFocusedPanelMock,
   setTaskFocusedPanelStateMock,
   takeOverMock,
   unregisterActionMock,
   unregisterFocusFnMock,
 } = vi.hoisted(() => ({
-  getAgentOutputTailMock: vi.fn(() => ''),
-  hasReadyPromptInTailMock: vi.fn(() => false),
+  localQuestionGenerationMock: vi.fn(() => undefined),
   leaseCleanupMock: vi.fn(),
-  offAgentReadyMock: vi.fn(),
-  onAgentReadyMock: vi.fn(),
-  normalizeForComparisonMock: vi.fn((value: string) => value),
   registerActionMock: vi.fn(),
   registerFocusFnMock: vi.fn(),
-  sendAgentEnterMock: vi.fn(),
   sendPromptMock: vi.fn(),
+  setActiveAgentMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
   setTaskFocusedPanelStateMock: vi.fn(),
   takeOverMock: vi.fn().mockResolvedValue(true),
@@ -39,14 +35,8 @@ const {
 }));
 
 function resetPromptStoreMocks(): void {
-  getAgentOutputTailMock.mockReset();
-  getAgentOutputTailMock.mockReturnValue('');
-  hasReadyPromptInTailMock.mockReset();
-  hasReadyPromptInTailMock.mockReturnValue(false);
-  normalizeForComparisonMock.mockReset();
-  normalizeForComparisonMock.mockImplementation((value: string) => value);
-  onAgentReadyMock.mockReset();
-  offAgentReadyMock.mockReset();
+  localQuestionGenerationMock.mockReset();
+  localQuestionGenerationMock.mockReturnValue(undefined);
 }
 
 function createDeferredPromise<T>(): {
@@ -69,14 +59,28 @@ vi.mock('../app/task-command-lease', () => ({
 }));
 
 vi.mock('../app/task-workflows', () => ({
-  sendAgentEnter: sendAgentEnterMock,
   sendPrompt: sendPromptMock,
+}));
+
+vi.mock('./InitialPromptDeliveryControl', () => ({
+  InitialPromptDeliveryControl: (props: {
+    deliveryId: string;
+    onInspectTerminal?: (agentId: string) => void;
+  }) => (
+    <div aria-label="Initial prompt owner">
+      {props.deliveryId}
+      <button
+        type="button"
+        aria-label="Inspect canonical initial prompt terminal"
+        onClick={() => props.onInspectTerminal?.('agent-canonical')}
+      />
+    </div>
+  ),
 }));
 
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
-    getAgentOutputTail: getAgentOutputTailMock,
     getPeerTaskCommandControlStatus: (taskId: string, fallbackAction: string) => {
       const controller = core.store.taskCommandControllers[taskId];
       if (!controller || controller.controllerId === 'client-self') {
@@ -103,20 +107,13 @@ vi.mock('../store/store', async () => {
       };
     },
     getTaskFocusedPanel: (taskId: string) => core.store.focusedPanel[taskId] ?? 'prompt',
-    hasReadyPromptInTail: hasReadyPromptInTailMock,
-    isAgentAskingQuestion: () => false,
-    isAutoTrustSettling: () => false,
-    isTrustQuestionAutoHandled: () => false,
-    looksLikeQuestion: () => false,
-    normalizeForComparison: normalizeForComparisonMock,
-    offAgentReady: offAgentReadyMock,
-    onAgentReady: onAgentReadyMock,
+    getLocalAgentQuestionGeneration: localQuestionGenerationMock,
     registerAction: registerActionMock,
     registerFocusFn: registerFocusFnMock,
+    setActiveAgent: setActiveAgentMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
     store: core.store,
-    stripAnsi: (value: string) => value,
     unregisterAction: unregisterActionMock,
     unregisterFocusFn: unregisterFocusFnMock,
   };
@@ -132,12 +129,14 @@ describe('PromptInput', () => {
     resetStoreForTest();
     setStore('focusedPanel', 'task-1', 'prompt');
     sendPromptMock.mockResolvedValue(true);
-    sendAgentEnterMock.mockResolvedValue(true);
     takeOverMock.mockResolvedValue(true);
     setTaskFocusedPanelStateMock.mockReset();
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(window, '__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__');
+    Reflect.deleteProperty(window, '__parallelCodeRendererRuntimeDiagnostics');
+    resetRendererRuntimeDiagnostics();
     resetStoreForTest();
     vi.clearAllMocks();
   });
@@ -159,7 +158,9 @@ describe('PromptInput', () => {
       'Another browser session is controlling this task…',
     ) as HTMLTextAreaElement;
 
-    expect(textarea.disabled).toBe(true);
+    expect(textarea.disabled).toBe(false);
+    expect(textarea.readOnly).toBe(true);
+    expect(textarea.getAttribute('aria-readonly')).toBe('true');
     const takeOverButton = result.getByRole('button', { name: 'Take Over Prompt' });
     takeOverButton.click();
 
@@ -269,6 +270,128 @@ describe('PromptInput', () => {
     expect(textarea.style.opacity).toBe('1');
   });
 
+  it('preserves edits made while an accepted send is in flight', async () => {
+    window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+    const send = createDeferredPromise<boolean>();
+    sendPromptMock.mockReturnValueOnce(send.promise);
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByRole('textbox') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'First draft' },
+      target: { value: 'First draft' },
+    });
+    result.getByTitle('Send prompt').click();
+    await vi.waitFor(() => expect(sendPromptMock).toHaveBeenCalledTimes(1));
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'New work while sending' },
+      target: { value: 'New work while sending' },
+    });
+    send.resolve(true);
+
+    await vi.waitFor(() => expect(result.getByTitle('Send prompt')).toBeTruthy());
+    expect(textarea.value).toBe('New work while sending');
+    expect(getRendererRuntimeDiagnosticsSnapshot().promptQuestion.draftPreservedAfterSend).toBe(1);
+  });
+
+  it('keeps focus and editing during a canonical question while blocking every send affordance', async () => {
+    window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+    setStore('agents', 'agent-1', {
+      generation: 3,
+      status: 'running',
+    } as never);
+    setStore('agentSupervision', 'agent-1', {
+      state: 'awaiting-input',
+    } as never);
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByRole('textbox') as HTMLTextAreaElement;
+    textarea.focus();
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'I can draft this answer' },
+      target: { value: 'I can draft this answer' },
+    });
+    const enter = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    });
+    textarea.dispatchEvent(enter);
+
+    expect(textarea.readOnly).toBe(false);
+    expect(document.activeElement).toBe(textarea);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(sendPromptMock).not.toHaveBeenCalled();
+    expect((result.getByTitle('Send prompt') as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      result.getByText('Answer the question in the terminal; you can draft here while you work.'),
+    ).toBeTruthy();
+    expect(setTaskFocusedPanelMock).not.toHaveBeenCalled();
+
+    const registeredSend = registerActionMock.mock.calls.find(
+      ([key]) => key === 'task-1:send-prompt',
+    )?.[1] as (() => void) | undefined;
+    registeredSend?.();
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().promptQuestion.blockedDispatchAttempts[
+        'agent-question'
+      ],
+    ).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().promptQuestion.canonicalLocalDisagreement
+        .activeCurrent,
+    ).toBe(1);
+
+    setStore('agentSupervision', 'agent-1', 'state', 'idle-at-prompt');
+    await vi.waitFor(() => {
+      expect(
+        getRendererRuntimeDiagnosticsSnapshot().promptQuestion.canonicalLocalDisagreement.completed,
+      ).toBe(1);
+    });
+  });
+
+  it('never dispatches through Enter or the registered action during composition', async () => {
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByRole('textbox') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, {
+      currentTarget: { value: '編集中' },
+      target: { value: '編集中' },
+    });
+    await fireEvent.compositionStart(textarea);
+    const registeredSend = registerActionMock.mock.calls.find(
+      ([key]) => key === 'task-1:send-prompt',
+    )?.[1] as (() => Promise<void>) | undefined;
+    await registeredSend?.();
+    const enter = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    });
+    textarea.dispatchEvent(enter);
+
+    expect(enter.defaultPrevented).toBe(false);
+    expect(sendPromptMock).not.toHaveBeenCalled();
+    await fireEvent.compositionEnd(textarea);
+    await registeredSend?.();
+    expect(sendPromptMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not expose the generic prompt sender while initial delivery is unresolved', async () => {
+    const result = render(() => (
+      <PromptInput taskId="task-1" agentId="agent-1" initialPromptDeliveryId="delivery-1" />
+    ));
+
+    expect((await result.findByLabelText('Initial prompt owner')).textContent).toBe('delivery-1');
+    expect(result.queryByTitle('Send prompt')).toBeNull();
+    expect(result.queryByPlaceholderText(/Send a prompt/iu)).toBeNull();
+    expect(sendPromptMock).not.toHaveBeenCalled();
+
+    result.getByLabelText('Inspect canonical initial prompt terminal').click();
+    expect(setActiveAgentMock).toHaveBeenCalledWith('agent-canonical');
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
+  });
+
   it('restores the draft at full strength when an in-flight send fails', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let rejectSend: (error: unknown) => void = () => {};
@@ -328,28 +451,5 @@ describe('PromptInput', () => {
     expect(result.queryByText('Prompt send failed: socket unavailable')).toBeNull();
     expect(textarea.value).toBe('');
     consoleErrorSpy.mockRestore();
-  });
-
-  it('does not add extra retry delay after auto-send verification times out', async () => {
-    vi.useFakeTimers();
-    getAgentOutputTailMock.mockReturnValue('❯');
-    hasReadyPromptInTailMock.mockReturnValue(true);
-    const onSendMock = vi.fn();
-
-    render(() => (
-      <PromptInput agentId="agent-1" initialPrompt="Ship it" onSend={onSendMock} taskId="task-1" />
-    ));
-
-    expect(onAgentReadyMock).toHaveBeenCalledTimes(1);
-    const onReady = onAgentReadyMock.mock.calls[0]?.[1];
-    expect(onReady).toBeTypeOf('function');
-
-    onReady?.();
-
-    await vi.advanceTimersByTimeAsync(7_999);
-    expect(onSendMock).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(onSendMock).toHaveBeenCalledWith('Ship it');
   });
 });

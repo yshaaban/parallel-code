@@ -72,6 +72,22 @@ describe('listAgents', () => {
     });
   });
 
+  it('reserves automatic resume-history recovery for the Claude built-in', () => {
+    const capable = getAgentDefsWithLastKnownAvailability().filter(
+      (agent) =>
+        agent.resume_failure_classifier !== undefined ||
+        agent.resume_failure_fallback !== undefined,
+    );
+
+    expect(capable).toEqual([
+      expect.objectContaining({
+        id: 'claude-code',
+        resume_failure_classifier: 'claude-no-conversation-v1',
+        resume_failure_fallback: 'fresh-start',
+      }),
+    ]);
+  });
+
   it('returns synchronously with probing status before any probe completes', () => {
     isCommandAvailableMock.mockReturnValue(new Promise<boolean>(() => {}));
     getHydraRuntimeAvailabilityMock.mockReturnValue(new Promise(() => {}));

@@ -1,6 +1,10 @@
 import { cleanupPanelEntries } from './core';
 import { deleteRecordEntry } from '../lib/record-utils';
 import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease-runtime';
+import {
+  clearRetainedManualAgentSessionOperation,
+  clearRetainedManualAgentSessionOperationsForTask,
+} from '../app/agent-session-operation-retention';
 import { clearPendingSessionInputForTask } from '../components/terminal-view/terminal-pending-session-input';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
 import { clearRecentTaskGitStatusPollAge } from './task-git-status';
@@ -79,6 +83,7 @@ export function removeAgentScopedStoreState(
   agentIds: Iterable<string>,
 ): void {
   for (const agentId of agentIds) {
+    clearRetainedManualAgentSessionOperation(agentId);
     clearTaskTerminalSlateCacheForAgent(agentId);
     deleteRecordEntry(storeState.agents, agentId);
     deleteRecordEntry(storeState.agentActive, agentId);
@@ -112,6 +117,7 @@ export function removeTaskStoreState(storeState: AppStore, taskId: string): void
 
 export function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
   for (const taskId of taskIds) {
+    clearRetainedManualAgentSessionOperationsForTask(taskId);
     void clearRemovedTaskCommandLeaseState(taskId);
     clearTerminalStartupEntriesForTask(taskId);
     clearPendingSessionInputForTask(taskId);

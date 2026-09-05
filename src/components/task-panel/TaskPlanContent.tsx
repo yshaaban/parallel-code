@@ -79,7 +79,6 @@ export function TaskPlanContent(props: TaskPlanContentProps): JSX.Element {
           overflow: 'auto',
           padding: '6px 8px',
           color: theme.fg,
-          outline: 'none',
           ...typography.monoUi,
         }}
         onKeyDown={openPlanViewerFromKeyboard}

@@ -1,4 +1,9 @@
 import { For, Show, createMemo, type JSX } from 'solid-js';
+import {
+  getCurrentMergeProgressSnapshot,
+  getMergedLineTotalsFromProgress,
+  getMergedTasksTodayFromProgress,
+} from '../app/merge-progress';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { formatAppBuildLabel } from '../lib/build-info';
@@ -183,8 +188,14 @@ function SessionChip(props: SessionChipProps): JSX.Element {
 export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
   const electronRuntime = isElectronRuntime();
-  const mergedTasksToday = createMemo(() => getMergedTasksTodayCount());
-  const mergedLines = createMemo(() => getMergedLineTotals());
+  const mergedTasksToday = createMemo(() =>
+    getCurrentMergeProgressSnapshot()
+      ? getMergedTasksTodayFromProgress()
+      : getMergedTasksTodayCount(),
+  );
+  const mergedLines = createMemo(() =>
+    getCurrentMergeProgressSnapshot() ? getMergedLineTotalsFromProgress() : getMergedLineTotals(),
+  );
   const peerSessions = createMemo(() => listPeerSessions());
   const hasOtherSessions = createMemo(() =>
     peerSessions().some((session) => session.clientId !== runtimeClientId),
@@ -224,6 +235,10 @@ export function SidebarFooter(): JSX.Element {
         />
         <Show when={!progressCollapsed()}>
           <div
+            aria-atomic="true"
+            aria-label="Merge progress"
+            aria-live="polite"
+            role="status"
             style={{
               display: 'flex',
               'flex-direction': 'column',

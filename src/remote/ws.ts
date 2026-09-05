@@ -1,12 +1,13 @@
 import { createSignal, untrack } from 'solid-js';
 import {
-  isServerMessage,
   type ClientMessage,
   type RemoteAgent,
   type RemoteTerminalStreamEvent,
   type ServerMessage,
 } from '../../electron/remote/protocol';
+import { isRemoteBaseServerMessage } from '../../electron/remote/remote-base-message';
 import type { PresenceConnectionStatus } from '../domain/presence';
+import type { TaskCatalogLiveEventSource, TaskCatalogLiveMessage } from '../domain/task-catalog';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../lib/dispatch-by-type';
 import { hasOwnKey } from '../lib/type-guards';
@@ -26,7 +27,12 @@ import {
   deriveRemoteAgentPreview,
   truncateRemoteAgentTail,
 } from './agent-presentation';
-import { clearToken, getToken, redirectToRemoteAuthGate } from './auth';
+import {
+  clearToken,
+  getToken,
+  isScopedRemoteSessionActive,
+  redirectToRemoteAuthGate,
+} from './auth';
 import { getRemoteClientId } from './client-id';
 import {
   applyRemoteIpcEvent,
@@ -55,12 +61,15 @@ type RemoteHandledServerMessageType =
   | 'status'
   | 'task-command-takeover-request'
   | 'task-command-takeover-result'
+  | 'task-catalog-delta'
   | 'task-ports-changed'
   | 'terminal-recovery-result'
   | 'terminal-stream';
 type RemoteIgnoredServerMessageType = Exclude<
   ServerMessage['type'],
-  RemoteHandledServerMessageType
+  | RemoteHandledServerMessageType
+  | 'task-creation-operation-snapshot'
+  | 'task-creation-operation-subscription-state'
 >;
 
 type ConnectionStatusListener = (nextStatus: ConnectionStatus) => void;
@@ -72,6 +81,12 @@ type TerminalRecoveryResultListener = (
 type TerminalStreamListener = (event: RemoteTerminalStreamEvent) => void;
 type TerminalSubscriptionProtocol = NonNullable<
   Extract<ClientMessage, { type: 'subscribe' }>['terminalProtocol']
+>;
+export type RemoteTaskCreationOperationServerMessage = Extract<
+  ServerMessage,
+  {
+    type: 'task-creation-operation-snapshot' | 'task-creation-operation-subscription-state';
+  }
 >;
 type PendingPreAgentTerminalEvent =
   | {
@@ -88,9 +103,10 @@ type PendingPreAgentTerminalEvent =
 const MAX_PRE_AGENT_TERMINAL_EVENT_COUNT_PER_AGENT = 64;
 const MAX_PRE_AGENT_TERMINAL_TEXT_BYTES_PER_AGENT = 64 * 1024;
 const MAX_PRE_AGENT_TERMINAL_AGENT_COUNT = 64;
-
 const agentDecoders = new Map<string, TextDecoder>();
 const connectionStatusListeners = new Set<ConnectionStatusListener>();
+const taskCatalogLiveListeners = new Set<(message: unknown) => void>();
+const remoteAuthenticationExpiredListeners = new Set<() => void>();
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
@@ -108,6 +124,8 @@ const pendingPreAgentTerminalEventsByAgent = new Map<string, PendingPreAgentTerm
 let shouldReconnect = true;
 let lifecycleBound = false;
 let reconnectLifecycleListener: (() => void) | null = null;
+let taskCreationOperationFrameHandler: ((message: RemoteIncomingServerMessage) => boolean) | null =
+  null;
 let visibilityChangeListener: (() => void) | null = null;
 
 export { agents, authRequired, status };
@@ -154,6 +172,8 @@ const REMOTE_SERVER_MESSAGE_HANDLERS = {
   'state-bootstrap': (message) => applyRemoteStateBootstrap(message.snapshots),
   'task-command-takeover-request': upsertIncomingRemoteTakeoverRequest,
   'task-command-takeover-result': handleRemoteTakeoverResult,
+  'task-catalog-delta': (message) =>
+    notifyTaskCatalogLiveListeners({ batch: message.batch, kind: 'catalog-delta' }),
   'ipc-event': (message) => applyRemoteIpcEvent(message.channel, message.payload),
   'task-ports-changed': applyRemoteTaskPortsChanged,
   'terminal-recovery-result': handleTerminalRecoveryResultMessage,
@@ -169,11 +189,20 @@ function updateStatus(nextStatus: ConnectionStatus): void {
   for (const listener of connectionStatusListeners) {
     listener(nextStatus);
   }
+  notifyTaskCatalogLiveListeners({
+    kind: 'connection-state',
+    state: nextStatus === 'connected' ? 'connected' : 'disconnected',
+  });
+}
+
+function notifyTaskCatalogLiveListeners(message: TaskCatalogLiveMessage): void {
+  for (const listener of taskCatalogLiveListeners) listener(message);
 }
 
 function getSocketUrl(context: { clientId: string; lastSeq: number }): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  const socketPath = isScopedRemoteSessionActive() ? '/remote-ws' : '/ws';
+  const url = new URL(`${protocol}//${window.location.host}${socketPath}`);
   url.searchParams.set('clientId', context.clientId);
   url.searchParams.set('lastSeq', String(context.lastSeq));
   return url.toString();
@@ -575,7 +604,7 @@ function handleTerminalRecoveryResultMessage(
 function shouldHandleRemoteServerMessage(
   message: RemoteIncomingServerMessage,
 ): message is RemoteHandledServerMessage {
-  if (!isServerMessage(message)) {
+  if (!isRemoteBaseServerMessage(message)) {
     return false;
   }
 
@@ -591,6 +620,7 @@ function shouldHandleRemoteServerMessage(
 }
 
 function handleServerMessage(message: RemoteIncomingServerMessage): void {
+  if (taskCreationOperationFrameHandler?.(message)) return;
   if (!shouldHandleRemoteServerMessage(message)) {
     return;
   }
@@ -607,18 +637,17 @@ function onAuthenticated(): void {
 }
 
 function onAuthExpired(): void {
-  if (getToken()) {
-    clearToken();
-    shouldReconnect = false;
-    client.disconnect();
-    updateStatus('disconnected');
+  updateStatus('disconnected');
+  for (const listener of remoteAuthenticationExpiredListeners) listener();
+  const hadToken = getToken() !== null;
+  if (hadToken) clearToken();
+  shouldReconnect = false;
+  client.disconnect();
+  if (hadToken) {
     setAuthRequired(true);
     return;
   }
 
-  shouldReconnect = false;
-  client.disconnect();
-  updateStatus('disconnected');
   void redirectToRemoteAuthGate('/remote').then((redirected) => {
     if (!redirected) {
       setAuthRequired(true);
@@ -731,6 +760,39 @@ export function subscribeRemoteConnectionStatus(listener: ConnectionStatusListen
   };
 }
 
+export const remoteTaskCatalogLiveEvents: TaskCatalogLiveEventSource = {
+  subscribe(listener) {
+    taskCatalogLiveListeners.add(listener);
+    listener({
+      kind: 'connection-state',
+      state: status() === 'connected' ? 'connected' : 'disconnected',
+    } satisfies TaskCatalogLiveMessage);
+    return () => taskCatalogLiveListeners.delete(listener);
+  },
+};
+
+export function registerRemoteTaskCreationOperationFrameHandler(
+  guard: (value: unknown) => value is RemoteTaskCreationOperationServerMessage,
+  listener: (message: RemoteTaskCreationOperationServerMessage) => void,
+): () => void {
+  const registered = (message: RemoteIncomingServerMessage): boolean => {
+    if (!guard(message)) return false;
+    listener(message);
+    return true;
+  };
+  taskCreationOperationFrameHandler = registered;
+  return () => {
+    if (taskCreationOperationFrameHandler === registered) {
+      taskCreationOperationFrameHandler = null;
+    }
+  };
+}
+
+export function subscribeRemoteAuthenticationExpired(listener: () => void): () => void {
+  remoteAuthenticationExpiredListeners.add(listener);
+  return () => remoteAuthenticationExpiredListeners.delete(listener);
+}
+
 export function send(message: ClientMessage): boolean {
   return client.sendIfOpen(message);
 }
@@ -759,6 +821,10 @@ export function resetRemoteWsRuntimeStateForTests(): void {
   lifecycleBound = false;
   shouldReconnect = true;
   connectionStatusListeners.clear();
+  taskCatalogLiveListeners.clear();
+  for (const listener of remoteAuthenticationExpiredListeners) listener();
+  remoteAuthenticationExpiredListeners.clear();
+  taskCreationOperationFrameHandler = null;
   resetAllAgentDecoders();
   agentTailResetPendingById.clear();
   outputListeners.clear();

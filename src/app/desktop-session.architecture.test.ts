@@ -13,9 +13,14 @@ const browserColdBootstrapProjectionPath = path.resolve(
   process.cwd(),
   'src/store/browser-cold-bootstrap-projection.ts',
 );
+const browserStateSyncControllerPath = path.resolve(
+  process.cwd(),
+  'src/runtime/browser-state-sync-controller.ts',
+);
 const desktopSessionSource = readFileSync(desktopSessionPath, 'utf8');
 const desktopSessionStartupSource = readFileSync(desktopSessionStartupPath, 'utf8');
 const browserWorkspaceRecoverySource = readFileSync(browserWorkspaceRecoveryPath, 'utf8');
+const browserStateSyncControllerSource = readFileSync(browserStateSyncControllerPath, 'utf8');
 const persistenceApplySources = [
   ['src/store/persistence-load.ts', readFileSync(persistenceLoadPath, 'utf8')],
   [
@@ -79,6 +84,38 @@ describe('desktop session architecture guardrails', () => {
     for (const [sourcePath, source] of persistenceApplySources) {
       expect(source, sourcePath).not.toContain('clearRemovedTaskCommandLeaseState');
       expect(source, sourcePath).not.toContain('clearTerminalStartupEntriesForTask');
+    }
+  });
+
+  it('runs retained merge status recovery only after host-owned state reconciliation', () => {
+    expect(desktopSessionStartupSource).toContain(
+      "import { reconcileRetainedTaskMergeOperations } from './task-merge-operation-recovery'",
+    );
+    expect(
+      desktopSessionStartupSource.match(/void reconcileRetainedTaskMergeOperations\(\);/g),
+    ).toHaveLength(1);
+    const startupRecoveryIndex = desktopSessionStartupSource.indexOf(
+      'void reconcileRetainedTaskMergeOperations();',
+    );
+    expect(startupRecoveryIndex).toBeGreaterThan(
+      desktopSessionStartupSource.indexOf('await loadState();'),
+    );
+    expect(startupRecoveryIndex).toBeGreaterThan(
+      desktopSessionStartupSource.indexOf(').restore();'),
+    );
+    expect(browserStateSyncControllerSource).toContain(
+      "import { reconcileRetainedTaskMergeOperations } from '../app/task-merge-operation-recovery'",
+    );
+    expect(
+      browserStateSyncControllerSource.match(/void reconcileRetainedTaskMergeOperations\(\);/g),
+    ).toHaveLength(1);
+    expect(
+      browserStateSyncControllerSource.indexOf('void reconcileRetainedTaskMergeOperations();'),
+    ).toBeGreaterThan(
+      browserStateSyncControllerSource.indexOf('const stateChanged = await readStateChange();'),
+    );
+    for (const [sourcePath, source] of persistenceApplySources) {
+      expect(source, sourcePath).not.toContain('task-merge-operation-recovery');
     }
   });
 });

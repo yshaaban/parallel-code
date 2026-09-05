@@ -1,7 +1,7 @@
 import { isElectronRuntime } from '../lib/ipc';
 import type { AgentDef } from '../ipc/types';
-import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { isTerminalTask } from '../domain/task-mode';
+import { getCanonicalMergeProgressPersistenceProjection } from '../app/merge-progress';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { store } from './core';
 import { buildElectronLocalShellPreferences } from './local-shell-preferences';
@@ -12,7 +12,6 @@ import type {
   PersistedTerminal,
   Project,
   Task,
-  Terminal,
   WorkspaceSharedState,
 } from './types';
 import {
@@ -29,6 +28,23 @@ import {
   isNonGitProject,
 } from './project-mode';
 import { getSelectedTaskAgentId } from './task-agent-selection';
+
+function buildPersistedMergeProgressFields(): Pick<
+  WorkspaceSharedState,
+  'committedMergeOperationId' | 'mergeOperation' | 'mergeProgress'
+> {
+  const projection = getCanonicalMergeProgressPersistenceProjection();
+  if (!projection) return {};
+  return {
+    mergeProgress: { ...projection.mergeProgress },
+    ...(projection.mergeOperation
+      ? {
+          committedMergeOperationId: projection.committedMergeOperationId,
+          mergeOperation: { ...projection.mergeOperation },
+        }
+      : {}),
+  };
+}
 
 function getPrimaryAgentDef(task: Task, fallbackAgentDefs: AgentDef[] = []): AgentDef | null {
   const agentId = task.agentIds[0];
@@ -153,6 +169,13 @@ function buildPersistedTask(
       ? { skipPermissions: task.skipPermissions }
       : {}),
     ...(task.githubUrl !== undefined ? { githubUrl: task.githubUrl } : {}),
+    ...(!terminalTask && task.initialPromptDeliveryId && task.initialPrompt !== undefined
+      ? {
+          initialPrompt: task.initialPrompt,
+          initialPromptDeliveryId: task.initialPromptDeliveryId,
+          initialPromptDeliveryMode: task.initialPromptDeliveryMode ?? 'automatic',
+        }
+      : {}),
     ...(!terminalTask && task.savedInitialPrompt !== undefined
       ? { savedInitialPrompt: task.savedInitialPrompt }
       : {}),
@@ -177,6 +200,15 @@ function buildPersistedTask(
     ...(!terminalTask && task.coordinatorToolCommand !== undefined
       ? { coordinatorToolCommand: task.coordinatorToolCommand }
       : {}),
+    ...(task.taskCreationProvenance !== undefined
+      ? { taskCreationProvenance: task.taskCreationProvenance }
+      : {}),
+    ...(task.taskCreationOperationLink !== undefined
+      ? { taskCreationOperationLink: task.taskCreationOperationLink }
+      : {}),
+    ...(task.taskInitialShellOwnership !== undefined
+      ? { taskInitialShellOwnership: task.taskInitialShellOwnership }
+      : {}),
     ...(exposedPorts ? { exposedPorts } : {}),
   };
 
@@ -187,19 +219,11 @@ function buildPersistedTask(
   return persistedTask;
 }
 
-function shouldPersistTask(task: Task | undefined): task is Task {
-  return !!task && !isTaskRemoving(task);
-}
-
-function shouldPersistTerminal(terminal: Terminal | undefined): terminal is Terminal {
-  return !!terminal && !isTerminalRemoving(terminal);
-}
-
 function buildPersistedActiveOrder(): string[] {
   const nextOrder: string[] = [];
 
   for (const id of store.taskOrder) {
-    if (shouldPersistTask(store.tasks[id]) || shouldPersistTerminal(store.terminals[id])) {
+    if (store.tasks[id] || store.terminals[id]) {
       nextOrder.push(id);
     }
   }
@@ -211,7 +235,7 @@ function buildPersistedSharedTaskOrder(): string[] {
   const nextOrder: string[] = [];
 
   for (const id of store.taskOrder) {
-    if (shouldPersistTask(store.tasks[id])) {
+    if (store.tasks[id]) {
       nextOrder.push(id);
     }
   }
@@ -220,7 +244,7 @@ function buildPersistedSharedTaskOrder(): string[] {
 }
 
 function buildPersistedCollapsedOrder(): string[] {
-  return store.collapsedTaskOrder.filter((taskId) => shouldPersistTask(store.tasks[taskId]));
+  return store.collapsedTaskOrder.filter((taskId) => Boolean(store.tasks[taskId]));
 }
 
 function buildPersistedTaskEntries(
@@ -231,7 +255,7 @@ function buildPersistedTaskEntries(
 
   for (const taskId of taskOrder) {
     const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) {
+    if (!task) {
       continue;
     }
 
@@ -240,7 +264,7 @@ function buildPersistedTaskEntries(
 
   for (const taskId of collapsedTaskOrder) {
     const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) {
+    if (!task) {
       continue;
     }
 
@@ -260,7 +284,7 @@ function buildPersistedTerminalEntries(
 
   for (const taskId of taskOrder) {
     const terminal = store.terminals[taskId];
-    if (!shouldPersistTerminal(terminal)) {
+    if (!terminal) {
       continue;
     }
 
@@ -289,6 +313,7 @@ export function buildWorkspaceSharedState(): WorkspaceSharedState {
     completedTaskCount: store.completedTaskCount,
     mergedLinesAdded: store.mergedLinesAdded,
     mergedLinesRemoved: store.mergedLinesRemoved,
+    ...buildPersistedMergeProgressFields(),
     hydraCommand: store.hydraCommand,
     hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
     hydraStartupMode: store.hydraStartupMode,
@@ -311,6 +336,7 @@ export function buildPersistedState(): PersistedState {
     completedTaskCount: store.completedTaskCount,
     mergedLinesAdded: store.mergedLinesAdded,
     mergedLinesRemoved: store.mergedLinesRemoved,
+    ...buildPersistedMergeProgressFields(),
     lastProjectId: store.lastProjectId,
     lastAgentId: store.lastAgentId,
     autoTrustFolders: store.autoTrustFolders,

@@ -125,10 +125,12 @@ export function BattleScreen() {
                     <TerminalView
                       taskId={competitor.id}
                       agentId={agentId}
+                      arenaLaunchToken={competitor.arenaLaunchToken}
                       command={command}
                       args={args}
                       cwd={cwd}
                       focusPanelId="ai-terminal"
+                      sessionOwner="arena-transient"
                       onExit={(info) => markBattleCompetitorExited(agentId, info.exit_code)}
                       onBufferReady={(getBuffer) => bufferSerializers.set(competitor.id, getBuffer)}
                     />

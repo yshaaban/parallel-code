@@ -10,6 +10,7 @@ import type {
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
 import type { ProjectContainerConfig } from '../domain/task-containers.js';
 import type { AgentRunnerProfileConfig } from '../domain/agent-runners.js';
+import type { AgentSessionLaunchReason } from '../domain/agent-session-operation.js';
 import type { TaskStepsSnapshot, TaskStepsSummarySnapshot } from '../domain/task-steps.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
 import type { TaskReviewSignalsSnapshot } from '../domain/task-review-signals.js';
@@ -20,6 +21,13 @@ import type { LookPreset } from '../lib/look.js';
 import type { PersistedKeybindingOverrides } from '../domain/keybindings.js';
 import type { CoordinatorRunSnapshot } from '../domain/coordinator.js';
 import type { TaskMode } from '../domain/task-mode.js';
+import type { NewTaskDefaults } from '../domain/new-task-defaults.js';
+import type { CommittedMergeOperationMarker, MergeProgressSnapshot } from '../domain/task-merge.js';
+import type {
+  TaskCreationOperationLink,
+  TaskCreationProvenance,
+  TaskInitialShellOwnership,
+} from '../domain/task-creation-provenance.js';
 
 export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
 export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
@@ -59,7 +67,8 @@ export interface Agent {
   signal: string | null;
   lastOutput: string[];
   generation: number;
-  replaceTerminalSessionOnNextAttach?: boolean;
+  launchReason?: AgentSessionLaunchReason;
+  sessionOperationId?: string;
   terminalSessionVersion?: number;
 }
 
@@ -81,7 +90,10 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
-  initialPrompt?: string; // auto-sends when agent is ready
+  /** Legacy/persisted source text; delivery is owned by the backend reliability runtime. */
+  initialPrompt?: string;
+  initialPromptDeliveryId?: string;
+  initialPromptDeliveryMode?: 'automatic' | 'manual-only';
   savedInitialPrompt?: string;
   prefillPrompt?: string; // fills prompt input without sending
   baseBranch?: string;
@@ -105,6 +117,9 @@ export interface Task {
   coordinatorRole?: 'coordinator' | 'subtask';
   coordinatorRunId?: string;
   coordinatorToolCommand?: string;
+  taskCreationProvenance?: TaskCreationProvenance;
+  taskCreationOperationLink?: TaskCreationOperationLink;
+  taskInitialShellOwnership?: TaskInitialShellOwnership;
 }
 
 export interface Terminal {
@@ -138,6 +153,9 @@ export interface PersistedTask {
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
+  initialPrompt?: string;
+  initialPromptDeliveryId?: string;
+  initialPromptDeliveryMode?: 'automatic' | 'manual-only';
   savedInitialPrompt?: string;
   savedSelectedAgentIndex?: number;
   planFileName?: string;
@@ -150,6 +168,9 @@ export interface PersistedTask {
   coordinatorRole?: 'coordinator' | 'subtask';
   coordinatorRunId?: string;
   coordinatorToolCommand?: string;
+  taskCreationProvenance?: TaskCreationProvenance;
+  taskCreationOperationLink?: TaskCreationOperationLink;
+  taskInitialShellOwnership?: TaskInitialShellOwnership;
 }
 
 export interface CoordinatorClientState {
@@ -210,6 +231,7 @@ export interface PersistedLocalShellPreferenceFields {
   verboseLogging?: boolean;
   inactiveColumnOpacity?: number;
   keybindings?: PersistedKeybindingOverrides;
+  newTaskDefaults?: Partial<NewTaskDefaults>;
 }
 
 export interface PersistedState extends PersistedLocalShellPreferenceFields {
@@ -225,6 +247,9 @@ export interface PersistedState extends PersistedLocalShellPreferenceFields {
   completedTaskCount?: number;
   mergedLinesAdded?: number;
   mergedLinesRemoved?: number;
+  committedMergeOperationId?: string;
+  mergeOperation?: CommittedMergeOperationMarker;
+  mergeProgress?: MergeProgressSnapshot;
   windowState?: PersistedWindowState;
   desktopNotificationsEnabled?: boolean;
   autoTrustFolders?: boolean;
@@ -246,6 +271,9 @@ export interface WorkspaceSharedState {
   completedTaskCount?: number;
   mergedLinesAdded?: number;
   mergedLinesRemoved?: number;
+  committedMergeOperationId?: string;
+  mergeOperation?: CommittedMergeOperationMarker;
+  mergeProgress?: MergeProgressSnapshot;
   hydraCommand?: string;
   hydraForceDispatchFromPromptPanel?: boolean;
   hydraStartupMode?: HydraStartupMode;
@@ -306,11 +334,12 @@ export interface PendingAction {
   taskId: string;
 }
 
-// Transient app toast. `info` notifications auto-dismiss; `error`
-// notifications persist until explicitly dismissed so failures are not lost.
+// App toast. `info` and `warning` notifications auto-dismiss unless marked persistent;
+// persistent notices and errors remain until explicitly dismissed.
 export interface AppNotification {
-  kind: 'error' | 'info';
+  kind: 'error' | 'info' | 'warning';
   message: string;
+  persistent?: true;
 }
 
 export type RemoteAccess = RemoteAccessStatus;
@@ -449,6 +478,7 @@ export interface AppStore {
   hydraForceDispatchFromPromptPanel: boolean;
   hydraStartupMode: HydraStartupMode;
   keybindings: PersistedKeybindingOverrides;
+  newTaskDefaults: NewTaskDefaults;
   newTaskDropUrl: string | null;
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
   missingProjectIds: Record<string, true>;

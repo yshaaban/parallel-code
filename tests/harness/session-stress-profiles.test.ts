@@ -1,10 +1,13 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createEmptyPhaseMetrics,
+  createLocalServerEnv,
+  createLocalServerState,
   getLocalServerStartupTimeoutMs,
   initializeLocalServerTarget,
   summarizeWatcherResults,
@@ -54,6 +57,28 @@ describe('session stress profiles', () => {
     expect(getLocalServerStartupTimeoutMs({ serverStartupTimeoutMs: 45_000 })).toBe(45_000);
     expect(getLocalServerStartupTimeoutMs({ serverStartupTimeoutMs: 0 })).toBe(30_000);
     expect(getLocalServerStartupTimeoutMs({})).toBe(30_000);
+  });
+
+  it('allocates isolated disposable state for every local stress-server run', async () => {
+    const first = await createLocalServerState();
+    const second = await createLocalServerState();
+
+    try {
+      expect(first.rootDir).not.toBe(second.rootDir);
+      expect(createLocalServerEnv({}, 4111, first.userDataPath)).toMatchObject({
+        PARALLEL_CODE_USER_DATA_DIR: first.userDataPath,
+        PORT: '4111',
+      });
+      expect(() => createLocalServerEnv({}, 4111, '')).toThrow(
+        'Local stress server requires an owned user-data path',
+      );
+
+      await first.cleanup();
+      await expect(fs.stat(first.rootDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(second.rootDir)).resolves.toBeDefined();
+    } finally {
+      await Promise.allSettled([first.cleanup(), second.cleanup()]);
+    }
   });
 
   it('summarizes empty stress marker results with zero metrics', () => {
@@ -153,8 +178,10 @@ describe('session stress profiles', () => {
     const startupError = new Error('readiness failed');
     const stopError = new Error('server stop failed');
     const stopProcess = vi.fn().mockRejectedValue(stopError);
+    const cleanupState = vi.fn().mockResolvedValue(undefined);
 
     const failure = await initializeLocalServerTarget(serverProcess, {}, 4111, {
+      cleanupState,
       stopProcess,
       waitForReady: vi.fn().mockRejectedValue(startupError),
     }).catch((error: unknown) => error);
@@ -171,6 +198,7 @@ describe('session stress profiles', () => {
       }),
     ]);
     expect(stopProcess).toHaveBeenCalledOnce();
+    expect(cleanupState).toHaveBeenCalledOnce();
   });
 
   it('handles shutdown errors and detaches post-startup output drains', async () => {
@@ -180,7 +208,9 @@ describe('session stress profiles', () => {
       return true;
     });
 
+    const cleanupState = vi.fn().mockResolvedValue(undefined);
     const startup = initializeLocalServerTarget(serverProcess, {}, 4111, {
+      cleanupState,
       createClient: () => ({ baseUrl: 'http://127.0.0.1:4111/' }),
     });
     serverProcess.stdout.emit(
@@ -196,5 +226,6 @@ describe('session stress profiles', () => {
     expect(serverProcess.stderr.listenerCount('data')).toBe(0);
     expect(serverProcess.listenerCount('error')).toBe(0);
     expect(serverProcess.listenerCount('exit')).toBe(0);
+    expect(cleanupState).toHaveBeenCalledOnce();
   });
 });

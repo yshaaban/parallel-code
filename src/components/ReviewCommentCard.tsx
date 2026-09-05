@@ -82,7 +82,6 @@ export function ReviewCommentEditor(props: ReviewCommentEditorProps): JSX.Elemen
           padding: '6px 8px',
           'font-family': "'JetBrains Mono', monospace",
           'font-size': sf(12),
-          outline: 'none',
           resize: 'vertical',
           'min-height': '72px',
         }}

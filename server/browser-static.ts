@@ -27,6 +27,8 @@ export interface RegisterBrowserStaticRoutesOptions {
   distDir: string;
   distRemoteDir: string;
   isAuthorizedRequest: (req: express.Request) => boolean;
+  isAuthorizedRemoteRequest?: (req: express.Request) => boolean;
+  remoteAuthGatePath?: string | null;
 }
 
 export function selectPrecompressedVariant(
@@ -171,16 +173,22 @@ function ensureAuthorizedRequest(
   res: express.Response,
   options: RegisterBrowserStaticRoutesOptions,
   fallbackPath: string,
+  isAuthorizedRequest: (req: express.Request) => boolean = options.isAuthorizedRequest,
+  authGatePath: string | null = options.authGatePath,
 ): boolean {
-  if (isAuthExemptRequest(req, options.authGatePath)) {
+  if (authGatePath !== null && isAuthExemptRequest(req, authGatePath)) {
     return true;
   }
 
-  if (options.isAuthorizedRequest(req)) {
+  if (isAuthorizedRequest(req)) {
     return true;
   }
 
-  redirectToAuthGate(req, res, options.authGatePath, fallbackPath);
+  if (authGatePath === null) {
+    res.status(401).send('Remote authentication required');
+  } else {
+    redirectToAuthGate(req, res, authGatePath, fallbackPath);
+  }
   return false;
 }
 
@@ -188,9 +196,20 @@ function createAuthorizedStaticHandler(
   staticHandler: express.RequestHandler,
   options: RegisterBrowserStaticRoutesOptions,
   fallbackPath: string,
+  isAuthorizedRequest?: (req: express.Request) => boolean,
+  authGatePath?: string | null,
 ): express.RequestHandler {
   return (req, res, next) => {
-    if (!ensureAuthorizedRequest(req, res, options, fallbackPath)) {
+    if (
+      !ensureAuthorizedRequest(
+        req,
+        res,
+        options,
+        fallbackPath,
+        isAuthorizedRequest,
+        authGatePath === undefined ? options.authGatePath : authGatePath,
+      )
+    ) {
       return;
     }
 
@@ -201,10 +220,23 @@ function createAuthorizedStaticHandler(
 export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutesOptions): void {
   const remoteStaticHandler = createStaticHtmlHandler(options.distRemoteDir);
   const appStaticHandler = createStaticHtmlHandler(options.distDir);
+  const isAuthorizedRemoteRequest =
+    options.isAuthorizedRemoteRequest ?? options.isAuthorizedRequest;
+  const remoteAuthGatePath =
+    options.remoteAuthGatePath === undefined ? options.authGatePath : options.remoteAuthGatePath;
 
   if (existsSync(options.distRemoteDir)) {
     options.app.get(/^\/remote$/, (req, res) => {
-      if (!ensureAuthorizedRequest(req, res, options, '/remote')) {
+      if (
+        !ensureAuthorizedRequest(
+          req,
+          res,
+          options,
+          '/remote',
+          isAuthorizedRemoteRequest,
+          remoteAuthGatePath,
+        )
+      ) {
         return;
       }
 
@@ -213,10 +245,25 @@ export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutes
 
     options.app.use(
       '/remote',
-      createAuthorizedStaticHandler(remoteStaticHandler, options, '/remote'),
+      createAuthorizedStaticHandler(
+        remoteStaticHandler,
+        options,
+        '/remote',
+        isAuthorizedRemoteRequest,
+        remoteAuthGatePath,
+      ),
     );
     options.app.get('/remote/{*path}', (req, res) => {
-      if (!ensureAuthorizedRequest(req, res, options, '/remote')) {
+      if (
+        !ensureAuthorizedRequest(
+          req,
+          res,
+          options,
+          '/remote',
+          isAuthorizedRemoteRequest,
+          remoteAuthGatePath,
+        )
+      ) {
         return;
       }
 

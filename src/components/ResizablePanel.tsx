@@ -1,9 +1,19 @@
-import { createSignal, createEffect, onCleanup, onMount, untrack, For, type JSX } from 'solid-js';
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  untrack,
+  type JSX,
+} from 'solid-js';
 import { beginPanelResizeDrag, endPanelResizeDrag } from '../app/panel-resize-drag';
 import { startWindowMouseDragSession, type DragSessionCleanup } from '../lib/drag-reorder';
 import { getPanelSize, setPanelSizes } from '../store/store';
 
 export interface PanelChild {
+  /** Stable, unique identity for this panel within its parent layout. */
   id: string;
   initialSize?: number;
   fixed?: boolean;
@@ -40,14 +50,63 @@ interface ResizablePanelProps {
   onHandle?: (handle: ResizablePanelHandle | undefined) => void;
 }
 
+interface RenderedPanelChild {
+  content: () => JSX.Element;
+  fallback: PanelChild;
+  id: string;
+}
+
 export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
   let containerRef!: HTMLDivElement;
   // In fitContent mode: pixel sizes. In flex mode: flex-grow weights (pixel values that work as proportional weights).
   const [sizes, setSizes] = createSignal<number[]>([]);
   const [dragging, setDragging] = createSignal<number | null>(null);
   let cancelActiveDrag: DragSessionCleanup | undefined;
+  const renderedPanelById = new Map<string, RenderedPanelChild>();
+
+  // Panel descriptors are commonly rebuilt as their parent reacts to store changes.
+  // Render identity belongs to PanelChild.id, not to those short-lived objects: keeping
+  // the first content factory alive prevents editor and terminal state from being lost.
+  const renderedChildren = createMemo(() => {
+    const activeIds = new Set<string>();
+    const next = props.children.map((child) => {
+      if (activeIds.has(child.id)) {
+        throw new Error(`ResizablePanel child id must be unique: ${child.id}`);
+      }
+      activeIds.add(child.id);
+
+      const existing = renderedPanelById.get(child.id);
+      if (existing) {
+        return existing;
+      }
+
+      const rendered = {
+        content: child.content,
+        fallback: child,
+        id: child.id,
+      } satisfies RenderedPanelChild;
+      renderedPanelById.set(child.id, rendered);
+      return rendered;
+    });
+
+    for (const id of renderedPanelById.keys()) {
+      if (!activeIds.has(id)) {
+        renderedPanelById.delete(id);
+      }
+    }
+
+    return next;
+  });
 
   const isHorizontal = () => props.direction === 'horizontal';
+
+  function getRenderedPanelDescriptor(rendered: RenderedPanelChild, index: number): PanelChild {
+    const indexed = props.children[index];
+    if (indexed?.id === rendered.id) {
+      return indexed;
+    }
+    return props.children.find((child) => child.id === rendered.id) ?? rendered.fallback;
+  }
 
   function getMinimumSize(child: PanelChild | undefined, fallback = 30): number {
     const min = child?.minSize ?? fallback;
@@ -220,6 +279,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
 
   onCleanup(() => {
     clearActiveDrag();
+    renderedPanelById.clear();
     props.onHandle?.(undefined);
   });
 
@@ -429,14 +489,15 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
         ...props.style,
       }}
     >
-      <For each={props.children}>
-        {(child, i) => {
+      <For each={renderedChildren()}>
+        {(renderedChild, i) => {
+          const child = () => getRenderedPanelDescriptor(renderedChild, i());
           const size = () => sizes()[i()] ?? 0;
           const showHandle = () => {
             const idx = i();
             if (idx >= props.children.length - 1) return false;
 
-            const leftFixed = child.fixed;
+            const leftFixed = child().fixed;
             const rightFixed = props.children[idx + 1]?.fixed;
 
             if (leftFixed && rightFixed) return false;
@@ -456,7 +517,8 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                   const minDim = isHorizontal() ? 'min-width' : 'min-height';
                   const maxDim = isHorizontal() ? 'max-width' : 'max-height';
                   const s = size();
-                  const min = child.minSize ?? 0;
+                  const descriptor = child();
+                  const min = descriptor.minSize ?? 0;
 
                   // fitContent mode: pixel-based sizing (unchanged)
                   if (props.fitContent) {
@@ -469,7 +531,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                   }
 
                   // Fixed panels: exact pixel size, no grow/shrink
-                  if (child.fixed) {
+                  if (descriptor.fixed) {
                     return {
                       flex: `0 0 ${s}px`,
                       [minDim]: `${min}px`,
@@ -478,7 +540,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                   }
 
                   // Stable panels: exact pixel size, no grow/shrink
-                  if (child.stable) {
+                  if (descriptor.stable) {
                     return {
                       flex: `0 0 ${s}px`,
                       [minDim]: `${min}px`,
@@ -491,12 +553,12 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                   return {
                     flex: `${s} 1 0px`,
                     [minDim]: `${min}px`,
-                    [maxDim]: child.maxSize ? `${child.maxSize}px` : undefined,
+                    [maxDim]: descriptor.maxSize ? `${descriptor.maxSize}px` : undefined,
                     overflow: 'hidden',
                   };
                 })()}
               >
-                {child.content()}
+                {renderedChild.content()}
               </div>
               {(() => {
                 const idx = i();
@@ -514,7 +576,7 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
                 }
 
                 // No spacer between two adjacent fixed panels
-                if (child.fixed && props.children[idx + 1]?.fixed) return null;
+                if (child().fixed && props.children[idx + 1]?.fixed) return null;
 
                 // Non-interactive spacer (preserves gap without hover effect)
                 return (

@@ -18,6 +18,7 @@ export interface PersistedLoadContext {
   projects: Project[];
   raw: LegacyPersistedState;
   restoredHydraCommand: string;
+  trustedAvailableAgents: AgentDef[];
 }
 
 export function createPersistedLoadContext(
@@ -28,7 +29,7 @@ export function createPersistedLoadContext(
   },
 ): PersistedLoadContext {
   const restoredHydraCommand = getRestoredHydraCommand(raw);
-  const { availableAgents, customAgents } = createWorkspaceStateBaseAgents(
+  const { availableAgents, customAgents, trustedAvailableAgents } = createWorkspaceStateBaseAgents(
     raw,
     restoredHydraCommand,
     options.currentAvailableAgents,
@@ -43,6 +44,7 @@ export function createPersistedLoadContext(
     projects,
     raw,
     restoredHydraCommand,
+    trustedAvailableAgents,
   };
 }
 
@@ -82,6 +84,7 @@ export function forEachHydratedPersistedTaskInContext(
     availableAgents: context.availableAgents,
     getExistingTask: options.getExistingTask,
     hydraCommand: context.restoredHydraCommand,
+    trustedCapabilityAgents: context.trustedAvailableAgents,
     visit: options.visit,
   });
 }

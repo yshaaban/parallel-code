@@ -5,7 +5,9 @@ import { clampTerminalFontSize } from './terminal-font-settings';
 import type { TerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
+import type { NewTaskDefaultKey } from '../domain/new-task-defaults';
 import type { PersistedWindowState } from './types';
+import { enqueueWorkspaceFieldEdit } from './persistence-session';
 
 // --- Font Scale (per-panel) ---
 
@@ -98,6 +100,10 @@ export function setShowPlans(showPlans: boolean): void {
   setStore('showPlans', showPlans);
 }
 
+export function setNewTaskDefault(key: NewTaskDefaultKey, enabled: boolean): void {
+  setStore('newTaskDefaults', key, enabled);
+}
+
 export function setTerminalHighLoadMode(terminalHighLoadMode: boolean): void {
   if (store.terminalHighLoadMode === terminalHighLoadMode) {
     return;
@@ -129,6 +135,8 @@ export function setEditorCommand(command: string): void {
 }
 
 export function setHydraCommandState(command: string): void {
+  const previous = store.hydraCommand;
+  if (previous === command) return;
   setStore(
     produce((s) => {
       s.hydraCommand = command;
@@ -138,14 +146,21 @@ export function setHydraCommandState(command: string): void {
       );
     }),
   );
+  enqueueWorkspaceFieldEdit('hydraCommand', previous, command);
 }
 
 export function setHydraForceDispatchFromPromptPanel(forceDispatch: boolean): void {
+  if (store.hydraForceDispatchFromPromptPanel === forceDispatch) return;
+  const previous = store.hydraForceDispatchFromPromptPanel;
   setStore('hydraForceDispatchFromPromptPanel', forceDispatch);
+  enqueueWorkspaceFieldEdit('hydraForceDispatchFromPromptPanel', previous, forceDispatch);
 }
 
 export function setHydraStartupMode(mode: HydraStartupMode): void {
+  if (store.hydraStartupMode === mode) return;
+  const previous = store.hydraStartupMode;
   setStore('hydraStartupMode', mode);
+  enqueueWorkspaceFieldEdit('hydraStartupMode', previous, mode);
 }
 
 export function toggleArena(show?: boolean): void {

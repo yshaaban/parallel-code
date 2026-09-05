@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { waitForShellTerminalCreation } from '../browser/harness/terminal-creation.js';
+import { waitForShellTerminalTileInsertion } from '../browser/harness/terminal-creation.js';
 
-describe('waitForShellTerminalCreation', () => {
+describe('waitForShellTerminalTileInsertion', () => {
   it('waits longer without clicking twice when terminal creation is slow', async () => {
     const clickCreateTerminal = vi.fn(async () => undefined);
     const waitForCreationSignal = vi
@@ -10,7 +10,7 @@ describe('waitForShellTerminalCreation', () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
 
-    await waitForShellTerminalCreation({
+    await waitForShellTerminalTileInsertion({
       clickCreateTerminal,
       waitForCreationSignal,
     });
@@ -26,11 +26,11 @@ describe('waitForShellTerminalCreation', () => {
     const waitForCreationSignal = vi.fn<(_: number) => Promise<boolean>>().mockResolvedValue(false);
 
     await expect(
-      waitForShellTerminalCreation({
+      waitForShellTerminalTileInsertion({
         clickCreateTerminal,
         waitForCreationSignal,
       }),
-    ).rejects.toThrow('Timed out waiting for shell terminal creation');
+    ).rejects.toThrow('Timed out waiting for shell terminal tile insertion');
 
     expect(clickCreateTerminal).toHaveBeenCalledTimes(2);
     expect(waitForCreationSignal).toHaveBeenCalledTimes(3);
@@ -47,7 +47,7 @@ describe('waitForShellTerminalCreation', () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
 
-    await waitForShellTerminalCreation({
+    await waitForShellTerminalTileInsertion({
       clickCreateTerminal,
       waitForCreationSignal,
     });

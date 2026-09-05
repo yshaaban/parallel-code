@@ -9,8 +9,14 @@ const FIXTURES_DIR = path.resolve(__dirname, '..', '..', '..', 'scripts', 'fixtu
 
 export interface BrowserLabScenario {
   additionalTaskNames?: string[];
+  agentCatalogSource?: 'built-in' | 'custom';
   agentDef: AgentDef;
   name: string;
+  prependRepoBinToPath?: boolean;
+  resolveTaskGitLocation?: (
+    repoDir: string,
+    taskIndex: number,
+  ) => { branchName: string; worktreePath: string };
   seedRepo?: (repoDir: string) => Promise<void> | void;
   taskGitIsolation?: TaskGitIsolationMode;
   taskName: string;
@@ -97,6 +103,32 @@ export function createPromptReadyScenario(delayMs = 220): BrowserLabScenario {
       'Browser Lab Prompt Ready',
       process.execPath,
       [getFixturePath('tui-prompt-ready.mjs'), String(delayMs)],
+    ),
+  };
+}
+
+export function createPersistentPromptReadyScenario(delayMs = 220): BrowserLabScenario {
+  return {
+    name: 'persistent-prompt-ready',
+    taskName: 'Persistent Prompt Ready Fixture',
+    agentDef: createAgentDef(
+      'browser-lab-persistent-prompt-ready',
+      'Browser Lab Persistent Prompt Ready',
+      process.execPath,
+      [getFixturePath('tui-prompt-ready.mjs'), String(delayMs), '--persistent'],
+    ),
+  };
+}
+
+export function createPromptQuestionScenario(): BrowserLabScenario {
+  return {
+    name: 'prompt-question',
+    taskName: 'Prompt Question Fixture',
+    agentDef: createAgentDef(
+      'browser-lab-prompt-question',
+      'Browser Lab Prompt Question',
+      process.execPath,
+      [getFixturePath('tui-prompt-question.mjs')],
     ),
   };
 }

@@ -3,6 +3,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createSignal,
   onCleanup,
   onMount,
   type JSX,
@@ -10,6 +11,7 @@ import {
 import { store, closeTerminal, toggleAddProjectDialog } from '../store/store';
 import { isAppStartupPresentationPending } from '../app/app-startup-status';
 import { listPendingTaskCreations } from '../app/task-creation-optimism';
+import { hasUnsavedDesktopTaskNotes } from '../app/task-notes-recovery-channel';
 import { closeTask } from '../app/task-workflows';
 import { getCachedWorkspaceShape } from '../app/workspace-shape-cache';
 import { getProject } from '../store/projects';
@@ -25,6 +27,7 @@ import { typography } from '../lib/typography';
 import { mod } from '../lib/platform';
 import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
 import { confirm } from '../lib/dialog';
+import { shouldAnimateTaskAppearance } from '../lib/reduced-motion';
 import { getEmergencyTaskCloseMessage } from './task-close-policy';
 
 export function TilingLayout(): JSX.Element {
@@ -87,6 +90,9 @@ export function TilingLayout(): JSX.Element {
           initialSize: 520,
           minSize: 300,
           content: () => {
+            const [appearancePending, setAppearancePending] = createSignal(
+              shouldAnimateTaskAppearance(),
+            );
             const task = store.tasks[panelId];
             const terminal = store.terminals[panelId];
             // eslint-disable-next-line solid/components-return-once
@@ -97,15 +103,23 @@ export function TilingLayout(): JSX.Element {
                 class={
                   isTaskRemoving(task) || isTerminalRemoving(terminal)
                     ? 'task-removing'
-                    : 'task-appearing'
+                    : appearancePending()
+                      ? 'task-appearing'
+                      : undefined
                 }
                 style={{
                   height: '100%',
                   padding: 'var(--space-xs) var(--space-2xs) var(--space-sm)',
                 }}
                 onAnimationEnd={(e) => {
-                  if (e.animationName === 'taskAppear')
-                    e.currentTarget.classList.remove('task-appearing');
+                  if (e.currentTarget === e.target && e.animationName === 'taskAppear') {
+                    setAppearancePending(false);
+                  }
+                }}
+                onAnimationCancel={(e) => {
+                  if (e.currentTarget === e.target && e.animationName === 'taskAppear') {
+                    setAppearancePending(false);
+                  }
                 }}
               >
                 <ErrorBoundary
@@ -156,11 +170,19 @@ export function TilingLayout(): JSX.Element {
                           onClick={async () => {
                             const task = store.tasks[panelId];
                             if (task) {
-                              const msg = getEmergencyTaskCloseMessage(
+                              const hasUnsavedTaskNotes = hasUnsavedDesktopTaskNotes(panelId);
+                              const closeMessage = getEmergencyTaskCloseMessage(
                                 task,
                                 getProject(task.projectId),
                               );
-                              if (await confirm(msg)) closeTask(panelId);
+                              const message = hasUnsavedTaskNotes
+                                ? `${closeMessage}\n\nUnsaved task notes will also be discarded.`
+                                : closeMessage;
+                              if (await confirm(message)) {
+                                void closeTask(panelId, {
+                                  taskNotesDiscardConfirmed: hasUnsavedTaskNotes,
+                                });
+                              }
                             } else if (store.terminals[panelId]) {
                               closeTerminal(panelId);
                             }

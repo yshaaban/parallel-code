@@ -195,19 +195,25 @@ export function ConfigScreen(): JSX.Element {
 
           let worktreePath: string | null = null;
           let branchName: string | null = null;
+          let arenaLaunchToken: string | undefined;
+          const agentId = createRandomId();
 
           if (projectRoot) {
             branchName = `arena/${slug(competitor.name)}-${runId}-${index}`;
             const result = await invoke(IPC.CreateArenaWorktree, {
+              agentId,
               branchName,
               projectRoot,
               symlinkDirs: ['node_modules'],
+              taskId: competitor.id,
             });
             worktreePath = result.path;
+            arenaLaunchToken = result.launchToken;
           }
 
           return {
-            agentId: createRandomId(),
+            agentId,
+            ...(arenaLaunchToken !== undefined ? { arenaLaunchToken } : {}),
             branchName,
             command: competitor.command,
             endTime: null,

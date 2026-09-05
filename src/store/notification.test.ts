@@ -27,6 +27,37 @@ describe('notification', () => {
     expect(store.notification).toBeNull();
   });
 
+  it('auto-clears warning notifications after the same bounded window', () => {
+    showNotification('Restore this task before merging it.', { kind: 'warning' });
+    expect(store.notification).toEqual({
+      kind: 'warning',
+      message: 'Restore this task before merging it.',
+    });
+
+    vi.advanceTimersByTime(2_999);
+    expect(store.notification).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(store.notification).toBeNull();
+  });
+
+  it('keeps a persistent warning visible until explicitly dismissed', () => {
+    showNotification('A local workspace edit was not applied.', {
+      kind: 'warning',
+      persistent: true,
+    });
+
+    expect(store.notification).toEqual({
+      kind: 'warning',
+      message: 'A local workspace edit was not applied.',
+      persistent: true,
+    });
+    vi.advanceTimersByTime(60_000);
+    expect(store.notification).not.toBeNull();
+
+    clearNotification();
+    expect(store.notification).toBeNull();
+  });
+
   it('keeps error notifications visible until explicitly dismissed', () => {
     showNotification('Failed to create terminal', { kind: 'error' });
 

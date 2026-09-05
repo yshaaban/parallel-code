@@ -12,6 +12,9 @@ import type { ConnectionStatus } from './ws';
 interface AgentDetailHeaderProps {
   agentId: string;
   agentStatus?: RemoteAgentStatus;
+  backAriaLabel?: string;
+  backLabel?: string;
+  canKill?: boolean;
   connectionStatus: ConnectionStatus;
   contextLine: string | null;
   lastActivityAt: number | null;
@@ -91,7 +94,7 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
           <button
             type="button"
             class="ghost-btn tap-feedback remote-detail-back-button"
-            aria-label="Back to agent list"
+            aria-label={props.backAriaLabel ?? 'Back to agent list'}
             onClick={() => props.onBack()}
           >
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -104,7 +107,7 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
               />
             </svg>
             <span class="remote-detail-back-label" style={typography.metaStrong}>
-              Agents
+              {props.backLabel ?? 'Agents'}
             </span>
           </button>
 
@@ -182,7 +185,7 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
               </button>
             </Show>
 
-            <Show when={props.agentStatus === 'running'}>
+            <Show when={props.agentStatus === 'running' && props.canKill !== false}>
               <button
                 type="button"
                 class="outline-danger-btn tap-feedback remote-detail-kill-button"

@@ -1,4 +1,10 @@
-export type DesktopRuntimeCleanupLabel = 'agent runner' | 'ask about code' | 'coordinator';
+export type DesktopRuntimeCleanupLabel =
+  | 'agent runner'
+  | 'ask about code'
+  | 'coordinator'
+  | 'task experience'
+  | 'window runtime'
+  | 'workspace storage';
 
 export interface RuntimeCleanupFailure<TLabel extends string> {
   error: unknown;
@@ -31,6 +37,28 @@ export class DesktopRuntimeCleanupError extends Error {
     super(`Desktop runtime cleanup failed: ${failures.map((failure) => failure.label).join(', ')}`);
     this.name = 'DesktopRuntimeCleanupError';
     this.failures = failures;
+  }
+}
+
+export class WorkspaceStorageCleanupError extends Error {
+  readonly errors: unknown[];
+
+  constructor(errors: unknown[]) {
+    super('Workspace storage cleanup failed');
+    this.name = 'WorkspaceStorageCleanupError';
+    this.errors = errors;
+  }
+}
+
+export async function settleWorkspaceStorageCleanupOwners(
+  owners: ReadonlyArray<() => Promise<void> | void>,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    owners.map((ownerCleanup) => Promise.resolve().then(ownerCleanup)),
+  );
+  const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+  if (errors.length > 0) {
+    throw new WorkspaceStorageCleanupError(errors);
   }
 }
 

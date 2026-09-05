@@ -39,10 +39,14 @@ function toStoredAgentSupervisionSnapshot(
   return {
     agentId: snapshot.agentId,
     attentionReason: snapshot.attentionReason,
+    ...(snapshot.generation !== undefined ? { generation: snapshot.generation } : {}),
     isShell: snapshot.isShell,
     lastOutputAt: snapshot.lastOutputAt,
     preview: snapshot.preview,
     state: snapshot.state,
+    ...(snapshot.supervisionVersion !== undefined
+      ? { supervisionVersion: snapshot.supervisionVersion }
+      : {}),
     taskId: snapshot.taskId,
     updatedAt: snapshot.updatedAt,
   };

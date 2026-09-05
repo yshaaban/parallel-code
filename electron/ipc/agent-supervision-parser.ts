@@ -3,6 +3,7 @@ import {
   getVisibleTerminalTextForDetection,
   hasPromptAdjacentInteractiveChoiceInVisibleTail,
   hasHydraPromptInTail,
+  hasReadyPromptInTail,
   isNonBlockingShortcutHintLine,
   looksLikePromptLine,
   looksLikeQuestionInVisibleTail,
@@ -137,6 +138,7 @@ export function classifyOutputState(rawTail: string): {
 
   if (
     looksLikePromptLine(lastVisibleLine) ||
+    hasReadyPromptInTail(rawTail) ||
     hasCodexPromptInTail(rawTail) ||
     hasHydraPromptInTail(rawTail)
   ) {

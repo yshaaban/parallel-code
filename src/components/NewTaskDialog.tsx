@@ -1,10 +1,12 @@
 import {
   For,
   Show,
+  batch,
   createEffect,
   createMemo,
   createSignal,
   createUniqueId,
+  on,
   onCleanup,
   untrack,
   type JSX,
@@ -16,21 +18,19 @@ import { IPC } from '../../electron/ipc/channels';
 import { openDialog } from '../lib/dialog';
 import {
   store,
-  toggleNewTaskDialog,
   getProject,
   getProjectMode,
   getProjectPath,
   getProjectBaseBranch,
   getProjectBranchPrefix,
   updateProject,
-  hasCurrentBranchTask,
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
 import {
   createTaskOptimistically,
   listPendingTaskCreations,
-  type PendingTaskCreation,
+  type PendingTaskCreationAttempt,
 } from '../app/task-creation-optimism';
 import {
   createCurrentBranchTask,
@@ -55,6 +55,14 @@ import { getProjectDefaultTaskGitIsolation } from '../store/task-git-isolation';
 import type { ProjectMode, TaskGitIsolationMode } from '../store/types';
 import type { AgentDef } from '../ipc/types';
 import { createTaskGitOptionsController } from './new-task-dialog/task-git-options-controller';
+import { DEFAULT_NEW_TASK_DEFAULTS, copyNewTaskDefaults } from '../domain/new-task-defaults';
+import { ConfirmDialog } from './ConfirmDialog';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
+import {
+  createNewTaskDraftBaseline,
+  hasMeaningfulNewTaskDraftChange,
+  type NewTaskDraftBaseline,
+} from './new-task-dialog/new-task-draft';
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -63,9 +71,17 @@ interface NewTaskDialogProps {
 
 type TaskCreationMode = 'agent' | 'terminal' | 'coordinator';
 
+type NewTaskCloseState =
+  | { kind: 'editing'; openGeneration: number }
+  | {
+      kind: 'confirming-discard';
+      openGeneration: number;
+      restoreFocus: HTMLElement | null;
+    }
+  | { kind: 'submitting'; openGeneration: number };
+
 export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const titleId = createUniqueId();
-  const defaultSkipPermissions = true;
   const [prompt, setPrompt] = createSignal('');
   const [name, setName] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
@@ -79,11 +95,18 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
   const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
   const [existingWorktreePath, setExistingWorktreePath] = createSignal('');
-  const [stepsTracking, setStepsTracking] = createSignal(false);
+  const [stepsTracking, setStepsTracking] = createSignal(DEFAULT_NEW_TASK_DEFAULTS.stepsTracking);
   const [creationMode, setCreationMode] = createSignal<TaskCreationMode>('agent');
-  const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
+  const [skipPermissions, setSkipPermissions] = createSignal(
+    DEFAULT_NEW_TASK_DEFAULTS.skipPermissions,
+  );
   const [branchPrefix, setBranchPrefix] = createSignal('');
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
+  const [closeState, setCloseState] = createSignal<NewTaskCloseState>({
+    kind: 'editing',
+    openGeneration: 0,
+  });
+  const [gitOptionsActive, setGitOptionsActive] = createSignal(false);
   const defaultTerminalName = createMemo(() => {
     if (!props.open) {
       return 'Terminal';
@@ -123,7 +146,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
   });
   const gitOptions = createTaskGitOptionsController({
+    active: () => props.open && gitOptionsActive() && closeState().kind !== 'submitting',
     branchPreview,
+    createsManagedWorktree: createsNewWorktree,
     projectBaseBranch: selectedProjectBaseBranch,
     projectId: selectedProjectId,
     projectMode: selectedProjectMode,
@@ -132,7 +157,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const coordinatorModeAvailable = !isElectronRuntime();
   const terminalMode = () => creationMode() === 'terminal';
   const coordinatorMode = () => creationMode() === 'coordinator';
+  const focusRestoreFrame = createAnimationFrameTask();
+  let openGeneration = 0;
+  let closeCommitted = false;
+  let draftBaseline: NewTaskDraftBaseline = createNewTaskDraftBaseline({ name: '', prompt: '' });
   let promptRef!: HTMLTextAreaElement;
+  let nameRef!: HTMLInputElement;
   let formRef!: HTMLFormElement;
 
   const focusableSelector =
@@ -183,84 +213,103 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     focusables[nextIdx].focus();
   }
 
-  // Initialize state each time the dialog opens
-  createEffect(() => {
-    if (!props.open) {
-      return;
-    }
+  // A mounted-open dialog and each later false -> true transition own exactly one initialization
+  // generation. All store reads stay untracked so background catalog, Git, and settings updates
+  // cannot reset authored text or replace its clean baseline.
+  createEffect(
+    on(
+      () => props.open,
+      (open) => {
+        if (!open) {
+          setGitOptionsActive(false);
+          focusRestoreFrame.cancel();
+          return;
+        }
 
-    // Reset signals for a fresh dialog
-    setPrompt('');
-    setName('');
-    setError('');
-    setCustomAgentMode(false);
-    setCustomAgentCommand('');
-    setCurrentBranchMode(false);
-    setExistingWorktreeMode(false);
-    setExistingWorktreePath('');
-    setStepsTracking(false);
-    setCreationMode('agent');
-    setSkipPermissions(defaultSkipPermissions);
-    gitOptions.reset();
-    setAdvancedOpen(false);
+        untrack(() => {
+          setGitOptionsActive(false);
+          openGeneration += 1;
+          closeCommitted = false;
+          focusRestoreFrame.cancel();
+          setCloseState({ kind: 'editing', openGeneration });
 
-    // Dialog open never awaits an agent probe: the catalog is consumed
-    // synchronously from the store (probing agents stay launchable) and a
-    // throttled backend availability revalidation is fired in the background.
-    untrack(() => {
-      const launchableAgents = store.availableAgents.filter((agent) => agent.available !== false);
-      const lastAgent = store.lastAgentId
-        ? (launchableAgents.find((a) => a.id === store.lastAgentId) ?? null)
-        : null;
-      setSelectedAgent(lastAgent ?? launchableAgents[0] ?? null);
+          setError('');
+          setCustomAgentMode(false);
+          setCustomAgentCommand('');
+          setCurrentBranchMode(false);
+          setExistingWorktreeMode(false);
+          setExistingWorktreePath('');
+          setCreationMode('agent');
+          setAdvancedOpen(false);
 
-      // Pre-fill from drop data if present
-      const dropUrl = store.newTaskDropUrl;
-      const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
-      const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
+          const newTaskDefaults = copyNewTaskDefaults(store.newTaskDefaults);
+          setStepsTracking(newTaskDefaults.stepsTracking);
+          setSkipPermissions(newTaskDefaults.skipPermissions);
 
-      if (dropUrl) setPrompt(`review ${dropUrl}`);
-      if (defaults) setName(defaults.name);
-      setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
+          // Dialog open never awaits an agent probe: the catalog is consumed synchronously and a
+          // throttled backend availability revalidation runs in the background.
+          const launchableAgents = store.availableAgents.filter(
+            (agent) => agent.available !== false,
+          );
+          const lastAgent = store.lastAgentId
+            ? (launchableAgents.find((agent) => agent.id === store.lastAgentId) ?? null)
+            : null;
+          setSelectedAgent(lastAgent ?? launchableAgents[0] ?? null);
 
-      // Pre-fill from arena comparison prompt
-      const prefill = store.newTaskPrefillPrompt;
-      if (prefill) {
-        setPrompt(prefill.prompt);
-        setName('Compare arena results');
-        if (prefill.projectId) setSelectedProjectId(prefill.projectId);
-      }
+          const dropUrl = store.newTaskDropUrl;
+          const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
+          const dropDefaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
+          let initialPrompt = dropUrl ? `review ${dropUrl}` : '';
+          let initialName = dropDefaults?.name ?? '';
+          let initialProjectId = dropDefaults?.projectId ?? fallbackProjectId;
 
-      promptRef?.focus();
+          const prefill = store.newTaskPrefillPrompt;
+          if (prefill) {
+            initialPrompt = prefill.prompt;
+            initialName = 'Compare arena results';
+            initialProjectId = prefill.projectId ?? initialProjectId;
+          }
 
-      const hydraCommand = store.hydraCommand.trim();
-      void invoke(IPC.RefreshAgentAvailability, hydraCommand ? { hydraCommand } : undefined).catch(
-        () => {},
-      );
-    });
+          setPrompt(initialPrompt);
+          setName(initialName);
+          updateSelectedProject(initialProjectId);
+          setGitOptionsActive(true);
+          draftBaseline = createNewTaskDraftBaseline({
+            name: initialName,
+            prompt: initialPrompt,
+          });
+          promptRef?.focus();
 
-    // Capture-phase handler for Alt+Arrow to navigate form sections / within fields
-    const handleAltArrow = (e: KeyboardEvent) => {
-      if (!e.altKey) return;
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        navigateDialogFields(e.key === 'ArrowDown' ? 'down' : 'up');
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        // Preserve native word-jump (Alt+Arrow) in text inputs
-        const tag = (document.activeElement as HTMLElement)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        navigateWithinField(e.key === 'ArrowRight' ? 'right' : 'left');
-      }
-    };
-    window.addEventListener('keydown', handleAltArrow, true);
+          const hydraCommand = store.hydraCommand.trim();
+          void invoke(
+            IPC.RefreshAgentAvailability,
+            hydraCommand ? { hydraCommand } : undefined,
+          ).catch(() => {});
+        });
 
-    onCleanup(() => {
-      window.removeEventListener('keydown', handleAltArrow, true);
-    });
-  });
+        // Capture-phase handler for Alt+Arrow to navigate form sections / within fields.
+        const handleAltArrow = (event: KeyboardEvent) => {
+          if (!event.altKey) return;
+          if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            navigateDialogFields(event.key === 'ArrowDown' ? 'down' : 'up');
+          } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+            // Preserve native word-jump (Alt+Arrow) in text inputs.
+            const tag = (document.activeElement as HTMLElement)?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            navigateWithinField(event.key === 'ArrowRight' ? 'right' : 'left');
+          }
+        };
+        window.addEventListener('keydown', handleAltArrow, true);
+        onCleanup(() => window.removeEventListener('keydown', handleAltArrow, true));
+      },
+    ),
+  );
+
+  onCleanup(focusRestoreFrame.cancel);
 
   // Sync branch prefix when project changes
   createEffect(() => {
@@ -278,10 +327,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
     if (existingWorktreeMode()) return;
-    if (projectRootModeDisabled(pid)) {
-      setCurrentBranchMode(false);
-      return;
-    }
     setCurrentBranchMode(getProjectDefaultTaskGitIsolation(proj) === 'current-branch');
   });
 
@@ -364,7 +409,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   }
 
   function currentBranchTooltip(): string {
-    return 'Reuses the project root instead of creating a worktree. The backend switches to the selected base branch before starting if needed.';
+    return 'Reuses the project root instead of creating a worktree. Keeps the checked-out branch and shares files with other project-root tasks.';
   }
 
   function skipPermissionsTooltip(): string {
@@ -382,41 +427,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return 'Registers an existing git worktree as a task. Closing the task stops its running processes but never deletes that worktree or branch.';
   }
 
-  function currentBranchModeDisabled(): boolean {
-    const pid = selectedProjectId();
-    return pid ? projectRootModeDisabled(pid) : false;
-  }
-
-  function getPendingProjectRootTask(projectId: string): PendingTaskCreation | undefined {
-    return listPendingTaskCreations().find(
-      (pendingTask) =>
-        pendingTask.projectId === projectId && pendingTask.gitIsolation === 'current-branch',
-    );
-  }
-
-  function projectRootModeDisabled(projectId: string): boolean {
-    return hasCurrentBranchTask(projectId) || getPendingProjectRootTask(projectId) !== undefined;
-  }
-
-  function projectRootModeDisabledReason(): string {
-    const projectId = selectedProjectId();
-    if (!projectId) {
-      return '';
-    }
-    if (hasCurrentBranchTask(projectId)) {
-      return 'A project-root task already exists for this project.';
-    }
-
-    const pendingTask = getPendingProjectRootTask(projectId);
-    if (pendingTask?.state.kind === 'creating') {
-      return 'A project-root task is already being created for this project.';
-    }
-    if (pendingTask) {
-      return 'Retry or dismiss the pending project-root task before creating another.';
-    }
-    return '';
-  }
-
   // True when the selected project has no tasks yet, so we can nudge toward working on the current
   // branch directly instead of spinning up an isolated worktree for a first/only task.
   function isFirstTaskForProject(): boolean {
@@ -430,13 +440,27 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     );
   }
 
-  function agentSupportsSkipPermissions(): boolean {
-    const agent = selectedAgent();
-    return !customAgentMode() && !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
+  function getCurrentSelectedAgent(): AgentDef | null {
+    const selected = selectedAgent();
+    if (!selected) {
+      return null;
+    }
+
+    return store.availableAgents.find((agent) => agent.id === selected.id) ?? null;
   }
 
-  function skipPermissionsActive(): boolean {
-    return agentSupportsSkipPermissions() && skipPermissions();
+  function agentSupportsSkipPermissions(): boolean {
+    const agent = getCurrentSelectedAgent();
+    return (
+      !customAgentMode() &&
+      agent?.available !== false &&
+      !!agent?.skip_permissions_args?.length &&
+      !isHydraAgentDef(agent)
+    );
+  }
+
+  function effectiveSkipPermissions(): boolean {
+    return !terminalMode() && agentSupportsSkipPermissions() && skipPermissions();
   }
 
   function customAgentCommandLine(): string {
@@ -466,7 +490,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
   function getSelectedAgentForSubmit(): AgentDef | null {
     if (!customAgentMode()) {
-      const agent = selectedAgent();
+      const agent = getCurrentSelectedAgent();
       return agent && agent.available !== false ? agent : null;
     }
 
@@ -501,13 +525,19 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
     const canUseSelectedBranch =
       selectedProjectIsNonGit() ||
+      currentBranchMode() ||
       (gitOptions.branchListStatus() !== 'loading' && gitOptions.selectedBaseBranchAvailable());
+    const ignoredFileDiscoverySettled =
+      !createsNewWorktree() ||
+      gitOptions.ignoredDirsStatus() === 'ready' ||
+      gitOptions.ignoredDirsStatus() === 'unavailable';
     return (
       hasContent &&
       hasLaunchableWorker &&
       !!selectedProjectId() &&
       hasRequiredWorktreePath &&
-      canUseSelectedBranch
+      canUseSelectedBranch &&
+      ignoredFileDiscoverySettled
     );
   }
 
@@ -521,17 +551,21 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     if (stepsTracking()) {
       count += 1;
     }
-    if (!terminalMode() && skipPermissionsActive()) {
+    if (effectiveSkipPermissions()) {
       count += 1;
     }
     if (
       !selectedProjectIsNonGit() &&
+      !currentBranchMode() &&
       gitOptions.selectedBaseBranch() &&
       gitOptions.selectedBaseBranch() !== selectedProjectBaseBranch()
     ) {
       count += 1;
     }
     if (createsNewWorktree() && gitOptions.branchPreviewConflictMessage()) {
+      count += 1;
+    }
+    if (createsNewWorktree() && gitOptions.selectedDirs().size > 0) {
       count += 1;
     }
     return count;
@@ -568,9 +602,128 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     }
   }
 
+  function updateSelectedProject(projectId: string | null): void {
+    const project = projectId ? getProject(projectId) : null;
+    const projectMode = getProjectMode(project);
+    const useProjectRoot =
+      projectId !== null &&
+      projectMode === 'git' &&
+      getProjectDefaultTaskGitIsolation(project) === 'current-branch';
+
+    // Project identity and its isolation default form one controller input. Publishing them in one
+    // batch prevents an advisory managed-worktree request for a project that opens in root mode.
+    batch(() => {
+      setExistingWorktreeMode(false);
+      setExistingWorktreePath('');
+      setCurrentBranchMode(useProjectRoot);
+      setSelectedProjectId(projectId);
+    });
+  }
+
   function selectCreationMode(mode: TaskCreationMode): void {
     setCreationMode(mode);
     setError('');
+  }
+
+  function getCurrentDraftText(): { name: string; prompt: string } {
+    return {
+      name: name(),
+      prompt: prompt(),
+    };
+  }
+
+  function getRestorableFormFocus(): HTMLElement | null {
+    const activeElement = document.activeElement;
+    if (
+      !(activeElement instanceof HTMLElement) ||
+      !formRef?.contains(activeElement) ||
+      !activeElement.matches('input, textarea, select')
+    ) {
+      return null;
+    }
+
+    return activeElement;
+  }
+
+  function commitClose(generation: number): void {
+    if (closeCommitted || generation !== openGeneration) {
+      return;
+    }
+
+    closeCommitted = true;
+    focusRestoreFrame.cancel();
+    props.onClose();
+  }
+
+  function requestClose(): void {
+    const state = closeState();
+    if (closeCommitted || state.kind !== 'editing' || state.openGeneration !== openGeneration) {
+      return;
+    }
+
+    if (!hasMeaningfulNewTaskDraftChange(draftBaseline, getCurrentDraftText())) {
+      commitClose(state.openGeneration);
+      return;
+    }
+
+    setCloseState({
+      kind: 'confirming-discard',
+      openGeneration: state.openGeneration,
+      restoreFocus: getRestorableFormFocus(),
+    });
+  }
+
+  function keepEditing(): void {
+    const state = closeState();
+    if (state.kind !== 'confirming-discard' || state.openGeneration !== openGeneration) {
+      return;
+    }
+
+    const generation = state.openGeneration;
+    const requestedFocus = state.restoreFocus;
+    setCloseState({ kind: 'editing', openGeneration: generation });
+    focusRestoreFrame.schedule(() => {
+      untrack(() => {
+        if (generation !== openGeneration || !props.open || closeState().kind !== 'editing') {
+          return;
+        }
+
+        const fallbackFocus = terminalMode() ? nameRef : promptRef;
+        const target = requestedFocus?.isConnected ? requestedFocus : fallbackFocus;
+        if (target?.isConnected) {
+          target.focus();
+        }
+      });
+    });
+  }
+
+  function discardDraft(): void {
+    const state = closeState();
+    if (state.kind !== 'confirming-discard' || state.openGeneration !== openGeneration) {
+      return;
+    }
+
+    setCloseState({ kind: 'editing', openGeneration: state.openGeneration });
+    commitClose(state.openGeneration);
+  }
+
+  function beginSubmit(): number | null {
+    const state = closeState();
+    if (closeCommitted || state.kind !== 'editing' || state.openGeneration !== openGeneration) {
+      return null;
+    }
+
+    setCloseState({ kind: 'submitting', openGeneration: state.openGeneration });
+    return state.openGeneration;
+  }
+
+  function closeAfterSubmit(generation: number): void {
+    const state = closeState();
+    if (state.kind !== 'submitting' || state.openGeneration !== generation) {
+      return;
+    }
+
+    commitClose(generation);
   }
 
   function handleSubmit(e: Event): void {
@@ -598,12 +751,25 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
     const projectMode = selectedProjectMode();
+    if (
+      createsNewWorktree() &&
+      gitOptions.ignoredDirsStatus() !== 'ready' &&
+      gitOptions.ignoredDirsStatus() !== 'unavailable'
+    ) {
+      setError('Checking ignored files before creating the worktree.');
+      setAdvancedOpen(true);
+      return;
+    }
     let configuredBaseBranch: string | undefined;
-    if (projectMode === 'git') {
+    if (projectMode === 'git' && !currentBranchMode()) {
       configuredBaseBranch = gitOptions.selectedBaseBranchForSubmit();
     }
 
-    if (projectMode === 'git' && !gitOptions.selectedBaseBranchAvailable()) {
+    if (
+      projectMode === 'git' &&
+      !currentBranchMode() &&
+      !gitOptions.selectedBaseBranchAvailable()
+    ) {
       setError('Selected base branch is no longer available. Refresh the branch list.');
       setAdvancedOpen(true);
       return;
@@ -616,19 +782,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return;
     }
 
-    setError('');
-
     const p = isTerminalSubmit ? undefined : prompt().trim() || undefined;
     const isFromDrop = !!store.newTaskDropUrl;
     const prefix = sanitizeBranchPrefix(branchPrefix());
     const promptGitHubUrl = p ? extractGitHubUrl(p) : undefined;
     const ghUrl = promptGitHubUrl ?? store.newTaskDropUrl ?? undefined;
-    const shouldSkipPermissions = skipPermissionsActive();
-    // Persist the branch prefix to the project for next time
-    if (projectMode === 'git') {
-      updateProject(projectId, { branchPrefix: prefix });
-    }
-
+    const shouldSkipPermissions = effectiveSkipPermissions();
     const isCurrentBranchSubmit = currentBranchMode();
     const isExistingWorktreeSubmit = existingWorktreeMode();
     const submitGitIsolation: TaskGitIsolationMode | undefined =
@@ -651,15 +810,31 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             agentDef: agent,
             initialPrompt: isFromDrop ? undefined : p,
             coordinatorMode: submitCoordinatorMode,
-            skipPermissions: shouldSkipPermissions,
+            ...(shouldSkipPermissions ? { skipPermissions: true } : {}),
           }
         : null;
     if (!launch) {
       return;
     }
-    const createPendingTask = (): Promise<string> => {
+
+    const submitGeneration = beginSubmit();
+    if (submitGeneration === null) {
+      return;
+    }
+
+    setError('');
+    // Persist the branch prefix only after this open generation admits the submit. A rapid second
+    // submit therefore cannot duplicate either this write or optimistic task creation.
+    if (projectMode === 'git') {
+      updateProject(projectId, { branchPrefix: prefix });
+    }
+
+    const createPendingTask = ({
+      adapterOperationId,
+    }: Readonly<PendingTaskCreationAttempt>): Promise<string> => {
       if (isCurrentBranchSubmit) {
         return createCurrentBranchTask({
+          adapterOperationId,
           name: n,
           launch,
           projectId,
@@ -670,6 +845,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       }
       if (isExistingWorktreeSubmit) {
         return createExistingWorktreeTask({
+          adapterOperationId,
           name: n,
           launch,
           projectId,
@@ -680,6 +856,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         });
       }
       return createTask({
+        adapterOperationId,
         name: n,
         launch,
         projectId,
@@ -710,7 +887,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       taskMode: isTerminalSubmit ? 'terminal' : 'agent',
       run: createPendingTask,
     });
-    toggleNewTaskDialog(false);
+    closeAfterSubmit(submitGeneration);
   }
 
   // Shared visual treatments keep callouts and inputs consistent so the form reads as one
@@ -722,7 +899,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       'border-radius': '8px',
       padding: '8px 11px',
       color: theme.fg,
-      outline: 'none',
     };
   }
 
@@ -787,226 +963,206 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog
-      open={props.open}
-      onClose={props.onClose}
-      width={dialogWidth()}
-      labelledBy={titleId}
-      panelStyle={{ gap: '11px', padding: '20px' }}
-    >
-      <form
-        class="new-task-dialog-form"
-        ref={formRef}
-        onSubmit={handleSubmit}
-        style={{
-          display: 'flex',
-          'flex-direction': 'column',
-          gap: '11px',
-        }}
+    <>
+      <Dialog
+        open={props.open}
+        onClose={requestClose}
+        width={dialogWidth()}
+        labelledBy={titleId}
+        panelStyle={{ gap: '11px', padding: '20px' }}
       >
-        <DialogHeader
-          description={currentBranchGuidance()}
-          descriptionTone="muted"
-          title="New Task"
-          titleId={titleId}
-        />
-
-        {/* Prompt - the primary input for agent-backed tasks. */}
-        <Show when={!terminalMode()}>
-          <div
-            data-nav-field="prompt"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-          >
-            <SectionLabel as="label">What should the agent work on?</SectionLabel>
-            <textarea
-              ref={promptRef}
-              class="input-field"
-              value={prompt()}
-              onInput={(e) => setPrompt(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (canSubmit()) handleSubmit(e);
-                }
-              }}
-              placeholder="Describe the task, e.g. add user authentication."
-              rows={3}
-              style={{
-                ...fieldInputStyle(),
-                ...typography.monoUi,
-                resize: 'vertical',
-              }}
-            />
-          </div>
-        </Show>
-
-        <div
-          data-nav-field="task-mode"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        <form
+          class="new-task-dialog-form"
+          ref={formRef}
+          onSubmit={handleSubmit}
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '11px',
+          }}
         >
-          <SectionLabel>Task mode</SectionLabel>
-          <div style={{ display: 'flex', gap: '6px' }}>
-            <button
-              type="button"
-              aria-pressed={creationMode() === 'agent'}
-              onClick={() => selectCreationMode('agent')}
-              style={isolationSegmentStyle(creationMode() === 'agent')}
-            >
-              Agent
-            </button>
-            <button
-              type="button"
-              aria-pressed={terminalMode()}
-              onClick={() => selectCreationMode('terminal')}
-              style={isolationSegmentStyle(terminalMode())}
-              title="Create a project-backed task with shells and no AI agent"
-            >
-              Terminal
-            </button>
-            <button
-              type="button"
-              aria-pressed={coordinatorMode()}
-              disabled={!coordinatorModeAvailable}
-              onClick={() => {
-                if (coordinatorModeAvailable) selectCreationMode('coordinator');
-              }}
-              style={isolationSegmentStyle(coordinatorMode(), !coordinatorModeAvailable)}
-              title={
-                coordinatorModeAvailable
-                  ? 'Give this task a compact coordinator rail for hidden subtasks'
-                  : 'Coordinator mode runs through the browser server tool gateway'
-              }
-            >
-              Coordinator
-            </button>
-          </div>
-          <Show when={coordinatorMode() && coordinatorModeAvailable}>
-            <div style={calloutStyle('muted')}>
-              Spawns and tracks hidden background subtasks from a compact coordinator rail.
-            </div>
-          </Show>
-          <Show when={!coordinatorModeAvailable && !terminalMode()}>
-            <div style={calloutStyle('muted')}>
-              Coordinator mode runs through the browser server tool gateway.
-            </div>
-          </Show>
-        </div>
-
-        <Show when={!terminalMode()}>
-          {/* Agent - the second primary choice */}
-          <AgentSelector
-            agents={store.availableAgents}
-            selectedAgent={selectedAgent()}
-            onSelect={setSelectedAgent}
+          <DialogHeader
+            description={currentBranchGuidance()}
+            descriptionTone="muted"
+            title="New Task"
+            titleId={titleId}
           />
 
-          <div
-            data-nav-field="custom-agent-command"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-          >
-            <label style={checkboxLabelStyle()}>
-              <input
-                type="checkbox"
-                checked={customAgentMode()}
-                onChange={(e) => setCustomAgentMode(e.currentTarget.checked)}
-                style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-              />
-              Use custom command
-            </label>
-            <Show when={customAgentMode()}>
-              <input
+          {/* Prompt - the primary input for agent-backed tasks. */}
+          <Show when={!terminalMode()}>
+            <div
+              data-nav-field="prompt"
+              style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+            >
+              <SectionLabel as="label">What should the agent work on?</SectionLabel>
+              <textarea
+                ref={promptRef}
                 class="input-field"
-                type="text"
-                value={customAgentCommand()}
-                onInput={(e) => {
-                  setCustomAgentCommand(e.currentTarget.value);
-                  setError('');
+                value={prompt()}
+                onInput={(e) => setPrompt(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (canSubmit()) handleSubmit(e);
+                  }
                 }}
-                placeholder="codex"
+                placeholder="Describe the task, e.g. add user authentication."
+                rows={3}
                 style={{
                   ...fieldInputStyle(),
                   ...typography.monoUi,
+                  resize: 'vertical',
                 }}
               />
-              <Show when={customAgentCommandError()}>
-                {(message) => <div style={calloutStyle('error')}>{message()}</div>}
-              </Show>
+            </div>
+          </Show>
+
+          <div
+            data-nav-field="task-mode"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <SectionLabel>Task mode</SectionLabel>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                aria-pressed={creationMode() === 'agent'}
+                onClick={() => selectCreationMode('agent')}
+                style={isolationSegmentStyle(creationMode() === 'agent')}
+              >
+                Agent
+              </button>
+              <button
+                type="button"
+                aria-pressed={terminalMode()}
+                onClick={() => selectCreationMode('terminal')}
+                style={isolationSegmentStyle(terminalMode())}
+                title="Create a project-backed task with shells and no AI agent"
+              >
+                Terminal
+              </button>
+              <button
+                type="button"
+                aria-pressed={coordinatorMode()}
+                disabled={!coordinatorModeAvailable}
+                onClick={() => {
+                  if (coordinatorModeAvailable) selectCreationMode('coordinator');
+                }}
+                style={isolationSegmentStyle(coordinatorMode(), !coordinatorModeAvailable)}
+                title={
+                  coordinatorModeAvailable
+                    ? 'Give this task a compact coordinator rail for hidden subtasks'
+                    : 'Coordinator mode runs through the browser server tool gateway'
+                }
+              >
+                Coordinator
+              </button>
+            </div>
+            <Show when={coordinatorMode() && coordinatorModeAvailable}>
               <div style={calloutStyle('muted')}>
-                Runs the command directly in the task folder, with any quoted arguments preserved.
+                Spawns and tracks hidden background subtasks from a compact coordinator rail.
+              </div>
+            </Show>
+            <Show when={!coordinatorModeAvailable && !terminalMode()}>
+              <div style={calloutStyle('muted')}>
+                Coordinator mode runs through the browser server tool gateway.
               </div>
             </Show>
           </div>
-        </Show>
 
-        {/* Project */}
-        <div
-          data-nav-field="project"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <SectionLabel as="label">Project</SectionLabel>
-          <ProjectSelect value={selectedProjectId()} onChange={setSelectedProjectId} />
-        </div>
+          <Show when={!terminalMode()}>
+            {/* Agent - the second primary choice */}
+            <AgentSelector
+              agents={store.availableAgents}
+              selectedAgent={selectedAgent()}
+              onSelect={setSelectedAgent}
+            />
 
-        {/* Task name (optional, derived) + where-it-lands preview */}
-        <div
-          data-nav-field="task-name"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <SectionLabel as="label">
-            Task name{' '}
-            <span style={{ opacity: '0.5', 'text-transform': 'none' }}>
-              {terminalMode() ? '(optional)' : '(optional - derived from prompt)'}
-            </span>
-          </SectionLabel>
-          <input
-            class="input-field"
-            type="text"
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-            placeholder={
-              terminalMode() ? defaultTerminalName() : effectiveName() || 'Add user authentication'
-            }
-            style={{
-              ...fieldInputStyle(),
-              ...typography.ui,
-            }}
-          />
-          <Show when={createsNewWorktree() && branchPreview()}>
-            <span
-              style={{
-                ...typography.monoMeta,
-                color: theme.fgSubtle,
-                display: 'flex',
-                'align-items': 'center',
-                gap: '6px',
-                padding: '2px 2px 0',
-              }}
-            >
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                style={{ 'flex-shrink': '0' }}
-              >
-                <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
-              </svg>
-              new branch <code>{branchPreview()}</code>
-            </span>
-          </Show>
-          <Show when={currentBranchMode() && selectedProjectPath()}>
             <div
-              style={{
-                ...typography.monoMeta,
-                color: theme.fgSubtle,
-                display: 'flex',
-                'flex-direction': 'column',
-                gap: '2px',
-                padding: '4px 2px 0',
-              }}
+              data-nav-field="custom-agent-command"
+              style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
             >
-              <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+              <label style={checkboxLabelStyle()}>
+                <input
+                  type="checkbox"
+                  checked={customAgentMode()}
+                  onChange={(e) => setCustomAgentMode(e.currentTarget.checked)}
+                  style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                />
+                Use custom command
+              </label>
+              <Show when={customAgentMode()}>
+                <input
+                  class="input-field"
+                  type="text"
+                  value={customAgentCommand()}
+                  onInput={(e) => {
+                    setCustomAgentCommand(e.currentTarget.value);
+                    setError('');
+                  }}
+                  placeholder="codex"
+                  style={{
+                    ...fieldInputStyle(),
+                    ...typography.monoUi,
+                  }}
+                />
+                <Show when={customAgentCommandError()}>
+                  {(message) => <div style={calloutStyle('error')}>{message()}</div>}
+                </Show>
+                <div style={calloutStyle('muted')}>
+                  Runs the command directly in the task folder, with any quoted arguments preserved.
+                </div>
+              </Show>
+            </div>
+          </Show>
+
+          {/* Project */}
+          <div
+            data-nav-field="project"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <SectionLabel as="label">Project</SectionLabel>
+            <ProjectSelect value={selectedProjectId()} onChange={updateSelectedProject} />
+          </div>
+
+          {/* Task name (optional, derived) + where-it-lands preview */}
+          <div
+            data-nav-field="task-name"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <SectionLabel as="label">
+              Task name{' '}
+              <span style={{ opacity: '0.5', 'text-transform': 'none' }}>
+                {terminalMode() ? '(optional)' : '(optional - derived from prompt)'}
+              </span>
+            </SectionLabel>
+            <input
+              ref={nameRef}
+              class="input-field"
+              type="text"
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+              placeholder={
+                terminalMode()
+                  ? defaultTerminalName()
+                  : effectiveName() || 'Add user authentication'
+              }
+              style={{
+                ...fieldInputStyle(),
+                ...typography.ui,
+              }}
+            />
+            <Show when={createsNewWorktree() && branchPreview()}>
+              <span
+                style={{
+                  ...typography.monoMeta,
+                  color: theme.fgSubtle,
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '6px',
+                  padding: '2px 2px 0',
+                }}
+              >
                 <svg
                   width="11"
                   height="11"
@@ -1016,423 +1172,507 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 >
                   <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
                 </svg>
-                {gitOptions.selectedProjectBaseBranchLabel()}
+                new branch <code>{branchPreview()}</code>
               </span>
-              <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 16 16"
-                  fill="currentColor"
-                  style={{ 'flex-shrink': '0' }}
-                >
-                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                </svg>
-                {selectedProjectPath()}
-              </span>
-            </div>
-          </Show>
-        </div>
-
-        {/* Isolation - worktree vs current branch (git projects only). */}
-        <Show when={!selectedProjectIsNonGit()}>
-          <div
-            data-nav-field="isolation"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-          >
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button
-                type="button"
-                aria-pressed={createsNewWorktree()}
-                title={`Creates a git branch and worktree so the ${terminalMode() ? 'terminal task' : 'agent'} works in isolation without affecting the base branch.`}
-                onClick={() => {
-                  setCurrentBranchMode(false);
-                  setExistingWorktreeMode(false);
+            </Show>
+            <Show when={currentBranchMode() && selectedProjectPath()}>
+              <div
+                style={{
+                  ...typography.monoMeta,
+                  color: theme.fgSubtle,
+                  display: 'flex',
+                  'flex-direction': 'column',
+                  gap: '2px',
+                  padding: '4px 2px 0',
                 }}
-                style={isolationSegmentStyle(createsNewWorktree())}
               >
-                New worktree
-              </button>
-              <button
-                type="button"
-                aria-pressed={currentBranchMode()}
-                disabled={currentBranchModeDisabled()}
-                title={currentBranchTooltip()}
-                onClick={() => updateCurrentBranchMode(true)}
-                style={isolationSegmentStyle(currentBranchMode(), currentBranchModeDisabled())}
-              >
-                Project root
-              </button>
-            </div>
-            <Show when={currentBranchModeDisabled()}>
-              <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-                {projectRootModeDisabledReason()}
-              </span>
-            </Show>
-            <Show
-              when={!currentBranchModeDisabled() && isFirstTaskForProject() && createsNewWorktree()}
-            >
-              <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-                First task in this project - you can{' '}
-                <button
-                  type="button"
-                  onClick={() => updateCurrentBranchMode(true)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: '0',
-                    color: theme.link,
-                    cursor: 'pointer',
-                    'text-decoration': 'underline',
-                    ...typography.meta,
-                  }}
-                >
-                  work in the project root
-                </button>{' '}
-                instead of creating a worktree.
-              </span>
-            </Show>
-            <Show when={currentBranchMode()}>
-              <div style={calloutStyle('warning')}>
-                Reuses the project root. The backend switches to the selected base branch before
-                starting if needed.
+                <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                    style={{ 'flex-shrink': '0' }}
+                  >
+                    <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
+                  </svg>
+                  {gitOptions.selectedProjectBaseBranchLabel()}
+                </span>
+                <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                    style={{ 'flex-shrink': '0' }}
+                  >
+                    <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                  </svg>
+                  {selectedProjectPath()}
+                </span>
               </div>
             </Show>
           </div>
-        </Show>
 
-        {/* Ignored-dir suggestion failures stay visible even when Advanced is collapsed. */}
-        <Show when={createsNewWorktree() ? gitOptions.ignoredDirsError() : null}>
-          {(message) => (
-            <div role="status" aria-live="polite" style={calloutStyle('warning')}>
-              Ignored directory suggestions unavailable: {message()}
-            </div>
-          )}
-        </Show>
-
-        <Show when={!terminalMode() && skipPermissionsActive()}>
-          <div role="status" aria-live="polite" style={calloutStyle('warning')}>
-            Runs without confirmation. The agent can read, write, delete, and execute commands.
-          </div>
-        </Show>
-
-        {/* Advanced - branch, worktree, permissions, files */}
-        <div
-          data-nav-field="advanced"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}
-        >
-          <button
-            type="button"
-            aria-expanded={advancedOpen()}
-            onClick={() => setAdvancedOpen((open) => !open)}
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              gap: '8px',
-              padding: '8px 4px',
-              background: 'transparent',
-              border: 'none',
-              'border-top': `1px solid ${theme.border}`,
-              color: theme.fgMuted,
-              cursor: 'pointer',
-              ...typography.metaStrong,
-            }}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="currentColor"
-              aria-hidden="true"
-              style={{
-                'flex-shrink': '0',
-                transition: 'transform 120ms ease',
-                transform: advancedOpen() ? 'rotate(90deg)' : 'rotate(0deg)',
-              }}
-            >
-              <path d="M6 4l4 4-4 4V4z" />
-            </svg>
-            <span>Advanced</span>
-            <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-              {terminalMode()
-                ? 'branch, worktree, steps, files'
-                : 'branch, worktree, permissions, files'}
-            </span>
-            <Show when={!advancedOpen() && activeAdvancedCount() > 0}>
-              <span
-                style={{
-                  'margin-left': 'auto',
-                  padding: '1px 7px',
-                  'border-radius': '999px',
-                  background: `color-mix(in srgb, ${theme.accent} 18%, transparent)`,
-                  color: theme.accent,
-                  ...typography.label,
-                }}
-              >
-                {activeAdvancedCount()} active
-              </span>
-            </Show>
-          </button>
-
-          <Show when={advancedOpen()}>
+          {/* Isolation - worktree vs current branch (git projects only). */}
+          <Show when={!selectedProjectIsNonGit()}>
             <div
-              style={{
-                display: 'flex',
-                'flex-direction': 'column',
-                gap: '16px',
-                'padding-left': '4px',
-              }}
+              data-nav-field="isolation"
+              style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
             >
-              <Show when={selectedProjectPath() && !selectedProjectIsNonGit()}>
-                <div
-                  data-nav-field="base-branch"
-                  style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  aria-pressed={createsNewWorktree()}
+                  title={`Creates a git branch and worktree so the ${terminalMode() ? 'terminal task' : 'agent'} works in isolation without affecting the base branch.`}
+                  onClick={() => {
+                    setCurrentBranchMode(false);
+                    setExistingWorktreeMode(false);
+                  }}
+                  style={isolationSegmentStyle(createsNewWorktree())}
                 >
-                  <SectionLabel as="label">Base branch</SectionLabel>
-                  <div
+                  New worktree
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={currentBranchMode()}
+                  title={currentBranchTooltip()}
+                  onClick={() => updateCurrentBranchMode(true)}
+                  style={isolationSegmentStyle(currentBranchMode())}
+                >
+                  Project root
+                </button>
+              </div>
+              <Show when={isFirstTaskForProject() && createsNewWorktree()}>
+                <span style={{ color: theme.fgSubtle, ...typography.meta }}>
+                  First task in this project - you can{' '}
+                  <button
+                    type="button"
+                    onClick={() => updateCurrentBranchMode(true)}
                     style={{
-                      display: 'grid',
-                      'grid-template-columns': 'minmax(0, 1fr) minmax(180px, 240px)',
-                      gap: '8px',
-                    }}
-                  >
-                    <input
-                      aria-label="Filter base branches"
-                      class="input-field"
-                      disabled={gitOptions.branchListStatus() === 'loading'}
-                      onInput={(event) => gitOptions.setBranchQuery(event.currentTarget.value)}
-                      placeholder="Filter branches"
-                      type="text"
-                      value={gitOptions.branchQuery()}
-                      style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
-                    />
-                    <select
-                      aria-label="Base branch"
-                      class="input-field"
-                      disabled={
-                        gitOptions.branchListStatus() === 'loading' ||
-                        gitOptions.visibleBranchOptions().length === 0
-                      }
-                      onChange={(event) =>
-                        gitOptions.setSelectedBaseBranch(event.currentTarget.value || null)
-                      }
-                      value={gitOptions.selectedBaseBranch() ?? ''}
-                      style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
-                    >
-                      <For each={gitOptions.visibleBranchOptions()}>
-                        {(branch) => (
-                          <option value={branch.name}>
-                            {gitOptions.formatBranchOption(branch)}
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </div>
-                  <div
-                    role="status"
-                    aria-live="polite"
-                    style={{
-                      color:
-                        gitOptions.branchListStatus() === 'error' ? theme.warning : theme.fgSubtle,
-                      display: 'flex',
-                      'align-items': 'center',
-                      gap: '8px',
+                      background: 'none',
+                      border: 'none',
+                      padding: '0',
+                      color: theme.link,
+                      cursor: 'pointer',
+                      'text-decoration': 'underline',
                       ...typography.meta,
                     }}
                   >
-                    <span>{gitOptions.branchPickerStatus()}</span>
-                    <Show when={gitOptions.branchListStatus() === 'error'}>
-                      <button
-                        type="button"
-                        class="btn-secondary"
-                        onClick={gitOptions.reloadBranches}
-                        style={{
-                          background: theme.bgInput,
-                          border: `1px solid ${theme.border}`,
-                          'border-radius': '8px',
-                          color: theme.fg,
-                          cursor: 'pointer',
-                          padding: '4px 8px',
-                          ...typography.metaStrong,
-                        }}
-                      >
-                        Retry
-                      </button>
-                    </Show>
-                  </div>
-                  <Show when={!gitOptions.selectedBaseBranchAvailable()}>
-                    <div role="alert" style={calloutStyle('error')}>
-                      Selected base branch is no longer available. Refresh or choose another branch.
-                    </div>
-                  </Show>
+                    work in the project root
+                  </button>{' '}
+                  instead of creating a worktree.
+                </span>
+              </Show>
+              <Show when={currentBranchMode()}>
+                <div style={calloutStyle('warning')}>
+                  Uses the checked-out branch without switching it. Project-root tasks share files
+                  and Git state, so concurrent edits can overlap. Use a worktree for isolation.
                 </div>
-              </Show>
-
-              <Show when={createsNewWorktree()}>
-                <BranchPrefixField
-                  branchPrefix={branchPrefix()}
-                  branchPreview={branchPreview()}
-                  conflictMessage={gitOptions.branchPreviewConflictMessage()}
-                  projectPath={selectedProjectPath()}
-                  onPrefixChange={setBranchPrefix}
-                />
-              </Show>
-
-              <Show when={!selectedProjectIsNonGit()}>
-                <div
-                  data-nav-field="existing-worktree-mode"
-                  style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-                >
-                  <label title={existingWorktreeTooltip()} style={checkboxLabelStyle()}>
-                    <input
-                      type="checkbox"
-                      checked={existingWorktreeMode()}
-                      onChange={(e) => updateExistingWorktreeMode(e.currentTarget.checked)}
-                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-                    />
-                    Use existing worktree
-                  </label>
-                  <Show when={existingWorktreeMode()}>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        class="input-field"
-                        type="text"
-                        value={existingWorktreePath()}
-                        onInput={(e) => setExistingWorktreePath(e.currentTarget.value)}
-                        placeholder="/path/to/existing/worktree"
-                        style={{
-                          ...fieldInputStyle(),
-                          flex: '1',
-                          padding: '8px 10px',
-                          ...typography.monoUi,
-                        }}
-                      />
-                      <button
-                        type="button"
-                        class="btn-secondary"
-                        onClick={() => {
-                          void browseExistingWorktreePath();
-                        }}
-                        style={{
-                          padding: '8px 12px',
-                          background: theme.bgInput,
-                          border: `1px solid ${theme.border}`,
-                          'border-radius': '8px',
-                          color: theme.fg,
-                          cursor: 'pointer',
-                          ...typography.metaStrong,
-                        }}
-                      >
-                        Browse
-                      </button>
-                    </div>
-                    <div style={calloutStyle('muted')}>
-                      Closing this task will keep the selected worktree and branch.
-                    </div>
-                  </Show>
-                </div>
-              </Show>
-
-              <div
-                data-nav-field="steps-tracking"
-                style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-              >
-                <label title={stepsTrackingTooltip()} style={checkboxLabelStyle()}>
-                  <input
-                    type="checkbox"
-                    checked={stepsTracking()}
-                    onChange={(e) => setStepsTracking(e.currentTarget.checked)}
-                    style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-                  />
-                  Track task steps
-                </label>
-                <Show when={stepsTracking()}>
-                  <div style={calloutStyle('muted')}>
-                    The backend watches <code>.claude/steps.json</code> and keeps step history
-                    shared across clients.
-                  </div>
-                </Show>
-              </div>
-
-              <Show when={!terminalMode() && agentSupportsSkipPermissions()}>
-                <div
-                  data-nav-field="skip-permissions"
-                  style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
-                >
-                  <label title={skipPermissionsTooltip()} style={checkboxLabelStyle()}>
-                    <input
-                      type="checkbox"
-                      checked={skipPermissions()}
-                      onChange={(e) => setSkipPermissions(e.currentTarget.checked)}
-                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-                    />
-                    Dangerously skip all confirms
-                  </label>
-                </div>
-              </Show>
-
-              <Show when={gitOptions.ignoredDirs().length > 0 && createsNewWorktree()}>
-                <SymlinkDirPicker
-                  dirs={gitOptions.ignoredDirs()}
-                  selectedDirs={gitOptions.selectedDirs()}
-                  onToggle={gitOptions.toggleSelectedDir}
-                />
               </Show>
             </div>
           </Show>
-        </div>
 
-        <Show when={error()}>
-          <div style={{ ...calloutStyle('error'), padding: '8px 12px' }}>{error()}</div>
-        </Show>
-
-        <div
-          data-nav-field="footer"
-          style={{
-            display: 'flex',
-            gap: '8px',
-            'justify-content': 'flex-end',
-            'padding-top': '4px',
-          }}
-        >
-          <button
-            type="button"
-            class="btn-secondary"
-            onClick={() => props.onClose()}
-            style={{
-              padding: '9px 18px',
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '8px',
-              color: theme.fgMuted,
-              cursor: 'pointer',
-              ...typography.ui,
-            }}
+          {/* Managed-worktree discovery can block submit, so its state stays visible when Advanced
+              is collapsed. The full picker owns the same status while expanded. */}
+          <Show
+            when={
+              createsNewWorktree() &&
+              !advancedOpen() &&
+              (gitOptions.ignoredDirsStatus() === 'idle' ||
+                gitOptions.ignoredDirsStatus() === 'loading')
+            }
           >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            class="btn-primary"
-            disabled={!canSubmit()}
+            <div role="status" aria-live="polite" style={calloutStyle('muted')}>
+              Checking ignored files…
+            </div>
+          </Show>
+          <Show
+            when={
+              createsNewWorktree() &&
+              !advancedOpen() &&
+              gitOptions.ignoredDirsStatus() === 'unavailable'
+            }
+          >
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                ...calloutStyle('warning'),
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+              }}
+            >
+              <span>
+                Ignored file suggestions unavailable:{' '}
+                {gitOptions.ignoredDirsError() ?? 'Unknown backend error'}
+              </span>
+              <button
+                type="button"
+                class="btn-secondary"
+                onClick={gitOptions.reloadIgnoredDirs}
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  color: theme.fg,
+                  cursor: 'pointer',
+                  'margin-left': 'auto',
+                  padding: '4px 8px',
+                  ...typography.metaStrong,
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          </Show>
+
+          <Show when={effectiveSkipPermissions()}>
+            <div role="status" aria-live="polite" style={calloutStyle('warning')}>
+              Runs without confirmation. The agent can read, write, delete, and execute commands.
+            </div>
+          </Show>
+
+          {/* Advanced - branch, worktree, permissions, files */}
+          <div
+            data-nav-field="advanced"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}
+          >
+            <button
+              type="button"
+              aria-expanded={advancedOpen()}
+              onClick={() => setAdvancedOpen((open) => !open)}
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                padding: '8px 4px',
+                background: 'transparent',
+                border: 'none',
+                'border-top': `1px solid ${theme.border}`,
+                color: theme.fgMuted,
+                cursor: 'pointer',
+                ...typography.metaStrong,
+              }}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+                style={{
+                  'flex-shrink': '0',
+                  transition: 'transform 120ms ease',
+                  transform: advancedOpen() ? 'rotate(90deg)' : 'rotate(0deg)',
+                }}
+              >
+                <path d="M6 4l4 4-4 4V4z" />
+              </svg>
+              <span>Advanced</span>
+              <span style={{ color: theme.fgSubtle, ...typography.meta }}>
+                {terminalMode()
+                  ? 'branch, worktree, steps, files'
+                  : 'branch, worktree, permissions, files'}
+              </span>
+              <Show when={!advancedOpen() && activeAdvancedCount() > 0}>
+                <span
+                  style={{
+                    'margin-left': 'auto',
+                    padding: '1px 7px',
+                    'border-radius': '999px',
+                    background: `color-mix(in srgb, ${theme.accent} 18%, transparent)`,
+                    color: theme.accent,
+                    ...typography.label,
+                  }}
+                >
+                  {activeAdvancedCount()} active
+                </span>
+              </Show>
+            </button>
+
+            <Show when={advancedOpen()}>
+              <div
+                style={{
+                  display: 'flex',
+                  'flex-direction': 'column',
+                  gap: '16px',
+                  'padding-left': '4px',
+                }}
+              >
+                <Show
+                  when={selectedProjectPath() && !selectedProjectIsNonGit() && !currentBranchMode()}
+                >
+                  <div
+                    data-nav-field="base-branch"
+                    style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+                  >
+                    <SectionLabel as="label">Base branch</SectionLabel>
+                    <div
+                      style={{
+                        display: 'grid',
+                        'grid-template-columns': 'minmax(0, 1fr) minmax(180px, 240px)',
+                        gap: '8px',
+                      }}
+                    >
+                      <input
+                        aria-label="Filter base branches"
+                        class="input-field"
+                        disabled={gitOptions.branchListStatus() === 'loading'}
+                        onInput={(event) => gitOptions.setBranchQuery(event.currentTarget.value)}
+                        placeholder="Filter branches"
+                        type="text"
+                        value={gitOptions.branchQuery()}
+                        style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
+                      />
+                      <select
+                        aria-label="Base branch"
+                        class="input-field"
+                        disabled={
+                          gitOptions.branchListStatus() === 'loading' ||
+                          gitOptions.visibleBranchOptions().length === 0
+                        }
+                        onChange={(event) =>
+                          gitOptions.setSelectedBaseBranch(event.currentTarget.value || null)
+                        }
+                        value={gitOptions.selectedBaseBranch() ?? ''}
+                        style={{ ...fieldInputStyle(), padding: '8px 10px', ...typography.monoUi }}
+                      >
+                        <For each={gitOptions.visibleBranchOptions()}>
+                          {(branch) => (
+                            <option value={branch.name}>
+                              {gitOptions.formatBranchOption(branch)}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </div>
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      style={{
+                        color:
+                          gitOptions.branchListStatus() === 'error'
+                            ? theme.warning
+                            : theme.fgSubtle,
+                        display: 'flex',
+                        'align-items': 'center',
+                        gap: '8px',
+                        ...typography.meta,
+                      }}
+                    >
+                      <span>{gitOptions.branchPickerStatus()}</span>
+                      <Show when={gitOptions.branchListStatus() === 'error'}>
+                        <button
+                          type="button"
+                          class="btn-secondary"
+                          onClick={gitOptions.reloadBranches}
+                          style={{
+                            background: theme.bgInput,
+                            border: `1px solid ${theme.border}`,
+                            'border-radius': '8px',
+                            color: theme.fg,
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            ...typography.metaStrong,
+                          }}
+                        >
+                          Retry
+                        </button>
+                      </Show>
+                    </div>
+                    <Show when={!gitOptions.selectedBaseBranchAvailable()}>
+                      <div role="alert" style={calloutStyle('error')}>
+                        Selected base branch is no longer available. Refresh or choose another
+                        branch.
+                      </div>
+                    </Show>
+                  </div>
+                </Show>
+
+                <Show when={createsNewWorktree()}>
+                  <BranchPrefixField
+                    branchPrefix={branchPrefix()}
+                    branchPreview={branchPreview()}
+                    conflictMessage={gitOptions.branchPreviewConflictMessage()}
+                    projectPath={selectedProjectPath()}
+                    onPrefixChange={setBranchPrefix}
+                  />
+                </Show>
+
+                <Show when={!selectedProjectIsNonGit()}>
+                  <div
+                    data-nav-field="existing-worktree-mode"
+                    style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+                  >
+                    <label title={existingWorktreeTooltip()} style={checkboxLabelStyle()}>
+                      <input
+                        type="checkbox"
+                        checked={existingWorktreeMode()}
+                        onChange={(e) => updateExistingWorktreeMode(e.currentTarget.checked)}
+                        style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                      />
+                      Use existing worktree
+                    </label>
+                    <Show when={existingWorktreeMode()}>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          class="input-field"
+                          type="text"
+                          value={existingWorktreePath()}
+                          onInput={(e) => setExistingWorktreePath(e.currentTarget.value)}
+                          placeholder="/path/to/existing/worktree"
+                          style={{
+                            ...fieldInputStyle(),
+                            flex: '1',
+                            padding: '8px 10px',
+                            ...typography.monoUi,
+                          }}
+                        />
+                        <button
+                          type="button"
+                          class="btn-secondary"
+                          onClick={() => {
+                            void browseExistingWorktreePath();
+                          }}
+                          style={{
+                            padding: '8px 12px',
+                            background: theme.bgInput,
+                            border: `1px solid ${theme.border}`,
+                            'border-radius': '8px',
+                            color: theme.fg,
+                            cursor: 'pointer',
+                            ...typography.metaStrong,
+                          }}
+                        >
+                          Browse
+                        </button>
+                      </div>
+                      <div style={calloutStyle('muted')}>
+                        Closing this task will keep the selected worktree and branch.
+                      </div>
+                    </Show>
+                  </div>
+                </Show>
+
+                <div
+                  data-nav-field="steps-tracking"
+                  style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+                >
+                  <label title={stepsTrackingTooltip()} style={checkboxLabelStyle()}>
+                    <input
+                      type="checkbox"
+                      checked={stepsTracking()}
+                      onChange={(e) => setStepsTracking(e.currentTarget.checked)}
+                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                    />
+                    Track task steps
+                  </label>
+                  <Show when={stepsTracking()}>
+                    <div style={calloutStyle('muted')}>
+                      The backend watches <code>.claude/steps.json</code> and keeps step history
+                      shared across clients.
+                    </div>
+                  </Show>
+                </div>
+
+                <Show when={!terminalMode() && agentSupportsSkipPermissions()}>
+                  <div
+                    data-nav-field="skip-permissions"
+                    style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+                  >
+                    <label title={skipPermissionsTooltip()} style={checkboxLabelStyle()}>
+                      <input
+                        type="checkbox"
+                        checked={skipPermissions()}
+                        onChange={(e) => setSkipPermissions(e.currentTarget.checked)}
+                        style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                      />
+                      Dangerously skip all confirms
+                    </label>
+                  </div>
+                </Show>
+
+                <Show when={createsNewWorktree()}>
+                  <SymlinkDirPicker
+                    dirs={gitOptions.ignoredDirs()}
+                    error={gitOptions.ignoredDirsError()}
+                    onRetry={gitOptions.reloadIgnoredDirs}
+                    selectedDirs={gitOptions.selectedDirs()}
+                    status={gitOptions.ignoredDirsStatus()}
+                    truncated={gitOptions.ignoredDirsTruncated()}
+                    onToggle={gitOptions.toggleSelectedDir}
+                  />
+                </Show>
+              </div>
+            </Show>
+          </div>
+
+          <Show when={error()}>
+            <div style={{ ...calloutStyle('error'), padding: '8px 12px' }}>{error()}</div>
+          </Show>
+
+          <div
+            data-nav-field="footer"
             style={{
-              padding: '9px 20px',
-              background: theme.accent,
-              border: 'none',
-              'border-radius': '8px',
-              color: theme.accentText,
-              cursor: 'pointer',
-              opacity: !canSubmit() ? '0.4' : '1',
-              display: 'inline-flex',
-              'align-items': 'center',
+              display: 'flex',
               gap: '8px',
-              ...typography.uiStrong,
+              'justify-content': 'flex-end',
+              'padding-top': '4px',
             }}
           >
-            {terminalMode() ? 'Create Terminal Task' : 'Create Task'}
-          </button>
-        </div>
-      </form>
-    </Dialog>
+            <button
+              type="button"
+              class="btn-secondary"
+              onClick={requestClose}
+              style={{
+                padding: '9px 18px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                color: theme.fgMuted,
+                cursor: 'pointer',
+                ...typography.ui,
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="btn-primary"
+              disabled={!canSubmit()}
+              style={{
+                padding: '9px 20px',
+                background: theme.accent,
+                border: 'none',
+                'border-radius': '8px',
+                color: theme.accentText,
+                cursor: 'pointer',
+                opacity: !canSubmit() ? '0.4' : '1',
+                display: 'inline-flex',
+                'align-items': 'center',
+                gap: '8px',
+                ...typography.uiStrong,
+              }}
+            >
+              {terminalMode() ? 'Create Terminal Task' : 'Create Task'}
+            </button>
+          </div>
+        </form>
+      </Dialog>
+
+      <ConfirmDialog
+        open={props.open && closeState().kind === 'confirming-discard'}
+        autoFocusCancel
+        danger
+        title="Discard new task draft?"
+        message="Your prompt or task name has changes that will be lost."
+        confirmLabel="Discard draft"
+        cancelLabel="Keep editing"
+        onCancel={keepEditing}
+        onConfirm={discardDraft}
+      />
+    </>
   );
 }

@@ -32,8 +32,12 @@ interface RemoteServerController {
 
 export interface CreateRemoteAccessControllerOptions {
   defaultPort?: number;
+  resolveScopedCommands?: () => Promise<
+    NonNullable<Parameters<typeof startRemoteServer>[0]['scopedCommands']> | undefined
+  >;
   startServer?: typeof startRemoteServer;
   staticDir?: string;
+  scopedCommands?: NonNullable<Parameters<typeof startRemoteServer>[0]['scopedCommands']>;
 }
 
 export type RemoteAccessStatusListener = (status: RemoteAccessStatus) => void;
@@ -55,6 +59,7 @@ function buildRemoteServerStartRequest(
   options: {
     defaultPort: number;
     notifyStatusChanged: () => void;
+    scopedCommands?: NonNullable<Parameters<typeof startRemoteServer>[0]['scopedCommands']>;
     staticDir: string;
   },
 ): Parameters<typeof startRemoteServer>[0] {
@@ -67,6 +72,7 @@ function buildRemoteServerStartRequest(
     onAuthenticatedClientCountChanged: () => {
       options.notifyStatusChanged();
     },
+    ...(options.scopedCommands ? { scopedCommands: options.scopedCommands } : {}),
   };
 }
 
@@ -113,9 +119,15 @@ export function createRemoteAccessController(
   const startServer = options.startServer ?? startRemoteServer;
   const defaultPort = options.defaultPort ?? 7777;
   const staticDir = options.staticDir ?? getDefaultRemoteStaticDir();
+  const scopedCommands = options.scopedCommands;
+  const resolveScopedCommands = options.resolveScopedCommands;
+  if (scopedCommands && resolveScopedCommands) {
+    throw new TypeError('Remote scoped commands must be static or activation-resolved, not both');
+  }
   const listeners = new Set<RemoteAccessStatusListener>();
 
   let remoteServer: RemoteServerController | null = null;
+  let startPromise: Promise<RemoteServerController> | null = null;
   let remoteStatusVersion = 0;
 
   function bumpRemoteStatusVersion(): number {
@@ -139,20 +151,45 @@ export function createRemoteAccessController(
     getStatusVersion: () => remoteStatusVersion,
     start: async (args) => {
       if (!remoteServer) {
-        remoteServer = await startServer(
-          buildRemoteServerStartRequest(args, {
-            defaultPort,
-            notifyStatusChanged,
-            staticDir,
-          }),
-        );
+        startPromise ??= Promise.resolve()
+          .then(() => resolveScopedCommands?.())
+          .then((resolvedCommands) => {
+            const activeScopedCommands = scopedCommands ?? resolvedCommands;
+            return startServer(
+              buildRemoteServerStartRequest(args, {
+                defaultPort,
+                notifyStatusChanged,
+                ...(activeScopedCommands ? { scopedCommands: activeScopedCommands } : {}),
+                staticDir,
+              }),
+            );
+          })
+          .then((server) => {
+            remoteServer = server;
+            return server;
+          })
+          .finally(() => {
+            startPromise = null;
+          });
+        await startPromise;
+      }
+
+      const activeServer = remoteServer;
+      if (!activeServer) {
+        throw new Error('Remote server startup completed without an active server');
       }
 
       notifyStatusChanged();
-
-      return mapRemoteServerStartResult(remoteServer);
+      return mapRemoteServerStartResult(activeServer);
     },
     stop: async () => {
+      if (startPromise) {
+        try {
+          await startPromise;
+        } catch {
+          return;
+        }
+      }
       if (!remoteServer) {
         return;
       }

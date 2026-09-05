@@ -168,6 +168,15 @@ async function runCheck() {
     if (!hasTerminalSessionPreload) {
       failures.push('dist/index.html is missing the terminal-session modulepreload link');
     }
+
+    const hasEagerSearchAddonLink = linkTags.some(
+      (tag) =>
+        (tag.includes('rel="modulepreload"') || tag.includes('rel="prefetch"')) &&
+        /href="\.\/assets\/addon-search-[^"]+\.js"/.test(tag),
+    );
+    if (hasEagerSearchAddonLink) {
+      failures.push('dist/index.html must not preload or prefetch the terminal search addon');
+    }
   }
 
   if (failures.length > 0) {

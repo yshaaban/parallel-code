@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getRendererRuntimeDiagnosticsSnapshot,
@@ -7,6 +7,11 @@ import {
   recordBrowserStartupModeStarted,
   recordBrowserStartupTierReached,
   recordAgentOutputAnalysis,
+  recordLocalQuestionStaleGenerationDrop,
+  recordLocalQuestionTransition,
+  recordPromptDispatchBlocked,
+  recordPromptDraftPreservedAfterSend,
+  recordPromptQuestionAgreementObservation,
   recordTerminalFitDirtyMark,
   recordTerminalFitExecution,
   recordTerminalFitFlush,
@@ -31,6 +36,7 @@ import {
   recordTerminalRecoveryStableRevealWait,
   recordTerminalRecoveryVisibleSteadyStateSnapshot,
   recordTerminalRendererAcquire,
+  recordTerminalRendererAtlasRepair,
   recordTerminalRendererEviction,
   recordTerminalRendererFallbackActivation,
   recordTerminalRendererPoolSnapshot,
@@ -57,6 +63,7 @@ describe('runtime-diagnostics', () => {
 
   afterEach(() => {
     resetRendererRuntimeDiagnostics();
+    vi.restoreAllMocks();
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: originalWindow,
@@ -158,7 +165,23 @@ describe('runtime-diagnostics', () => {
       visibleContextsCurrent: 0,
     });
     recordTerminalRendererSwap('attach');
+    recordTerminalRendererAtlasRepair({ reason: 'foreground', type: 'intent' });
+    recordTerminalRendererAtlasRepair({ queueDepth: 1, type: 'queued' });
+    recordTerminalRendererAtlasRepair({ delayMs: 12, type: 'applied' });
+    recordTerminalRendererAtlasRepair({ reason: 'hidden', type: 'skipped' });
+    recordTerminalRendererAtlasRepair({ type: 'failed' });
     recordBrowserStartupModeCanceled('reconnect-restore', 'transport-lost', 18);
+    recordLocalQuestionTransition('enter');
+    recordLocalQuestionTransition('clear');
+    recordLocalQuestionStaleGenerationDrop('private-agent-id', 1);
+    recordPromptDispatchBlocked('agent-question');
+    recordPromptDraftPreservedAfterSend();
+    recordPromptQuestionAgreementObservation({
+      agentId: 'private-agent-id',
+      canonicalQuestionActive: true,
+      generation: 1,
+      localQuestionActive: false,
+    });
 
     expect(getRendererRuntimeDiagnosticsSnapshot()).toEqual(initialSnapshot);
   });
@@ -263,6 +286,18 @@ describe('runtime-diagnostics', () => {
       visibleContextsCurrent: 0,
     });
     recordTerminalRendererSwap('attach');
+    recordTerminalRendererAtlasRepair({ reason: 'foreground', type: 'intent' });
+    recordTerminalRendererAtlasRepair({ reason: 'manual', type: 'intent' });
+    recordTerminalRendererAtlasRepair({ reason: 'newly-visible', type: 'intent' });
+    recordTerminalRendererAtlasRepair({ queueDepth: 1, type: 'queued' });
+    recordTerminalRendererAtlasRepair({ queueDepth: 3, type: 'queued' });
+    recordTerminalRendererAtlasRepair({ delayMs: 12, type: 'applied' });
+    recordTerminalRendererAtlasRepair({ delayMs: 8, type: 'applied' });
+    recordTerminalRendererAtlasRepair({ reason: 'disposed', type: 'skipped' });
+    recordTerminalRendererAtlasRepair({ reason: 'generation', type: 'skipped' });
+    recordTerminalRendererAtlasRepair({ reason: 'hidden', type: 'skipped' });
+    recordTerminalRendererAtlasRepair({ reason: 'ineligible', type: 'skipped' });
+    recordTerminalRendererAtlasRepair({ type: 'failed' });
     recordBrowserStartupModeStarted('cold-bootstrap');
     recordBrowserStartupTierReached('summary', 12);
     recordBrowserStartupModeCompleted('cold-bootstrap', 24);
@@ -277,6 +312,24 @@ describe('runtime-diagnostics', () => {
         scannedCandidates: 3,
       }),
     );
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer.atlasRepair).toEqual({
+      applied: 2,
+      failed: 1,
+      intents: {
+        foreground: 1,
+        manual: 1,
+        'newly-visible': 1,
+      },
+      maxQueueDepth: 3,
+      queued: 2,
+      skipped: {
+        disposed: 1,
+        generation: 1,
+        hidden: 1,
+        ineligible: 1,
+      },
+      totalDelayMs: 20,
+    });
     expect(getRendererRuntimeDiagnosticsSnapshot().agentOutputAnalysis).toEqual(
       expect.objectContaining({
         analysisCalls: 1,
@@ -475,6 +528,92 @@ describe('runtime-diagnostics', () => {
     );
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer.rendererSwapCounts.attach).toBe(
       1,
+    );
+  });
+
+  it('aggregates content-free prompt-question counters and disagreement duration', () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+    const nowSpy = vi
+      .spyOn(globalThis.performance, 'now')
+      .mockReturnValueOnce(10)
+      .mockReturnValueOnce(25)
+      .mockReturnValue(25);
+
+    recordLocalQuestionTransition('enter');
+    recordLocalQuestionTransition('clear');
+    recordLocalQuestionStaleGenerationDrop('private-agent-id', 6);
+    recordLocalQuestionStaleGenerationDrop('private-agent-id', 6);
+    recordPromptDispatchBlocked('agent-question');
+    recordPromptDispatchBlocked('peer-controlled');
+    recordPromptDraftPreservedAfterSend();
+    recordPromptQuestionAgreementObservation({
+      agentId: 'private-agent-id',
+      canonicalQuestionActive: true,
+      generation: 7,
+      localQuestionActive: false,
+    });
+    recordPromptQuestionAgreementObservation({
+      agentId: 'private-agent-id',
+      canonicalQuestionActive: true,
+      generation: 7,
+      localQuestionActive: true,
+    });
+
+    const diagnostics = getRendererRuntimeDiagnosticsSnapshot().promptQuestion;
+    expect(diagnostics).toEqual({
+      blockedDispatchAttempts: {
+        'agent-question': 1,
+        empty: 0,
+        'peer-controlled': 1,
+        'send-in-flight': 0,
+      },
+      canonicalLocalDisagreement: {
+        activeCurrent: 0,
+        completed: 1,
+        lastDurationMs: 15,
+        maxDurationMs: 15,
+        totalDurationMs: 15,
+        trackingDrops: 0,
+      },
+      draftPreservedAfterSend: 1,
+      localClears: 1,
+      localEnters: 1,
+      staleGenerationDrops: 1,
+      staleGenerationTrackingDrops: 0,
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain('private-agent-id');
+    nowSpy.mockRestore();
+  });
+
+  it('caps prompt-question disagreement tracking by agent generation', () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+
+    for (let generation = 0; generation < 129; generation += 1) {
+      recordPromptQuestionAgreementObservation({
+        agentId: 'private-agent-id',
+        canonicalQuestionActive: true,
+        generation,
+        localQuestionActive: false,
+      });
+    }
+
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().promptQuestion.canonicalLocalDisagreement,
+    ).toEqual(
+      expect.objectContaining({
+        activeCurrent: 128,
+        trackingDrops: 1,
+      }),
     );
   });
 

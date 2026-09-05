@@ -1,5 +1,12 @@
 export type { WorktreeStatus } from '../domain/server-state.js';
 import type { ChangedFileStatus } from '../domain/git-status.js';
+import type { TaskCreationSnapshotIssue, TaskCreationPhase } from '../domain/task-creation.js';
+import type {
+  TaskCreationOperationLink,
+  TaskCreationProvenance,
+  TaskInitialShellOwnership,
+  TaskCreationWriterEpoch,
+} from '../domain/task-creation-provenance.js';
 
 export type DiscoveredProjectSource = 'claude' | 'codex' | 'git';
 
@@ -25,6 +32,8 @@ export type PtyOutput =
     };
 
 export type AgentResumeStrategy = 'cli-args' | 'hydra-session' | 'none';
+export type AgentResumeFailureClassifier = 'claude-no-conversation-v1';
+export type AgentResumeFailureFallback = 'fresh-start' | 'none';
 
 export interface AgentDef {
   id: string;
@@ -32,6 +41,8 @@ export interface AgentDef {
   command: string;
   args: string[];
   resume_args: string[];
+  resume_failure_classifier?: AgentResumeFailureClassifier;
+  resume_failure_fallback?: AgentResumeFailureFallback;
   resume_strategy?: AgentResumeStrategy;
   skip_permissions_args: string[];
   description: string;
@@ -44,12 +55,60 @@ export interface AgentDef {
 }
 
 export interface CreateTaskResult {
+  agent_def_id?: string;
+  agent_def_name?: string;
   id: string;
   branch_name: string;
   worktree_path: string;
   base_branch?: string;
+  coordinator_credential_path?: string;
+  coordinator_run_id?: string;
+  coordinator_tool_command?: string;
+  creation_issue?: TaskCreationSnapshotIssue;
+  creation_operation_id?: string;
+  creation_phase?: TaskCreationPhase;
+  creation_writer_epoch?: TaskCreationWriterEpoch;
   git_isolation?: 'worktree' | 'current-branch' | 'existing-worktree';
+  initial_prompt?: string;
+  initial_prompt_delivery_id?: string;
+  launch_operation_id?: string;
   project_mode?: 'git' | 'non-git';
+  session_id?: string;
+  symlink_warnings?: WorktreeSymlinkWarning[];
+  task_creation_operation_link?: TaskCreationOperationLink;
+  task_creation_provenance?: TaskCreationProvenance;
+  task_initial_shell_ownership?: TaskInitialShellOwnership;
+  task_name?: string;
+  workspace_revision?: number;
+}
+
+export interface WorktreeSymlinkCandidate {
+  name: string;
+  isDefault: boolean;
+}
+
+export interface WorktreeSymlinkCandidatesResult {
+  candidates: WorktreeSymlinkCandidate[];
+  truncated: boolean;
+}
+
+export type WorktreeSymlinkWarningReason =
+  | 'candidate_query_failed'
+  | 'not_current_candidate'
+  | 'invalid_name'
+  | 'reserved_name'
+  | 'source_missing'
+  | 'source_symlink'
+  | 'unsupported_source_kind'
+  | 'destination_exists'
+  | 'link_failed'
+  | 'exclude_update_failed'
+  | 'ignore_postcondition_failed';
+
+export interface WorktreeSymlinkWarning {
+  name: string;
+  reason: WorktreeSymlinkWarningReason;
+  message: string;
 }
 
 export interface GitBranchInfo {

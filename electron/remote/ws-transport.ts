@@ -50,6 +50,15 @@ export type AuthenticateClientResult =
   | { ok: true; clientId: string }
   | { ok: false; reason: 'client-cap-reached' };
 
+export interface AuthenticateClientOptions {
+  /**
+   * Grants this socket access to the transport's sequenced control stream.
+   * Scoped remote transports use that stream only for terminal-read events;
+   * full browser and legacy transports retain the default access.
+   */
+  receiveControlEvents?: boolean;
+}
+
 export interface ControlReplayCoverage {
   lastSeq: number;
   latestSeq: number;
@@ -85,7 +94,11 @@ export function getClaimAgentControlErrorMessage(result: ClaimAgentControlFailur
 }
 
 export interface WebSocketTransport<Client extends WebSocket> {
-  authenticateClient: (client: Client, clientId?: string) => AuthenticateClientResult;
+  authenticateClient: (
+    client: Client,
+    clientId?: string,
+    options?: AuthenticateClientOptions,
+  ) => AuthenticateClientResult;
   broadcast: (message: ServerMessage) => void;
   broadcastControl: (message: ServerMessage) => void;
   cleanupClient: (client: Client) => void;
@@ -119,6 +132,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
   const authenticatedClients = new Set<Client>();
   const authTimers = new WeakMap<Client, ReturnType<typeof setTimeout>>();
   const clientIds = new WeakMap<Client, string>();
+  const controlEventAccess = new WeakMap<Client, boolean>();
   const clientsByClientId = new Map<string, Set<Client>>();
   const clientMissedPongs = new WeakMap<Client, number>();
   const agentControllers = new Map<string, AgentControllerLease>();
@@ -267,7 +281,11 @@ export function createWebSocketTransport<Client extends WebSocket>(
     const json = serializeJson({ ...message, seq });
 
     addControlEvent(seq, json, options.getControlEventCompactionKey?.(message) ?? null);
-    broadcastSerialized(json);
+    for (const client of authenticatedClients) {
+      if (controlEventAccess.get(client) === true) {
+        options.sendBroadcastText(client, json);
+      }
+    }
   }
 
   function replayControlEventsBatched(
@@ -343,6 +361,9 @@ export function createWebSocketTransport<Client extends WebSocket>(
     replayOptions: ReplayControlEventsOptions = {},
   ): ControlReplayCoverage {
     const coverage = getReplayCoverage(lastSeq, maxSeq);
+    if (controlEventAccess.get(client) !== true) {
+      return coverage;
+    }
     const replayTruncatedMessage = createReplayTruncatedMessage(coverage);
     if (
       replayTruncatedMessage &&
@@ -388,6 +409,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
   }
 
   function sendAgentControllers(client: Client): void {
+    if (controlEventAccess.get(client) !== true) return;
     for (const [agentId] of agentControllers) {
       const controller = getAgentController(agentId);
       if (!controller) continue;
@@ -400,13 +422,18 @@ export function createWebSocketTransport<Client extends WebSocket>(
     }
   }
 
-  function authenticateClient(client: Client, clientId?: string): AuthenticateClientResult {
+  function authenticateClient(
+    client: Client,
+    clientId?: string,
+    authenticationOptions: AuthenticateClientOptions = {},
+  ): AuthenticateClientResult {
     if (!authenticatedClients.has(client) && authenticatedClients.size >= maxAuthenticatedClients) {
       options.closeClient(client, 1013, 'Too many authenticated sessions');
       return { ok: false, reason: 'client-cap-reached' };
     }
 
     const wasAuthenticated = authenticatedClients.has(client);
+    controlEventAccess.set(client, authenticationOptions.receiveControlEvents !== false);
     authenticatedClients.add(client);
     clearAuthTimer(client);
     clientMissedPongs.set(client, 0);
@@ -429,6 +456,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
 
   function cleanupClient(client: Client): void {
     const wasAuthenticated = authenticatedClients.delete(client);
+    controlEventAccess.delete(client);
     clearAuthTimer(client);
     clientMissedPongs.delete(client);
     const clientId = clientIds.get(client);

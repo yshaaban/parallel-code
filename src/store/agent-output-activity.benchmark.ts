@@ -8,11 +8,6 @@ import {
   writeBenchmarkArtifact,
 } from '../lib/benchmark-helpers';
 import {
-  createBulkTextChunks,
-  createMixedWorkloadChunks,
-  createStatuslineChunks,
-} from '../lib/terminal-workload-fixtures';
-import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from '../app/runtime-diagnostics';
@@ -24,15 +19,11 @@ import {
   resetAgentOutputActivityStateForTests,
   type AgentOutputProcessingMode,
 } from './agent-output-activity';
-
-interface ActivityScenario {
-  buildChunks: (terminalIndex: number) => Uint8Array[];
-  getTaskId: (terminalIndex: number) => string;
-  interChunkAdvanceMs: number;
-  name: string;
-  processingMode: AgentOutputProcessingMode;
-  setupActiveTaskId: () => string | null;
-}
+import {
+  AGENT_OUTPUT_ACTIVITY_BENCHMARK_SCENARIOS,
+  buildAgentOutputActivityBenchmarkChunks,
+  type AgentOutputActivityBenchmarkScenario,
+} from './agent-output-activity.benchmark-workload';
 
 interface ActivityBenchmarkResult {
   diagnostics: ReturnType<typeof getRendererRuntimeDiagnosticsSnapshot>['agentOutputAnalysis'];
@@ -42,77 +33,6 @@ interface ActivityBenchmarkResult {
   terminals: number;
 }
 
-const ACTIVITY_SCENARIOS: readonly ActivityScenario[] = [
-  {
-    buildChunks: (terminalIndex) =>
-      createBulkTextChunks({
-        label: `activity:bulk:${terminalIndex}`,
-        paragraphBytes: 4_096,
-        paragraphCount: 8,
-      }),
-    getTaskId: () => 'task-active',
-    interChunkAdvanceMs: 50,
-    name: 'all-active-bulk-text',
-    processingMode: 'full',
-    setupActiveTaskId: () => 'task-active',
-  },
-  {
-    buildChunks: (terminalIndex) =>
-      createStatuslineChunks({
-        footerTopRow: 20,
-        frameCount: 24,
-        label: `activity:status:${terminalIndex}`,
-        splitSequences: true,
-      }),
-    getTaskId: () => 'task-background',
-    interChunkAdvanceMs: 50,
-    name: 'all-background-statusline',
-    processingMode: 'full',
-    setupActiveTaskId: () => 'task-active',
-  },
-  {
-    buildChunks: (terminalIndex) =>
-      createMixedWorkloadChunks({
-        bulkText: {
-          label: `activity:mixed:${terminalIndex}`,
-          paragraphBytes: 2_048,
-          paragraphCount: 4,
-        },
-        statusline: {
-          footerTopRow: 20,
-          frameCount: 12,
-          label: `activity:mixed:${terminalIndex}`,
-          splitSequences: true,
-        },
-      }),
-    getTaskId: (terminalIndex) => (terminalIndex === 0 ? 'task-active' : 'task-background'),
-    interChunkAdvanceMs: 50,
-    name: 'one-active-many-background-mixed',
-    processingMode: 'full',
-    setupActiveTaskId: () => 'task-active',
-  },
-  {
-    buildChunks: (terminalIndex) =>
-      createMixedWorkloadChunks({
-        bulkText: {
-          label: `shell:mixed:${terminalIndex}`,
-          paragraphBytes: 2_048,
-          paragraphCount: 4,
-        },
-        statusline: {
-          footerTopRow: 20,
-          frameCount: 12,
-          label: `shell:mixed:${terminalIndex}`,
-          splitSequences: true,
-        },
-      }),
-    getTaskId: () => 'task-shell',
-    interChunkAdvanceMs: 50,
-    name: 'all-shell-mixed-workload',
-    processingMode: 'shell',
-    setupActiveTaskId: () => null,
-  },
-];
 const DEFAULT_ITERATIONS = 8;
 
 describe('agent-output-activity benchmark', () => {
@@ -148,7 +68,7 @@ describe('agent-output-activity benchmark', () => {
   });
 
   function runScenario(
-    scenario: ActivityScenario,
+    scenario: AgentOutputActivityBenchmarkScenario,
     terminalCount: number,
     iterations: number,
   ): ActivityBenchmarkResult {
@@ -166,7 +86,7 @@ describe('agent-output-activity benchmark', () => {
       }
 
       setStore('activeTaskId', scenario.setupActiveTaskId());
-      const chunksByAgent = agentIds.map((_, terminalIndex) => scenario.buildChunks(terminalIndex));
+      const chunksByAgent = buildAgentOutputActivityBenchmarkChunks(scenario, terminalCount);
       const maxChunkCount = Math.max(0, ...chunksByAgent.map((chunks) => chunks.length));
       const startedAtMs = nodePerformance.now();
 
@@ -212,7 +132,7 @@ describe('agent-output-activity benchmark', () => {
     const results: ActivityBenchmarkResult[] = [];
 
     for (const terminalCount of terminalCounts) {
-      for (const scenario of ACTIVITY_SCENARIOS) {
+      for (const scenario of AGENT_OUTPUT_ACTIVITY_BENCHMARK_SCENARIOS) {
         const result = runScenario(scenario, terminalCount, iterations);
         results.push(result);
         process.stdout.write(
@@ -227,7 +147,9 @@ describe('agent-output-activity benchmark', () => {
       results,
     });
 
-    expect(results.length).toBe(terminalCounts.length * ACTIVITY_SCENARIOS.length);
+    expect(results.length).toBe(
+      terminalCounts.length * AGENT_OUTPUT_ACTIVITY_BENCHMARK_SCENARIOS.length,
+    );
     expect(
       results
         .filter((result) => result.processingMode === 'full')

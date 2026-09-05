@@ -410,7 +410,6 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
           'flex-direction': 'column',
           gap: '8px',
           padding: '10px',
-          outline: 'none',
         }}
       >
         <Show when={errorMessage()}>

@@ -3,6 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { IPC } from '../ipc/channels.js';
 import type { ClaimAgentControlResult, WebSocketTransport } from './ws-transport.js';
+import type { RemoteCommandAuthentication, RemoteGrant } from '../ipc/remote-command-gateway.js';
+import type { TaskCatalogDeltaBatch } from '../../src/domain/task-catalog.js';
+import type { TaskCreationAgentOperationSnapshot } from '../../src/domain/task-creation.js';
+import type {
+  TaskCreationOperationCapability,
+  TaskCreationOperationId,
+} from '../../src/domain/task-creation-ticket.js';
+import type { RemoteTaskCreationOperationSource } from '../ipc/task-creation-remote-commands.js';
 
 const writeToAgentMock = vi.fn();
 const resizeAgentMock = vi.fn();
@@ -35,6 +43,12 @@ const onPtyEventMock = vi.fn(
 );
 const subscribeToAgentMock = vi.fn((_agentId: string, _callback: (data: string) => void) => false);
 const unsubscribeFromAgentMock = vi.fn();
+const TASK_CREATION_OPERATION_ID = Buffer.alloc(16, 0x31).toString(
+  'base64url',
+) as TaskCreationOperationId;
+const TASK_CREATION_OPERATION_CAPABILITY = Buffer.alloc(32, 0x42).toString(
+  'base64url',
+) as TaskCreationOperationCapability;
 
 vi.mock('../ipc/pty.js', () => ({
   getAgentCols: vi.fn(() => 80),
@@ -104,6 +118,68 @@ function createClaimAgentControlMock() {
 
 function createSendMessageMock() {
   return vi.fn(() => ({ ok: true as const }));
+}
+
+function createScopedAuthentication(
+  grants: readonly RemoteGrant[],
+  overrides: Partial<RemoteCommandAuthentication> = {},
+): RemoteCommandAuthentication {
+  return {
+    authEpoch: '1',
+    authenticationSessionGeneration: 'generation-1',
+    csrfValidated: true,
+    directPeerValidated: true,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    grants: new Set(grants),
+    kind: 'browser-session',
+    originValidated: true,
+    principalId: 'workspace-owner',
+    sourceId: 'peer-1',
+    transportSecure: true,
+    ...overrides,
+  };
+}
+
+function createTaskCatalogRemovalBatch(): TaskCatalogDeltaBatch {
+  return {
+    events: [
+      {
+        catalogVersion: 1,
+        entityId: 'task-1',
+        entityKind: 'task',
+        kind: 'remove',
+        serverInstanceId: 'server-1',
+      },
+    ],
+    fromCatalogVersion: 0,
+    serverInstanceId: 'server-1',
+    toCatalogVersion: 1,
+  };
+}
+
+function createTaskCreationSnapshot(
+  operationId: TaskCreationOperationId = TASK_CREATION_OPERATION_ID,
+): TaskCreationAgentOperationSnapshot {
+  return {
+    commit: 'not-committed',
+    committedTaskId: null,
+    committedWorkspaceRevision: null,
+    current: {
+      catalogVersion: 1,
+      serverInstanceId: 'server-1',
+      task: null,
+      taskClosing: false,
+      taskState: 'not-visible',
+      workspaceRevision: 1,
+    },
+    managedArtifactRecovery: { kind: 'none' },
+    operationId,
+    phase: 'validating',
+    serverInstanceId: 'server-1',
+    symlinkWarnings: [],
+    taskMode: 'agent',
+    version: 1,
+  };
 }
 
 function createMockTransport(
@@ -190,6 +266,312 @@ describe('registerRemoteWebSocketServer', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('authenticates scoped cookie sockets without URL credentials and routes input through the gateway', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const dispatch = vi.fn().mockResolvedValue({ ok: true, result: { kind: 'accepted' } });
+    const authenticateConnection = vi.fn(() => true);
+    const authentication = {
+      authEpoch: '1',
+      authenticationSessionGeneration: 'generation-1',
+      csrfValidated: true,
+      directPeerValidated: true,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      grants: new Set(['terminal:control' as const]),
+      kind: 'browser-session' as const,
+      originValidated: true,
+      principalId: 'workspace-owner',
+      sourceId: 'peer-1',
+      transportSecure: true,
+    };
+
+    registerRemoteWebSocketServer({
+      authenticateConnection,
+      authenticateScopedConnection: () => authentication,
+      getAgentList: () => [],
+      remoteCommandGateway: { dispatch } as never,
+      safeCompareToken: () => false,
+      transport: createMockTransport(),
+      wss: wss as never,
+    });
+    wss.emit('connection', client, {
+      headers: { cookie: '__Host-parallel_code_session=session', host: 'parallel.test' },
+      url: '/?clientId=mobile-1&lastSeq=4',
+    });
+    client.emit('message', JSON.stringify({ type: 'input', agentId: 'agent-1', data: 'ls\r' }));
+
+    expect(authenticateConnection).toHaveBeenCalledWith(client, 'mobile-1', 4, {
+      terminalRead: false,
+    });
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        'terminal.input',
+        expect.objectContaining({ sourceId: 'mobile-1' }),
+        { type: 'input', agentId: 'agent-1', data: 'ls\r' },
+      ),
+    );
+    expect(writeToAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects query-token fallback once scoped socket authentication is configured', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const authenticateConnection = vi.fn(() => true);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection,
+      authenticateScopedConnection: () => ({
+        authEpoch: '1',
+        authenticationSessionGeneration: 'generation-1',
+        csrfValidated: true,
+        directPeerValidated: true,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        grants: new Set(['terminal:control']),
+        kind: 'browser-session',
+        originValidated: true,
+        principalId: 'workspace-owner',
+        transportSecure: true,
+      }),
+      getAgentList: () => [],
+      remoteCommandGateway: { dispatch: vi.fn() } as never,
+      safeCompareToken: (token) => token === 'legacy',
+      transport: createMockTransport(),
+      wss: wss as never,
+    });
+    wss.emit('connection', client, {
+      headers: { host: 'parallel.test' },
+      url: '/?token=legacy',
+    });
+
+    expect(client.close).toHaveBeenCalledWith(4001, 'Secure session required');
+    expect(authenticateConnection).not.toHaveBeenCalled();
+  });
+
+  it('rejects every scoped socket missing secure direct exact-origin proof before any effects', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    for (const overrides of [
+      { transportSecure: false },
+      { directPeerValidated: false },
+      { originValidated: false },
+      { expiresAt: 0 },
+    ] satisfies Array<Partial<RemoteCommandAuthentication>>) {
+      const client = createFakeClient();
+      const wss = createFakeWebSocketServer();
+      wss.clients.add(client);
+      const authenticateConnection = vi.fn(() => true);
+      const server = registerRemoteWebSocketServer({
+        authenticateConnection,
+        authenticateScopedConnection: () =>
+          createScopedAuthentication(['terminal:read'], overrides),
+        getAgentList: () => [],
+        safeCompareToken: () => false,
+        transport: createMockTransport(),
+        wss: wss as never,
+      });
+
+      wss.emit('connection', client, { headers: { host: 'parallel.test' }, url: '/' });
+      client.emit('message', JSON.stringify({ type: 'subscribe', agentId: 'agent-1' }));
+
+      expect(client.close).toHaveBeenCalledWith(4001, 'Secure session required');
+      expect(authenticateConnection).not.toHaveBeenCalled();
+      expect(subscribeToAgentMock).not.toHaveBeenCalled();
+      server.cleanup();
+      vi.clearAllMocks();
+    }
+  });
+
+  it('closes a scoped socket immediately when its authority invalidates the generation', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const authentication = createScopedAuthentication(['terminal:read']);
+    let current: RemoteCommandAuthentication | null = authentication;
+    let invalidate: (() => void) | undefined;
+    const transport = createMockTransport();
+
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => authentication,
+      getAgentList: () => [],
+      getCurrentScopedAuthentication: () => current,
+      refreshScopedAuthentication: () => current,
+      safeCompareToken: () => false,
+      subscribeScopedAuthenticationInvalidation: (listener) => {
+        invalidate = listener;
+        return () => undefined;
+      },
+      transport,
+      wss: wss as never,
+    });
+    wss.emit('connection', client, { headers: { host: 'parallel.test' }, url: '/' });
+
+    current = null;
+    invalidate?.();
+
+    expect(client.close).toHaveBeenCalledWith(4001, 'Secure session required');
+    expect(transport.cleanupClient).toHaveBeenCalledWith(client);
+    server.cleanup();
+  });
+
+  it('isolates catalog and terminal read streams by scoped grant', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const catalogClient = createFakeClient();
+    const catalogWss = createFakeWebSocketServer();
+    catalogWss.clients.add(catalogClient);
+    const catalogTransport = createMockTransport();
+    let publishCatalog: ((batch: TaskCatalogDeltaBatch) => void) | undefined;
+    const catalogServer = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => createScopedAuthentication(['catalog:read']),
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      subscribeTaskCatalog: (listener) => {
+        publishCatalog = listener;
+        return () => undefined;
+      },
+      transport: catalogTransport,
+      wss: catalogWss as never,
+    });
+    catalogWss.emit('connection', catalogClient, {
+      headers: { host: 'parallel.test' },
+      url: '/',
+    });
+    catalogClient.emit('message', JSON.stringify({ type: 'subscribe', agentId: 'agent-1' }));
+    publishCatalog?.(createTaskCatalogRemovalBatch());
+    expect(subscribeToAgentMock).not.toHaveBeenCalled();
+    expect(catalogTransport.sendMessage).toHaveBeenCalledWith(catalogClient, {
+      type: 'task-catalog-delta',
+      batch: createTaskCatalogRemovalBatch(),
+    });
+
+    const terminalClient = createFakeClient();
+    const terminalWss = createFakeWebSocketServer();
+    terminalWss.clients.add(terminalClient);
+    const terminalTransport = createMockTransport();
+    let publishWithoutGrant: typeof publishCatalog;
+    const terminalServer = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => createScopedAuthentication(['terminal:read']),
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      subscribeTaskCatalog: (listener) => {
+        publishWithoutGrant = listener;
+        return () => undefined;
+      },
+      transport: terminalTransport,
+      wss: terminalWss as never,
+    });
+    terminalWss.emit('connection', terminalClient, {
+      headers: { host: 'parallel.test' },
+      url: '/',
+    });
+    vi.mocked(terminalTransport.sendMessage).mockClear();
+    publishWithoutGrant?.(createTaskCatalogRemovalBatch());
+    expect(terminalTransport.sendMessage).not.toHaveBeenCalled();
+
+    catalogServer.cleanup();
+    terminalServer.cleanup();
+  });
+
+  it('fans out content-free notes invalidations only to notes readers and unsubscribes on cleanup', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const notesClient = createFakeClient();
+    const deniedClient = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(notesClient);
+    wss.clients.add(deniedClient);
+    const transport = createMockTransport();
+    const unsubscribe = vi.fn();
+    let publish:
+      | ((payload: { sourceId: string | null; taskId: string; workspaceRevision: number }) => void)
+      | undefined;
+    let connection = 0;
+
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () =>
+        createScopedAuthentication(connection++ === 0 ? ['notes:read'] : ['terminal:read']),
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      subscribeTaskNotesChanged: (listener) => {
+        publish = listener;
+        return unsubscribe;
+      },
+      transport,
+      wss: wss as never,
+    });
+    wss.emit('connection', notesClient, { headers: { host: 'parallel.test' }, url: '/' });
+    wss.emit('connection', deniedClient, { headers: { host: 'parallel.test' }, url: '/' });
+    vi.mocked(transport.sendMessage).mockClear();
+
+    publish?.({ sourceId: 'peer-1', taskId: 'task-1', workspaceRevision: 7 });
+
+    expect(transport.sendMessage).toHaveBeenCalledOnce();
+    expect(transport.sendMessage).toHaveBeenCalledWith(notesClient, {
+      type: 'ipc-event',
+      channel: IPC.TaskNotesChanged,
+      payload: { sourceId: 'peer-1', taskId: 'task-1', workspaceRevision: 7 },
+    });
+    expect(transport.sendMessage).not.toHaveBeenCalledWith(deniedClient, expect.anything());
+
+    server.cleanup();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('returns visible read-only feedback when scoped terminal control is not granted', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const sendMessage = createSendMessageMock();
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => ({
+        authEpoch: '1',
+        authenticationSessionGeneration: 'generation-1',
+        csrfValidated: true,
+        directPeerValidated: true,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        grants: new Set(['terminal:read']),
+        kind: 'browser-session',
+        originValidated: true,
+        principalId: 'workspace-owner',
+        transportSecure: true,
+      }),
+      getAgentList: () => [],
+      remoteCommandGateway: { dispatch: vi.fn() } as never,
+      safeCompareToken: () => false,
+      transport: createMockTransport({ sendMessage }),
+      wss: wss as never,
+    });
+    wss.emit('connection', client, { headers: { host: 'parallel.test' }, url: '/' });
+    client.emit(
+      'message',
+      JSON.stringify({
+        type: 'task-command-lease',
+        action: 'type',
+        operation: 'acquire',
+        ownerId: 'owner-1',
+        requestId: 'request-1',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(client, {
+      type: 'task-command-lease-result',
+      error: 'Secure terminal control is not available',
+      operation: 'acquire',
+      requestId: 'request-1',
+    });
+    expect(acquireTaskCommandLeaseMock).not.toHaveBeenCalled();
   });
 
   it('forwards browser terminal input traces to backend diagnostics', async () => {
@@ -496,8 +878,10 @@ describe('registerRemoteWebSocketServer', () => {
     }
     exitListener('agent-1', {
       exitCode: 2,
+      generation: 4,
       lastOutput: ['fatal error'],
       signal: null,
+      taskId: 'task-1',
     });
 
     expect(sendMessage).toHaveBeenCalledWith(client, {
@@ -1236,5 +1620,261 @@ describe('registerRemoteWebSocketServer', () => {
       resizeEpoch: 'resize-epoch-1',
       resizeSeq: 3,
     });
+  });
+
+  it('publishes catalog-owner events and releases the subscription during cleanup', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const wss = createFakeWebSocketServer();
+    const transport = createMockTransport();
+    const unsubscribe = vi.fn();
+    let publish: ((batch: TaskCatalogDeltaBatch) => void) | undefined;
+
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      subscribeTaskCatalog: (listener) => {
+        publish = listener;
+        return unsubscribe;
+      },
+      transport,
+      wss: wss as never,
+    });
+
+    publish?.(createTaskCatalogRemovalBatch());
+    expect(transport.broadcast).toHaveBeenCalledWith({
+      type: 'task-catalog-delta',
+      batch: createTaskCatalogRemovalBatch(),
+    });
+
+    server.cleanup();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('binds one scoped operation subscription, emits exact secret-free frames, and cleans up', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const transport = createMockTransport();
+    const backendUnsubscribe = vi.fn(async () => undefined);
+    let publishSnapshot: ((snapshot: TaskCreationAgentOperationSnapshot) => void) | undefined;
+    const taskCreationOperations: RemoteTaskCreationOperationSource = {
+      refreshOperation: vi.fn(async () => undefined),
+      subscribe: vi.fn<RemoteTaskCreationOperationSource['subscribe']>(
+        async (_authentication, _request, listener) => {
+          publishSnapshot = listener;
+          return { kind: 'subscribed', unsubscribe: backendUnsubscribe };
+        },
+      ),
+    };
+    const authentication = createScopedAuthentication(['task:create']);
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => authentication,
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      taskCreationOperations,
+      transport,
+      wss: wss as never,
+    });
+    wss.emit('connection', client, {
+      headers: { host: 'parallel.test' },
+      url: '/?clientId=mobile-1',
+    });
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        operationCapability: TASK_CREATION_OPERATION_CAPABILITY,
+        operationId: TASK_CREATION_OPERATION_ID,
+        type: 'subscribe-task-creation-operation',
+      }),
+    );
+    await vi.waitFor(() => expect(taskCreationOperations.subscribe).toHaveBeenCalledOnce());
+    expect(taskCreationOperations.subscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ principalId: 'workspace-owner', sourceId: 'mobile-1' }),
+      {
+        operationCapability: TASK_CREATION_OPERATION_CAPABILITY,
+        operationId: TASK_CREATION_OPERATION_ID,
+      },
+      expect.any(Function),
+    );
+    await vi.waitFor(() =>
+      expect(transport.sendMessage).toHaveBeenCalledWith(client, {
+        operationId: TASK_CREATION_OPERATION_ID,
+        state: 'ready',
+        type: 'task-creation-operation-subscription-state',
+      }),
+    );
+
+    publishSnapshot?.(createTaskCreationSnapshot());
+    expect(transport.sendMessage).toHaveBeenCalledWith(client, {
+      snapshot: createTaskCreationSnapshot(),
+      type: 'task-creation-operation-snapshot',
+    });
+    expect(JSON.stringify(vi.mocked(transport.sendMessage).mock.calls)).not.toContain(
+      TASK_CREATION_OPERATION_CAPABILITY,
+    );
+
+    client.emit(
+      'message',
+      JSON.stringify({
+        operationId: TASK_CREATION_OPERATION_ID,
+        type: 'unsubscribe-task-creation-operation',
+      }),
+    );
+    await vi.waitFor(() => expect(backendUnsubscribe).toHaveBeenCalledOnce());
+    server.cleanup();
+  });
+
+  it('silently rejects missing grants and bounds each client to eight operation subscriptions', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const deniedClient = createFakeClient();
+    const deniedWss = createFakeWebSocketServer();
+    deniedWss.clients.add(deniedClient);
+    const deniedTransport = createMockTransport();
+    const subscribe = vi.fn<RemoteTaskCreationOperationSource['subscribe']>(async () => ({
+      kind: 'subscribed',
+      unsubscribe: async () => undefined,
+    }));
+    const taskCreationOperations: RemoteTaskCreationOperationSource = {
+      refreshOperation: vi.fn(async () => undefined),
+      subscribe,
+    };
+    const deniedServer = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => createScopedAuthentication(['catalog:read']),
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      taskCreationOperations,
+      transport: deniedTransport,
+      wss: deniedWss as never,
+    });
+    deniedWss.emit('connection', deniedClient, { headers: { host: 'parallel.test' }, url: '/' });
+    deniedClient.emit(
+      'message',
+      JSON.stringify({
+        operationCapability: TASK_CREATION_OPERATION_CAPABILITY,
+        operationId: TASK_CREATION_OPERATION_ID,
+        type: 'subscribe-task-creation-operation',
+      }),
+    );
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(deniedTransport.sendMessage).not.toHaveBeenCalledWith(
+      deniedClient,
+      expect.objectContaining({ type: 'task-creation-operation-subscription-state' }),
+    );
+    deniedServer.cleanup();
+
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const transport = createMockTransport();
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => createScopedAuthentication(['task:create']),
+      getAgentList: () => [],
+      safeCompareToken: () => false,
+      taskCreationOperations,
+      transport,
+      wss: wss as never,
+    });
+    wss.emit('connection', client, { headers: { host: 'parallel.test' }, url: '/' });
+    const operationIds = Array.from({ length: 9 }, (_, index) =>
+      Buffer.alloc(16, 0x40 + index).toString('base64url'),
+    );
+    for (const candidateOperationId of operationIds) {
+      client.emit(
+        'message',
+        JSON.stringify({
+          operationCapability: TASK_CREATION_OPERATION_CAPABILITY,
+          operationId: candidateOperationId,
+          type: 'subscribe-task-creation-operation',
+        }),
+      );
+    }
+    expect(subscribe).toHaveBeenCalledTimes(8);
+    expect(transport.sendMessage).toHaveBeenCalledWith(client, {
+      operationId: operationIds[8],
+      state: 'degraded',
+      type: 'task-creation-operation-subscription-state',
+    });
+    server.cleanup();
+  });
+
+  it('refreshes subscribed operations after catalog publication and cleans up on grant revocation', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+    const transport = createMockTransport();
+    const backendUnsubscribe = vi.fn(async () => undefined);
+    let publishCatalog: ((batch: TaskCatalogDeltaBatch) => void) | undefined;
+    let publishSnapshot: ((snapshot: TaskCreationAgentOperationSnapshot) => void) | undefined;
+    const refreshOperation = vi.fn(async (currentOperationId: TaskCreationOperationId) => {
+      publishSnapshot?.(createTaskCreationSnapshot(currentOperationId));
+    });
+    const taskCreationOperations: RemoteTaskCreationOperationSource = {
+      refreshOperation,
+      subscribe: vi.fn<RemoteTaskCreationOperationSource['subscribe']>(
+        async (_authentication, _request, listener) => {
+          publishSnapshot = listener;
+          return { kind: 'subscribed', unsubscribe: backendUnsubscribe };
+        },
+      ),
+    };
+    const authentication = createScopedAuthentication(['catalog:read', 'task:create']);
+    let current: RemoteCommandAuthentication | null = authentication;
+    let invalidate: (() => void) | undefined;
+    const server = registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      authenticateScopedConnection: () => authentication,
+      getAgentList: () => [],
+      getCurrentScopedAuthentication: () => current,
+      safeCompareToken: () => false,
+      subscribeScopedAuthenticationInvalidation: (listener) => {
+        invalidate = listener;
+        return () => undefined;
+      },
+      subscribeTaskCatalog: (listener) => {
+        publishCatalog = listener;
+        return () => undefined;
+      },
+      taskCreationOperations,
+      transport,
+      wss: wss as never,
+    });
+    wss.emit('connection', client, { headers: { host: 'parallel.test' }, url: '/' });
+    client.emit(
+      'message',
+      JSON.stringify({
+        operationCapability: TASK_CREATION_OPERATION_CAPABILITY,
+        operationId: TASK_CREATION_OPERATION_ID,
+        type: 'subscribe-task-creation-operation',
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(transport.sendMessage).toHaveBeenCalledWith(
+        client,
+        expect.objectContaining({ state: 'ready' }),
+      ),
+    );
+    vi.mocked(transport.sendMessage).mockClear();
+
+    publishCatalog?.(createTaskCatalogRemovalBatch());
+    await vi.waitFor(() =>
+      expect(refreshOperation).toHaveBeenCalledWith(TASK_CREATION_OPERATION_ID),
+    );
+    expect(transport.sendMessage).toHaveBeenCalledWith(client, {
+      snapshot: createTaskCreationSnapshot(),
+      type: 'task-creation-operation-snapshot',
+    });
+
+    current = createScopedAuthentication(['catalog:read']);
+    invalidate?.();
+    expect(client.close).toHaveBeenCalledWith(4001, 'Secure session required');
+    await vi.waitFor(() => expect(backendUnsubscribe).toHaveBeenCalledOnce());
+    server.cleanup();
   });
 });

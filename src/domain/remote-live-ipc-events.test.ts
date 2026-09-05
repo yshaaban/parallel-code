@@ -7,6 +7,7 @@ describe('remote live IPC event channels', () => {
   it('recognizes only supported remote live event channels', () => {
     expect(isRemoteLiveIpcEventChannel(IPC.AgentSupervisionChanged)).toBe(true);
     expect(isRemoteLiveIpcEventChannel(IPC.TaskReviewChanged)).toBe(true);
+    expect(isRemoteLiveIpcEventChannel(IPC.TaskNotesChanged)).toBe(true);
     expect(isRemoteLiveIpcEventChannel(IPC.PauseAgent)).toBe(false);
     expect(isRemoteLiveIpcEventChannel('unknown-channel')).toBe(false);
   });

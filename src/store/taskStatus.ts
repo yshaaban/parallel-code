@@ -24,7 +24,11 @@ import {
   onAgentReady,
   resetAgentReadyCallbackRuntimeState,
 } from './agent-ready-callbacks';
-import { isAgentAskingQuestion, resetAgentQuestionRuntimeState } from './agent-question-state';
+import {
+  getLocalAgentQuestionGeneration,
+  isLocalAgentQuestionActive,
+  resetAgentQuestionRuntimeState,
+} from './agent-question-state';
 import { store } from './core';
 import { resetTaskTerminalSlateCache } from './task-terminal-slate';
 
@@ -43,8 +47,9 @@ export {
   hasHydraPromptInTail,
   hasShellPromptReadyInTail,
   hasReadyPromptInTail,
-  isAgentAskingQuestion,
+  getLocalAgentQuestionGeneration,
   isAutoTrustSettling,
+  isLocalAgentQuestionActive,
   isAgentIdle,
   looksLikeQuestion,
   markAgentBusy,

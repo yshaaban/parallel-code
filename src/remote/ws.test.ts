@@ -9,6 +9,11 @@ import type {
   ServerMessage,
   TerminalStreamMessage,
 } from '../../electron/remote/protocol';
+import type { TaskCreationAgentOperationSnapshot } from '../domain/task-creation';
+import type {
+  TaskCreationOperationCapability,
+  TaskCreationOperationId,
+} from '../domain/task-creation-ticket';
 import type {
   CreateWebSocketClientCoreOptions,
   WebSocketClientCore,
@@ -44,10 +49,17 @@ const terminalOrderState = vi.hoisted(() => ({
 const authState = vi.hoisted(() => ({
   clearTokenMock: vi.fn(),
   getTokenMock: vi.fn(() => null as string | null),
+  isScopedRemoteSessionActiveMock: vi.fn(() => false),
   redirectToRemoteAuthGateMock: vi.fn(async () => false),
 }));
 
 let loadedWsModule: typeof import('./ws') | null = null;
+const taskCreationOperationId = Buffer.alloc(16, 0x31).toString(
+  'base64url',
+) as TaskCreationOperationId;
+const taskCreationOperationCapability = Buffer.alloc(32, 0x42).toString(
+  'base64url',
+) as TaskCreationOperationCapability;
 
 vi.mock('../lib/client-id', () => ({
   getPersistentClientId: vi.fn(() => 'remote-client-1234'),
@@ -56,6 +68,7 @@ vi.mock('../lib/client-id', () => ({
 vi.mock('./auth', () => ({
   clearToken: authState.clearTokenMock,
   getToken: authState.getTokenMock,
+  isScopedRemoteSessionActive: authState.isScopedRemoteSessionActiveMock,
   redirectToRemoteAuthGate: authState.redirectToRemoteAuthGateMock,
 }));
 
@@ -147,7 +160,33 @@ function createTerminalStreamDataMessage(data: string): TerminalStreamMessage {
   };
 }
 
+function createTaskCreationSnapshot(
+  operationId: TaskCreationOperationId = taskCreationOperationId,
+): TaskCreationAgentOperationSnapshot {
+  return {
+    commit: 'not-committed',
+    committedTaskId: null,
+    committedWorkspaceRevision: null,
+    current: {
+      catalogVersion: 0,
+      serverInstanceId: 'server-1',
+      task: null,
+      taskClosing: false,
+      taskState: 'not-visible',
+      workspaceRevision: 1,
+    },
+    managedArtifactRecovery: { kind: 'none' },
+    operationId,
+    phase: 'validating',
+    serverInstanceId: 'server-1',
+    symlinkWarnings: [],
+    taskMode: 'agent',
+    version: 1,
+  };
+}
+
 async function loadWsModule(): Promise<{
+  creationLive: typeof import('./task-creation-live-events');
   module: typeof import('./ws');
   options: CreateWebSocketClientCoreOptions<CapturedRemoteServerMessage, unknown>;
 }> {
@@ -155,6 +194,8 @@ async function loadWsModule(): Promise<{
   authState.clearTokenMock.mockReset();
   authState.getTokenMock.mockReset();
   authState.getTokenMock.mockReturnValue(null);
+  authState.isScopedRemoteSessionActiveMock.mockReset();
+  authState.isScopedRemoteSessionActiveMock.mockReturnValue(false);
   authState.redirectToRemoteAuthGateMock.mockReset();
   authState.redirectToRemoteAuthGateMock.mockResolvedValue(false);
   websocketState.disconnectMock.mockReset();
@@ -166,6 +207,7 @@ async function loadWsModule(): Promise<{
   websocketState.sendIfOpenMock.mockReset();
   websocketState.sendIfOpenMock.mockReturnValue(true);
   const module = await import('./ws');
+  const creationLive = await import('./task-creation-live-events');
   loadedWsModule = module;
   module.resetRemoteWsRuntimeStateForTests();
   const options = websocketState.options;
@@ -173,7 +215,7 @@ async function loadWsModule(): Promise<{
     throw new Error('websocket options were not captured');
   }
 
-  return { module, options };
+  return { creationLive, module, options };
 }
 
 describe('remote ws projections', () => {
@@ -512,6 +554,19 @@ describe('remote ws projections', () => {
 
     expect(url.origin).toBe('ws://localhost:43117');
     expect(url.pathname).toBe('/ws');
+    expect(url.searchParams.get('clientId')).toBe('remote-mobile-client');
+    expect(url.searchParams.get('lastSeq')).toBe('12');
+  });
+
+  it('uses the scoped websocket endpoint after secure-session bootstrap', async () => {
+    const { options } = await loadWsModule();
+    authState.isScopedRemoteSessionActiveMock.mockReturnValue(true);
+
+    const url = new URL(
+      options.getSocketUrl({ clientId: 'remote-mobile-client', lastSeq: 12, token: null }),
+    );
+
+    expect(url.pathname).toBe('/remote-ws');
     expect(url.searchParams.get('clientId')).toBe('remote-mobile-client');
     expect(url.searchParams.get('lastSeq')).toBe('12');
   });
@@ -1001,6 +1056,256 @@ describe('remote ws projections', () => {
     expect(listener).toHaveBeenLastCalledWith('connected');
 
     cleanup();
+  });
+
+  it('adapts validated task-catalog events and connection state for the catalog runtime', async () => {
+    const { module, options } = await loadWsModule();
+    const listener = vi.fn();
+    const cleanup = module.remoteTaskCatalogLiveEvents.subscribe(listener);
+
+    expect(listener).toHaveBeenCalledWith({
+      kind: 'connection-state',
+      state: 'disconnected',
+    });
+    options.onStateChange?.('connected');
+    options.onMessage({
+      type: 'task-catalog-delta',
+      batch: {
+        events: [
+          {
+            catalogVersion: 1,
+            entityId: 'task-1',
+            entityKind: 'task',
+            kind: 'remove',
+            serverInstanceId: 'server-1',
+          },
+        ],
+        fromCatalogVersion: 0,
+        serverInstanceId: 'server-1',
+        toCatalogVersion: 1,
+      },
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      kind: 'connection-state',
+      state: 'connected',
+    });
+    expect(listener).toHaveBeenCalledWith({
+      batch: {
+        events: [
+          {
+            catalogVersion: 1,
+            entityId: 'task-1',
+            entityKind: 'task',
+            kind: 'remove',
+            serverInstanceId: 'server-1',
+          },
+        ],
+        fromCatalogVersion: 0,
+        serverInstanceId: 'server-1',
+        toCatalogVersion: 1,
+      },
+      kind: 'catalog-delta',
+    });
+
+    cleanup();
+  });
+
+  it('routes exact operation frames and removes the capability before unsubscribe', async () => {
+    const { creationLive, options } = await loadWsModule();
+    options.onStateChange?.('connected');
+    websocketState.sendIfOpenMock.mockClear();
+    const listener = vi.fn();
+
+    const cleanup = creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: taskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      listener,
+    );
+
+    expect(listener).toHaveBeenCalledWith({ kind: 'connection-state', state: 'connected' });
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+      operationCapability: taskCreationOperationCapability,
+      operationId: taskCreationOperationId,
+      type: 'subscribe-task-creation-operation',
+    });
+    options.onMessage({
+      operationId: taskCreationOperationId,
+      state: 'ready',
+      type: 'task-creation-operation-subscription-state',
+    });
+    options.onMessage({
+      snapshot: createTaskCreationSnapshot(),
+      type: 'task-creation-operation-snapshot',
+    });
+    expect(listener).toHaveBeenCalledWith({ kind: 'subscription-state', state: 'ready' });
+    expect(listener).toHaveBeenCalledWith({
+      kind: 'snapshot',
+      snapshot: createTaskCreationSnapshot(),
+    });
+
+    websocketState.sendIfOpenMock.mockClear();
+    cleanup();
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledWith({
+      operationId: taskCreationOperationId,
+      type: 'unsubscribe-task-creation-operation',
+    });
+    expect(JSON.stringify(websocketState.sendIfOpenMock.mock.calls)).not.toContain(
+      taskCreationOperationCapability,
+    );
+    listener.mockClear();
+    options.onMessage({
+      snapshot: createTaskCreationSnapshot(),
+      type: 'task-creation-operation-snapshot',
+    });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('shares matching listeners, resubscribes after authentication, and fails closed on conflicts', async () => {
+    const { creationLive, options } = await loadWsModule();
+    options.onStateChange?.('connected');
+    websocketState.sendIfOpenMock.mockClear();
+    const firstListener = vi.fn();
+    const secondListener = vi.fn();
+    const firstCleanup = creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: taskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      firstListener,
+    );
+    const secondCleanup = creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: taskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      secondListener,
+    );
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledTimes(1);
+
+    options.onAuthenticated?.({} as WebSocket);
+    options.onStateChange?.('connected');
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledTimes(2);
+    expect(websocketState.sendIfOpenMock).toHaveBeenLastCalledWith({
+      operationCapability: taskCreationOperationCapability,
+      operationId: taskCreationOperationId,
+      type: 'subscribe-task-creation-operation',
+    });
+
+    firstCleanup();
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledTimes(2);
+    secondCleanup();
+    expect(websocketState.sendIfOpenMock).toHaveBeenLastCalledWith({
+      operationId: taskCreationOperationId,
+      type: 'unsubscribe-task-creation-operation',
+    });
+
+    websocketState.sendIfOpenMock.mockClear();
+    const conflictingListener = vi.fn();
+    const retainedCleanup = creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: taskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      vi.fn(),
+    );
+    creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: Buffer.alloc(32, 0x43).toString(
+          'base64url',
+        ) as TaskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      conflictingListener,
+    );
+    expect(conflictingListener).toHaveBeenNthCalledWith(1, {
+      kind: 'connection-state',
+      state: 'disconnected',
+    });
+    expect(conflictingListener).toHaveBeenNthCalledWith(2, {
+      kind: 'subscription-state',
+      state: 'degraded',
+    });
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledTimes(1);
+    retainedCleanup();
+  });
+
+  it('routes snapshots by their embedded operation identity and clears operation subscriptions on auth expiry', async () => {
+    const { creationLive, options } = await loadWsModule();
+    options.onStateChange?.('connected');
+    const otherOperationId = Buffer.alloc(16, 0x32).toString(
+      'base64url',
+    ) as TaskCreationOperationId;
+    const firstListener = vi.fn();
+    const otherListener = vi.fn();
+    creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: taskCreationOperationCapability,
+        operationId: taskCreationOperationId,
+      },
+      firstListener,
+    );
+    creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+      {
+        operationCapability: Buffer.alloc(32, 0x44).toString(
+          'base64url',
+        ) as TaskCreationOperationCapability,
+        operationId: otherOperationId,
+      },
+      otherListener,
+    );
+    firstListener.mockClear();
+    otherListener.mockClear();
+
+    options.onMessage({
+      snapshot: createTaskCreationSnapshot(otherOperationId),
+      type: 'task-creation-operation-snapshot',
+    });
+    expect(firstListener).not.toHaveBeenCalled();
+    expect(otherListener).toHaveBeenCalledOnce();
+
+    websocketState.sendIfOpenMock.mockClear();
+    options.onAuthExpired?.(new Error('expired'));
+    options.onAuthenticated?.({} as WebSocket);
+    expect(websocketState.sendIfOpenMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'subscribe-task-creation-operation' }),
+    );
+  });
+
+  it('bounds in-memory operation subscriptions to eight', async () => {
+    const { creationLive, options } = await loadWsModule();
+    options.onStateChange?.('connected');
+    websocketState.sendIfOpenMock.mockClear();
+    const overflowListener = vi.fn();
+    const cleanups: Array<() => void> = [];
+
+    for (let index = 0; index < 9; index += 1) {
+      const candidateOperationId = Buffer.alloc(16, 0x50 + index).toString(
+        'base64url',
+      ) as TaskCreationOperationId;
+      cleanups.push(
+        creationLive.remoteTaskCreationOperationLiveEvents.subscribe(
+          {
+            operationCapability: taskCreationOperationCapability,
+            operationId: candidateOperationId,
+          },
+          index === 8 ? overflowListener : vi.fn(),
+        ),
+      );
+    }
+
+    expect(websocketState.sendIfOpenMock).toHaveBeenCalledTimes(8);
+    expect(overflowListener).toHaveBeenNthCalledWith(1, {
+      kind: 'connection-state',
+      state: 'disconnected',
+    });
+    expect(overflowListener).toHaveBeenNthCalledWith(2, {
+      kind: 'subscription-state',
+      state: 'degraded',
+    });
+    for (const cleanup of cleanups) cleanup();
   });
 
   it('returns to disconnected when the initial remote websocket connect fails', async () => {

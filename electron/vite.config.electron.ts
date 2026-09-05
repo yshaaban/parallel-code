@@ -16,6 +16,7 @@ const buildStamp = new Date()
 const buildCommit = resolveBuildCommit();
 const buildDirty = resolveBuildDirty();
 const buildMetadataFileName = 'build-metadata.json';
+const STARTUP_TERMINAL_ADDON_CHUNKS = new Set(['addon-web-links', 'addon-webgl']);
 const buildOutputDir = path.resolve(
   __dirname,
   '..',
@@ -60,8 +61,8 @@ function resolveBuildDirty(): boolean {
 }
 
 // Inject modulepreload links for the lazily imported terminal-session chunk
-// and its static import closure (plus prefetch hints for its dynamically
-// imported xterm addon chunks), computed from the bundle graph instead of
+// and its static import closure (plus prefetch hints for its explicitly
+// startup-critical dynamic addon chunks), computed from the bundle graph instead of
 // hardcoded file names. This removes the discovered-waterfall cost of the
 // first terminal mount on cold browser loads.
 function createTerminalModulepreloadPlugin(): Plugin {
@@ -77,6 +78,7 @@ function createTerminalModulepreloadPlugin(): Plugin {
         }
 
         const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
+        const chunksByFileName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
         const entryFileNames = new Set(
           chunks.filter((chunk) => chunk.isEntry).map((chunk) => chunk.fileName),
         );
@@ -110,7 +112,8 @@ function createTerminalModulepreloadPlugin(): Plugin {
               .flatMap((chunk) => chunk.dynamicImports)
               .filter(
                 (fileName) =>
-                  path.basename(fileName).startsWith('addon-') && !preloadFileNames.has(fileName),
+                  STARTUP_TERMINAL_ADDON_CHUNKS.has(chunksByFileName.get(fileName)?.name ?? '') &&
+                  !preloadFileNames.has(fileName),
               ),
           ),
         ];

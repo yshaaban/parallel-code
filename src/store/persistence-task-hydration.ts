@@ -18,6 +18,7 @@ interface HydratedTaskBuildOptions {
   existingTask: Task | undefined;
   hydraCommand: string;
   persistedTask: HydratablePersistedTask;
+  trustedCapabilityAgents?: ReadonlyArray<AgentDef>;
 }
 
 interface HydratedTaskBase {
@@ -76,6 +77,7 @@ function getHydratedAgentDefs(
   persistedTask: HydratablePersistedTask,
   availableAgents: AgentDef[],
   hydraCommand: string,
+  trustedCapabilityAgents: ReadonlyArray<AgentDef>,
 ): AgentDef[] {
   let agentDefs: AgentDef[] = [];
   if (Array.isArray(persistedTask.agentDefs) && persistedTask.agentDefs.length > 0) {
@@ -85,7 +87,7 @@ function getHydratedAgentDefs(
   }
 
   for (const agentDef of agentDefs) {
-    hydratePersistedAgentDef(agentDef, availableAgents, hydraCommand);
+    hydratePersistedAgentDef(agentDef, availableAgents, hydraCommand, trustedCapabilityAgents);
   }
 
   return agentDefs;
@@ -151,7 +153,12 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
   const isTerminalMode = taskMode === 'terminal';
   const agentDefs = isTerminalMode
     ? []
-    : getHydratedAgentDefs(options.persistedTask, options.availableAgents, options.hydraCommand);
+    : getHydratedAgentDefs(
+        options.persistedTask,
+        options.availableAgents,
+        options.hydraCommand,
+        options.trustedCapabilityAgents ?? [],
+      );
   const agentIds = createHydratedAgentIds(
     options.persistedTask,
     options.existingTask,
@@ -194,6 +201,16 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       ...(options.persistedTask.githubUrl !== undefined
         ? { githubUrl: options.persistedTask.githubUrl }
         : {}),
+      ...(!isTerminalMode &&
+      options.persistedTask.initialPromptDeliveryId !== undefined &&
+      options.persistedTask.initialPrompt !== undefined
+        ? {
+            initialPrompt: options.persistedTask.initialPrompt,
+            initialPromptDeliveryId: options.persistedTask.initialPromptDeliveryId,
+            initialPromptDeliveryMode:
+              options.persistedTask.initialPromptDeliveryMode ?? 'automatic',
+          }
+        : {}),
       ...(!isTerminalMode && options.persistedTask.savedInitialPrompt !== undefined
         ? { savedInitialPrompt: options.persistedTask.savedInitialPrompt }
         : {}),
@@ -220,6 +237,15 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
         : {}),
       ...(!isTerminalMode && options.persistedTask.coordinatorToolCommand !== undefined
         ? { coordinatorToolCommand: options.persistedTask.coordinatorToolCommand }
+        : {}),
+      ...(options.persistedTask.taskCreationProvenance !== undefined
+        ? { taskCreationProvenance: options.persistedTask.taskCreationProvenance }
+        : {}),
+      ...(options.persistedTask.taskCreationOperationLink !== undefined
+        ? { taskCreationOperationLink: options.persistedTask.taskCreationOperationLink }
+        : {}),
+      ...(options.persistedTask.taskInitialShellOwnership !== undefined
+        ? { taskInitialShellOwnership: options.persistedTask.taskInitialShellOwnership }
         : {}),
       ...(!isTerminalMode && options.persistedTask.terminalLayoutMode !== undefined
         ? { terminalLayoutMode: options.persistedTask.terminalLayoutMode }
@@ -282,6 +308,7 @@ export function forEachHydratedPersistedTask(
     hydraCommand: string;
     getExistingTask: (taskId: string) => Task | undefined;
     visit: (entry: HydratedPersistedTaskEntry) => void;
+    trustedCapabilityAgents?: ReadonlyArray<AgentDef>;
   },
 ): void {
   function visitTask(taskId: string, collapsed: boolean): void {
@@ -296,12 +323,18 @@ export function forEachHydratedPersistedTask(
           existingTask: options.getExistingTask(taskId),
           hydraCommand: options.hydraCommand,
           persistedTask,
+          ...(options.trustedCapabilityAgents
+            ? { trustedCapabilityAgents: options.trustedCapabilityAgents }
+            : {}),
         })
       : buildExpandedHydratedTask({
           availableAgents: options.availableAgents,
           existingTask: options.getExistingTask(taskId),
           hydraCommand: options.hydraCommand,
           persistedTask,
+          ...(options.trustedCapabilityAgents
+            ? { trustedCapabilityAgents: options.trustedCapabilityAgents }
+            : {}),
         });
 
     options.visit({

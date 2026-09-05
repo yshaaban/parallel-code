@@ -60,6 +60,19 @@ registerSuspendedTaskCommandLeaseReclaim(() => {
   }
 });
 
+/**
+ * Returns the backend generation for a lease retained by this renderer.
+ * Callers use this only inside `runWithTaskCommandLease`, after acquisition
+ * and refresh have completed, so session-operation requests cannot confuse
+ * the presentation controller version with the authoritative lease epoch.
+ */
+export function getRetainedTaskCommandLeaseGeneration(taskId: string): number | null {
+  const lease = getLocalTaskCommandLease(taskId);
+  return lease && !lease.removed && lease.holdCount > 0 && lease.leaseGeneration !== undefined
+    ? lease.leaseGeneration
+    : null;
+}
+
 async function reclaimSuspendedTaskCommandLease(
   taskId: string,
   lease: LocalTaskCommandLease,

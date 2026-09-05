@@ -87,6 +87,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   let gitStatusRefreshGeneration = 0;
   let rebaseGeneration = 0;
   let mergeGeneration = 0;
+  let initializedTaskId: string | null = null;
   const mergeBaseBranch = (): string | undefined =>
     normalizeTaskBaseBranch(props.task) ?? getProject(props.task.projectId)?.baseBranch;
   const gitRequest = (): MergeDialogGitRequest | null => {
@@ -308,6 +309,11 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   createEffect(() => {
     const taskId = props.task.id;
     if (!props.open) {
+      if (initializedTaskId === null) {
+        return;
+      }
+
+      initializedTaskId = null;
       invalidateGitStatusRefresh();
       invalidateRebaseRun();
       invalidateMergeRun();
@@ -316,6 +322,14 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
       setRebasing(false);
       return;
     }
+
+    // Canonical state sync may replace the task projection while a merge is in flight. The dialog
+    // lifecycle belongs to the open task identity, not that projection's object identity; resetting
+    // here for the same task would invalidate the successful merge before it can close the dialog.
+    if (initializedTaskId === taskId) {
+      return;
+    }
+    initializedTaskId = taskId;
 
     invalidateRebaseRun();
     invalidateMergeRun();
@@ -639,7 +653,6 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                 padding: '8px 11px',
                 color: theme.fg,
                 resize: 'vertical',
-                outline: 'none',
                 'box-sizing': 'border-box',
                 ...typography.monoUi,
               }}

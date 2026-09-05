@@ -17,6 +17,7 @@ import {
 } from '../domain/server-state-bootstrap';
 import { isTaskReviewEvent } from '../domain/task-review';
 import { isNonNegativeInteger } from '../lib/type-guards';
+import { publishTaskNotesInvalidation } from '../runtime/task-notes-invalidation';
 import {
   applyTaskCommandControllerSnapshotRecord,
   areTaskCommandControllerStatesEqual,
@@ -283,6 +284,10 @@ function handleRemoteTaskReviewIpcEvent(payload: unknown): void {
   }
 }
 
+function handleRemoteTaskNotesChangedIpcEvent(payload: unknown): void {
+  publishTaskNotesInvalidation(payload);
+}
+
 const REMOTE_LIVE_IPC_EVENT_HANDLERS = {
   [IPC.AgentSupervisionChanged]: handleRemoteAgentSupervisionIpcEvent,
   [IPC.GitStatusChanged]: null,
@@ -291,6 +296,7 @@ const REMOTE_LIVE_IPC_EVENT_HANDLERS = {
   [IPC.TaskReviewChanged]: handleRemoteTaskReviewIpcEvent,
   [IPC.TaskReviewSignalsChanged]: null,
   [IPC.TaskStepsChanged]: null,
+  [IPC.TaskNotesChanged]: handleRemoteTaskNotesChangedIpcEvent,
 } satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandler | null>;
 
 export function applyRemoteIpcEvent(channel: string, payload: unknown): void {

@@ -90,6 +90,27 @@ describe('keybindings', () => {
     }
   });
 
+  it('defines terminal redraw as a global remappable action owned by modal policy', () => {
+    const definition = getKeybindingDefinition('app.redraw-terminals');
+    expect(definition).toEqual({
+      actionId: 'app.redraw-terminals',
+      category: 'App',
+      defaultChords: [{ key: 'L', cmdOrCtrl: true, shift: true }],
+      description: 'Redraw terminals (fix rendering glitches)',
+      global: true,
+    });
+    if (!definition) {
+      return;
+    }
+
+    expect(
+      getEffectiveKeyChords(definition, {
+        version: 1,
+        overrides: { 'app.redraw-terminals': { chords: null } },
+      }),
+    ).toEqual([]);
+  });
+
   it('does not ship duplicate default keybinding chords', () => {
     const seen = new Map<string, string>();
 

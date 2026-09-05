@@ -1,6 +1,7 @@
 import { assertNever } from '../lib/assert-never';
 import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
 import { isBrowserColdBootstrapPending } from '../app/browser-startup';
+import { reconcileRetainedTaskMergeOperations } from '../app/task-merge-operation-recovery';
 import {
   recordBrowserSyncCompleted,
   recordBrowserSyncFailed,
@@ -167,6 +168,12 @@ export function createBrowserStateSync(electronRuntime: boolean): {
       if (stateChanged) {
         markAutosaveClean();
       }
+
+      // A merge response may be lost after canonical task removal. Join the retained credential
+      // against public backend status after workspace truth is applied; the recovery owner clears
+      // only terminal operations, preserving active/manual recovery while surfacing terminal
+      // finalizer repair once before credential release.
+      void reconcileRetainedTaskMergeOperations();
 
       await validateProjectPaths();
       if (isBrowserStateSyncDisposed(state)) {

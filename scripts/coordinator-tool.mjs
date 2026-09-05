@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { Buffer } from 'node:buffer';
 import fs from 'node:fs';
+import https from 'node:https';
+import { URL } from 'node:url';
 
 function printUsage() {
   console.error(
@@ -24,12 +27,63 @@ function readCredential() {
     typeof parsed.runId !== 'string' ||
     typeof parsed.taskId !== 'string' ||
     typeof parsed.token !== 'string' ||
-    typeof parsed.toolCallUrl !== 'string'
+    typeof parsed.toolCallUrl !== 'string' ||
+    (parsed.toolCallTlsCertificate !== undefined &&
+      typeof parsed.toolCallTlsCertificate !== 'string')
   ) {
     throw new Error('Coordinator credential file is invalid or missing toolCallUrl');
   }
 
   return parsed;
+}
+
+function postJsonWithTlsCertificate(urlValue, certificate, body) {
+  const url = new URL(urlValue);
+  if (url.protocol !== 'https:') {
+    throw new Error('Coordinator TLS certificate may only be used with an HTTPS tool-call URL');
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      url,
+      {
+        ca: certificate,
+        // The URL is deliberately loopback while the configured certificate
+        // commonly names the externally reachable host. Trust is anchored to
+        // that exact configured certificate instead of the loopback hostname.
+        checkServerIdentity: () => undefined,
+        headers: {
+          'content-length': Buffer.byteLength(body),
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      },
+      (response) => {
+        const chunks = [];
+        let byteLength = 0;
+        response.on('data', (chunk) => {
+          byteLength += chunk.length;
+          if (byteLength > 1024 * 1024) {
+            request.destroy(new Error('Coordinator tool response exceeded 1 MiB'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let parsed = null;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            // The caller reports the HTTP status when the body is not JSON.
+          }
+          resolve({ body: parsed, status: response.statusCode ?? 0 });
+        });
+      },
+    );
+    request.on('error', reject);
+    request.end(body);
+  });
 }
 
 function readPayload(rawPayload) {
@@ -71,23 +125,38 @@ async function main() {
     ...(rawPayload !== undefined ? { payload: readPayload(rawPayload) } : {}),
   };
 
-  let response;
+  let responseStatus;
+  let responseBody;
   try {
-    response = await fetch(credential.toolCallUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(envelope),
-    });
+    const requestBody = JSON.stringify(envelope);
+    if (credential.toolCallTlsCertificate) {
+      const response = await postJsonWithTlsCertificate(
+        credential.toolCallUrl,
+        credential.toolCallTlsCertificate,
+        requestBody,
+      );
+      responseStatus = response.status;
+      responseBody = response.body;
+    } else {
+      const response = await fetch(credential.toolCallUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: requestBody,
+      });
+      responseStatus = response.status;
+      responseBody = await response.json().catch(() => null);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Coordinator tool fetch failed for ${credential.toolCallUrl}: ${message}`);
   }
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(body?.error ?? `Coordinator tool call failed with HTTP ${response.status}`);
+  if (responseStatus < 200 || responseStatus >= 300) {
+    throw new Error(
+      responseBody?.error ?? `Coordinator tool call failed with HTTP ${responseStatus}`,
+    );
   }
 
-  process.stdout.write(`${JSON.stringify(body.result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(responseBody?.result, null, 2)}\n`);
 }
 
 main().catch((error) => {

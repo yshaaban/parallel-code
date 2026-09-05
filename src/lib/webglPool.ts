@@ -10,19 +10,25 @@ import type { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
 import {
   recordTerminalRendererAcquire,
+  recordTerminalRendererAtlasRepair,
   recordTerminalRendererEviction,
   recordTerminalRendererFallbackActivation,
   recordTerminalRendererPoolSnapshot,
   recordTerminalRendererRelease,
   type TerminalRendererPoolSnapshot,
+  type TerminalWebglRepairReason,
 } from '../app/runtime-diagnostics';
+import { isMac } from './platform';
 import type { TerminalWebglPriority } from './terminal-output-priority';
+
+export type { TerminalWebglRepairReason } from '../app/runtime-diagnostics';
 
 const MAX_WEBGL_CONTEXTS = 6;
 type WebglAddonConstructor = new () => WebglAddon;
 
 interface PoolEntry {
   addon: WebglAddon;
+  generation: number;
   lastTouchedAt: number;
   priority: TerminalWebglPriority;
   term: Terminal;
@@ -31,6 +37,13 @@ interface PoolEntry {
 
 interface AcquireWebglAddonOptions {
   visibleContextLimit?: number;
+}
+
+interface PendingWebglRepair {
+  generation: number;
+  id: string;
+  reason: TerminalWebglRepairReason;
+  requestedAt: number;
 }
 
 const activeContexts = new Map<string, PoolEntry>();
@@ -44,7 +57,217 @@ const WEBGL_PRIORITY_METADATA = {
 } as const satisfies Record<TerminalWebglPriority, { order: number; visible: boolean }>;
 let webglAddonConstructor: WebglAddonConstructor | null = null;
 let webglAddonLoadPromise: Promise<WebglAddonConstructor> | null = null;
+const pendingRepairs = new Map<string, PendingWebglRepair>();
+let entryGeneration = 0;
+let foregroundListenersInstalled = false;
+let foregroundState = false;
+let repairAnimationFrame: number | null = null;
 let touchSequence = 0;
+
+function getRepairNow(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
+
+function requestRepairAnimationFrame(callback: FrameRequestCallback): number {
+  if (typeof requestAnimationFrame === 'function') {
+    return requestAnimationFrame(callback);
+  }
+
+  return setTimeout(() => callback(getRepairNow()), 16) as unknown as number;
+}
+
+function cancelRepairAnimationFrame(frame: number): void {
+  if (typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(frame);
+    return;
+  }
+
+  clearTimeout(frame);
+}
+
+function isDocumentVisible(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState !== 'hidden';
+}
+
+function isDocumentForeground(): boolean {
+  return isDocumentVisible() && document.hasFocus();
+}
+
+function getRepairKey(id: string, generation: number): string {
+  return `${id}:${generation}`;
+}
+
+function isRepairablePriority(priority: TerminalWebglPriority): boolean {
+  return priority === 'focused' || priority === 'visible';
+}
+
+function cancelRepairDrain(): void {
+  if (repairAnimationFrame === null) {
+    return;
+  }
+
+  cancelRepairAnimationFrame(repairAnimationFrame);
+  repairAnimationFrame = null;
+}
+
+function removePendingRepair(id: string, generation: number): void {
+  pendingRepairs.delete(getRepairKey(id, generation));
+  if (pendingRepairs.size === 0) {
+    cancelRepairDrain();
+  }
+}
+
+function selectNextPendingRepair(): PendingWebglRepair | null {
+  const repairs = [...pendingRepairs.values()];
+  repairs.sort((left, right) => {
+    const leftEntry = activeContexts.get(left.id);
+    const rightEntry = activeContexts.get(right.id);
+    const leftPriority = leftEntry?.priority === 'focused' ? 0 : 1;
+    const rightPriority = rightEntry?.priority === 'focused' ? 0 : 1;
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+
+    const touchDelta = (rightEntry?.lastTouchedAt ?? -1) - (leftEntry?.lastTouchedAt ?? -1);
+    if (touchDelta !== 0) {
+      return touchDelta;
+    }
+
+    return left.requestedAt - right.requestedAt;
+  });
+  return repairs[0] ?? null;
+}
+
+function scheduleRepairDrain(): void {
+  if (repairAnimationFrame !== null || pendingRepairs.size === 0) {
+    return;
+  }
+
+  repairAnimationFrame = requestRepairAnimationFrame(() => {
+    repairAnimationFrame = null;
+    const repair = selectNextPendingRepair();
+    if (!repair) {
+      return;
+    }
+
+    pendingRepairs.delete(getRepairKey(repair.id, repair.generation));
+    const entry = activeContexts.get(repair.id);
+    if (!entry) {
+      recordTerminalRendererAtlasRepair({ type: 'skipped', reason: 'disposed' });
+    } else if (entry.generation !== repair.generation) {
+      recordTerminalRendererAtlasRepair({ type: 'skipped', reason: 'generation' });
+    } else if (!isRepairablePriority(entry.priority) || !isDocumentVisible()) {
+      recordTerminalRendererAtlasRepair({ type: 'skipped', reason: 'hidden' });
+    } else if (entry.term.rows <= 0) {
+      recordTerminalRendererAtlasRepair({ type: 'skipped', reason: 'ineligible' });
+    } else {
+      try {
+        entry.addon.clearTextureAtlas();
+        entry.term.refresh(0, entry.term.rows - 1);
+        recordTerminalRendererAtlasRepair({
+          delayMs: Math.max(0, getRepairNow() - repair.requestedAt),
+          type: 'applied',
+        });
+      } catch {
+        recordTerminalRendererAtlasRepair({ type: 'failed' });
+      }
+    }
+
+    scheduleRepairDrain();
+  });
+}
+
+function queueEntryRepair(
+  id: string,
+  entry: PoolEntry,
+  reason: TerminalWebglRepairReason,
+): boolean {
+  if (!isRepairablePriority(entry.priority) || entry.term.rows <= 0) {
+    return false;
+  }
+
+  const key = getRepairKey(id, entry.generation);
+  const existing = pendingRepairs.get(key);
+  if (existing) {
+    if (reason === 'manual' && existing.reason !== 'manual') {
+      pendingRepairs.set(key, { ...existing, reason });
+    }
+    return false;
+  }
+
+  pendingRepairs.set(key, {
+    generation: entry.generation,
+    id,
+    reason,
+    requestedAt: getRepairNow(),
+  });
+  recordTerminalRendererAtlasRepair({ queueDepth: pendingRepairs.size, type: 'queued' });
+  scheduleRepairDrain();
+  return true;
+}
+
+export function requestVisibleWebglAtlasRepair(reason: TerminalWebglRepairReason): number {
+  recordTerminalRendererAtlasRepair({ reason, type: 'intent' });
+  let queued = 0;
+  for (const [id, entry] of activeContexts) {
+    if (queueEntryRepair(id, entry, reason)) {
+      queued += 1;
+    }
+  }
+  return queued;
+}
+
+function reconcileForeground(): void {
+  const nextForeground = isDocumentForeground();
+  const becameForeground = !foregroundState && nextForeground;
+  foregroundState = nextForeground;
+  if (becameForeground && isMac) {
+    requestVisibleWebglAtlasRepair('foreground');
+  }
+}
+
+function handleForegroundEvent(): void {
+  reconcileForeground();
+}
+
+function installForegroundListeners(): void {
+  if (
+    foregroundListenersInstalled ||
+    typeof window === 'undefined' ||
+    typeof document === 'undefined'
+  ) {
+    return;
+  }
+
+  foregroundState = isDocumentForeground();
+  window.addEventListener('focus', handleForegroundEvent);
+  window.addEventListener('blur', handleForegroundEvent);
+  document.addEventListener('visibilitychange', handleForegroundEvent);
+  foregroundListenersInstalled = true;
+}
+
+function removeForegroundListeners(): void {
+  if (!foregroundListenersInstalled) {
+    return;
+  }
+
+  window.removeEventListener('focus', handleForegroundEvent);
+  window.removeEventListener('blur', handleForegroundEvent);
+  document.removeEventListener('visibilitychange', handleForegroundEvent);
+  foregroundListenersInstalled = false;
+  foregroundState = false;
+}
+
+function reconcilePoolLifecycle(): void {
+  if (activeContexts.size > 0) {
+    installForegroundListeners();
+    return;
+  }
+
+  pendingRepairs.clear();
+  cancelRepairDrain();
+  removeForegroundListeners();
+}
 
 function loadWebglAddonConstructor(): Promise<WebglAddonConstructor> {
   if (webglAddonConstructor) {
@@ -220,11 +443,22 @@ function updateEntryPriority(id: string, entry: PoolEntry, priority: TerminalWeb
     return;
   }
 
+  const wasVisible = isVisibleWebglPriority(entry.priority);
   entry.priority = priority;
   if (isVisibleWebglPriority(priority)) {
     promoteEntry(id);
   }
   recordTerminalRendererPoolSnapshot(getWebglPoolSnapshot());
+  if (
+    isMac &&
+    !wasVisible &&
+    isVisibleWebglPriority(priority) &&
+    foregroundState &&
+    isDocumentForeground()
+  ) {
+    recordTerminalRendererAtlasRepair({ reason: 'newly-visible', type: 'intent' });
+    queueEntryRepair(id, entry, 'newly-visible');
+  }
 }
 
 /**
@@ -240,10 +474,12 @@ function evictEntry(id: string, notifyLost: boolean): void {
   }
 
   const { addon, term, onRendererLost } = entry;
+  removePendingRepair(id, entry.generation);
   activeContexts.delete(id);
   removeFromOrder(id);
   fallbackAgents.add(id);
   const snapshot = getWebglPoolSnapshot();
+  reconcilePoolLifecycle();
 
   try {
     addon.dispose();
@@ -264,6 +500,14 @@ function evictEntry(id: string, notifyLost: boolean): void {
 
   recordTerminalRendererEviction(snapshot);
   recordTerminalRendererFallbackActivation(snapshot);
+}
+
+function disposeUnpublishedAddon(addon: WebglAddon): void {
+  try {
+    addon.dispose();
+  } catch {
+    // A failed activation may have partially disposed the addon already.
+  }
 }
 
 /**
@@ -326,34 +570,9 @@ export function acquireWebglAddon(
     }
   }
 
+  let addon: WebglAddon | null = null;
   try {
-    const addon = createWebglAddon();
-    if (!addon) {
-      return null;
-    }
-
-    addon.onContextLoss(() => {
-      // Browser-initiated context loss — viewport is truly blank, so the
-      // terminal needs a scrollback restore (notifyLost: true).
-      evictEntry(agentId, true);
-    });
-    term.loadAddon(addon);
-    const entry: PoolEntry = {
-      addon,
-      lastTouchedAt: 0,
-      priority: requestedPriority,
-      term,
-    };
-    setRendererLostCallback(entry, onRendererLost);
-    activeContexts.set(agentId, entry);
-    promoteEntry(agentId);
-    const recoveredFromFallback = fallbackAgents.delete(agentId);
-    recordTerminalRendererAcquire({
-      hit: true,
-      recoveredFromFallback,
-      snapshot: getWebglPoolSnapshot(),
-    });
-    return addon;
+    addon = createWebglAddon();
   } catch {
     // WebGL2 not supported — DOM renderer used automatically
     recordTerminalRendererAcquire({
@@ -362,6 +581,67 @@ export function acquireWebglAddon(
     });
     return null;
   }
+  if (!addon) {
+    return null;
+  }
+
+  const generation = ++entryGeneration;
+  let contextLostBeforePublish = false;
+  let published = false;
+  try {
+    addon.onContextLoss(() => {
+      if (!published) {
+        contextLostBeforePublish = true;
+        return;
+      }
+
+      const currentEntry = activeContexts.get(agentId);
+      if (currentEntry?.addon !== addon || currentEntry.generation !== generation) {
+        return;
+      }
+
+      // Browser-initiated context loss — viewport is truly blank, so the
+      // terminal needs a scrollback restore (notifyLost: true).
+      evictEntry(agentId, true);
+    });
+    term.loadAddon(addon);
+  } catch {
+    disposeUnpublishedAddon(addon);
+    recordTerminalRendererAcquire({
+      hit: false,
+      snapshot: getWebglPoolSnapshot(),
+    });
+    return null;
+  }
+
+  if (contextLostBeforePublish) {
+    disposeUnpublishedAddon(addon);
+    recordTerminalRendererAcquire({
+      hit: false,
+      snapshot: getWebglPoolSnapshot(),
+    });
+    return null;
+  }
+
+  const entry: PoolEntry = {
+    addon,
+    generation,
+    lastTouchedAt: 0,
+    priority: requestedPriority,
+    term,
+  };
+  setRendererLostCallback(entry, onRendererLost);
+  activeContexts.set(agentId, entry);
+  published = true;
+  promoteEntry(agentId);
+  reconcilePoolLifecycle();
+  const recoveredFromFallback = fallbackAgents.delete(agentId);
+  recordTerminalRendererAcquire({
+    hit: true,
+    recoveredFromFallback,
+    snapshot: getWebglPoolSnapshot(),
+  });
+  return addon;
 }
 
 /** Promote an entry when the terminal becomes active again. */
@@ -399,6 +679,7 @@ export function setWebglAddonPriority(
 export function releaseWebglAddon(agentId: string): void {
   const entry = activeContexts.get(agentId);
   if (entry) {
+    removePendingRepair(agentId, entry.generation);
     activeContexts.delete(agentId);
     removeFromOrder(agentId);
     fallbackAgents.delete(agentId);
@@ -409,8 +690,10 @@ export function releaseWebglAddon(agentId: string): void {
       // Already disposed
     }
     recordTerminalRendererRelease(getWebglPoolSnapshot());
+    reconcilePoolLifecycle();
     return;
   }
   fallbackAgents.delete(agentId);
   removeFromOrder(agentId);
+  reconcilePoolLifecycle();
 }

@@ -1,5 +1,6 @@
 import { IPC } from './channels.js';
-import { listAgentSupervisionSnapshots } from './agent-supervision.js';
+import { createHash } from 'node:crypto';
+import { getAgentSupervisionSnapshot, listAgentSupervisionSnapshots } from './agent-supervision.js';
 import { listAgents, requestAgentCatalogAvailabilityRevalidation } from './agents.js';
 import {
   assertOptionalPauseReason,
@@ -7,9 +8,11 @@ import {
   type IpcHandler,
 } from './handler-context.js';
 import {
+  attachExistingAgentSessionExact,
   detachAgentOutput,
   getActiveAgentIds,
   getAgentCols,
+  getAgentLifecycleGeneration,
   getAgentMeta,
   getAgentRows,
   getAgentScrollback,
@@ -22,15 +25,26 @@ import {
   type AgentSpawnDisposition,
   writeToAgent,
 } from './pty.js';
+import type {
+  AttachTerminalSessionRequest,
+  AttachTerminalSessionResult,
+  EnsureAgentSessionResult,
+  TerminalSessionOwner,
+} from '../../src/domain/renderer-invoke.js';
 import { decodeTerminalRenderedTail, serializeTerminalRecoveryEntry } from './terminal-recovery.js';
-import { getTaskCommandControllerSnapshot, isTaskCommandLeaseHeld } from './task-command-leases.js';
+import {
+  getTaskCommandControllerSnapshot,
+  getTaskCommandLeaseIdentity,
+  isTaskCommandLeaseHeld,
+} from './task-command-leases.js';
 import {
   countRunningAndPendingTaskAgents,
-  spawnTaskAgentWorkflow,
+  spawnOwnedTaskAgentWorkflow,
   stopAllTaskAgentWorkflows,
   stopTaskAgentWorkflow,
 } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
+import { consumeArenaTerminalLaunch } from './arena-terminal-launches.js';
 import {
   recordTerminalRecoveryBatch,
   recordAgentSessionEnsureBatch,
@@ -56,6 +70,8 @@ import type {
   TerminalStartupRecoveryRequestEntry,
 } from '../../src/ipc/types.js';
 import type { ProjectMode } from '../../src/store/types.js';
+import { createOrdinaryTaskPromptInputHandler } from './task-prompt-input-handler.js';
+import type { TaskPromptInputAdmissionService } from './task-prompt-input-admission.js';
 
 interface ScrollbackBatchEntrySnapshot {
   agentId: string;
@@ -493,6 +509,46 @@ function assertCanApplyTaskCommandMutation(request: {
   return taskId;
 }
 
+function assertExistingSessionTaskIdentity(request: { agentId: string; taskId: string }): boolean {
+  if (!hasAgentSession(request.agentId)) return false;
+  if (getAgentMeta(request.agentId)?.taskId !== request.taskId) {
+    throw new BadRequestError('taskId must match the agent task');
+  }
+  return true;
+}
+
+function assertTaskSessionProcessAdmission(request: {
+  agentId: string;
+  arenaLaunchToken?: string;
+  controllerId?: string;
+  replaceExistingSession: boolean;
+  taskId: string;
+}): void {
+  if (!request.replaceExistingSession && assertExistingSessionTaskIdentity(request)) {
+    return;
+  }
+  // A backend-issued, one-shot Arena token is independently bound to the
+  // exact task/agent/root and is consumed before any transient PTY effect.
+  if (request.arenaLaunchToken !== undefined) {
+    return;
+  }
+
+  // An absent controller identity is reserved for the trusted Electron host.
+  // Browser transport rejects missing identities before reaching this handler.
+  if (request.controllerId === undefined) {
+    return;
+  }
+
+  if (!isTaskCommandLeaseHeld(request.taskId, request.controllerId)) {
+    const snapshot = getTaskCommandControllerSnapshot(request.taskId);
+    throw new BadRequestError(
+      snapshot.controllerId
+        ? `Task is controlled by another client (${snapshot.controllerId})`
+        : 'Task is controlled by another client',
+    );
+  }
+}
+
 function assertOptionalProjectMode(value: unknown): asserts value is ProjectMode | undefined {
   if (value === undefined || value === 'git' || value === 'non-git') {
     return;
@@ -511,13 +567,55 @@ function assertEnsureAgentSessionsBatchReason(
   throw new BadRequestError('reason must be one of: startup-restore, dispatch-storm, user-action');
 }
 
+const TERMINAL_SESSION_OWNERS = new Set<TerminalSessionOwner>([
+  'arena-transient',
+  'compatibility-shell',
+  'managed-agent',
+  'managed-task-shell',
+]);
+
+function assertTerminalSessionOwner(value: unknown): asserts value is TerminalSessionOwner {
+  if (typeof value !== 'string' || !TERMINAL_SESSION_OWNERS.has(value as TerminalSessionOwner)) {
+    throw new BadRequestError('sessionOwner must identify a supported terminal-session owner');
+  }
+}
+
+function assertManagedAttachRequestIsIdentityOnly(
+  request: Extract<
+    AttachTerminalSessionRequest,
+    { sessionOwner: 'managed-agent' | 'managed-task-shell' }
+  >,
+): void {
+  const allowedKeys = new Set([
+    'agentId',
+    'clientId',
+    'initialRecovery',
+    'onOutput',
+    'sessionOwner',
+    'taskId',
+  ]);
+  for (const key of Object.keys(request)) {
+    if (!allowedKeys.has(key)) {
+      throw new BadRequestError(`Managed terminal attach does not accept ${key}`);
+    }
+  }
+}
+
+function unavailableAttachResult(
+  reason: Extract<AttachTerminalSessionResult, { kind: 'unavailable' }>['reason'],
+): Extract<AttachTerminalSessionResult, { kind: 'unavailable' }> {
+  return { channelBound: false, kind: 'unavailable', reason, recovery: null };
+}
+
 interface AgentSpawnRequestFields {
   adapter?: 'hydra';
   agentId: string;
+  arenaLaunchToken?: string;
   args: string[];
   baseBranch?: string;
   cols?: number;
   command?: string;
+  compatibilityIntent?: 'create';
   controllerId?: string;
   cwd?: string;
   env?: Record<string, string>;
@@ -539,11 +637,28 @@ interface NormalizedAgentSpawnRequest {
   requestedRows: number;
 }
 
+function compatibilitySpawnOperationId(
+  purpose: 'desktop' | 'restore',
+  taskId: string,
+  agentId: string,
+  replaceExistingSession: boolean,
+): string {
+  const sourceGeneration = getAgentLifecycleGeneration(agentId);
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify([purpose, taskId, agentId, sourceGeneration, replaceExistingSession]),
+      'utf8',
+    )
+    .digest('base64url');
+  return `agent-session-compat:v1:${digest}`;
+}
+
 function assertAgentSpawnRequestFields(
   request: AgentSpawnRequestFields,
 ): NormalizedAgentSpawnRequest {
   assertString(request.taskId, 'taskId');
   assertString(request.agentId, 'agentId');
+  assertOptionalString(request.arenaLaunchToken, 'arenaLaunchToken');
   assertStringArray(request.args, 'args');
   if (request.adapter !== undefined && request.adapter !== 'hydra') {
     throw new BadRequestError('adapter must be hydra when provided');
@@ -590,36 +705,94 @@ async function runAgentSpawnRequest(
   context: HandlerContext,
   request: AgentSpawnRequestFields,
   normalized: NormalizedAgentSpawnRequest,
+  bindOutputChannel?: () => boolean,
 ): Promise<AgentSpawnDisposition> {
   const { channelId, replaceExistingSession, requestedCols, requestedRows } = normalized;
+  const assertProcessAdmission = (): void =>
+    assertTaskSessionProcessAdmission({
+      agentId: request.agentId,
+      ...(request.arenaLaunchToken !== undefined
+        ? { arenaLaunchToken: request.arenaLaunchToken }
+        : {}),
+      ...(request.controllerId !== undefined ? { controllerId: request.controllerId } : {}),
+      replaceExistingSession,
+      taskId: request.taskId,
+    });
+  assertProcessAdmission();
+
+  if (
+    context.agentSessionWriter?.isActive() === true &&
+    request.isShell !== true &&
+    (replaceExistingSession || !hasAgentSession(request.agentId))
+  ) {
+    throw new BadRequestError(
+      'Managed agent sessions must be created or replaced through the session-operation owner',
+    );
+  }
 
   function spawnWorkflow(): Promise<AgentSpawnDisposition> {
     const hasSessionAtSpawn = hasAgentSession(request.agentId);
     const shouldAttachExistingSession = hasSessionAtSpawn && !replaceExistingSession;
+    if (shouldAttachExistingSession && request.arenaLaunchToken !== undefined) {
+      throw new BadRequestError('Arena terminal launch is unavailable');
+    }
     // Attach-to-existing never resizes: the backend session geometry stays
     // authoritative regardless of the optimistic geometry on the request.
     const cols = shouldAttachExistingSession ? getAgentCols(request.agentId) : requestedCols;
     const rows = shouldAttachExistingSession ? getAgentRows(request.agentId) : requestedRows;
+    let contentAuthorityClass: 'explicit-transient' | undefined;
+    let contentAuthorityRoot: string | undefined;
+    if (!shouldAttachExistingSession && request.arenaLaunchToken !== undefined) {
+      const arenaLaunch = request.cwd
+        ? consumeArenaTerminalLaunch({
+            agentId: request.agentId,
+            cwd: request.cwd,
+            taskId: request.taskId,
+            token: request.arenaLaunchToken,
+          })
+        : null;
+      if (!arenaLaunch) {
+        throw new BadRequestError('Arena terminal launch is unavailable');
+      }
+      contentAuthorityClass = 'explicit-transient';
+      contentAuthorityRoot = arenaLaunch.root;
+    }
 
-    return spawnTaskAgentWorkflow(context, {
-      taskId: request.taskId,
-      ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
-      agentId: request.agentId,
-      command: typeof request.command === 'string' ? request.command : '',
-      args: request.args,
-      cwd: typeof request.cwd === 'string' ? request.cwd : '',
-      env: request.env,
-      cols,
-      rows,
-      isShell: request.isShell === true,
-      replaceExistingSession,
-      resumeOnStart: request.resumeOnStart === true,
-      onOutput: { __CHANNEL_ID__: channelId },
-      ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
-      ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
-      ...(request.runnerProfile !== undefined ? { runnerProfile: request.runnerProfile } : {}),
-      ...(request.startsTaskWatchers === true ? { startsTaskWatchers: true } : {}),
-    });
+    return spawnOwnedTaskAgentWorkflow(
+      context,
+      {
+        operationId: compatibilitySpawnOperationId(
+          'desktop',
+          request.taskId,
+          request.agentId,
+          replaceExistingSession,
+        ),
+        purpose: 'desktop-compatibility',
+      },
+      {
+        taskId: request.taskId,
+        ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+        agentId: request.agentId,
+        ...(contentAuthorityClass !== undefined ? { contentAuthorityClass } : {}),
+        ...(contentAuthorityRoot !== undefined ? { contentAuthorityRoot } : {}),
+        command: typeof request.command === 'string' ? request.command : '',
+        args: request.args,
+        assertSpawnAdmitted: assertProcessAdmission,
+        ...(bindOutputChannel !== undefined ? { bindOutputChannel } : {}),
+        cwd: typeof request.cwd === 'string' ? request.cwd : '',
+        env: request.env,
+        cols,
+        rows,
+        isShell: request.isShell === true,
+        replaceExistingSession,
+        resumeOnStart: request.resumeOnStart === true,
+        onOutput: { __CHANNEL_ID__: channelId },
+        ...(request.projectMode !== undefined ? { projectMode: request.projectMode } : {}),
+        ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
+        ...(request.runnerProfile !== undefined ? { runnerProfile: request.runnerProfile } : {}),
+        ...(request.startsTaskWatchers === true ? { startsTaskWatchers: true } : {}),
+      },
+    );
   }
 
   return spawnWorkflow();
@@ -674,109 +847,283 @@ function assertInitialAttachRecoveryRequest(
   };
 }
 
-export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
-  return {
-    [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
-      const request = args;
-      const normalized = assertAgentSpawnRequestFields(request);
-      const spawnDisposition = await runAgentSpawnRequest(context, request, normalized);
+async function captureInitialAttachRecovery(
+  agentId: string,
+  initialRecovery: NormalizedInitialAttachRecoveryRequest,
+): Promise<TerminalRecoveryBatchEntry> {
+  pauseAgent(agentId, 'restore');
+  const batchPauseId = holdTerminalRecoveryBatchPause(agentId);
 
-      return {
-        attachedExistingSession: spawnDisposition.kind === 'attached-existing',
-      };
+  try {
+    let recovery =
+      initialRecovery.role === null
+        ? getAgentTerminalRecovery(
+            agentId,
+            null,
+            initialRecovery.outputCursor,
+            initialRecovery.snapshotByteLimit,
+          )
+        : await getAgentTerminalStartupRecovery(
+            agentId,
+            null,
+            null,
+            initialRecovery.role,
+            initialRecovery.visibleTerminalCount,
+          );
+    if (recovery.kind === 'tail-needed') {
+      // A fresh attach has no rendered tail to offer in a phase-two request,
+      // so a cursor miss resolves to the capped snapshot here.
+      recovery = getAgentTerminalRecovery(agentId, null, null, initialRecovery.snapshotByteLimit);
+    } else if (
+      recovery.kind === 'delta' &&
+      initialRecovery.outputCursor === 0 &&
+      initialRecovery.snapshotByteLimit !== null &&
+      recovery.data.length > initialRecovery.snapshotByteLimit
+    ) {
+      // A cursor-0 delta is a full-state transfer in disguise and therefore
+      // honors the same byte budget as a snapshot.
+      recovery = getAgentTerminalRecovery(agentId, null, null, initialRecovery.snapshotByteLimit);
+    }
+    return {
+      ...serializeTerminalRecoveryEntry(agentId, 'attach-initial', recovery),
+      batchPauseId,
+    };
+  } catch (error) {
+    releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+    throw error;
+  }
+}
+
+export interface AgentIpcHandlerOptions {
+  promptInputAdmission: TaskPromptInputAdmissionService;
+}
+
+export function createAgentIpcHandlers(
+  context: HandlerContext,
+  options: AgentIpcHandlerOptions,
+): Partial<Record<IPC, IpcHandler>> {
+  const sendTaskPromptInput = createOrdinaryTaskPromptInputHandler({
+    admission: options.promptInputAdmission,
+    getAgentGeneration: getAgentLifecycleGeneration,
+    getAgentMetadata: getAgentMeta,
+    getLeaseIdentity: getTaskCommandLeaseIdentity,
+    getSupervisionSnapshot: getAgentSupervisionSnapshot,
+  });
+
+  return {
+    [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, (args) => {
+      assertString(args.taskId, 'taskId');
+      assertString(args.agentId, 'agentId');
+      getRequiredChannelId(args.onOutput);
+      throw new BadRequestError(
+        'SpawnAgent is retired; use AttachTerminalSession with an explicit sessionOwner',
+      );
     }),
 
     [IPC.AttachTerminalSession]: defineIpcHandler<IPC.AttachTerminalSession>(
       IPC.AttachTerminalSession,
       async (args) => {
-        const request = args;
-        const normalized = assertAgentSpawnRequestFields(request);
+        const request: AttachTerminalSessionRequest = args;
+        assertString(request.taskId, 'taskId');
+        assertString(request.agentId, 'agentId');
+        assertTerminalSessionOwner(request.sessionOwner);
+        const channelId = getRequiredChannelId(request.onOutput);
         const initialRecovery = assertInitialAttachRecoveryRequest(request.initialRecovery);
         assertOptionalString(request.clientId, 'clientId');
         const clientId = typeof request.clientId === 'string' ? request.clientId : null;
+        let channelBindingFailed = false;
+        const bindChannel = (): boolean => {
+          const bound = context.bindChannelForClient?.(clientId, channelId) ?? true;
+          if (!bound) channelBindingFailed = true;
+          return bound;
+        };
 
-        // Bind the output channel for the requesting client before the spawn
-        // workflow so the attach path's pending-batch flush goes to the OLD
-        // channels and every Data frame on the new channel strictly follows
-        // the captured recovery cursor.
-        const channelBound = context.bindChannelForClient?.(clientId, normalized.channelId) ?? true;
-        const spawnDisposition = await runAgentSpawnRequest(context, request, normalized);
-        const attachedExistingSession = spawnDisposition.kind === 'attached-existing';
-        if (!attachedExistingSession) {
+        async function attachExactSession(
+          generation: number,
+          isShell: boolean,
+          disposition: 'existing' | 'restored',
+        ): Promise<AttachTerminalSessionResult> {
+          let attached: AgentSpawnDisposition;
+          try {
+            attached = attachExistingAgentSessionExact(context.sendToChannel, {
+              agentId: request.agentId,
+              bindChannel,
+              generation,
+              isShell,
+              onOutput: { __CHANNEL_ID__: channelId },
+              taskId: request.taskId,
+            });
+          } catch {
+            return unavailableAttachResult('identity-unavailable');
+          }
+          if (attached.channelBound === false) {
+            return unavailableAttachResult('channel-unavailable');
+          }
           return {
-            attachedExistingSession,
-            channelBound,
-            recovery: null,
+            channelBound: true,
+            disposition,
+            generation,
+            kind: 'attached',
+            recovery: await captureInitialAttachRecovery(request.agentId, initialRecovery),
           };
         }
 
-        const agentId = request.agentId;
-        // Always hold a request-scoped pause for live sessions (leases
-        // stack); see fetchTerminalRecoveryBatch for the concurrent-client
-        // rationale.
-        const shouldPause = hasAgentSession(agentId);
-        let batchPauseId: string | undefined;
-        if (shouldPause) {
-          pauseAgent(agentId, 'restore');
-          batchPauseId = holdTerminalRecoveryBatchPause(agentId);
+        if (request.sessionOwner === 'managed-agent') {
+          assertManagedAttachRequestIsIdentityOnly(request);
+          const restoreCanonicalAgentSession = context.restoreCanonicalAgentSession;
+          if (!restoreCanonicalAgentSession) {
+            return unavailableAttachResult('session-state-unavailable');
+          }
+          const restored = await restoreCanonicalAgentSession({
+            agentId: request.agentId,
+            taskId: request.taskId,
+          });
+          if (restored.kind === 'unavailable') {
+            return unavailableAttachResult(restored.reason);
+          }
+          if (restored.agentId !== request.agentId || restored.taskId !== request.taskId) {
+            return unavailableAttachResult('identity-unavailable');
+          }
+          return attachExactSession(restored.generation, false, restored.kind);
         }
 
-        try {
-          let recovery =
-            initialRecovery.role === null
-              ? getAgentTerminalRecovery(
-                  agentId,
-                  null,
-                  initialRecovery.outputCursor,
-                  initialRecovery.snapshotByteLimit,
-                )
-              : await getAgentTerminalStartupRecovery(
-                  agentId,
-                  null,
-                  null,
-                  initialRecovery.role,
-                  initialRecovery.visibleTerminalCount,
-                );
-          if (recovery.kind === 'tail-needed') {
-            // A fresh attach has no rendered tail to offer in a phase-two
-            // request, so a cursor miss resolves to the capped snapshot here.
-            recovery = getAgentTerminalRecovery(
-              agentId,
-              null,
-              null,
-              initialRecovery.snapshotByteLimit,
-            );
-          } else if (
-            recovery.kind === 'delta' &&
-            initialRecovery.outputCursor === 0 &&
-            initialRecovery.snapshotByteLimit !== null &&
-            recovery.data.length > initialRecovery.snapshotByteLimit
+        if (request.sessionOwner === 'managed-task-shell') {
+          assertManagedAttachRequestIsIdentityOnly(request);
+        }
+
+        const compatibilityRequest =
+          request.sessionOwner === 'managed-task-shell'
+            ? null
+            : (request as Extract<
+                AttachTerminalSessionRequest,
+                { sessionOwner: 'arena-transient' | 'compatibility-shell' }
+              >);
+        const normalized = compatibilityRequest
+          ? assertAgentSpawnRequestFields(compatibilityRequest)
+          : null;
+        if (compatibilityRequest?.sessionOwner === 'compatibility-shell') {
+          if (
+            compatibilityRequest.isShell !== true ||
+            compatibilityRequest.arenaLaunchToken !== undefined
           ) {
-            // Cursor-hit deltas are uncapped by design (live continuity must
-            // not be truncated), but a fresh-mount cursor-0 claim has no
-            // rendered history to preserve: a delta from byte 0 is a
-            // full-state transfer in disguise, so it must honor the attach
-            // snapshot byte budget instead of shipping the whole retained
-            // ring inline.
-            recovery = getAgentTerminalRecovery(
-              agentId,
-              null,
-              null,
-              initialRecovery.snapshotByteLimit,
+            throw new BadRequestError(
+              'compatibility-shell requires a shell session without an Arena launch token',
             );
           }
-          const entry = serializeTerminalRecoveryEntry(agentId, 'attach-initial', recovery);
-          return {
-            attachedExistingSession,
-            channelBound,
-            recovery: batchPauseId === undefined ? entry : { ...entry, batchPauseId },
-          };
-        } catch (error) {
-          if (batchPauseId !== undefined) {
-            releaseHeldTerminalRecoveryBatchPause(batchPauseId);
+          if (
+            compatibilityRequest.compatibilityIntent !== undefined &&
+            compatibilityRequest.compatibilityIntent !== 'create'
+          ) {
+            throw new BadRequestError('compatibilityIntent must be create when provided');
           }
+        } else if (
+          compatibilityRequest?.sessionOwner === 'arena-transient' &&
+          (compatibilityRequest.arenaLaunchToken === undefined ||
+            compatibilityRequest.isShell === true ||
+            compatibilityRequest.compatibilityIntent !== undefined)
+        ) {
+          throw new BadRequestError('arena-transient requires a non-shell Arena launch token');
+        }
+
+        if (request.sessionOwner !== 'arena-transient') {
+          if (request.sessionOwner === 'compatibility-shell') {
+            const classifyCanonicalAgentSessionIdentity =
+              context.classifyCanonicalAgentSessionIdentity;
+            if (!classifyCanonicalAgentSessionIdentity) {
+              if (context.agentSessionWriter?.isActive() === true) {
+                return unavailableAttachResult('session-state-unavailable');
+              }
+            } else {
+              let classification: 'managed-agent' | 'unmanaged' | 'unavailable';
+              try {
+                classification = await classifyCanonicalAgentSessionIdentity({
+                  agentId: request.agentId,
+                  taskId: request.taskId,
+                });
+              } catch {
+                classification = 'unavailable';
+              }
+              if (classification === 'managed-agent') {
+                return unavailableAttachResult('identity-unavailable');
+              }
+              if (classification === 'unavailable') {
+                return unavailableAttachResult('session-state-unavailable');
+              }
+            }
+          }
+
+          const restoreCanonicalTaskShellSession = context.restoreCanonicalTaskShellSession;
+          if (!restoreCanonicalTaskShellSession) {
+            if (context.agentSessionWriter?.isActive() === true) {
+              return unavailableAttachResult('session-state-unavailable');
+            }
+            if (request.sessionOwner === 'managed-task-shell') {
+              return unavailableAttachResult('task-shell-restore-unavailable');
+            }
+          } else {
+            let restoredShell: Awaited<ReturnType<typeof restoreCanonicalTaskShellSession>>;
+            try {
+              restoredShell = await restoreCanonicalTaskShellSession(
+                {
+                  sessionId: request.agentId,
+                  taskId: request.taskId,
+                },
+                compatibilityRequest?.compatibilityIntent === 'create'
+                  ? { compatibilityIntent: 'create' }
+                  : undefined,
+              );
+            } catch {
+              return unavailableAttachResult('restore-failed');
+            }
+            if (restoredShell.kind === 'unavailable') {
+              return unavailableAttachResult(restoredShell.reason);
+            }
+            if (
+              restoredShell.sessionId !== request.agentId ||
+              restoredShell.taskId !== request.taskId
+            ) {
+              return unavailableAttachResult('identity-unavailable');
+            }
+            if (restoredShell.kind === 'existing' || restoredShell.kind === 'restored') {
+              return attachExactSession(restoredShell.generation, true, restoredShell.kind);
+            }
+            if (request.sessionOwner === 'managed-task-shell') {
+              return unavailableAttachResult('task-shell-restore-unavailable');
+            }
+          }
+        }
+
+        if (!normalized || !compatibilityRequest) {
+          return unavailableAttachResult('task-shell-restore-unavailable');
+        }
+
+        let spawnDisposition: AgentSpawnDisposition;
+        try {
+          spawnDisposition = await runAgentSpawnRequest(
+            context,
+            compatibilityRequest,
+            normalized,
+            bindChannel,
+          );
+        } catch (error) {
+          if (channelBindingFailed) return unavailableAttachResult('channel-unavailable');
           throw error;
         }
+        if (spawnDisposition.channelBound === false) {
+          return unavailableAttachResult('channel-unavailable');
+        }
+        const generation = getAgentLifecycleGeneration(request.agentId);
+        if (generation === null) return unavailableAttachResult('identity-unavailable');
+        const attachedExistingSession = spawnDisposition.kind === 'attached-existing';
+        return {
+          channelBound: true,
+          disposition: attachedExistingSession ? 'existing' : 'created',
+          generation,
+          kind: 'attached',
+          recovery: attachedExistingSession
+            ? await captureInitialAttachRecovery(request.agentId, initialRecovery)
+            : null,
+        };
       },
     ),
 
@@ -795,6 +1142,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       async (args) => {
         const request = args;
         assertEnsureAgentSessionsBatchReason(request.reason);
+        assertOptionalString(request.clientId, 'clientId');
         if (!Array.isArray(request.requests)) {
           throw new BadRequestError('requests must be an array');
         }
@@ -807,121 +1155,49 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           const entry = candidate as Record<string, unknown>;
           assertString(entry.taskId, `requests[${index}].taskId`);
           assertString(entry.agentId, `requests[${index}].agentId`);
-          assertStringArray(entry.args, `requests[${index}].args`);
-          if (entry.adapter !== undefined && entry.adapter !== 'hydra') {
-            throw new BadRequestError(`requests[${index}].adapter must be hydra when provided`);
+          if (
+            Object.keys(entry).length !== 2 ||
+            !Object.prototype.hasOwnProperty.call(entry, 'taskId') ||
+            !Object.prototype.hasOwnProperty.call(entry, 'agentId')
+          ) {
+            throw new BadRequestError(`requests[${index}] must contain exactly taskId and agentId`);
           }
-          if (entry.cwd !== undefined) {
-            assertString(entry.cwd, `requests[${index}].cwd`);
-          }
-          if (entry.resumeOnStart !== undefined && typeof entry.resumeOnStart !== 'boolean') {
-            throw new BadRequestError(
-              `requests[${index}].resumeOnStart must be a boolean when provided`,
-            );
-          }
-          const baseBranch = entry.baseBranch;
-          const projectMode = entry.projectMode;
-          validateOptionalBranchName(baseBranch, `requests[${index}].baseBranch`);
-          assertOptionalProjectMode(projectMode);
-
-          const taskId = entry.taskId;
-          const agentId = entry.agentId;
-          const spawnArgs = entry.args;
-          const adapter: 'hydra' | undefined = entry.adapter === 'hydra' ? 'hydra' : undefined;
-          const command = typeof entry.command === 'string' ? entry.command : '';
-          const cwd = typeof entry.cwd === 'string' ? entry.cwd : '';
-          const requestedCols = normalizeTerminalDimension(
-            entry.cols,
-            80,
-            `requests[${index}].cols`,
-          );
-          const requestedRows = normalizeTerminalDimension(
-            entry.rows,
-            24,
-            `requests[${index}].rows`,
-          );
-          return {
-            adapter,
-            agentId,
-            baseBranch,
-            command,
-            cwd,
-            env: entry.env,
-            isShell: entry.isShell === true,
-            projectMode,
-            requestedCols,
-            requestedRows,
-            resumeOnStart: entry.resumeOnStart === true,
-            runnerProfile: entry.runnerProfile,
-            spawnArgs,
-            taskId,
-          };
+          return { agentId: entry.agentId, taskId: entry.taskId };
         });
 
         recordAgentSessionEnsureBatch(normalizedRequests.length);
 
-        const results = await Promise.all(
-          normalizedRequests.map(async (entry) => {
-            function buildExistingResult() {
-              return {
-                agentId: entry.agentId,
-                cols: getAgentCols(entry.agentId),
-                created: false,
-                existed: true,
-                rows: getAgentRows(entry.agentId),
-                taskId: getAgentMeta(entry.agentId)?.taskId ?? entry.taskId,
-              };
-            }
+        const restoreCanonicalAgentSession = context.restoreCanonicalAgentSession;
+        const inFlightByIdentity = new Map<string, Promise<EnsureAgentSessionResult>>();
+        function restoreEntry(entry: {
+          agentId: string;
+          taskId: string;
+        }): Promise<EnsureAgentSessionResult> {
+          const key = `${entry.taskId}\u0000${entry.agentId}`;
+          const existing = inFlightByIdentity.get(key);
+          if (existing) return existing;
 
+          const pending = (async (): Promise<EnsureAgentSessionResult> => {
+            if (!restoreCanonicalAgentSession) {
+              return { ...entry, kind: 'unavailable', reason: 'session-state-unavailable' };
+            }
             try {
-              const spawnDisposition = await spawnTaskAgentWorkflow(context, {
-                taskId: entry.taskId,
-                ...(entry.baseBranch !== undefined ? { baseBranch: entry.baseBranch } : {}),
-                agentId: entry.agentId,
-                command: entry.command,
-                args: entry.spawnArgs,
-                cwd: entry.cwd,
-                env: entry.env,
-                cols: entry.requestedCols,
-                rows: entry.requestedRows,
-                isShell: entry.isShell,
-                resumeOnStart: entry.resumeOnStart,
-                skipExistingSessionAttach: true,
-                ...(entry.projectMode !== undefined ? { projectMode: entry.projectMode } : {}),
-                ...(entry.adapter !== undefined ? { adapter: entry.adapter } : {}),
-                ...(entry.runnerProfile !== undefined
-                  ? { runnerProfile: entry.runnerProfile }
-                  : {}),
-              });
-              const created = spawnDisposition.kind === 'created-session';
-
-              if (!created) {
-                recordAgentSessionEnsureResult('existing');
-                return buildExistingResult();
+              const result = await restoreCanonicalAgentSession(entry);
+              if (result.kind === 'unavailable') return { ...entry, ...result };
+              if (result.agentId !== entry.agentId || result.taskId !== entry.taskId) {
+                return { ...entry, kind: 'unavailable', reason: 'identity-unavailable' };
               }
-
-              recordAgentSessionEnsureResult('created');
-              return {
-                agentId: entry.agentId,
-                cols: entry.requestedCols,
-                created: true,
-                existed: false,
-                rows: entry.requestedRows,
-                taskId: entry.taskId,
-              };
-            } catch (error) {
-              return {
-                agentId: entry.agentId,
-                cols: entry.requestedCols,
-                created: false,
-                error: error instanceof Error ? error.message : String(error),
-                existed: false,
-                rows: entry.requestedRows,
-                taskId: entry.taskId,
-              };
+              recordAgentSessionEnsureResult(result.kind === 'existing' ? 'existing' : 'created');
+              return result;
+            } catch {
+              return { ...entry, kind: 'unavailable', reason: 'restore-failed' };
             }
-          }),
-        );
+          })();
+          inFlightByIdentity.set(key, pending);
+          return pending;
+        }
+
+        const results = await Promise.all(normalizedRequests.map(restoreEntry));
 
         return { results };
       },
@@ -952,6 +1228,26 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       );
       return undefined;
     }),
+
+    [IPC.SendTaskPromptInput]: defineIpcHandler<IPC.SendTaskPromptInput>(
+      IPC.SendTaskPromptInput,
+      async (args) => {
+        assertString(args.agentId, 'agentId');
+        assertString(args.controllerId, 'controllerId');
+        assertString(args.taskId, 'taskId');
+        assertString(args.text, 'text');
+        if (args.text.length === 0) {
+          throw new BadRequestError('text must not be empty');
+        }
+
+        return sendTaskPromptInput({
+          agentId: args.agentId,
+          controllerId: args.controllerId,
+          taskId: args.taskId,
+          text: args.text,
+        });
+      },
+    ),
 
     [IPC.DetachAgentOutput]: defineIpcHandler<IPC.DetachAgentOutput>(
       IPC.DetachAgentOutput,

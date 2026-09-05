@@ -17,6 +17,7 @@ import { syncTerminalCounter } from './terminals.js';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus.js';
 import { clearRemovedTaskRuntimeState } from './task-state-cleanup.js';
 import type { Agent } from './types.js';
+import { applyPersistedMergeProgressProjection } from '../app/merge-progress.js';
 
 export { buildBrowserColdBootstrapProjectionFromJson } from '../domain/browser-cold-bootstrap-projection-builder.js';
 
@@ -150,6 +151,7 @@ export function applyBrowserColdBootstrapProjection(
       restoredRunningAgentIds = restoreExpandedProjectionAgents(storeState);
     }),
   );
+  applyPersistedMergeProgressProjection(projection);
   syncTerminalHighLoadMode(store.terminalHighLoadMode);
 
   for (const agentId of previousAgentIds) {

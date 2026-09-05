@@ -140,4 +140,88 @@ describe('remote access workflows', () => {
 
     unsubscribeStatus();
   });
+
+  it('forwards one immutable scoped-command composition to the remote host', async () => {
+    const startServer = vi.fn().mockResolvedValue({
+      connectedClients: () => 0,
+      port: 7777,
+      stop: vi.fn(),
+      tailscaleUrl: null,
+      token: 'token',
+      url: 'https://localhost:7777/auth/bootstrap',
+      wifiUrl: null,
+    });
+    const scopedCommands = {
+      grants: new Set(['catalog:read' as const]),
+      peerTrustPolicy: {
+        allowedInterfaces: ['tailscale0'],
+        allowedPeerRanges: ['100.64.0.0/10'],
+      },
+      registrations: {},
+      tls: { cert: Buffer.from('certificate'), key: Buffer.from('key') },
+      workspacePrincipalId: 'desktop-owner',
+    };
+    const controller = createRemoteAccessController({
+      scopedCommands,
+      startServer,
+      staticDir: '/tmp/dist-remote',
+    });
+
+    await controller.start({
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' }),
+      getTaskName: () => 'Task',
+    });
+
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ scopedCommands }));
+  });
+
+  it('resolves active-only commands once and serializes concurrent start with stop', async () => {
+    let releaseActivation!: () => void;
+    const activation = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
+    });
+    const scopedCommands = {
+      grants: new Set(['catalog:read' as const]),
+      peerTrustPolicy: { allowedInterfaces: [], allowedPeerRanges: [] },
+      registrations: {},
+      tls: { cert: Buffer.from('certificate'), key: Buffer.from('key') },
+      workspacePrincipalId: 'desktop-owner',
+    };
+    const resolveScopedCommands = vi.fn(async () => {
+      await activation;
+      return scopedCommands;
+    });
+    const stop = vi.fn(async () => undefined);
+    const startServer = vi.fn(async () => ({
+      connectedClients: () => 0,
+      port: 7777,
+      stop,
+      tailscaleUrl: null,
+      token: 'token',
+      url: 'https://localhost:7777/auth/bootstrap',
+      wifiUrl: null,
+    }));
+    const controller = createRemoteAccessController({
+      resolveScopedCommands,
+      startServer,
+      staticDir: '/tmp/dist-remote',
+    });
+    const request = {
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
+      getTaskName: () => 'Task',
+    };
+
+    const first = controller.start(request);
+    const second = controller.start(request);
+    const stopped = controller.stop();
+    expect(startServer).not.toHaveBeenCalled();
+    releaseActivation();
+    await Promise.all([first, second, stopped]);
+
+    expect(resolveScopedCommands).toHaveBeenCalledOnce();
+    expect(startServer).toHaveBeenCalledOnce();
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ scopedCommands }));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(controller.status().enabled).toBe(false);
+  });
 });

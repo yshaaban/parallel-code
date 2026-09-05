@@ -3,7 +3,7 @@ import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from './harness/fixtures.js';
 import {
   createInteractiveNodeScenario,
-  createPromptReadyScenario,
+  createPersistentPromptReadyScenario,
   createRenderStressScenario,
 } from './harness/scenarios.js';
 import { getRendererDiagnostics, openDiagnosticSession } from './harness/terminal-render.js';
@@ -142,7 +142,9 @@ function buildSelectedAttachTracePayload(
 
 async function getSelectedTerminalAgentId(page: Page): Promise<string | null> {
   return page.evaluate(() => {
-    const terminal = document.querySelector('[data-terminal-agent-id]');
+    const terminal = document.querySelector(
+      '[data-terminal-active-command-target="true"][data-terminal-agent-id]',
+    );
     return terminal?.getAttribute('data-terminal-agent-id') ?? null;
   });
 }
@@ -345,11 +347,9 @@ function expectReconnectRestoreDiagnostics(
 
 async function waitForShellAndSelectedTerminalReady(
   browserLab: {
-    waitForTerminalInteractiveReady: (
+    waitForActiveTerminalInteractiveReady: (
       page: Page,
-      terminalIndex?: number,
       options?: {
-        requireLiveRenderReady?: boolean;
         timeoutMs?: number;
       },
     ) => Promise<void>;
@@ -357,8 +357,8 @@ async function waitForShellAndSelectedTerminalReady(
   page: Page,
 ): Promise<void> {
   await page.locator('.app-shell').waitFor({ state: 'visible' });
-  await browserLab.waitForTerminalInteractiveReady(page, 0, {
-    requireLiveRenderReady: true,
+  await browserLab.waitForActiveTerminalInteractiveReady(page, {
+    timeoutMs: 30_000,
   });
 }
 
@@ -445,7 +445,7 @@ async function resetPageDiagnostics(page: Page): Promise<void> {
 
 startupMetricsDescribe('browser startup metrics / cold bootstrap / prompt ready', () => {
   test.use({
-    scenario: createPromptReadyScenario(320),
+    scenario: createPersistentPromptReadyScenario(320),
   });
 
   test('captures cold bootstrap and selected-terminal timings for a prompt-ready fixture', async ({
@@ -480,8 +480,8 @@ startupMetricsDescribe('browser startup metrics / cold bootstrap / prompt ready'
 
 function createTerminalFleetScenario(
   terminalCount: number,
-): ReturnType<typeof createPromptReadyScenario> {
-  const scenario = createPromptReadyScenario(320);
+): ReturnType<typeof createPersistentPromptReadyScenario> {
+  const scenario = createPersistentPromptReadyScenario(320);
   return {
     ...scenario,
     additionalTaskNames: Array.from(

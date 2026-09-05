@@ -7,6 +7,12 @@ import {
 } from '../electron/ipc/runtime-diagnostics.js';
 import { installStdioEpipeGuard } from '../electron/stdio.js';
 import { startBrowserServer } from './browser-server.js';
+import type { BrowserServerController } from './browser-server.js';
+import {
+  snapshotTaskNotesWriterEntitlements,
+  type TaskNotesWriterEntitlements,
+} from '../electron/ipc/task-notes-writer-entitlements.js';
+import { loadRemoteScopedCommandSecurityConfig } from '../electron/remote/scoped-command-security-config.js';
 import {
   assertBrowserServerBuildArtifactsAreFresh,
   shouldCheckBrowserServerBuildArtifacts,
@@ -120,7 +126,12 @@ if (runtimeDiagnosticsLoggingConfig) {
   });
 }
 
-async function main(): Promise<void> {
+export async function startConfiguredBrowserServer(
+  options: { taskNotesWriterEntitlements?: TaskNotesWriterEntitlements } = {},
+): Promise<BrowserServerController> {
+  const taskNotesWriterEntitlements = snapshotTaskNotesWriterEntitlements(
+    options.taskNotesWriterEntitlements,
+  );
   if (shouldCheckBrowserServerBuildArtifacts(process.env)) {
     await assertBrowserServerBuildArtifactsAreFresh({
       frontendDistDir: distDir,
@@ -130,7 +141,19 @@ async function main(): Promise<void> {
     });
   }
 
-  startBrowserServer({
+  const remoteSecurity = loadRemoteScopedCommandSecurityConfig();
+  if (remoteSecurity.kind === 'invalid') {
+    throw new Error(`Secure remote access configuration is invalid (${remoteSecurity.code})`);
+  }
+  const scopedAccessToken =
+    remoteSecurity.kind === 'configured'
+      ? (remoteSecurity.accessToken ?? randomBytes(24).toString('base64url'))
+      : randomBytes(24).toString('base64url');
+  if (remoteSecurity.kind === 'configured' && scopedAccessToken === token) {
+    throw new Error('Secure remote and full browser access tokens must be distinct');
+  }
+
+  const controller = startBrowserServer({
     ...getBrowserChannelServerOptions(),
     distDir,
     distRemoteDir,
@@ -138,13 +161,33 @@ async function main(): Promise<void> {
     simulateJitterMs: Number(process.env.SIMULATE_JITTER_MS) || 0,
     simulateLatencyMs: Number(process.env.SIMULATE_LATENCY_MS) || 0,
     simulatePacketLoss: Number(process.env.SIMULATE_PACKET_LOSS) || 0,
+    taskNotesWriterEntitlements,
+    ...(remoteSecurity.kind === 'configured'
+      ? {
+          scopedCommands: {
+            accessToken: scopedAccessToken,
+            grants: remoteSecurity.grants,
+            mutationAdmissionInitiallyOpen: [...remoteSecurity.grants].some(
+              (grant) =>
+                grant === 'notes:write' || grant === 'task:create' || grant === 'terminal:control',
+            ),
+            peerTrustPolicy: remoteSecurity.peerTrustPolicy,
+            tls: remoteSecurity.tls,
+            workspacePrincipalId: 'standalone-owner',
+          },
+        }
+      : {}),
     token,
     userDataPath,
   });
+  await controller.whenReady();
+  return controller;
 }
 
-void main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  void startConfiguredBrowserServer().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
+}

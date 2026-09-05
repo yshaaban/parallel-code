@@ -34,6 +34,7 @@ import {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setNewTaskDefault,
   setTerminalHighLoadMode,
   setTerminalLocalInputFeedbackEnabled,
   setTaskNotificationsEnabled,
@@ -45,6 +46,7 @@ import {
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
 import { KeybindingsSettingsSection } from './settings/KeybindingsSettingsSection';
+import { NewTaskDefaultsSettingsSection } from './settings/NewTaskDefaultsSettingsSection';
 import { mod } from '../lib/platform';
 import { SectionLabel } from './SectionLabel';
 import { typography } from '../lib/typography';
@@ -295,7 +297,6 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 padding: '8px 11px',
                 color: theme.fg,
                 ...typography.monoUi,
-                outline: 'none',
               }}
             />
           </label>
@@ -346,7 +347,6 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 padding: '8px 11px',
                 color: theme.fg,
                 ...typography.ui,
-                outline: 'none',
               }}
             >
               <For each={HYDRA_STARTUP_MODES}>
@@ -533,6 +533,11 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
         </label>
       </div>
 
+      <NewTaskDefaultsSettingsSection
+        defaults={store.newTaskDefaults}
+        onChange={setNewTaskDefault}
+      />
+
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
         <SectionLabel>Updates</SectionLabel>
         <div
@@ -615,7 +620,6 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 padding: '8px 11px',
                 color: theme.fg,
                 ...typography.monoUi,
-                outline: 'none',
               }}
             />
           </label>

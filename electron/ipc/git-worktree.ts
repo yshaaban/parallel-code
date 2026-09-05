@@ -1,5 +1,5 @@
 import fs from 'fs';
-import path from 'path';
+import path from 'node:path';
 
 import {
   findBranchRefPrefixConflict,
@@ -8,27 +8,19 @@ import {
 import { BadRequestError } from './errors.js';
 import { invalidateGitQueryCacheForPath } from './git-cache.js';
 import { execGit } from './git-exec.js';
-
-const SYMLINK_CANDIDATES = [
-  '.claude',
-  '.cursor',
-  '.aider',
-  '.copilot',
-  '.codeium',
-  '.continue',
-  '.windsurf',
-  '.env',
-  'node_modules',
-];
-
-/** Entries inside `.claude` that must NOT be symlinked (kept per-worktree). */
-const CLAUDE_DIR_EXCLUDE = new Set(['plans', 'settings.local.json']);
-
-export { SYMLINK_CANDIDATES };
+import { resolveBranchRef } from './git-branch-ref.js';
+import {
+  applyRequestedWorktreeSymlinks,
+  assertTaskWorktreeLinkRequestV1,
+  type TaskWorktreeLinkRequestV1,
+  WorktreeSymlinkSafetyError,
+} from './git-worktree-symlinks.js';
+import type { WorktreeSymlinkWarning } from '../../src/ipc/types.js';
 
 export interface GitWorktreeListEntry {
   branchName: string | null;
   detached: boolean;
+  lockedReason?: string;
   path: string;
 }
 
@@ -55,6 +47,7 @@ function parseGitWorktreeList(output: string): GitWorktreeListEntry[] {
   let currentPath: string | null = null;
   let branchName: string | null = null;
   let detached = false;
+  let lockedReason: string | undefined;
 
   function flushEntry(): void {
     if (!currentPath) {
@@ -64,11 +57,13 @@ function parseGitWorktreeList(output: string): GitWorktreeListEntry[] {
     entries.push({
       branchName,
       detached,
+      ...(lockedReason !== undefined ? { lockedReason } : {}),
       path: currentPath,
     });
     currentPath = null;
     branchName = null;
     detached = false;
+    lockedReason = undefined;
   }
 
   for (const line of output.split('\n')) {
@@ -85,6 +80,11 @@ function parseGitWorktreeList(output: string): GitWorktreeListEntry[] {
 
     if (line === 'detached') {
       detached = true;
+      continue;
+    }
+
+    if (line === 'locked' || line.startsWith('locked ')) {
+      lockedReason = line.slice('locked'.length).trim();
       continue;
     }
 
@@ -122,69 +122,69 @@ async function assertBranchRefPrefixAvailable(repoRoot: string, branchName: stri
   }
 }
 
-async function gitRefExists(repoRoot: string, refName: string): Promise<boolean> {
+export interface CreatedWorktree {
+  branch: string;
+  path: string;
+  symlink_warnings?: WorktreeSymlinkWarning[];
+}
+
+function pathEntryExists(candidatePath: string): boolean {
   try {
-    await execGit(['rev-parse', '--verify', refName], { cwd: repoRoot });
+    fs.lstatSync(candidatePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
   }
 }
 
-async function resolveWorktreeStartRef(
+async function cleanupFailedCreatedWorktree(
   repoRoot: string,
-  baseBranch?: string,
-): Promise<{ exists: boolean; refName: string }> {
-  const startRef = baseBranch || 'HEAD';
-  if (await gitRefExists(repoRoot, startRef)) {
-    return { exists: true, refName: startRef };
-  }
-
-  if (baseBranch) {
-    const originStartRef = `origin/${baseBranch}`;
-    if (await gitRefExists(repoRoot, originStartRef)) {
-      return { exists: true, refName: originStartRef };
-    }
-  }
-
-  return { exists: false, refName: startRef };
-}
-
-/**
- * "Shallow-symlink" a directory: create a real directory at `target` and
- * symlink each entry from `source` into it, EXCEPT entries in `exclude`.
- */
-function shallowSymlinkDir(source: string, target: string, exclude: Set<string>): void {
-  fs.mkdirSync(target, { recursive: true });
-  let entries: fs.Dirent[];
+  worktreePath: string,
+  branchName: string,
+): Promise<void> {
+  let worktreeRemoved = false;
   try {
-    entries = fs.readdirSync(source, { withFileTypes: true });
-  } catch (err) {
-    console.warn(`Failed to read directory ${source} for shallow-symlink:`, err);
-    return;
-  }
-  for (const entry of entries) {
-    if (exclude.has(entry.name)) continue;
-    const src = path.join(source, entry.name);
-    const dst = path.join(target, entry.name);
+    await execGit(['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+    worktreeRemoved = !pathEntryExists(worktreePath);
+  } catch {
     try {
-      fs.symlinkSync(src, dst);
-    } catch (err: unknown) {
-      // EEXIST is expected if the symlink already exists; log other errors
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-        console.warn(`Failed to symlink ${src} -> ${dst}:`, err);
-      }
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+      worktreeRemoved = !pathEntryExists(worktreePath);
+    } catch {
+      worktreeRemoved = false;
     }
+  }
+
+  const failures: unknown[] = [];
+  if (!worktreeRemoved) {
+    failures.push(new Error(`Could not remove failed worktree ${worktreePath}`));
+  }
+  try {
+    await execGit(['worktree', 'prune'], { cwd: repoRoot });
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await execGit(['branch', '-D', '--', branchName], { cwd: repoRoot });
+  } catch (error) {
+    const message = String(error).toLowerCase();
+    if (!message.includes('not found') && !message.includes('not exist')) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new WorktreeSymlinkSafetyError('Failed to clean an unsafe worktree creation', failures);
   }
 }
 
 export async function createWorktree(
   repoRoot: string,
   branchName: string,
-  symlinkDirs: string[],
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
   forceClean = false,
   baseBranch?: string,
-): Promise<{ path: string; branch: string }> {
+): Promise<CreatedWorktree> {
+  assertTaskWorktreeLinkRequestV1(worktreeLinkRequest);
   const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
 
   if (forceClean) {
@@ -208,7 +208,7 @@ export async function createWorktree(
     }
   }
 
-  const startRef = await resolveWorktreeStartRef(repoRoot, baseBranch);
+  const startRef = await resolveBranchRef(repoRoot, baseBranch);
   if (!startRef.exists) {
     const isEmptyRepo = await execGit(['rev-list', '-n1', '--all'], { cwd: repoRoot })
       .then(({ stdout }) => !stdout.trim())
@@ -233,47 +233,53 @@ export async function createWorktree(
   }
   await execGit(worktreeArgs, { cwd: repoRoot });
 
-  // Symlink selected directories
-  for (const name of symlinkDirs) {
-    // Reject names that could escape the worktree directory
-    if (name.includes('/') || name.includes('\\') || name.includes('..') || name === '.') continue;
-    const source = path.join(repoRoot, name);
-    const target = path.join(worktreePath, name);
+  let warnings: WorktreeSymlinkWarning[];
+  try {
+    ({ warnings } = await applyRequestedWorktreeSymlinks(
+      repoRoot,
+      worktreePath,
+      worktreeLinkRequest,
+    ));
+  } catch (operationError) {
     try {
-      if (!fs.existsSync(source)) continue;
-      if (fs.existsSync(target)) continue;
-
-      if (name === '.claude') {
-        // Shallow-symlink: real dir with per-entry symlinks, excluding per-worktree entries
-        shallowSymlinkDir(source, target, CLAUDE_DIR_EXCLUDE);
-      } else {
-        fs.symlinkSync(source, target);
-      }
-    } catch {
-      /* ignore */
+      await cleanupFailedCreatedWorktree(repoRoot, worktreePath, branchName);
+    } catch (cleanupError) {
+      throw new WorktreeSymlinkSafetyError(
+        'Worktree link safety failed and cleanup did not settle cleanly',
+        [operationError, cleanupError],
+      );
     }
+    throw operationError;
   }
 
-  return { path: worktreePath, branch: branchName };
+  return {
+    branch: branchName,
+    path: worktreePath,
+    ...(warnings.length > 0 ? { symlink_warnings: warnings } : {}),
+  };
 }
 
 export async function removeWorktree(
   repoRoot: string,
   branchName: string,
   deleteBranch: boolean,
+  expectedWorktreePath?: string,
 ): Promise<void> {
   const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
+  if (
+    expectedWorktreePath !== undefined &&
+    path.resolve(expectedWorktreePath) !== path.resolve(worktreePath)
+  ) {
+    throw new Error('Managed worktree cleanup target changed');
+  }
   invalidateGitQueryCacheForPath(worktreePath);
 
   if (!fs.existsSync(repoRoot)) return;
 
   if (fs.existsSync(worktreePath)) {
-    try {
-      await execGit(['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
-    } catch {
-      // Fallback: direct directory removal
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    }
+    // Git refuses dirty worktrees here. Keeping canonical task membership on failure gives the user
+    // an explicit recovery path and avoids the previous recursive-delete fallback's data loss.
+    await execGit(['worktree', 'remove', worktreePath], { cwd: repoRoot });
   }
 
   // Prune stale worktree entries

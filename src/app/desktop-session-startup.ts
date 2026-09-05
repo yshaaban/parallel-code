@@ -59,6 +59,7 @@ import type {
   DesktopSessionRuntime,
   StartDesktopAppSessionOptions,
 } from './desktop-session-types';
+import { reconcileRetainedTaskMergeOperations } from './task-merge-operation-recovery';
 
 interface DesktopSessionBootstrapController {
   cleanupStartupListeners(): void;
@@ -247,7 +248,7 @@ async function restorePersistedPlanContent(): Promise<void> {
 
       return invoke(IPC.ReadPlanContent, {
         relativePath: task.planRelativePath,
-        worktreePath: task.worktreePath,
+        taskId,
       })
         .then((result) => {
           if (result) {
@@ -428,6 +429,11 @@ export async function runDesktopSessionStartup(
     }
   }
   if (isDisposed()) return;
+
+  // Recover credentials left by a response lost after canonical merge removal. This is deliberately
+  // background work: startup renders canonical state immediately, while the status join clears only
+  // operations whose backend outcome is terminal.
+  void reconcileRetainedTaskMergeOperations();
 
   if (options.electronRuntime) {
     await Promise.all([

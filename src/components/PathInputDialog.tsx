@@ -758,7 +758,6 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
               border: `1px solid ${inputError() ? theme.error : theme.border}`,
               'border-radius': '8px',
               color: theme.fg,
-              outline: 'none',
               width: '100%',
               'box-sizing': 'border-box',
               ...typography.monoUi,

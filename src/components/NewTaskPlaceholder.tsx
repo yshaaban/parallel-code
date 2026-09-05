@@ -1,6 +1,6 @@
 import { onMount, onCleanup } from 'solid-js';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
-import { createTerminal, store, unfocusPlaceholder } from '../store/store';
+import { createTerminal, unfocusPlaceholder } from '../store/store';
 import { registerFocusFn, unregisterFocusFn } from '../store/focus';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
@@ -17,18 +17,6 @@ export function NewTaskPlaceholder() {
       unregisterFocusFn('placeholder:add-terminal');
     });
   });
-
-  const isFocused = (btn: 'add-task' | 'add-terminal') =>
-    store.placeholderFocused && store.placeholderFocusedButton === btn;
-
-  const focusedBorder = (btn: 'add-task' | 'add-terminal') =>
-    isFocused(btn) ? `2px dashed ${theme.accent}` : `2px dashed ${theme.border}`;
-
-  const focusedColor = (btn: 'add-task' | 'add-terminal') =>
-    isFocused(btn) ? theme.accent : theme.fgSubtle;
-
-  const focusedBg = (btn: 'add-task' | 'add-terminal') =>
-    isFocused(btn) ? `color-mix(in srgb, ${theme.accent} 8%, transparent)` : undefined;
 
   return (
     <div
@@ -64,9 +52,8 @@ export function NewTaskPlaceholder() {
           'justify-content': 'center',
           cursor: 'pointer',
           'border-radius': '12px',
-          border: focusedBorder('add-task'),
-          color: focusedColor('add-task'),
-          background: focusedBg('add-task'),
+          border: `2px dashed ${theme.border}`,
+          color: theme.fgSubtle,
           'font-size': '20px',
           'user-select': 'none',
         }}
@@ -97,9 +84,8 @@ export function NewTaskPlaceholder() {
           'justify-content': 'center',
           cursor: 'pointer',
           'border-radius': '10px',
-          border: focusedBorder('add-terminal'),
-          color: focusedColor('add-terminal'),
-          background: focusedBg('add-terminal'),
+          border: `2px dashed ${theme.border}`,
+          color: theme.fgSubtle,
           'font-size': '13px',
           'font-family': 'monospace',
           'user-select': 'none',

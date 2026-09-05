@@ -143,8 +143,12 @@ describe('git mutation phase 1 parity', () => {
       return 'feature/task';
     });
     setExecImplementation(async (args, options) => {
-      if (args[0] === 'rev-parse') {
+      if (args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
         return { stderr: '', stdout: '.git\n' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--symbolic-full-name') {
+        expect(args).toEqual(['rev-parse', '--symbolic-full-name', 'main']);
+        return { stderr: '', stdout: 'refs/heads/main\n' };
       }
       if (args[0] === 'merge-base') {
         expect(options.cwd).toBe('/repo');

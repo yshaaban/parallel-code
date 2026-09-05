@@ -143,5 +143,11 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps): JSX.Element {
     modifiedModel?.dispose();
   });
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
+  return (
+    <div
+      ref={containerRef}
+      class="monaco-diff-focus-shell"
+      style={{ width: '100%', height: '100%' }}
+    />
+  );
 }

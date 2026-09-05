@@ -20,13 +20,16 @@ export function StatusDot(props: { status: TaskDotStatus; size?: 'sm' | 'md' }) 
   return (
     <span
       class={
-        props.status === 'busy' || props.status === 'restoring' ? 'status-dot-pulse' : undefined
+        props.status === 'busy' || props.status === 'restoring'
+          ? 'status-dot-pulse status-dot-ring'
+          : undefined
       }
       style={{
         display: 'inline-block',
         width: `${px()}px`,
         height: `${px()}px`,
         'border-radius': '50%',
+        color: getDotColor(props.status),
         background: getDotColor(props.status),
         'flex-shrink': '0',
       }}

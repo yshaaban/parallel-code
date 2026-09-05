@@ -10,6 +10,7 @@ import { isBinaryDiff } from '../../src/lib/diff-parser.js';
 import { terminateBoundedSpawnAndWait } from './bounded-process.js';
 import { NotFoundError } from './errors.js';
 import { detectMainBranch } from './git-branch.js';
+import { getBranchUpstreamRef } from './git-branch-ref.js';
 import { looksBinaryBuffer } from './git-binary.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
@@ -137,15 +138,16 @@ async function getMainComparisonState(
   mainBranch?: string,
 ): Promise<MainComparisonState> {
   const branch = mainBranch ?? (await detectMainBranch(repoRoot));
+  const remoteRef = await getBranchUpstreamRef(repoRoot, branch);
   const [mainBranchHead, remoteMainBranchHead] = await Promise.all([
     resolveRevisionHash(repoRoot, branch),
-    resolveRevisionHash(repoRoot, `origin/${branch}`),
+    resolveRevisionHash(repoRoot, remoteRef),
   ]);
 
   const refs = [mainBranchHead];
   let fingerprint = mainBranchHead;
 
-  if (remoteMainBranchHead !== `origin/${branch}` && remoteMainBranchHead !== mainBranchHead) {
+  if (remoteMainBranchHead !== remoteRef && remoteMainBranchHead !== mainBranchHead) {
     refs.push(remoteMainBranchHead);
     fingerprint = `${mainBranchHead}:${remoteMainBranchHead}`;
   }

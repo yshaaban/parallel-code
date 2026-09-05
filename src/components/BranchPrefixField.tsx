@@ -33,7 +33,6 @@ export function BranchPrefixField(props: BranchPrefixFieldProps): JSX.Element {
             color: theme.fg,
             'font-size': '12px',
             'font-family': "'JetBrains Mono', monospace",
-            outline: 'none',
             width: '120px',
           }}
         />

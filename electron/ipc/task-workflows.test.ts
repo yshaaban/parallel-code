@@ -5,6 +5,7 @@ import path from 'path';
 import { IPC } from './channels.js';
 
 const {
+  attachExistingAgentSessionExactMock,
   resolveHydraAdapterLaunchMock,
   cleanupPendingDockerAgentRunnerBuildsMock,
   createDockerAgentRunnerLaunchMock,
@@ -35,6 +36,7 @@ const {
   removeGitStatusSnapshotMock,
   removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
+  attachExistingAgentSessionExactMock: vi.fn(),
   resolveHydraAdapterLaunchMock: vi.fn(),
   cleanupPendingDockerAgentRunnerBuildsMock: vi.fn(),
   createDockerAgentRunnerLaunchMock: vi.fn(),
@@ -85,6 +87,7 @@ vi.mock('./pty.js', async () => {
   const actual = await vi.importActual<typeof import('./pty.js')>('./pty.js');
   return {
     ...actual,
+    attachExistingAgentSessionExact: attachExistingAgentSessionExactMock,
     hasAgentSession: hasAgentSessionMock,
     killAllAgentsAndWaitForRunnerCleanup: killAllAgentsAndWaitForRunnerCleanupMock,
     killAgentAndWaitForRunnerCleanup: killAgentAndWaitForRunnerCleanupMock,
@@ -154,6 +157,7 @@ import {
   createTaskWorkflow,
   deleteTaskWorkflow,
   findRegisteredTaskIdForWorktreePath,
+  spawnOwnedTaskAgentWorkflow,
   spawnTaskAgentWorkflow,
   stopAllTaskAgentWorkflows,
   stopTaskAgentWorkflow,
@@ -161,6 +165,7 @@ import {
   type CreateTaskWorkflowRequest,
   type TaskWorkflowContext,
 } from './task-workflows.js';
+import { createAgentSessionWriterRuntime } from './agent-session-writer-authority.js';
 import {
   acquireTaskCommandLease,
   getTaskCommandControllers,
@@ -170,6 +175,7 @@ import { clearTaskStepsRegistry, stopAllTaskStepsWatchers } from './task-steps.j
 
 function createContext(): TaskWorkflowContext {
   return {
+    beginTaskContentRootAdmission: () => null,
     emitIpcEvent: vi.fn(),
     sendToChannel: vi.fn(),
   };
@@ -240,6 +246,18 @@ function createExistingWorktreeWorkflowRequest(
   };
 }
 
+function fixedLengthWorktreeLinkName(index: number, byteLength: number): string {
+  const prefix = `${index.toString(16).padStart(2, '0')}-`;
+  return `${prefix}${'x'.repeat(byteLength - prefix.length)}`;
+}
+
+function worktreeLinkBoundaryNames(lastLength: number): string[] {
+  return [
+    ...Array.from({ length: 63 }, (_, index) => fixedLengthWorktreeLinkName(index, 255)),
+    fixedLengthWorktreeLinkName(63, lastLength),
+  ];
+}
+
 describe('task workflows', () => {
   beforeEach(() => {
     clearTaskWorkflowWorktreeRegistryForTests();
@@ -256,6 +274,9 @@ describe('task workflows', () => {
       channelAttached: true,
       kind: 'created-session',
     });
+    attachExistingAgentSessionExactMock.mockImplementation((sendToChannel, request) =>
+      spawnAgentMock(sendToChannel, request),
+    );
     hasAgentSessionMock.mockReturnValue(false);
     killAgentAndWaitForRunnerCleanupMock.mockResolvedValue(undefined);
     killAllAgentsAndWaitForRunnerCleanupMock.mockResolvedValue(undefined);
@@ -304,6 +325,128 @@ describe('task workflows', () => {
     vi.useRealTimers();
   });
 
+  it('keeps concurrent Hydra writers exclusive while allowing ordinary agents on the same root', async () => {
+    const context = createContext();
+    const sessions = new Set<string>();
+    hasAgentSessionMock.mockImplementation((agentId: string) => sessions.has(agentId));
+    spawnAgentMock.mockImplementation((_send, request) => {
+      sessions.add(request.agentId);
+      return { channelAttached: true, kind: 'created-session' };
+    });
+    const request = {
+      taskId: 'hydra-task-1',
+      agentId: 'hydra-agent-1',
+      adapter: 'hydra' as const,
+      command: 'hydra',
+      args: [],
+      cwd: '/tmp/hydra-shared-root',
+      env: {},
+      cols: 80,
+      rows: 24,
+    };
+    const first = spawnTaskAgentWorkflow(context, request);
+    const second = spawnTaskAgentWorkflow(context, {
+      ...request,
+      taskId: 'hydra-task-2',
+      agentId: 'hydra-agent-2',
+    });
+    await expect(second).rejects.toThrow('Hydra is already running or starting');
+    await first;
+    expect(sessions).toEqual(new Set(['hydra-agent-1']));
+    await expect(
+      spawnTaskAgentWorkflow(context, {
+        ...request,
+        taskId: 'hydra-task-2',
+        agentId: 'hydra-agent-2',
+      }),
+    ).rejects.toThrow('Hydra is already running or starting');
+    await spawnTaskAgentWorkflow(context, {
+      ...request,
+      adapter: undefined,
+      command: 'codex',
+      taskId: 'ordinary-task',
+      agentId: 'ordinary-agent',
+    });
+    expect(sessions).toEqual(new Set(['hydra-agent-1', 'ordinary-agent']));
+    sessions.delete('hydra-agent-1');
+    await spawnTaskAgentWorkflow(context, {
+      ...request,
+      taskId: 'hydra-task-2',
+      agentId: 'hydra-agent-2',
+    });
+    expect(sessions.has('hydra-agent-2')).toBe(true);
+  });
+
+  it('does not strand a Hydra workspace reservation after a failed launch', async () => {
+    const request = {
+      taskId: 'hydra-task-1',
+      agentId: 'hydra-agent-1',
+      adapter: 'hydra' as const,
+      command: 'hydra',
+      args: [],
+      cwd: '/tmp/hydra-shared-root',
+      env: {},
+      cols: 80,
+      rows: 24,
+    };
+    resolveHydraAdapterLaunchMock.mockImplementationOnce(() => {
+      throw new Error('launch failed');
+    });
+    await expect(spawnTaskAgentWorkflow(createContext(), request)).rejects.toThrow('launch failed');
+    await expect(
+      spawnTaskAgentWorkflow(createContext(), {
+        ...request,
+        taskId: 'hydra-task-2',
+        agentId: 'hydra-agent-2',
+      }),
+    ).resolves.toMatchObject({ kind: 'created-session' });
+  });
+
+  it('keeps Hydra aliases exclusive and distinct checkouts independent', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-workspace-'));
+    const alias = `${workspace}-alias`;
+    fs.symlinkSync(workspace, alias, 'dir');
+    const sessions = new Set<string>();
+    hasAgentSessionMock.mockImplementation((agentId: string) => sessions.has(agentId));
+    spawnAgentMock.mockImplementation((_send, request) => {
+      sessions.add(request.agentId);
+      return { channelAttached: true, kind: 'created-session' };
+    });
+    const request = {
+      taskId: 'hydra-task-1',
+      agentId: 'hydra-agent-1',
+      adapter: 'hydra' as const,
+      command: 'hydra',
+      args: [],
+      cwd: workspace,
+      env: {},
+      cols: 80,
+      rows: 24,
+    };
+    try {
+      await spawnTaskAgentWorkflow(createContext(), request);
+      await expect(
+        spawnTaskAgentWorkflow(createContext(), {
+          ...request,
+          cwd: alias,
+          taskId: 'hydra-task-2',
+          agentId: 'hydra-agent-2',
+        }),
+      ).rejects.toThrow('Hydra is already running or starting');
+      await expect(
+        spawnTaskAgentWorkflow(createContext(), {
+          ...request,
+          cwd: '/tmp/independent-hydra-workspace',
+          taskId: 'hydra-task-3',
+          agentId: 'hydra-agent-3',
+        }),
+      ).resolves.toMatchObject({ kind: 'created-session' });
+    } finally {
+      fs.rmSync(alias);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('routes hydra agent creation through the adapter and starts worktree watchers', async () => {
     const context = createContext();
 
@@ -350,6 +493,7 @@ describe('task workflows', () => {
     expect(startPlanWatcherMock).toHaveBeenCalledWith(
       'task-1',
       '/tmp/task-1',
+      expect.any(Function),
       expect.any(Function),
     );
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
@@ -430,6 +574,89 @@ describe('task workflows', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/task-1',
     });
+  });
+
+  it('forwards only an internally derived explicit-transient class to the PTY owner', async () => {
+    const context = createContext();
+
+    await spawnTaskAgentWorkflow(context, {
+      agentId: 'arena-agent',
+      args: ['run'],
+      cols: 80,
+      command: 'codex',
+      contentAuthorityClass: 'explicit-transient',
+      contentAuthorityRoot: '/tmp/arena-worktree',
+      cwd: '/tmp/arena-worktree',
+      env: {},
+      onOutput: { __CHANNEL_ID__: 'arena-channel' },
+      rows: 24,
+      taskId: 'arena-competitor',
+    });
+
+    expect(spawnAgentMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({ contentAuthorityClass: 'explicit-transient' }),
+    );
+  });
+
+  it('rejects a transient launch when runner resolution changes its backend-authorized root', async () => {
+    const cleanup = vi.fn();
+    createDockerAgentRunnerLaunchMock.mockResolvedValueOnce({
+      args: ['run', 'agent:latest', 'codex'],
+      cleanup,
+      command: 'docker',
+      cwd: '/tmp/runner-projected-root',
+      env: {},
+      identity: {
+        agentId: 'arena-agent',
+        labels: {},
+        profileId: 'profile-1',
+        provider: 'docker-container',
+        runnerInstanceId: 'runner-arena',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskId: 'arena-competitor',
+      },
+    });
+
+    await expect(
+      spawnTaskAgentWorkflow(createContext(), {
+        agentId: 'arena-agent',
+        args: ['run'],
+        cols: 80,
+        command: 'codex',
+        contentAuthorityClass: 'explicit-transient',
+        contentAuthorityRoot: '/tmp/arena-worktree',
+        cwd: '/tmp/arena-worktree',
+        env: {},
+        rows: 24,
+        runnerProfile: { image: 'agent:latest', provider: 'docker-container' },
+        taskId: 'arena-competitor',
+      }),
+    ).rejects.toThrow('Transient PTY launch root changed before process spawn');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('does not apply transient authority by attaching to a raced existing session', async () => {
+    hasAgentSessionMock.mockReturnValue(true);
+
+    await expect(
+      spawnTaskAgentWorkflow(createContext(), {
+        agentId: 'arena-agent',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        contentAuthorityClass: 'explicit-transient',
+        contentAuthorityRoot: '/tmp/arena-worktree',
+        cwd: '/tmp/arena-worktree',
+        env: {},
+        rows: 24,
+        taskId: 'arena-competitor',
+      }),
+    ).rejects.toThrow('A transient Arena launch cannot attach to an existing PTY session');
+
+    expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
   it('cleans a prepared Docker runner when PTY spawn fails', async () => {
@@ -547,6 +774,7 @@ describe('task workflows', () => {
   it('cleans a prepared Docker launch that loses a concurrent session-creation race', async () => {
     const context = createContext();
     const cleanup = vi.fn();
+    const bindOutputChannel = vi.fn(() => true);
     createDockerAgentRunnerLaunchMock.mockResolvedValueOnce({
       args: ['run', 'agent:latest', 'codex'],
       cleanup,
@@ -563,15 +791,20 @@ describe('task workflows', () => {
         taskId: 'task-1',
       },
     });
-    spawnAgentMock.mockReturnValueOnce({
-      channelAttached: true,
-      kind: 'attached-existing',
+    hasAgentSessionMock.mockReturnValueOnce(false).mockReturnValueOnce(false).mockReturnValue(true);
+    attachExistingAgentSessionExactMock.mockImplementationOnce((_sendToChannel, request) => {
+      request.bindChannel?.();
+      return {
+        channelAttached: true,
+        channelBound: true,
+        kind: 'attached-existing',
+      };
     });
-
     await expect(
       spawnTaskAgentWorkflow(context, {
         agentId: 'agent-1',
         args: ['run'],
+        bindOutputChannel,
         cols: 80,
         command: 'codex',
         cwd: '/tmp/task-1',
@@ -583,9 +816,20 @@ describe('task workflows', () => {
       }),
     ).resolves.toEqual({
       channelAttached: true,
+      channelBound: true,
       kind: 'attached-existing',
     });
     expect(cleanup).toHaveBeenCalledOnce();
+    expect(attachExistingAgentSessionExactMock).toHaveBeenCalledWith(
+      context.sendToChannel,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        bindChannel: bindOutputChannel,
+        taskId: 'task-1',
+      }),
+    );
+    expect(bindOutputChannel).toHaveBeenCalledOnce();
+    expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
   it('rejects Hydra adapter agents for Docker container runners before creating Docker resources', async () => {
@@ -1334,6 +1578,7 @@ describe('task workflows', () => {
       'task-terminal-git',
       '/tmp/task-terminal-git',
       expect.any(Function),
+      expect.any(Function),
     );
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
       baseBranch: 'release/main',
@@ -1367,6 +1612,7 @@ describe('task workflows', () => {
       'task-terminal-non-git',
       '/tmp/task-terminal-non-git',
       expect.any(Function),
+      expect.any(Function),
     );
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
@@ -1393,6 +1639,7 @@ describe('task workflows', () => {
       'task-non-git',
       '/tmp/non-git-task',
       expect.any(Function),
+      expect.any(Function),
     );
     expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
@@ -1417,7 +1664,11 @@ describe('task workflows', () => {
     expect(createTaskMock).toHaveBeenCalledWith(
       'Workflow task',
       '/tmp/project',
-      ['node_modules'],
+      expect.objectContaining({
+        encodedLength: 16,
+        format: 1,
+        names: ['node_modules'],
+      }),
       'task',
       'main',
     );
@@ -1457,7 +1708,11 @@ describe('task workflows', () => {
     expect(createTaskMock).toHaveBeenCalledWith(
       'Workflow task',
       '/tmp/project',
-      ['node_modules'],
+      expect.objectContaining({
+        encodedLength: 16,
+        format: 1,
+        names: ['node_modules'],
+      }),
       'task',
       'release/main',
     );
@@ -1473,6 +1728,75 @@ describe('task workflows', () => {
       base_branch: 'release/main',
       git_isolation: 'worktree',
     });
+  });
+
+  it('rejects a one-byte V1 overflow before operation replay, Git, or task side effects', async () => {
+    const context = createContext();
+    const operationId = 'create-operation-link-overflow';
+
+    await expect(
+      createTaskWorkflow(context, {
+        branchPrefix: 'task',
+        name: 'Oversized link request',
+        operationId,
+        projectId: 'project-1',
+        projectRoot: '/tmp/project',
+        symlinkDirs: worktreeLinkBoundaryNames(190),
+      }),
+    ).rejects.toThrow('canonical V1 encoding must be at most 16384 bytes');
+
+    expect(getGitRepoRootMock).not.toHaveBeenCalled();
+    expect(getMainBranchMock).not.toHaveBeenCalled();
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
+
+    createTaskMock.mockResolvedValueOnce({
+      branch_name: 'task/accepted-retry',
+      git_isolation: 'worktree',
+      id: 'task-accepted-retry',
+      worktree_path: '/tmp/project/.worktrees/task/accepted-retry',
+    });
+    await expect(
+      createTaskWorkflow(context, {
+        branchPrefix: 'task',
+        name: 'Oversized link request',
+        operationId,
+        projectId: 'project-1',
+        projectRoot: '/tmp/project',
+        symlinkDirs: [],
+      }),
+    ).resolves.toMatchObject({ id: 'task-accepted-retry' });
+    expect(createTaskMock).toHaveBeenCalledOnce();
+  });
+
+  it('canonicalizes the managed project root before Git and worktree creation', async () => {
+    getGitRepoRootMock.mockResolvedValue('/canonical/project');
+    createTaskMock.mockResolvedValueOnce({
+      branch_name: 'task/canonical-root',
+      git_isolation: 'worktree',
+      id: 'task-canonical-root',
+      worktree_path: '/canonical/project/.worktrees/task/canonical-root',
+    });
+
+    await expect(
+      createTaskWorkflow(createContext(), {
+        branchPrefix: 'task',
+        name: 'Canonical root',
+        projectId: 'project-1',
+        projectRoot: '/alias/project/packages/app',
+        symlinkDirs: ['node_modules'],
+      }),
+    ).resolves.toMatchObject({ id: 'task-canonical-root' });
+
+    expect(getGitRepoRootMock).toHaveBeenCalledWith('/alias/project/packages/app');
+    expect(getMainBranchMock).toHaveBeenCalledWith('/canonical/project', undefined);
+    expect(createTaskMock).toHaveBeenCalledWith(
+      'Canonical root',
+      '/canonical/project',
+      expect.objectContaining({ encodedLength: 16, names: ['node_modules'] }),
+      'task',
+      'main',
+    );
   });
 
   it('resolves the managed base branch before creation and retries without leaking a worktree', async () => {
@@ -1505,7 +1829,13 @@ describe('task workflows', () => {
       id: 'task-ordered',
     });
     expect(createTaskMock).toHaveBeenCalledOnce();
-    expect(createTaskMock).toHaveBeenCalledWith('Ordered task', '/tmp/project', [], 'task', 'main');
+    expect(createTaskMock).toHaveBeenCalledWith(
+      'Ordered task',
+      '/tmp/project',
+      expect.objectContaining({ encodedLength: 2, format: 1, names: [] }),
+      'task',
+      'main',
+    );
   });
 
   it('creates non-git task runtime without git metadata or git watchers', async () => {
@@ -1605,6 +1935,74 @@ describe('task workflows', () => {
       createTestGitTaskResult('task-replayed', '/tmp/project', 'current-branch'),
     );
     expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays reordered and exactly duplicated link names with the committed warnings', async () => {
+    const context = createContext();
+    const warning = {
+      message: 'Could not share "z": the filesystem link could not be created and verified safely.',
+      name: 'z',
+      reason: 'link_failed' as const,
+    };
+    createTaskMock.mockResolvedValueOnce({
+      branch_name: 'task/link-replay',
+      git_isolation: 'worktree',
+      id: 'task-link-replay',
+      symlink_warnings: [warning],
+      worktree_path: '/tmp/project/.worktrees/task/link-replay',
+    });
+    const request = {
+      branchPrefix: 'task',
+      name: 'Link replay',
+      operationId: 'create-operation-link-replay',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: ['z', 'a', 'z'],
+    };
+
+    const first = await createTaskWorkflow(context, request);
+    const replay = await createTaskWorkflow(context, {
+      ...request,
+      symlinkDirs: ['a', 'z'],
+    });
+
+    expect(first).toEqual(replay);
+    expect(replay.symlink_warnings).toEqual([warning]);
+    expect(createTaskMock).toHaveBeenCalledOnce();
+    expect(createTaskMock).toHaveBeenCalledWith(
+      'Link replay',
+      '/tmp/project',
+      expect.objectContaining({ names: ['a', 'z'] }),
+      'task',
+      'main',
+    );
+    expect(getGitRepoRootMock).toHaveBeenCalledOnce();
+  });
+
+  it('keeps byte-distinct Unicode link names distinct in operation fingerprints', async () => {
+    const context = createContext();
+    createTaskMock.mockResolvedValueOnce({
+      branch_name: 'task/unicode-links',
+      git_isolation: 'worktree',
+      id: 'task-unicode-links',
+      worktree_path: '/tmp/project/.worktrees/task/unicode-links',
+    });
+    const request = {
+      branchPrefix: 'task',
+      name: 'Unicode links',
+      operationId: 'create-operation-unicode-links',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: ['é'],
+    };
+
+    await expect(createTaskWorkflow(context, request)).resolves.toMatchObject({
+      id: 'task-unicode-links',
+    });
+    await expect(createTaskWorkflow(context, { ...request, symlinkDirs: ['é'] })).rejects.toThrow(
+      'was reused with different inputs',
+    );
+    expect(createTaskMock).toHaveBeenCalledOnce();
   });
 
   it('rejects task creation operation ids reused with different inputs', async () => {
@@ -2196,32 +2594,38 @@ describe('task workflows', () => {
     }
   });
 
-  it('keeps a current-branch path reserved while creation is pending across saved-state syncs', async () => {
+  it('allows concurrent shared-root creation across canonical aliases and saved-state syncs', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-pending-'));
     const folderPath = path.join(tempRoot, 'folder');
     const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
     fs.mkdirSync(folderPath, { recursive: true });
     fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
     const deferred = createDeferred<TestGitTaskResult>();
-    createCurrentBranchTaskMock.mockReturnValueOnce(deferred.promise);
+    createCurrentBranchTaskMock
+      .mockReturnValueOnce(deferred.promise)
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-concurrent', folderPath, 'current-branch'),
+      );
 
     try {
       const firstCreation = createTaskWorkflow(
         createContext(),
         createCurrentBranchWorkflowRequest(folderPath),
       );
-
+      await vi.waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
       syncTaskWorkflowWorktreesFromSavedState(JSON.stringify({ tasks: {} }));
-      await expect(
-        createTaskWorkflow(
-          createContext(),
-          createCurrentBranchWorkflowRequest(aliasedFolderPath, 'Concurrent direct task'),
-        ),
-      ).rejects.toThrow('already being registered');
-      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
-
+      const secondCreation = createTaskWorkflow(
+        createContext(),
+        createCurrentBranchWorkflowRequest(aliasedFolderPath, 'Concurrent direct task'),
+      );
       deferred.resolve(createTestGitTaskResult('task-current', folderPath, 'current-branch'));
       await expect(firstCreation).resolves.toMatchObject({ id: 'task-current' });
+      await expect(secondCreation).resolves.toMatchObject({ id: 'task-concurrent' });
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-current')).toBe('task-current');
+      expect(findRegisteredTaskIdForWorktreePath(aliasedFolderPath, 'task-concurrent')).toBe(
+        'task-concurrent',
+      );
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -2247,8 +2651,54 @@ describe('task workflows', () => {
     expect(createCurrentBranchTaskMock).toHaveBeenCalledWith('/repo', undefined);
     await expect(
       createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest('/repo')),
-    ).rejects.toThrow('already registered for task task-current-root');
-    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+    ).resolves.toMatchObject({ worktree_path: '/repo' });
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('reserves only shared steps while an ordinary root task can still be created', async () => {
+    const deferred = createDeferred<TestGitTaskResult>();
+    createCurrentBranchTaskMock
+      .mockReturnValueOnce(deferred.promise)
+      .mockResolvedValueOnce(createTestGitTaskResult('ordinary-root', '/repo', 'current-branch'));
+    const steps = createTaskWorkflow(createContext(), {
+      ...createCurrentBranchWorkflowRequest('/repo'),
+      stepsTracking: true,
+    });
+    await vi.waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
+    syncTaskWorkflowWorktreesFromSavedState(
+      JSON.stringify({
+        tasks: {
+          'restored-root-peer': {
+            id: 'restored-root-peer',
+            gitIsolation: 'current-branch',
+            worktreePath: '/repo',
+          },
+        },
+      }),
+    );
+    expect(findRegisteredTaskIdForWorktreePath('/repo', 'restored-root-peer')).toBe(
+      'restored-root-peer',
+    );
+    await expect(
+      createTaskWorkflow(createContext(), {
+        ...createCurrentBranchWorkflowRequest('/repo'),
+        stepsTracking: true,
+      }),
+    ).rejects.toThrow('already being registered');
+    const ordinary = createTaskWorkflow(
+      createContext(),
+      createCurrentBranchWorkflowRequest('/repo'),
+    );
+    deferred.resolve(createTestGitTaskResult('steps-root', '/repo', 'current-branch'));
+    await expect(steps).resolves.toMatchObject({ id: 'steps-root' });
+    await expect(ordinary).resolves.toMatchObject({ id: 'ordinary-root' });
+    await expect(
+      createTaskWorkflow(createContext(), {
+        ...createCurrentBranchWorkflowRequest('/repo'),
+        stepsTracking: true,
+      }),
+    ).rejects.toThrow('Task steps are already registered');
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
   });
 
   it('rejects project-root tasks outside a Git repository before mutation', async () => {
@@ -2276,6 +2726,7 @@ describe('task workflows', () => {
         createContext(),
         createCurrentBranchWorkflowRequest(folderPath),
       );
+      await vi.waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
       deferred.reject(new Error('branch switch failed'));
       await expect(failedCreation).rejects.toThrow('branch switch failed');
 
@@ -2331,15 +2782,19 @@ describe('task workflows', () => {
     }
   });
 
-  it('keeps live worktree registrations authoritative over lagging saved snapshots', async () => {
+  it('keeps live shared-root registrations authoritative while admitting another task', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-live-'));
     const folderPath = path.join(tempRoot, 'folder');
     const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
     fs.mkdirSync(folderPath, { recursive: true });
     fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
-    createCurrentBranchTaskMock.mockResolvedValueOnce(
-      createTestGitTaskResult('task-current-live', folderPath, 'current-branch'),
-    );
+    createCurrentBranchTaskMock
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-current-live', folderPath, 'current-branch'),
+      )
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-current-next', folderPath, 'current-branch'),
+      );
 
     try {
       await createTaskWorkflow(createContext(), createCurrentBranchWorkflowRequest(folderPath));
@@ -2350,8 +2805,14 @@ describe('task workflows', () => {
           createContext(),
           createCurrentBranchWorkflowRequest(aliasedFolderPath, 'Stale snapshot duplicate'),
         ),
-      ).rejects.toThrow('already registered for task task-current-live');
-      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+      ).resolves.toMatchObject({ id: 'task-current-next' });
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-current-live')).toBe(
+        'task-current-live',
+      );
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-current-next')).toBe(
+        'task-current-next',
+      );
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -2400,19 +2861,23 @@ describe('task workflows', () => {
     }
   });
 
-  it('still rejects duplicate current-branch tasks across canonical path aliases', async () => {
+  it('removes only one shared-root registration and retains the other across stale restore', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-current-duplicate-'));
     const folderPath = path.join(tempRoot, 'folder');
     const aliasedFolderPath = path.join(tempRoot, 'folder-alias');
     fs.mkdirSync(folderPath, { recursive: true });
     fs.symlinkSync(folderPath, aliasedFolderPath, 'dir');
-    createCurrentBranchTaskMock.mockResolvedValueOnce({
-      id: 'task-current',
-      branch_name: 'main',
-      worktree_path: folderPath,
-      base_branch: 'main',
-      git_isolation: 'current-branch',
-    });
+    createCurrentBranchTaskMock
+      .mockResolvedValueOnce({
+        id: 'task-current',
+        branch_name: 'main',
+        worktree_path: folderPath,
+        base_branch: 'main',
+        git_isolation: 'current-branch',
+      })
+      .mockResolvedValueOnce(
+        createTestGitTaskResult('task-parallel', folderPath, 'current-branch'),
+      );
 
     try {
       await createTaskWorkflow(createContext(), {
@@ -2431,8 +2896,40 @@ describe('task workflows', () => {
           symlinkDirs: [],
           gitIsolation: 'current-branch',
         }),
-      ).rejects.toThrow('already registered for task task-current');
-      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(1);
+      ).resolves.toMatchObject({ id: 'task-parallel' });
+      cleanupTaskRuntimeWorkflow({
+        agentIds: [],
+        removeTaskState: true,
+        taskId: 'task-current',
+        worktreePath: folderPath,
+      });
+      expect(removeGitStatusSnapshotMock).not.toHaveBeenCalled();
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-current': {
+              id: 'task-current',
+              gitIsolation: 'current-branch',
+              worktreePath: folderPath,
+            },
+            'task-restored': {
+              id: 'task-restored',
+              gitIsolation: 'current-branch',
+              worktreePath: aliasedFolderPath,
+            },
+          },
+        }),
+      );
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-parallel')).toBe(
+        'task-parallel',
+      );
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-restored')).toBe(
+        'task-restored',
+      );
+      expect(findRegisteredTaskIdForWorktreePath(folderPath, 'task-current')).not.toBe(
+        'task-current',
+      );
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -2481,7 +2978,12 @@ describe('task workflows', () => {
       worktreePath: '/tmp/project/.worktrees/task-3',
     });
     expect(killAgentAndWaitForRunnerCleanupMock).toHaveBeenCalledWith('agent-1');
-    expect(deleteTaskMock).toHaveBeenCalledWith('task/delete', true, '/tmp/project');
+    expect(deleteTaskMock).toHaveBeenCalledWith(
+      'task/delete',
+      true,
+      '/tmp/project',
+      '/tmp/project/.worktrees/task-3',
+    );
     expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
     expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
@@ -2624,7 +3126,12 @@ describe('task workflows', () => {
           message: 'Failed to clean task containers while deleting task: container failed',
         },
       ]);
-      expect(deleteTaskMock).toHaveBeenCalledWith('task/delete', true, '/tmp/project');
+      expect(deleteTaskMock).toHaveBeenCalledWith(
+        'task/delete',
+        true,
+        '/tmp/project',
+        '/tmp/project/.worktrees/task-3',
+      );
       expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
       expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
     } finally {
@@ -2702,7 +3209,7 @@ describe('task workflows', () => {
       onOutput: { __CHANNEL_ID__: 'channel-1' },
     });
 
-    const onPlanChange = startPlanWatcherMock.mock.calls[0]?.[2];
+    const onPlanChange = startPlanWatcherMock.mock.calls[0]?.[3];
     expect(onPlanChange).toBeTypeOf('function');
 
     onPlanChange?.({
@@ -2718,5 +3225,54 @@ describe('task workflows', () => {
       fileName: 'plan.md',
       relativePath: '.claude/plans/plan.md',
     });
+  });
+
+  it('keeps an observed compatibility attach synchronous instead of racing into an unowned spawn', async () => {
+    const writer = createAgentSessionWriterRuntime({ getCurrentGeneration: () => null });
+    writer.activate('cutover-1');
+    const allocate = vi.spyOn(writer, 'allocate');
+    const context = { ...createContext(), agentSessionWriter: writer };
+    hasAgentSessionMock.mockReturnValueOnce(true).mockReturnValue(false);
+    attachExistingAgentSessionExactMock.mockReturnValueOnce({
+      channelAttached: true,
+      kind: 'attached-existing',
+    });
+
+    await expect(
+      spawnOwnedTaskAgentWorkflow(
+        context,
+        { operationId: 'compatibility-attach-1', purpose: 'desktop-compatibility' },
+        {
+          agentId: 'agent-compatibility-attach',
+          args: [],
+          cols: 80,
+          command: 'codex',
+          cwd: '/tmp/task-compatibility-attach',
+          env: {},
+          rows: 24,
+          taskId: 'task-compatibility-attach',
+        },
+      ),
+    ).resolves.toMatchObject({ kind: 'attached-existing' });
+    expect(attachExistingAgentSessionExactMock).toHaveBeenCalledOnce();
+    expect(allocate).not.toHaveBeenCalled();
+    expect(hasAgentSessionMock).toHaveBeenCalledOnce();
+  });
+
+  it('can permanently retain the global shutdown admission barrier', async () => {
+    await expect(stopAllTaskAgentWorkflows({ keepAdmissionClosed: true })).resolves.toBeUndefined();
+    await expect(
+      spawnTaskAgentWorkflow(createContext(), {
+        agentId: 'agent-after-permanent-stop',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-after-permanent-stop',
+        env: {},
+        rows: 24,
+        taskId: 'task-after-permanent-stop',
+      }),
+    ).rejects.toThrow('stopping');
+    expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 });

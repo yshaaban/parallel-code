@@ -14,10 +14,13 @@ import { TaskAiTerminalSection } from './TaskAiTerminalSection';
 import { IPC } from '../../../electron/ipc/channels';
 
 const readyCallbacks = new Map<string, (focusFn: () => void) => void>();
-const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  saveCurrentRuntimeStateMock: vi.fn(),
-}));
+const { invokeMock, runManualAgentSessionActionMock, saveCurrentRuntimeStateMock } = vi.hoisted(
+  () => ({
+    invokeMock: vi.fn(),
+    runManualAgentSessionActionMock: vi.fn(),
+    saveCurrentRuntimeStateMock: vi.fn(),
+  }),
+);
 
 vi.mock('../TerminalView', () => ({
   TerminalView: (props: {
@@ -43,7 +46,15 @@ vi.mock('../TerminalView', () => ({
 }));
 
 vi.mock('../AgentSwitchMenu', () => ({
-  AgentSwitchMenu: () => <button type="button">Switch agent</button>,
+  AgentSwitchMenu: (props: { disabled: boolean; onRestartCurrent: () => void }) => (
+    <button type="button" disabled={props.disabled} onClick={() => props.onRestartCurrent()}>
+      Restart agent
+    </button>
+  ),
+}));
+
+vi.mock('../../app/agent-session-workflows', () => ({
+  runManualAgentSessionAction: runManualAgentSessionActionMock,
 }));
 
 vi.mock('../../lib/ipc', () => ({
@@ -67,12 +78,36 @@ function getRequiredButton(
   return button;
 }
 
+function renderExitedAgentTerminal(): HTMLButtonElement {
+  const task = createTestTask({
+    agentIds: ['agent-1'],
+    id: 'task-1',
+    selectedAgentId: 'agent-1',
+  });
+  setStore('tasks', { 'task-1': task });
+  setStore('agents', {
+    'agent-1': createTestAgent({
+      exitCode: 1,
+      id: 'agent-1',
+      status: 'exited',
+      taskId: 'task-1',
+    }),
+  });
+
+  render(() => (
+    <TaskAiTerminalSection isActive={() => true} onReuseLastPrompt={vi.fn()} task={() => task} />
+  ));
+
+  return screen.getByRole('button', { name: 'Restart agent' });
+}
+
 describe('TaskAiTerminalSection', () => {
   beforeEach(() => {
     resetStoreForTest();
     readyCallbacks.clear();
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
+    runManualAgentSessionActionMock.mockReset();
     saveCurrentRuntimeStateMock.mockReset();
     saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
   });
@@ -496,5 +531,46 @@ describe('TaskAiTerminalSection', () => {
     expect(staleFocusAgent).not.toHaveBeenCalled();
     readyCallbacks.get('agent-1')?.(nextFocusAgent);
     expect(nextFocusAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads manual session policy on demand and deduplicates the pending action', async () => {
+    let resolveAction: ((started: boolean) => void) | undefined;
+    runManualAgentSessionActionMock.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveAction = resolve;
+      }),
+    );
+    const restartButton = renderExitedAgentTerminal();
+    fireEvent.click(restartButton);
+    fireEvent.click(restartButton);
+
+    await waitFor(() => {
+      expect(runManualAgentSessionActionMock).toHaveBeenCalledTimes(1);
+    });
+    expect(restartButton.disabled).toBe(true);
+    expect(runManualAgentSessionActionMock).toHaveBeenCalledWith('agent-1', { kind: 'restart' });
+
+    resolveAction?.(true);
+    await waitFor(() => {
+      expect(restartButton.disabled).toBe(false);
+    });
+    fireEvent.click(restartButton);
+    await waitFor(() => expect(runManualAgentSessionActionMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('reports a failed manual action and releases its pending guard for retry', async () => {
+    runManualAgentSessionActionMock.mockRejectedValueOnce(new Error('Session action failed'));
+    const restartButton = renderExitedAgentTerminal();
+
+    fireEvent.click(restartButton);
+
+    await waitFor(() => {
+      expect(store.notification).toEqual({ kind: 'error', message: 'Session action failed' });
+      expect(restartButton.disabled).toBe(false);
+    });
+
+    runManualAgentSessionActionMock.mockResolvedValueOnce(true);
+    fireEvent.click(restartButton);
+    await waitFor(() => expect(runManualAgentSessionActionMock).toHaveBeenCalledTimes(2));
   });
 });

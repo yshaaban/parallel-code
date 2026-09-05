@@ -129,6 +129,30 @@ describe('SettingsDialog', () => {
     expect(store.fontSmoothing).toBe(false);
   });
 
+  it('updates both client-local new task defaults with explicit risk guidance', () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    const steps = screen.getByRole('checkbox', { name: 'Track task steps' });
+    const permissions = screen.getByRole('checkbox', {
+      name: 'Dangerously skip all confirms',
+    });
+    expect((steps as HTMLInputElement).checked).toBe(false);
+    expect((permissions as HTMLInputElement).checked).toBe(true);
+    expect(
+      screen.getByText(
+        'Runs without asking for confirmation. The agent can read, write, delete, and execute commands without your approval. Applies only to supported agent tasks.',
+      ),
+    ).toBeDefined();
+
+    fireEvent.click(steps);
+    fireEvent.click(permissions);
+
+    expect(store.newTaskDefaults).toEqual({
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+  });
+
   it('shows the task notifications toggle in Electron and wires it to the shared ui setter', () => {
     setStore('taskNotificationsEnabled', false);
 
@@ -202,6 +226,17 @@ describe('SettingsDialog', () => {
     );
 
     expect(store.keybindings.overrides['app.new-task']).toBeUndefined();
+  });
+
+  it('exposes terminal redraw through the data-driven keybinding editor', () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    expect(screen.getByText('Redraw terminals (fix rendering glitches)')).toBeDefined();
+    expect(
+      screen.getByRole('button', {
+        name: 'Disable Redraw terminals (fix rendering glitches) (app.redraw-terminals)',
+      }),
+    ).toBeDefined();
   });
 
   it('keeps the browser task notification toggle interactive before permission is granted', () => {

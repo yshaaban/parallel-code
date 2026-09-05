@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import {
+  clearCompatibilityTerminalCreationsForTests,
+  isCompatibilityTerminalCreationPending,
+} from '../runtime/compatibility-terminal-creation';
 import { setStore, store } from './core';
 import { registerFocusFn, resetFocusStateForTests } from './focus';
-import { closeTerminal } from './terminals';
+import { closeTerminal, createTerminal } from './terminals';
 import { createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
 const { invokeMock, saveCurrentRuntimeStateMock } = vi.hoisted(() => ({
@@ -25,6 +29,7 @@ vi.mock('./persistence-save', () => ({
 describe('terminal cleanup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearCompatibilityTerminalCreationsForTests();
     resetStoreForTest();
     resetFocusStateForTests();
     invokeMock.mockResolvedValue(undefined);
@@ -83,6 +88,22 @@ describe('terminal cleanup', () => {
     expect(store.fontScales['terminal-1:terminal']).toBeUndefined();
     expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
     expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a standalone terminal creation pending and clears that exact identity on close', async () => {
+    const previousTerminalIds = new Set(store.taskOrder);
+
+    createTerminal();
+
+    const terminalId = store.taskOrder.find((id) => !previousTerminalIds.has(id));
+    if (!terminalId) throw new Error('Expected createTerminal to append a terminal identity');
+    const terminal = store.terminals[terminalId];
+    if (!terminal) throw new Error('Expected createTerminal to store the appended terminal');
+    expect(isCompatibilityTerminalCreationPending(terminal.id, terminal.agentId)).toBe(true);
+
+    await closeTerminal(terminalId);
+
+    expect(isCompatibilityTerminalCreationPending(terminal.id, terminal.agentId)).toBe(false);
   });
 
   it('selects and focuses a neighboring terminal-only task after closing a standalone terminal', async () => {

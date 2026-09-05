@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import type { TaskCommandTakeoverRequestMessage } from '../../electron/remote/protocol';
+import type { RemoteTaskSessionRef } from '../domain/task-catalog';
+import { REMOTE_TASK_CREATION_CAPABILITY_DARK } from '../domain/task-creation';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -10,6 +12,8 @@ const {
   getIncomingRemoteTakeoverRequestsMock,
   getRemoteControllingTaskIdsMock,
   getStoredDisplayNameMock,
+  applyRemoteTaskNotesCatalogLifecycleMock,
+  hasUnsavedRemoteTaskNotesMock,
   respondToRemoteTaskCommandTakeoverMock,
   setStoredDisplayNameMock,
 } = vi.hoisted(() => ({
@@ -20,6 +24,8 @@ const {
   getIncomingRemoteTakeoverRequestsMock: vi.fn<() => TaskCommandTakeoverRequestMessage[]>(() => []),
   getRemoteControllingTaskIdsMock: vi.fn(() => []),
   getStoredDisplayNameMock: vi.fn<() => string | null>(() => null),
+  applyRemoteTaskNotesCatalogLifecycleMock: vi.fn(),
+  hasUnsavedRemoteTaskNotesMock: vi.fn((_taskId?: string) => false),
   respondToRemoteTaskCommandTakeoverMock: vi.fn(async () => true),
   setStoredDisplayNameMock: vi.fn((value: string) => value.trim()),
 }));
@@ -44,8 +50,15 @@ vi.mock('./remote-task-command', () => ({
   respondToRemoteTaskCommandTakeover: respondToRemoteTaskCommandTakeoverMock,
 }));
 
+vi.mock('./task-notes-lifecycle-channel', () => ({
+  reconcileRemoteTaskNotesCatalogLifecycle: (taskId: string, lifecycle: unknown): boolean => {
+    applyRemoteTaskNotesCatalogLifecycleMock(taskId, lifecycle);
+    return hasUnsavedRemoteTaskNotesMock(taskId);
+  },
+}));
+
 vi.mock('./auth', () => ({
-  initAuth: vi.fn(),
+  remoteSessionAllows: vi.fn(() => true),
 }));
 
 vi.mock('./ws', () => ({
@@ -68,7 +81,11 @@ vi.mock('./AgentList', () => ({
 }));
 
 vi.mock('./AgentDetail', () => ({
-  AgentDetail: () => <div>Agent detail</div>,
+  AgentDetail: (props: { agentId: string; taskSession?: RemoteTaskSessionRef }) => (
+    <div>
+      Agent detail {props.agentId} {props.taskSession?.kind}
+    </div>
+  ),
 }));
 
 import { App } from './App';
@@ -78,6 +95,7 @@ describe('remote App session naming', () => {
     vi.clearAllMocks();
     getStoredDisplayNameMock.mockReturnValue(null);
     getIncomingRemoteTakeoverRequestsMock.mockReturnValue([]);
+    hasUnsavedRemoteTaskNotesMock.mockReturnValue(false);
     setStoredDisplayNameMock.mockImplementation((value: string) => value.trim());
     respondToRemoteTaskCommandTakeoverMock.mockResolvedValue(true);
   });
@@ -210,6 +228,188 @@ describe('remote App session naming', () => {
       expect(
         within(secondCard as HTMLElement).getAllByRole('button', { name: 'Sending…' }).length,
       ).toBe(2);
+    });
+  });
+
+  it('opens a catalog shell by its session id without an agent-list entry', async () => {
+    getStoredDisplayNameMock.mockReturnValue('Already Named');
+    const shellSession: RemoteTaskSessionRef = {
+      generation: 1,
+      kind: 'shell',
+      orderKey: '0001',
+      sessionId: 'shell-session-1',
+      state: 'running',
+      taskId: 'task-1',
+    };
+    const snapshot = {
+      projection: {
+        agents: new Map(),
+        catalogVersion: 1,
+        projects: new Map([
+          [
+            'project-1',
+            {
+              baseBranchChoiceCount: 0,
+              baseBranchChoicesTruncated: false,
+              id: 'project-1',
+              label: 'Project',
+              labelTruncated: false,
+              locations: {
+                'existing-worktree': { enabled: true as const },
+                'managed-worktree': { enabled: true as const },
+                'project-root': { enabled: true as const },
+              },
+              projectMode: 'git' as const,
+              worktreeChoiceCount: 0,
+              worktreeChoicesTruncated: false,
+            },
+          ],
+        ]),
+        serverInstanceId: 'server-1',
+        sessions: new Map([['shell-session-1', shellSession]]),
+        sessionsByTask: new Map([['task-1', [shellSession]]]),
+        tasks: new Map([
+          [
+            'task-1',
+            {
+              branchLabel: null,
+              branchLabelTruncated: false,
+              creationStatus: 'ready' as const,
+              lifecycle: 'active' as const,
+              location: 'project-root' as const,
+              name: 'Terminal-only task',
+              nameTruncated: false,
+              ownership: 'shared' as const,
+              primarySessionId: 'shell-session-1',
+              projectId: 'project-1',
+              sessionCount: 1,
+              taskId: 'task-1',
+              taskMode: 'terminal' as const,
+            },
+          ],
+        ]),
+      },
+      revision: 1,
+      staleReason: null,
+      status: 'ready' as const,
+    };
+    const taskExperience = {
+      catalogRuntime: {
+        dispose: vi.fn(),
+        handleConnectionLoss: vi.fn(),
+        requestResync: vi.fn(async () => {}),
+        store: {
+          getSnapshot: () => snapshot,
+          subscribe: vi.fn(() => () => {}),
+        },
+      },
+      creationCapabilities: {
+        getCapabilities: vi.fn(async () => REMOTE_TASK_CREATION_CAPABILITY_DARK),
+      },
+      taskNotesCapability: { read: true, write: true },
+    };
+
+    render(() => <App taskExperience={taskExperience as never} />);
+    await fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Open Terminal-only task. Running. Terminal-only task.',
+      }),
+    );
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Terminal. Running.' }));
+
+    expect(screen.getByText('Agent detail shell-session-1 shell')).toBeDefined();
+  });
+
+  it('keeps a removed task detail reachable while its notes runtime reports an unsafe draft', async () => {
+    getStoredDisplayNameMock.mockReturnValue('Already Named');
+    const task = {
+      branchLabel: null,
+      branchLabelTruncated: false,
+      creationStatus: 'ready' as const,
+      lifecycle: 'active' as const,
+      location: 'project-root' as const,
+      name: 'Draft recovery task',
+      nameTruncated: false,
+      ownership: 'shared' as const,
+      projectId: 'project-1',
+      sessionCount: 0,
+      taskId: 'task-1',
+      taskMode: 'agent' as const,
+    };
+    const project = {
+      baseBranchChoiceCount: 0,
+      baseBranchChoicesTruncated: false,
+      id: 'project-1',
+      label: 'Project',
+      labelTruncated: false,
+      locations: {
+        'existing-worktree': { enabled: true as const },
+        'managed-worktree': { enabled: true as const },
+        'project-root': { enabled: true as const },
+      },
+      projectMode: 'git' as const,
+      worktreeChoiceCount: 0,
+      worktreeChoicesTruncated: false,
+    };
+    const initialSnapshot = {
+      projection: {
+        agents: new Map(),
+        catalogVersion: 1,
+        projects: new Map([['project-1', project]]),
+        serverInstanceId: 'server-1',
+        sessions: new Map(),
+        sessionsByTask: new Map(),
+        tasks: new Map([['task-1', task]]),
+      },
+      revision: 1,
+      staleReason: null,
+      status: 'ready' as const,
+    };
+    let catalogListener: ((snapshot: typeof initialSnapshot) => void) | undefined;
+    const taskExperience = {
+      catalogRuntime: {
+        dispose: vi.fn(),
+        handleConnectionLoss: vi.fn(),
+        requestResync: vi.fn(async () => {}),
+        store: {
+          getSnapshot: () => initialSnapshot,
+          subscribe: vi.fn((listener: (snapshot: typeof initialSnapshot) => void) => {
+            catalogListener = listener;
+            return () => {};
+          }),
+        },
+      },
+      creationCapabilities: {
+        getCapabilities: vi.fn(async () => REMOTE_TASK_CREATION_CAPABILITY_DARK),
+      },
+      taskNotesCapability: { read: true, write: true },
+    };
+    hasUnsavedRemoteTaskNotesMock.mockReturnValue(true);
+
+    render(() => <App taskExperience={taskExperience as never} />);
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Open Draft recovery task. No session. Agent task.',
+      }),
+    );
+    expect(screen.getByRole('heading', { name: 'Draft recovery task' })).toBeDefined();
+
+    catalogListener?.({
+      ...initialSnapshot,
+      projection: {
+        ...initialSnapshot.projection,
+        catalogVersion: 2,
+        tasks: new Map(),
+      },
+      revision: 2,
+    });
+
+    await waitFor(() => {
+      expect(applyRemoteTaskNotesCatalogLifecycleMock).toHaveBeenCalledWith(
+        'task-1',
+        expect.objectContaining({ catalogVersion: 2, taskState: 'removed' }),
+      );
+      expect(screen.getByRole('heading', { name: 'Draft recovery task' })).toBeDefined();
     });
   });
 });

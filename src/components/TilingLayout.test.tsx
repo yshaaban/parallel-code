@@ -11,6 +11,7 @@ import {
   resetPendingTaskCreationsForTests,
 } from '../app/task-creation-optimism';
 import { resetWorkspaceShapeCacheForTests } from '../app/workspace-shape-cache';
+import { publishUnsavedDesktopTaskNotes } from '../app/task-notes-recovery-channel';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
@@ -86,9 +87,42 @@ function getGhostColumnCount(container: HTMLElement): number {
   return container.querySelector('[data-startup-skeleton="true"]')?.childElementCount ?? 0;
 }
 
+function stubReducedMotion(matches: boolean): ReturnType<typeof vi.fn> {
+  const matchMedia = vi.fn((query: string) => ({
+    addEventListener: vi.fn(),
+    addListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    matches,
+    media: query,
+    onchange: null,
+    removeEventListener: vi.fn(),
+    removeListener: vi.fn(),
+  }));
+  vi.stubGlobal('matchMedia', matchMedia);
+  return matchMedia;
+}
+
+function dispatchAnimation(
+  target: Element,
+  type: 'animationcancel' | 'animationend',
+  name: string,
+) {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperty(event, 'animationName', { value: name });
+  target.dispatchEvent(event);
+}
+
+function requireElement<T extends Element>(element: T | null | undefined, label: string): T {
+  if (!element) {
+    throw new Error(`Missing ${label}`);
+  }
+  return element;
+}
+
 describe('TilingLayout', () => {
   beforeEach(() => {
     closeTaskMock.mockReset();
+    publishUnsavedDesktopTaskNotes([]);
     confirmMock.mockReset();
     crashingTaskIds.clear();
     resetStoreForTest();
@@ -99,10 +133,80 @@ describe('TilingLayout', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     resetPendingTaskCreationsForTests();
     resetWorkspaceShapeCacheForTests();
     resetAppStartupStatusForTests();
     resetStoreForTest();
+  });
+
+  it('clears a panel appearance class only for its own completed animation', () => {
+    const matchMedia = stubReducedMotion(false);
+    setStore('tasks', 'task-1', createTestTask({ id: 'task-1' }));
+    setStore('taskOrder', ['task-1']);
+
+    const result = render(() => <TilingLayout />);
+    const panel = requireElement(
+      result.container.querySelector<HTMLElement>('[data-task-id="task-1"]'),
+      'task panel',
+    );
+    const nested = requireElement(
+      panel.querySelector('[data-test-task-panel="task-1"]'),
+      'nested task content',
+    );
+    expect(panel.classList.contains('task-appearing')).toBe(true);
+    expect(matchMedia).toHaveBeenCalledTimes(1);
+
+    dispatchAnimation(nested, 'animationend', 'taskAppear');
+    expect(panel.classList.contains('task-appearing')).toBe(true);
+
+    dispatchAnimation(panel, 'animationend', 'unrelatedAnimation');
+    expect(panel.classList.contains('task-appearing')).toBe(true);
+
+    dispatchAnimation(panel, 'animationend', 'taskAppear');
+    expect(panel.classList.contains('task-appearing')).toBe(false);
+  });
+
+  it('does not seed panel appearance under reduced motion and clears cancellation permanently', () => {
+    const matchMedia = stubReducedMotion(true);
+    setStore('tasks', 'task-1', createTestTask({ id: 'task-1' }));
+    setStore('taskOrder', ['task-1']);
+
+    const reducedResult = render(() => <TilingLayout />);
+    const reducedPanel =
+      reducedResult.container.querySelector<HTMLElement>('[data-task-id="task-1"]');
+    expect(reducedPanel?.classList.contains('task-appearing')).toBe(false);
+    expect(matchMedia).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    vi.unstubAllGlobals();
+    stubReducedMotion(false);
+    const animatedResult = render(() => <TilingLayout />);
+    const animatedPanel = requireElement(
+      animatedResult.container.querySelector<HTMLElement>('[data-task-id="task-1"]'),
+      'animated task panel',
+    );
+    expect(animatedPanel.classList.contains('task-appearing')).toBe(true);
+    dispatchAnimation(animatedPanel, 'animationcancel', 'taskAppear');
+    expect(animatedPanel.classList.contains('task-appearing')).toBe(false);
+
+    // A later preference change has no listener that can replay a stale entry animation.
+    stubReducedMotion(false);
+    expect(animatedPanel.classList.contains('task-appearing')).toBe(false);
+  });
+
+  it('gives removal precedence over a pending appearance animation', async () => {
+    stubReducedMotion(false);
+    setStore('tasks', 'task-1', createTestTask({ id: 'task-1' }));
+    setStore('taskOrder', ['task-1']);
+    const result = render(() => <TilingLayout />);
+    const panel = result.container.querySelector<HTMLElement>('[data-task-id="task-1"]');
+    expect(panel?.classList.contains('task-appearing')).toBe(true);
+
+    setStore('tasks', 'task-1', 'closeState', { kind: 'removing' });
+
+    await waitFor(() => expect(panel?.classList.contains('task-removing')).toBe(true));
+    expect(panel?.classList.contains('task-appearing')).toBe(false);
   });
 
   it('never shows first-run onboarding to a returning user while startup is pending', () => {
@@ -290,7 +394,11 @@ describe('TilingLayout', () => {
 
     const pendingColumn = result.container.querySelector(`[data-pending-task-id="${pendingId}"]`);
     expect(pendingColumn).not.toBeNull();
-    expect(screen.getByLabelText('Works directly in the project root on main')).toBeDefined();
+    expect(
+      screen.getByLabelText(
+        /Works directly in the project root on main; shares files and Git state/,
+      ),
+    ).toBeDefined();
     expect(screen.getByText('root')).toBeDefined();
   });
 
@@ -330,5 +438,25 @@ describe('TilingLayout', () => {
 
     await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expected));
     expect(closeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('includes unsaved task notes in the emergency-close confirmation', async () => {
+    const task = createTestTask({ id: 'task-with-notes' });
+    setStore('projects', [createTestProject({ id: task.projectId })]);
+    setStore('tasks', { [task.id]: task });
+    setStore('taskOrder', [task.id]);
+    crashingTaskIds.add(task.id);
+    publishUnsavedDesktopTaskNotes([task.id]);
+    confirmMock.mockResolvedValue(true);
+
+    render(() => <TilingLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Close Task' }));
+
+    await waitFor(() =>
+      expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining('Unsaved task notes')),
+    );
+    expect(closeTaskMock).toHaveBeenCalledWith(task.id, {
+      taskNotesDiscardConfirmed: true,
+    });
   });
 });

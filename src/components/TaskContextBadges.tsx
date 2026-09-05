@@ -36,8 +36,8 @@ export function ProjectRootBadge(props: { branchName?: string; compact?: boolean
   const branchName = () => props.branchName?.trim();
   const title = () =>
     branchName()
-      ? `Works directly in the project root on ${branchName()}`
-      : 'Works directly in the project root';
+      ? `Works directly in the project root on ${branchName()}; shares files and Git state with other project-root tasks`
+      : 'Works directly in the project root; shares files and Git state with other project-root tasks';
 
   return (
     <ContextBadge

@@ -2072,6 +2072,30 @@ describe('Channel', () => {
     }
   });
 
+  it('never queues or replays a single-attempt semantic side effect after transport loss', async () => {
+    vi.useFakeTimers();
+    bindFakeWindowTimers();
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('response lost'));
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { getBrowserQueueDepth, invokeOnce } = await import('./ipc');
+    await expect(
+      invokeOnce(IPC.SendTaskPromptInput, {
+        agentId: 'agent-1',
+        controllerId: 'client-1',
+        taskId: 'task-1',
+        text: 'continue',
+      }),
+    ).rejects.toThrow('Unable to reach the Parallel Code server');
+
+    expect(getBrowserQueueDepth()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves task creation operation identity across an ambiguous browser retry', async () => {
     vi.useFakeTimers();
     bindFakeWindowTimers();

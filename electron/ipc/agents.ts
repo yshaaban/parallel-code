@@ -14,6 +14,8 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'claude',
     args: ['--dangerously-skip-permissions'],
     resume_args: ['--continue'],
+    resume_failure_classifier: 'claude-no-conversation-v1',
+    resume_failure_fallback: 'fresh-start',
     resume_strategy: 'cli-args',
     skip_permissions_args: ['--dangerously-skip-permissions'],
     description: "Anthropic's Claude Code CLI agent",

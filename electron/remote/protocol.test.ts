@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_CLIENT_INPUT_DATA_LENGTH,
+  isCoreServerMessage,
   isReplayTruncatedMessage,
-  isServerMessage,
   parseClientMessage,
   type ServerMessage,
 } from './protocol.js';
+import { isRemoteServerMessage as isServerMessage } from './remote-message.js';
 
 describe('parseClientMessage', () => {
   it('accepts websocket input messages up to the configured maximum size', () => {
@@ -727,6 +728,23 @@ describe('isServerMessage', () => {
       seq: 7,
     },
     {
+      type: 'task-catalog-delta',
+      batch: {
+        events: [
+          {
+            catalogVersion: 1,
+            entityId: 'task-1',
+            entityKind: 'task',
+            kind: 'remove',
+            serverInstanceId: 'server-1',
+          },
+        ],
+        fromCatalogVersion: 0,
+        serverInstanceId: 'server-1',
+        toCatalogVersion: 1,
+      },
+    },
+    {
       type: 'task-ports-changed',
       exposed: [],
       kind: 'snapshot',
@@ -770,6 +788,15 @@ describe('isServerMessage', () => {
     for (const message of validServerMessages) {
       expect(isServerMessage(message), message.type).toBe(true);
     }
+  });
+
+  it('keeps task-catalog validation outside the core browser control protocol', () => {
+    const catalogMessage = validServerMessages.find(
+      (message) => message.type === 'task-catalog-delta',
+    );
+    expect(catalogMessage).toBeDefined();
+    expect(isCoreServerMessage(catalogMessage)).toBe(false);
+    expect(isServerMessage(catalogMessage)).toBe(true);
   });
 
   it('leaves state-bootstrap snapshot validation to server-state domain owners', () => {

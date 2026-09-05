@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render } from '@solidjs/testing-library';
 import { Show, createSignal } from 'solid-js';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   beginBrowserColdBootstrap,
   getBrowserStartupState,
@@ -48,6 +48,7 @@ import {
 } from '../store/terminal-startup';
 import { resetStoreForTest } from '../test/store-test-helpers';
 import type { StartTerminalSessionOptions } from './terminal-view/terminal-session';
+import type { TerminalSearchCapability } from './terminal-view/terminal-search-runtime';
 
 function expectTerminalStartupSummary(
   expected: Partial<NonNullable<ReturnType<typeof getTerminalStartupSummary>>>,
@@ -106,6 +107,14 @@ vi.mock('../lib/fonts', async (importOriginal) => ({
 }));
 
 vi.mock('../lib/theme', () => ({
+  getTerminalSearchDecorationTheme: vi.fn(() => ({
+    activeMatchBackground: '#ffffff',
+    activeMatchBorder: '#ffffff',
+    activeMatchColorOverviewRuler: '#ffffff',
+    matchBackground: '#777777',
+    matchBorder: '#777777',
+    matchOverviewRuler: '#777777',
+  })),
   getTerminalTheme: getTerminalThemeMock,
   theme: {
     border: '#2b2b2b',
@@ -171,6 +180,7 @@ type MockSessionOptions = Pick<
   | 'onAttachBound'
   | 'onAttachDispatched'
   | 'onAttachMilestone'
+  | 'onAttachUnavailable'
   | 'onBlockedInputAttempt'
   | 'onInputAccepted'
   | 'onLocalInputFeedback'
@@ -181,14 +191,18 @@ type MockSessionOptions = Pick<
   | 'onRenderHibernationChange'
   | 'onResizeTransactionChange'
   | 'onRestoreBlockedChange'
+  | 'onSearchRequested'
+  | 'onSearchResult'
+  | 'onSearchUnavailable'
   | 'onSelectedRecoverySettle'
   | 'onSelectedRecoveryStart'
   | 'onStatusChange'
+  | 'sessionIdentity'
   | 'shouldCommitResize'
 >;
 interface MockTerminalSurface {
-  blur?: () => void;
-  focus: () => void;
+  blur?: Mock<() => void>;
+  focus: Mock<() => void>;
   options: {
     cursorBlink: boolean;
     disableStdin?: boolean;
@@ -205,6 +219,10 @@ interface MockTerminalSession {
   prefetchInputLease: () => void;
   prewarmRenderHibernation: () => void;
   requestInputTakeover: () => Promise<boolean>;
+  retryAttach: () => void;
+  search: {
+    [Key in keyof TerminalSearchCapability]: Mock<TerminalSearchCapability[Key]>;
+  };
   term: MockTerminalSurface;
   updateOutputPriority: () => void;
 }
@@ -220,6 +238,14 @@ function createMockTerminalSession(
     prefetchInputLease: vi.fn(),
     prewarmRenderHibernation: vi.fn(),
     requestInputTakeover: requestInputTakeoverMock,
+    retryAttach: vi.fn(),
+    search: {
+      clear: vi.fn<TerminalSearchCapability['clear']>(),
+      close: vi.fn<TerminalSearchCapability['close']>(),
+      find: vi.fn<TerminalSearchCapability['find']>(),
+      getSelectionSeed: vi.fn<TerminalSearchCapability['getSelectionSeed']>(() => ''),
+      setDecorationTheme: vi.fn<TerminalSearchCapability['setDecorationTheme']>(),
+    },
     term: {
       blur: vi.fn(),
       focus: vi.fn(),
@@ -252,6 +278,12 @@ function getLastAttachBoundHandler(): (() => void) | undefined {
 
 function getLastAttachDispatchedHandler(): (() => void) | undefined {
   return getLastSessionOptions()?.onAttachDispatched;
+}
+
+function getLastAttachUnavailableHandler():
+  | NonNullable<StartTerminalSessionOptions['onAttachUnavailable']>
+  | undefined {
+  return getLastSessionOptions()?.onAttachUnavailable;
 }
 
 function getLastRenderHibernationHandler(): ((isHibernating: boolean) => void) | undefined {
@@ -288,6 +320,18 @@ function getLastLocalInputFeedbackHandler(): ((data: string) => void) | undefine
 
 function getLastOutputRenderedHandler(): ((byteLength: number) => void) | undefined {
   return getLastSessionOptions()?.onOutputRendered;
+}
+
+function getLastSearchRequestedHandler(): StartTerminalSessionOptions['onSearchRequested'] {
+  return getLastSessionOptions()?.onSearchRequested;
+}
+
+function getLastSearchResultHandler(): StartTerminalSessionOptions['onSearchResult'] {
+  return getLastSessionOptions()?.onSearchResult;
+}
+
+function getLastSearchUnavailableHandler(): StartTerminalSessionOptions['onSearchUnavailable'] {
+  return getLastSessionOptions()?.onSearchUnavailable;
 }
 
 function createDeferredPromise<T>(): {
@@ -436,6 +480,190 @@ describe('TerminalView', () => {
         }),
       }),
     );
+  });
+
+  it('opens local terminal search for the exact session and seeds one bounded selection', async () => {
+    const session = createMockTerminalSession();
+    session.search.getSelectionSeed.mockReturnValue('selected output');
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    const options = getLastSessionOptions();
+    session.search.setDecorationTheme.mockClear();
+    syncFocusedTypingTaskCommandLeaseMock.mockClear();
+
+    getLastSearchRequestedHandler()?.(options?.sessionIdentity ?? '', session.search);
+    await Promise.resolve();
+
+    const input = result.getByLabelText('Find in terminal') as HTMLInputElement;
+    expect(input.value).toBe('selected output');
+    expect(document.activeElement).toBe(input);
+    expect(session.search.find).toHaveBeenCalledWith('selected output', {
+      direction: 'next',
+      incremental: true,
+    });
+    expect(session.search.setDecorationTheme).toHaveBeenCalledTimes(1);
+    expect(session.handleTerminalData).not.toHaveBeenCalled();
+    expect(syncFocusedTypingTaskCommandLeaseMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps terminal search usable while peer-controlled without hiding task control', () => {
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastSearchRequestedHandler()?.(
+      getLastSessionOptions()?.sessionIdentity ?? '',
+      session.search,
+    );
+
+    expect(result.getByRole('search')).toBeTruthy();
+    expect(
+      result.getByText('Another browser session is currently typing in this terminal.'),
+    ).toBeTruthy();
+    expect(result.getByRole('button', { name: 'Take Over' })).toBeTruthy();
+  });
+
+  it('updates, navigates, closes, and restores focus only to the same live session', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    getLastStatusChangeHandler()?.('ready');
+    const identity = getLastSessionOptions()?.sessionIdentity ?? '';
+    getLastSearchRequestedHandler()?.(identity, session.search);
+    const input = result.getByLabelText('Find in terminal') as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: 'needle' } });
+    expect(session.search.find).toHaveBeenLastCalledWith('needle', {
+      direction: 'next',
+      incremental: true,
+    });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(session.search.find).toHaveBeenLastCalledWith('needle', {
+      direction: 'previous',
+      incremental: false,
+    });
+    expect(session.handleTerminalData).not.toHaveBeenCalled();
+
+    session.term.focus.mockClear();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await Promise.resolve();
+    expect(result.queryByRole('search')).toBeNull();
+    expect(session.search.close).toHaveBeenCalledTimes(1);
+    expect(session.term.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores stale search owners and result callbacks', () => {
+    const session = createMockTerminalSession();
+    session.search.getSelectionSeed.mockReturnValue('needle');
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    const identity = getLastSessionOptions()?.sessionIdentity ?? '';
+
+    getLastSearchRequestedHandler()?.('stale-session', session.search);
+    expect(result.queryByRole('search')).toBeNull();
+
+    getLastSearchRequestedHandler()?.(identity, session.search);
+    getLastSearchResultHandler()?.('stale-session', session.search, { count: 9, index: 4 });
+    expect(result.getByRole('status').textContent).toBe('Searching…');
+    getLastSearchResultHandler()?.(identity, session.search, { count: 3, index: 1 });
+    expect(result.getByRole('status').textContent).toBe('2/3');
+  });
+
+  it('shows a local unavailable state, does not retry while open, and always allows close', () => {
+    const session = createMockTerminalSession();
+    session.search.getSelectionSeed.mockReturnValue('needle');
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    const identity = getLastSessionOptions()?.sessionIdentity ?? '';
+    getLastSearchRequestedHandler()?.(identity, session.search);
+    getLastSearchUnavailableHandler()?.(identity, session.search);
+
+    const input = result.getByLabelText('Find in terminal');
+    expect(result.getByText('Search unavailable')).toBeTruthy();
+    fireEvent.input(input, { target: { value: 'another' } });
+    expect(session.search.find).toHaveBeenCalledTimes(1);
+    fireEvent.click(result.getByLabelText('Close terminal search'));
+    expect(result.queryByRole('search')).toBeNull();
+  });
+
+  it('focuses the existing overlay on repeated Find and closes without focus on teardown', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    const identity = getLastSessionOptions()?.sessionIdentity ?? '';
+    const requestSearch = getLastSearchRequestedHandler();
+    requestSearch?.(identity, session.search);
+    const nextButton = result.getByLabelText('Next terminal match') as HTMLButtonElement;
+    nextButton.focus();
+
+    requestSearch?.(identity, session.search);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(result.getByLabelText('Find in terminal'));
+    expect(session.search.clear).toHaveBeenCalledTimes(1);
+
+    session.term.focus.mockClear();
+    result.unmount();
+    expect(session.search.close).toHaveBeenCalledTimes(1);
+    expect(session.term.focus).not.toHaveBeenCalled();
   });
 
   it('does not read disposed task identity during terminal session cleanup callbacks', () => {
@@ -1310,6 +1538,41 @@ describe('TerminalView', () => {
 
     expect(keyEvent.defaultPrevented).toBe(true);
     expect(session.handleTerminalData).toHaveBeenCalledWith('x');
+  });
+
+  it('captures xterm textarea input while resize temporarily disables stdin', () => {
+    setStore('activeTaskId', 'task-1');
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const terminalInput = document.createElement('textarea');
+    terminalInput.setAttribute('aria-label', 'Terminal input');
+    terminalRoot?.appendChild(terminalInput);
+
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    getLastResizeTransactionChangeHandler()?.(true);
+    expect(session.term.options.disableStdin).toBe(true);
+
+    const keyEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'E',
+    });
+    terminalInput.dispatchEvent(keyEvent);
+
+    expect(keyEvent.defaultPrevented).toBe(true);
+    expect(session.handleTerminalData).toHaveBeenCalledWith('E');
   });
 
   it('updates cursor blinking when DOM focus moves into and out of the terminal', async () => {
@@ -2796,8 +3059,8 @@ describe('TerminalView', () => {
     const options = getLastSessionOptions();
     options?.onAttachMilestone?.('channel-ready');
     options?.onAttachMilestone?.('attach-fit-ready');
-    options?.onAttachMilestone?.('spawn-requested');
-    options?.onAttachMilestone?.('spawn-resolved');
+    options?.onAttachMilestone?.('attach-requested');
+    options?.onAttachMilestone?.('attach-resolved');
     getLastAttachBoundHandler()?.();
     options?.onAttachMilestone?.('attach-recovery-started');
     options?.onAttachMilestone?.('attach-recovery-settled');
@@ -4153,5 +4416,32 @@ describe('TerminalView', () => {
     onStatusChange?.('error');
 
     expect(getTerminalStartupSummary()).toBeNull();
+  });
+
+  it('announces a typed restore failure and retries it without replacing the terminal session', () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const view = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastAttachUnavailableHandler()?.('restore-failed');
+    getLastStatusChangeHandler()?.('error');
+
+    const status = view.getByRole('status');
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(status.textContent).toContain('The terminal could not be restored.');
+    fireEvent.click(view.getByRole('button', { name: 'Retry restore' }));
+
+    expect(session.retryAttach).toHaveBeenCalledOnce();
+    expect(view.queryByRole('status')).toBeNull();
+    expect(startTerminalSessionMock).toHaveBeenCalledOnce();
   });
 });

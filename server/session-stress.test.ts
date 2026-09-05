@@ -17,7 +17,7 @@ import {
   killAgentViaHttp,
   parseServerMessage,
   sendJson,
-  spawnAgentViaHttp,
+  createSyntheticTerminalViaHttp,
   startServer,
   stopServer,
   TEST_TOKEN,
@@ -865,7 +865,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       await bindClientToChannels(primaryClient, channelIds);
 
       for (const agent of agents) {
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           command: '/bin/sh',
@@ -927,7 +927,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
 
     try {
       await bindClientToChannels(client, [agent.channelId]);
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId: getStressAgentTaskId(agent),
         agentId: agent.agentId,
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
@@ -937,7 +937,6 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
-        isShell: false,
         renewTaskControl: true,
       });
       await waitForChannelMarker(client, agent.channelId, createReadyMarker(agent.agentId));
@@ -981,7 +980,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
 
       for (const [agentIndex, agent] of agents.entries()) {
         const writerState = getStressClientStateAt(clientStates, agentIndex % clients.length);
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
@@ -991,7 +990,6 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
           env: {
             STRESS_READY_MARKER: createReadyMarker(agent.agentId),
           },
-          isShell: false,
           renewTaskControl: true,
         });
         await waitForChannelMarker(
@@ -1082,7 +1080,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       await bindClientToChannels(ownerClient, [agent.channelId]);
       await bindClientToChannels(observerClient, [agent.channelId]);
 
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId,
         agentId: agent.agentId,
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
@@ -1092,7 +1090,6 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
-        isShell: false,
       });
       await waitForChannelMarker(ownerClient, agent.channelId, createReadyMarker(agent.agentId));
 
@@ -1200,7 +1197,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       await bindClientToChannels(ownerClient, [agent.channelId]);
       await bindClientToChannels(observerClient, [agent.channelId]);
 
-      await spawnAgentViaHttp({
+      await createSyntheticTerminalViaHttp({
         taskId,
         agentId: agent.agentId,
         args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
@@ -1210,7 +1207,6 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
         env: {
           STRESS_READY_MARKER: createReadyMarker(agent.agentId),
         },
-        isShell: false,
       });
       await waitForChannelMarker(ownerClient, agent.channelId, createReadyMarker(agent.agentId));
 
@@ -1319,7 +1315,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
           existingClientStates,
           agentIndex % existingClients.length,
         );
-        await spawnAgentViaHttp({
+        await createSyntheticTerminalViaHttp({
           taskId: getStressAgentTaskId(agent),
           agentId: agent.agentId,
           args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
@@ -1329,7 +1325,6 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
           env: {
             STRESS_READY_MARKER: createReadyMarker(agent.agentId),
           },
-          isShell: false,
           renewTaskControl: true,
         });
         await waitForChannelMarker(

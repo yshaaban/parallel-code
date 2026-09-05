@@ -73,10 +73,38 @@ describe('TaskTitleBar', () => {
     runCoordinatorOperatorActionMock.mockResolvedValue({ accepted: true });
   });
 
+  it('exposes the task name as a level-two heading', () => {
+    render(() => (
+      <TaskTitleBar
+        task={createTestTask({ name: 'Fallback proof task' })}
+        mergeAvailable
+        pushAvailable
+        isActive
+        taskActivityStatus="live"
+        hasPreviewPorts={false}
+        isPreviewVisible={false}
+        pushing={false}
+        pushSuccess={false}
+        onMouseDown={vi.fn()}
+        onPreviewButtonClick={vi.fn()}
+        onUpdateTaskName={vi.fn()}
+        onSetTitleEditHandle={vi.fn()}
+        onOpenMerge={vi.fn()}
+        onOpenPush={vi.fn()}
+        onCollapse={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Fallback proof task' })).toBeDefined();
+  });
+
   it('labels the preview button as hiding the manager when it is already visible', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -101,6 +129,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -125,6 +155,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask({ baseBranch: 'release/main' })}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -151,6 +183,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask({ baseBranch: undefined })}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -175,6 +209,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask({ baseBranch: undefined })}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -206,6 +242,8 @@ describe('TaskTitleBar', () => {
           shellAgentIds: ['shell-1'],
           taskMode: 'terminal',
         })}
+        mergeAvailable={false}
+        pushAvailable={false}
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -224,7 +262,9 @@ describe('TaskTitleBar', () => {
     ));
 
     expect(screen.getByText('root · main')).toBeDefined();
-    expect(screen.getByTitle('Works directly in the project root on main')).toBeDefined();
+    expect(
+      screen.getByTitle(/Works directly in the project root on main; shares files and Git state/),
+    ).toBeDefined();
     expect(screen.getByText('terminal')).toBeDefined();
     expect(screen.getByTitle('Terminal-only task with no AI agent')).toBeDefined();
     expect(screen.queryByTitle(/Merge/)).toBeNull();
@@ -242,6 +282,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -286,6 +328,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -318,6 +362,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="live"
         hasPreviewPorts={false}
@@ -342,6 +388,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask({ coordinatorRole: 'coordinator' })}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="idle"
         hasPreviewPorts={false}
@@ -410,6 +458,8 @@ describe('TaskTitleBar', () => {
     render(() => (
       <TaskTitleBar
         task={createTestTask()}
+        mergeAvailable
+        pushAvailable
         isActive
         taskActivityStatus="idle"
         hasPreviewPorts={false}

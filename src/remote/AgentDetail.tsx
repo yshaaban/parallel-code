@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import {
   Show,
+  Suspense,
   createEffect,
   createMemo,
   createSignal,
@@ -12,8 +13,15 @@ import {
   untrack,
 } from 'solid-js';
 import type { TerminalRecoveryBatchEntry } from '../ipc/types';
+import type { RemoteAgentStatus } from '../domain/server-state';
+import type { RemoteTaskSessionRef } from '../domain/task-catalog';
 import { createBoundedByteHistory } from '../lib/bounded-byte-history';
 import { createRandomId } from '../lib/random-id';
+import { lazyNamed } from '../lib/lazy-named';
+import {
+  UNAVAILABLE_TASK_NOTES_CAPABILITY,
+  type TaskNotesCapability,
+} from '../app/task-notes-capability';
 import { b64decode } from './base64';
 import { AgentDetailControls } from './AgentDetailControls';
 import { AgentDetailHeader } from './AgentDetailHeader';
@@ -54,6 +62,7 @@ const TERMINAL_RECOVERY_TIMEOUT_MS = 5_000;
 const TERMINAL_RECOVERY_MAX_ATTEMPTS = 3;
 const TERMINAL_RECOVERY_TAIL_MAX_BYTES = 64 * 1024;
 const BASE64_CHUNK_SIZE = 0x8000;
+const TaskNotesView = lazyNamed(() => import('./TaskNotesView'), 'TaskNotesView');
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) {
@@ -90,17 +99,29 @@ function haptic(): void {
 
 interface AgentDetailProps {
   agentId: string;
+  confirm?: (message: string) => boolean;
   taskName: string;
+  taskNotesCapability?: TaskNotesCapability;
+  taskSession?: RemoteTaskSessionRef;
+  terminalControl?: boolean;
+  terminalKill?: boolean;
   onBack: () => void;
+}
+
+function getCatalogSessionStatus(state: RemoteTaskSessionRef['state']): RemoteAgentStatus {
+  return state === 'running' ? 'running' : 'exited';
 }
 
 export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let detailRoot: HTMLDivElement | undefined;
+  let notesTab: HTMLButtonElement | undefined;
   let termContainer: HTMLDivElement | undefined;
   let term: Terminal | undefined;
+  let terminalTab: HTMLButtonElement | undefined;
   let fitAddon: FitAddon | undefined;
   let currentAgentId = '';
   let currentTaskId: string | null = null;
+  let notesNavigationPending = false;
 
   const [atBottom, setAtBottom] = createSignal(true);
   const [termFontSize, setTermFontSize] = createSignal(10);
@@ -111,10 +132,17 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   const [takeoverBusy, setTakeoverBusy] = createSignal(false);
   const [forceTakeover, setForceTakeover] = createSignal(false);
   const [statusNotice, setStatusNotice] = createSignal<string | null>(null);
+  const [activeView, setActiveView] = createSignal<'terminal' | 'notes'>('terminal');
 
-  const selectedAgent = createMemo(() => agents().find((agent) => agent.agentId === props.agentId));
-  const taskId = createMemo(() => selectedAgent()?.taskId ?? null);
-  const selectedAgentStatus = createMemo(() => selectedAgent()?.status);
+  const terminalId = createMemo(() => props.taskSession?.sessionId ?? props.agentId);
+  const selectedAgent = createMemo(() => {
+    const agentId = props.taskSession?.agentId ?? props.agentId;
+    return agents().find((agent) => agent.agentId === agentId);
+  });
+  const taskId = createMemo(() => props.taskSession?.taskId ?? selectedAgent()?.taskId ?? null);
+  const selectedAgentStatus = createMemo(() =>
+    props.taskSession ? getCatalogSessionStatus(props.taskSession.state) : selectedAgent()?.status,
+  );
   const selectedTaskName = createMemo(() => selectedAgent()?.taskName ?? props.taskName);
   const selectedTaskContextLine = createMemo(() => {
     const taskMeta = selectedAgent()?.taskMeta;
@@ -142,8 +170,77 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
     return getRemoteTaskControllerOwnerStatus(activeTaskId);
   });
-  const readOnly = createMemo(() => Boolean(controlOwnerStatus() && !controlOwnerStatus()?.isSelf));
+  const readOnly = createMemo(
+    () =>
+      props.terminalControl === false ||
+      Boolean(controlOwnerStatus() && !controlOwnerStatus()?.isSelf),
+  );
   const takeOverLabel = createMemo(() => (forceTakeover() ? 'Force Take Over' : 'Take Over'));
+  const notesAvailable = createMemo(
+    () =>
+      (props.taskNotesCapability ?? UNAVAILABLE_TASK_NOTES_CAPABILITY).read && taskId() !== null,
+  );
+
+  createEffect(() => {
+    if (!notesAvailable() && activeView() === 'notes') showTerminal();
+  });
+
+  function showTerminal(): void {
+    setActiveView('terminal');
+    requestAnimationFrame(() => {
+      const target = term;
+      if (target) refreshTerminalViewport(target);
+      scheduleFitAndResize();
+    });
+  }
+
+  function selectDetailView(view: 'terminal' | 'notes'): void {
+    if (view === 'terminal') showTerminal();
+    else setActiveView('notes');
+  }
+
+  function handleDetailTabKeyDown(event: KeyboardEvent): void {
+    let nextView: 'terminal' | 'notes' | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'End') nextView = 'notes';
+    if (event.key === 'ArrowLeft' || event.key === 'Home') nextView = 'terminal';
+    if (!nextView) return;
+    event.preventDefault();
+    selectDetailView(nextView);
+    requestAnimationFrame(() => (nextView === 'terminal' ? terminalTab : notesTab)?.focus());
+  }
+
+  function requestBack(): void {
+    const activeTaskId = getActiveTaskId();
+    const confirmDiscard = props.confirm ?? ((message: string) => window.confirm(message));
+    const onBack = props.onBack;
+    if (!notesAvailable() || !activeTaskId) {
+      onBack();
+      return;
+    }
+    if (notesNavigationPending) return;
+    notesNavigationPending = true;
+    void import('./TaskNotesView')
+      .then(async (runtime) => {
+        if (
+          !(await runtime.confirmRemoteTaskNotesLeave(
+            activeTaskId,
+            'Discard the unsaved notes draft and choose another task?',
+            confirmDiscard,
+          ))
+        ) {
+          return;
+        }
+        onBack();
+      })
+      .catch(() => {
+        setStatusNotice(
+          'Notes draft status could not be checked. Try again before leaving the task.',
+        );
+      })
+      .finally(() => {
+        notesNavigationPending = false;
+      });
+  }
 
   function getActiveTaskId(): string | null {
     return taskId() ?? currentTaskId;
@@ -152,6 +249,10 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   function getReadOnlyReason(): string | null {
     if (!readOnly()) {
       return null;
+    }
+
+    if (props.terminalControl === false) {
+      return 'This secure session has read-only terminal access.';
     }
 
     return `${ownerStatus()?.label ?? 'Another session'} controls this terminal.`;
@@ -198,7 +299,9 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let terminalRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let takeoverRequestId = 0;
   let activeRecoveryRequestId: string | null = null;
+  let disposed = false;
   let restoringScrollback = false;
+  let terminalRestoreGeneration = 0;
   let hasTerminalData = false;
   let agentMissingValue = false;
   let bufferedOutput: Uint8Array[] = [];
@@ -218,9 +321,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   createEffect(() => {
     const currentControlOwnerStatus = controlOwnerStatus();
     if (term) {
-      term.options.disableStdin = Boolean(
-        currentControlOwnerStatus && !currentControlOwnerStatus.isSelf,
-      );
+      term.options.disableStdin = readOnly();
     }
 
     if (!currentControlOwnerStatus || currentControlOwnerStatus.isSelf) {
@@ -238,7 +339,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       return;
     }
 
-    if (currentAgent) {
+    if (props.taskSession || currentAgent) {
       updateAgentMissing(false);
       return;
     }
@@ -288,6 +389,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
   function startMissingAgentTimer(): void {
     clearMissingAgentTimer();
+    if (props.taskSession) return;
     missingAgentTimer = setTimeout(() => {
       if (hasTerminalData) {
         return;
@@ -356,20 +458,32 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     };
   }
 
-  function writeLiveTerminalBytes(bytes: Uint8Array): void {
-    term?.write(bytes);
+  function writeLiveTerminalBytes(
+    bytes: Uint8Array,
+    target: Terminal | undefined = term,
+    onRendered?: () => void,
+  ): void {
+    target?.write(bytes, onRendered);
     recordLiveTerminalBytes(bytes);
   }
 
-  function flushBufferedOutput(): void {
-    if (!term || bufferedOutput.length === 0) {
+  function flushBufferedOutput(target: Terminal | undefined = term, onRendered?: () => void): void {
+    if (!target) {
+      return;
+    }
+    if (bufferedOutput.length === 0) {
+      onRendered?.();
       return;
     }
 
     const queued = bufferedOutput;
     bufferedOutput = [];
-    for (const chunk of queued) {
-      writeLiveTerminalBytes(chunk);
+    for (let index = 0; index < queued.length; index += 1) {
+      const chunk = queued[index];
+      if (!chunk) {
+        continue;
+      }
+      writeLiveTerminalBytes(chunk, target, index === queued.length - 1 ? onRendered : undefined);
     }
   }
 
@@ -398,6 +512,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   }
 
   function beginTerminalRestore(options?: { dropBufferedOutput?: boolean }): void {
+    terminalRestoreGeneration += 1;
     restoringScrollback = true;
     if (options?.dropBufferedOutput) {
       bufferedOutput = [];
@@ -439,6 +554,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   }
 
   function finishTerminalRestore(): void {
+    terminalRestoreGeneration += 1;
     restoringScrollback = false;
     flushBufferedOutput();
     term?.scrollToBottom();
@@ -455,6 +571,57 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     finishTerminalRestore();
   }
 
+  function isCurrentTerminalRestore(
+    target: Terminal,
+    targetAgentId: string,
+    restoreGeneration: number,
+  ): boolean {
+    return (
+      !disposed &&
+      term === target &&
+      currentAgentId === targetAgentId &&
+      terminalRestoreGeneration === restoreGeneration
+    );
+  }
+
+  function finishAcceptedTerminalRestore(options: {
+    onRendered?: () => void;
+    requestId?: string;
+    restoreGeneration: number;
+    targetAgentId: string;
+    targetTerm: Terminal;
+  }): void {
+    const { onRendered, requestId, restoreGeneration, targetAgentId, targetTerm } = options;
+    if (
+      !isCurrentTerminalRestore(targetTerm, targetAgentId, restoreGeneration) ||
+      (requestId !== undefined && activeRecoveryRequestId !== requestId)
+    ) {
+      return;
+    }
+
+    onRendered?.();
+    if (requestId !== undefined) {
+      activeRecoveryRequestId = null;
+      clearTerminalRecoveryTimer();
+    }
+    restoringScrollback = false;
+
+    let presentationSettled = false;
+    flushBufferedOutput(targetTerm, () => {
+      if (presentationSettled) {
+        return;
+      }
+      presentationSettled = true;
+      if (!isCurrentTerminalRestore(targetTerm, targetAgentId, restoreGeneration)) {
+        return;
+      }
+
+      targetTerm.scrollToBottom();
+      refreshTerminalViewport(targetTerm);
+      scheduleFitAndResize();
+    });
+  }
+
   function writeTerminalRecoveryPayload(
     requestId: string,
     payload: Uint8Array,
@@ -464,21 +631,35 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       reset?: boolean;
     } = {},
   ): void {
-    if (!term) {
-      options.onRendered?.();
+    const targetTerm = term;
+    if (!targetTerm) {
       finishTrackedTerminalRestore(requestId);
       return;
     }
 
+    const targetAgentId = currentAgentId;
+    terminalRestoreGeneration += 1;
+    const restoreGeneration = terminalRestoreGeneration;
+
     if (options.reset) {
-      term.reset();
+      targetTerm.reset();
     } else if (options.clear) {
-      term.clear();
+      targetTerm.clear();
     }
 
-    term.write(payload, () => {
-      options.onRendered?.();
-      finishTrackedTerminalRestore(requestId);
+    let writeCompleted = false;
+    targetTerm.write(payload, () => {
+      if (writeCompleted) {
+        return;
+      }
+      writeCompleted = true;
+      finishAcceptedTerminalRestore({
+        onRendered: options.onRendered,
+        requestId,
+        restoreGeneration,
+        targetAgentId,
+        targetTerm,
+      });
     });
   }
 
@@ -514,14 +695,12 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
     switch (entry.recovery.kind) {
       case 'noop':
-        flushBufferedOutput();
         renderedOutputCursor = entry.outputCursor;
         finishTrackedTerminalRestore(entry.requestId);
         return;
       case 'delta': {
         const recovery = entry.recovery;
         const delta = b64decode(recovery.data);
-        flushBufferedOutput();
         writeTerminalRecoveryPayload(entry.requestId, delta, {
           onRendered: () => recordDeltaRecovery(entry, recovery, delta),
         });
@@ -593,6 +772,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
 
   function scheduleResizeSend(): void {
     clearResizeDebounceTimer();
+    if (props.terminalControl === false) return;
     const activeAgentId = currentAgentId;
     const activeTaskId = getActiveTaskId();
 
@@ -610,18 +790,25 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     }, 100);
   }
 
-  function refreshTerminalViewport(): void {
-    if (!term) {
+  function refreshTerminalViewport(target: Terminal): void {
+    if (target.rows <= 0) {
       return;
     }
 
-    term.refresh(0, Math.max(term.rows - 1, 0));
+    try {
+      target.refresh(0, target.rows - 1);
+    } catch {
+      // Repaint is cosmetic and may race terminal disposal.
+    }
   }
 
   function fitAndResize(options?: { refresh?: boolean }): void {
     fitAddon?.fit();
     if (options?.refresh) {
-      refreshTerminalViewport();
+      const target = term;
+      if (target) {
+        refreshTerminalViewport(target);
+      }
     }
     scheduleResizeSend();
   }
@@ -681,7 +868,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   }
 
   async function handleTerminalInput(data: string): Promise<void> {
-    if (agentMissing()) {
+    if (agentMissing() || props.terminalControl === false) {
       return;
     }
 
@@ -712,6 +899,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   }
 
   function handleKill(): void {
+    if (props.terminalKill === false) return;
     haptic();
     sendKill(currentAgentId);
     setShowKillConfirm(false);
@@ -745,7 +933,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     if (!detailRoot || !termContainer) {
       return;
     }
-    currentAgentId = props.agentId;
+    currentAgentId = terminalId();
     currentTaskId = taskId();
 
     term = new Terminal({
@@ -788,12 +976,31 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       activeRecoveryRequestId = null;
       clearTerminalRecoveryTimer();
       beginTerminalRestore({ dropBufferedOutput: true });
-      term?.clear();
-      const bytes = b64decode(data);
-      term?.write(bytes, () => {
-        renderedTail.replace(bytes);
-        renderedOutputCursor = null;
+      const targetTerm = term;
+      if (!targetTerm) {
         finishTerminalRestore();
+        return;
+      }
+      targetTerm.clear();
+      const bytes = b64decode(data);
+      const targetAgentId = currentAgentId;
+      terminalRestoreGeneration += 1;
+      const restoreGeneration = terminalRestoreGeneration;
+      let writeCompleted = false;
+      targetTerm.write(bytes, () => {
+        if (writeCompleted) {
+          return;
+        }
+        writeCompleted = true;
+        finishAcceptedTerminalRestore({
+          onRendered: () => {
+            renderedTail.replace(bytes);
+            renderedOutputCursor = null;
+          },
+          restoreGeneration,
+          targetAgentId,
+          targetTerm,
+        });
       });
     });
 
@@ -856,11 +1063,13 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       agentMissing,
       swipeOffset,
       setSwipeOffset,
-      onBack: props.onBack,
+      onBack: requestBack,
       onHaptic: haptic,
     });
 
     onCleanup(() => {
+      disposed = true;
+      terminalRestoreGeneration += 1;
       takeoverRequestId += 1;
       setTakeoverBusy(false);
       cancelFitFrames();
@@ -903,12 +1112,14 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       }}
     >
       <AgentDetailHeader
-        agentId={props.agentId}
+        agentId={terminalId()}
         agentStatus={selectedAgentStatus()}
+        {...(props.taskSession ? { backAriaLabel: 'Back to task details', backLabel: 'Task' } : {})}
+        canKill={props.terminalKill !== false}
         connectionStatus={status()}
         contextLine={selectedTaskContextLine()}
-        lastActivityAt={getAgentLastActivityAt(props.agentId)}
-        onBack={props.onBack}
+        lastActivityAt={getAgentLastActivityAt(terminalId())}
+        onBack={requestBack}
         onKill={() => setShowKillConfirm(true)}
         onTakeOver={() => {
           void handleTakeOver();
@@ -916,12 +1127,58 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
         ownerIsSelf={ownerStatus()?.isSelf ?? false}
         ownerLabel={ownerStatus()?.label ?? null}
         ownershipNotice={statusNotice()}
-        showTakeOver={readOnly()}
+        showTakeOver={props.terminalControl !== false && readOnly()}
         statusFlashClass={statusFlashClass()}
         takeOverBusy={takeoverBusy()}
         takeOverLabel={takeOverLabel()}
         taskName={selectedTaskName()}
       />
+
+      <Show when={notesAvailable()}>
+        <div
+          role="tablist"
+          aria-label="Task detail view"
+          aria-orientation="horizontal"
+          onKeyDown={handleDetailTabKeyDown}
+          style={{
+            display: 'grid',
+            'grid-template-columns': '1fr 1fr',
+            gap: '2px',
+            margin: '0 var(--space-sm) var(--space-xs)',
+            padding: '2px',
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)',
+            'border-radius': '0.75rem',
+          }}
+        >
+          <button
+            aria-controls="remote-terminal-panel"
+            id="remote-terminal-tab"
+            ref={terminalTab}
+            type="button"
+            role="tab"
+            aria-selected={activeView() === 'terminal'}
+            tabindex={activeView() === 'terminal' ? 0 : -1}
+            onClick={showTerminal}
+            style={{ 'min-height': '44px', 'border-radius': '0.6rem' }}
+          >
+            Terminal
+          </button>
+          <button
+            aria-controls="remote-task-notes-panel"
+            id="remote-task-notes-tab"
+            ref={notesTab}
+            type="button"
+            role="tab"
+            aria-selected={activeView() === 'notes'}
+            tabindex={activeView() === 'notes' ? 0 : -1}
+            onClick={() => setActiveView('notes')}
+            style={{ 'min-height': '44px', 'border-radius': '0.6rem' }}
+          >
+            Notes
+          </button>
+        </div>
+      </Show>
 
       <div
         style={{
@@ -929,13 +1186,17 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
           'min-height': '0',
           padding: '0 var(--space-sm) var(--space-xs)',
           position: 'relative',
-          overflow: 'hidden',
+          overflow: activeView() === 'terminal' ? 'hidden' : 'auto',
         }}
       >
         <div
+          aria-labelledby="remote-terminal-tab"
           class="remote-panel remote-terminal-shell"
           data-testid="remote-terminal-shell"
+          id="remote-terminal-panel"
+          role="tabpanel"
           style={{
+            display: activeView() === 'terminal' ? 'block' : 'none',
             height: '100%',
             padding: 'var(--space-3xs)',
             'border-radius': '1.35rem',
@@ -963,7 +1224,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
               }}
             />
 
-            <AgentMissingDialog onBack={props.onBack} open={agentMissing()} />
+            <AgentMissingDialog onBack={requestBack} open={agentMissing()} />
             <AgentKillConfirmDialog
               onCancel={() => setShowKillConfirm(false)}
               onConfirm={handleKill}
@@ -971,14 +1232,37 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
             />
           </div>
         </div>
+        <Show when={notesAvailable() && activeView() === 'notes'}>
+          <div aria-labelledby="remote-task-notes-tab" id="remote-task-notes-panel" role="tabpanel">
+            <Suspense
+              fallback={
+                <div
+                  role="status"
+                  style={{ padding: 'var(--space-md)', color: 'var(--text-muted)' }}
+                >
+                  Loading notes…
+                </div>
+              }
+            >
+              <TaskNotesView
+                canWrite={(props.taskNotesCapability ?? UNAVAILABLE_TASK_NOTES_CAPABILITY).write}
+                taskId={taskId() ?? ''}
+                taskName={selectedTaskName()}
+                onChooseAnotherTask={requestBack}
+              />
+            </Suspense>
+          </div>
+        </Show>
       </div>
 
-      <ScrollToBottomButton
-        onScrollToBottom={scrollToBottom}
-        open={!atBottom() && !agentMissing()}
-      />
+      <Show when={activeView() === 'terminal'}>
+        <ScrollToBottomButton
+          onScrollToBottom={scrollToBottom}
+          open={!atBottom() && !agentMissing()}
+        />
+      </Show>
 
-      <Show when={!agentMissing()}>
+      <Show when={activeView() === 'terminal' && !agentMissing()}>
         <AgentDetailControls
           agentMissing={agentMissing()}
           disabled={readOnly()}

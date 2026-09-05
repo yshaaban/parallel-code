@@ -1189,10 +1189,10 @@ async function measureReloadRestore(
   await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
 
   const recoveryRequestCounts: Record<string, number> = {
+    [IPC.AttachTerminalSession]: 0,
     get_terminal_recovery_batch: 0,
     pause_agent: 0,
     resume_agent: 0,
-    spawn_agent: 0,
   };
 
   let trackRequests = false;

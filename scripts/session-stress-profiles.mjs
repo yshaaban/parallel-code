@@ -225,10 +225,10 @@ function createStartupSpawnStormProfile(terminals, budgetMs, description) {
   return {
     args: {
       ...STARTUP_ONLY_BASE_ARGS,
-      startupSpawnMode: 'batch-ensure',
+      startupSpawnMode: 'concurrent-attach',
       terminals,
     },
-    budgets: [createMaxBudget('startup batch ensure wall clock', budgetMs, getStartupSpawnMs)],
+    budgets: [createMaxBudget('startup concurrent attach wall clock', budgetMs, getStartupSpawnMs)],
     description,
   };
 }
@@ -308,17 +308,17 @@ export const SESSION_STRESS_PROFILES = {
   startup_spawn_storm_4: createStartupSpawnStormProfile(
     4,
     6_000,
-    'Browser-free dispatch storm scorecard using backend batch ensure with four agents.',
+    'Browser-free dispatch storm scorecard using four concurrent terminal attaches.',
   ),
   startup_spawn_storm_8: createStartupSpawnStormProfile(
     8,
     12_000,
-    'Browser-free dispatch storm scorecard using backend batch ensure.',
+    'Browser-free dispatch storm scorecard using concurrent terminal attaches.',
   ),
   startup_spawn_storm_16: createStartupSpawnStormProfile(
     16,
     24_000,
-    'Browser-free dispatch storm scorecard using backend batch ensure with sixteen agents.',
+    'Browser-free dispatch storm scorecard using sixteen concurrent terminal attaches.',
   ),
   heavy_tui: {
     args: {

@@ -2642,6 +2642,83 @@ describe('createTerminalRecoveryRuntime', () => {
     ]);
   });
 
+  it('releases the initial attach batch pause when readiness aborts before apply', async () => {
+    let disposed = false;
+    const { ensureTerminalFitReadyMock, runtime, termWriteMock } = createRecoveryRuntimeFixture({
+      isDisposed: () => disposed,
+    });
+    ensureTerminalFitReadyMock.mockImplementationOnce(async () => {
+      disposed = true;
+      return false;
+    });
+
+    await runtime.applyInitialAttachRecoveryEntry({
+      ...createSnapshotRecoveryEntry('agent-1', 32),
+      batchPauseId: 'recovery-pause-attach-early-abort',
+    });
+
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-attach-early-abort' },
+    ]);
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+  });
+
+  it('releases a late initial attach batch pause after the runtime is disposed', async () => {
+    const { markTerminalReadyMock, runtime, termWriteMock } = createRecoveryRuntimeFixture();
+    runtime.dispose();
+
+    await runtime.applyInitialAttachRecoveryEntry({
+      ...createSnapshotRecoveryEntry('agent-1', 32),
+      batchPauseId: 'recovery-pause-after-dispose',
+    });
+
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls.map((call) => call[1])).toEqual([
+      { batchPauseId: 'recovery-pause-after-dispose' },
+    ]);
+    expect(termWriteMock).not.toHaveBeenCalled();
+    expect(markTerminalReadyMock).not.toHaveBeenCalled();
+  });
+
+  it('moves an initial attach pause to a local output barrier before readiness waits', async () => {
+    const fitReady = createDeferredPromise<boolean>();
+    const { ensureTerminalFitReadyMock, outputPipelineMock, runtime, termWriteMock } =
+      createRecoveryRuntimeFixture({ hasQueuedOutput: true });
+    ensureTerminalFitReadyMock.mockImplementationOnce(() => fitReady.promise);
+
+    const restorePromise = runtime.applyInitialAttachRecoveryEntry({
+      ...createSnapshotRecoveryEntry('agent-1', 32),
+      batchPauseId: 'recovery-pause-attach-local-barrier',
+    });
+    await Promise.resolve();
+
+    expect(fireAndForgetMock).toHaveBeenCalledWith(
+      IPC.ReleaseTerminalRecoveryPause,
+      { batchPauseId: 'recovery-pause-attach-local-barrier' },
+      expect.any(Function),
+    );
+    expect(runtime.isOutputFlushBlocked()).toBe(true);
+    expect(outputPipelineMock.scheduleOutputFlush).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+
+    fitReady.resolve(true);
+    await restorePromise;
+
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.scheduleOutputFlush).toHaveBeenCalledTimes(1);
+    expect(runtime.isOutputFlushBlocked()).toBe(false);
+    const releaseCalls = fireAndForgetMock.mock.calls.filter(
+      (call) => call[0] === IPC.ReleaseTerminalRecoveryPause,
+    );
+    expect(releaseCalls).toHaveLength(1);
+  });
+
   it('keeps queued post-cursor output when applying the initial attach entry', async () => {
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       hasQueuedOutput: true,

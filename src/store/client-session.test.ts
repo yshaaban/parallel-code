@@ -81,6 +81,10 @@ describe('client session state', () => {
     setStore('fontScales', { 'task-1': 1.2 });
     setStore('globalScale', 1.1);
     setStore('inactiveColumnOpacity', 0.75);
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
     setStore('panelSizes', { 'left:right': 0.4 });
     setStore('placeholderFocused', true);
     setStore('placeholderFocusedButton', 'add-terminal');
@@ -147,6 +151,10 @@ describe('client session state', () => {
     expect(store.fontScales).toEqual({ 'task-1': 1.2 });
     expect(store.globalScale).toBe(1.1);
     expect(store.inactiveColumnOpacity).toBe(0.75);
+    expect(store.newTaskDefaults).toEqual({
+      skipPermissions: false,
+      stepsTracking: true,
+    });
     expect(store.panelSizes).toEqual({ 'left:right': 0.4 });
     expect(store.placeholderFocused).toBe(true);
     expect(store.placeholderFocusedButton).toBe('add-terminal');
@@ -174,6 +182,36 @@ describe('client session state', () => {
       height: 720,
       maximized: false,
     });
+  });
+
+  it('keeps new task defaults isolated between browser client sessions', () => {
+    const firstClientStorage = createSessionStorage();
+    const secondClientStorage = createSessionStorage();
+
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      value: firstClientStorage,
+    });
+    setStore('newTaskDefaults', { skipPermissions: false, stepsTracking: true });
+    saveClientSessionState();
+
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      value: secondClientStorage,
+    });
+    setStore('newTaskDefaults', { skipPermissions: true, stepsTracking: false });
+    saveClientSessionState();
+
+    setStore('newTaskDefaults', { skipPermissions: false, stepsTracking: false });
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.newTaskDefaults).toEqual({ skipPermissions: true, stepsTracking: false });
+
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      value: firstClientStorage,
+    });
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.newTaskDefaults).toEqual({ skipPermissions: false, stepsTracking: true });
   });
 
   it.each(['ai-terminal', 'coordinator', 'prompt', 'shell:0'])(

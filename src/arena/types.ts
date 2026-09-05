@@ -21,6 +21,7 @@ export interface BattleCompetitor {
   name: string;
   command: string;
   agentId: string;
+  arenaLaunchToken?: string;
   status: BattleCompetitorStatus;
   startTime: number;
   endTime: number | null;

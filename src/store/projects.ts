@@ -5,8 +5,10 @@ import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
 import { invoke } from '../lib/ipc';
 import { createRandomId } from '../lib/random-id';
+import type { WorkspaceProjectEditableField } from '../domain/workspace-edit-intents';
 import type { DiscoveredProject } from '../ipc/types';
 import { store, setStore } from './core';
+import { enqueueWorkspaceEditIntent } from './persistence-session';
 import { buildProjectModeFields, getProjectMode } from './project-mode';
 import {
   buildProjectGitIsolationFields,
@@ -18,6 +20,45 @@ import type { Project, ProjectMode } from './types.js';
 export { PASTEL_HUES, randomPastelColor } from '../domain/project-colors.js';
 
 let projectPathValidationGeneration = 0;
+
+const PROJECT_EDIT_INTENT_FIELDS = Object.freeze([
+  'agentRunnerConfig',
+  'baseBranch',
+  'branchPrefix',
+  'color',
+  'containerConfig',
+  'deleteBranchOnClose',
+  'defaultTaskGitIsolation',
+  'name',
+  'path',
+  'projectMode',
+  'terminalBookmarks',
+] as const satisfies readonly WorkspaceProjectEditableField[]);
+
+function projectFieldValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function cloneProjectFieldValue(value: unknown): unknown {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function enqueueProjectFieldChanges(projectId: string, before: Project, after: Project): void {
+  for (const field of PROJECT_EDIT_INTENT_FIELDS) {
+    const baseValue = before[field];
+    const nextValue = after[field];
+    if (projectFieldValuesEqual(baseValue, nextValue)) continue;
+    enqueueWorkspaceEditIntent({
+      baseValue: cloneProjectFieldValue(baseValue),
+      field,
+      kind: 'edit-project-field',
+      nextValue: cloneProjectFieldValue(nextValue),
+      operationId: createRandomId(),
+      projectId,
+    });
+  }
+}
 
 function getProjectPathValidationSignature(): string {
   return store.projects
@@ -55,6 +96,9 @@ export function addProject(
 }
 
 export function setProjectPath(projectId: string, path: string): void {
+  const before = store.projects.find((project) => project.id === projectId);
+  if (!before || before.path === path) return;
+  const baseValue = before.path;
   setStore(
     produce((s) => {
       const idx = s.projects.findIndex((p) => p.id === projectId);
@@ -64,6 +108,14 @@ export function setProjectPath(projectId: string, path: string): void {
       project.path = path;
     }),
   );
+  enqueueWorkspaceEditIntent({
+    baseValue,
+    field: 'path',
+    kind: 'edit-project-field',
+    nextValue: path,
+    operationId: createRandomId(),
+    projectId,
+  });
 }
 
 export function removeProject(projectId: string): void {
@@ -107,6 +159,9 @@ export function updateProject(
     >
   >,
 ): void {
+  const currentProject = store.projects.find((project) => project.id === projectId);
+  if (!currentProject) return;
+  const before = JSON.parse(JSON.stringify(currentProject)) as Project;
   setStore(
     produce((s) => {
       const idx = s.projects.findIndex((p) => p.id === projectId);
@@ -173,6 +228,8 @@ export function updateProject(
         project.terminalBookmarks = updates.terminalBookmarks;
     }),
   );
+  const after = store.projects.find((project) => project.id === projectId);
+  if (after) enqueueProjectFieldChanges(projectId, before, after);
 }
 
 export function getProjectBaseBranch(projectId: string): string | undefined {

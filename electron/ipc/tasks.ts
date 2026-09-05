@@ -1,15 +1,16 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
-  checkoutBranch,
   createWorktree,
   getCurrentBranch,
   getGitCommonDirectory,
   getMainBranch,
   removeWorktree,
 } from './git.js';
+import type { TaskWorktreeLinkRequestV1 } from './git-worktree-symlinks.js';
 import { notifyAgentListChanged } from './pty.js';
+import type { WorktreeSymlinkWarning } from '../../src/ipc/types.js';
 
 const MAX_SLUG_LEN = 72;
 const MAX_BRANCH_ATTEMPTS = 100;
@@ -53,6 +54,33 @@ function buildTaskBranchName(prefix: string, taskSlug: string, attempt: number):
   return `${prefix}/${truncatedTaskSlug.replace(/-+$/g, '') || 'task'}${suffix}`;
 }
 
+export interface PlannedManagedTaskLocation {
+  branchName: string;
+  worktreePath: string;
+}
+
+/**
+ * Gives the durable creation owner one stable, high-entropy location for an operation. A retry
+ * can verify this exact tuple instead of allocating a visually similar second worktree.
+ */
+export function planManagedTaskLocation(
+  name: string,
+  projectRoot: string,
+  branchPrefix: string,
+  operationId: string,
+): PlannedManagedTaskLocation {
+  const prefix = sanitizeBranchPrefix(branchPrefix);
+  const suffix = `-${createHash('sha256').update(operationId, 'utf8').digest('hex').slice(0, 12)}`;
+  const taskSlug = getTaskSlug(name)
+    .slice(0, Math.max(1, MAX_SLUG_LEN - suffix.length))
+    .replace(/-+$/g, '');
+  const branchName = `${prefix}/${taskSlug || 'task'}${suffix}`;
+  return {
+    branchName,
+    worktreePath: `${projectRoot}/.worktrees/${branchName}`,
+  };
+}
+
 function getErrorText(error: unknown): string {
   if (!(error instanceof Error)) {
     return String(error);
@@ -93,20 +121,54 @@ function isWorktreeNameCollision(
 function createTaskWorktree(
   projectRoot: string,
   branchName: string,
-  symlinkDirs: string[],
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
   baseBranch: string | undefined,
-): Promise<{ branch: string; path: string }> {
+): Promise<{
+  branch: string;
+  path: string;
+  symlink_warnings?: WorktreeSymlinkWarning[];
+}> {
   if (baseBranch === undefined) {
-    return createWorktree(projectRoot, branchName, symlinkDirs);
+    return createWorktree(projectRoot, branchName, worktreeLinkRequest);
   }
 
-  return createWorktree(projectRoot, branchName, symlinkDirs, false, baseBranch);
+  return createWorktree(projectRoot, branchName, worktreeLinkRequest, false, baseBranch);
+}
+
+export async function createPlannedManagedTask(
+  projectRoot: string,
+  location: Readonly<PlannedManagedTaskLocation>,
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
+  baseBranch?: string,
+): Promise<{
+  branch_name: string;
+  worktree_path: string;
+  git_isolation: 'worktree';
+  symlink_warnings?: WorktreeSymlinkWarning[];
+}> {
+  const worktree = await createTaskWorktree(
+    projectRoot,
+    location.branchName,
+    worktreeLinkRequest,
+    baseBranch,
+  );
+  if (worktree.branch !== location.branchName || worktree.path !== location.worktreePath) {
+    throw new Error('Managed task preparation returned a different canonical location');
+  }
+  return {
+    branch_name: worktree.branch,
+    worktree_path: worktree.path,
+    git_isolation: 'worktree',
+    ...(worktree.symlink_warnings !== undefined
+      ? { symlink_warnings: worktree.symlink_warnings }
+      : {}),
+  };
 }
 
 export async function createTask(
   name: string,
   projectRoot: string,
-  symlinkDirs: string[],
+  worktreeLinkRequest: TaskWorktreeLinkRequestV1,
   branchPrefix: string,
   baseBranch?: string,
 ): Promise<{
@@ -114,6 +176,7 @@ export async function createTask(
   branch_name: string;
   worktree_path: string;
   git_isolation: 'worktree';
+  symlink_warnings?: WorktreeSymlinkWarning[];
 }> {
   const prefix = sanitizeBranchPrefix(branchPrefix);
   const taskSlug = getTaskSlug(name);
@@ -123,12 +186,20 @@ export async function createTask(
     const worktreePath = `${projectRoot}/.worktrees/${branchName}`;
 
     try {
-      const worktree = await createTaskWorktree(projectRoot, branchName, symlinkDirs, baseBranch);
+      const worktree = await createTaskWorktree(
+        projectRoot,
+        branchName,
+        worktreeLinkRequest,
+        baseBranch,
+      );
       return {
         id: randomUUID(),
         branch_name: worktree.branch,
         worktree_path: worktree.path,
         git_isolation: 'worktree',
+        ...(worktree.symlink_warnings !== undefined
+          ? { symlink_warnings: worktree.symlink_warnings }
+          : {}),
       };
     } catch (error) {
       if (!isWorktreeNameCollision(error, branchName, worktreePath)) {
@@ -150,15 +221,14 @@ export async function createCurrentBranchTask(
   base_branch: string;
   git_isolation: 'current-branch';
 }> {
-  const baseBranch = await getMainBranch(projectRoot, configuredBaseBranch);
   const currentBranch = await getCurrentBranch(projectRoot);
-  if (currentBranch !== baseBranch) {
-    await checkoutBranch(projectRoot, baseBranch);
-  }
+  // Root-backed tasks share the user's checkout, including its index and dirty files.
+  // Creating another task must never switch the branch underneath existing agents.
+  const baseBranch = configuredBaseBranch?.trim() || currentBranch;
 
   return {
     id: randomUUID(),
-    branch_name: baseBranch,
+    branch_name: currentBranch,
     worktree_path: projectRoot,
     base_branch: baseBranch,
     git_isolation: 'current-branch',
@@ -244,9 +314,10 @@ export async function deleteTask(
   branchName: string,
   deleteBranch: boolean,
   projectRoot: string,
+  expectedWorktreePath?: string,
 ): Promise<void> {
   try {
-    await removeWorktree(projectRoot, branchName, deleteBranch);
+    await removeWorktree(projectRoot, branchName, deleteBranch, expectedWorktreePath);
   } finally {
     notifyAgentListChanged();
   }

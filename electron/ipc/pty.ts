@@ -1,6 +1,8 @@
 import * as pty from 'node-pty';
+import path from 'node:path';
 import type { PauseReason } from '../remote/protocol.js';
 import type { AgentRuntimeIdentity } from '../../src/domain/agent-runners.js';
+import type { AgentSessionLaunchReason } from '../../src/domain/agent-session-operation.js';
 import type { TerminalInputTraceMessage } from '../../src/domain/terminal-input-tracing.js';
 import {
   getTerminalInputBatchPlan,
@@ -48,6 +50,13 @@ import { observeTaskPortsFromOutput } from './task-ports.js';
 import { TerminalStateMirror } from './terminal-state-mirror.js';
 import { TEST_SHELL_HOME_ENV_KEY } from '../../src/lib/test-shell-env.js';
 import { applyTestShellSandbox } from './test-shell-sandbox.js';
+import {
+  createTaskContentAuthorityCoordinator,
+  type TaskContentAuthorityAccess,
+  type TaskContentAuthorityCoordinator,
+} from '../../server/task-content-authority-coordinator.js';
+
+export type PtyContentAuthorityClass = 'explicit-transient' | 'task-backed';
 
 interface PtySession {
   proc: pty.IPty;
@@ -55,6 +64,11 @@ interface PtySession {
   sendToChannel: (channelId: string, msg: unknown) => void;
   taskId: string;
   agentId: string;
+  contentAuthorityClass: PtyContentAuthorityClass;
+  contentAuthorityGeneration: bigint;
+  contentAuthorityRevoked: boolean;
+  contentAuthorityTaskId: string;
+  spawnCwd: string;
   runnerIdentity?: AgentRuntimeIdentity;
   onExitCleanup?: () => Promise<void> | void;
   runnerCleanupPromise?: Promise<void>;
@@ -89,13 +103,26 @@ interface PtySession {
     restore: Map<string, Map<string, RestorePauseLease>>;
   };
   lifecycleGeneration: number;
+  agentSessionLaunchReason?: AgentSessionLaunchReason;
+  agentSessionOperationId?: string;
+  agentSessionResumed?: boolean;
   disposed: boolean;
 }
 
 export interface AgentSpawnDisposition {
   channelAttached: boolean;
+  channelBound?: boolean;
   kind: 'attached-existing' | 'created-session';
   replacedSessionCleanup?: Promise<void>;
+}
+
+export interface AttachExistingAgentSessionRequest {
+  agentId: string;
+  bindChannel?: () => boolean;
+  generation?: number;
+  isShell: boolean;
+  onOutput?: { __CHANNEL_ID__: string };
+  taskId: string;
 }
 
 interface PauseLease {
@@ -277,34 +304,115 @@ const terminatingSessions = new Map<string, Set<PtySession>>();
 const PTY_EXIT_GRACE_MS = 5_000;
 const PTY_FORCE_EXIT_GRACE_MS = 1_000;
 const nextLifecycleGenerationByAgentId = new Map<string, number>();
+let nextContentAuthorityGeneration = 1n;
+let contentAuthorityCoordinator = createTaskContentAuthorityCoordinator();
 const TERMINAL_INPUT_TRACE_PREVIEW_LIMIT = 96;
+
+export interface PtyContentAuthoritySnapshot {
+  agentId: string;
+  authorityClass: PtyContentAuthorityClass;
+  generation: bigint;
+  root: string;
+  taskId: string;
+}
+
+export function configurePtyContentAuthorityCoordinator(
+  coordinator: TaskContentAuthorityCoordinator,
+): void {
+  if (contentAuthorityCoordinator.identity === coordinator.identity) {
+    return;
+  }
+  if (sessions.size > 0 || pendingRunnerCleanupSessions.size > 0 || terminatingSessions.size > 0) {
+    throw new Error(
+      'Cannot replace the PTY content authority coordinator while sessions are owned',
+    );
+  }
+  contentAuthorityCoordinator = coordinator;
+}
+
+export function readPtyContentAuthorityUnderCoordinator(
+  access: TaskContentAuthorityAccess,
+  agentId: string,
+): PtyContentAuthoritySnapshot | null {
+  contentAuthorityCoordinator.assertAccess(access);
+  const session = sessions.get(agentId);
+  if (!session || session.contentAuthorityRevoked || session.exited || session.disposed) {
+    return null;
+  }
+
+  return {
+    agentId: session.agentId,
+    authorityClass: session.contentAuthorityClass,
+    generation: session.contentAuthorityGeneration,
+    root: session.spawnCwd,
+    taskId: session.contentAuthorityTaskId,
+  };
+}
 
 // --- PTY event bus for spawn/exit notifications ---
 
-type PtyEventType = 'spawn' | 'exit' | 'list-changed' | 'pause' | 'resume';
-type PtyEventListener = (agentId: string, data?: unknown) => void;
-const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
+export interface PtyLifecycleGenerationEventData {
+  generation: number;
+}
+
+export interface PtySpawnEventData extends PtyLifecycleGenerationEventData {
+  launchReason?: AgentSessionLaunchReason;
+  operationId?: string;
+  resumed?: boolean;
+}
+
+export interface PtyExitEventData extends PtySpawnEventData {
+  exitCode: number | null;
+  lastOutput: readonly string[];
+  signal: string | null;
+  taskId: string;
+}
+
+export interface PtyEventDataMap {
+  exit: PtyExitEventData;
+  'list-changed': undefined;
+  pause: PtyLifecycleGenerationEventData;
+  resume: PtyLifecycleGenerationEventData;
+  spawn: PtySpawnEventData;
+}
+
+export type PtyEventType = keyof PtyEventDataMap;
+export type PtyEventListener<Event extends PtyEventType> = (
+  agentId: string,
+  data: PtyEventDataMap[Event],
+) => void;
+
+type StoredPtyEventListener = (agentId: string, data: unknown) => void;
+const eventListeners = new Map<PtyEventType, Set<StoredPtyEventListener>>();
 
 /** Register a listener for PTY lifecycle events. Returns an unsubscribe function. */
-export function onPtyEvent(event: PtyEventType, listener: PtyEventListener): () => void {
+export function onPtyEvent<Event extends PtyEventType>(
+  event: Event,
+  listener: PtyEventListener<Event>,
+): () => void {
   let listeners = eventListeners.get(event);
   if (!listeners) {
     listeners = new Set();
     eventListeners.set(event, listeners);
   }
-  listeners.add(listener);
+  const storedListener = listener as StoredPtyEventListener;
+  listeners.add(storedListener);
   return () => {
-    eventListeners.get(event)?.delete(listener);
+    eventListeners.get(event)?.delete(storedListener);
   };
 }
 
-function emitPtyEvent(event: PtyEventType, agentId: string, data?: unknown): void {
+function emitPtyEvent<Event extends PtyEventType>(
+  event: Event,
+  agentId: string,
+  data: PtyEventDataMap[Event],
+): void {
   eventListeners.get(event)?.forEach((fn) => fn(agentId, data));
 }
 
 /** Notify listeners that the agent list has changed (e.g. task deleted). */
 export function notifyAgentListChanged(): void {
-  emitPtyEvent('list-changed', '');
+  emitPtyEvent('list-changed', '', undefined);
 }
 
 const BATCH_MAX = 64 * 1024;
@@ -315,8 +423,8 @@ const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 180;
 const INTERACTIVE_OUTPUT_MAX_BYTES = 4 * 1024;
 const FLOW_CONTROL_PAUSE_LEASE_TTL_MS = 15_000;
 const RESTORE_PAUSE_LEASE_TTL_MS = 30_000;
-const TAIL_CAP = 8 * 1024;
-const MAX_LINES = 50;
+export const PTY_EXIT_DIAGNOSTIC_MAX_BYTES = 8 * 1024;
+export const PTY_EXIT_DIAGNOSTIC_MAX_LINES = 50;
 const STARTUP_VISIBLE_TERMINAL_DENSE_THRESHOLD = 4;
 const STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE = {
   selected: 256 * 1024,
@@ -628,13 +736,37 @@ function buildStartupSnapshotRecovery(
   };
 }
 
+function getUtf8SuffixWithinByteLimit(value: string, maxBytes: number): string {
+  let retainedBytes = 0;
+  let start = value.length;
+
+  while (start > 0) {
+    let characterStart = start - 1;
+    const trailingCodeUnit = value.charCodeAt(characterStart);
+    if (trailingCodeUnit >= 0xdc00 && trailingCodeUnit <= 0xdfff && characterStart > 0) {
+      const leadingCodeUnit = value.charCodeAt(characterStart - 1);
+      if (leadingCodeUnit >= 0xd800 && leadingCodeUnit <= 0xdbff) {
+        characterStart -= 1;
+      }
+    }
+
+    const characterBytes = Buffer.byteLength(value.slice(characterStart, start), 'utf8');
+    if (retainedBytes + characterBytes > maxBytes) {
+      break;
+    }
+    retainedBytes += characterBytes;
+    start = characterStart;
+  }
+
+  return value.slice(start);
+}
+
 function getTailLines(buffer: Buffer): string[] {
-  return buffer
-    .toString('utf8')
+  return getUtf8SuffixWithinByteLimit(buffer.toString('utf8'), PTY_EXIT_DIAGNOSTIC_MAX_BYTES)
     .split('\n')
     .map((line) => line.replace(/\r$/, ''))
     .filter((line) => line.length > 0)
-    .slice(-MAX_LINES);
+    .slice(-PTY_EXIT_DIAGNOSTIC_MAX_LINES);
 }
 
 function clearPendingInput(session: PtySession): void {
@@ -695,6 +827,88 @@ function createPtyLifecycleError(message: string, failures: unknown[]): Error {
   return error;
 }
 
+function revokeSessionContentAuthority(
+  session: PtySession,
+  options: { exited?: boolean } = {},
+): void {
+  contentAuthorityCoordinator.run(() => {
+    if (options.exited === true) {
+      session.exited = true;
+    }
+    if (session.contentAuthorityRevoked) {
+      return;
+    }
+
+    session.contentAuthorityRevoked = true;
+    session.contentAuthorityGeneration = nextContentAuthorityGeneration;
+    nextContentAuthorityGeneration += 1n;
+  });
+}
+
+function getOwnedSessionsForAgent(agentId: string): Set<PtySession> {
+  const ownedSessions = new Set([
+    ...(pendingRunnerCleanupSessions.get(agentId) ?? []),
+    ...(terminatingSessions.get(agentId) ?? []),
+  ]);
+  const activeSession = sessions.get(agentId);
+  if (activeSession) {
+    ownedSessions.add(activeSession);
+  }
+  return ownedSessions;
+}
+
+export function revokeAgentContentAuthority(agentId: string): void {
+  for (const session of getOwnedSessionsForAgent(agentId)) {
+    revokeSessionContentAuthority(session);
+  }
+}
+
+export function revokeAllAgentContentAuthorities(): void {
+  const agentIds = new Set([
+    ...sessions.keys(),
+    ...pendingRunnerCleanupSessions.keys(),
+    ...terminatingSessions.keys(),
+  ]);
+  for (const agentId of agentIds) {
+    revokeAgentContentAuthority(agentId);
+  }
+}
+
+export function revokeTaskAgentContentAuthorities(
+  taskId: string,
+  knownAgentIds: readonly string[] = [],
+): void {
+  const ownedSessions = new Set<PtySession>();
+  for (const agentId of knownAgentIds) {
+    for (const session of getOwnedSessionsForAgent(agentId)) {
+      ownedSessions.add(session);
+    }
+  }
+  for (const session of sessions.values()) {
+    if (session.taskId === taskId) {
+      ownedSessions.add(session);
+    }
+  }
+  for (const pendingSessions of pendingRunnerCleanupSessions.values()) {
+    for (const session of pendingSessions) {
+      if (session.taskId === taskId) {
+        ownedSessions.add(session);
+      }
+    }
+  }
+  for (const terminatingSessionsForAgent of terminatingSessions.values()) {
+    for (const session of terminatingSessionsForAgent) {
+      if (session.taskId === taskId) {
+        ownedSessions.add(session);
+      }
+    }
+  }
+
+  for (const session of ownedSessions) {
+    revokeSessionContentAuthority(session);
+  }
+}
+
 function rememberPendingRunnerCleanup(session: PtySession): void {
   if (!session.onExitCleanup) {
     return;
@@ -742,6 +956,7 @@ function cleanupSessionRunner(session: PtySession): Promise<void> {
 
 function disposeSessionResources(session: PtySession): void {
   if (!session.disposed) {
+    revokeSessionContentAuthority(session);
     session.disposed = true;
     clearFlushTimer(session);
     stopAcceptingInput(session);
@@ -812,6 +1027,7 @@ async function performSessionTermination(session: PtySession): Promise<void> {
 }
 
 function terminateSessionAndWait(session: PtySession): Promise<void> {
+  revokeSessionContentAuthority(session);
   if (!session.terminationPromise) {
     session.terminationPromise = performSessionTermination(session).then(
       () => {
@@ -851,8 +1067,7 @@ async function terminateSessionAndCleanup(session: PtySession): Promise<void> {
   await cleanup;
 }
 
-function replaceExistingSession(agentId: string, session: PtySession): Promise<void> {
-  sessions.delete(agentId);
+function replaceExistingSession(session: PtySession): Promise<void> {
   rememberTerminatingSession(session);
   session.channelIds.clear();
   session.subscribers.clear();
@@ -1305,6 +1520,11 @@ export function spawnAgent(
     rows: number;
     isShell?: boolean;
     isInternalNodeProcess?: boolean;
+    lifecycleGeneration?: number;
+    contentAuthorityClass?: PtyContentAuthorityClass;
+    agentSessionLaunchReason?: AgentSessionLaunchReason;
+    agentSessionOperationId?: string;
+    agentSessionResumed?: boolean;
     runnerIdentity?: AgentRuntimeIdentity;
     replaceExistingSession?: boolean;
     onExitCleanup?: () => Promise<void> | void;
@@ -1317,19 +1537,18 @@ export function spawnAgent(
 
   const existing = sessions.get(args.agentId);
   if (existing && args.replaceExistingSession !== true) {
-    const isNewChannel = channelId !== null && !existing.channelIds.has(channelId);
-    flushSessionBatch(existing);
-    if (channelId !== null) {
-      existing.channelIds.add(channelId);
+    if (
+      args.contentAuthorityClass !== undefined &&
+      args.contentAuthorityClass !== existing.contentAuthorityClass
+    ) {
+      throw new Error('Attaching a channel cannot change PTY content authority');
     }
-    existing.sendToChannel = sendToChannel;
-    existing.taskId = args.taskId;
-    existing.isShell = args.isShell ?? false;
-    existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
-    return {
-      channelAttached: isNewChannel,
-      kind: 'attached-existing',
-    };
+    return attachExistingAgentSessionExact(sendToChannel, {
+      agentId: args.agentId,
+      isShell: args.isShell === true,
+      ...(args.onOutput !== undefined ? { onOutput: args.onOutput } : {}),
+      taskId: args.taskId,
+    });
   }
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
@@ -1375,6 +1594,18 @@ export function spawnAgent(
   delete spawnEnv.CLAUDE_CODE_SESSION;
   delete spawnEnv.CLAUDE_CODE_ENTRYPOINT;
 
+  const nextLifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId);
+  const lifecycleGeneration = args.lifecycleGeneration ?? nextLifecycleGeneration ?? 0;
+  if (
+    !Number.isSafeInteger(lifecycleGeneration) ||
+    lifecycleGeneration < 0 ||
+    (args.lifecycleGeneration !== undefined &&
+      nextLifecycleGeneration !== undefined &&
+      args.lifecycleGeneration !== nextLifecycleGeneration)
+  ) {
+    throw new Error('Agent lifecycle generation does not match the reserved generation');
+  }
+
   const proc = pty.spawn(command, commandArgs, {
     name: 'xterm-256color',
     cols: args.cols,
@@ -1384,7 +1615,6 @@ export function spawnAgent(
     env: spawnEnv,
   });
 
-  const lifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId) ?? 0;
   nextLifecycleGenerationByAgentId.set(args.agentId, lifecycleGeneration + 1);
 
   let resolveExit!: () => void;
@@ -1397,6 +1627,11 @@ export function spawnAgent(
     sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
+    contentAuthorityClass: args.contentAuthorityClass ?? 'task-backed',
+    contentAuthorityGeneration: 0n,
+    contentAuthorityRevoked: false,
+    contentAuthorityTaskId: args.taskId,
+    spawnCwd: path.resolve(cwd),
     ...(args.runnerIdentity !== undefined ? { runnerIdentity: args.runnerIdentity } : {}),
     ...(args.onExitCleanup !== undefined ? { onExitCleanup: args.onExitCleanup } : {}),
     runnerCleanupAwaited: false,
@@ -1422,7 +1657,7 @@ export function spawnAgent(
     orderedInputState: createTerminalOrderedState(),
     orderedResizeState: createTerminalOrderedState(),
     recentInteractiveOutputDeadlineAtMs: 0,
-    exitDiagnosticTail: new RingBuffer(TAIL_CAP),
+    exitDiagnosticTail: new RingBuffer(PTY_EXIT_DIAGNOSTIC_MAX_BYTES),
     pauseState: null,
     pauseReasons: new Map(),
     globalRestorePauseLeases: new Map(),
@@ -1431,17 +1666,28 @@ export function spawnAgent(
       restore: new Map(),
     },
     lifecycleGeneration,
+    ...(args.agentSessionLaunchReason !== undefined
+      ? { agentSessionLaunchReason: args.agentSessionLaunchReason }
+      : {}),
+    ...(args.agentSessionOperationId !== undefined
+      ? { agentSessionOperationId: args.agentSessionOperationId }
+      : {}),
+    ...(args.agentSessionResumed !== undefined
+      ? { agentSessionResumed: args.agentSessionResumed }
+      : {}),
     disposed: false,
   };
 
-  const replacedSessionCleanup = existing
-    ? replaceExistingSession(args.agentId, existing)
-    : undefined;
+  contentAuthorityCoordinator.run(() => {
+    session.contentAuthorityGeneration = nextContentAuthorityGeneration;
+    nextContentAuthorityGeneration += 1n;
+    sessions.set(args.agentId, session);
+  });
+
+  const replacedSessionCleanup = existing ? replaceExistingSession(existing) : undefined;
   if (replacedSessionCleanup) {
     void replacedSessionCleanup.catch(() => undefined);
   }
-
-  sessions.set(args.agentId, session);
 
   function handlePtyData(data: string | Uint8Array): void {
     if (sessions.get(args.agentId) !== session) {
@@ -1482,7 +1728,12 @@ export function spawnAgent(
   proc.onData(handlePtyData as (data: string) => void);
 
   proc.onExit(({ exitCode, signal }) => {
-    session.exited = true;
+    // node-pty reports `0` for an ordinary, non-signalled POSIX exit. Keep the
+    // normalization at the PTY boundary so channel consumers, supervision,
+    // and finalized-exit recovery all observe the same signal semantics.
+    const normalizedSignal =
+      signal === null || signal === undefined || signal === 0 ? null : String(signal);
+    revokeSessionContentAuthority(session, { exited: true });
     session.resolveExit();
     forgetTerminatingSession(session);
     // If this session was replaced by a new spawn with the same agentId,
@@ -1507,23 +1758,37 @@ export function spawnAgent(
       type: 'Exit',
       data: {
         exit_code: exitCode,
-        signal: signal === null || signal === undefined ? null : String(signal),
+        signal: normalizedSignal,
         last_output: lines,
       },
     });
 
     emitPtyEvent('exit', args.agentId, {
+      ...(session.agentSessionLaunchReason !== undefined
+        ? { launchReason: session.agentSessionLaunchReason }
+        : {}),
+      ...(session.agentSessionOperationId !== undefined
+        ? { operationId: session.agentSessionOperationId }
+        : {}),
+      ...(session.agentSessionResumed !== undefined
+        ? { resumed: session.agentSessionResumed }
+        : {}),
       exitCode,
       generation: session.lifecycleGeneration,
       lastOutput: lines,
-      signal,
+      signal: normalizedSignal,
+      taskId: session.taskId,
     });
     recordAgentExit(args.agentId, {
       exitCode,
       lastOutput: lines,
-      signal: signal === null || signal === undefined ? null : String(signal),
+      signal: normalizedSignal,
     });
-    sessions.delete(args.agentId);
+    contentAuthorityCoordinator.run(() => {
+      if (sessions.get(args.agentId) === session) {
+        sessions.delete(args.agentId);
+      }
+    });
     if (session.runnerCleanupAwaited) {
       disposeSessionResources(session);
       void cleanupSessionRunner(session).catch(() => undefined);
@@ -1534,6 +1799,7 @@ export function spawnAgent(
 
   recordAgentSpawn({
     agentId: args.agentId,
+    generation: session.lifecycleGeneration,
     isShell: args.isShell ?? false,
     ...(args.runnerIdentity !== undefined
       ? {
@@ -1543,11 +1809,54 @@ export function spawnAgent(
       : {}),
     taskId: args.taskId,
   });
-  emitPtyEvent('spawn', args.agentId, { generation: session.lifecycleGeneration });
+  emitPtyEvent('spawn', args.agentId, {
+    generation: session.lifecycleGeneration,
+    ...(session.agentSessionLaunchReason !== undefined
+      ? { launchReason: session.agentSessionLaunchReason }
+      : {}),
+    ...(session.agentSessionOperationId !== undefined
+      ? { operationId: session.agentSessionOperationId }
+      : {}),
+    ...(session.agentSessionResumed !== undefined ? { resumed: session.agentSessionResumed } : {}),
+  });
   return {
     channelAttached: channelId !== null,
     kind: 'created-session',
     ...(replacedSessionCleanup !== undefined ? { replacedSessionCleanup } : {}),
+  };
+}
+
+/**
+ * Attach-only primitive for a caller that already owns an exact backend
+ * identity. It cannot create a process or rewrite session classification.
+ */
+export function attachExistingAgentSessionExact(
+  sendToChannel: (channelId: string, msg: unknown) => void,
+  request: Readonly<AttachExistingAgentSessionRequest>,
+): AgentSpawnDisposition {
+  const session = sessions.get(request.agentId);
+  if (
+    !session ||
+    session.agentId !== request.agentId ||
+    session.taskId !== request.taskId ||
+    session.isShell !== request.isShell ||
+    (request.generation !== undefined && session.lifecycleGeneration !== request.generation)
+  ) {
+    throw new Error('Exact agent session is unavailable for attach');
+  }
+  const channelId = request.onOutput?.__CHANNEL_ID__ ?? null;
+  const isNewChannel = channelId !== null && !session.channelIds.has(channelId);
+  const channelBound = request.bindChannel?.();
+  if (channelBound === false) {
+    return { channelAttached: false, channelBound: false, kind: 'attached-existing' };
+  }
+  flushSessionBatch(session);
+  if (channelId !== null) session.channelIds.add(channelId);
+  session.sendToChannel = sendToChannel;
+  return {
+    channelAttached: isNewChannel,
+    ...(channelBound !== undefined ? { channelBound } : {}),
+    kind: 'attached-existing',
   };
 }
 
@@ -1717,6 +2026,7 @@ export function getAgentPauseState(agentId: string): PauseReason | null {
 }
 
 export function killAgent(agentId: string): void {
+  revokeAgentContentAuthority(agentId);
   const session = sessions.get(agentId);
   if (session) {
     clearFlushTimer(session);
@@ -1734,6 +2044,7 @@ export function killAgent(agentId: string): void {
 }
 
 export async function killAgentAndWaitForRunnerCleanup(agentId: string): Promise<void> {
+  revokeAgentContentAuthority(agentId);
   const activeSession = sessions.get(agentId);
   const cleanupSessions = new Set([
     ...(pendingRunnerCleanupSessions.get(agentId) ?? []),
@@ -1771,6 +2082,7 @@ export async function killAgentAndWaitForRunnerCleanup(agentId: string): Promise
 }
 
 export async function killAllAgentsAndWaitForRunnerCleanup(): Promise<void> {
+  revokeAllAgentContentAuthorities();
   const agentIds = new Set([
     ...sessions.keys(),
     ...pendingRunnerCleanupSessions.keys(),
@@ -1794,6 +2106,7 @@ export async function killTaskAgentsAndWaitForRunnerCleanup(
   taskId: string,
   knownAgentIds: readonly string[] = [],
 ): Promise<void> {
+  revokeTaskAgentContentAuthorities(taskId, knownAgentIds);
   const agentIds = new Set(knownAgentIds);
   for (const session of sessions.values()) {
     if (session.taskId === taskId) {
@@ -1834,6 +2147,7 @@ export function countRunningAgents(): number {
 }
 
 export function killAllAgents(): void {
+  revokeAllAgentContentAuthorities();
   for (const [, session] of sessions) {
     clearFlushTimer(session);
     stopAcceptingInput(session);
@@ -2019,6 +2333,9 @@ export function getActiveAgentIds(): string[] {
 /** Return metadata for a specific agent, or null if not found. */
 export function getAgentMeta(agentId: string): {
   agentId: string;
+  agentSessionLaunchReason?: AgentSessionLaunchReason;
+  agentSessionOperationId?: string;
+  agentSessionResumed?: boolean;
   generation: number;
   isShell: boolean;
   runnerIdentity?: AgentRuntimeIdentity;
@@ -2028,12 +2345,32 @@ export function getAgentMeta(agentId: string): {
   return s
     ? {
         agentId: s.agentId,
+        ...(s.agentSessionLaunchReason !== undefined
+          ? { agentSessionLaunchReason: s.agentSessionLaunchReason }
+          : {}),
+        ...(s.agentSessionOperationId !== undefined
+          ? { agentSessionOperationId: s.agentSessionOperationId }
+          : {}),
+        ...(s.agentSessionResumed !== undefined
+          ? { agentSessionResumed: s.agentSessionResumed }
+          : {}),
         generation: s.lifecycleGeneration,
         isShell: s.isShell,
         ...(s.runnerIdentity !== undefined ? { runnerIdentity: s.runnerIdentity } : {}),
         taskId: s.taskId,
       }
     : null;
+}
+
+/** Return the active or most recently allocated lifecycle generation for an agent id. */
+export function getAgentLifecycleGeneration(agentId: string): number | null {
+  const activeGeneration = sessions.get(agentId)?.lifecycleGeneration;
+  if (activeGeneration !== undefined) {
+    return activeGeneration;
+  }
+
+  const nextGeneration = nextLifecycleGenerationByAgentId.get(agentId);
+  return nextGeneration === undefined ? null : nextGeneration - 1;
 }
 
 /** Return the current column width of an agent's PTY. */

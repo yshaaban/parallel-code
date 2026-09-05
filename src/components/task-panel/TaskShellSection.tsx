@@ -30,6 +30,7 @@ import {
 } from '../../store/store';
 import { closeShell, runBookmarkInTask, spawnShellForTask } from '../../app/task-workflows';
 import type { ProjectMode, TerminalBookmark } from '../../store/types';
+import type { TaskInitialShellOwnership } from '../../domain/task-creation-provenance';
 import type { PanelChild } from '../ResizablePanel';
 import { ScalablePanel } from '../ScalablePanel';
 import { TaskShellToolbar } from '../TaskShellToolbar';
@@ -44,6 +45,7 @@ export interface TaskShellSectionProps {
   projectMode: Accessor<ProjectMode>;
   shellAgentIds: Accessor<string[]>;
   taskId: Accessor<string>;
+  taskInitialShellOwnership?: Accessor<TaskInitialShellOwnership | undefined>;
   worktreePath: Accessor<string>;
 }
 
@@ -98,6 +100,19 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
       const { [shellId]: _omittedShellExit, ...nextState } = currentState;
       return reconcile(nextState)(currentState);
     });
+  }
+
+  function getShellSessionOwner(
+    shellId: string,
+    index: number,
+  ): 'compatibility-shell' | 'managed-task-shell' {
+    const ownership = props.taskInitialShellOwnership?.();
+    return props.primary &&
+      index === 0 &&
+      ownership?.kind === 'managed-terminal-v1' &&
+      ownership.sessionId === shellId
+      ? 'managed-task-shell'
+      : 'compatibility-shell';
   }
 
   createEffect(() => {
@@ -298,6 +313,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       focusPanelId={`shell:${index()}`}
                       initialCommand={initialCommand}
                       projectMode={props.projectMode()}
+                      sessionOwner={getShellSessionOwner(shellId, index())}
                       startsTaskWatchers={props.primary && index() === 0}
                       onData={(data) => {
                         clearShellExit(shellId);

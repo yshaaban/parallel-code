@@ -110,6 +110,11 @@ export interface BrowserHttpIpcClient {
     args: RendererInvokeRequestMap[TChannel] | undefined,
     signal: AbortSignal,
   ) => Promise<RendererInvokeResponseMap[TChannel]>;
+  /** One network attempt only. Use for side effects whose lost response is ambiguous. */
+  fetchOnce: <TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args?: RendererInvokeRequestMap[TChannel],
+  ) => Promise<RendererInvokeResponseMap[TChannel]>;
   getQueueDepth: () => number;
   invalidateActiveRequests: (error: Error) => void;
   onStateChange: (listener: (state: BrowserHttpIpcState) => void) => () => void;
@@ -744,6 +749,7 @@ export function createBrowserHttpIpcClient(
     clearDurableQueueStorage,
     fetch: fetchWithQueue,
     fetchCancellable: (cmd, args, signal) => executeFetch(cmd, args, signal),
+    fetchOnce: (cmd, args) => executeFetch(cmd, args),
     getQueueDepth: () => pendingRequestQueue.length,
     invalidateActiveRequests,
     onStateChange: (listener) => {

@@ -137,4 +137,26 @@ describe('autosave snapshots', () => {
     });
     expect(snapshot).not.toHaveProperty('tasks');
   });
+
+  it('routes new task default changes only through the client-session autosave lane', () => {
+    const workspaceBefore = getAutosaveWorkspaceSnapshot();
+    const clientSessionBefore = getAutosaveClientSessionSnapshot();
+
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+
+    const workspaceAfter = getAutosaveWorkspaceSnapshot();
+    const clientSessionAfter = getAutosaveClientSessionSnapshot();
+    expect(workspaceAfter).toBe(workspaceBefore);
+    expect(clientSessionAfter).not.toBe(clientSessionBefore);
+    expect(JSON.parse(clientSessionAfter)).toMatchObject({
+      newTaskDefaults: {
+        skipPermissions: false,
+        stepsTracking: true,
+      },
+    });
+    expect(JSON.parse(workspaceAfter)).not.toHaveProperty('newTaskDefaults');
+  });
 });

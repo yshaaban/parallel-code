@@ -71,6 +71,11 @@ import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-s
 import { emitStartupBreadcrumb } from './app/startup-breadcrumbs';
 import { lazyNamed } from './lib/lazy-named';
 import { preloadTerminalSessionModule } from './components/terminal-view/terminal-session-loader';
+import {
+  publishDesktopTaskIds,
+  subscribeDetachedDesktopTaskNotesChannel,
+  type DetachedDesktopTaskNotesDraft,
+} from './app/task-notes-recovery-channel';
 
 const ArenaOverlay = lazyNamed(() => import('./arena/ArenaOverlay'), 'ArenaOverlay');
 const HelpDialog = lazyNamed(() => import('./components/HelpDialog'), 'HelpDialog');
@@ -85,6 +90,10 @@ const PlanViewerDialog = lazyNamed(
   'PlanViewerDialog',
 );
 const SettingsDialog = lazyNamed(() => import('./components/SettingsDialog'), 'SettingsDialog');
+const DesktopTaskNotesRecovery = lazyNamed(
+  () => import('./components/app-shell/DesktopTaskNotesRecovery'),
+  'DesktopTaskNotesRecovery',
+);
 
 type ConnectionBannerPresentation = 'bar' | 'overlay';
 
@@ -179,6 +188,9 @@ function App(): JSX.Element {
   const [pathInputSuppressRecent, setPathInputSuppressRecent] = createSignal(false);
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
+  const [detachedTaskNotesDrafts, setDetachedTaskNotesDrafts] = createSignal<
+    readonly DetachedDesktopTaskNotesDraft[]
+  >([]);
   const [busyTakeoverRequestIds, setBusyTakeoverRequestIds] = createSignal<Set<string>>(new Set());
   const [displayName, setDisplayName] = createSignal(initialDisplayName);
   const [displayNameDialogMode, setDisplayNameDialogMode] =
@@ -206,6 +218,10 @@ function App(): JSX.Element {
 
   createEffect(() => {
     setRendererLogVerbose(store.verboseLogging);
+  });
+
+  createEffect(() => {
+    publishDesktopTaskIds(Object.keys(store.tasks));
   });
 
   function clearBusyTakeoverRequest(requestId: string): void {
@@ -318,6 +334,9 @@ function App(): JSX.Element {
       setWindowFocused,
       setWindowMaximized,
     });
+    const unsubscribeDetachedTaskNotes = subscribeDetachedDesktopTaskNotesChannel(
+      setDetachedTaskNotesDrafts,
+    );
     emitStartupBreadcrumb('App:onMount:session-started');
     onCleanup(() => {
       clearConfirmNotifier();
@@ -325,6 +344,7 @@ function App(): JSX.Element {
         unregisterAction(OPEN_DISPLAY_NAME_DIALOG_ACTION);
       }
       cleanupSession();
+      unsubscribeDetachedTaskNotes();
     });
   });
 
@@ -430,6 +450,11 @@ function App(): JSX.Element {
             />
           )}
         </Show>
+        <Suspense>
+          <Show when={detachedTaskNotesDrafts().length > 0}>
+            <DesktopTaskNotesRecovery drafts={detachedTaskNotesDrafts()} />
+          </Show>
+        </Suspense>
         <DisplayNameDialog
           open={showDisplayNameDialog()}
           allowClose={displayNameDialogMode() === 'edit'}

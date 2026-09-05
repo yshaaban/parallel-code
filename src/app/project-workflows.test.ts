@@ -52,6 +52,7 @@ vi.mock('./task-workflows', () => ({
 import { IPC } from '../../electron/ipc/channels';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
+import { publishUnsavedDesktopTaskNotes } from './task-notes-recovery-channel';
 import {
   addDiscoveredProject,
   pickAndAddProject,
@@ -74,6 +75,7 @@ describe('project workflows', () => {
   beforeEach(() => {
     resetStoreForTest();
     vi.clearAllMocks();
+    publishUnsavedDesktopTaskNotes([]);
     addProjectMock.mockReturnValue('project-1');
     closeTaskMock.mockResolvedValue(undefined);
     saveCurrentRuntimeStateMock.mockResolvedValue(undefined);
@@ -301,7 +303,9 @@ describe('project workflows', () => {
 
     await removeProjectWithTasks('project-1');
 
-    expect(closeTaskMock).toHaveBeenCalledWith('task-1');
+    expect(closeTaskMock).toHaveBeenCalledWith('task-1', {
+      taskNotesDiscardConfirmed: false,
+    });
     expect(removeProjectMock).toHaveBeenCalledWith('project-1');
     expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
   });
@@ -314,8 +318,25 @@ describe('project workflows', () => {
 
     await removeProjectWithTasks('project-1');
 
-    expect(closeTaskMock).toHaveBeenCalledWith('task-1');
+    expect(closeTaskMock).toHaveBeenCalledWith('task-1', {
+      taskNotesDiscardConfirmed: false,
+    });
     expect(removeProjectMock).not.toHaveBeenCalled();
     expect(saveCurrentRuntimeStateMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps every project task when its unsaved-notes retirement is declined', async () => {
+    seedProjectWithTask();
+    publishUnsavedDesktopTaskNotes(['task-1']);
+    confirmMock.mockResolvedValueOnce(false);
+
+    await removeProjectWithTasks('project-1');
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      'Removing this project will discard unsaved task notes in 1 task. Continue?',
+      expect.objectContaining({ okLabel: 'Discard notes and remove' }),
+    );
+    expect(closeTaskMock).not.toHaveBeenCalled();
+    expect(removeProjectMock).not.toHaveBeenCalled();
   });
 });

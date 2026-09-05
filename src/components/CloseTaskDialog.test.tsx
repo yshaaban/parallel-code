@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createSignal, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
@@ -61,10 +61,12 @@ vi.mock('../store/task-git-status', async () => {
 });
 
 import { CloseTaskDialog } from './CloseTaskDialog';
+import { publishUnsavedDesktopTaskNotes } from '../app/task-notes-recovery-channel';
 
 describe('CloseTaskDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    publishUnsavedDesktopTaskNotes([]);
     resetStoreForTest();
     setStore('projects', [createTestProject({ baseBranch: 'main' })]);
   });
@@ -126,6 +128,33 @@ describe('CloseTaskDialog', () => {
     expect(screen.getByText(/non-git task/u)).toBeDefined();
     expect(screen.getByText(/No git operations will be performed/u)).toBeDefined();
     expect(screen.queryByText(/will be permanently deleted/u)).toBeNull();
+  });
+
+  it('warns before closing over a locally unsaved initial-prompt revision', () => {
+    render(() => (
+      <CloseTaskDialog
+        open
+        task={createTestTask({ directMode: true })}
+        unsavedInitialPrompt
+        onDone={() => {}}
+      />
+    ));
+
+    expect(screen.getByText(/latest initial prompt edit has not been saved/iu)).toBeDefined();
+  });
+
+  it('makes task-note discard explicit and forwards the confirmation to close admission', () => {
+    publishUnsavedDesktopTaskNotes(['task-1']);
+    render(() => (
+      <CloseTaskDialog open task={createTestTask({ directMode: true })} onDone={() => {}} />
+    ));
+
+    expect(screen.getByText('Unsaved task notes will also be discarded.')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    expect(closeTaskMock).toHaveBeenCalledWith('task-1', {
+      taskNotesDiscardConfirmed: true,
+    });
   });
 
   it('skips git status refresh and deletion warning for external worktree tasks', () => {

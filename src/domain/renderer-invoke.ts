@@ -19,6 +19,7 @@ import type {
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
   TerminalStartupRecoveryRole,
+  WorktreeSymlinkCandidatesResult,
 } from '../ipc/types.js';
 import type { ProjectMode, ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
 import type { AskAboutCodeMessage, AskAboutCodeProviderId } from './ask-about-code.js';
@@ -55,6 +56,51 @@ import type { TaskReviewSignalsSnapshot } from './task-review-signals.js';
 import type { TaskStepsSnapshot } from './task-steps.js';
 import type { TaskNotificationRequest } from './task-notification.js';
 import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
+import type { OrdinaryTaskPromptInputResult } from './task-prompt-input-admission.js';
+import type {
+  AgentSessionOperationProjection,
+  AgentSessionOperationResult,
+  GetAgentSessionOperationProjectionRequest,
+  ManagedAgentSessionRestoreResult,
+  RendererAgentSessionOperationRequest,
+} from './agent-session-operation.js';
+import type { ManagedTaskShellSessionRestoreResult } from './task-shell-session-operation.js';
+import type {
+  GetTaskInitialPromptDeliveryProjectionRequest,
+  ResolveManualInitialPromptSendAmbiguityRequest,
+  ResolveManualInitialPromptSendAmbiguityResult,
+  ReviseTaskInitialPromptDraftRequest,
+  ReviseTaskInitialPromptDraftResult,
+  SendTaskInitialPromptManuallyRequest,
+  SendTaskInitialPromptManuallyResult,
+  TaskInitialPromptDeliveryProjection,
+} from './task-initial-prompt-delivery.js';
+import type { ActiveTaskReliabilityRuntimeCapabilities } from './task-reliability-runtime.js';
+import type {
+  GetTaskMergeOperationStatusRequest,
+  IssuedTaskMergeOperation,
+  StartTaskMergeOperationRequest,
+  TaskMergeResultEnvelope,
+} from './task-merge.js';
+import type { TaskRemovalMutationResult } from './task-removal-owner.js';
+import type {
+  ListTaskCreationReconciliationsRequest,
+  ListTaskCreationReconciliationsResult,
+} from '../../electron/ipc/task-creation-local-reconciliation.js';
+import type {
+  TaskCreationReconciliationAction,
+  TaskCreationReconciliationActionResult,
+} from '../../electron/ipc/task-creation-reconciliation.js';
+import type {
+  GetTaskNotesRequest,
+  GetTaskNotesResult,
+  IssueTaskNotesOperationRequest,
+  IssueTaskNotesOperationResult,
+  TaskNotesWireResponse,
+  TaskNotesCapability,
+  UpdateTaskNotesRequest,
+  UpdateTaskNotesResult,
+} from './task-notes.js';
 
 export interface Position {
   x: number;
@@ -125,10 +171,95 @@ export type ChannelRefLike<TMessage = unknown> =
       toJSON: () => ChannelRef<TMessage>;
     };
 
+/**
+ * Declares which backend lifecycle owns a terminal session. The renderer may
+ * express intent, but managed owners still reconcile against canonical
+ * backend state before any PTY or channel effect.
+ */
+export type TerminalSessionOwner =
+  | 'arena-transient'
+  | 'compatibility-shell'
+  | 'managed-agent'
+  | 'managed-task-shell';
+
+interface AttachTerminalSessionBaseRequest {
+  agentId: string;
+  // Injected server-side from the authenticated browser client-id header so
+  // the handler can bind the output channel for the requesting client.
+  clientId?: string;
+  initialRecovery: {
+    outputCursor: number | null;
+    role: TerminalStartupRecoveryRole | null;
+    snapshotByteLimit: number | null;
+    visibleTerminalCount: number;
+  };
+  onOutput: ChannelRefLike<string>;
+  taskId: string;
+}
+
+interface ManagedAttachTerminalSessionRequest extends AttachTerminalSessionBaseRequest {
+  sessionOwner: 'managed-agent' | 'managed-task-shell';
+}
+
+interface CompatibilityAttachTerminalSessionRequest extends AttachTerminalSessionBaseRequest {
+  adapter?: 'hydra';
+  arenaLaunchToken?: string;
+  args: string[];
+  baseBranch?: string;
+  cols?: number;
+  command?: string;
+  /** Explicit one-shot renderer intent for a newly created compatibility shell identity. */
+  compatibilityIntent?: 'create';
+  controllerId?: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  isShell?: boolean;
+  projectMode?: ProjectMode;
+  replaceExistingSession?: boolean;
+  resumeOnStart?: boolean;
+  rows?: number;
+  runnerProfile?: AgentRunnerProfileConfig;
+  sessionOwner: 'arena-transient' | 'compatibility-shell';
+  startsTaskWatchers?: boolean;
+}
+
+export type AttachTerminalSessionRequest =
+  | CompatibilityAttachTerminalSessionRequest
+  | ManagedAttachTerminalSessionRequest;
+
+export type TerminalSessionUnavailableReason =
+  | Extract<ManagedAgentSessionRestoreResult, { kind: 'unavailable' }>['reason']
+  | Extract<ManagedTaskShellSessionRestoreResult, { kind: 'unavailable' }>['reason']
+  | 'channel-unavailable'
+  | 'task-shell-restore-unavailable';
+
+export type AttachTerminalSessionResult =
+  | {
+      channelBound: true;
+      disposition: 'created' | 'existing' | 'restored';
+      generation: number;
+      kind: 'attached';
+      recovery: TerminalRecoveryBatchEntry | null;
+    }
+  | {
+      channelBound: false;
+      kind: 'unavailable';
+      reason: TerminalSessionUnavailableReason;
+      recovery: null;
+    };
+
+export type EnsureAgentSessionResult =
+  | Extract<ManagedAgentSessionRestoreResult, { kind: 'existing' | 'restored' }>
+  | ({ agentId: string; taskId: string } & Extract<
+      ManagedAgentSessionRestoreResult,
+      { kind: 'unavailable' }
+    >);
+
 export interface RendererInvokeRequestMap {
   [IPC.SpawnAgent]: {
     adapter?: 'hydra';
     agentId: string;
+    arenaLaunchToken?: string;
     args: string[];
     baseBranch?: string;
     cols?: number;
@@ -146,54 +277,14 @@ export interface RendererInvokeRequestMap {
     startsTaskWatchers?: boolean;
     taskId: string;
   };
-  [IPC.AttachTerminalSession]: {
-    adapter?: 'hydra';
-    agentId: string;
-    args: string[];
-    baseBranch?: string;
-    // Injected server-side from the authenticated browser client-id header so
-    // the handler can bind the output channel for the requesting client.
-    clientId?: string;
-    cols?: number;
-    command?: string;
-    controllerId?: string;
-    cwd?: string;
-    env?: Record<string, string>;
-    initialRecovery: {
-      outputCursor: number | null;
-      role: TerminalStartupRecoveryRole | null;
-      snapshotByteLimit: number | null;
-      visibleTerminalCount: number;
-    };
-    isShell?: boolean;
-    onOutput: ChannelRefLike<string>;
-    projectMode?: ProjectMode;
-    replaceExistingSession?: boolean;
-    resumeOnStart?: boolean;
-    runnerProfile?: AgentRunnerProfileConfig;
-    rows?: number;
-    startsTaskWatchers?: boolean;
-    taskId: string;
-  };
+  [IPC.AttachTerminalSession]: AttachTerminalSessionRequest;
   [IPC.ReleaseTerminalRecoveryPause]: {
     batchPauseId: string;
   };
   [IPC.EnsureAgentSessionsBatch]: {
     clientId?: string;
     requests: Array<{
-      adapter?: 'hydra';
       agentId: string;
-      args: string[];
-      baseBranch?: string;
-      cols?: number;
-      command?: string;
-      cwd?: string;
-      env?: Record<string, string>;
-      isShell?: boolean;
-      projectMode?: ProjectMode;
-      resumeOnStart?: boolean;
-      rows?: number;
-      runnerProfile?: AgentRunnerProfileConfig;
       taskId: string;
     }>;
     reason: 'dispatch-storm' | 'startup-restore' | 'user-action';
@@ -202,6 +293,19 @@ export interface RendererInvokeRequestMap {
     agentId: string;
     channelId: string;
   };
+  [IPC.SendTaskPromptInput]: {
+    agentId: string;
+    controllerId: string;
+    taskId: string;
+    text: string;
+  };
+  [IPC.ExecuteAgentSessionOperation]: RendererAgentSessionOperationRequest;
+  [IPC.GetAgentSessionOperationProjection]: GetAgentSessionOperationProjectionRequest;
+  [IPC.GetTaskReliabilityCapabilities]: undefined;
+  [IPC.GetInitialPromptDeliveryProjection]: GetTaskInitialPromptDeliveryProjectionRequest;
+  [IPC.ResolveInitialPromptAmbiguity]: ResolveManualInitialPromptSendAmbiguityRequest;
+  [IPC.ReviseInitialPromptDraft]: ReviseTaskInitialPromptDraftRequest;
+  [IPC.SendInitialPromptManually]: SendTaskInitialPromptManuallyRequest;
   [IPC.WriteToAgent]: {
     agentId: string;
     controllerId?: string;
@@ -285,17 +389,22 @@ export interface RendererInvokeRequestMap {
     agentDefName?: string;
     baseBranch?: string;
     branchPrefix?: string;
+    coordinatorMode?: boolean;
     existingWorktreePath?: string;
     gitIsolation?: TaskGitIsolationMode;
     githubUrl?: string;
+    initialPrompt?: string;
     name: string;
     operationId: string;
     projectMode?: ProjectMode;
     projectId: string;
     projectRoot: string;
+    skipPermissions?: boolean;
     symlinkDirs: string[];
     stepsTracking?: boolean;
   };
+  [IPC.ListTaskCreationReconciliations]: ListTaskCreationReconciliationsRequest;
+  [IPC.ExecuteTaskCreationReconciliation]: TaskCreationReconciliationAction;
   [IPC.DeleteTask]: {
     agentIds: string[];
     branchName: string;
@@ -344,6 +453,16 @@ export interface RendererInvokeRequestMap {
   [IPC.GetTaskStepsSnapshot]: {
     taskId: string;
   };
+  [IPC.IssueTaskMergeOperation]: {
+    controllerId: string;
+    taskId: string;
+  };
+  [IPC.StartTaskMergeOperation]: StartTaskMergeOperationRequest;
+  [IPC.GetTaskMergeOperationStatus]: GetTaskMergeOperationStatusRequest;
+  [IPC.GetTaskNotesCapability]: undefined;
+  [IPC.GetTaskNotes]: GetTaskNotesRequest;
+  [IPC.IssueTaskNotesOperation]: IssueTaskNotesOperationRequest;
+  [IPC.UpdateTaskNotes]: UpdateTaskNotesRequest;
   [IPC.ContainersInspectTask]: {
     projectContainerConfig?: ProjectContainerConfig;
     projectPath: string;
@@ -531,6 +650,7 @@ export interface RendererInvokeRequestMap {
   };
 
   [IPC.SaveAppState]: {
+    baseRevision?: number | null;
     json: string;
     sourceId?: string;
   };
@@ -612,9 +732,11 @@ export interface RendererInvokeRequestMap {
     commandTemplate: string;
   };
   [IPC.CreateArenaWorktree]: {
+    agentId: string;
     branchName: string;
     projectRoot: string;
     symlinkDirs?: string[];
+    taskId: string;
   };
   [IPC.RemoveArenaWorktree]: {
     branchName: string;
@@ -645,11 +767,12 @@ export interface RendererInvokeRequestMap {
 
   [IPC.ReadPlanContent]: {
     relativePath?: string;
-    worktreePath: string;
+    taskId: string;
   };
   [IPC.ReadMarkdownFile]: {
+    agentId?: string;
     relativePath: string;
-    worktreePath: string;
+    taskId: string;
   };
   [IPC.ResolveClipboardPaste]: undefined;
   [IPC.SaveClipboardImage]: undefined;
@@ -671,24 +794,20 @@ export interface RendererInvokeResponseMap {
   [IPC.SpawnAgent]: {
     attachedExistingSession: boolean;
   };
-  [IPC.AttachTerminalSession]: {
-    attachedExistingSession: boolean;
-    channelBound: boolean;
-    recovery: TerminalRecoveryBatchEntry | null;
-  };
+  [IPC.AttachTerminalSession]: AttachTerminalSessionResult;
   [IPC.ReleaseTerminalRecoveryPause]: undefined;
   [IPC.EnsureAgentSessionsBatch]: {
-    results: Array<{
-      agentId: string;
-      cols: number;
-      created: boolean;
-      error?: string;
-      existed: boolean;
-      rows: number;
-      taskId: string;
-    }>;
+    results: EnsureAgentSessionResult[];
   };
   [IPC.DetachAgentOutput]: undefined;
+  [IPC.SendTaskPromptInput]: OrdinaryTaskPromptInputResult;
+  [IPC.ExecuteAgentSessionOperation]: AgentSessionOperationResult;
+  [IPC.GetAgentSessionOperationProjection]: AgentSessionOperationProjection | null;
+  [IPC.GetTaskReliabilityCapabilities]: ActiveTaskReliabilityRuntimeCapabilities;
+  [IPC.GetInitialPromptDeliveryProjection]: TaskInitialPromptDeliveryProjection | null;
+  [IPC.ResolveInitialPromptAmbiguity]: ResolveManualInitialPromptSendAmbiguityResult;
+  [IPC.ReviseInitialPromptDraft]: ReviseTaskInitialPromptDraftResult;
+  [IPC.SendInitialPromptManually]: SendTaskInitialPromptManuallyResult;
   [IPC.WriteToAgent]: undefined;
   [IPC.ResizeAgent]: undefined;
   [IPC.PauseAgent]: undefined;
@@ -712,6 +831,8 @@ export interface RendererInvokeResponseMap {
   [IPC.ReportClientTaskFocus]: null;
 
   [IPC.CreateTask]: CreateTaskResult;
+  [IPC.ListTaskCreationReconciliations]: ListTaskCreationReconciliationsResult;
+  [IPC.ExecuteTaskCreationReconciliation]: TaskCreationReconciliationActionResult;
   [IPC.DeleteTask]: TaskCleanupResult;
   [IPC.CleanupTaskRuntime]: TaskCleanupResult;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
@@ -729,6 +850,13 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
   [IPC.GetTaskReviewSignals]: TaskReviewSignalsSnapshot[];
   [IPC.GetTaskStepsSnapshot]: TaskStepsSnapshot | null;
+  [IPC.IssueTaskMergeOperation]: IssuedTaskMergeOperation;
+  [IPC.StartTaskMergeOperation]: TaskMergeResultEnvelope<TaskRemovalMutationResult>;
+  [IPC.GetTaskMergeOperationStatus]: TaskMergeResultEnvelope<TaskRemovalMutationResult>;
+  [IPC.GetTaskNotesCapability]: TaskNotesCapability;
+  [IPC.GetTaskNotes]: TaskNotesWireResponse<GetTaskNotesResult>;
+  [IPC.IssueTaskNotesOperation]: TaskNotesWireResponse<IssueTaskNotesOperationResult>;
+  [IPC.UpdateTaskNotes]: TaskNotesWireResponse<UpdateTaskNotesResult>;
   [IPC.ContainersInspectTask]: TaskContainerInspectResult;
   [IPC.ContainersStartTask]: TaskContainerInspectResult;
   [IPC.ContainersStopTask]: TaskContainerInspectResult;
@@ -751,7 +879,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetAllFileDiffs]: string;
   [IPC.GetAllFileDiffsFromBranch]: string;
   [IPC.GetGitRepoRoot]: string | null;
-  [IPC.GetGitignoredDirs]: string[];
+  [IPC.GetGitignoredDirs]: WorktreeSymlinkCandidatesResult;
   [IPC.ListBranches]: GitBranchListResult;
   [IPC.ListImportableWorktrees]: ImportableWorktree[];
   [IPC.GetWorktreeStatus]: WorktreeStatus;
@@ -810,7 +938,7 @@ export interface RendererInvokeResponseMap {
   [IPC.SaveArenaData]: undefined;
   [IPC.LoadArenaData]: string | null;
   [IPC.InspectArenaCompetitor]: ArenaCompetitorInspectResult;
-  [IPC.CreateArenaWorktree]: CreateArenaWorktreeResult;
+  [IPC.CreateArenaWorktree]: CreateArenaWorktreeResult & { launchToken: string };
   [IPC.RemoveArenaWorktree]: undefined;
   [IPC.CheckPathExists]: boolean;
   [IPC.CheckPathsExist]: Record<string, boolean>;
@@ -834,7 +962,12 @@ export interface RendererInvokeResponseMap {
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
-  [IPC.ReadMarkdownFile]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.ReadMarkdownFile]: {
+    content: string;
+    fileName: string;
+    relativePath: string;
+    worktreePath: string;
+  } | null;
   [IPC.ResolveClipboardPaste]:
     | { kind: 'empty' }
     | { kind: 'file'; path: string }

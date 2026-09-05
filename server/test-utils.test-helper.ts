@@ -3,6 +3,7 @@ import type { ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import { rm, rmdir } from 'fs/promises';
 import { createServer } from 'net';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
@@ -15,6 +16,8 @@ import {
 import type { StandaloneServerProcess } from '../scripts/lib/standalone-server-process.mjs';
 import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
+import type { AttachTerminalSessionResult } from '../src/domain/renderer-invoke.js';
+import { IPC } from '../electron/ipc/channels.js';
 import { getStateDirForEnv } from '../electron/ipc/storage.js';
 import {
   createTestShellEnv,
@@ -28,7 +31,13 @@ const __dirname = path.dirname(__filename);
 export const TEST_TOKEN = 'test-integration-token-' + Date.now();
 export const TEST_CLIENT_ID = 'test-integration-client-' + Date.now();
 
-const DEFAULT_TEST_SERVER_USER_DATA_PATH = path.resolve(__dirname, '..', '.test-server-data');
+// A standalone server owns both this root and its adjacent `-dev` state directory.
+// Keep that ownership process/run-local so concurrent validation cannot delete another
+// server's state between directory creation and canonicalization.
+const DEFAULT_TEST_SERVER_USER_DATA_PATH = path.join(
+  os.tmpdir(),
+  `parallel-code-server-integration-${process.pid}-${randomUUID()}`,
+);
 
 let serverProcess: ChildProcess | null = null;
 let serverEnvironment: NodeJS.ProcessEnv | null = null;
@@ -1006,7 +1015,7 @@ async function unregisterAgentTaskControl(agentId: string): Promise<void> {
   await releaseTaskControlHandle(handle);
 }
 
-export async function spawnAgentViaHttp(opts: {
+export async function createSyntheticTerminalViaHttp(opts: {
   taskId: string;
   agentId: string;
   command: string;
@@ -1018,7 +1027,6 @@ export async function spawnAgentViaHttp(opts: {
   rows?: number;
   channelId?: string;
   env?: Record<string, string>;
-  isShell?: boolean;
 }): Promise<void> {
   const controllerId = opts.controllerId ?? TEST_CLIENT_ID;
   const registration = {
@@ -1037,17 +1045,40 @@ export async function spawnAgentViaHttp(opts: {
     taskId: opts.taskId,
     agentId: opts.agentId,
     command: opts.command,
+    compatibilityIntent: 'create' as const,
     args: opts.args ?? [],
     controllerId,
     cwd: '/tmp',
     env: opts.env ?? {},
     cols: opts.cols ?? 80,
     rows: opts.rows ?? 24,
-    isShell: opts.isShell ?? true,
+    // Integration helpers exercise the terminal transport, not managed AI-agent
+    // lifecycle admission. Keep these synthetic sessions on the explicit shell
+    // compatibility path after the managed session-writer cutover.
+    initialRecovery: {
+      outputCursor: null,
+      role: null,
+      snapshotByteLimit: null,
+      visibleTerminalCount: 1,
+    },
+    isShell: true,
     onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
+    sessionOwner: 'compatibility-shell',
   };
   try {
-    await invokeIpcViaHttp('spawn_agent', body);
+    const result = await invokeIpcViaHttp<AttachTerminalSessionResult>(
+      IPC.AttachTerminalSession,
+      body,
+    );
+    if (result.kind !== 'attached' || result.channelBound !== true) {
+      throw new Error(
+        `Synthetic terminal attach unavailable for ${opts.taskId}/${opts.agentId}: ${result.reason}`,
+      );
+    }
+    const batchPauseId = result.recovery?.batchPauseId;
+    if (batchPauseId) {
+      await invokeIpcViaHttp(IPC.ReleaseTerminalRecoveryPause, { batchPauseId });
+    }
   } catch (error) {
     if (shouldAcquireTaskControl && !hasRetainedTaskControlLease(registration)) {
       await releaseTaskControlForTest(registration).catch(() => {});

@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 
 const {
+  attachExistingAgentSessionExactMock,
   getAgentColsMock,
   getAgentPauseStateMock,
   getAgentRowsMock,
+  getAgentLifecycleGenerationMock,
+  getAgentMetaMock,
   getAgentTerminalRecoveryMock,
   getAgentTerminalStartupRecoveryMock,
   hasAgentSessionMock,
@@ -12,9 +15,12 @@ const {
   resumeAgentMock,
   spawnTaskAgentWorkflowMock,
 } = vi.hoisted(() => ({
+  attachExistingAgentSessionExactMock: vi.fn(),
   getAgentColsMock: vi.fn(),
   getAgentPauseStateMock: vi.fn(),
   getAgentRowsMock: vi.fn(),
+  getAgentLifecycleGenerationMock: vi.fn(),
+  getAgentMetaMock: vi.fn(),
   getAgentTerminalRecoveryMock: vi.fn(),
   getAgentTerminalStartupRecoveryMock: vi.fn(),
   hasAgentSessionMock: vi.fn(),
@@ -27,9 +33,12 @@ vi.mock('./pty.js', async () => {
   const actual = await vi.importActual<typeof import('./pty.js')>('./pty.js');
   return {
     ...actual,
+    attachExistingAgentSessionExact: attachExistingAgentSessionExactMock,
     getAgentCols: getAgentColsMock,
     getAgentPauseState: getAgentPauseStateMock,
     getAgentRows: getAgentRowsMock,
+    getAgentLifecycleGeneration: getAgentLifecycleGenerationMock,
+    getAgentMeta: getAgentMetaMock,
     getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
     getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
     hasAgentSession: hasAgentSessionMock,
@@ -42,24 +51,53 @@ vi.mock('./task-workflows.js', async () => {
   const actual = await vi.importActual<typeof import('./task-workflows.js')>('./task-workflows.js');
   return {
     ...actual,
+    spawnOwnedTaskAgentWorkflow: (
+      context: unknown,
+      _ownership: unknown,
+      request: { bindOutputChannel?: () => boolean },
+    ) => {
+      const channelBound = request.bindOutputChannel?.();
+      if (channelBound === false) {
+        return { channelAttached: false, channelBound: false, kind: 'created-session' };
+      }
+      const result = spawnTaskAgentWorkflowMock(context, request);
+      return result instanceof Promise
+        ? result.then((value) => ({
+            ...value,
+            ...(channelBound === undefined ? {} : { channelBound }),
+          }))
+        : { ...result, ...(channelBound === undefined ? {} : { channelBound }) };
+    },
     spawnTaskAgentWorkflow: spawnTaskAgentWorkflowMock,
   };
 });
 
 import { releaseAllHeldTerminalRecoveryBatchPausesForTests } from './agent-handlers.js';
 import { createIpcHandlers, type HandlerContext } from './handlers.js';
+import {
+  registerArenaTerminalLaunch,
+  resetArenaTerminalLaunchesForTest,
+} from './arena-terminal-launches.js';
+import { acquireTaskCommandLease, resetTaskCommandLeasesForTest } from './task-command-leases.js';
 
 function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
   return {
     userDataPath: '/tmp/parallel-code-tests',
     isPackaged: false,
+    classifyCanonicalAgentSessionIdentity: vi.fn().mockResolvedValue('unmanaged'),
+    restoreCanonicalTaskShellSession: vi.fn(async ({ sessionId, taskId }) => ({
+      kind: 'unmanaged' as const,
+      reason: 'compatibility-shell' as const,
+      sessionId,
+      taskId,
+    })),
     sendToChannel: vi.fn(),
     ...overrides,
   };
 }
 
 function buildAttachRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  const request: Record<string, unknown> = {
     agentId: 'agent-1',
     args: [],
     clientId: 'client-1',
@@ -73,10 +111,35 @@ function buildAttachRequest(overrides: Record<string, unknown> = {}): Record<str
       snapshotByteLimit: 64 * 1024,
       visibleTerminalCount: 1,
     },
+    isShell: true,
     onOutput: { __CHANNEL_ID__: 'channel-1' },
     rows: 40,
+    sessionOwner: 'compatibility-shell',
     taskId: 'task-1',
     ...overrides,
+  };
+  if (overrides.arenaLaunchToken !== undefined && overrides.sessionOwner === undefined) {
+    request.isShell = false;
+    request.sessionOwner = 'arena-transient';
+  }
+  return request;
+}
+
+function buildManagedAttachRequest(
+  sessionOwner: 'managed-agent' | 'managed-task-shell' = 'managed-agent',
+): Record<string, unknown> {
+  return {
+    agentId: 'agent-1',
+    clientId: 'client-1',
+    initialRecovery: {
+      outputCursor: null,
+      role: null,
+      snapshotByteLimit: 64 * 1024,
+      visibleTerminalCount: 1,
+    },
+    onOutput: { __CHANNEL_ID__: 'channel-1' },
+    sessionOwner,
+    taskId: 'task-1',
   };
 }
 
@@ -86,10 +149,26 @@ describe('AttachTerminalSession', () => {
     vi.useRealTimers();
     vi.useFakeTimers();
     vi.clearAllMocks();
+    resetArenaTerminalLaunchesForTest();
+    resetTaskCommandLeasesForTest();
     hasAgentSessionMock.mockReturnValue(true);
     getAgentPauseStateMock.mockReturnValue(null);
     getAgentColsMock.mockReturnValue(132);
     getAgentRowsMock.mockReturnValue(43);
+    getAgentLifecycleGenerationMock.mockReturnValue(7);
+    getAgentMetaMock.mockReturnValue({
+      agentId: 'agent-1',
+      generation: 7,
+      isShell: true,
+      taskId: 'task-1',
+    });
+    attachExistingAgentSessionExactMock.mockImplementation(
+      (_send: unknown, request: { bindChannel?: () => boolean }) => ({
+        channelAttached: true,
+        channelBound: request.bindChannel?.() ?? true,
+        kind: 'attached-existing',
+      }),
+    );
     spawnTaskAgentWorkflowMock.mockReturnValue({
       channelAttached: true,
       kind: 'attached-existing',
@@ -110,9 +189,77 @@ describe('AttachTerminalSession', () => {
   });
 
   afterEach(() => {
+    resetArenaTerminalLaunchesForTest();
+    resetTaskCommandLeasesForTest();
     releaseAllHeldTerminalRecoveryBatchPausesForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it('classifies only an exact backend-issued Arena launch as explicit transient', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockResolvedValue({
+      channelAttached: true,
+      kind: 'created-session',
+    });
+    const arenaLaunchToken = registerArenaTerminalLaunch({
+      agentId: 'agent-1',
+      branchName: 'arena/one',
+      projectRoot: '/tmp/project',
+      root: '/tmp/worktree',
+      taskId: 'task-1',
+    });
+    const handlers = createIpcHandlers(buildContext());
+
+    await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest({ arenaLaunchToken }));
+
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        contentAuthorityClass: 'explicit-transient',
+        contentAuthorityRoot: '/tmp/worktree',
+      }),
+    );
+  });
+
+  it('rejects a renderer-invented Arena token without reaching the spawn workflow', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(
+        buildAttachRequest({ arenaLaunchToken: 'renderer-selected' }),
+      ),
+    ).rejects.toThrow('Arena terminal launch is unavailable');
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an Arena launch attach race without consuming its capability', async () => {
+    const arenaLaunchToken = registerArenaTerminalLaunch({
+      agentId: 'agent-1',
+      branchName: 'arena/one',
+      projectRoot: '/tmp/project',
+      root: '/tmp/worktree',
+      taskId: 'task-1',
+    });
+    const handlers = createIpcHandlers(buildContext());
+
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(buildAttachRequest({ arenaLaunchToken })),
+    ).rejects.toThrow('Arena terminal launch is unavailable');
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+
+    hasAgentSessionMock.mockReturnValue(false);
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(buildAttachRequest({ arenaLaunchToken })),
+    ).resolves.toBeDefined();
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        contentAuthorityClass: 'explicit-transient',
+        contentAuthorityRoot: '/tmp/worktree',
+      }),
+    );
   });
 
   it('binds the channel for the requesting client before running the spawn workflow', async () => {
@@ -128,14 +275,164 @@ describe('AttachTerminalSession', () => {
     const handlers = createIpcHandlers(buildContext({ bindChannelForClient }));
 
     const result = (await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest())) as {
-      attachedExistingSession: boolean;
       channelBound: boolean;
+      disposition: string;
       recovery: { batchPauseId?: string; recovery: { kind: string } } | null;
     };
 
     expect(callOrder).toEqual(['bind:client-1:channel-1', 'spawn']);
     expect(result.channelBound).toBe(true);
-    expect(result.attachedExistingSession).toBe(true);
+    expect(result.disposition).toBe('existing');
+  });
+
+  it('restores a managed agent from identity only before exact channel attach', async () => {
+    const callOrder: string[] = [];
+    const bindChannelForClient = vi.fn(() => {
+      callOrder.push('bind');
+      return true;
+    });
+    const restoreCanonicalAgentSession = vi.fn(async () => {
+      callOrder.push('restore');
+      return {
+        agentId: 'agent-1',
+        cols: 132,
+        generation: 8,
+        kind: 'restored' as const,
+        rows: 43,
+        taskId: 'task-1',
+      };
+    });
+    attachExistingAgentSessionExactMock.mockImplementation(
+      (_send: unknown, request: { bindChannel?: () => boolean }) => {
+        callOrder.push('exact-attach');
+        return {
+          channelAttached: true,
+          channelBound: request.bindChannel?.() ?? true,
+          kind: 'attached-existing',
+        };
+      },
+    );
+    const handlers = createIpcHandlers(
+      buildContext({ bindChannelForClient, restoreCanonicalAgentSession }),
+    );
+
+    const result = await handlers[IPC.AttachTerminalSession]?.(buildManagedAttachRequest());
+
+    expect(restoreCanonicalAgentSession).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+    });
+    expect(callOrder).toEqual(['restore', 'exact-attach', 'bind']);
+    expect(result).toMatchObject({
+      channelBound: true,
+      disposition: 'restored',
+      generation: 8,
+      kind: 'attached',
+    });
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('returns typed managed restore denial without channel, PTY, pause, or spawn effects', async () => {
+    const bindChannelForClient = vi.fn(() => true);
+    const restoreCanonicalAgentSession = vi.fn().mockResolvedValue({
+      kind: 'unavailable',
+      reason: 'restore-failed',
+    });
+    const handlers = createIpcHandlers(
+      buildContext({ bindChannelForClient, restoreCanonicalAgentSession }),
+    );
+
+    const result = await handlers[IPC.AttachTerminalSession]?.(buildManagedAttachRequest());
+
+    expect(result).toEqual({
+      channelBound: false,
+      kind: 'unavailable',
+      reason: 'restore-failed',
+      recovery: null,
+    });
+    expect(bindChannelForClient).not.toHaveBeenCalled();
+    expect(attachExistingAgentSessionExactMock).not.toHaveBeenCalled();
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('does not let a compatibility label downgrade a canonical managed agent identity', async () => {
+    const bindChannelForClient = vi.fn(() => true);
+    const restoreCanonicalTaskShellSession = vi.fn();
+    const handlers = createIpcHandlers(
+      buildContext({
+        bindChannelForClient,
+        classifyCanonicalAgentSessionIdentity: vi.fn().mockResolvedValue('managed-agent'),
+        restoreCanonicalTaskShellSession,
+      }),
+    );
+
+    const result = await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest());
+
+    expect(result).toEqual({
+      channelBound: false,
+      kind: 'unavailable',
+      reason: 'identity-unavailable',
+      recovery: null,
+    });
+    expect(restoreCanonicalTaskShellSession).not.toHaveBeenCalled();
+    expect(bindChannelForClient).not.toHaveBeenCalled();
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards explicit compatibility creation only to shell ownership classification', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockReturnValue({
+      channelAttached: true,
+      kind: 'created-session',
+    });
+    const restoreCanonicalTaskShellSession = vi.fn(async ({ sessionId, taskId }) => ({
+      kind: 'unmanaged' as const,
+      reason: 'compatibility-shell' as const,
+      sessionId,
+      taskId,
+    }));
+    const handlers = createIpcHandlers(buildContext({ restoreCanonicalTaskShellSession }));
+
+    const result = await handlers[IPC.AttachTerminalSession]?.(
+      buildAttachRequest({ compatibilityIntent: 'create' }),
+    );
+
+    expect(restoreCanonicalTaskShellSession).toHaveBeenCalledWith(
+      { sessionId: 'agent-1', taskId: 'task-1' },
+      { compatibilityIntent: 'create' },
+    );
+    expect(result).toMatchObject({
+      channelBound: true,
+      disposition: 'created',
+      kind: 'attached',
+    });
+    expect(spawnTaskAgentWorkflowMock.mock.calls[0]?.[1]).not.toHaveProperty('controllerId');
+  });
+
+  it('requires the authenticated browser client to hold task control for explicit creation', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockReturnValue({
+      channelAttached: true,
+      kind: 'created-session',
+    });
+    const handlers = createIpcHandlers(buildContext());
+    acquireTaskCommandLease('task-1', 'peer-client', 'peer-owner', 'peer action');
+
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(
+        buildAttachRequest({ compatibilityIntent: 'create', controllerId: 'client-1' }),
+      ),
+    ).rejects.toThrow('Task is controlled by another client');
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+
+    resetTaskCommandLeasesForTest();
+    acquireTaskCommandLease('task-1', 'client-1', 'client-owner', 'open a terminal');
+    await expect(
+      handlers[IPC.AttachTerminalSession]?.(
+        buildAttachRequest({ compatibilityIntent: 'create', controllerId: 'client-1' }),
+      ),
+    ).resolves.toMatchObject({ kind: 'attached' });
   });
 
   it('reports channelBound true on Electron where channel binding is implicit', async () => {
@@ -185,11 +482,15 @@ describe('AttachTerminalSession', () => {
     },
     {
       expected: 'startsTaskWatchers requires a shell session',
-      overrides: { startsTaskWatchers: true },
+      overrides: { isShell: false, startsTaskWatchers: true },
     },
     {
       expected: 'startsTaskWatchers requires a non-empty cwd',
       overrides: { cwd: '  ', isShell: true, startsTaskWatchers: true },
+    },
+    {
+      expected: 'compatibilityIntent must be create when provided',
+      overrides: { compatibilityIntent: 'restore' },
     },
   ])('rejects invalid watcher ownership requests: $expected', async ({ expected, overrides }) => {
     const handlers = createIpcHandlers(buildContext());
@@ -204,11 +505,11 @@ describe('AttachTerminalSession', () => {
     const handlers = createIpcHandlers(buildContext());
 
     const result = (await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest())) as {
-      attachedExistingSession: boolean;
+      disposition: string;
       recovery: { agentId: string; batchPauseId?: string; recovery: { kind: string } } | null;
     };
 
-    expect(result.attachedExistingSession).toBe(true);
+    expect(result.disposition).toBe('existing');
     expect(result.recovery).toMatchObject({
       agentId: 'agent-1',
       batchPauseId: expect.any(String),
@@ -273,11 +574,11 @@ describe('AttachTerminalSession', () => {
     const handlers = createIpcHandlers(buildContext());
 
     const result = (await handlers[IPC.AttachTerminalSession]?.(buildAttachRequest())) as {
-      attachedExistingSession: boolean;
+      disposition: string;
       recovery: unknown;
     };
 
-    expect(result.attachedExistingSession).toBe(false);
+    expect(result.disposition).toBe('created');
     expect(result.recovery).toBeNull();
     expect(pauseAgentMock).not.toHaveBeenCalled();
     expect(getAgentTerminalRecoveryMock).not.toHaveBeenCalled();

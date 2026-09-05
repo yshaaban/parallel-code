@@ -1,29 +1,32 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal, For, Show, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TaskNotesControllerSnapshot } from '../task-notes/task-notes-controller';
+import type { TaskNotesController } from '../task-notes/task-notes-controller';
+import type { mountDesktopTaskNotes } from '../../app/task-notes-runtime';
 
-import { setStore } from '../../store/core';
+import { setStore, store } from '../../store/core';
 import { createTestTask, resetStoreForTest } from '../../test/store-test-helpers';
 import { TaskNotesFilesSection } from './TaskNotesFilesSection';
 
 const {
   getProjectMock,
-  isAgentAskingQuestionMock,
+  getLocalAgentQuestionGenerationMock,
   openMarkdownViewerMock,
   sendPromptMock,
+  mountDesktopTaskNotesMock,
   setReviewPanelOpenMock,
   setTaskFocusedPanelMock,
   showNotificationMock,
-  updateTaskNotesMock,
 } = vi.hoisted(() => ({
   getProjectMock: vi.fn(),
-  isAgentAskingQuestionMock: vi.fn(),
+  getLocalAgentQuestionGenerationMock: vi.fn(),
   openMarkdownViewerMock: vi.fn(),
   sendPromptMock: vi.fn(),
+  mountDesktopTaskNotesMock: vi.fn(),
   setReviewPanelOpenMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
   showNotificationMock: vi.fn(),
-  updateTaskNotesMock: vi.fn(),
 }));
 
 vi.mock('../../app/markdown-viewer', () => ({
@@ -32,6 +35,10 @@ vi.mock('../../app/markdown-viewer', () => ({
 
 vi.mock('../../app/task-workflows', () => ({
   sendPrompt: sendPromptMock,
+}));
+
+vi.mock('../../app/task-notes-runtime', () => ({
+  mountDesktopTaskNotes: mountDesktopTaskNotesMock,
 }));
 
 vi.mock('../../store/store', async () => {
@@ -53,11 +60,11 @@ vi.mock('../../store/store', async () => {
 
       return task.agentIds[0] ?? null;
     },
-    isAgentAskingQuestion: isAgentAskingQuestionMock,
+    getLocalAgentQuestionGeneration: getLocalAgentQuestionGenerationMock,
+    isTaskCommandControlledByPeer: () => false,
     setReviewPanelOpen: setReviewPanelOpenMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     showNotification: showNotificationMock,
-    updateTaskNotes: updateTaskNotesMock,
   };
 });
 
@@ -108,19 +115,58 @@ vi.mock('../ScalablePanel', () => ({
 }));
 
 describe('TaskNotesFilesSection', () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     resetStoreForTest();
     getProjectMock.mockReset();
     openMarkdownViewerMock.mockReset();
-    openMarkdownViewerMock.mockResolvedValue(true);
+    openMarkdownViewerMock.mockResolvedValue('opened');
     sendPromptMock.mockReset();
     sendPromptMock.mockResolvedValue(true);
-    isAgentAskingQuestionMock.mockReset();
-    isAgentAskingQuestionMock.mockReturnValue(false);
+    getLocalAgentQuestionGenerationMock.mockReset();
+    getLocalAgentQuestionGenerationMock.mockReturnValue(undefined);
     showNotificationMock.mockReset();
     setReviewPanelOpenMock.mockReset();
     setTaskFocusedPanelMock.mockReset();
-    updateTaskNotesMock.mockReset();
+    mountDesktopTaskNotesMock.mockReset();
+    mountDesktopTaskNotesMock.mockImplementation((taskId: string) => {
+      let listener: ((value: TaskNotesControllerSnapshot) => void) | undefined;
+      let snapshot: TaskNotesControllerSnapshot = {
+        savedNoticeVisible: false,
+        slowSaving: false,
+        state: {
+          base: {
+            contentVersion: 'A'.repeat(43),
+            notes: store.tasks[taskId]?.notes ?? '',
+            taskId,
+            taskIncarnation: 'B'.repeat(43),
+            workspaceRevision: 1,
+          },
+          draft: store.tasks[taskId]?.notes ?? '',
+          generation: 1,
+          kind: 'clean',
+          taskId,
+        },
+      };
+      const controller = {
+        edit(value: string) {
+          snapshot = {
+            ...snapshot,
+            state: { ...snapshot.state, draft: value, kind: 'dirty' },
+          } as TaskNotesControllerSnapshot;
+          listener?.(snapshot);
+        },
+        save: vi.fn(),
+        subscribe(next: (value: TaskNotesControllerSnapshot) => void) {
+          listener = next;
+          next(snapshot);
+          return () => {
+            listener = undefined;
+          };
+        },
+      } as unknown as TaskNotesController;
+      return { controller, release: vi.fn() };
+    });
 
     getProjectMock.mockReturnValue({
       id: 'project-1',
@@ -234,9 +280,18 @@ describe('TaskNotesFilesSection', () => {
         agentId: undefined,
         relativePath: 'docs/plans/plan.md',
         taskId: 'task-1',
-        worktreePath: '/tmp/project/task',
       });
     });
+  });
+
+  it('does not reopen cached plan content after a file request is superseded', async () => {
+    openMarkdownViewerMock.mockResolvedValueOnce('superseded');
+    renderSection();
+
+    fireEvent.click(await screen.findByTitle('Review Plan'));
+    await Promise.resolve();
+
+    expect(openMarkdownViewerMock).toHaveBeenCalledTimes(1);
   });
 
   it('sanitizes inline plan markdown through the shared renderer', async () => {
@@ -291,7 +346,6 @@ describe('TaskNotesFilesSection', () => {
         agentId: undefined,
         relativePath: 'docs/plans/plan.md',
         taskId: 'task-1',
-        worktreePath: '/tmp/project/task',
       });
     });
   });
@@ -305,6 +359,7 @@ describe('TaskNotesFilesSection', () => {
       selectedAgentId: 'agent-2',
       worktreePath: '/tmp/project/task',
     });
+    setStore('tasks', task.id, task);
     const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
 
     render(() => (
@@ -321,11 +376,48 @@ describe('TaskNotesFilesSection', () => {
       />
     ));
 
+    await vi.dynamicImportSettled();
     fireEvent.click(screen.getByRole('button', { name: 'Send notes as prompt' }));
 
     await waitFor(() => {
       expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-2', 'summarize this plan');
     });
+  });
+
+  it('surfaces a control race without clearing or mutating the notes draft', async () => {
+    sendPromptMock.mockResolvedValue(false);
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      notes: 'keep this draft',
+      projectId: 'project-1',
+    });
+    setStore('tasks', task.id, task);
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    await vi.dynamicImportSettled();
+    fireEvent.click(screen.getByRole('button', { name: 'Send notes as prompt' }));
+
+    await waitFor(() => {
+      expect(showNotificationMock).toHaveBeenCalledWith(
+        'Notes were not sent because another session controls this task',
+      );
+    });
+    expect(task.notes).toBe('keep this draft');
   });
 
   it('does not show agent prompt actions for terminal-only tasks', () => {
@@ -353,5 +445,198 @@ describe('TaskNotesFilesSection', () => {
     ));
 
     expect(screen.queryByRole('button', { name: 'Send notes as prompt' })).toBeNull();
+  });
+
+  it('keeps typed edits local, autosaves once after one second, and sends the visible draft', async () => {
+    vi.useFakeTimers();
+    let snapshot: TaskNotesControllerSnapshot = {
+      state: {
+        kind: 'clean',
+        generation: 1,
+        taskId: 'task-1',
+        base: {
+          taskId: 'task-1',
+          taskIncarnation: 'A'.repeat(43),
+          contentVersion: 'A'.repeat(43),
+          notes: 'server base',
+          workspaceRevision: 1,
+        },
+        draft: 'server base',
+      },
+      savedNoticeVisible: false,
+      slowSaving: false,
+    };
+    let listener: ((value: TaskNotesControllerSnapshot) => void) | undefined;
+    const save = vi.fn();
+    const fakeController = {
+      edit(value: string) {
+        snapshot = {
+          ...snapshot,
+          state: { ...snapshot.state, kind: 'dirty', draft: value },
+        } as TaskNotesControllerSnapshot;
+        listener?.(snapshot);
+      },
+      save,
+      subscribe(next: (value: TaskNotesControllerSnapshot) => void) {
+        listener = next;
+        next(snapshot);
+        return () => {
+          listener = undefined;
+        };
+      },
+    } as unknown as TaskNotesController;
+    const mountTaskNotes = vi.fn(() => ({
+      controller: fakeController,
+      release: vi.fn(),
+    })) as unknown as typeof mountDesktopTaskNotes;
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      notes: 'legacy value',
+      projectId: 'project-1',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        mountTaskNotes={mountTaskNotes}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+        taskNotesCapability={{ read: true, write: true }}
+      />
+    ));
+
+    await vi.dynamicImportSettled();
+    const editor = screen.getByRole('textbox');
+    expect((editor as HTMLTextAreaElement).value).toBe('server base');
+    fireEvent.input(editor, { target: { value: 'first draft' } });
+    await vi.advanceTimersByTimeAsync(500);
+    fireEvent.input(editor, { target: { value: 'visible draft' } });
+    expect(task.notes).toBe('legacy value');
+    await vi.advanceTimersByTimeAsync(999);
+    expect(save).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send notes as prompt' }));
+    await vi.runAllTimersAsync();
+    expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-1', 'visible draft');
+  });
+
+  it('keeps capability-read-only notes focusable and selectable', async () => {
+    const task = createTestTask({ id: 'task-1', notes: 'copy this', projectId: 'project-1' });
+    setStore('tasks', { 'task-1': task });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+        taskNotesCapability={{ read: true, write: false }}
+      />
+    ));
+
+    await vi.dynamicImportSettled();
+    const editor = screen.getByRole('textbox', { name: 'Task notes' }) as HTMLTextAreaElement;
+    expect(editor.disabled).toBe(false);
+    expect(editor.readOnly).toBe(true);
+    expect(screen.getByText(/read-only in this session/i)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(0);
+    expect(editor.selectionEnd).toBe(editor.value.length);
+  });
+
+  it('offers confirmed reset when the task id now names a replacement task', async () => {
+    let listener: ((value: TaskNotesControllerSnapshot) => void) | undefined;
+    const oldBase = {
+      contentVersion: 'A'.repeat(43),
+      notes: 'old notes',
+      taskId: 'task-1',
+      taskIncarnation: 'B'.repeat(43),
+      workspaceRevision: 1,
+    };
+    const snapshot = {
+      savedNoticeVisible: false,
+      slowSaving: false,
+      state: {
+        base: oldBase,
+        draft: 'recover this',
+        generation: 1,
+        kind: 'orphaned',
+        reason: 'task-replaced',
+        taskId: 'task-1',
+      },
+    } as TaskNotesControllerSnapshot;
+    const discard = vi.fn(() => {
+      listener?.({
+        ...snapshot,
+        state: { draft: '', generation: 2, kind: 'loading', taskId: 'task-1' },
+      });
+      queueMicrotask(() =>
+        listener?.({
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            base: { ...oldBase, notes: 'replacement notes' },
+            draft: 'replacement notes',
+            generation: 2,
+            kind: 'clean',
+          },
+        } as TaskNotesControllerSnapshot),
+      );
+    });
+    const controller = {
+      discard,
+      subscribe(next: (value: TaskNotesControllerSnapshot) => void) {
+        listener = next;
+        next(snapshot);
+        return () => {};
+      },
+    } as unknown as TaskNotesController;
+    const mountTaskNotes = vi.fn(() => ({
+      controller,
+      release: vi.fn(),
+    })) as unknown as typeof mountDesktopTaskNotes;
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const task = createTestTask({ id: 'task-1', projectId: 'project-1' });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        mountTaskNotes={mountTaskNotes}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+        taskNotesCapability={{ read: true, write: true }}
+      />
+    ));
+
+    await vi.dynamicImportSettled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft and reload' }));
+    expect(confirm).toHaveBeenCalledWith(
+      'Discard the recovered draft and load notes for the current task?',
+    );
+    expect(discard).toHaveBeenCalledOnce();
+    const editor = screen.getByRole('textbox', { name: 'Task notes' });
+    await waitFor(() => expect(document.activeElement).toBe(editor));
+    confirm.mockRestore();
   });
 });

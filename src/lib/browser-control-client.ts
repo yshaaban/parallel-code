@@ -1,8 +1,8 @@
 import {
   isReplayTruncatedMessage,
-  isServerMessage,
+  isCoreServerMessage,
   type ClientMessage,
-  type ServerMessage,
+  type CoreServerMessage,
 } from '../../electron/remote/protocol';
 import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
 import {
@@ -17,7 +17,7 @@ import {
 } from './weak-connectivity-policy';
 
 export type BrowserServerMessage = Exclude<
-  ServerMessage,
+  CoreServerMessage,
   | { type: 'channel' }
   | { type: 'ipc-event' }
   | { type: 'replay-truncated' }
@@ -79,11 +79,11 @@ export type BrowserControlConnectionState = Extract<
 // core (per-event dispatch with wholesale toSeq adoption), so they never reach
 // the dispatch map.
 type BrowserServerDispatchMessage = Exclude<
-  ServerMessage,
+  CoreServerMessage,
   { type: 'replay-truncated' } | { type: 'control-replay-batch' }
 >;
 type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<BrowserServerDispatchMessage>;
-type BrowserControlIncomingMessage = ServerMessage;
+type BrowserControlIncomingMessage = CoreServerMessage;
 
 export interface BrowserControlClient {
   bindLifecycle: () => void;
@@ -327,13 +327,13 @@ export function createBrowserControlClient(
     dispatchByType(browserServerMessageHandlers, message);
   }
 
-  function isSequencedServerMessage(message: ServerMessage): boolean {
+  function isSequencedServerMessage(message: CoreServerMessage): boolean {
     const seq = (message as { seq?: unknown }).seq;
     return typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0;
   }
 
   function isBrowserControlIncomingMessage(value: unknown): value is BrowserControlIncomingMessage {
-    return isServerMessage(value);
+    return isCoreServerMessage(value);
   }
 
   function getDisconnectConnectedDurationMs(event: {

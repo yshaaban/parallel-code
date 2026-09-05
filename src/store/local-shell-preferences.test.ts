@@ -39,6 +39,10 @@ describe('local shell preferences', () => {
       },
       version: 1,
     };
+    source.newTaskDefaults = {
+      skipPermissions: false,
+      stepsTracking: true,
+    };
     source.windowState = {
       height: 720,
       maximized: false,
@@ -53,6 +57,7 @@ describe('local shell preferences', () => {
     expect(snapshot.panelSizes).not.toBe(source.panelSizes);
     expect(snapshot.sidebarSectionCollapsed).not.toBe(source.sidebarSectionCollapsed);
     expect(snapshot.keybindings).not.toBe(source.keybindings);
+    expect(snapshot.newTaskDefaults).not.toBe(source.newTaskDefaults);
     expect(snapshot.keybindings.overrides['app.new-task']).not.toBe(
       source.keybindings.overrides['app.new-task'],
     );
@@ -64,11 +69,14 @@ describe('local shell preferences', () => {
     const snapshotChord = snapshot.keybindings.overrides['app.new-task']?.chords?.[0];
     if (snapshotChord) snapshotChord.key = 'x';
     if (snapshot.windowState) snapshot.windowState.width = 640;
+    snapshot.newTaskDefaults.skipPermissions = true;
+    snapshot.newTaskDefaults.stepsTracking = false;
 
     expect(source.fontScales['task-1']).toBe(1.2);
     expect(source.panelSizes['task-1:agent-1']).toBe(0.4);
     expect(source.sidebarSectionCollapsed.projects).toBe(true);
     expect(source.keybindings.overrides['app.new-task']?.chords?.[0]?.key).toBe('n');
+    expect(source.newTaskDefaults).toEqual({ skipPermissions: false, stepsTracking: true });
     expect(source.windowState.width).toBe(1280);
   });
 
@@ -98,6 +106,10 @@ describe('local shell preferences', () => {
       globalScale: 1,
       inactiveColumnOpacity: 0.6,
       keybindings: createDefaultKeybindingOverrides(),
+      newTaskDefaults: {
+        skipPermissions: true,
+        stepsTracking: false,
+      },
       panelSizes: {},
       showPlans: true,
       sidebarSectionCollapsed: {
@@ -127,6 +139,11 @@ describe('local shell preferences', () => {
         fontSmoothing: false,
         globalScale: 1.1,
         inactiveColumnOpacity: 0.746,
+        newTaskDefaults: {
+          skipPermissions: false,
+          stepsTracking: true,
+          ignored: true,
+        },
         panelSizes: { 'left:right': 0.4 },
         showPlans: false,
         sidebarSectionCollapsed: {
@@ -160,6 +177,10 @@ describe('local shell preferences', () => {
       fontSmoothing: false,
       globalScale: 1.1,
       inactiveColumnOpacity: 0.75,
+      newTaskDefaults: {
+        skipPermissions: false,
+        stepsTracking: true,
+      },
       panelSizes: { 'left:right': 0.4 },
       showPlans: false,
       sidebarSectionCollapsed: {
@@ -193,6 +214,10 @@ describe('local shell preferences', () => {
     source.fontSmoothing = false;
     source.globalScale = 1.1;
     source.inactiveColumnOpacity = 0.75;
+    source.newTaskDefaults = {
+      skipPermissions: false,
+      stepsTracking: true,
+    };
     source.panelSizes = { 'left:right': 0.4 };
     source.showPlans = false;
     source.sidebarSectionCollapsed = {
@@ -218,6 +243,10 @@ describe('local shell preferences', () => {
       globalScale: 1.1,
       inactiveColumnOpacity: 0.75,
       keybindings: createDefaultKeybindingOverrides(),
+      newTaskDefaults: {
+        skipPermissions: false,
+        stepsTracking: true,
+      },
       panelSizes: { 'left:right': 0.4 },
       showPlans: false,
       sidebarSectionCollapsed: {
@@ -280,10 +309,12 @@ describe('local shell preferences', () => {
     target.sidebarVisible = false;
     target.terminalHighLoadMode = false;
     target.terminalLocalInputFeedbackEnabled = true;
+    target.newTaskDefaults = { skipPermissions: false, stepsTracking: true };
     applyFullStateLocalShellPreferences(target, preferences);
 
     expect(target.sidebarVisible).toBe(true);
     expect(target.terminalHighLoadMode).toBe(true);
     expect(target.terminalLocalInputFeedbackEnabled).toBe(false);
+    expect(target.newTaskDefaults).toEqual({ skipPermissions: true, stepsTracking: false });
   });
 });

@@ -23,6 +23,9 @@ vi.mock('../lib/ipc', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Auto-trust owns prompt detection and dispatch intent; lease arbitration has
+// its own contract suite. Keep this unit test focused by running the admitted
+// callback without composing the command-lease transport.
 vi.mock('../app/task-command-lease', () => ({
   runWithAgentTaskCommandLease: vi.fn(
     async (_agentId: string, _actionDescription: string, run: () => Promise<void>) => run(),
@@ -57,7 +60,7 @@ import {
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
-  isAgentAskingQuestion,
+  isLocalAgentQuestionActive,
   markAgentSpawned,
   markAgentOutput,
   clearAgentActivity,
@@ -193,6 +196,45 @@ describe('looksLikeQuestion', () => {
 
   it('returns false for normal output without questions', () => {
     expect(looksLikeQuestion('Building project...\nCompiling files...')).toBe(false);
+  });
+
+  it('clears once a carriage-return TUI redraw reaches the real prompt', () => {
+    const idleFrame = [
+      'Would you like me to continue with the refactor?',
+      '❯',
+      'opus · /Users/x/proj · ctx:24k/200k',
+    ].join('\r');
+
+    expect(looksLikeQuestion(idleFrame)).toBe(false);
+  });
+
+  it('clears when a deep status footer follows the real prompt', () => {
+    const idleFrame = [
+      'Do you want to refactor the auth module?',
+      '❯',
+      ...Array.from({ length: 12 }, (_, index) => `status line ${index + 1}`),
+    ].join('\n');
+
+    expect(looksLikeQuestion(idleFrame)).toBe(false);
+  });
+
+  it('clears across cursor-home and clear-screen prompt redraws', () => {
+    const idleFrame = 'Proceed? [y/N]\u001b[H\u001b[2J❯\nready';
+
+    expect(looksLikeQuestion(idleFrame)).toBe(false);
+  });
+
+  it('retains a live selection dialog that renders a prompt cursor', () => {
+    const liveDialog = ['Do you want to proceed?', '❯ 1. Yes', '  2. No'].join('\n');
+    const hydraDialog = [
+      'Use arrow keys to cycle',
+      'Select an option',
+      'hydra[dispatch]>',
+      ...Array.from({ length: 12 }, (_, index) => `status line ${index + 1}`),
+    ].join('\n');
+
+    expect(looksLikeQuestion(liveDialog)).toBe(true);
+    expect(looksLikeQuestion(hydraDialog)).toBe(true);
   });
 });
 
@@ -379,18 +421,18 @@ describe('markAgentOutput', () => {
 
     markAgentOutput('agent-1', new TextEncoder().encode('Proceed? [y/N]'), 'task-1');
 
-    expect(isAgentAskingQuestion('agent-1')).toBe(true);
+    expect(isLocalAgentQuestionActive('agent-1', 0)).toBe(true);
   });
 
   it('clears the question state after normal output resumes', () => {
     markAgentSpawned('agent-1');
 
     markAgentOutput('agent-1', new TextEncoder().encode('Proceed? [y/N]'), 'task-1');
-    expect(isAgentAskingQuestion('agent-1')).toBe(true);
+    expect(isLocalAgentQuestionActive('agent-1', 0)).toBe(true);
 
     markAgentOutput('agent-1', new TextEncoder().encode('Continuing work...\n'), 'task-1');
     vi.advanceTimersByTime(250);
 
-    expect(isAgentAskingQuestion('agent-1')).toBe(false);
+    expect(isLocalAgentQuestionActive('agent-1', 0)).toBe(false);
   });
 });

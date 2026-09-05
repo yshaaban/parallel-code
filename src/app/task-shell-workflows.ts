@@ -5,6 +5,11 @@ import { invoke, isElectronRuntime } from '../lib/ipc';
 import { hasShellPromptReadyInTail } from '../lib/prompt-detection';
 import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
+import {
+  completeCompatibilityTerminalCreation,
+  isCompatibilityTerminalCreationPending,
+  markCompatibilityTerminalCreationPending,
+} from '../runtime/compatibility-terminal-creation';
 import { saveBrowserWorkspaceState } from '../store/persistence';
 import { setTaskFocusedPanel } from '../store/focus';
 import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
@@ -38,6 +43,7 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
     return shellId;
   }
 
+  markCompatibilityTerminalCreationPending(taskId, shellId);
   let nextShellIndex: number | null = null;
   if (initialCommand) {
     setPendingShellCommand(shellId, initialCommand);
@@ -109,7 +115,16 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
   const closedIndex = store.tasks[taskId]?.shellAgentIds.indexOf(shellId) ?? -1;
 
-  await invoke(IPC.KillAgent, { agentId: shellId });
+  const creationWasPending = isCompatibilityTerminalCreationPending(taskId, shellId);
+  completeCompatibilityTerminalCreation(taskId, shellId);
+  try {
+    await invoke(IPC.KillAgent, { agentId: shellId });
+  } catch (error) {
+    if (creationWasPending && store.tasks[taskId]?.shellAgentIds.includes(shellId)) {
+      markCompatibilityTerminalCreationPending(taskId, shellId);
+    }
+    throw error;
+  }
   clearAgentActivity(shellId);
   clearAgentSupervisionSnapshots([shellId]);
   setStore(

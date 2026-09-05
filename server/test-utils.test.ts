@@ -107,6 +107,16 @@ describe('test-utils buffered message helpers', () => {
 });
 
 describe('createTestServerEnv', () => {
+  it('keeps the helper-owned default state root stable and run-local', () => {
+    const first = createTestServerEnv();
+    const second = createTestServerEnv();
+    const userDataPath = first.PARALLEL_CODE_USER_DATA_DIR;
+
+    expect(userDataPath).toBe(second.PARALLEL_CODE_USER_DATA_DIR);
+    expect(userDataPath).toContain(`parallel-code-server-integration-${process.pid}-`);
+    expect(path.dirname(userDataPath ?? '')).toBe(os.tmpdir());
+  });
+
   it('applies the shared test-only browser build bypass and shell sandbox env', () => {
     const env = createTestServerEnv({
       PARALLEL_CODE_USER_DATA_DIR: '/tmp/custom-user-data',

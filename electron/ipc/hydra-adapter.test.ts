@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'child_process';
+import { createServer } from 'node:http';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import os from 'os';
@@ -73,6 +74,43 @@ function createControllableBoundedChild(): {
 }
 
 describe('hydra adapter helpers', () => {
+  it.each([0, 1])(
+    'rejects an existing Hydra daemon at port offset %s without shutting it down',
+    async (offset) => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-port-owner-'));
+      const port = 43_000 + ((deriveHydraPortFromWorktree(workspace) - 43_000 + offset) % 15_000);
+      const ownedHealthUrl = `http://127.0.0.1:${port}/health`;
+      const server = createServer();
+      const fetchHealth = vi.spyOn(globalThis, 'fetch').mockImplementation(
+        async (url) =>
+          new Response(
+            JSON.stringify({
+              running: true,
+              projectRoot: url === ownedHealthUrl ? workspace : '/unrelated-checkout',
+            }),
+          ),
+      );
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(port, '127.0.0.1', resolve);
+        });
+        await expect(__hydraAdapterTestExports.pickHydraPort(workspace)).rejects.toThrow(
+          'Hydra is already running in this checkout',
+        );
+        const requestedUrls = fetchHealth.mock.calls.map(([url]) => String(url));
+        expect(requestedUrls).toContain(ownedHealthUrl);
+        expect(requestedUrls.every((url) => url.endsWith('/health'))).toBe(true);
+        expect(server.listening).toBe(true);
+      } finally {
+        fetchHealth.mockRestore();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('derives a stable per-worktree daemon port', () => {
     const first = deriveHydraPortFromWorktree('/tmp/parallel-code/worktree-one');
     const second = deriveHydraPortFromWorktree('/tmp/parallel-code/worktree-one');
@@ -149,6 +187,69 @@ describe('hydra adapter helpers', () => {
 describe('hydra child lifecycle ownership', () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('cleans up only its owned daemon process, never the listener at its former port', async () => {
+    const { bounded, resolve } = createControllableBoundedChild();
+    const fetchRequest = vi.spyOn(globalThis, 'fetch');
+    try {
+      const cleanup = __hydraAdapterTestExports.shutdownHydraDaemon(bounded);
+      resolve();
+      await cleanup;
+      expect(bounded.terminate).toHaveBeenCalledOnce();
+      expect(fetchRequest).not.toHaveBeenCalled();
+    } finally {
+      fetchRequest.mockRestore();
+    }
+  });
+
+  it.each([
+    { pid: 42, projectRoot: '/other-checkout' },
+    { pid: 43, projectRoot: '/repo' },
+  ])('rejects health from a different process or checkout: %j', async (identity) => {
+    vi.useFakeTimers();
+    const { bounded } = createControllableBoundedChild();
+    Object.assign(bounded.child, { pid: 42 });
+    const fetchHealth = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(JSON.stringify({ running: true, ...identity })));
+    try {
+      const ready = __hydraAdapterTestExports.waitForHydraHealth(
+        'http://127.0.0.1:43123',
+        bounded.child,
+        [],
+        { current: null },
+        '/repo',
+      );
+      const rejection = expect(ready).rejects.toThrow('does not belong to the launched daemon');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await rejection;
+    } finally {
+      fetchHealth.mockRestore();
+    }
+  });
+
+  it('accepts health only from its owned daemon and checkout', async () => {
+    const { bounded } = createControllableBoundedChild();
+    Object.assign(bounded.child, { pid: 42 });
+    const fetchHealth = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(JSON.stringify({ running: true, pid: 42, projectRoot: '/repo' })),
+      );
+    try {
+      await expect(
+        __hydraAdapterTestExports.waitForHydraHealth(
+          'http://127.0.0.1:43123',
+          bounded.child,
+          [],
+          { current: null },
+          '/repo',
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      fetchHealth.mockRestore();
+    }
   });
 
   it('keeps long-lived children deadline-free while delegating process-tree ownership', () => {
@@ -248,6 +349,7 @@ describe('hydra child lifecycle ownership', () => {
         bounded.child,
         ['daemon output'],
         daemonFailure,
+        '/repo',
       ),
     ).rejects.toThrow('Hydra daemon output stream failed: broken pipe\ndaemon output');
   });

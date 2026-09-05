@@ -1,4 +1,5 @@
 export {
+  type CloseTaskOptions,
   type CreateCurrentBranchTaskOptions,
   type CreateDirectTaskOptions,
   type CreateExistingWorktreeTaskOptions,

@@ -17,6 +17,7 @@ export type TerminalShortcutAction =
   | { kind: 'allow'; preventDefault: false }
   | { kind: 'block'; preventDefault: boolean }
   | { kind: 'copy'; preventDefault: true }
+  | { kind: 'find'; preventDefault: true }
   | { kind: 'paste'; preventDefault: true }
   | { kind: 'scrollback'; preventDefault: true; unit: 'line' | 'page'; delta: -1 | 1 }
   | { kind: 'send-input'; data: string; preventDefault: true };
@@ -41,6 +42,28 @@ const PASTE_TERMINAL_SHORTCUT: TerminalShortcutAction = {
   preventDefault: true,
 };
 
+const FIND_TERMINAL_SHORTCUT: TerminalShortcutAction = {
+  kind: 'find',
+  preventDefault: true,
+};
+
+export function isPrimaryTerminalFindShortcut(
+  event: TerminalShortcutKeyEventLike,
+  isMac: boolean,
+): boolean {
+  if (event.type !== undefined && event.type !== 'keydown') {
+    return false;
+  }
+
+  return (
+    event.key.toLowerCase() === 'f' &&
+    (isMac ? event.metaKey : event.ctrlKey) &&
+    !(isMac ? event.ctrlKey : event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
 export function getTerminalShortcutAction(
   event: TerminalShortcutKeyEventLike,
   context: TerminalShortcutContext,
@@ -62,12 +85,7 @@ export function getTerminalShortcutAction(
   const isPrimaryPaste = context.isMac
     ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === 'v'
     : event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === 'v';
-  const isPrimaryFind =
-    (context.isMac ? event.metaKey : event.ctrlKey) &&
-    !event.altKey &&
-    !(context.isMac ? event.ctrlKey : event.metaKey) &&
-    !event.shiftKey &&
-    key === 'f';
+  const isPrimaryFind = isPrimaryTerminalFindShortcut(event, context.isMac);
   const isExplicitTerminalCopy =
     !context.isMac &&
     event.ctrlKey &&
@@ -92,6 +110,10 @@ export function getTerminalShortcutAction(
       kind: 'send-input',
       preventDefault: true,
     };
+  }
+
+  if (isPrimaryFind) {
+    return FIND_TERMINAL_SHORTCUT;
   }
 
   if (context.isMac && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
@@ -126,10 +148,6 @@ export function getTerminalShortcutAction(
   }
 
   if (context.browserMode) {
-    if (isPrimaryFind) {
-      return BLOCK_TERMINAL_SHORTCUT;
-    }
-
     if (
       (context.isMac && isPrimaryCopy) ||
       (!context.isMac && isPrimaryCopy && context.hasSelection)

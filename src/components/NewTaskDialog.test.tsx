@@ -1,23 +1,22 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
-import { createSignal, Show, type JSX } from 'solid-js';
+import { createSignal, Show } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setStore } from '../store/core';
+import { setStore, store } from '../store/core';
 import {
   createTestAgentDef,
   createTestProject,
   createTestTask,
   resetStoreForTest,
 } from '../test/store-test-helpers';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 
 const {
   createCurrentBranchTaskMock,
   createExistingWorktreeTaskMock,
   createTaskMock,
-  hasCurrentBranchTaskMock,
   invokeMock,
   invokeWithAbortSignalMock,
-  toggleNewTaskDialogMock,
   updateProjectMock,
 } = vi.hoisted(() => {
   const invokeMock = vi.fn();
@@ -25,7 +24,6 @@ const {
     createCurrentBranchTaskMock: vi.fn(),
     createExistingWorktreeTaskMock: vi.fn(),
     createTaskMock: vi.fn(),
-    hasCurrentBranchTaskMock: vi.fn(() => false),
     invokeMock,
     invokeWithAbortSignalMock: vi.fn(
       async (channel: string, signal: AbortSignal, args?: unknown) => {
@@ -35,7 +33,6 @@ const {
         return result;
       },
     ),
-    toggleNewTaskDialogMock: vi.fn(),
     updateProjectMock: vi.fn(),
   };
 });
@@ -43,14 +40,6 @@ const {
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
   invokeWithAbortSignal: invokeWithAbortSignalMock,
-}));
-
-vi.mock('./Dialog', () => ({
-  Dialog: (props: { children: JSX.Element; open: boolean; width?: string }) => (
-    <Show when={props.open}>
-      <div data-dialog-width={props.width}>{props.children}</div>
-    </Show>
-  ),
 }));
 
 vi.mock('./AgentSelector', () => ({
@@ -89,7 +78,6 @@ vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
     store: core.store,
-    toggleNewTaskDialog: toggleNewTaskDialogMock,
     getProject: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId) ?? null,
     getProjectMode: (project: { projectMode?: 'git' | 'non-git' } | null | undefined) =>
@@ -101,7 +89,6 @@ vi.mock('../store/store', async () => {
     getProjectBranchPrefix: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.branchPrefix ?? 'task',
     updateProject: updateProjectMock,
-    hasCurrentBranchTask: hasCurrentBranchTaskMock,
     getGitHubDropDefaults: () => null,
     setPrefillPrompt: vi.fn(),
   };
@@ -118,6 +105,7 @@ import {
   createTaskOptimistically,
   listPendingTaskCreations,
   resetPendingTaskCreationsForTests,
+  retryPendingTaskCreation,
 } from '../app/task-creation-optimism';
 import { NewTaskDialog } from './NewTaskDialog';
 
@@ -143,6 +131,10 @@ function mockListBranches(localBranchNames: string[]): void {
       });
     }
 
+    if (channel === 'get_gitignored_dirs') {
+      return Promise.resolve({ candidates: [], truncated: false });
+    }
+
     return Promise.resolve([]);
   });
 }
@@ -161,7 +153,6 @@ describe('NewTaskDialog', () => {
         skip_permissions_args: ['--yolo'],
       }),
     ]);
-    hasCurrentBranchTaskMock.mockReturnValue(false);
     mockListBranches(['main', 'release/main']);
   });
 
@@ -169,33 +160,348 @@ describe('NewTaskDialog', () => {
     vi.useRealTimers();
   });
 
-  it('resets dangerously skip confirms back to checked when the dialog reopens', async () => {
-    const [open, setOpen] = createSignal(true);
+  it.each(['Cancel', 'overlay', 'Escape'] as const)(
+    'guards a dirty prompt from the %s close route and commits discard once',
+    async (closeRoute) => {
+      const onClose = vi.fn();
+      render(() => <NewTaskDialog open onClose={onClose} />);
 
-    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
-    await screen.findByRole('button', { name: 'Create Task' });
+      const prompt = await screen.findByPlaceholderText(/Describe the task/i);
+      fireEvent.input(prompt, { target: { value: 'Keep this authored prompt' } });
 
+      if (closeRoute === 'Cancel') {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      } else if (closeRoute === 'overlay') {
+        const overlay = screen.getByRole('dialog', { name: 'New Task' }).closest('.dialog-overlay');
+        if (!(overlay instanceof HTMLElement)) {
+          throw new Error('Expected the New Task overlay');
+        }
+        fireEvent.click(overlay);
+      } else {
+        fireEvent.keyDown(document, { key: 'Escape' });
+      }
+
+      expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+      expect(
+        screen.getByText('Your prompt or task name has changes that will be lost.'),
+      ).toBeDefined();
+      expect((prompt as HTMLTextAreaElement).value).toBe('Keep this authored prompt');
+      expect(onClose).not.toHaveBeenCalled();
+
+      const discard = screen.getByRole('button', { name: 'Discard draft' });
+      fireEvent.click(discard);
+      fireEvent.click(discard);
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('closes untouched, whitespace-only, and reverted text without confirmation', async () => {
+    const onClose = vi.fn();
+    render(() => <NewTaskDialog open onClose={onClose} />);
+
+    const prompt = await screen.findByPlaceholderText(/Describe the task/i);
+    fireEvent.input(prompt, { target: { value: 'Temporary text' } });
+    fireEvent.input(prompt, { target: { value: '  \n  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+  });
+
+  it('guards an explicit task-name edit even when the prompt is untouched', async () => {
+    const onClose = vi.fn();
+    render(() => <NewTaskDialog open onClose={onClose} />);
+
+    fireEvent.input(await screen.findByPlaceholderText('Add user authentication'), {
+      target: { value: 'Important explicit name' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'GitHub drop',
+      prepare: () => setStore('newTaskDropUrl', 'https://github.com/acme/widget/pull/42'),
+      expectedName: '',
+      expectedPrompt: 'review https://github.com/acme/widget/pull/42',
+    },
+    {
+      label: 'arena',
+      prepare: () =>
+        setStore('newTaskPrefillPrompt', {
+          projectId: 'project-1',
+          prompt: 'Compare these arena candidates',
+        }),
+      expectedName: 'Compare arena results',
+      expectedPrompt: 'Compare these arena candidates',
+    },
+  ])('treats an untouched $label prefill as the clean baseline', async (prefillCase) => {
+    const onClose = vi.fn();
+    prefillCase.prepare();
+    render(() => <NewTaskDialog open onClose={onClose} />);
+
+    const prompt = (await screen.findByPlaceholderText(
+      /Describe the task/i,
+    )) as HTMLTextAreaElement;
+    const name = document.querySelector<HTMLInputElement>(
+      '.new-task-dialog-form input.input-field[type="text"]',
+    );
+    if (!name) {
+      throw new Error('Expected the task name input');
+    }
+    expect(prompt.value).toBe(prefillCase.expectedPrompt);
+    expect(name.value).toBe(prefillCase.expectedName);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+  });
+
+  it.each([
+    {
+      label: 'GitHub drop prompt',
+      prepare: () => setStore('newTaskDropUrl', 'https://github.com/acme/widget/pull/42'),
+      field: 'prompt' as const,
+    },
+    {
+      label: 'arena name',
+      prepare: () =>
+        setStore('newTaskPrefillPrompt', {
+          projectId: 'project-1',
+          prompt: 'Compare these arena candidates',
+        }),
+      field: 'name' as const,
+    },
+  ])('guards deleting the prefilled $label', async (prefillCase) => {
+    prefillCase.prepare();
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const target =
+      prefillCase.field === 'prompt'
+        ? await screen.findByPlaceholderText(/Describe the task/i)
+        : await screen.findByDisplayValue('Compare arena results');
+    fireEvent.input(target, { target: { value: '' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+  });
+
+  it('keeps the complete form intact and restores the prompt caret after cancelling discard', async () => {
+    const animationFrame = installManualAnimationFrame();
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const prompt = (await screen.findByPlaceholderText(
+      /Describe the task/i,
+    )) as HTMLTextAreaElement;
+    const name = screen.getByPlaceholderText('Add user authentication') as HTMLInputElement;
+    fireEvent.input(prompt, { target: { value: 'Draft prompt with caret' } });
+    fireEvent.input(name, { target: { value: 'Draft name' } });
     await openAdvanced();
-    const checkbox = await screen.findByRole('checkbox', {
-      name: /Dangerously skip all confirms/i,
-    });
-    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    const steps = screen.getByRole('checkbox', { name: /Track task steps/i });
+    fireEvent.click(steps);
+    prompt.focus();
+    prompt.setSelectionRange(6, 6);
 
-    fireEvent.click(checkbox);
-    expect((checkbox as HTMLInputElement).checked).toBe(false);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    animationFrame.flush();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(prompt.value).toBe('Draft prompt with caret');
+    expect(name.value).toBe('Draft name');
+    expect((steps as HTMLInputElement).checked).toBe(true);
 
-    setOpen(false);
-    await waitFor(() => {
-      expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    animationFrame.flush();
+
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+    expect(document.activeElement).toBe(prompt);
+    expect(prompt.selectionStart).toBe(6);
+    expect(prompt.selectionEnd).toBe(6);
+    expect(prompt.value).toBe('Draft prompt with caret');
+    expect(name.value).toBe('Draft name');
+    expect((steps as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('falls back to the terminal name field when the prior focus is not editable', async () => {
+    const animationFrame = installManualAnimationFrame();
+    const user = userEvent.setup();
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    const name = screen.getByPlaceholderText('Terminal') as HTMLInputElement;
+    await user.type(name, 'Edited terminal name');
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    cancel.focus();
+    await user.click(cancel);
+    animationFrame.flush();
+
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+    animationFrame.flush();
+
+    expect(document.activeElement).toBe(name);
+    expect(name.value).toBe('Edited terminal name');
+  });
+
+  it('does not guard changes to intentionally unprotected form options', async () => {
+    const onClose = vi.fn();
+    render(() => <NewTaskDialog open onClose={onClose} />);
+    await openAdvanced();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Track task steps/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+  });
+
+  it('resets a confirmed discarded draft only on the next open generation', async () => {
+    const [open, setOpen] = createSignal(true);
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+
+    fireEvent.input(await screen.findByPlaceholderText(/Describe the task/i), {
+      target: { value: 'Discard me' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }));
+    expect(screen.queryByRole('dialog', { name: 'New Task' })).toBeNull();
 
     setOpen(true);
-    await screen.findByRole('button', { name: 'Create Task' });
+    const reopenedPrompt = (await screen.findByPlaceholderText(
+      /Describe the task/i,
+    )) as HTMLTextAreaElement;
+    expect(reopenedPrompt.value).toBe('');
+  });
+
+  it('does not leave discard confirmation mounted after the parent closes externally', async () => {
+    const [open, setOpen] = createSignal(true);
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+
+    fireEvent.input(await screen.findByPlaceholderText(/Describe the task/i), {
+      target: { value: 'Draft from an obsolete open generation' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+
+    setOpen(false);
+    expect(screen.queryByRole('dialog', { name: 'New Task' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+
+    setOpen(true);
+    const reopenedPrompt = (await screen.findByPlaceholderText(
+      /Describe the task/i,
+    )) as HTMLTextAreaElement;
+    expect(reopenedPrompt.value).toBe('');
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
+  });
+
+  it('does not reset or rebaseline text after agent, settings, project, and Git updates', async () => {
+    let resolveBranches:
+      | ((value: {
+          branches: Array<{ current: boolean; local: boolean; name: string; remote: boolean }>;
+          defaultBranch: string;
+          generatedAt: number;
+        }) => void)
+      | undefined;
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return new Promise((resolve) => {
+          resolveBranches = resolve;
+        });
+      }
+      if (channel === 'get_gitignored_dirs') {
+        return Promise.resolve({
+          candidates: [{ isDefault: true, name: 'node_modules' }],
+          truncated: false,
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    const prompt = (await screen.findByPlaceholderText(
+      /Describe the task/i,
+    )) as HTMLTextAreaElement;
+    const name = screen.getByPlaceholderText('Add user authentication') as HTMLInputElement;
+    fireEvent.input(prompt, { target: { value: 'Stable authored prompt' } });
+    fireEvent.input(name, { target: { value: 'Stable authored name' } });
     await openAdvanced();
-    const reopenedCheckbox = await screen.findByRole('checkbox', {
+
+    setStore('availableAgents', [
+      createTestAgentDef({
+        id: 'codex',
+        name: 'Codex refreshed',
+        skip_permissions_args: [],
+      }),
+    ]);
+    setStore('newTaskDefaults', { skipPermissions: false, stepsTracking: true });
+    setStore('projects', 0, 'name', 'Project refreshed');
+    await waitFor(() => expect(resolveBranches).toBeTypeOf('function'));
+    resolveBranches?.({
+      branches: [
+        { current: true, local: true, name: 'main', remote: true },
+        { current: false, local: true, name: 'release/main', remote: true },
+      ],
+      defaultBranch: 'main',
+      generatedAt: 456,
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base branch')).toBeDefined();
+    });
+
+    expect(prompt.value).toBe('Stable authored prompt');
+    expect(name.value).toBe('Stable authored name');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+  });
+
+  it('returns to editing after synchronous validation fails and still protects the draft', async () => {
+    const onClose = vi.fn();
+    setStore('projects', []);
+    render(() => <NewTaskDialog open onClose={onClose} />);
+
+    fireEvent.input(await screen.findByPlaceholderText(/Describe the task/i), {
+      target: { value: 'Draft without a project' },
+    });
+    const createButton = screen.getByRole('button', { name: 'Create Task' });
+    fireEvent.submit(createButton.closest('form') as HTMLFormElement);
+    expect(screen.getByText('Select a project')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('dialog', { name: 'Discard new task draft?' })).toBeDefined();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('uses saved defaults without letting one-task overrides mutate them', async () => {
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await screen.findByRole('button', { name: 'Create Task' });
+
+    await openAdvanced();
+    const permissionsCheckbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
-    expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
+    const stepsCheckbox = await screen.findByRole('checkbox', {
+      name: /Track task steps/i,
+    });
+    expect((permissionsCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((stepsCheckbox as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(permissionsCheckbox);
+    fireEvent.click(stepsCheckbox);
+    expect((permissionsCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((stepsCheckbox as HTMLInputElement).checked).toBe(false);
+    expect(store.newTaskDefaults).toEqual({
+      skipPermissions: false,
+      stepsTracking: true,
+    });
   });
 
   it('reloads only the final selected project when reopening with a different default', async () => {
@@ -221,7 +527,7 @@ describe('NewTaskDialog', () => {
         });
       }
       if (channel === 'get_gitignored_dirs') {
-        return Promise.resolve([]);
+        return Promise.resolve({ candidates: [], truncated: false });
       }
       return Promise.resolve([]);
     });
@@ -337,6 +643,31 @@ describe('NewTaskDialog', () => {
       );
     });
     expect(listPendingTaskCreations()).toEqual([]);
+  });
+
+  it('reuses one backend adapter operation identity after a lost-response retry', async () => {
+    const user = userEvent.setup();
+    createTaskMock
+      .mockRejectedValueOnce(new Error('Response lost after commit'))
+      .mockResolvedValueOnce('task-terminal');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await user.click(await screen.findByRole('button', { name: 'Terminal' }));
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+
+    await waitFor(() => {
+      expect(listPendingTaskCreations()[0]?.state).toMatchObject({ kind: 'error' });
+    });
+    const pendingId = listPendingTaskCreations()[0]?.pendingId;
+    if (!pendingId) throw new Error('Expected a failed optimistic task');
+    const firstOperationId = createTaskMock.mock.calls[0]?.[0]?.adapterOperationId;
+
+    retryPendingTaskCreation(pendingId);
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(2));
+
+    expect(firstOperationId).toEqual(expect.any(String));
+    expect(createTaskMock.mock.calls[1]?.[0]?.adapterOperationId).toBe(firstOperationId);
+    await waitFor(() => expect(listPendingTaskCreations()).toEqual([]));
   });
 
   it('ignores a hidden agent prompt after switching to terminal mode', async () => {
@@ -486,14 +817,42 @@ describe('NewTaskDialog', () => {
     });
     expect(listPendingTaskCreations()).toMatchObject([
       {
-        baseBranch: 'main',
         gitIsolation: 'current-branch',
         taskMode: 'terminal',
       },
     ]);
+    expect(listPendingTaskCreations()[0]).not.toHaveProperty('baseBranch');
   });
 
-  it('disables project-root creation while a terminal root task is pending', async () => {
+  it('does not query ignored-file candidates when a project opens in root mode', async () => {
+    const user = userEvent.setup();
+    const [open, setOpen] = createSignal(true);
+    createCurrentBranchTaskMock.mockResolvedValue('task-root');
+    setStore('projects', [
+      createTestProject({
+        defaultTaskGitIsolation: 'current-branch',
+        id: 'project-1',
+        path: '/repo',
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+    const projectRootButton = await screen.findByRole('button', { name: 'Project root' });
+    expect(projectRootButton.getAttribute('aria-pressed')).toBe('true');
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === 'get_gitignored_dirs'),
+    ).toHaveLength(0);
+
+    await user.type(screen.getByPlaceholderText('Add user authentication'), 'Root task');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+    await waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('dialog', { name: 'New Task' })).toBeNull();
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === 'get_gitignored_dirs'),
+    ).toHaveLength(0);
+  });
+
+  it('allows another project-root task while a terminal root task is pending', async () => {
     const user = userEvent.setup();
     createTaskOptimistically({
       baseBranch: 'main',
@@ -509,10 +868,10 @@ describe('NewTaskDialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Terminal' }));
 
     const projectRootButton = screen.getByRole('button', { name: 'Project root' });
-    expect((projectRootButton as HTMLButtonElement).disabled).toBe(true);
-    expect(
-      screen.getByText('A project-root task is already being created for this project.'),
-    ).toBeDefined();
+    expect((projectRootButton as HTMLButtonElement).disabled).toBe(false);
+    await user.click(projectRootButton);
+    await user.click(screen.getByRole('button', { name: 'Create Terminal Task' }));
+    await waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
   });
 
   it('creates a terminal task in an existing worktree through the shared import workflow', async () => {
@@ -577,6 +936,7 @@ describe('NewTaskDialog', () => {
         }),
       );
     });
+    expect(createTaskMock.mock.calls[0]?.[0].launch).not.toHaveProperty('skipPermissions');
   });
 
   it('shows custom command parse errors before submit', async () => {
@@ -623,8 +983,93 @@ describe('NewTaskDialog', () => {
     });
   });
 
+  it('does not pass the saved skip-permission default to an unsupported agent', async () => {
+    createTaskMock.mockResolvedValue('task-unsupported');
+    setStore('availableAgents', [
+      createTestAgentDef({
+        id: 'plain-agent',
+        name: 'Plain agent',
+        skip_permissions_args: [],
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+
+    expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    fireEvent.input(screen.getByPlaceholderText('Add user authentication'), {
+      target: { value: 'Safe launch' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+    expect(createTaskMock.mock.calls[0]?.[0].launch).not.toHaveProperty('skipPermissions');
+  });
+
+  it('does not pass the saved skip-permission default to Hydra', async () => {
+    createTaskMock.mockResolvedValue('task-hydra');
+    setStore('availableAgents', [
+      createTestAgentDef({
+        adapter: 'hydra',
+        id: 'hydra',
+        name: 'Hydra',
+        skip_permissions_args: ['--unsafe'],
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+
+    expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    fireEvent.input(screen.getByPlaceholderText('Add user authentication'), {
+      target: { value: 'Hydra launch' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+    expect(createTaskMock.mock.calls[0]?.[0].launch).not.toHaveProperty('skipPermissions');
+  });
+
+  it('rechecks skip-permission capability at submit when the selected agent changes', async () => {
+    createTaskMock.mockResolvedValue('task-capability-change');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await openAdvanced();
+    expect(screen.getByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeDefined();
+
+    setStore('availableAgents', 0, 'skip_permissions_args', []);
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    });
+
+    fireEvent.input(screen.getByPlaceholderText('Add user authentication'), {
+      target: { value: 'Capability changed' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+    expect(createTaskMock.mock.calls[0]?.[0].launch).not.toHaveProperty('skipPermissions');
+  });
+
+  it('blocks submit when the selected agent becomes unavailable', async () => {
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await screen.findByRole('button', { name: 'Create Task' });
+    fireEvent.input(screen.getByPlaceholderText('Add user authentication'), {
+      target: { value: 'Unavailable agent' },
+    });
+
+    setStore('availableAgents', 0, 'available', false);
+    const createButton = screen.getByRole('button', { name: 'Create Task' });
+    await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(true));
+
+    fireEvent.submit(createButton.closest('form') as HTMLFormElement);
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Select an available agent')).toBeDefined();
+  });
+
   it('closes the dialog synchronously while the create round trip is still in flight', async () => {
     let resolveCreate: (taskId: string) => void = () => {};
+    const onClose = vi.fn();
     createTaskMock.mockImplementation(
       () =>
         new Promise<string>((resolve) => {
@@ -632,13 +1077,18 @@ describe('NewTaskDialog', () => {
         }),
     );
 
-    render(() => <NewTaskDialog open onClose={() => {}} />);
+    render(() => <NewTaskDialog open onClose={onClose} />);
     await screen.findByRole('button', { name: 'Create Task' });
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
     fireEvent.input(taskNameInput, { target: { value: 'Instant task' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    const createButton = screen.getByRole('button', { name: 'Create Task' });
+    fireEvent.click(createButton);
+    fireEvent.click(createButton);
 
-    expect(toggleNewTaskDialogMock).toHaveBeenCalledWith(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(updateProjectMock).toHaveBeenCalledTimes(1);
+    expect(createTaskMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Discard new task draft?' })).toBeNull();
     expect(listPendingTaskCreations()).toMatchObject([
       { name: 'Instant task', state: { kind: 'creating' } },
     ]);
@@ -650,14 +1100,15 @@ describe('NewTaskDialog', () => {
   });
 
   it('keeps the dialog open when synchronous validation fails', async () => {
-    render(() => <NewTaskDialog open onClose={() => {}} />);
+    const onClose = vi.fn();
+    render(() => <NewTaskDialog open onClose={onClose} />);
     await screen.findByRole('button', { name: 'Create Task' });
 
     fireEvent.submit(
       screen.getByRole('button', { name: 'Create Task' }).closest('form') as HTMLFormElement,
     );
 
-    expect(toggleNewTaskDialogMock).not.toHaveBeenCalledWith(false);
+    expect(onClose).not.toHaveBeenCalled();
     expect(createTaskMock).not.toHaveBeenCalled();
     expect(listPendingTaskCreations()).toEqual([]);
   });
@@ -692,7 +1143,7 @@ describe('NewTaskDialog', () => {
     });
   });
 
-  it('shows ignored directory suggestion failures without blocking task creation', async () => {
+  it('shows ignored file suggestion failures with retry without blocking task creation', async () => {
     createTaskMock.mockResolvedValue('task-1');
     invokeMock.mockRejectedValue(new Error('gitignored backend unavailable'));
 
@@ -700,7 +1151,7 @@ describe('NewTaskDialog', () => {
 
     expect(
       await screen.findByText(
-        'Ignored directory suggestions unavailable: gitignored backend unavailable',
+        'Ignored file suggestions unavailable: gitignored backend unavailable',
       ),
     ).toBeDefined();
 
@@ -721,7 +1172,56 @@ describe('NewTaskDialog', () => {
     });
   });
 
-  it('submits the selected ignored-directory suggestions', async () => {
+  it('blocks only managed-worktree submission while ignored files are loading', async () => {
+    const user = userEvent.setup();
+    let resolveCandidates:
+      | ((value: {
+          candidates: Array<{ isDefault: boolean; name: string }>;
+          truncated: boolean;
+        }) => void)
+      | undefined;
+    createTaskMock.mockResolvedValue('task-1');
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'list_branches') {
+        return Promise.resolve({
+          branches: [{ current: true, local: true, name: 'main', remote: true }],
+          defaultBranch: 'main',
+          generatedAt: 123,
+        });
+      }
+      if (channel === 'get_gitignored_dirs') {
+        return new Promise((resolve) => {
+          resolveCandidates = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+    await user.type(screen.getByPlaceholderText('Add user authentication'), 'Ship safely');
+    expect(await screen.findByText('Checking ignored files…')).toBeDefined();
+    const createButton = screen.getByRole('button', { name: 'Create Task' }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(true);
+
+    fireEvent.submit(createButton.closest('form') as HTMLFormElement);
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Checking ignored files before creating the worktree.')).toBeDefined();
+
+    resolveCandidates?.({
+      candidates: [{ isDefault: true, name: '.claude' }],
+      truncated: false,
+    });
+    await waitFor(() => expect(createButton.disabled).toBe(false));
+    await user.click(createButton);
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({ symlinkDirs: ['.claude'] }),
+      );
+    });
+  });
+
+  it('submits the selected ignored-file entries', async () => {
     const user = userEvent.setup();
     createTaskMock.mockResolvedValue('task-1');
     invokeMock.mockImplementation((channel: string) => {
@@ -740,7 +1240,13 @@ describe('NewTaskDialog', () => {
         });
       }
       if (channel === 'get_gitignored_dirs') {
-        return Promise.resolve(['node_modules', '.venv']);
+        return Promise.resolve({
+          candidates: [
+            { isDefault: true, name: 'node_modules' },
+            { isDefault: false, name: '.venv' },
+          ],
+          truncated: false,
+        });
       }
       return Promise.resolve([]);
     });
@@ -755,7 +1261,7 @@ describe('NewTaskDialog', () => {
       name: '.venv',
     }) as HTMLInputElement;
     expect(nodeModules.checked).toBe(true);
-    expect(virtualEnvironment.checked).toBe(true);
+    expect(virtualEnvironment.checked).toBe(false);
     await user.click(virtualEnvironment);
 
     await user.type(screen.getByPlaceholderText('Add user authentication'), 'Ship it');
@@ -766,13 +1272,13 @@ describe('NewTaskDialog', () => {
         expect.objectContaining({
           name: 'Ship it',
           projectId: 'project-1',
-          symlinkDirs: ['node_modules'],
+          symlinkDirs: ['node_modules', '.venv'],
         }),
       );
     });
   });
 
-  it('does not submit ignored-directory selections from the previous project', async () => {
+  it('does not submit ignored-file selections from the previous project', async () => {
     const user = userEvent.setup();
     createTaskMock.mockResolvedValue('task-2');
     setStore('projects', [
@@ -796,8 +1302,11 @@ describe('NewTaskDialog', () => {
       }
       if (channel === 'get_gitignored_dirs') {
         return args?.projectRoot === '/repo-a'
-          ? Promise.resolve(['node_modules'])
-          : new Promise<string[]>(() => {});
+          ? Promise.resolve({
+              candidates: [{ isDefault: true, name: 'node_modules' }],
+              truncated: false,
+            })
+          : Promise.reject(new Error('project B candidates unavailable'));
       }
       return Promise.resolve([]);
     });
@@ -810,6 +1319,9 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(screen.queryByRole('checkbox', { name: 'node_modules' })).toBeNull();
     });
+    await screen.findByText(
+      'Ignored file suggestions unavailable: project B candidates unavailable',
+    );
     await user.type(screen.getByPlaceholderText('Add user authentication'), 'Project B task');
     await user.click(screen.getByRole('button', { name: 'Create Task' }));
 
@@ -855,7 +1367,10 @@ describe('NewTaskDialog', () => {
       }
 
       if (channel === 'get_gitignored_dirs') {
-        return Promise.resolve(['node_modules']);
+        return Promise.resolve({
+          candidates: [{ isDefault: true, name: 'node_modules' }],
+          truncated: false,
+        });
       }
 
       return Promise.resolve([]);
@@ -887,9 +1402,12 @@ describe('NewTaskDialog', () => {
     ).toHaveLength(ignoredRequestCount);
   });
 
-  it('resets steps tracking when the dialog reopens', async () => {
-    const user = userEvent.setup();
+  it('samples defaults once per open and applies later settings changes on the next open', async () => {
     const [open, setOpen] = createSignal(true);
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: false,
+    });
 
     render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
 
@@ -899,10 +1417,18 @@ describe('NewTaskDialog', () => {
     const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
       name: /Track task steps/i,
     });
+    const permissionsCheckbox = await screen.findByRole('checkbox', {
+      name: /Dangerously skip all confirms/i,
+    });
     expect((stepsTrackingCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((permissionsCheckbox as HTMLInputElement).checked).toBe(false);
 
-    await user.click(stepsTrackingCheckbox);
-    expect((stepsTrackingCheckbox as HTMLInputElement).checked).toBe(true);
+    setStore('newTaskDefaults', {
+      skipPermissions: true,
+      stepsTracking: true,
+    });
+    expect((stepsTrackingCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((permissionsCheckbox as HTMLInputElement).checked).toBe(false);
 
     setOpen(false);
     await waitFor(() => {
@@ -916,11 +1442,21 @@ describe('NewTaskDialog', () => {
     const reopenedCheckbox = await screen.findByRole('checkbox', {
       name: /Track task steps/i,
     });
-    expect((reopenedCheckbox as HTMLInputElement).checked).toBe(false);
+    const reopenedPermissionsCheckbox = await screen.findByRole('checkbox', {
+      name: /Dangerously skip all confirms/i,
+    });
+    expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((reopenedPermissionsCheckbox as HTMLInputElement).checked).toBe(true);
   });
 
-  it('clears project-root mode when the selected project already has a current-branch task', async () => {
-    hasCurrentBranchTaskMock.mockReturnValue(true);
+  it('keeps project-root mode available alongside active and collapsed project-root tasks', async () => {
+    const user = userEvent.setup();
+    setStore('tasks', {
+      'root-active': createTestTask({ id: 'root-active', gitIsolation: 'current-branch' }),
+      'root-collapsed': createTestTask({ id: 'root-collapsed', gitIsolation: 'current-branch' }),
+    });
+    setStore('taskOrder', ['root-active']);
+    setStore('collapsedTaskOrder', ['root-collapsed']);
     setStore('projects', [
       createTestProject({
         defaultTaskGitIsolation: 'current-branch',
@@ -932,11 +1468,14 @@ describe('NewTaskDialog', () => {
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
     const currentBranchButton = await screen.findByRole('button', { name: /^Project root/i });
-    expect((currentBranchButton as HTMLButtonElement).disabled).toBe(true);
-    expect(currentBranchButton.getAttribute('aria-pressed')).toBe('false');
+    expect((currentBranchButton as HTMLButtonElement).disabled).toBe(false);
+    expect(currentBranchButton.getAttribute('aria-pressed')).toBe('true');
     expect(currentBranchButton.getAttribute('title')).toMatch(
       /Reuses the project root instead of creating a worktree/i,
     );
+    await user.type(screen.getByPlaceholderText('Add user authentication'), 'Parallel root agent');
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+    await waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
   });
 
   it('widens the dialog when many agents are available', async () => {
@@ -952,7 +1491,7 @@ describe('NewTaskDialog', () => {
 
     await screen.findByRole('button', { name: 'Create Task' });
 
-    expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
+    expect(screen.getByRole('dialog', { name: 'New Task' }).style.width).toBe('560px');
   });
 
   it('widens the dialog and exposes isolation guidance in titles when project-root mode is active', async () => {
@@ -968,7 +1507,7 @@ describe('NewTaskDialog', () => {
 
     await screen.findByRole('button', { name: 'Create Task' });
 
-    expect(document.querySelector('[data-dialog-width="560px"]')).not.toBeNull();
+    expect(screen.getByRole('dialog', { name: 'New Task' }).style.width).toBe('560px');
     expect(
       screen.getByTitle(/Reuses the project root instead of creating a worktree/i),
     ).toBeTruthy();
@@ -980,7 +1519,7 @@ describe('NewTaskDialog', () => {
     ).toBeTruthy();
   });
 
-  it('passes the configured project base branch through current-branch task creation', async () => {
+  it('does not submit a configured base branch as a root checkout selection', async () => {
     const user = userEvent.setup();
     createCurrentBranchTaskMock.mockResolvedValue('task-1');
     setStore('projects', [createTestProject({ baseBranch: 'personal/main', path: '/repo' })]);
@@ -1000,6 +1539,10 @@ describe('NewTaskDialog', () => {
         });
       }
 
+      if (channel === 'get_gitignored_dirs') {
+        return Promise.resolve({ candidates: [], truncated: false });
+      }
+
       return Promise.resolve([]);
     });
     render(() => <NewTaskDialog open onClose={() => {}} />);
@@ -1017,13 +1560,46 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(createCurrentBranchTaskMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          baseBranch: 'personal/main',
           name: 'Ship it',
           projectId: 'project-1',
         }),
       );
     });
+    expect(createCurrentBranchTaskMock.mock.calls[0]?.[0]).not.toHaveProperty('baseBranch');
   });
+
+  it.each(['loading', 'unavailable', 'stale-default'] as const)(
+    'allows root creation while branch metadata is %s without exposing a checkout selector',
+    async (branchState) => {
+      const user = userEvent.setup();
+      setStore('projects', [
+        createTestProject({
+          baseBranch: 'removed/default',
+          defaultTaskGitIsolation: 'current-branch',
+        }),
+      ]);
+      invokeMock.mockImplementation((channel: string) => {
+        if (channel !== 'list_branches') return Promise.resolve([]);
+        if (branchState === 'loading') return new Promise(() => {});
+        if (branchState === 'unavailable') return Promise.reject(new Error('Git unavailable'));
+        return Promise.resolve({
+          branches: [{ current: true, local: true, name: 'trunk', remote: false }],
+          defaultBranch: 'trunk',
+          generatedAt: 123,
+        });
+      });
+      render(() => <NewTaskDialog open onClose={() => {}} />);
+      await user.type(screen.getByPlaceholderText('Add user authentication'), 'Root task');
+      await openAdvanced();
+      expect(screen.queryByRole('combobox', { name: 'Base branch' })).toBeNull();
+      expect(screen.getByText(/Uses the checked-out branch without switching it/)).toBeDefined();
+      const submit = screen.getByRole('button', { name: 'Create Task' });
+      expect((submit as HTMLButtonElement).disabled).toBe(false);
+      await user.click(submit);
+      await waitFor(() => expect(createCurrentBranchTaskMock).toHaveBeenCalledOnce());
+      expect(createCurrentBranchTaskMock.mock.calls[0]?.[0]).not.toHaveProperty('baseBranch');
+    },
+  );
 
   it('passes the selected base branch through managed task creation', async () => {
     const user = userEvent.setup();
@@ -1126,6 +1702,9 @@ describe('NewTaskDialog', () => {
     expect(screen.queryByLabelText('Base branch')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Project root/i })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Use existing worktree/i })).toBeNull();
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === 'get_gitignored_dirs'),
+    ).toHaveLength(0);
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');
     await user.type(taskNameInput, 'Inspect folder');

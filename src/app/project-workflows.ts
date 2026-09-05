@@ -15,6 +15,7 @@ import { getProjectMode } from '../store/project-mode';
 import { saveCurrentRuntimeState } from '../store/persistence-save';
 import { store } from '../store/state';
 import type { ProjectMode } from '../store/types';
+import { hasUnsavedDesktopTaskNotes } from './task-notes-recovery-channel';
 import { closeTask } from './task-workflows';
 
 function normalizeProjectPath(pathValue: string): string {
@@ -330,8 +331,30 @@ export async function relinkProject(projectId: string): Promise<boolean> {
 
 export async function removeProjectWithTasks(projectId: string): Promise<void> {
   const projectTaskIds = getProjectTaskIds(projectId);
+  const taskIdsWithUnsavedNotes = new Set(
+    projectTaskIds.filter((taskId) => hasUnsavedDesktopTaskNotes(taskId)),
+  );
+  if (
+    taskIdsWithUnsavedNotes.size > 0 &&
+    !(await confirm(
+      taskIdsWithUnsavedNotes.size === 1
+        ? 'Removing this project will discard unsaved task notes in 1 task. Continue?'
+        : `Removing this project will discard unsaved task notes in ${taskIdsWithUnsavedNotes.size} tasks. Continue?`,
+      {
+        cancelLabel: 'Keep project',
+        kind: 'warning',
+        okLabel: 'Discard notes and remove',
+        title: 'Discard unsaved task notes?',
+      },
+    ))
+  ) {
+    return;
+  }
+
   for (const taskId of projectTaskIds) {
-    await closeTask(taskId);
+    await closeTask(taskId, {
+      taskNotesDiscardConfirmed: taskIdsWithUnsavedNotes.has(taskId),
+    });
   }
 
   const hasRemainingTasks = projectTaskIds.some((taskId) => {

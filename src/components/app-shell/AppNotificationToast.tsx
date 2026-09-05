@@ -10,6 +10,8 @@ interface AppNotificationToastProps {
 
 export function AppNotificationToast(props: AppNotificationToastProps): JSX.Element {
   const isError = (): boolean => props.notification.kind === 'error';
+  const isWarning = (): boolean => props.notification.kind === 'warning';
+  const isPersistent = (): boolean => isError() || props.notification.persistent === true;
 
   return (
     <div
@@ -27,7 +29,9 @@ export function AppNotificationToast(props: AppNotificationToastProps): JSX.Elem
         background: theme.islandBg,
         border: isError()
           ? `1px solid color-mix(in srgb, ${theme.error} 45%, ${theme.border})`
-          : `1px solid ${theme.border}`,
+          : isWarning()
+            ? `1px solid color-mix(in srgb, ${theme.warning} 45%, ${theme.border})`
+            : `1px solid ${theme.border}`,
         'border-radius': '8px',
         padding: '10px 20px',
         color: theme.fg,
@@ -39,7 +43,7 @@ export function AppNotificationToast(props: AppNotificationToastProps): JSX.Elem
       }}
     >
       <span style={{ 'word-break': 'break-word' }}>{props.notification.message}</span>
-      <Show when={isError()}>
+      <Show when={isPersistent()}>
         <button
           aria-label="Dismiss notification"
           onClick={(event) => {

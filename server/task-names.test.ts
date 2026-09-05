@@ -378,4 +378,92 @@ describe('createTaskNameRegistry', () => {
 
     expect(registry.getTaskMetadata('task-1')?.lastPrompt).toBeNull();
   });
+
+  it('restores canonical roots once without letting presentation sync replace them', () => {
+    const registry = createTaskNameRegistry();
+    registry.restoreAuthorizedTaskRoots(
+      JSON.stringify({
+        tasks: {
+          git: { id: 'task-git', worktreePath: '/tmp/project/.worktrees/git' },
+          nonGit: { id: 'task-folder', worktreePath: '/tmp/folder' },
+          root: { id: 'task-root', worktreePath: '/' },
+          rootless: { id: 'task-rootless', worktreePath: null },
+        },
+      }),
+    );
+
+    expect(registry.classifyTaskContentRoot('task-git')).toMatchObject({
+      kind: 'live',
+      provenance: 'restored',
+      root: '/tmp/project/.worktrees/git',
+    });
+    expect(registry.classifyTaskContentRoot('task-folder')).toMatchObject({
+      kind: 'live',
+      root: '/tmp/folder',
+    });
+    expect(registry.classifyTaskContentRoot('task-root')).toMatchObject({
+      kind: 'live',
+      root: '/',
+    });
+    expect(registry.classifyTaskContentRoot('task-rootless').kind).toBe('tombstoned');
+
+    const restoredGeneration = registry.classifyTaskContentRoot('task-git').generation;
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: { git: { id: 'task-git', worktreePath: '/tmp/renderer-substitution' } },
+      }),
+    );
+    registry.restoreAuthorizedTaskRoots(
+      JSON.stringify({ tasks: { git: { id: 'task-git', worktreePath: '/tmp/second-seed' } } }),
+    );
+    expect(registry.classifyTaskContentRoot('task-git')).toEqual({
+      generation: restoredGeneration,
+      kind: 'live',
+      provenance: 'restored',
+      root: '/tmp/project/.worktrees/git',
+    });
+  });
+
+  it('keeps a backend-created root authoritative when startup restoration races it', () => {
+    const registry = createTaskNameRegistry();
+    registry.registerCreatedTask('task-1', { worktreePath: '/tmp/created' });
+    const created = registry.classifyTaskContentRoot('task-1');
+
+    registry.restoreAuthorizedTaskRoots(
+      JSON.stringify({ tasks: { one: { id: 'task-1', worktreePath: '/tmp/restored' } } }),
+    );
+    expect(registry.classifyTaskContentRoot('task-1')).toEqual(created);
+  });
+
+  it('uses fresh generations for real lifecycle transitions and preserves negative state', () => {
+    const registry = createTaskNameRegistry();
+    expect(registry.classifyTaskContentRoot('task-1')).toEqual({ generation: 0n, kind: 'unknown' });
+
+    registry.registerCreatedTask('task-1', { worktreePath: '/tmp/project' });
+    const live = registry.classifyTaskContentRoot('task-1');
+    registry.markTaskClosing('task-1');
+    const closing = registry.classifyTaskContentRoot('task-1');
+    registry.deleteTask('task-1');
+    const removed = registry.classifyTaskContentRoot('task-1');
+
+    expect(live.kind).toBe('live');
+    expect(closing.kind).toBe('closing');
+    expect(removed.kind).toBe('removed');
+    expect(closing.generation).toBeGreaterThan(live.generation);
+    expect(removed.generation).toBeGreaterThan(closing.generation);
+    expect(registry.classifyTaskContentRoot('task-1').kind).not.toBe('unknown');
+  });
+
+  it('does not advance a generation for duplicated backend side effects', () => {
+    const registry = createTaskNameRegistry();
+    registry.registerCreatedTask('task-1', { worktreePath: '/tmp/project' });
+    const first = registry.classifyTaskContentRoot('task-1');
+    registry.registerCreatedTask('task-1', { worktreePath: '/tmp/project' });
+    expect(registry.classifyTaskContentRoot('task-1')).toEqual(first);
+
+    registry.deleteTask('task-1');
+    const removed = registry.classifyTaskContentRoot('task-1');
+    registry.deleteTask('task-1');
+    expect(registry.classifyTaskContentRoot('task-1')).toEqual(removed);
+  });
 });

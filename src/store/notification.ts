@@ -14,12 +14,16 @@ function clearNotificationTimer(): void {
 
 export function showNotification(
   message: string,
-  options: { kind?: AppNotification['kind'] } = {},
+  options: { kind?: AppNotification['kind']; persistent?: true } = {},
 ): void {
   const kind = options.kind ?? 'info';
   clearNotificationTimer();
-  setStore('notification', { kind, message });
-  if (kind === 'error') {
+  setStore('notification', {
+    kind,
+    message,
+    ...(options.persistent ? { persistent: true as const } : {}),
+  });
+  if (kind === 'error' || options.persistent) {
     return;
   }
 

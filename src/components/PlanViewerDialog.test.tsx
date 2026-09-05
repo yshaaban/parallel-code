@@ -323,6 +323,7 @@ describe('PlanViewerDialog', () => {
         planContent={'[Guide](guide.md)'}
         planFileName="plan.md"
         relativePath="docs/plans/plan.md"
+        taskId="task-1"
         worktreePath="/tmp/project"
       />
     ));
@@ -333,8 +334,7 @@ describe('PlanViewerDialog', () => {
       expect(openMarkdownViewerMock).toHaveBeenCalledWith({
         agentId: undefined,
         relativePath: 'docs/plans/guide.md',
-        taskId: undefined,
-        worktreePath: '/tmp/project',
+        taskId: 'task-1',
       });
     });
   });

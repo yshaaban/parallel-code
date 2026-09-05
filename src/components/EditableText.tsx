@@ -97,7 +97,6 @@ export function EditableText(props: EditableTextProps): JSX.Element {
           'font-size': 'inherit',
           'font-family': 'inherit',
           'font-weight': 'inherit',
-          outline: 'none',
           width: '100%',
           'min-width': '0',
         }}

@@ -43,6 +43,7 @@ export interface CreateAgentSupervisionControllerOptions {
 
 export interface AgentSpawnMetadata {
   agentId: string;
+  generation?: number;
   isShell: boolean;
   runnerInstanceId?: string;
   runnerProvider?: AgentSupervisionSnapshot['runnerProvider'];
@@ -77,6 +78,13 @@ export function createAgentSupervisionController(
   const setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
   const clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
   const trackers = new Map<string, AgentTracker>();
+  const nextSupervisionVersionByAgentId = new Map<string, number>();
+
+  function allocateSupervisionVersion(agentId: string): number {
+    const version = nextSupervisionVersionByAgentId.get(agentId) ?? 1;
+    nextSupervisionVersionByAgentId.set(agentId, version + 1);
+    return version;
+  }
 
   function emit(event: AgentSupervisionEvent): void {
     const stateVersion = bumpAgentSupervisionStateVersion();
@@ -109,9 +117,16 @@ export function createAgentSupervisionController(
     }
 
     const currentSnapshot = tracker.snapshot;
-    tracker.snapshot = nextSnapshot;
-    if (shouldEmitSnapshotChange(currentSnapshot, nextSnapshot)) {
-      emit(createAgentSupervisionSnapshotEvent(nextSnapshot));
+    const changed = shouldEmitSnapshotChange(currentSnapshot, nextSnapshot);
+    const committedSnapshot: AgentSupervisionSnapshot = {
+      ...nextSnapshot,
+      supervisionVersion: changed
+        ? allocateSupervisionVersion(agentId)
+        : (currentSnapshot.supervisionVersion ?? allocateSupervisionVersion(agentId)),
+    };
+    tracker.snapshot = committedSnapshot;
+    if (changed) {
+      emit(createAgentSupervisionSnapshotEvent(committedSnapshot));
     }
   }
 
@@ -171,6 +186,7 @@ export function createAgentSupervisionController(
       snapshot: {
         agentId: metadata.agentId,
         attentionReason: null,
+        generation: metadata.generation ?? 0,
         isShell: metadata.isShell,
         lastOutputAt: timestamp,
         preview: '',
@@ -181,6 +197,7 @@ export function createAgentSupervisionController(
           ? { runnerProvider: metadata.runnerProvider }
           : {}),
         state: 'active',
+        supervisionVersion: allocateSupervisionVersion(metadata.agentId),
         taskId: metadata.taskId,
         updatedAt: timestamp,
       },
@@ -296,6 +313,7 @@ export function createAgentSupervisionController(
       clearQuietTimer(tracker);
     }
     trackers.clear();
+    nextSupervisionVersionByAgentId.clear();
     listeners.clear();
   }
 

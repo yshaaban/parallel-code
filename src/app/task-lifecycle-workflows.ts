@@ -1,21 +1,17 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { resolveAgentRunnerProfile } from '../domain/agent-runners';
-import { buildCoordinatorInitialPrompt } from '../domain/coordinator-instructions';
-import {
-  hasProjectCurrentBranchTask,
-  hasTaskClosingState,
-  isTaskCloseInProgress,
-  isTaskRemoving,
-} from '../domain/task-closing';
+import { hasTaskClosingState, isTaskCloseInProgress } from '../domain/task-closing';
 import { isTerminalTask } from '../domain/task-mode';
+import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
+import { isTerminalTaskMergePhase } from '../domain/task-merge';
 import type { TaskCleanupResult, TaskCleanupWarning } from '../domain/task-cleanup';
-import type { AgentDef } from '../ipc/types';
+import type { AgentDef, WorktreeSymlinkWarning, WorktreeSymlinkWarningReason } from '../ipc/types';
+import { confirm } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
-import { recordMergedLines, recordMergedTaskToday } from '../store/completion';
 import {
   getProject,
   getProjectBaseBranch,
@@ -25,14 +21,14 @@ import {
 } from '../store/projects';
 import { showNotification } from '../store/notification';
 import { saveCurrentRuntimeState } from '../store/persistence';
-import { buildTaskProjectModeFields, getProjectMode, isNonGitProject } from '../store/project-mode';
-import { setStore, store, updateWindowTitle } from '../store/state';
+import { applyLoadedWorkspaceStateJson } from '../store/persistence-load';
 import {
-  buildTaskGitIsolationFields,
-  isCurrentBranchTask,
-  isExistingWorktreeTask,
-  isManagedWorktreeTask,
-} from '../store/task-git-isolation';
+  enqueueWorkspaceOrderEdit,
+  enqueueWorkspaceTaskFieldEdit,
+} from '../store/persistence-session';
+import { getProjectMode } from '../store/project-mode';
+import { setStore, store, updateWindowTitle } from '../store/state';
+import { isExistingWorktreeTask, isManagedWorktreeTask } from '../store/task-git-isolation';
 import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
@@ -44,9 +40,29 @@ import { clearTaskConvergence } from './task-convergence';
 import { createPushOutputBinding } from './task-output-channels';
 import { clearTaskReview } from './task-review-state';
 import { clearTaskReviewSignals } from './task-review-signals';
-import type { CoordinatorCreateRunResult } from '../domain/coordinator';
+import {
+  getCurrentTaskGitActionDecision,
+  notifyTaskGitActionDenial,
+} from './task-git-action-capability';
+import { applyMergeProgressSnapshot } from './merge-progress';
+import {
+  areTaskMergeSemanticRequestsEqual,
+  clearRetainedTaskMergeOperation,
+  getRetainedTaskMergeOperation,
+  retainTaskMergeOperation,
+  resetRetainedTaskMergeOperationsForTests,
+} from './task-merge-operation-access';
+import { notifyTaskMergeFinalizerRepair } from './task-merge-operation-recovery';
+import {
+  admitDesktopTaskNotesRemoval,
+  completeDesktopTaskNotesRemoval,
+} from './task-notes-recovery-channel';
 
 const collapsingTaskIds = new Set<string>();
+
+function getSharedOrderedTaskIds(order: readonly string[]): string[] {
+  return order.filter((taskId) => store.tasks[taskId] !== undefined);
+}
 
 interface TaskRuntimeCleanupRequest {
   agentIds: string[];
@@ -65,20 +81,16 @@ interface TaskRuntimeCleanupOptions {
 
 const TASK_CONTROLLED_BY_PEER_MESSAGE = 'Task is controlled by another client';
 
-function buildTaskInitialPrompt(
-  initialPrompt: string | undefined,
-  coordinatorMode: boolean,
-  coordinatorRunResult: CoordinatorCreateRunResult | undefined,
-): string | undefined {
-  if (!coordinatorMode) {
-    return initialPrompt;
-  }
-  if (coordinatorRunResult?.toolCommand === undefined) {
-    return buildCoordinatorInitialPrompt(initialPrompt);
-  }
-
-  return buildCoordinatorInitialPrompt(initialPrompt, {
-    toolCommand: coordinatorRunResult.toolCommand,
+async function admitTaskNotesRemoval(taskId: string, confirmed = false): Promise<boolean> {
+  return admitDesktopTaskNotesRemoval(taskId, {
+    confirmed,
+    confirmDiscard: (message) =>
+      confirm(message, {
+        cancelLabel: 'Keep task',
+        kind: 'warning',
+        okLabel: 'Discard notes and continue',
+        title: 'Discard unsaved task notes?',
+      }),
   });
 }
 
@@ -267,6 +279,21 @@ function getTaskCleanupWarnings(result: TaskCleanupResult | undefined): TaskClea
   return result.cleanupWarnings;
 }
 
+function requireCommittedTaskRemoval(result: TaskCleanupResult | undefined): void {
+  if (
+    result?.removalState === undefined ||
+    result.removalState === 'complete' ||
+    result.removalState === 'finalizer-repair-pending'
+  ) {
+    return;
+  }
+  throw new Error(
+    result.removalState === 'cleanup-pending'
+      ? 'Task cleanup is still pending. Retry closing the task to continue safely.'
+      : 'Task removal is waiting for its linked operation to finish.',
+  );
+}
+
 function getTaskCleanupWarningMessage(warnings: TaskCleanupWarning[]): string {
   const hasWorktreeWarning = warnings.some((warning) => warning.kind === 'worktree');
   const hasContainerWarning = warnings.some((warning) => warning.kind === 'containers');
@@ -307,6 +334,27 @@ function reportTaskCleanupWarnings(taskId: string, warnings: TaskCleanupWarning[
   showNotification(getTaskCleanupWarningMessage(warnings));
 }
 
+function reportWorktreeSymlinkWarnings(warnings: readonly WorktreeSymlinkWarning[]): void {
+  if (warnings.length === 0) {
+    return;
+  }
+
+  const reasonCounts: Partial<Record<WorktreeSymlinkWarningReason, number>> = {};
+  for (const warning of warnings) {
+    reasonCounts[warning.reason] = (reasonCounts[warning.reason] ?? 0) + 1;
+  }
+
+  console.warn('Task created with ignored-file sharing warnings:', {
+    count: warnings.length,
+    reasonCounts,
+  });
+  showNotification(
+    warnings.length === 1
+      ? 'Task created, but 1 ignored entry could not be shared with its worktree.'
+      : `Task created, but ${warnings.length} ignored entries could not be shared with its worktree.`,
+  );
+}
+
 export type TaskLaunch =
   | {
       kind: 'agent';
@@ -318,6 +366,8 @@ export type TaskLaunch =
   | { kind: 'terminal' };
 
 export interface TaskCreationOptions {
+  /** Stable identity allocated by the desktop submission owner and reused for exact retries. */
+  adapterOperationId: string;
   name: string;
   projectId: string;
   baseBranch?: string;
@@ -334,63 +384,6 @@ export interface CreateTaskOptions extends TaskCreationOptions {
   projectMode?: ProjectMode;
 }
 
-async function rollbackCreatedTaskAfterCoordinatorFailure(options: {
-  agentIds: string[];
-  branchName: string;
-  gitIsolation: TaskGitIsolationMode;
-  projectMode: ProjectMode;
-  projectRoot: string;
-  taskId: string;
-  worktreePath: string;
-}): Promise<void> {
-  const controllerId = getRuntimeClientId();
-  try {
-    const lease = await invoke(IPC.AcquireTaskCommandLease, {
-      action: 'roll back failed coordinator setup',
-      clientId: controllerId,
-      ownerId: controllerId,
-      taskId: options.taskId,
-      takeover: true,
-    });
-    if (!lease.acquired) {
-      throw new Error('Failed to acquire rollback control for coordinator setup');
-    }
-
-    if (options.projectMode === 'git' && options.gitIsolation === 'worktree') {
-      const cleanupResult = await invoke(IPC.DeleteTask, {
-        agentIds: options.agentIds,
-        branchName: options.branchName,
-        controllerId,
-        deleteBranch: true,
-        projectRoot: options.projectRoot,
-        taskId: options.taskId,
-        worktreePath: options.worktreePath,
-      });
-      reportTaskCleanupWarnings(options.taskId, getTaskCleanupWarnings(cleanupResult));
-      return;
-    }
-
-    const cleanupResult = await invoke(IPC.CleanupTaskRuntime, {
-      agentIds: options.agentIds,
-      controllerId,
-      projectMode: options.projectMode,
-      projectRoot: options.projectRoot,
-      removeTaskState: true,
-      taskId: options.taskId,
-      worktreePath: options.worktreePath,
-    });
-    reportTaskCleanupWarnings(options.taskId, getTaskCleanupWarnings(cleanupResult));
-  } catch (error) {
-    console.warn('Failed to roll back task after coordinator setup failure:', error);
-  } finally {
-    await invoke(IPC.ReleaseTaskCommandLease, {
-      clientId: controllerId,
-      ownerId: controllerId,
-      taskId: options.taskId,
-    }).catch(() => undefined);
-  }
-}
-
 export async function createTask(opts: CreateTaskOptions): Promise<string> {
   const {
     name,
@@ -402,6 +395,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     githubUrl,
     launch,
     stepsTracking,
+    adapterOperationId,
   } = opts;
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) {
@@ -430,11 +424,21 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke(IPC.CreateTask, {
     ...(launch.kind === 'agent'
-      ? { agentDefId: launch.agentDef.id, agentDefName: launch.agentDef.name }
+      ? {
+          agentDefId: launch.agentDef.id,
+          agentDefName: launch.agentDef.name,
+          ...(launch.coordinatorMode !== undefined
+            ? { coordinatorMode: launch.coordinatorMode }
+            : {}),
+          ...(launch.initialPrompt !== undefined ? { initialPrompt: launch.initialPrompt } : {}),
+          ...(launch.skipPermissions !== undefined
+            ? { skipPermissions: launch.skipPermissions }
+            : {}),
+        }
       : {}),
     ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
     name,
-    operationId: createRandomId(),
+    operationId: adapterOperationId,
     ...(projectMode === 'non-git' ? { projectMode } : {}),
     ...(projectMode === 'git' ? { branchPrefix } : {}),
     ...(projectMode === 'git' && gitIsolation !== undefined ? { gitIsolation } : {}),
@@ -448,111 +452,62 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 
-  const runtimeId = createRandomId();
-  const resolvedGitIsolation = result.git_isolation ?? gitIsolation;
-  const resultProjectMode = result.project_mode ?? projectMode;
-  const taskBaseBranch =
-    resultProjectMode === 'git' ? (result.base_branch ?? resolvedBaseBranch) : undefined;
-  let coordinatorRunResult: CoordinatorCreateRunResult | undefined;
+  if (
+    result.creation_writer_epoch !== 'managed-initial-shell-v1' ||
+    !result.session_id ||
+    !Number.isSafeInteger(result.workspace_revision) ||
+    (result.workspace_revision ?? -1) < 1
+  ) {
+    throw new Error('Managed task creation did not return its canonical commit identity');
+  }
+  const canonical = await invoke(IPC.LoadWorkspaceState);
+  if (!canonical?.json || canonical.revision < (result.workspace_revision as number)) {
+    throw new Error('Created task canonical workspace projection is unavailable');
+  }
+  applyLoadedWorkspaceStateJson(canonical.json, canonical.revision);
+  const runtimeId = result.session_id;
+  const canonicalTask = store.tasks[result.id];
+  if (
+    !canonicalTask ||
+    canonicalTask.taskMode !== launch.kind ||
+    canonicalTask.projectId !== projectId ||
+    canonicalTask.branchName !== result.branch_name ||
+    canonicalTask.worktreePath !== result.worktree_path ||
+    (launch.kind === 'agent'
+      ? !canonicalTask.agentIds.includes(runtimeId) || !store.agents[runtimeId]
+      : !canonicalTask.shellAgentIds.includes(runtimeId))
+  ) {
+    throw new Error('Created task canonical projection does not match its committed identity');
+  }
   if (launch.kind === 'agent' && launch.coordinatorMode === true) {
-    try {
-      coordinatorRunResult = await invoke(IPC.CoordinatorCreateRun, {
-        coordinatorAgentId: runtimeId,
-        coordinatorTaskId: result.id,
-        projectId,
-        projectMode: resultProjectMode,
-        projectRoot,
-      });
-    } catch (error) {
-      await rollbackCreatedTaskAfterCoordinatorFailure({
-        agentIds: [],
-        branchName: result.branch_name,
-        gitIsolation: resolvedGitIsolation,
-        projectMode: resultProjectMode,
-        projectRoot,
-        taskId: result.id,
-        worktreePath: result.worktree_path,
-      });
-      throw error;
+    const canonicalAgent = store.agents[runtimeId];
+    const env = canonicalAgent?.def.env;
+    if (
+      canonicalTask.coordinatorRole !== 'coordinator' ||
+      canonicalTask.coordinatorRunId !== result.coordinator_run_id ||
+      canonicalTask.coordinatorCredentialPath !== result.coordinator_credential_path ||
+      env?.PARALLEL_CODE_COORDINATOR_RUN_ID !== result.coordinator_run_id ||
+      env?.PARALLEL_CODE_COORDINATOR_CREDENTIAL !== result.coordinator_credential_path ||
+      (result.coordinator_tool_command !== undefined &&
+        env?.PARALLEL_CODE_COORDINATOR_TOOL !== result.coordinator_tool_command)
+    ) {
+      throw new Error('Created coordinator canonical launch metadata is unavailable');
     }
   }
-  const taskInitialPrompt =
-    launch.kind === 'agent'
-      ? buildTaskInitialPrompt(
-          launch.initialPrompt,
-          launch.coordinatorMode === true,
-          coordinatorRunResult,
-        )
-      : undefined;
-  const task: Task = {
-    id: result.id,
-    taskMode: launch.kind,
-    name,
-    projectId,
-    branchName: result.branch_name,
-    worktreePath: result.worktree_path,
-    agentIds: launch.kind === 'agent' ? [runtimeId] : [],
-    ...(launch.kind === 'agent' ? { selectedAgentId: runtimeId } : {}),
-    shellAgentIds: launch.kind === 'terminal' ? [runtimeId] : [],
-    notes: '',
-    lastPrompt: '',
-    ...buildTaskProjectModeFields({ projectMode: resultProjectMode }),
-    ...(resultProjectMode === 'git'
-      ? buildTaskGitIsolationFields({ gitIsolation: resolvedGitIsolation })
-      : {}),
-    ...(typeof taskBaseBranch === 'string' ? { baseBranch: taskBaseBranch } : {}),
-    ...(taskInitialPrompt ? { initialPrompt: taskInitialPrompt } : {}),
-    ...(launch.kind === 'agent' && launch.skipPermissions ? { skipPermissions: true } : {}),
-    ...(stepsTracking !== undefined ? { stepsTracking } : {}),
-    ...(githubUrl !== undefined ? { githubUrl } : {}),
-    ...(taskInitialPrompt ? { savedInitialPrompt: taskInitialPrompt } : {}),
-    ...(coordinatorRunResult !== undefined
-      ? {
-          coordinatorCredentialPath: coordinatorRunResult.credentialPath,
-          coordinatorRole: 'coordinator' as const,
-          coordinatorRunId: coordinatorRunResult.run.id,
-          ...(coordinatorRunResult.toolCommand !== undefined
-            ? { coordinatorToolCommand: coordinatorRunResult.toolCommand }
-            : {}),
-        }
-      : {}),
-  };
-
-  const agent: Agent | undefined =
-    launch.kind === 'agent'
-      ? {
-          id: runtimeId,
-          taskId: result.id,
-          def: launch.agentDef,
-          resumed: false,
-          status: 'running',
-          exitCode: null,
-          signal: null,
-          lastOutput: [],
-          generation: 0,
-        }
-      : undefined;
 
   setStore(
     produce((state) => {
-      state.tasks[result.id] = task;
-      if (agent) {
-        state.agents[runtimeId] = agent;
-      } else {
-        state.focusedPanel[result.id] = 'shell:0';
-      }
-      state.taskOrder.push(result.id);
+      if (launch.kind === 'terminal') state.focusedPanel[result.id] = 'shell:0';
       state.activeTaskId = result.id;
       state.activeAgentId = runtimeId;
       state.lastProjectId = projectId;
-      if (agent && launch.kind === 'agent') {
-        state.lastAgentId = launch.agentDef.id;
-      }
+      if (launch.kind === 'agent') state.lastAgentId = launch.agentDef.id;
     }),
   );
 
   markAgentSpawned(runtimeId);
   updateWindowTitle(name);
+  reportWorktreeSymlinkWarnings(result.symlink_warnings ?? []);
   return result.id;
 }
 
@@ -561,17 +516,7 @@ export type CreateCurrentBranchTaskOptions = TaskCreationOptions;
 export async function createCurrentBranchTask(
   opts: CreateCurrentBranchTaskOptions,
 ): Promise<string> {
-  const { name, projectId, baseBranch, githubUrl, launch } = opts;
-  if (
-    hasProjectCurrentBranchTask(
-      [...store.taskOrder, ...store.collapsedTaskOrder],
-      store.tasks,
-      projectId,
-    )
-  ) {
-    throw new Error('A project-root task already exists for this project');
-  }
-
+  const { adapterOperationId, name, projectId, baseBranch, githubUrl, launch } = opts;
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) {
     throw new Error('Project not found');
@@ -581,6 +526,7 @@ export async function createCurrentBranchTask(
   }
 
   return createTask({
+    adapterOperationId,
     name,
     launch,
     projectId,
@@ -603,6 +549,7 @@ export async function createExistingWorktreeTask(
   opts: CreateExistingWorktreeTaskOptions,
 ): Promise<string> {
   return createTask({
+    adapterOperationId: opts.adapterOperationId,
     name: opts.name,
     launch: opts.launch,
     projectId: opts.projectId,
@@ -615,13 +562,21 @@ export async function createExistingWorktreeTask(
   });
 }
 
-export async function closeTask(taskId: string): Promise<void> {
-  const task = store.tasks[taskId];
-  if (!task || isTaskCloseInProgress(task)) {
+export interface CloseTaskOptions {
+  taskNotesDiscardConfirmed?: boolean;
+}
+
+export async function closeTask(taskId: string, options: CloseTaskOptions = {}): Promise<void> {
+  const initialTask = store.tasks[taskId];
+  if (!initialTask || isTaskCloseInProgress(initialTask)) {
     return;
   }
 
   const result = await runWithTaskCommandLease(taskId, 'close this task', async () => {
+    const task = store.tasks[taskId];
+    if (!task || isTaskCloseInProgress(task)) return;
+    if (!(await admitTaskNotesRemoval(taskId, options.taskNotesDiscardConfirmed))) return;
+
     const branchName = task.branchName;
     const projectRoot = getProjectPath(task.projectId) ?? '';
     const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
@@ -629,8 +584,6 @@ export async function closeTask(taskId: string): Promise<void> {
     markTaskClosing(taskId);
 
     try {
-      await killTaskAgentsBestEffort(task);
-
       const runtimeAgentIds = getRuntimeAgentIds(task);
       if (isManagedWorktreeTask(task)) {
         const deleteResult = await invoke(IPC.DeleteTask, {
@@ -642,6 +595,7 @@ export async function closeTask(taskId: string): Promise<void> {
           projectRoot,
           worktreePath: task.worktreePath,
         });
+        requireCommittedTaskRemoval(deleteResult);
         reportTaskCleanupWarnings(taskId, getTaskCleanupWarnings(deleteResult));
       } else {
         const cleanupResult = await cleanupTaskRuntimeForTask(task, {
@@ -649,9 +603,11 @@ export async function closeTask(taskId: string): Promise<void> {
           includeWorktreePath: true,
           removeTaskState: true,
         });
+        requireCommittedTaskRemoval(cleanupResult);
         reportTaskCleanupWarnings(taskId, getTaskCleanupWarnings(cleanupResult));
       }
 
+      completeDesktopTaskNotesRemoval(taskId);
       removeTaskFromStore(taskId, runtimeAgentIds);
       await persistTaskRemovalBestEffort(taskId);
     } catch (error) {
@@ -670,75 +626,142 @@ export async function retryCloseTask(taskId: string): Promise<void> {
   await closeTask(taskId);
 }
 
+function getTaskGitWorkflowAdmission(
+  action: 'merge' | 'push',
+  taskId: string,
+): { projectRoot: string; task: Task } | null {
+  const decision = getCurrentTaskGitActionDecision(action, taskId);
+  if (!decision.allowed) {
+    notifyTaskGitActionDenial(decision);
+    return null;
+  }
+
+  const task = store.tasks[taskId];
+  const projectRoot = task ? getProjectPath(task.projectId) : null;
+  if (!task || !projectRoot) {
+    return null;
+  }
+  return { projectRoot, task };
+}
+
 export async function mergeTask(
   taskId: string,
   options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
-  const task = store.tasks[taskId];
-  if (
-    !task ||
-    isTaskRemoving(task) ||
-    task.collapsed ||
-    isCurrentBranchTask(task) ||
-    isNonGitProject(task)
-  ) {
-    return;
-  }
-
-  const projectRoot = getProjectPath(task.projectId);
-  if (!projectRoot) {
-    return;
-  }
+  if (!getTaskGitWorkflowAdmission('merge', taskId)) return;
 
   const result = await runWithTaskCommandLease(taskId, 'merge this task', async () => {
-    const branchName = task.branchName;
+    // Lease acquisition is asynchronous. Re-read the capability and task snapshot at the final
+    // effect boundary so collapse/close/project churn cannot reach Git through a stale closure.
+    const admission = getTaskGitWorkflowAdmission('merge', taskId);
+    if (!admission) return;
+    const { task } = admission;
     const cleanup = !isExistingWorktreeTask(task) && options?.cleanup === true;
-    const runtimeAgentIds = getRuntimeAgentIds(task);
-
-    const mergeResult = await invoke(IPC.MergeTask, {
-      projectRoot,
-      branchName,
-      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
-      squash: options?.squash ?? false,
+    if (cleanup && !(await admitTaskNotesRemoval(taskId))) return;
+    const controllerId = getRuntimeClientId();
+    const semanticRequest = {
       cleanup,
-      controllerId: getRuntimeClientId(),
-      taskId,
-      worktreePath: task.worktreePath,
       ...(options?.message !== undefined ? { message: options.message } : {}),
+      squash: options?.squash ?? false,
+      taskId,
+    };
+    let retained = getRetainedTaskMergeOperation(taskId);
+    let mergeResult: RendererInvokeResponseMap[IPC.StartTaskMergeOperation] | undefined;
+    if (retained) {
+      const status = await invoke(IPC.GetTaskMergeOperationStatus, {
+        access: retained.access,
+        controllerId,
+      });
+      const terminal = isTerminalTaskMergePhase(status.originalOutcome.phase);
+      if (!areTaskMergeSemanticRequestsEqual(retained.semanticRequest, semanticRequest)) {
+        if (!terminal) {
+          throw new Error('A task merge with different options is already in progress');
+        }
+        clearRetainedTaskMergeOperation(taskId, retained.access.operationId);
+        retained = null;
+      } else if (terminal || status.originalOutcome.phase === 'manual-reconciliation-required') {
+        mergeResult = status;
+      }
+    }
+    if (!retained) {
+      const issued = await invoke(IPC.IssueTaskMergeOperation, { controllerId, taskId });
+      if (!retainTaskMergeOperation(issued, semanticRequest)) {
+        throw new Error('Task merge operation access could not be retained for recovery');
+      }
+      retained = getRetainedTaskMergeOperation(taskId);
+      if (!retained) {
+        throw new Error('Task merge operation access could not be retained for recovery');
+      }
+    }
+    mergeResult ??= await invoke(IPC.StartTaskMergeOperation, {
+      access: retained.access,
+      controllerId,
+      semanticRequest,
     });
-    recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
+    applyMergeProgressSnapshot(mergeResult.currentProgress);
+
+    const outcome = mergeResult.originalOutcome;
+    const terminal = isTerminalTaskMergePhase(outcome.phase);
+    const releasedRetainedAccess = terminal
+      ? clearRetainedTaskMergeOperation(taskId, outcome.operationId)
+      : false;
+    if (
+      releasedRetainedAccess &&
+      mergeResult.currentRemoval?.removalState === 'finalizer-repair-pending'
+    ) {
+      notifyTaskMergeFinalizerRepair();
+    }
+
+    if (outcome.phase === 'failed') {
+      throw new Error(`Task merge failed (${outcome.issue?.code ?? 'unknown'})`);
+    }
+    if (outcome.phase === 'manual-reconciliation-required') {
+      throw new Error('Task merge outcome needs local reconciliation before it can continue');
+    }
+    if (outcome.phase === 'expired-unused' || outcome.phase === 'superseded-unused') {
+      throw new Error('Task merge operation expired before admission');
+    }
+    if (cleanup && outcome.phase !== 'completed') {
+      throw new Error('Task merge cleanup is still pending and can be retried safely');
+    }
+    if (!cleanup && outcome.phase !== 'completed-not-counted') {
+      throw new Error('Task merge did not reach a completed state');
+    }
 
     if (cleanup) {
-      await killTaskAgentsBestEffort(task);
-      const cleanupResult = await cleanupTaskRuntimeForTask(task, {
-        bestEffort: true,
-        includeWorktreePath: true,
-        removeTaskState: true,
-      });
-      reportTaskCleanupWarnings(taskId, getTaskCleanupWarnings(cleanupResult));
-      recordMergedTaskToday();
-      removeTaskFromStore(taskId, runtimeAgentIds);
-      await persistTaskRemovalBestEffort(taskId);
+      const canonical = await invoke(IPC.LoadWorkspaceState);
+      if (!canonical?.json) {
+        throw new Error('Merged task canonical removal projection is unavailable');
+      }
+      return {
+        canonical: { json: canonical.json, revision: canonical.revision },
+      };
     }
+    return null;
   });
 
   if (isTaskCommandLeaseSkipped(result)) {
     return;
   }
+  if (!result) return;
+
+  // Project canonical absence only after the enclosing command lease has released. Applying the
+  // projection clears removed-task runtime state, including retained lease state; doing that inside
+  // the lease callback would race its mandatory backend release.
+  applyLoadedWorkspaceStateJson(result.canonical.json, result.canonical.revision);
+  if (store.tasks[taskId]) {
+    throw new Error('Merged task remains in canonical workspace state');
+  }
+  completeDesktopTaskNotesRemoval(taskId);
 }
 
 export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
-  const task = store.tasks[taskId];
-  if (!task || isCurrentBranchTask(task) || isNonGitProject(task)) {
-    return;
-  }
-
-  const projectRoot = getProjectPath(task.projectId);
-  if (!projectRoot) {
-    return;
-  }
+  if (!getTaskGitWorkflowAdmission('push', taskId)) return;
 
   const result = await runWithTaskCommandLease(taskId, 'push this task', async () => {
+    const admission = getTaskGitWorkflowAdmission('push', taskId);
+    if (!admission) return;
+    const { projectRoot, task } = admission;
     const { channel, cleanup } = createPushOutputBinding(onOutput);
 
     try {
@@ -786,6 +809,8 @@ export async function collapseTask(taskId: string): Promise<void> {
         }
         clearAgentSupervisionSnapshots(runtimeAgentIds);
 
+        const baseActiveOrder = getSharedOrderedTaskIds(store.taskOrder);
+        const baseCollapsedOrder = getSharedOrderedTaskIds(store.collapsedTaskOrder);
         setStore(
           produce((state) => {
             const currentTask = state.tasks[taskId];
@@ -829,6 +854,17 @@ export async function collapseTask(taskId: string): Promise<void> {
             }
           }),
         );
+        enqueueWorkspaceOrderEdit(
+          'active',
+          baseActiveOrder,
+          getSharedOrderedTaskIds(store.taskOrder),
+        );
+        enqueueWorkspaceOrderEdit(
+          'collapsed',
+          baseCollapsedOrder,
+          getSharedOrderedTaskIds(store.collapsedTaskOrder),
+        );
+        enqueueWorkspaceTaskFieldEdit(taskId, 'collapsed', undefined, true);
 
         syncWindowTitleToActiveSelection();
       } catch (error) {
@@ -861,6 +897,8 @@ export async function uncollapseTask(taskId: string): Promise<void> {
       task.savedSelectedAgentIndex,
     );
 
+    const baseActiveOrder = getSharedOrderedTaskIds(store.taskOrder);
+    const baseCollapsedOrder = getSharedOrderedTaskIds(store.collapsedTaskOrder);
     setStore(
       produce((state) => {
         const currentTask = state.tasks[taskId];
@@ -900,6 +938,13 @@ export async function uncollapseTask(taskId: string): Promise<void> {
         state.activeAgentId = getTaskActiveAgentId(currentTask);
       }),
     );
+    enqueueWorkspaceOrderEdit('active', baseActiveOrder, getSharedOrderedTaskIds(store.taskOrder));
+    enqueueWorkspaceOrderEdit(
+      'collapsed',
+      baseCollapsedOrder,
+      getSharedOrderedTaskIds(store.collapsedTaskOrder),
+    );
+    enqueueWorkspaceTaskFieldEdit(taskId, 'collapsed', true, undefined);
 
     for (const agent of restoredAgents) {
       markAgentSpawned(agent.id);
@@ -918,4 +963,5 @@ export async function uncollapseTask(taskId: string): Promise<void> {
 
 export function resetTaskLifecycleRuntimeStateForTests(): void {
   collapsingTaskIds.clear();
+  resetRetainedTaskMergeOperationsForTests();
 }

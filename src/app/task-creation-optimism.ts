@@ -22,9 +22,15 @@ export interface PendingTaskCreation {
 }
 
 interface PendingTaskCreationRuntime {
+  attempt: PendingTaskCreationAttempt;
   entry: PendingTaskCreation;
   onCreated: ((taskId: string) => void) | undefined;
-  run: () => Promise<string>;
+  run: (attempt: Readonly<PendingTaskCreationAttempt>) => Promise<string>;
+}
+
+/** Backend adapter identity owned once per admitted desktop submission and reused by UI retries. */
+export interface PendingTaskCreationAttempt {
+  adapterOperationId: string;
 }
 
 const pendingTaskCreationRuntimes = new Map<string, PendingTaskCreationRuntime>();
@@ -60,7 +66,7 @@ function runPendingTaskCreation(pendingId: string): void {
   runtime.entry = { ...runtime.entry, state: { kind: 'creating' } };
   syncPendingTaskCreationsSignal();
 
-  void runtime.run().then(
+  void runtime.run(runtime.attempt).then(
     (taskId) => {
       const currentRuntime = getPendingTaskCreationRuntime(pendingId);
       // The real task is already in the store via the createTask insert;
@@ -91,11 +97,12 @@ export function createTaskOptimistically(options: {
   name: string;
   onCreated?: (taskId: string) => void;
   projectId: string;
-  run: () => Promise<string>;
+  run: (attempt: Readonly<PendingTaskCreationAttempt>) => Promise<string>;
   taskMode: TaskMode;
 }): string {
   const pendingId = `pending-task:${createRandomId()}`;
   pendingTaskCreationRuntimes.set(pendingId, {
+    attempt: { adapterOperationId: createRandomId() },
     entry: {
       ...(options.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
       ...(options.gitIsolation !== undefined ? { gitIsolation: options.gitIsolation } : {}),

@@ -1,4 +1,5 @@
 import type { BrowserColdBootstrapProjection } from './browser-cold-bootstrap.js';
+import { decodeMergeProgressPersistenceProjection } from './task-merge.js';
 import type { AgentDef } from '../ipc/types.js';
 import { getLocalDateKey } from '../lib/date.js';
 import { isHydraStartupMode } from '../lib/hydra.js';
@@ -31,6 +32,7 @@ function createEmptyBrowserColdBootstrapProjection(
     lastProjectId: null,
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
+    mergeProgress: null,
     projects: [],
     taskOrder: [],
     tasks: {},
@@ -121,6 +123,7 @@ export function buildBrowserColdBootstrapProjectionFromJson(
   });
 
   syncProjectionTaskVisibility(tempState, context.raw);
+  const mergeProgressProjection = decodeMergeProgressPersistenceProjection(context.raw);
 
   return {
     availableAgents: [...context.availableAgents],
@@ -137,6 +140,13 @@ export function buildBrowserColdBootstrapProjectionFromJson(
     lastProjectId: context.lastProjectId,
     mergedLinesAdded: toNonNegativeInt(context.raw.mergedLinesAdded),
     mergedLinesRemoved: toNonNegativeInt(context.raw.mergedLinesRemoved),
+    ...(mergeProgressProjection?.mergeOperation
+      ? {
+          committedMergeOperationId: mergeProgressProjection.committedMergeOperationId,
+          mergeOperation: { ...mergeProgressProjection.mergeOperation },
+        }
+      : {}),
+    mergeProgress: mergeProgressProjection ? { ...mergeProgressProjection.mergeProgress } : null,
     projects: [...context.projects],
     taskOrder: [...tempState.taskOrder],
     tasks: { ...tempState.tasks },

@@ -5,23 +5,17 @@ import path from 'path';
 import { isFiniteNumber, isRecord } from '../../src/lib/type-guards.js';
 import { parsePersistedTaskLookupStateFromRoot } from './persisted-task-lookup-state.js';
 import type { SavedStateDocument } from './saved-state-document.js';
+import { getStateDirForEnv, type StorageEnv } from './storage-environment.js';
+import {
+  WORKSPACE_HOST_ENVELOPE_KEY,
+  decodeWorkspaceHostRecord,
+  type JsonObject,
+} from './workspace-state-storage.js';
 
-export interface StorageEnv {
-  userDataPath: string;
-  isPackaged: boolean;
-}
+export { getStateDirForEnv, type StorageEnv } from './storage-environment.js';
 
 const STATE_DIR_MODE = 0o700;
 const STATE_FILE_MODE = 0o600;
-
-export function getStateDirForEnv(env: StorageEnv): string {
-  let dir = env.userDataPath;
-  if (!env.isPackaged) {
-    const base = path.basename(dir);
-    dir = path.join(path.dirname(dir), `${base}-dev`);
-  }
-  return dir;
-}
 
 function getStatePath(env: StorageEnv): string {
   return path.join(getStateDirForEnv(env), 'state.json');
@@ -109,6 +103,34 @@ function parseStateJsonObject(json: string): Record<string, unknown> {
   return parsed;
 }
 
+function decodeElectronStateRoot(content: string): JsonObject {
+  const root = parseStateJsonObject(content) as JsonObject;
+  if (!(WORKSPACE_HOST_ENVELOPE_KEY in root)) {
+    return root;
+  }
+
+  const decoded = decodeWorkspaceHostRecord(content, 'electron').record;
+  return { ...decoded.localState, ...decoded.sharedState };
+}
+
+function decodeStandaloneState(content: string): { json: string; revision: number } {
+  const root = parseStateJsonObject(content);
+  if (WORKSPACE_HOST_ENVELOPE_KEY in root) {
+    const decoded = decodeWorkspaceHostRecord(content, 'standalone').record;
+    return {
+      json: JSON.stringify(decoded.sharedState),
+      revision: decoded.sharedRevision,
+    };
+  }
+  if (!isFiniteNumber(root.revision) || !isRecord(root.state)) {
+    throw new Error('Persisted workspace state must contain a numeric revision and object state');
+  }
+  return {
+    json: JSON.stringify(root.state),
+    revision: Math.max(0, Math.floor(root.revision)),
+  };
+}
+
 function copyFileIfExists(sourcePath: string, destinationPath: string): void {
   if (!fs.existsSync(sourcePath)) {
     return;
@@ -181,6 +203,37 @@ export function readContentWithBackup<T>(
   return null;
 }
 
+function containsActiveWorkspaceEnvelope(content: string): boolean {
+  try {
+    return WORKSPACE_HOST_ENVELOPE_KEY in parseStateJsonObject(content);
+  } catch {
+    return content.includes(WORKSPACE_HOST_ENVELOPE_KEY);
+  }
+}
+
+function readHostContentWithLegacyBackup<T>(
+  primaryPath: string,
+  backupPath: string,
+  reader: (content: string) => T,
+): T | null {
+  let primaryContent: string | null = null;
+  try {
+    primaryContent = fs.readFileSync(primaryPath, 'utf8');
+    if (primaryContent.trim()) return reader(primaryContent);
+  } catch {
+    if (primaryContent && containsActiveWorkspaceEnvelope(primaryContent)) return null;
+  }
+
+  try {
+    const backupContent = fs.readFileSync(backupPath, 'utf8');
+    // Generation-aware candidates are recovery evidence, never fallback truth.
+    if (!backupContent.trim() || containsActiveWorkspaceEnvelope(backupContent)) return null;
+    return reader(backupContent);
+  } catch {
+    return null;
+  }
+}
+
 export function saveAppStateForEnv(env: StorageEnv, json: string): void {
   parseStateJsonObject(json);
   saveStateFileWithBackup(getStatePath(env), json);
@@ -190,9 +243,9 @@ export function loadAppStateForEnv(env: StorageEnv): string | null {
   const statePath = getStatePath(env);
   const bakPath = `${statePath}.bak`;
 
-  return readContentWithBackup(statePath, bakPath, (content) => {
-    parseStateJsonObject(content);
-    return content;
+  return readHostContentWithLegacyBackup(statePath, bakPath, (content) => {
+    const root = decodeElectronStateRoot(content);
+    return JSON.stringify(root);
   });
 }
 
@@ -209,18 +262,23 @@ export function loadWorkspaceStateForEnv(env: StorageEnv): {
   const statePath = getWorkspaceStatePath(env);
   const bakPath = `${statePath}.bak`;
 
-  return readContentWithBackup(statePath, bakPath, (content) => {
-    const parsed = parseStateJsonObject(content);
-    if (!isFiniteNumber(parsed.revision)) {
-      return null;
-    }
-    if (!isRecord(parsed.state)) {
-      return null;
-    }
+  return readHostContentWithLegacyBackup(statePath, bakPath, (content) => {
+    return decodeStandaloneState(content);
+  });
+}
 
+export function loadElectronWorkspaceStateForEnv(env: StorageEnv): {
+  json: string;
+  revision: number;
+} | null {
+  const statePath = getStatePath(env);
+  const bakPath = `${statePath}.bak`;
+
+  return readHostContentWithLegacyBackup(statePath, bakPath, (content) => {
+    const decoded = decodeWorkspaceHostRecord(content, 'electron').record;
     return {
-      json: JSON.stringify(parsed.state),
-      revision: Math.max(0, Math.floor(parsed.revision)),
+      json: JSON.stringify(decoded.sharedState),
+      revision: decoded.sharedRevision,
     };
   });
 }
@@ -244,9 +302,10 @@ export function loadAppStateDocumentForEnv(env: StorageEnv): SavedStateDocument 
   const statePath = getStatePath(env);
   const bakPath = `${statePath}.bak`;
 
-  return readContentWithBackup(statePath, bakPath, (content) => {
-    const root = parseStateJsonObject(content);
-    return createSavedStateDocumentFromRoot(content, root);
+  return readHostContentWithLegacyBackup(statePath, bakPath, (content) => {
+    const root = decodeElectronStateRoot(content);
+    const json = JSON.stringify(root);
+    return createSavedStateDocumentFromRoot(json, root);
   });
 }
 
@@ -257,20 +316,28 @@ export function loadWorkspaceStateDocumentForEnv(env: StorageEnv): {
   const statePath = getWorkspaceStatePath(env);
   const bakPath = `${statePath}.bak`;
 
-  return readContentWithBackup(statePath, bakPath, (content) => {
-    const parsed = parseStateJsonObject(content);
-    if (!isFiniteNumber(parsed.revision)) {
-      return null;
-    }
-    if (!isRecord(parsed.state)) {
-      return null;
-    }
+  return readHostContentWithLegacyBackup(statePath, bakPath, (content) => {
+    const decoded = decodeStandaloneState(content);
+    const root = parseStateJsonObject(decoded.json);
 
     return {
-      document: createSavedStateDocumentFromRoot(JSON.stringify(parsed.state), parsed.state),
-      revision: Math.max(0, Math.floor(parsed.revision)),
+      document: createSavedStateDocumentFromRoot(decoded.json, root),
+      revision: decoded.revision,
     };
   });
+}
+
+export function loadElectronWorkspaceStateDocumentForEnv(env: StorageEnv): {
+  document: SavedStateDocument;
+  revision: number;
+} | null {
+  const loaded = loadElectronWorkspaceStateForEnv(env);
+  if (!loaded) return null;
+  const root = parseStateJsonObject(loaded.json);
+  return {
+    document: createSavedStateDocumentFromRoot(loaded.json, root),
+    revision: loaded.revision,
+  };
 }
 
 export function loadTaskRegistryStateDocumentForEnv(env: StorageEnv): SavedStateDocument | null {

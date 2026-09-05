@@ -1075,7 +1075,6 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     border: `1px solid ${theme.border}`,
                     'border-radius': '6px',
                     padding: '6px 8px',
-                    outline: 'none',
                     ...typography.monoUi,
                   }}
                 />
@@ -1095,7 +1094,6 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     border: `1px solid ${theme.border}`,
                     'border-radius': '6px',
                     padding: '6px 8px',
-                    outline: 'none',
                     ...typography.ui,
                   }}
                 />

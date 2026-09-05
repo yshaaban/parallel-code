@@ -303,6 +303,7 @@
       .outline-danger-btn:focus-visible,
       .icon-btn:focus-visible,
       .command-input:focus-visible,
+      .remote-session-name-input:focus-visible,
       a:focus-visible {
         outline: none;
         box-shadow:
@@ -363,9 +364,60 @@
       .remote-shell {
         position: relative;
         overflow: hidden;
+        width: 100%;
+        height: 100%;
         background:
           linear-gradient(180deg, rgba(10, 15, 21, 0.96) 0%, rgba(8, 12, 18, 1) 100%),
           var(--bg-base);
+      }
+
+      .remote-auth-required {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        padding: var(--space-lg);
+        color: var(--text-muted);
+        font-size: var(--text-body-size);
+        line-height: var(--text-body-line-height);
+        font-weight: var(--font-weight-regular);
+        text-align: center;
+        animation: fadeIn 0.5s ease-out;
+      }
+
+      .remote-auth-required__content {
+        display: grid;
+        gap: var(--space-sm);
+        max-width: 320px;
+      }
+
+      .remote-auth-required__icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 48px;
+        height: 48px;
+        margin: 0 auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg-elevated);
+        font-size: 24px;
+      }
+
+      .remote-auth-required__title,
+      .remote-auth-required__help {
+        font-size: var(--text-ui-size);
+        line-height: var(--text-ui-line-height);
+      }
+
+      .remote-auth-required__title {
+        color: var(--text-secondary);
+        font-weight: var(--font-weight-semibold);
+      }
+
+      .remote-auth-required__help {
+        color: var(--text-muted);
+        font-weight: var(--font-weight-regular);
       }
 
       .remote-shell__view {
@@ -373,6 +425,14 @@
         z-index: 2;
         width: 100%;
         height: 100%;
+      }
+
+      .remote-shell__view[data-transition='slide-right'] {
+        animation: slideInRight 0.25s ease-out both;
+      }
+
+      .remote-shell__view[data-transition='slide-left'] {
+        animation: slideInLeft 0.25s ease-out both;
       }
 
       .remote-shell__grid,
@@ -726,6 +786,26 @@
         .remote-shell__glow,
         .remote-terminal-shell::before {
           display: none !important;
+        }
+      }
+
+      @media (forced-colors: active) {
+        .tap-feedback:focus-visible,
+        .card-btn:focus-visible,
+        .quick-action-btn:focus-visible,
+        .send-btn:focus-visible,
+        .ghost-btn:focus-visible,
+        .surface-btn:focus-visible,
+        .accent-btn:focus-visible,
+        .danger-btn:focus-visible,
+        .outline-danger-btn:focus-visible,
+        .icon-btn:focus-visible,
+        .command-input:focus-visible,
+        .remote-session-name-input:focus-visible,
+        a:focus-visible {
+          outline: 2px solid Highlight;
+          outline-offset: 2px;
+          box-shadow: none;
         }
       }
 

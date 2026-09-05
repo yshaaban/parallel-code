@@ -5,6 +5,11 @@ import {
   resetTaskCommandLeaseStateForTests,
 } from '../app/task-command-lease';
 import { markTaskPromptDispatch } from '../app/task-prompt-dispatch';
+import {
+  getCurrentMergeProgressSnapshot,
+  resetMergeProgressProjectionForTests,
+} from '../app/merge-progress';
+import { MERGE_PROGRESS_SCHEMA_VERSION } from '../domain/task-merge';
 import { getTaskActivityStatus } from '../app/task-presentation-status';
 import {
   isTerminalHighLoadModeEnabled,
@@ -32,9 +37,13 @@ import {
   saveState,
 } from './persistence';
 import {
+  enqueueWorkspaceEditIntent,
+  getPendingWorkspaceEditIntents,
   getLoadedWorkspaceRevision,
+  getWorkspaceEditIntentConflicts,
   resetPersistenceSessionStateForTests,
 } from './persistence-session';
+import { clearNotification } from './notification';
 import { getIncomingTaskTakeoverRequest } from './task-command-takeovers';
 import {
   getRecentTaskGitStatusPollAge,
@@ -109,6 +118,7 @@ describe('persistence integration', () => {
     resetTaskCommandControllerStateForTests();
     resetTaskGitStatusRuntimeState();
     resetPersistenceSessionStateForTests();
+    resetMergeProgressProjectionForTests();
     vi.clearAllMocks();
     isElectronRuntimeMock.mockReturnValue(true);
     taskCommandControllerVersion = 0;
@@ -247,6 +257,74 @@ describe('persistence integration', () => {
     });
     expect(store.agents).toEqual({});
     expect(store.activeAgentId).toBe('shell-1');
+  });
+
+  it('round-trips backend task-creation ownership metadata without weakening its shape', () => {
+    setStore('projects', [createTestProject()]);
+    setStore('taskOrder', ['task-agent', 'task-terminal']);
+    setStore('tasks', {
+      'task-agent': createTestTask({
+        id: 'task-agent',
+        taskCreationOperationLink: {
+          creationOperationId: 'create-agent-1',
+          kind: 'creation-v1',
+          launchOperationId: 'launch-agent-1',
+        },
+        taskCreationProvenance: { creationWriterEpoch: 'managed-initial-shell-v1' },
+        taskInitialShellOwnership: {
+          kind: 'not-applicable-agent',
+          migrationSchemaVersion: 1,
+        },
+      }),
+      'task-terminal': createTestTask({
+        id: 'task-terminal',
+        taskCreationOperationLink: {
+          creationOperationId: 'create-terminal-1',
+          kind: 'creation-v1',
+          launchOperationId: 'launch-terminal-1',
+        },
+        taskCreationProvenance: { creationWriterEpoch: 'managed-initial-shell-v1' },
+        taskInitialShellOwnership: {
+          expectedGeneration: 0,
+          kind: 'managed-terminal-v1',
+          launchOperationId: 'launch-terminal-1',
+          sessionId: 'session-terminal-1',
+        },
+        taskMode: 'terminal',
+      }),
+    });
+
+    const workspaceJson = getWorkspaceStateSnapshotJson();
+    resetStoreForTest();
+    isElectronRuntimeMock.mockReturnValue(true);
+
+    expect(applyLoadedStateJson(workspaceJson)).toBe(true);
+    expect(store.tasks['task-agent']).toMatchObject({
+      taskCreationOperationLink: {
+        creationOperationId: 'create-agent-1',
+        kind: 'creation-v1',
+        launchOperationId: 'launch-agent-1',
+      },
+      taskCreationProvenance: { creationWriterEpoch: 'managed-initial-shell-v1' },
+      taskInitialShellOwnership: {
+        kind: 'not-applicable-agent',
+        migrationSchemaVersion: 1,
+      },
+    });
+    expect(store.tasks['task-terminal']).toMatchObject({
+      taskCreationOperationLink: {
+        creationOperationId: 'create-terminal-1',
+        kind: 'creation-v1',
+        launchOperationId: 'launch-terminal-1',
+      },
+      taskCreationProvenance: { creationWriterEpoch: 'managed-initial-shell-v1' },
+      taskInitialShellOwnership: {
+        expectedGeneration: 0,
+        kind: 'managed-terminal-v1',
+        launchOperationId: 'launch-terminal-1',
+        sessionId: 'session-terminal-1',
+      },
+    });
   });
 
   it('does not persist incomplete multi-agent definitions as a restorable agent set', () => {
@@ -1355,12 +1433,20 @@ describe('persistence integration', () => {
     });
   });
 
-  it('omits removing tasks and terminals from persisted state', async () => {
+  it('echoes closing, removing, and error rows because presentation state cannot change membership', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
       { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
     ]);
-    setStore('taskOrder', ['task-1', 'terminal-1', 'removed-task', 'removed-terminal']);
+    setStore('taskOrder', [
+      'task-1',
+      'terminal-1',
+      'closing-task',
+      'removed-task',
+      'error-task',
+      'closing-terminal',
+      'removed-terminal',
+    ]);
     setStore('collapsedTaskOrder', ['task-2', 'removed-collapsed-task']);
     setStore('tasks', {
       'task-1': {
@@ -1401,6 +1487,32 @@ describe('persistence integration', () => {
         lastPrompt: '',
         closeState: { kind: 'removing' },
       },
+      'closing-task': {
+        taskMode: 'agent',
+        id: 'closing-task',
+        name: 'Closing Task',
+        projectId: 'project-1',
+        branchName: 'feature/closing-task',
+        worktreePath: '/tmp/project/closing-task',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        closeState: { kind: 'closing' },
+      },
+      'error-task': {
+        taskMode: 'agent',
+        id: 'error-task',
+        name: 'Error Task',
+        projectId: 'project-1',
+        branchName: 'feature/error-task',
+        worktreePath: '/tmp/project/error-task',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        closeState: { kind: 'error', message: 'cleanup failed' },
+      },
       'removed-collapsed-task': {
         taskMode: 'agent',
         id: 'removed-collapsed-task',
@@ -1428,6 +1540,12 @@ describe('persistence integration', () => {
         agentId: 'terminal-agent-2',
         closingStatus: 'removing',
       },
+      'closing-terminal': {
+        id: 'closing-terminal',
+        name: 'Closing Shell',
+        agentId: 'terminal-agent-3',
+        closingStatus: 'closing',
+      },
     });
 
     await saveState();
@@ -1442,17 +1560,37 @@ describe('persistence integration', () => {
       terminals?: Record<string, { agentId: string; id: string; name: string }>;
     };
 
-    expect(persisted.taskOrder).toEqual(['task-1', 'terminal-1']);
-    expect(persisted.collapsedTaskOrder).toEqual(['task-2']);
+    expect(persisted.taskOrder).toEqual([
+      'task-1',
+      'terminal-1',
+      'closing-task',
+      'removed-task',
+      'error-task',
+      'closing-terminal',
+      'removed-terminal',
+    ]);
+    expect(persisted.collapsedTaskOrder).toEqual(['task-2', 'removed-collapsed-task']);
     expect(persisted.tasks).toHaveProperty('task-1');
     expect(persisted.tasks).toHaveProperty('task-2');
-    expect(persisted.tasks).not.toHaveProperty('removed-task');
-    expect(persisted.tasks).not.toHaveProperty('removed-collapsed-task');
+    expect(persisted.tasks).toHaveProperty('closing-task');
+    expect(persisted.tasks).toHaveProperty('removed-task');
+    expect(persisted.tasks).toHaveProperty('error-task');
+    expect(persisted.tasks).toHaveProperty('removed-collapsed-task');
     expect(persisted.terminals).toEqual({
       'terminal-1': {
         agentId: 'terminal-agent-1',
         id: 'terminal-1',
         name: 'Shell',
+      },
+      'closing-terminal': {
+        agentId: 'terminal-agent-3',
+        id: 'closing-terminal',
+        name: 'Closing Shell',
+      },
+      'removed-terminal': {
+        agentId: 'terminal-agent-2',
+        id: 'removed-terminal',
+        name: 'Removed Shell',
       },
     });
   });
@@ -1498,6 +1636,15 @@ describe('persistence integration', () => {
     setStore('terminalLocalInputFeedbackEnabled', false);
     setStore('taskNotificationsEnabled', true);
     setStore('inactiveColumnOpacity', 0.75);
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+
+    const workspaceSnapshot = JSON.parse(getWorkspaceStateSnapshotJson()) as Record<
+      string,
+      unknown
+    >;
 
     await saveState();
 
@@ -1521,6 +1668,8 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('terminalLocalInputFeedbackEnabled');
     expect(persisted).not.toHaveProperty('taskNotificationsEnabled');
     expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
+    expect(persisted).not.toHaveProperty('newTaskDefaults');
+    expect(workspaceSnapshot).not.toHaveProperty('newTaskDefaults');
   });
 
   it('keeps browser task notifications at the local default when applying the full-state load path outside electron', async () => {
@@ -1547,6 +1696,89 @@ describe('persistence integration', () => {
 
     expect(store.taskNotificationsEnabled).toBe(true);
     expect(store.taskNotificationsPreferenceInitialized).toBe(true);
+  });
+
+  it('does not let a foreign workspace snapshot overwrite client-local new task defaults', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+
+    expect(
+      applyLoadedWorkspaceStateJson(
+        JSON.stringify({
+          projects: [],
+          taskOrder: [],
+          tasks: {},
+          newTaskDefaults: {
+            skipPermissions: true,
+            stepsTracking: false,
+          },
+        }),
+        1,
+      ),
+    ).toBe(true);
+    expect(store.newTaskDefaults).toEqual({
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+  });
+
+  it('hydrates canonical merge progress monotonically from workspace reloads', () => {
+    const mergeProgress = {
+      schemaVersion: MERGE_PROGRESS_SCHEMA_VERSION,
+      version: 4,
+      dateKey: '2026-08-04',
+      tasksToday: 2,
+      linesAdded: 34,
+      linesRemoved: 5,
+      updatedAt: '2026-08-04T10:00:00.000Z',
+    } as const;
+    const mergeOperation = {
+      committedAt: mergeProgress.updatedAt,
+      operationId: 'merge-operation-4',
+      progressVersion: mergeProgress.version,
+      taskId: 'task-merged',
+    } as const;
+
+    expect(
+      applyLoadedWorkspaceStateJson(
+        JSON.stringify({
+          committedMergeOperationId: mergeOperation.operationId,
+          mergeOperation,
+          mergeProgress,
+          projects: [],
+          taskOrder: [],
+          tasks: {},
+        }),
+        1,
+      ),
+    ).toBe(true);
+    expect(getCurrentMergeProgressSnapshot()).toEqual(mergeProgress);
+    expect(JSON.parse(getWorkspaceStateSnapshotJson())).toMatchObject({
+      committedMergeOperationId: mergeOperation.operationId,
+      mergeOperation,
+      mergeProgress,
+    });
+
+    expect(
+      applyLoadedWorkspaceStateJson(
+        JSON.stringify({
+          mergeProgress: { ...mergeProgress, version: 3, tasksToday: 99 },
+          projects: [],
+          taskOrder: [],
+          tasks: {},
+        }),
+        2,
+      ),
+    ).toBe(true);
+    expect(getCurrentMergeProgressSnapshot()).toEqual(mergeProgress);
+    expect(JSON.parse(getWorkspaceStateSnapshotJson())).toMatchObject({
+      committedMergeOperationId: mergeOperation.operationId,
+      mergeOperation,
+      mergeProgress,
+    });
   });
 
   it('restores persisted plan file names for active and collapsed tasks', async () => {
@@ -1708,6 +1940,73 @@ describe('persistence integration', () => {
     expect(store.activeAgentId).toBe('local-agent');
     expect(store.tasks['task-1']?.name).toBe('Remote');
     expect(store.taskGitStatus['task-1']).toBeDefined();
+  });
+
+  it('retires conflicting local edits, preserves safe rebases, and reports the loss once', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    const workspace = (name: string) =>
+      JSON.stringify({
+        completedTaskCount: 0,
+        projects: [createTestProject()],
+        taskOrder: ['task-1'],
+        tasks: {
+          'task-1': {
+            agentDef: null,
+            branchName: 'task/task-1',
+            id: 'task-1',
+            lastPrompt: '',
+            name,
+            notes: '',
+            projectId: 'project-1',
+            shellCount: 0,
+            worktreePath: '/tmp/project/task-1',
+          },
+        },
+      });
+
+    expect(applyLoadedWorkspaceStateJson(workspace('One'), 1)).toBe(true);
+    enqueueWorkspaceEditIntent({
+      baseName: 'One',
+      kind: 'rename-task',
+      nextName: 'Local',
+      operationId: 'rename-1',
+      taskId: 'task-1',
+    });
+    enqueueWorkspaceEditIntent({
+      baseValue: 0,
+      field: 'completedTaskCount',
+      kind: 'edit-workspace-field',
+      nextValue: 1,
+      operationId: 'counter-1',
+    });
+
+    expect(applyLoadedWorkspaceStateJson(workspace('Remote'), 2)).toBe(true);
+    expect(store.tasks['task-1']?.name).toBe('Remote');
+    expect(store.completedTaskCount).toBe(1);
+    expect(getWorkspaceEditIntentConflicts()).toEqual([
+      expect.objectContaining({
+        canonicalValue: 'Remote',
+        intent: expect.objectContaining({ operationId: 'rename-1' }),
+        reason: 'same-field-changed',
+      }),
+    ]);
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({
+        acknowledgedBaseRevision: 2,
+        operationId: 'counter-1',
+      }),
+    ]);
+    expect(store.notification).toEqual({
+      kind: 'warning',
+      message:
+        'A local workspace edit conflicted with a newer workspace change and was not applied. The newer value was kept.',
+      persistent: true,
+    });
+
+    clearNotification();
+    expect(applyLoadedWorkspaceStateJson(workspace('Remote'), 3)).toBe(true);
+    expect(store.completedTaskCount).toBe(1);
+    expect(store.notification).toBeNull();
   });
 
   it('falls back to the first visible task when incremental sync removes the active task', () => {
@@ -2804,6 +3103,7 @@ describe('persistence integration', () => {
       lastProjectId: null,
       mergedLinesAdded: 0,
       mergedLinesRemoved: 0,
+      mergeProgress: null,
       projects: [],
       taskOrder: ['task-2', 'shell-1'],
       tasks: {
@@ -2962,6 +3262,98 @@ describe('persistence integration', () => {
     expect(store.terminalHighLoadMode).toBe(true);
     expect(store.terminalLocalInputFeedbackEnabled).toBe(false);
     expect(store.taskNotificationsEnabled).toBe(true);
+  });
+
+  it('round-trips explicit new task defaults through Electron full-state persistence', async () => {
+    let savedJson = '';
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      if (channel === IPC.SaveAppState) {
+        savedJson = (args as { json: string }).json;
+        return Promise.resolve(undefined);
+      }
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(savedJson);
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('newTaskDefaults', {
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+    await saveState();
+
+    expect(JSON.parse(savedJson)).toMatchObject({
+      newTaskDefaults: {
+        skipPermissions: false,
+        stepsTracking: true,
+      },
+    });
+
+    resetStoreForTest();
+    resetPersistenceSessionStateForTests();
+    await loadState();
+
+    expect(store.newTaskDefaults).toEqual({
+      skipPermissions: false,
+      stepsTracking: true,
+    });
+  });
+
+  it.each([
+    {
+      expected: { skipPermissions: true, stepsTracking: false },
+      label: 'missing',
+      value: undefined,
+    },
+    {
+      expected: { skipPermissions: false, stepsTracking: false },
+      label: 'partial with explicit false',
+      value: { skipPermissions: false },
+    },
+    {
+      expected: { skipPermissions: true, stepsTracking: true },
+      label: 'malformed member',
+      value: { skipPermissions: 'false', stepsTracking: true },
+    },
+  ])(
+    'normalizes $label new task defaults during Electron full-state load',
+    ({ expected, value }) => {
+      setStore('newTaskDefaults', {
+        skipPermissions: false,
+        stepsTracking: true,
+      });
+      const persistedState = {
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+        ...(value === undefined ? {} : { newTaskDefaults: value }),
+      };
+
+      expect(applyLoadedStateJson(JSON.stringify(persistedState))).toBe(true);
+      expect(store.newTaskDefaults).toEqual(expected);
+    },
+  );
+
+  it('resets dropped defaults deterministically after a pre-feature known-key-only write', () => {
+    const newVersionState = {
+      projects: [],
+      taskOrder: [],
+      tasks: {},
+      newTaskDefaults: {
+        skipPermissions: false,
+        stepsTracking: true,
+      },
+    };
+    expect(applyLoadedStateJson(JSON.stringify(newVersionState))).toBe(true);
+    expect(store.newTaskDefaults).toEqual({ skipPermissions: false, stepsTracking: true });
+
+    const preFeatureKnownFields = Object.fromEntries(
+      Object.entries(newVersionState).filter(([key]) => key !== 'newTaskDefaults'),
+    );
+    expect(applyLoadedStateJson(JSON.stringify(preFeatureKnownFields))).toBe(true);
+    expect(store.newTaskDefaults).toEqual({ skipPermissions: true, stepsTracking: false });
   });
 
   it('preserves the current high load mode when persisted state omits it', async () => {

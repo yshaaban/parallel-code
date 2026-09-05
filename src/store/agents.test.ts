@@ -2,16 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAgentPromptDispatchAt, markTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import { IPC } from '../../electron/ipc/channels';
+import type {
+  AgentSessionOperationProjection,
+  AgentSessionOperationSnapshot,
+} from '../domain/agent-session-operation';
 import { setStore, store } from './core';
 import {
   addAgentToTask,
-  clearAgentTerminalSessionReplacement,
+  applyAgentSessionOperationProjection,
   closeAgentInTask,
   getAgentTerminalSessionVersion,
   hydrateAgentGeneration,
   markAgentExited,
-  restartAgent,
-  switchAgent,
 } from './agents';
 import { createTestAgent, resetStoreForTest } from '../test/store-test-helpers';
 import type { Agent } from './types';
@@ -49,6 +51,31 @@ function createDeferredPromise(): {
   return { promise, resolve };
 }
 
+function operationProjection(
+  overrides: Partial<AgentSessionOperationSnapshot> = {},
+): AgentSessionOperationProjection {
+  return {
+    current: {
+      catalogVersion: 1,
+      serverInstanceId: 'server-1',
+      taskClosing: false,
+      taskState: 'present',
+    },
+    operation: {
+      agentId: 'agent-1',
+      launchReason: 'manual-restart',
+      operationId: 'operation-1',
+      phase: 'running',
+      resumed: false,
+      sourceGeneration: 0,
+      targetGeneration: 1,
+      taskId: 'task-1',
+      version: 1,
+      ...overrides,
+    },
+  };
+}
+
 describe('agents store lifecycle guards', () => {
   beforeEach(() => {
     resetStoreForTest();
@@ -66,7 +93,7 @@ describe('agents store lifecycle guards', () => {
       }),
     });
 
-    restartAgent('agent-1', false);
+    applyAgentSessionOperationProjection(operationProjection());
     expect(store.agents['agent-1']?.generation).toBe(1);
     expect(store.agents['agent-1']?.status).toBe('running');
 
@@ -133,7 +160,7 @@ describe('agents store lifecycle guards', () => {
     expect(store.agents['agent-1']?.generation).toBe(1);
   });
 
-  it('remounts terminal sessions when hydrating newer backend generations', () => {
+  it('remounts terminal sessions only from newer backend generations', () => {
     setStore('agents', {
       'agent-1': createTestAgent({
         generation: 0,
@@ -144,17 +171,16 @@ describe('agents store lifecycle guards', () => {
     hydrateAgentGeneration('agent-1', 4);
     expect(store.agents['agent-1']?.generation).toBe(4);
     expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(1);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
 
-    restartAgent('agent-1', false);
+    expect(
+      applyAgentSessionOperationProjection(
+        operationProjection({ sourceGeneration: 4, targetGeneration: 5 }),
+      ),
+    ).toBe(true);
     expect(store.agents['agent-1']?.generation).toBe(5);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
     expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(2);
 
-    clearAgentTerminalSessionReplacement('agent-1');
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
-
-    switchAgent('agent-1', {
+    const replacement = {
       id: 'replacement',
       name: 'Replacement',
       command: 'replacement',
@@ -162,13 +188,23 @@ describe('agents store lifecycle guards', () => {
       resume_args: [],
       skip_permissions_args: [],
       description: 'replacement',
-    });
+    };
+    expect(
+      applyAgentSessionOperationProjection(
+        operationProjection({
+          launchReason: 'agent-switch',
+          sourceGeneration: 5,
+          targetGeneration: 6,
+        }),
+        replacement,
+      ),
+    ).toBe(true);
     expect(store.agents['agent-1']?.generation).toBe(6);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+    expect(store.agents['agent-1']?.def).toEqual(replacement);
     expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(3);
   });
 
-  it('does not clear a replacement intent from a stale terminal generation', () => {
+  it('rejects failed, stale, and mismatched authoritative projections', () => {
     setStore('agents', {
       'agent-1': createTestAgent({
         generation: 0,
@@ -176,26 +212,28 @@ describe('agents store lifecycle guards', () => {
       }),
     });
 
-    restartAgent('agent-1', false);
-    expect(store.agents['agent-1']?.generation).toBe(1);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
+    expect(
+      applyAgentSessionOperationProjection(
+        operationProjection({ phase: 'failed', targetGeneration: 1 }),
+      ),
+    ).toBe(false);
+    expect(
+      applyAgentSessionOperationProjection(
+        operationProjection({ agentId: 'missing', targetGeneration: 1 }),
+      ),
+    ).toBe(false);
+    expect(
+      applyAgentSessionOperationProjection(
+        operationProjection({ taskId: 'task-2', targetGeneration: 1 }),
+      ),
+    ).toBe(false);
 
-    switchAgent('agent-1', {
-      id: 'replacement',
-      name: 'Replacement',
-      command: 'replacement',
-      args: [],
-      resume_args: [],
-      skip_permissions_args: [],
-      description: 'replacement',
-    });
-
+    hydrateAgentGeneration('agent-1', 2);
+    expect(applyAgentSessionOperationProjection(operationProjection({ targetGeneration: 1 }))).toBe(
+      false,
+    );
     expect(store.agents['agent-1']?.generation).toBe(2);
-    clearAgentTerminalSessionReplacement('agent-1', 1);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBe(true);
-
-    clearAgentTerminalSessionReplacement('agent-1', 2);
-    expect(store.agents['agent-1']?.replaceTerminalSessionOnNextAttach).toBeUndefined();
+    expect(getAgentTerminalSessionVersion(requireAgent('agent-1'))).toBe(1);
   });
 
   it('clears prompt dispatch state when an agent exits', () => {
@@ -220,7 +258,7 @@ describe('agents store lifecycle guards', () => {
     expect(getAgentPromptDispatchAt('agent-1', 2, 1_100)).toBeNull();
   });
 
-  it('clears prompt dispatch state when an agent restarts or switches', () => {
+  it('clears prompt dispatch state when an authoritative replacement starts', () => {
     setStore('agents', {
       'agent-1': createTestAgent({
         generation: 0,
@@ -229,19 +267,20 @@ describe('agents store lifecycle guards', () => {
     });
     markTaskPromptDispatch('agent-1', 0, 1_000);
 
-    restartAgent('agent-1', false);
+    applyAgentSessionOperationProjection(operationProjection());
     expect(getAgentPromptDispatchAt('agent-1', 1, 1_100)).toBeNull();
 
     markTaskPromptDispatch('agent-1', 1, 1_200);
-    switchAgent('agent-1', {
-      id: 'replacement',
-      name: 'Replacement',
-      command: 'replacement',
-      args: [],
-      resume_args: [],
-      skip_permissions_args: [],
-      description: 'replacement',
-    });
+    applyAgentSessionOperationProjection(
+      operationProjection({
+        launchReason: 'manual-resume',
+        operationId: 'operation-2',
+        resumed: true,
+        sourceGeneration: 1,
+        targetGeneration: 2,
+        version: 2,
+      }),
+    );
 
     expect(getAgentPromptDispatchAt('agent-1', 2, 1_300)).toBeNull();
   });

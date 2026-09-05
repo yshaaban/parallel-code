@@ -17,6 +17,7 @@ export default [
       'release/**',
       'node_modules/**',
       '.claude/**',
+      '.playwright-browser-lab/**',
       '.worktrees/**',
       'tmp/**',
       // Vendored third-party code is not maintained to this repo's lint baseline.

@@ -24,14 +24,13 @@ export {
 export { getProjectMode, isGitProject, isNonGitProject } from './project-mode';
 export {
   addAgentToTask,
-  clearAgentTerminalSessionReplacement,
+  applyAgentSessionOperationProjection,
   closeAgentInTask,
   getAgentTerminalSessionVersion,
+  hydrateAgentSessionIdentity,
   markAgentExited,
   markAgentRunning,
   setAgentStatus,
-  restartAgent,
-  switchAgent,
 } from './agents';
 export {
   getSelectedTaskAgentId,
@@ -46,14 +45,11 @@ export {
 } from './task-terminal-layout';
 export {
   updateTaskName,
-  updateTaskNotes,
   setLastPrompt,
-  clearInitialPrompt,
   clearPrefillPrompt,
   setPrefillPrompt,
   reorderTask,
   reorderTaskWithinSidebarGroup,
-  hasCurrentBranchTask,
   getGitHubDropDefaults,
   setNewTaskDropUrl,
   setNewTaskPrefillPrompt,
@@ -158,6 +154,7 @@ export {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setNewTaskDefault,
   setTerminalHighLoadMode,
   setTerminalLocalInputFeedbackEnabled,
   setTaskNotificationsEnabled,
@@ -184,7 +181,8 @@ export {
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
   hasReadyPromptInTail,
-  isAgentAskingQuestion,
+  getLocalAgentQuestionGeneration,
+  isLocalAgentQuestionActive,
 } from './taskStatus';
 export type { TaskActivityStatus, TaskDotStatus } from './taskStatus';
 export { getRecentTaskGitStatusPollAge } from './task-git-status';

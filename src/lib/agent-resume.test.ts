@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { createTestAgentDef } from '../test/store-test-helpers';
 import {
+  AGENT_RESUME_FAILURE_OUTPUT_MAX_BYTES,
   buildAgentSpawnArgs,
+  classifyAgentResumeFallback,
   getAgentResumeStrategy,
   isAgentResumeStrategy,
   shouldResumeAgentOnSpawn,
 } from './agent-resume';
+
+const SUPPORTED_CLAUDE = {
+  resume_failure_classifier: 'claude-no-conversation-v1',
+  resume_failure_fallback: 'fresh-start',
+} as const;
+
+function createResumeExitFacts(
+  overrides: Partial<Parameters<typeof classifyAgentResumeFallback>[1]> = {},
+): Parameters<typeof classifyAgentResumeFallback>[1] {
+  return {
+    exitCode: 1,
+    lastOutput: ['No conversation found to continue'],
+    resumed: true,
+    signal: null,
+    ...overrides,
+  };
+}
 
 describe('agent resume helpers', () => {
   it('uses hydra session recovery for hydra agents', () => {
@@ -138,5 +157,132 @@ describe('agent resume helpers', () => {
         skipPermissions: true,
       }),
     ).toEqual(['--frame-delay-ms', '18', '--footer-top-row', '18', '--dangerous']);
+  });
+});
+
+describe('classifyAgentResumeFallback', () => {
+  it('matches the exact Claude failure line in a bounded ANSI/redraw frame', () => {
+    expect(
+      classifyAgentResumeFallback(
+        SUPPORTED_CLAUDE,
+        createResumeExitFacts({
+          lastOutput: [
+            '\x1b[1mClaude Code\x1b[22m',
+            'status\rNo conversation found to continue',
+            'Run claude without --continue to start a new conversation',
+            '❯ ',
+          ],
+        }),
+      ),
+    ).toEqual({ classifier: 'claude-no-conversation-v1', kind: 'eligible' });
+  });
+
+  it.each([
+    'No conversation found to continue.',
+    'Error: No conversation found to continue',
+    'no conversation found to continue',
+    'source = "No conversation found to continue"',
+    'No conversation found to continue later',
+  ])('rejects near-match line %j', (line) => {
+    expect(
+      classifyAgentResumeFallback(SUPPORTED_CLAUDE, createResumeExitFacts({ lastOutput: [line] })),
+    ).toEqual({ kind: 'ineligible', reason: 'no-match' });
+  });
+
+  it('requires the signature to remain in the final error frame', () => {
+    expect(
+      classifyAgentResumeFallback(
+        SUPPORTED_CLAUDE,
+        createResumeExitFacts({
+          lastOutput: [
+            'No conversation found to continue',
+            'later-1',
+            'later-2',
+            'later-3',
+            'later-4',
+            'later-5',
+          ],
+        }),
+      ),
+    ).toEqual({ kind: 'ineligible', reason: 'no-match' });
+  });
+
+  it('never searches before the final 16 KiB of exit output', () => {
+    expect(
+      classifyAgentResumeFallback(
+        SUPPORTED_CLAUDE,
+        createResumeExitFacts({
+          lastOutput: [
+            'No conversation found to continue',
+            'x'.repeat(AGENT_RESUME_FAILURE_OUTPUT_MAX_BYTES + 1),
+          ],
+        }),
+      ),
+    ).toEqual({ kind: 'ineligible', reason: 'no-match' });
+
+    expect(
+      classifyAgentResumeFallback(
+        SUPPORTED_CLAUDE,
+        createResumeExitFacts({
+          lastOutput: [
+            'x'.repeat(AGENT_RESUME_FAILURE_OUTPUT_MAX_BYTES + 1),
+            'No conversation found to continue',
+          ],
+        }),
+      ),
+    ).toEqual({ classifier: 'claude-no-conversation-v1', kind: 'eligible' });
+  });
+
+  it('bounds a single oversized terminal chunk before matching its suffix', () => {
+    expect(
+      classifyAgentResumeFallback(
+        SUPPORTED_CLAUDE,
+        createResumeExitFacts({
+          lastOutput: [
+            `${'x'.repeat(AGENT_RESUME_FAILURE_OUTPUT_MAX_BYTES * 10)}\nNo conversation found to continue`,
+          ],
+        }),
+      ),
+    ).toEqual({ classifier: 'claude-no-conversation-v1', kind: 'eligible' });
+  });
+
+  it.each([
+    [{ resumed: false }, 'not-resumed'],
+    [{ exitCode: 0 }, 'successful-exit'],
+    [{ exitCode: null, signal: 'spawn_failed' }, 'spawn-failed'],
+    [{ signal: 'SIGTERM' }, 'signal'],
+  ] as const)('rejects invalid exit metadata with %s', (overrides, reason) => {
+    expect(classifyAgentResumeFallback(SUPPORTED_CLAUDE, createResumeExitFacts(overrides))).toEqual(
+      { kind: 'ineligible', reason },
+    );
+  });
+
+  it('requires an explicit supported fallback capability', () => {
+    expect(classifyAgentResumeFallback({}, createResumeExitFacts())).toEqual({
+      kind: 'ineligible',
+      reason: 'unsupported',
+    });
+    expect(
+      classifyAgentResumeFallback(
+        {
+          resume_failure_classifier: 'claude-no-conversation-v1',
+          resume_failure_fallback: 'none',
+        },
+        createResumeExitFacts(),
+      ),
+    ).toEqual({ kind: 'ineligible', reason: 'unsupported' });
+  });
+
+  it('does not infer trust from a custom Claude display name or executable path', () => {
+    const customClaude = createTestAgentDef({
+      command: '/usr/local/bin/claude',
+      id: 'custom-claude',
+      name: 'Claude Code',
+    });
+
+    expect(classifyAgentResumeFallback(customClaude, createResumeExitFacts())).toEqual({
+      kind: 'ineligible',
+      reason: 'unsupported',
+    });
   });
 });

@@ -44,6 +44,7 @@ interface CoordinatorCredentialFile {
   token: string;
   tokenId: string;
   toolCommand?: string;
+  toolCallTlsCertificate?: string;
   toolCallUrl?: string;
 }
 
@@ -56,6 +57,7 @@ interface CoordinatorTokenRecord {
   token: string;
   tokenId: string;
   toolCommand?: string;
+  toolCallTlsCertificate?: string;
   toolCallUrl?: string;
 }
 
@@ -88,7 +90,7 @@ function createToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function resolveCoordinatorToolCallUrl(value: unknown): string | undefined {
+function resolveOptionalString(value: unknown): string | undefined {
   if (typeof value === 'function') {
     const resolved: unknown = value();
     if (typeof resolved === 'string') {
@@ -107,7 +109,12 @@ function resolveCoordinatorToolCallUrl(value: unknown): string | undefined {
 
 function getCoordinatorToolCallUrl(env: StorageEnv): string | undefined {
   const candidate = env as StorageEnv & { coordinatorToolCallUrl?: unknown };
-  return resolveCoordinatorToolCallUrl(candidate.coordinatorToolCallUrl);
+  return resolveOptionalString(candidate.coordinatorToolCallUrl);
+}
+
+function getCoordinatorToolCallTlsCertificate(env: StorageEnv): string | undefined {
+  const candidate = env as StorageEnv & { coordinatorToolCallTlsCertificate?: unknown };
+  return resolveOptionalString(candidate.coordinatorToolCallTlsCertificate);
 }
 
 function quoteShellToken(value: string): string {
@@ -138,6 +145,8 @@ function isCredentialFile(value: unknown): value is CoordinatorCredentialFile {
     typeof candidate.token === 'string' &&
     typeof candidate.tokenId === 'string' &&
     (candidate.toolCommand === undefined || typeof candidate.toolCommand === 'string') &&
+    (candidate.toolCallTlsCertificate === undefined ||
+      typeof candidate.toolCallTlsCertificate === 'string') &&
     (candidate.toolCallUrl === undefined || typeof candidate.toolCallUrl === 'string')
   );
 }
@@ -155,6 +164,9 @@ function createTokenRecord(
     token: credential.token,
     tokenId: credential.tokenId,
     ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
+    ...(credential.toolCallTlsCertificate !== undefined
+      ? { toolCallTlsCertificate: credential.toolCallTlsCertificate }
+      : {}),
     ...(credential.toolCallUrl !== undefined ? { toolCallUrl: credential.toolCallUrl } : {}),
   };
 }
@@ -316,7 +328,10 @@ export function createCoordinatorCredential(
   const tokenId = randomUUID();
   const credentialPath = createCredentialPath(env, tokenId);
   const createdAt = Date.now();
-  const toolCallUrl = resolveCoordinatorToolCallUrl(options.toolCallUrl);
+  const toolCallUrl = resolveOptionalString(options.toolCallUrl);
+  const toolCallTlsCertificate = toolCallUrl?.startsWith('https:')
+    ? getCoordinatorToolCallTlsCertificate(env)
+    : undefined;
   const toolCommand =
     toolCallUrl === undefined ? undefined : (options.toolCommand ?? getCoordinatorToolCommand());
   const credential: CoordinatorCredentialFile = {
@@ -327,6 +342,7 @@ export function createCoordinatorCredential(
     token,
     tokenId,
     ...(toolCommand !== undefined ? { toolCommand } : {}),
+    ...(toolCallTlsCertificate !== undefined ? { toolCallTlsCertificate } : {}),
     ...(toolCallUrl !== undefined ? { toolCallUrl } : {}),
   };
   fs.mkdirSync(path.dirname(credentialPath), { recursive: true, mode: 0o700 });
@@ -346,6 +362,7 @@ export function createCoordinatorCredential(
     token,
     tokenId,
     ...(toolCommand !== undefined ? { toolCommand } : {}),
+    ...(toolCallTlsCertificate !== undefined ? { toolCallTlsCertificate } : {}),
     ...(toolCallUrl !== undefined ? { toolCallUrl } : {}),
   };
   rememberTokenRecord(record);
@@ -353,6 +370,17 @@ export function createCoordinatorCredential(
 }
 
 export function createCoordinatorRunForTask(
+  env: StorageEnv,
+  request: CoordinatorCreateRunRequest,
+): CoordinatorCreateRunResult {
+  const result = createCoordinatorRunForTaskInMemory(env, request);
+  void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
+    console.error('Failed to flush coordinator state after run creation:', error);
+  });
+  return result;
+}
+
+function createCoordinatorRunForTaskInMemory(
   env: StorageEnv,
   request: CoordinatorCreateRunRequest,
 ): CoordinatorCreateRunResult {
@@ -391,13 +419,58 @@ export function createCoordinatorRunForTask(
     removeCoordinatorRun(run.id);
     throw error;
   }
-  void flushCoordinatorRuntimeState(env).catch((error: unknown) => {
-    console.error('Failed to flush coordinator state after run creation:', error);
-  });
-
   return {
     credentialPath: credential.credentialPath,
     run,
+    ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
+  };
+}
+
+/** Creates the coordinator run and credential before reporting preparation complete. */
+export async function createCoordinatorRunForTaskDurably(
+  env: StorageEnv,
+  request: CoordinatorCreateRunRequest,
+): Promise<CoordinatorCreateRunResult> {
+  const result = createCoordinatorRunForTaskInMemory(env, request);
+  try {
+    await flushCoordinatorRuntimeState(env);
+    return result;
+  } catch (error) {
+    revokeCoordinatorTaskCredential(env, request.coordinatorTaskId);
+    removeCoordinatorRun(result.run.id);
+    await flushCoordinatorRuntimeState(env).catch(() => undefined);
+    throw error;
+  }
+}
+
+export interface CoordinatorTaskLaunchMetadata {
+  credentialPath: string;
+  runId: string;
+  toolCommand?: string;
+}
+
+/** Exact restart-safe lookup used only by the trusted desktop creation workflow. */
+export function getCoordinatorTaskLaunchMetadata(
+  env: StorageEnv,
+  taskId: string,
+  agentId: string,
+): CoordinatorTaskLaunchMetadata | null {
+  ensureCoordinatorServiceLoaded(env);
+  const run = getCoordinatorRunMetaByCoordinatorTaskId(taskId);
+  const credential = tokenRecordsByTaskId.get(taskId);
+  if (!run && !credential) return null;
+  if (
+    !run ||
+    !credential ||
+    credential.runId !== run.id ||
+    credential.taskId !== taskId ||
+    credential.agentId !== agentId
+  ) {
+    throw new Error('Coordinator task launch metadata requires recovery');
+  }
+  return {
+    credentialPath: credential.credentialPath,
+    runId: run.id,
     ...(credential.toolCommand !== undefined ? { toolCommand: credential.toolCommand } : {}),
   };
 }
@@ -461,6 +534,14 @@ export function cleanupCoordinatorStateForTask(env: StorageEnv, taskId: string):
     });
     return;
   }
+}
+
+export async function cleanupCoordinatorStateForTaskDurably(
+  env: StorageEnv,
+  taskId: string,
+): Promise<void> {
+  cleanupCoordinatorStateForTask(env, taskId);
+  await flushCoordinatorRuntimeState(env);
 }
 
 export function getCoordinatorTaskCredentialPath(taskId: string): string | null {

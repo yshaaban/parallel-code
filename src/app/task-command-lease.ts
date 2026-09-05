@@ -15,6 +15,7 @@ export {
   type TaskCommandLeaseSession,
 } from './task-command-lease-session';
 export { clearRemovedTaskCommandLeaseState } from './task-command-lease-runtime';
+export { getRetainedTaskCommandLeaseGeneration } from './task-command-lease-runtime';
 export {
   respondToIncomingTaskCommandTakeover,
   type TaskCommandTakeoverDecision,

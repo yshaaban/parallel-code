@@ -296,9 +296,9 @@ function parseArgs(argv) {
   if (
     runOptions.startupSpawnMode !== undefined &&
     runOptions.startupSpawnMode !== 'sequential' &&
-    runOptions.startupSpawnMode !== 'batch-ensure'
+    runOptions.startupSpawnMode !== 'concurrent-attach'
   ) {
-    throw new Error('--startup-spawn-mode must be one of: sequential, batch-ensure');
+    throw new Error('--startup-spawn-mode must be one of: sequential, concurrent-attach');
   }
 
   return {
@@ -368,7 +368,7 @@ Options:
   --packet-loss <n>          Simulated retransmission-style loss as 0-1 (default: 0)
   --output-json <path>       Write the full JSON summary to a file
   --startup-only             Stop after the startup/spawn phase and emit diagnostics
-  --startup-spawn-mode <m>   Startup mode: sequential or batch-ensure (default: sequential)
+  --startup-spawn-mode <m>   Startup mode: sequential or concurrent-attach (default: sequential)
   --fail-on-budget           Exit non-zero when the selected profile exceeds its budgets
   --quiet                    Suppress the pretty JSON stdout dump
   --print-profiles           Print the available named profiles and exit
@@ -749,18 +749,29 @@ async function startLocalServer(options) {
   }
 
   const port = await reservePort();
-  const env = createLocalServerEnv(options, port);
+  const state = await createLocalServerState();
+  const env = createLocalServerEnv(options, port, state.userDataPath);
 
-  const serverProcess = spawnStandaloneServerProcess('node', [SERVER_ENTRY], {
-    cwd: ROOT_DIR,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let serverProcess;
+  try {
+    serverProcess = spawnStandaloneServerProcess('node', [SERVER_ENTRY], {
+      cwd: ROOT_DIR,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    return runOperationWithCleanups(
+      'Local stress server spawn',
+      async () => Promise.reject(error),
+      [['remove local stress server state', state.cleanup]],
+    );
+  }
 
-  return initializeLocalServerTarget(serverProcess, options, port);
+  return initializeLocalServerTarget(serverProcess, options, port, { cleanupState: state.cleanup });
 }
 
 export async function initializeLocalServerTarget(serverProcess, options, port, dependencies = {}) {
+  const cleanupState = dependencies.cleanupState ?? (async () => {});
   const createClient = dependencies.createClient ?? createBrowserServerClient;
   const stopProcess = dependencies.stopProcess ?? stopStandaloneServerProcessWithRetry;
   const waitForReady = dependencies.waitForReady ?? waitForLocalServerReady;
@@ -782,13 +793,17 @@ export async function initializeLocalServerTarget(serverProcess, options, port, 
       stop: () =>
         runOperationWithCleanups('Local stress server stop', () => stopProcess(serverProcess), [
           ['stop draining local server output', () => stopDrainingOutput()],
+          ['remove local stress server state', cleanupState],
         ]),
     });
   } catch (error) {
     return runOperationWithCleanups(
       'Local stress server initialization',
       async () => Promise.reject(error),
-      [['stop incomplete local server', () => stopProcess(serverProcess)]],
+      [
+        ['stop incomplete local server', () => stopProcess(serverProcess)],
+        ['remove local stress server state', cleanupState],
+      ],
     );
   }
 }
@@ -823,7 +838,19 @@ async function startServerTarget(options) {
   return startLocalServer(options);
 }
 
-function createLocalServerEnv(options, port) {
+export async function createLocalServerState() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'parallel-code-session-stress-'));
+  return {
+    cleanup: () => fs.rm(rootDir, { force: true, recursive: true }),
+    rootDir,
+    userDataPath: path.join(rootDir, 'user-data'),
+  };
+}
+
+export function createLocalServerEnv(options, port, userDataPath) {
+  if (typeof userDataPath !== 'string' || userDataPath.trim().length === 0) {
+    throw new Error('Local stress server requires an owned user-data path');
+  }
   return {
     ...process.env,
     AUTH_TOKEN: DEFAULT_TOKEN,
@@ -842,7 +869,7 @@ function createLocalServerEnv(options, port) {
     BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES: String(options.browserChannelCoalescedDataMaxBytes),
     BROWSER_CONTROL_HEARTBEAT_INTERVAL_MS: String(options.browserControlHeartbeatIntervalMs),
     BROWSER_CONTROL_MAX_MISSED_PONGS: String(options.browserControlMaxMissedPongs),
-    PARALLEL_CODE_USER_DATA_DIR: path.resolve(ROOT_DIR, '.stress-server-data'),
+    PARALLEL_CODE_USER_DATA_DIR: path.resolve(userDataPath),
     PORT: String(port),
     SIMULATE_JITTER_MS: String(options.jitterMs),
     SIMULATE_LATENCY_MS: String(options.latencyMs),
@@ -870,9 +897,9 @@ function getClientBufferedAmount(ws) {
   return typeof ws.bufferedAmount === 'number' ? ws.bufferedAmount : 0;
 }
 
-function createClientState(label) {
+function createClientState(label, clientId = `stress-client-${label}-${randomUUID()}`) {
   return {
-    clientId: `stress-client-${label}-${randomUUID()}`,
+    clientId,
     label,
     lastSeq: -1,
   };
@@ -1071,58 +1098,98 @@ async function invokeIpc(serverTarget, channel, body) {
   return serverTarget.client.invokeIpc(channel, body);
 }
 
+function getRequiredBrowserClientId(serverTarget) {
+  const clientId = serverTarget.client.browserClientId;
+  if (typeof clientId !== 'string' || clientId.trim().length === 0) {
+    throw new Error('Synthetic terminal admission requires a browser client identity');
+  }
+  return clientId;
+}
+
+async function withSyntheticTerminalTaskLease(serverTarget, taskId, operation) {
+  const clientId = getRequiredBrowserClientId(serverTarget);
+  const ownerId = `session-stress:${clientId}`;
+  const lease = await invokeIpc(serverTarget, 'acquire_task_command_lease', {
+    action: 'run terminal transport stress',
+    clientId,
+    ownerId,
+    taskId,
+  });
+  if (lease?.acquired !== true) {
+    throw new Error('Synthetic terminal admission could not acquire the task controller lease');
+  }
+
+  return runOperationWithCleanups('Synthetic terminal admission', operation, [
+    [
+      'release synthetic terminal task lease',
+      () =>
+        invokeIpc(serverTarget, 'release_task_command_lease', {
+          clientId,
+          leaseGeneration: lease.leaseGeneration,
+          ownerId,
+          taskId,
+        }),
+    ],
+  ]);
+}
+
 function isUnknownIpcChannelError(error) {
   return error instanceof Error && /failed \(404\): unknown ipc channel/i.test(error.message);
 }
 
-async function spawnAgent(serverTarget, taskId, agent) {
-  await invokeIpc(serverTarget, 'spawn_agent', {
+function createSyntheticTerminalAttachRequest(taskId, agent) {
+  return {
     agentId: agent.agentId,
     args: [SESSION_STRESS_AGENT_ENTRY],
     cols: 80,
     command: SYNTHETIC_TUI_AGENT_COMMAND,
+    compatibilityIntent: 'create',
     cwd: '/tmp',
     env: {
       STRESS_READY_MARKER: createReadyMarker(agent.agentId),
     },
-    isShell: false,
+    initialRecovery: {
+      outputCursor: null,
+      role: null,
+      snapshotByteLimit: null,
+      visibleTerminalCount: 1,
+    },
+    isShell: true,
     onOutput: { __CHANNEL_ID__: agent.channelId },
     rows: 24,
+    sessionOwner: 'compatibility-shell',
     taskId,
-  });
+  };
 }
 
-async function ensureAgentSessionsBatch(serverTarget, taskId, agents, reason = 'startup-restore') {
-  const response = await invokeIpc(serverTarget, 'ensure_agent_sessions_batch', {
-    clientId: 'session-stress-scorecard',
-    reason,
-    requests: agents.map((agent) => ({
-      agentId: agent.agentId,
-      args: [SESSION_STRESS_AGENT_ENTRY],
-      cols: 80,
-      command: SYNTHETIC_TUI_AGENT_COMMAND,
-      cwd: '/tmp',
-      env: {
-        STRESS_READY_MARKER: createReadyMarker(agent.agentId),
-      },
-      isShell: false,
-      rows: 24,
-      taskId,
-    })),
-  });
-  const failures = [];
-  if (Array.isArray(response?.results)) {
-    failures.push(...response.results.filter((result) => result?.error));
-  }
-  if (failures.length > 0) {
+async function invokeSyntheticTerminalAttach(serverTarget, taskId, agent) {
+  const response = await invokeIpc(
+    serverTarget,
+    'attach_terminal_session',
+    createSyntheticTerminalAttachRequest(taskId, agent),
+  );
+  if (response?.kind !== 'attached' || response.channelBound !== true) {
     throw new Error(
-      `Batch ensure failed for ${failures
-        .map((result) => `${result.agentId}: ${result.error}`)
-        .join(', ')}`,
+      `Synthetic terminal attach unavailable for ${taskId}/${agent.agentId}: ${response?.reason ?? 'invalid response'}`,
     );
   }
-
   return response;
+}
+
+async function attachSyntheticTerminal(serverTarget, taskId, agent) {
+  return withSyntheticTerminalTaskLease(serverTarget, taskId, () =>
+    invokeSyntheticTerminalAttach(serverTarget, taskId, agent),
+  );
+}
+
+async function attachSyntheticTerminalSessionsConcurrently(serverTarget, taskId, agents) {
+  return withSyntheticTerminalTaskLease(serverTarget, taskId, async () => {
+    const results = await Promise.allSettled(
+      agents.map((agent) => invokeSyntheticTerminalAttach(serverTarget, taskId, agent)),
+    );
+    throwCleanupFailures('Failed to attach one or more synthetic terminals', results);
+    return results.map((result) => result.value);
+  });
 }
 
 async function killAgent(serverTarget, agentId) {
@@ -2701,8 +2768,12 @@ async function main() {
       };
 
       const authStartedAt = performance.now();
+      const primaryClientId = getRequiredBrowserClientId(serverTarget);
       const clientStates = Array.from({ length: options.users }, (_, index) =>
-        createClientState(`user-${index}`),
+        createClientState(
+          `user-${index}`,
+          index === 0 ? primaryClientId : `stress-client-user-${index}-${randomUUID()}`,
+        ),
       );
       const initialClients = await connectOwnedSessionStressClients(
         serverTarget,
@@ -2714,16 +2785,16 @@ async function main() {
       const channelIds = agents.map((agent) => agent.channelId);
       const primaryClient = initialClients[0];
       const spawnStartedAt = performance.now();
-      if (options.startupSpawnMode === 'batch-ensure') {
+      if (options.startupSpawnMode === 'concurrent-attach') {
         if (!options.startupOnly) {
-          throw new Error('batch-ensure startup spawn mode is only supported with startupOnly');
+          throw new Error('concurrent-attach startup mode is only supported with startupOnly');
         }
-        await ensureAgentSessionsBatch(serverTarget, taskId, agents, 'dispatch-storm');
+        await attachSyntheticTerminalSessionsConcurrently(serverTarget, taskId, agents);
         await waitForScrollbackMarkers(serverTarget, agents);
       } else {
         await bindClientToChannels(primaryClient, channelIds);
         for (const agent of agents) {
-          await spawnAgent(serverTarget, taskId, agent);
+          await attachSyntheticTerminal(serverTarget, taskId, agent);
           await waitForChannelMarker(
             primaryClient,
             agent.channelId,

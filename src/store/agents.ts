@@ -1,6 +1,10 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
+import type {
+  AgentSessionLaunchReason,
+  AgentSessionOperationProjection,
+} from '../domain/agent-session-operation';
 import { isTerminalTask } from '../domain/task-mode';
 import type { AgentDef, PtyExitData } from '../ipc/types';
 import { clearTaskPromptDispatch } from '../app/task-prompt-dispatch';
@@ -231,10 +235,36 @@ export function hydrateAgentGeneration(agentId: string, generation: number): voi
       }
 
       agent.generation = generation;
+      agent.resumed = false;
+      delete agent.launchReason;
+      delete agent.sessionOperationId;
       agent.terminalSessionVersion = getAgentTerminalSessionVersion(agent) + 1;
-      delete agent.replaceTerminalSessionOnNextAttach;
     }),
   );
+}
+
+export function hydrateAgentSessionIdentity(
+  agentId: string,
+  generation: number,
+  identity: {
+    launchReason?: AgentSessionLaunchReason;
+    operationId?: string;
+    resumed?: boolean;
+  },
+): boolean {
+  if (!isNonNegativeInteger(generation)) return false;
+  let applied = false;
+  setStore(
+    produce((state) => {
+      const agent = state.agents[agentId];
+      if (!agent || agent.generation !== generation) return;
+      if (identity.launchReason !== undefined) agent.launchReason = identity.launchReason;
+      if (identity.operationId !== undefined) agent.sessionOperationId = identity.operationId;
+      if (identity.resumed !== undefined) agent.resumed = identity.resumed;
+      applied = true;
+    }),
+  );
+  return applied;
 }
 
 export function getAgentTerminalSessionVersion(
@@ -243,61 +273,50 @@ export function getAgentTerminalSessionVersion(
   return agent.terminalSessionVersion ?? 0;
 }
 
-export function restartAgent(agentId: string, resumed: boolean): void {
-  clearTaskPromptDispatch(agentId);
-  setStore(
-    produce((s) => {
-      if (s.agents[agentId]) {
-        s.agents[agentId].status = 'running';
-        s.agents[agentId].exitCode = null;
-        s.agents[agentId].signal = null;
-        s.agents[agentId].lastOutput = [];
-        s.agents[agentId].resumed = resumed;
-        s.agents[agentId].generation += 1;
-        s.agents[agentId].replaceTerminalSessionOnNextAttach = true;
-        s.agents[agentId].terminalSessionVersion =
-          getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
-      }
-    }),
-  );
-  markAgentSpawned(agentId);
-}
+/** Applies only backend-authoritative session-operation truth. */
+export function applyAgentSessionOperationProjection(
+  projection: Readonly<AgentSessionOperationProjection>,
+  nextAgentDef?: AgentDef,
+): boolean {
+  const operation = projection.operation;
+  const targetGeneration = operation.targetGeneration;
+  const isRunning =
+    operation.phase === 'running' ||
+    (operation.phase === 'attempted-no-replay' && operation.markerTerminalPhase === 'running');
+  if (!isRunning || targetGeneration === undefined) return false;
 
-export function switchAgent(agentId: string, newDef: AgentDef): void {
-  clearTaskPromptDispatch(agentId);
+  let applied = false;
   setStore(
-    produce((s) => {
-      if (s.agents[agentId]) {
-        s.agents[agentId].def = newDef;
-        s.agents[agentId].status = 'running';
-        s.agents[agentId].exitCode = null;
-        s.agents[agentId].signal = null;
-        s.agents[agentId].lastOutput = [];
-        s.agents[agentId].resumed = false;
-        s.agents[agentId].generation += 1;
-        s.agents[agentId].replaceTerminalSessionOnNextAttach = true;
-        s.agents[agentId].terminalSessionVersion =
-          getAgentTerminalSessionVersion(s.agents[agentId]) + 1;
-      }
-    }),
-  );
-  markAgentSpawned(agentId);
-}
-
-export function clearAgentTerminalSessionReplacement(
-  agentId: string,
-  expectedGeneration?: number,
-): void {
-  setStore(
-    produce((s) => {
-      const agent = s.agents[agentId];
-      if (!agent) {
+    produce((state) => {
+      const agent = state.agents[operation.agentId];
+      if (
+        !agent ||
+        agent.taskId !== operation.taskId ||
+        targetGeneration < agent.generation ||
+        (nextAgentDef !== undefined && operation.launchReason !== 'agent-switch')
+      ) {
         return;
       }
-      if (expectedGeneration !== undefined && agent.generation !== expectedGeneration) {
-        return;
+
+      const generationChanged = targetGeneration > agent.generation;
+      agent.generation = targetGeneration;
+      agent.status = 'running';
+      agent.exitCode = null;
+      agent.signal = null;
+      agent.lastOutput = [];
+      agent.resumed = operation.resumed;
+      agent.launchReason = operation.launchReason;
+      agent.sessionOperationId = operation.operationId;
+      if (nextAgentDef !== undefined) agent.def = nextAgentDef;
+      if (generationChanged) {
+        agent.terminalSessionVersion = getAgentTerminalSessionVersion(agent) + 1;
       }
-      delete agent.replaceTerminalSessionOnNextAttach;
+      applied = true;
     }),
   );
+  if (applied) {
+    clearTaskPromptDispatch(operation.agentId);
+    markAgentSpawned(operation.agentId);
+  }
+  return applied;
 }

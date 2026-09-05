@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { encodeTaskWorktreeLinkRequestV1 } from './git-worktree-symlinks.js';
 
 const {
   checkoutBranchMock,
@@ -59,33 +60,53 @@ describe('createTask', () => {
   });
 
   it('creates the first matching task branch when it is available', async () => {
+    const worktreeLinkRequest = encodeTaskWorktreeLinkRequestV1([]);
+    const warning = {
+      message:
+        'Could not share "cache": the filesystem link could not be created and verified safely.',
+      name: 'cache',
+      reason: 'link_failed' as const,
+    };
     createWorktreeMock.mockResolvedValue({
       branch: 'task/test',
       path: '/tmp/project/.worktrees/task/test',
+      symlink_warnings: [warning],
     });
 
-    const result = await createTask('Test', '/tmp/project', [], 'task');
-
-    expect(createWorktreeMock).toHaveBeenCalledWith('/tmp/project', 'task/test', []);
-    expect(result).toMatchObject({
-      branch_name: 'task/test',
-      worktree_path: '/tmp/project/.worktrees/task/test',
-      git_isolation: 'worktree',
-    });
-  });
-
-  it('passes the selected base branch into managed worktree creation', async () => {
-    createWorktreeMock.mockResolvedValue({
-      branch: 'task/test',
-      path: '/tmp/project/.worktrees/task/test',
-    });
-
-    const result = await createTask('Test', '/tmp/project', [], 'task', 'release/main');
+    const result = await createTask('Test', '/tmp/project', worktreeLinkRequest, 'task');
 
     expect(createWorktreeMock).toHaveBeenCalledWith(
       '/tmp/project',
       'task/test',
-      [],
+      worktreeLinkRequest,
+    );
+    expect(result).toMatchObject({
+      branch_name: 'task/test',
+      worktree_path: '/tmp/project/.worktrees/task/test',
+      git_isolation: 'worktree',
+      symlink_warnings: [warning],
+    });
+  });
+
+  it('passes the selected base branch into managed worktree creation', async () => {
+    const worktreeLinkRequest = encodeTaskWorktreeLinkRequestV1([]);
+    createWorktreeMock.mockResolvedValue({
+      branch: 'task/test',
+      path: '/tmp/project/.worktrees/task/test',
+    });
+
+    const result = await createTask(
+      'Test',
+      '/tmp/project',
+      worktreeLinkRequest,
+      'task',
+      'release/main',
+    );
+
+    expect(createWorktreeMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      'task/test',
+      worktreeLinkRequest,
       false,
       'release/main',
     );
@@ -97,6 +118,7 @@ describe('createTask', () => {
   });
 
   it('retries with a suffixed branch name when the initial branch already exists', async () => {
+    const worktreeLinkRequest = encodeTaskWorktreeLinkRequestV1([]);
     createWorktreeMock
       .mockRejectedValueOnce(
         createBranchExistsError('task/test', '/tmp/project/.worktrees/task/test'),
@@ -106,10 +128,20 @@ describe('createTask', () => {
         path: '/tmp/project/.worktrees/task/test-2',
       });
 
-    const result = await createTask('Test', '/tmp/project', [], 'task');
+    const result = await createTask('Test', '/tmp/project', worktreeLinkRequest, 'task');
 
-    expect(createWorktreeMock).toHaveBeenNthCalledWith(1, '/tmp/project', 'task/test', []);
-    expect(createWorktreeMock).toHaveBeenNthCalledWith(2, '/tmp/project', 'task/test-2', []);
+    expect(createWorktreeMock).toHaveBeenNthCalledWith(
+      1,
+      '/tmp/project',
+      'task/test',
+      worktreeLinkRequest,
+    );
+    expect(createWorktreeMock).toHaveBeenNthCalledWith(
+      2,
+      '/tmp/project',
+      'task/test-2',
+      worktreeLinkRequest,
+    );
     expect(result).toMatchObject({
       branch_name: 'task/test-2',
       worktree_path: '/tmp/project/.worktrees/task/test-2',
@@ -120,9 +152,9 @@ describe('createTask', () => {
   it('rethrows non-collision worktree errors', async () => {
     createWorktreeMock.mockRejectedValue(new Error('not a git repository'));
 
-    await expect(createTask('Test', '/tmp/project', [], 'task')).rejects.toThrow(
-      'not a git repository',
-    );
+    await expect(
+      createTask('Test', '/tmp/project', encodeTaskWorktreeLinkRequestV1([]), 'task'),
+    ).rejects.toThrow('not a git repository');
     expect(createWorktreeMock).toHaveBeenCalledOnce();
   });
 
@@ -133,9 +165,9 @@ describe('createTask', () => {
       ),
     );
 
-    await expect(createTask('Test', '/tmp/project', [], 'feature')).rejects.toThrow(
-      'Cannot create branch "feature/test"',
-    );
+    await expect(
+      createTask('Test', '/tmp/project', encodeTaskWorktreeLinkRequestV1([]), 'feature'),
+    ).rejects.toThrow('Cannot create branch "feature/test"');
     expect(createWorktreeMock).toHaveBeenCalledOnce();
   });
 });
@@ -156,7 +188,7 @@ describe('createCurrentBranchTask', () => {
     getMainBranchMock.mockResolvedValue('main');
   });
 
-  it('uses the pre-checkout branch when the project root is already on the base branch', async () => {
+  it('uses the checked-out branch without resolving or switching the project default', async () => {
     getCurrentBranchMock.mockResolvedValue('main');
 
     await expect(createCurrentBranchTask('/tmp/project')).resolves.toMatchObject({
@@ -167,20 +199,43 @@ describe('createCurrentBranchTask', () => {
 
     expect(getCurrentBranchMock).toHaveBeenCalledOnce();
     expect(checkoutBranchMock).not.toHaveBeenCalled();
+    expect(getMainBranchMock).not.toHaveBeenCalled();
   });
 
-  it('returns the resolved base branch without a fallible read after checkout', async () => {
+  it('preserves the checked-out branch when the configured review base differs', async () => {
     getCurrentBranchMock.mockResolvedValue('feature/old');
     checkoutBranchMock.mockResolvedValue(undefined);
 
-    await expect(createCurrentBranchTask('/tmp/project')).resolves.toMatchObject({
-      base_branch: 'main',
-      branch_name: 'main',
+    await expect(createCurrentBranchTask('/tmp/project', 'custom/trunk')).resolves.toMatchObject({
+      base_branch: 'custom/trunk',
+      branch_name: 'feature/old',
       worktree_path: '/tmp/project',
     });
 
     expect(getCurrentBranchMock).toHaveBeenCalledOnce();
-    expect(checkoutBranchMock).toHaveBeenCalledWith('/tmp/project', 'main');
+    expect(checkoutBranchMock).not.toHaveBeenCalled();
+    expect(getMainBranchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['main', 'master', 'develop', 'releases/stable'])(
+    'allows parallel independent tasks on %s',
+    async (branch) => {
+      getCurrentBranchMock.mockResolvedValue(branch);
+      const results = await Promise.all([
+        createCurrentBranchTask('/tmp/project'),
+        createCurrentBranchTask('/tmp/project'),
+      ]);
+      expect(new Set(results.map((result) => result.id)).size).toBe(2);
+      expect(results.map((result) => result.branch_name)).toEqual([branch, branch]);
+      expect(checkoutBranchMock).not.toHaveBeenCalled();
+      expect(createWorktreeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails without modifying Git when the checkout is detached or unreadable', async () => {
+    getCurrentBranchMock.mockRejectedValueOnce(new Error('HEAD is detached'));
+    await expect(createCurrentBranchTask('/tmp/project')).rejects.toThrow('HEAD is detached');
+    expect(checkoutBranchMock).not.toHaveBeenCalled();
   });
 });
 

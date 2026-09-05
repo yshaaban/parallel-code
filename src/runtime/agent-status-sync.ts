@@ -9,6 +9,7 @@ import {
 import { invoke } from '../lib/ipc';
 import {
   hydrateAgentGeneration,
+  hydrateAgentSessionIdentity,
   markAgentExited,
   markAgentRunning,
   setAgentStatus,
@@ -33,6 +34,7 @@ function getMissingAgentSessionsMessage(missingCount: number): string {
 
 export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void {
   let current = store.agents[message.agentId];
+  const previousSessionOperationId = current?.sessionOperationId;
   if (
     message.event === 'spawn' &&
     current &&
@@ -45,6 +47,13 @@ export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void 
 
   if (!shouldApplyLifecycleEventForGeneration(current, message.generation)) {
     return;
+  }
+  if (message.generation !== undefined) {
+    hydrateAgentSessionIdentity(message.agentId, message.generation, {
+      ...(message.launchReason !== undefined ? { launchReason: message.launchReason } : {}),
+      ...(message.operationId !== undefined ? { operationId: message.operationId } : {}),
+      ...(message.resumed !== undefined ? { resumed: message.resumed } : {}),
+    });
   }
 
   switch (message.event) {
@@ -63,6 +72,16 @@ export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void 
       setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'paused'));
       return;
     case 'spawn':
+      if (
+        current &&
+        message.launchReason === 'resume-fallback' &&
+        message.operationId !== undefined &&
+        message.operationId !== previousSessionOperationId
+      ) {
+        showNotification('Resume was unavailable, so the agent started a fresh session.');
+      }
+      setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'running'));
+      return;
     case 'resume':
       setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'running'));
       return;

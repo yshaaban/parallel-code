@@ -4,18 +4,34 @@ import { invoke } from '../lib/ipc.js';
 import { showNotification } from '../store/notification.js';
 import { setStore, store } from '../store/state.js';
 
-interface OpenMarkdownViewerOptions {
+type OpenMarkdownViewerOptions =
+  | {
+      agentId?: string;
+      content: string;
+      fileName?: string;
+      relativePath?: string;
+      taskId?: string;
+      worktreePath?: string;
+    }
+  | {
+      agentId?: string;
+      content?: never;
+      relativePath: string;
+      taskId: string;
+    };
+
+interface BuildMarkdownViewerStateOptions {
   agentId?: string;
-  content?: string;
+  content: string;
   fileName?: string;
   relativePath?: string;
   taskId?: string;
   worktreePath?: string;
 }
 
-interface BuildMarkdownViewerStateOptions extends OpenMarkdownViewerOptions {
-  content: string;
-}
+export type MarkdownViewerOpenResult = 'opened' | 'superseded' | 'unavailable';
+
+let openGeneration = 0;
 
 function buildMarkdownViewerState(options: BuildMarkdownViewerStateOptions): MarkdownViewerState {
   return {
@@ -33,6 +49,7 @@ function setMarkdownViewer(options: BuildMarkdownViewerStateOptions): void {
 }
 
 export function closeMarkdownViewer(): void {
+  openGeneration += 1;
   if (!store.markdownViewer) {
     return;
   }
@@ -40,35 +57,38 @@ export function closeMarkdownViewer(): void {
   setStore('markdownViewer', null);
 }
 
-export async function openMarkdownViewer(options: OpenMarkdownViewerOptions): Promise<boolean> {
+export async function openMarkdownViewer(
+  options: OpenMarkdownViewerOptions,
+): Promise<MarkdownViewerOpenResult> {
+  const generation = ++openGeneration;
   if (options.content !== undefined) {
     setMarkdownViewer({
       ...options,
       content: options.content,
     });
-    return true;
-  }
-
-  if (!options.worktreePath || !options.relativePath) {
-    return false;
+    return 'opened';
   }
 
   const result = await invoke(IPC.ReadMarkdownFile, {
+    ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
     relativePath: options.relativePath,
-    worktreePath: options.worktreePath,
+    taskId: options.taskId,
   }).catch(() => null);
+  if (generation !== openGeneration) {
+    return 'superseded';
+  }
   if (!result) {
     showNotification(`Unable to open markdown file: ${options.relativePath}`);
-    return false;
+    return 'unavailable';
   }
 
   setMarkdownViewer({
     content: result.content,
     fileName: result.fileName,
     relativePath: result.relativePath,
-    worktreePath: options.worktreePath,
+    worktreePath: result.worktreePath,
     ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
-    ...(options.taskId !== undefined ? { taskId: options.taskId } : {}),
+    taskId: options.taskId,
   });
-  return true;
+  return 'opened';
 }

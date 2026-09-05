@@ -60,6 +60,34 @@ describe('agent supervision parser', () => {
     });
   });
 
+  it('self-heals stale question prose across CR redraws and deep prompt footers', () => {
+    const statusFooter = Array.from({ length: 12 }, (_, index) => `status line ${index + 1}`);
+
+    for (const tail of [
+      ['Would you like me to continue?', '❯', 'opus · /repo · ctx:1k/200k'].join('\r'),
+      ['Do you want to refactor this?', '❯', ...statusFooter].join('\n'),
+      'Proceed? [y/N]\u001b[H\u001b[2J❯\nready',
+    ]) {
+      expect(classifyOutputState(tail).state).toBe('idle-at-prompt');
+    }
+  });
+
+  it('retains prompt-adjacent selection state beneath a deep footer', () => {
+    const result = classifyOutputState(
+      [
+        'Use arrow keys to cycle',
+        'Select an option',
+        'hydra[dispatch]>',
+        ...Array.from({ length: 12 }, (_, index) => `status line ${index + 1}`),
+      ].join('\n'),
+    );
+
+    expect(result).toEqual({
+      preview: 'Select an option',
+      state: 'awaiting-input',
+    });
+  });
+
   it('classifies the Codex composer line as idle at prompt', () => {
     const result = classifyOutputState(
       'What would you like to work on?\n› Improve documentation in @docs/ARCHITECTURE.md',

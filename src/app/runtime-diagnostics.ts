@@ -3,6 +3,7 @@ import {
   type ServerStateBootstrapCategory,
 } from '../domain/server-state-bootstrap';
 import type { TerminalPresentationModeKind } from '../lib/terminal-presentation-mode';
+import type { PromptDispatchBlock } from './prompt-input-policy';
 
 interface CategoryCounters {
   [category: string]: number;
@@ -104,6 +105,13 @@ const BROWSER_RECONNECT_RESTORE_OUTCOMES = [
   'stale-snapshot-skip',
   'status-check-failed',
 ] as const;
+const PROMPT_DISPATCH_BLOCK_REASONS = [
+  'peer-controlled',
+  'agent-question',
+  'send-in-flight',
+  'empty',
+] as const satisfies readonly PromptDispatchBlock[];
+const MAX_PROMPT_QUESTION_GENERATION_TRACKERS = 128;
 
 export type TerminalFitDirtyReason = (typeof TERMINAL_FIT_DIRTY_REASONS)[number];
 export type TerminalFitExecutionSource = (typeof TERMINAL_FIT_EXECUTION_SOURCES)[number];
@@ -114,6 +122,8 @@ export type TerminalRecoveryResetReason = (typeof TERMINAL_RECOVERY_RESET_REASON
 export type BrowserStartupCancelReason = (typeof BROWSER_STARTUP_CANCEL_REASONS)[number];
 export type BrowserReconnectRestoreOutcome = (typeof BROWSER_RECONNECT_RESTORE_OUTCOMES)[number];
 export type TerminalRendererSwapReason = 'attach' | 'restore' | 'selected-switch';
+export type TerminalWebglRepairReason = 'foreground' | 'manual' | 'newly-visible';
+export type TerminalWebglRepairSkipReason = 'disposed' | 'generation' | 'hidden' | 'ineligible';
 export type TerminalResizeDeferReason = (typeof TERMINAL_RESIZE_DEFER_REASONS)[number];
 export type TerminalResizePendingReason = (typeof TERMINAL_RESIZE_PENDING_REASONS)[number];
 export type TerminalStartupPaintRole = (typeof TERMINAL_STARTUP_PAINT_ROLES)[number];
@@ -191,6 +201,22 @@ export interface RendererRuntimeDiagnosticsSnapshot {
       'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
       number
     >;
+  };
+  promptQuestion: {
+    blockedDispatchAttempts: Record<PromptDispatchBlock, number>;
+    canonicalLocalDisagreement: {
+      activeCurrent: number;
+      completed: number;
+      lastDurationMs: number | null;
+      maxDurationMs: number;
+      totalDurationMs: number;
+      trackingDrops: number;
+    };
+    draftPreservedAfterSend: number;
+    localClears: number;
+    localEnters: number;
+    staleGenerationDrops: number;
+    staleGenerationTrackingDrops: number;
   };
   browserReconnect: {
     disconnectCounts: Record<
@@ -349,6 +375,15 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     explicitReleases: number;
     fallbackActivations: number;
     fallbackRecoveries: number;
+    atlasRepair: {
+      applied: number;
+      failed: number;
+      intents: Record<TerminalWebglRepairReason, number>;
+      maxQueueDepth: number;
+      queued: number;
+      skipped: Record<TerminalWebglRepairSkipReason, number>;
+      totalDelayMs: number;
+    };
     rendererSwapCounts: Record<TerminalRendererSwapReason, number>;
     visibleContextsCurrent: number;
     visibleContextsMax: number;
@@ -417,6 +452,13 @@ function recordStartupDurationMetric(details: {
 }
 
 let rendererRuntimeDiagnostics: RendererRuntimeDiagnosticsSnapshot = createInitialSnapshot();
+
+interface PromptQuestionDisagreementEntry {
+  startedAtMs: number;
+}
+
+const promptQuestionDisagreements = new Map<string, PromptQuestionDisagreementEntry>();
+const promptQuestionStaleGenerations = new Set<string>();
 
 interface TerminalResizePendingEntry {
   pendingSinceMs: number;
@@ -673,6 +715,15 @@ function createInitialTerminalRendererDiagnostics(): RendererRuntimeDiagnosticsS
     explicitReleases: 0,
     fallbackActivations: 0,
     fallbackRecoveries: 0,
+    atlasRepair: {
+      applied: 0,
+      failed: 0,
+      intents: createCounterRecord(['foreground', 'manual', 'newly-visible'] as const),
+      maxQueueDepth: 0,
+      queued: 0,
+      skipped: createCounterRecord(['disposed', 'generation', 'hidden', 'ineligible'] as const),
+      totalDelayMs: 0,
+    },
     rendererSwapCounts: {
       attach: 0,
       restore: 0,
@@ -717,6 +768,25 @@ function createInitialBrowserSyncDiagnostics(): RendererRuntimeDiagnosticsSnapsh
     scheduled: 0,
     started: 0,
     superseded: 0,
+  };
+}
+
+function createInitialPromptQuestionDiagnostics(): RendererRuntimeDiagnosticsSnapshot['promptQuestion'] {
+  return {
+    blockedDispatchAttempts: createCounterRecord(PROMPT_DISPATCH_BLOCK_REASONS),
+    canonicalLocalDisagreement: {
+      activeCurrent: 0,
+      completed: 0,
+      lastDurationMs: null,
+      maxDurationMs: 0,
+      totalDurationMs: 0,
+      trackingDrops: 0,
+    },
+    draftPreservedAfterSend: 0,
+    localClears: 0,
+    localEnters: 0,
+    staleGenerationDrops: 0,
+    staleGenerationTrackingDrops: 0,
   };
 }
 
@@ -814,6 +884,7 @@ function createInitialSnapshot(): RendererRuntimeDiagnosticsSnapshot {
     browserSync: createInitialBrowserSyncDiagnostics(),
     browserStartup: createInitialBrowserStartupDiagnostics(),
     browserReconnect: createInitialBrowserReconnectDiagnostics(),
+    promptQuestion: createInitialPromptQuestionDiagnostics(),
     terminalInput: createInitialTerminalInputDiagnostics(),
     terminalOutputScheduler: createInitialTerminalOutputSchedulerDiagnostics(),
     terminalPresentation: createInitialTerminalPresentationDiagnostics(),
@@ -861,6 +932,15 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       disconnectCounts: { ...rendererRuntimeDiagnostics.browserReconnect.disconnectCounts },
       restoreOutcomeCounts: {
         ...rendererRuntimeDiagnostics.browserReconnect.restoreOutcomeCounts,
+      },
+    },
+    promptQuestion: {
+      ...rendererRuntimeDiagnostics.promptQuestion,
+      blockedDispatchAttempts: {
+        ...rendererRuntimeDiagnostics.promptQuestion.blockedDispatchAttempts,
+      },
+      canonicalLocalDisagreement: {
+        ...rendererRuntimeDiagnostics.promptQuestion.canonicalLocalDisagreement,
       },
     },
     terminalInput: { ...rendererRuntimeDiagnostics.terminalInput },
@@ -970,6 +1050,11 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
     },
     terminalRenderer: {
       ...rendererRuntimeDiagnostics.terminalRenderer,
+      atlasRepair: {
+        ...rendererRuntimeDiagnostics.terminalRenderer.atlasRepair,
+        intents: { ...rendererRuntimeDiagnostics.terminalRenderer.atlasRepair.intents },
+        skipped: { ...rendererRuntimeDiagnostics.terminalRenderer.atlasRepair.skipped },
+      },
       rendererSwapCounts: { ...rendererRuntimeDiagnostics.terminalRenderer.rendererSwapCounts },
     },
   };
@@ -1001,6 +1086,8 @@ export function getDegradedBootstrapCategories(): ServerStateBootstrapCategory[]
 
 export function resetRendererRuntimeDiagnostics(): void {
   rendererRuntimeDiagnostics = createInitialSnapshot();
+  promptQuestionDisagreements.clear();
+  promptQuestionStaleGenerations.clear();
   terminalResizePendingEntries.clear();
   degradedBootstrapCategories.clear();
   attachRendererRuntimeDiagnosticsStore();
@@ -1069,6 +1156,104 @@ export function recordBrowserSyncFailed(durationMs: number): void {
 export function recordBrowserSyncSuperseded(): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.browserSync.superseded += 1;
+  });
+}
+
+export function recordLocalQuestionTransition(transition: 'clear' | 'enter'): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    if (transition === 'enter') {
+      snapshot.promptQuestion.localEnters += 1;
+      return;
+    }
+
+    snapshot.promptQuestion.localClears += 1;
+  });
+}
+
+export function recordLocalQuestionStaleGenerationDrop(
+  agentId: string,
+  staleGeneration: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    const key = getPromptQuestionGenerationKey(agentId, staleGeneration);
+    if (promptQuestionStaleGenerations.has(key)) {
+      return;
+    }
+    if (promptQuestionStaleGenerations.size >= MAX_PROMPT_QUESTION_GENERATION_TRACKERS) {
+      snapshot.promptQuestion.staleGenerationTrackingDrops += 1;
+      return;
+    }
+
+    promptQuestionStaleGenerations.add(key);
+    snapshot.promptQuestion.staleGenerationDrops += 1;
+  });
+}
+
+export function recordPromptDispatchBlocked(reason: PromptDispatchBlock): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.promptQuestion.blockedDispatchAttempts[reason] += 1;
+  });
+}
+
+export function recordPromptDraftPreservedAfterSend(): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.promptQuestion.draftPreservedAfterSend += 1;
+  });
+}
+
+function getPromptQuestionGenerationKey(agentId: string, generation: number): string {
+  return `${agentId}\0${generation}`;
+}
+
+export function recordPromptQuestionAgreementObservation(details: {
+  agentId: string;
+  canonicalQuestionActive: boolean;
+  generation: number;
+  localQuestionActive: boolean;
+}): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    const key = getPromptQuestionGenerationKey(details.agentId, details.generation);
+    const current = promptQuestionDisagreements.get(key);
+    const disagrees = details.canonicalQuestionActive !== details.localQuestionActive;
+    if (!disagrees) {
+      if (!current) {
+        return;
+      }
+
+      promptQuestionDisagreements.delete(key);
+      const durationMs = Math.max(0, getDiagnosticsNowMs() - current.startedAtMs);
+      const disagreement = snapshot.promptQuestion.canonicalLocalDisagreement;
+      disagreement.activeCurrent = promptQuestionDisagreements.size;
+      disagreement.completed += 1;
+      disagreement.lastDurationMs = durationMs;
+      disagreement.totalDurationMs += durationMs;
+      disagreement.maxDurationMs = Math.max(disagreement.maxDurationMs, durationMs);
+      return;
+    }
+
+    if (current) {
+      return;
+    }
+    if (promptQuestionDisagreements.size >= MAX_PROMPT_QUESTION_GENERATION_TRACKERS) {
+      snapshot.promptQuestion.canonicalLocalDisagreement.trackingDrops += 1;
+      return;
+    }
+
+    promptQuestionDisagreements.set(key, { startedAtMs: getDiagnosticsNowMs() });
+    snapshot.promptQuestion.canonicalLocalDisagreement.activeCurrent =
+      promptQuestionDisagreements.size;
+  });
+}
+
+export function clearPromptQuestionAgreementObservation(agentId: string, generation: number): void {
+  const key = getPromptQuestionGenerationKey(agentId, generation);
+  if (!promptQuestionDisagreements.delete(key)) {
+    return;
+  }
+
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.promptQuestion.canonicalLocalDisagreement.activeCurrent =
+      promptQuestionDisagreements.size;
   });
 }
 
@@ -1701,5 +1886,37 @@ export function recordTerminalRendererRelease(snapshot: TerminalRendererPoolSnap
 export function recordTerminalRendererSwap(reason: TerminalRendererSwapReason): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.terminalRenderer.rendererSwapCounts[reason] += 1;
+  });
+}
+
+export type TerminalRendererAtlasRepairEvent =
+  | { reason: TerminalWebglRepairReason; type: 'intent' }
+  | { queueDepth: number; type: 'queued' }
+  | { delayMs: number; type: 'applied' }
+  | { type: 'failed' }
+  | { reason: TerminalWebglRepairSkipReason; type: 'skipped' };
+
+export function recordTerminalRendererAtlasRepair(event: TerminalRendererAtlasRepairEvent): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    const repair = snapshot.terminalRenderer.atlasRepair;
+    switch (event.type) {
+      case 'intent':
+        repair.intents[event.reason] += 1;
+        return;
+      case 'queued':
+        repair.queued += 1;
+        repair.maxQueueDepth = Math.max(repair.maxQueueDepth, event.queueDepth);
+        return;
+      case 'applied':
+        repair.applied += 1;
+        repair.totalDelayMs += event.delayMs;
+        return;
+      case 'failed':
+        repair.failed += 1;
+        return;
+      case 'skipped':
+        repair.skipped[event.reason] += 1;
+        return;
+    }
   });
 }

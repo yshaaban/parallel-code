@@ -6,6 +6,7 @@ import { sf } from '../lib/fontScale';
 interface AgentSwitchMenuProps {
   currentAgentDefId: string;
   availableAgents: AgentDef[];
+  disabled: boolean;
   onRestartCurrent: () => void;
   onSelectAgent: (agentDef: AgentDef) => void;
 }
@@ -36,35 +37,39 @@ export function AgentSwitchMenu(props: AgentSwitchMenuProps): JSX.Element {
       }}
     >
       <button
+        disabled={props.disabled}
         onClick={(event) => {
           event.stopPropagation();
+          if (props.disabled) return;
           props.onRestartCurrent();
         }}
         style={{
           background: theme.bgElevated,
           border: `1px solid ${theme.border}`,
-          color: theme.fg,
+          color: props.disabled ? theme.fgMuted : theme.fg,
           padding: '2px 8px',
           'border-radius': '4px 0 0 4px',
           'border-right': 'none',
-          cursor: 'pointer',
+          cursor: props.disabled ? 'default' : 'pointer',
           'font-size': sf(10),
         }}
       >
         Restart
       </button>
       <button
+        disabled={props.disabled}
         onClick={(event) => {
           event.stopPropagation();
+          if (props.disabled) return;
           setShowMenu(!showMenu());
         }}
         style={{
           background: theme.bgElevated,
           border: `1px solid ${theme.border}`,
-          color: theme.fg,
+          color: props.disabled ? theme.fgMuted : theme.fg,
           padding: '2px 4px',
           'border-radius': '0 4px 4px 0',
-          cursor: 'pointer',
+          cursor: props.disabled ? 'default' : 'pointer',
           'font-size': sf(10),
         }}
       >

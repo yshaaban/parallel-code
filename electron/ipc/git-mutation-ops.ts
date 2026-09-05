@@ -1,10 +1,9 @@
-import fs from 'fs';
-import path from 'path';
-
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
+import { resolveBranchRef } from './git-branch-ref.js';
 import { execGit, GitSpawnTimeoutError, spawnGitWithDeadline } from './git-exec.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
-import { invalidateGitQueryCacheForPath, withWorktreeLock } from './git-cache.js';
+import { invalidateGitQueryCacheForPath } from './git-cache.js';
+import { withRepositoryWorktreeLock } from './git-worktree-lock.js';
 import { parseConflictPath } from './git-status-parser.js';
 import { removeWorktree } from './git-worktree.js';
 import type { MergeResult, MergeStatus } from '../../src/ipc/types.js';
@@ -34,17 +33,6 @@ function getLastRelevantStderrLine(text: string): string | undefined {
   }
 
   return lines.length > 0 ? lines[lines.length - 1] : undefined;
-}
-
-async function detectRepoLockKey(repoPath: string): Promise<string> {
-  const { stdout } = await execGit(['rev-parse', '--git-common-dir'], { cwd: repoPath });
-  const commonDir = stdout.trim();
-  const commonPath = path.isAbsolute(commonDir) ? commonDir : path.join(repoPath, commonDir);
-  try {
-    return fs.realpathSync(commonPath);
-  } catch {
-    return commonPath;
-  }
 }
 
 async function computeBranchDiffStats(
@@ -111,7 +99,10 @@ export async function checkMergeStatus(
   worktreePath: string,
   baseBranch?: string,
 ): Promise<MergeStatus> {
-  const mainBranch = await detectMainBranch(worktreePath, baseBranch);
+  const { refName: mainBranch } = await resolveBranchRef(
+    worktreePath,
+    await detectMainBranch(worktreePath, baseBranch),
+  );
   const currentBranch = await getCurrentBranchOrNull(worktreePath);
 
   const mainAheadCount = await countBaseBranchCommitsAhead(worktreePath, mainBranch);
@@ -161,16 +152,26 @@ export async function mergeTask(
   message: string | null,
   cleanup: boolean,
   baseBranch?: string,
+  isProjectRootShared?: (projectRoot: string) => boolean,
 ): Promise<MergeResult> {
-  const lockKey = await detectRepoLockKey(projectRoot).catch(() => projectRoot);
-
-  return withWorktreeLock(lockKey, async () => {
+  return withRepositoryWorktreeLock(projectRoot, async () => {
     const currentBranch = await getCurrentBranchOrNull(worktreePath);
     if (currentBranch !== branchName) {
       throw createMergeBranchMismatchError(branchName, currentBranch);
     }
 
-    const mainBranch = await detectMainBranch(projectRoot, baseBranch);
+    const requestedBaseBranch = await detectMainBranch(projectRoot, baseBranch);
+    const targetRef = await execGit(['rev-parse', '--symbolic-full-name', requestedBaseBranch], {
+      cwd: projectRoot,
+    })
+      .then(({ stdout }) => stdout.trim())
+      .catch(() => '');
+    if (!targetRef.startsWith('refs/heads/') || targetRef.includes('\n')) {
+      throw new Error(
+        `Merge target "${requestedBaseBranch}" is not a local branch. Create or select a local tracking branch before merging.`,
+      );
+    }
+    const mainBranch = targetRef.slice('refs/heads/'.length);
     const { linesAdded, linesRemoved } = await computeBranchDiffStats(
       projectRoot,
       mainBranch,
@@ -187,11 +188,17 @@ export async function mergeTask(
     }
 
     const originalBranch = await getCurrentBranchName(projectRoot).catch(() => null);
-
-    await execGit(['checkout', mainBranch], { cwd: projectRoot });
+    if (originalBranch !== mainBranch) {
+      if (isProjectRootShared?.(projectRoot)) {
+        throw new Error(
+          `Project-root tasks are using "${originalBranch ?? 'detached HEAD'}". Close them or select that branch as the merge target before switching to "${mainBranch}".`,
+        );
+      }
+      await execGit(['checkout', mainBranch], { cwd: projectRoot });
+    }
 
     const restoreBranch = async (): Promise<void> => {
-      if (!originalBranch) return;
+      if (!originalBranch || originalBranch === mainBranch) return;
       try {
         await execGit(['checkout', originalBranch], { cwd: projectRoot });
       } catch (error) {
@@ -338,10 +345,11 @@ export async function streamPushTask(
 }
 
 export async function rebaseTask(worktreePath: string, baseBranch?: string): Promise<void> {
-  const lockKey = await detectRepoLockKey(worktreePath).catch(() => worktreePath);
-
-  return withWorktreeLock(lockKey, async () => {
-    const mainBranch = await detectMainBranch(worktreePath, baseBranch);
+  return withRepositoryWorktreeLock(worktreePath, async () => {
+    const { refName: mainBranch } = await resolveBranchRef(
+      worktreePath,
+      await detectMainBranch(worktreePath, baseBranch),
+    );
     try {
       await execGit(['rebase', mainBranch], { cwd: worktreePath });
     } catch (error) {

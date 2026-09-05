@@ -46,7 +46,6 @@ export function TaskShellToolbar(props: TaskShellToolbarProps): JSX.Element {
         padding: '0 8px',
         background: 'transparent',
         gap: '4px',
-        outline: 'none',
       }}
     >
       <button

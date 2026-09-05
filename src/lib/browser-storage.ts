@@ -47,14 +47,16 @@ export function setSafeStorageItem(storage: Storage | null, key: string, value: 
   }
 }
 
-export function removeSafeStorageItem(storage: Storage | null, key: string): void {
+export function removeSafeStorageItem(storage: Storage | null, key: string): boolean {
   if (!storage) {
-    return;
+    return false;
   }
 
   try {
     storage.removeItem(key);
+    return true;
   } catch {
     // Ignore storage cleanup failures for browser-local fallback state.
+    return false;
   }
 }

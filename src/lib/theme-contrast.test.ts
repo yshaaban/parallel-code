@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import { LOOK_PRESETS, type LookPreset } from './look';
 import { getMonacoPresetColorsForTests } from './monaco-theme';
-import { getTerminalTheme } from './theme';
+import { getTerminalSearchDecorationTheme, getTerminalTheme } from './theme';
 
 const CSS_PATH = join(dirname(fileURLToPath(import.meta.url)), '../styles.css');
 const MIN_NORMAL_TEXT_CONTRAST = 4.5;
@@ -144,6 +144,45 @@ describe('look preset contrast tokens', () => {
       const terminalTheme = getTerminalTheme(id);
 
       expect(terminalTheme.background).toBe(getHexColor(variables, 'task-panel-bg'));
+    }
+  });
+
+  it('keeps terminal search decorations exact, visible, and distinguishable', () => {
+    const source = readStylesheet();
+
+    for (const { id } of LOOK_PRESETS) {
+      const variables = getPresetVariables(source, id);
+      const background = getHexColor(variables, 'task-panel-bg');
+      const decorations = getTerminalSearchDecorationTheme(id);
+
+      for (const color of Object.values(decorations)) {
+        expect(color).toMatch(/^#[0-9a-f]{6}$/iu);
+      }
+
+      expect(getContrastRatio(decorations.matchBackground, background)).toBeGreaterThanOrEqual(3);
+      expect(
+        getContrastRatio(decorations.activeMatchBackground, background),
+      ).toBeGreaterThanOrEqual(3);
+      expect(
+        getContrastRatio(decorations.activeMatchBackground, decorations.matchBackground),
+      ).toBeGreaterThanOrEqual(1.5);
+      expect(decorations.activeMatchBorder).not.toBe(decorations.matchBorder);
+    }
+  });
+
+  it('keeps keyboard focus and reduced-motion status rings visible on adjacent surfaces', () => {
+    const source = readStylesheet();
+    const adjacentSurfaces = ['bg-elevated', 'island-bg', 'task-container-bg', 'task-panel-bg'];
+    const statusRingColors = ['fg-muted', 'fg-subtle', 'success', 'accent', 'warning'];
+
+    for (const { id } of LOOK_PRESETS) {
+      const variables = getPresetVariables(source, id);
+      for (const background of adjacentSurfaces) {
+        expectContrastAtLeast(variables, 'border-focus', background, 3);
+        for (const color of statusRingColors) {
+          expectContrastAtLeast(variables, color, background, 3);
+        }
+      }
     }
   });
 });

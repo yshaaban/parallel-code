@@ -12,6 +12,12 @@ interface TaskCommandLease {
   ownerId: string;
 }
 
+export interface TaskCommandLeaseIdentity {
+  clientId: string;
+  leaseGeneration: number;
+  ownerId: string;
+}
+
 export interface AcquireTaskCommandLeaseResult extends TaskCommandControllerSnapshot {
   acquired: boolean;
   changed: boolean;
@@ -254,6 +260,28 @@ export function isTaskCommandLeaseHeld(
 ): boolean {
   const currentLease = getActiveTaskCommandLease(taskId, now);
   return currentLease?.clientId === clientId;
+}
+
+/**
+ * Capture the exact currently-active lease identity for a controller. Callers
+ * must still use `isTaskCommandLeaseGenerationHeld` at their side-effect
+ * boundary; this snapshot alone is never authorization.
+ */
+export function getTaskCommandLeaseIdentity(
+  taskId: string,
+  clientId: string,
+  now = Date.now(),
+): TaskCommandLeaseIdentity | null {
+  const currentLease = getActiveTaskCommandLease(taskId, now);
+  if (!currentLease || currentLease.clientId !== clientId) {
+    return null;
+  }
+
+  return {
+    clientId: currentLease.clientId,
+    leaseGeneration: currentLease.leaseGeneration,
+    ownerId: currentLease.ownerId,
+  };
 }
 
 export function isTaskCommandLeaseGenerationHeld(

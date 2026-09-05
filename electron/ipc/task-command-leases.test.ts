@@ -5,6 +5,8 @@ import {
   clearTaskCommandLeaseForTask,
   getTaskCommandControllerSnapshot,
   getTaskCommandControllers,
+  getTaskCommandLeaseIdentity,
+  isTaskCommandLeaseGenerationHeld,
   isTaskCommandLeaseHeld,
   pruneExpiredTaskCommandLeases,
   releaseTaskCommandLease,
@@ -64,6 +66,45 @@ describe('task-command leases', () => {
       },
     ]);
     expect(isTaskCommandLeaseHeld('task-1', 'client-a', 2_000)).toBe(true);
+  });
+
+  it('captures an exact active identity that becomes invalid after reacquire', () => {
+    const first = acquireTaskCommandLease(
+      'task-1',
+      'client-a',
+      'owner-a',
+      'send a prompt',
+      false,
+      1_000,
+    );
+    const identity = getTaskCommandLeaseIdentity('task-1', 'client-a', 1_000);
+
+    expect(identity).toEqual({
+      clientId: 'client-a',
+      leaseGeneration: first.leaseGeneration,
+      ownerId: 'owner-a',
+    });
+    expect(
+      isTaskCommandLeaseGenerationHeld(
+        'task-1',
+        'client-a',
+        'owner-a',
+        first.leaseGeneration,
+        1_000,
+      ),
+    ).toBe(true);
+    expect(getTaskCommandLeaseIdentity('task-1', 'client-b', 1_000)).toBeNull();
+
+    acquireTaskCommandLease('task-1', 'client-a', 'owner-a', 'send another prompt', false, 2_000);
+    expect(
+      isTaskCommandLeaseGenerationHeld(
+        'task-1',
+        'client-a',
+        'owner-a',
+        first.leaseGeneration,
+        2_000,
+      ),
+    ).toBe(false);
   });
 
   it('rejects conflicting acquires until a takeover is requested', () => {

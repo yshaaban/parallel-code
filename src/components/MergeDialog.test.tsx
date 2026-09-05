@@ -799,4 +799,48 @@ describe('MergeDialog', () => {
 
     expect(screen.queryByText('Error: Old merge failed')).toBeNull();
   });
+
+  it('keeps an in-flight merge active across a same-task canonical projection replacement', async () => {
+    const merge = createDeferredPromise<undefined>();
+    mergeTaskMock.mockImplementationOnce(() => merge.promise);
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    const [task, setTask] = createSignal(createTestTask());
+    const onDone = vi.fn();
+
+    render(() => (
+      <MergeDialog
+        open
+        task={task()}
+        initialCleanup={true}
+        onDone={onDone}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    const confirm = screen.getByTestId('confirm-action');
+    await waitFor(() => {
+      expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    fireEvent.click(screen.getByLabelText('Delete branch and worktree after merge'));
+    fireEvent.click(confirm);
+    expect(mergeTaskMock).toHaveBeenCalledWith('task-1', {
+      cleanup: false,
+      message: undefined,
+      squash: false,
+    });
+
+    setTask(createTestTask());
+    expect(
+      (screen.getByLabelText('Delete branch and worktree after merge') as HTMLInputElement).checked,
+    ).toBe(false);
+
+    merge.resolve(undefined);
+    await waitFor(() => {
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+  });
 });

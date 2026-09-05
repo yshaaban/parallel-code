@@ -4,6 +4,8 @@ import {
   DesktopRuntimeCleanupError,
   finishDesktopRuntimeShutdown,
   settleDesktopRuntimeCleanupOwners,
+  settleWorkspaceStorageCleanupOwners,
+  WorkspaceStorageCleanupError,
 } from './runtime-cleanup.js';
 
 describe('desktop runtime cleanup', () => {
@@ -89,5 +91,27 @@ describe('desktop runtime cleanup', () => {
 
     expect(exit).toHaveBeenCalledWith(1, cleanupError);
     expect(quit).not.toHaveBeenCalled();
+  });
+
+  it('attempts every workspace owner and preserves synchronous and asynchronous failures', async () => {
+    const synchronousError = new Error('synchronous close failed');
+    const asynchronousError = new Error('asynchronous close failed');
+    const laterOwner = vi.fn(async () => undefined);
+
+    const cleanup = settleWorkspaceStorageCleanupOwners([
+      () => {
+        throw synchronousError;
+      },
+      async () => Promise.reject(asynchronousError),
+      laterOwner,
+    ]);
+    const error = await cleanup.catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WorkspaceStorageCleanupError);
+    expect((error as WorkspaceStorageCleanupError).errors).toEqual([
+      synchronousError,
+      asynchronousError,
+    ]);
+    expect(laterOwner).toHaveBeenCalledOnce();
   });
 });

@@ -373,7 +373,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   padding: '8px 11px',
                   color: theme.fg,
                   ...typography.ui,
-                  outline: 'none',
                 }}
               />
             </div>
@@ -396,7 +395,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       padding: '8px 11px',
                       color: theme.fg,
                       ...typography.monoUi,
-                      outline: 'none',
                     }}
                   />
                   <div
@@ -425,7 +423,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       'border-radius': '8px',
                       padding: '8px 11px',
                       color: theme.fg,
-                      outline: 'none',
                       ...typography.monoUi,
                     }}
                   />
@@ -502,7 +499,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                   'border-radius': '8px',
                   padding: '8px 11px',
                   color: theme.fg,
-                  outline: 'none',
                   ...typography.ui,
                 }}
               >
@@ -525,7 +521,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       'border-radius': '8px',
                       padding: '8px 11px',
                       color: theme.fg,
-                      outline: 'none',
                       ...typography.monoUi,
                     }}
                   />
@@ -542,7 +537,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                       'border-radius': '8px',
                       padding: '8px 11px',
                       color: theme.fg,
-                      outline: 'none',
                       ...typography.monoUi,
                     }}
                   />
@@ -676,7 +670,6 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
                     'border-radius': '8px',
                     padding: '8px 11px',
                     color: theme.fg,
-                    outline: 'none',
                     ...typography.monoUi,
                   }}
                 />

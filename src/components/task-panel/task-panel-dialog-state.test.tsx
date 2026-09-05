@@ -1,51 +1,88 @@
 import { createRoot, createSignal } from 'solid-js';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestTask } from '../../test/store-test-helpers';
 import type { PendingAction } from '../../store/types';
+
+const { decisionRef, notifyTaskGitActionDenialMock } = vi.hoisted(() => ({
+  decisionRef: {
+    current: {
+      allowed: true,
+    } as
+      | { allowed: true }
+      | { allowed: false; message: string; reason: 'non_git_task' | 'task_collapsed' },
+  },
+  notifyTaskGitActionDenialMock: vi.fn(),
+}));
+
+vi.mock('../../app/task-git-action-capability', () => ({
+  getCurrentTaskGitActionDecision: vi.fn(() => decisionRef.current),
+  notifyTaskGitActionDenial: notifyTaskGitActionDenialMock,
+}));
+
 import { createTaskPanelDialogState } from './task-panel-dialog-state';
 
-describe('createTaskPanelDialogState', () => {
-  it('blocks merge and push dialogs for non-git tasks', async () => {
-    let dispose!: () => void;
-    let setPendingAction!: (action: PendingAction | null) => void;
-    let dialogState!: ReturnType<typeof createTaskPanelDialogState>;
-    const clearPendingAction = vi.fn(() => setPendingAction(null));
+function createHarness() {
+  let dispose!: () => void;
+  let setPendingAction!: (action: PendingAction | null) => void;
+  let dialogState!: ReturnType<typeof createTaskPanelDialogState>;
+  const clearPendingAction = vi.fn(() => setPendingAction(null));
 
-    createRoot((rootDispose) => {
-      const [pendingAction, setInnerPendingAction] = createSignal<PendingAction | null>(null);
-      setPendingAction = setInnerPendingAction;
-      dialogState = createTaskPanelDialogState({
-        clearPendingAction,
-        pendingAction,
-        showNotification: vi.fn(),
-        task: () =>
-          createTestTask({
-            branchName: '',
-            projectMode: 'non-git',
-            worktreePath: '/tmp/folder',
-          }),
-      });
-      dispose = rootDispose;
+  createRoot((rootDispose) => {
+    const [pendingAction, setInnerPendingAction] = createSignal<PendingAction | null>(null);
+    setPendingAction = setInnerPendingAction;
+    dialogState = createTaskPanelDialogState({
+      clearPendingAction,
+      pendingAction,
+      showNotification: vi.fn(),
+      task: () => createTestTask(),
     });
+    dispose = rootDispose;
+  });
 
+  return { clearPendingAction, dialogState, dispose, setPendingAction };
+}
+
+describe('createTaskPanelDialogState', () => {
+  beforeEach(() => {
+    decisionRef.current = { allowed: true };
+    notifyTaskGitActionDenialMock.mockReset();
+  });
+
+  it.each(['merge', 'push'] as const)(
+    'opens an already-admitted %s action after current-state revalidation',
+    async (type) => {
+      const harness = createHarness();
+
+      harness.setPendingAction({ taskId: 'task-1', type });
+      await Promise.resolve();
+
+      expect(harness.clearPendingAction).toHaveBeenCalledOnce();
+      expect(
+        type === 'merge'
+          ? harness.dialogState.showMergeConfirm()
+          : harness.dialogState.showPushConfirm(),
+      ).toBe(true);
+      expect(notifyTaskGitActionDenialMock).not.toHaveBeenCalled();
+      harness.dispose();
+    },
+  );
+
+  it('rejects task churn before opening and reports the shared capability reason once', async () => {
+    const harness = createHarness();
+    decisionRef.current = {
+      allowed: false,
+      message: 'Restore this task before merging it.',
+      reason: 'task_collapsed',
+    };
+
+    harness.setPendingAction({ taskId: 'task-1', type: 'merge' });
     await Promise.resolve();
 
-    dialogState.openMergeConfirm();
-    dialogState.openPushConfirm();
-    expect(dialogState.showMergeConfirm()).toBe(false);
-    expect(dialogState.showPushConfirm()).toBe(false);
-
-    setPendingAction({ taskId: 'task-1', type: 'merge' });
-    await Promise.resolve();
-    expect(clearPendingAction).toHaveBeenCalledTimes(1);
-    expect(dialogState.showMergeConfirm()).toBe(false);
-
-    setPendingAction({ taskId: 'task-1', type: 'push' });
-    await Promise.resolve();
-    expect(clearPendingAction).toHaveBeenCalledTimes(2);
-    expect(dialogState.showPushConfirm()).toBe(false);
-
-    dispose();
+    expect(harness.clearPendingAction).toHaveBeenCalledOnce();
+    expect(harness.dialogState.showMergeConfirm()).toBe(false);
+    expect(notifyTaskGitActionDenialMock).toHaveBeenCalledOnce();
+    expect(notifyTaskGitActionDenialMock).toHaveBeenCalledWith(decisionRef.current);
+    harness.dispose();
   });
 });

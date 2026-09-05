@@ -12,6 +12,8 @@ import type { TaskReviewEvent } from './task-review.js';
 import type { TaskReviewSignalsEvent } from './task-review-signals.js';
 import type { AgentAvailabilityChangedEvent } from './agent-availability.js';
 import type { CoordinatorEventEnvelope } from './coordinator.js';
+import type { TaskNotesChangedNotification } from './task-notes.js';
+import type { TaskReliabilityRuntimeEvent } from './task-reliability-runtime.js';
 
 export interface PlanContentUpdate {
   content: string | null;
@@ -51,6 +53,8 @@ export interface RendererIpcEventPayloads {
   [IPC.TaskReviewSignalsChanged]: TaskReviewSignalsEvent;
   [IPC.TaskPortsChanged]: TaskPortsEvent;
   [IPC.TaskStepsChanged]: TaskStepsEvent;
+  [IPC.TaskNotesChanged]: TaskNotesChangedNotification;
+  [IPC.TaskReliabilityChanged]: TaskReliabilityRuntimeEvent;
 }
 
 export type RendererEventChannel = keyof RendererIpcEventPayloads;

@@ -4,7 +4,9 @@ import {
   subscribeToAgent,
   unsubscribeFromAgent,
 } from '../electron/ipc/pty.js';
+import type { PtyExitEventData } from '../electron/ipc/pty.js';
 import type { ServerMessage, SubscribeCommand } from '../electron/remote/protocol.js';
+import type { PtyExitData } from '../src/ipc/types.js';
 
 type AgentOutputCallback = (data: string) => void;
 type TerminalSubscriptionProtocol = NonNullable<SubscribeCommand['terminalProtocol']>;
@@ -17,11 +19,10 @@ interface AgentOutputSubscription {
 
 type AgentOutputSubscriptions = Map<string, AgentOutputSubscription>;
 
-export interface BrowserAgentOutputExitData {
-  exitCode?: number | null;
-  lastOutput?: string[];
-  signal?: unknown;
-}
+export type BrowserAgentOutputExitData = Pick<
+  PtyExitEventData,
+  'exitCode' | 'lastOutput' | 'signal'
+>;
 
 export interface CreateBrowserAgentOutputSubscriptionsOptions<Client extends object> {
   getAgentCols?: (agentId: string) => number;
@@ -34,7 +35,7 @@ export interface CreateBrowserAgentOutputSubscriptionsOptions<Client extends obj
 
 export interface BrowserAgentOutputSubscriptions<Client extends object> {
   cleanupClient: (client: Client) => void;
-  emitExit: (agentId: string, data?: BrowserAgentOutputExitData) => void;
+  emitExit: (agentId: string, data: BrowserAgentOutputExitData) => void;
   registerClient: (client: Client) => void;
   resume: (client: Client, agentId: string) => void;
   subscribe: (
@@ -45,15 +46,11 @@ export interface BrowserAgentOutputSubscriptions<Client extends object> {
   unsubscribe: (client: Client, agentId: string) => void;
 }
 
-function createTerminalExitData(data: BrowserAgentOutputExitData): {
-  exit_code: number | null;
-  last_output: string[];
-  signal: string | null;
-} {
+function createTerminalExitData(data: BrowserAgentOutputExitData): PtyExitData {
   return {
-    exit_code: data.exitCode ?? null,
-    last_output: Array.isArray(data.lastOutput) ? data.lastOutput : [],
-    signal: data.signal === null || data.signal === undefined ? null : String(data.signal),
+    exit_code: data.exitCode,
+    last_output: [...data.lastOutput],
+    signal: data.signal,
   };
 }
 
@@ -87,7 +84,7 @@ export function createBrowserAgentOutputSubscriptions<Client extends object>(
     registeredClients.delete(client);
   }
 
-  function emitExit(agentId: string, data: BrowserAgentOutputExitData = {}): void {
+  function emitExit(agentId: string, data: BrowserAgentOutputExitData): void {
     for (const client of registeredClients) {
       const subscriptions = subscriptionsByClient.get(client);
       const subscription = subscriptions?.get(agentId);

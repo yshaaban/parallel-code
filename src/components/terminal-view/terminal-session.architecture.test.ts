@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -12,6 +12,14 @@ function expectSourceNotToContain(sourceName: string, source: string, forbiddenT
   for (const term of forbiddenTerms) {
     expect(source, `${sourceName} should not contain ${term}`).not.toContain(term);
   }
+}
+
+function listProductionSources(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listProductionSources(entryPath);
+    return /\.tsx?$/u.test(entry.name) && !/\.(?:test|spec)\./u.test(entry.name) ? [entryPath] : [];
+  });
 }
 
 const terminalContractSource = readRepoFile('docs/TERMINAL-CONTRACT.md');
@@ -30,7 +38,15 @@ const terminalViewSource = readFileSync(
   'utf8',
 );
 const remoteAgentDetailSource = readRepoFile('src/remote/AgentDetail.tsx');
+const appShortcutsSource = readRepoFile('src/runtime/app-shortcuts.ts');
 const webglPoolSource = readFileSync(path.resolve(process.cwd(), 'src/lib/webglPool.ts'), 'utf8');
+const terminalLinksSource = readRepoFile('src/lib/terminal-links.ts');
+const terminalSearchRuntimeSource = readRepoFile(
+  'src/components/terminal-view/terminal-search-runtime.ts',
+);
+const terminalSearchOverlaySource = readRepoFile('src/components/TerminalSearchOverlay.tsx');
+const frontendViteConfigSource = readRepoFile('electron/vite.config.electron.ts');
+const compressionScriptSource = readRepoFile('scripts/compress-dist-assets.mjs');
 const terminalRecoveryRuntimeSource = readRepoFile(
   'src/components/terminal-view/terminal-recovery-runtime.ts',
 );
@@ -46,6 +62,14 @@ const browserWebSocketSource = readRepoFile('server/browser-websocket.ts');
 const browserAgentCommandExecutorSource = readRepoFile('server/browser-agent-command-executor.ts');
 const browserChannelClientSource = readRepoFile('src/lib/browser-channel-client.ts');
 const remoteWsSource = readRepoFile('src/remote/ws.ts');
+const taskAiTerminalSectionSource = readRepoFile(
+  'src/components/task-panel/TaskAiTerminalSection.tsx',
+);
+const taskShellSectionSource = readRepoFile('src/components/task-panel/TaskShellSection.tsx');
+const terminalPanelSource = readRepoFile('src/components/TerminalPanel.tsx');
+const arenaBattleSource = readRepoFile('src/arena/BattleScreen.tsx');
+const electronRegisterSource = readRepoFile('electron/ipc/register.ts');
+const browserServerSource = readRepoFile('server/browser-server.ts');
 
 describe('terminal session architecture guardrails', () => {
   it('keeps the durable terminal contract discoverable and scoped to terminal boundaries', () => {
@@ -85,8 +109,45 @@ describe('terminal session architecture guardrails', () => {
 
   it('keeps transport-aware lifecycle logic visible in the public terminal facade', () => {
     expect(terminalSessionSource).toContain('outputChannel.onmessage');
-    expect(terminalSessionSource).toContain('invoke(IPC.AttachTerminalSession');
+    expect(terminalSessionSource).toContain('IPC.AttachTerminalSession');
+    expect(terminalSessionSource).not.toContain('IPC.SpawnAgent');
     expect(terminalSessionSource).toContain('onBrowserTransportEvent');
+  });
+
+  it('keeps production terminal lifecycle ownership explicit at every surface', () => {
+    expect(taskAiTerminalSectionSource).toContain('sessionOwner="managed-agent"');
+    expect(taskShellSectionSource).toContain("ownership?.kind === 'managed-terminal-v1'");
+    expect(taskShellSectionSource).toContain('ownership.sessionId === shellId');
+    expect(terminalPanelSource).toContain('sessionOwner="compatibility-shell"');
+    expect(arenaBattleSource).toContain('sessionOwner="arena-transient"');
+    expect(terminalSessionSource).toContain(
+      "sessionOwner === 'managed-agent' || sessionOwner === 'managed-task-shell'",
+    );
+  });
+
+  it('keeps compatibility creation intent process-local and minted only by creation owners', () => {
+    const markerCallers = listProductionSources(path.resolve(PROJECT_ROOT, 'src'))
+      .filter((filePath) =>
+        readFileSync(filePath, 'utf8').includes('markCompatibilityTerminalCreationPending('),
+      )
+      .map((filePath) => path.relative(PROJECT_ROOT, filePath))
+      .sort();
+
+    expect(markerCallers).toEqual([
+      'src/app/task-shell-workflows.ts',
+      'src/runtime/compatibility-terminal-creation.ts',
+      'src/store/terminals.ts',
+    ]);
+    expect(terminalSessionSource).toContain('isCompatibilityTerminalCreationPending(');
+    expect(terminalSessionSource).toContain('completeCompatibilityTerminalCreation(');
+    expect(terminalSessionSource).not.toContain('markCompatibilityTerminalCreationPending(');
+  });
+
+  it('forwards compatibility creation provenance through desktop and browser compositions', () => {
+    for (const source of [electronRegisterSource, browserServerSource]) {
+      expect(source).toContain('restoreCanonicalTaskShellSession = async (request, options) =>');
+      expect(source).toContain('restoreCanonicalTaskShellSession(request, options)');
+    }
   });
 
   it('keeps optional terminal addons out of the eager startup chunk', () => {
@@ -96,6 +157,61 @@ describe('terminal session architecture guardrails', () => {
     expect(webglPoolSource).toContain("import('@xterm/addon-webgl')");
     expect(webglPoolSource).toContain("import type { WebglAddon } from '@xterm/addon-webgl'");
     expect(webglPoolSource).not.toMatch(/import\s+\{[^}]*WebglAddon/u);
+  });
+
+  it('keeps terminal search lazy, session-owned, and presentation-only at the view edge', () => {
+    expect(terminalSearchRuntimeSource).toContain("import('@xterm/addon-search')");
+    expect(terminalSearchRuntimeSource).not.toMatch(
+      /import\s+\{[^}]*SearchAddon[^}]*\}\s+from\s+['"]@xterm\/addon-search['"]/u,
+    );
+    expect(terminalSessionSource).toContain('createTerminalSearchRuntime');
+    expect(terminalSessionSource).toContain("case 'find':");
+    expect(terminalViewSource).toContain('<TerminalSearchOverlay');
+    expectSourceNotToContain('TerminalView', terminalViewSource, [
+      '@xterm/addon-search',
+      'createTerminalSearchRuntime',
+      'findNext(',
+      'findPrevious(',
+    ]);
+    expectSourceNotToContain('TerminalSearchOverlay', terminalSearchOverlaySource, [
+      '@xterm/',
+      '../store/',
+      'findNext(',
+      'findPrevious(',
+    ]);
+  });
+
+  it('prefetches only startup-critical terminal addons and excludes search from eager links', () => {
+    expect(frontendViteConfigSource).toContain("new Set(['addon-web-links', 'addon-webgl'])");
+    expect(frontendViteConfigSource).not.toContain("startsWith('addon-')");
+    expect(compressionScriptSource).toContain(
+      'must not preload or prefetch the terminal search addon',
+    );
+  });
+
+  it('keeps bounded terminal link policy in its pure owner', () => {
+    expect(terminalLinksSource).toContain('export function computeTerminalMarkdownLinks');
+    expect(terminalLinksSource).toContain('maxCells: 4_096');
+    expect(terminalLinksSource).toContain('maxRows: 128');
+    expect(terminalSessionSource).toContain('computeTerminalMarkdownLinks(');
+    expectSourceNotToContain('terminal-session', terminalSessionSource, [
+      'TERMINAL_MARKDOWN_LINK_PATTERN',
+      'getMarkdownViewerRelativePath',
+      'stripTerminalMarkdownLinkSuffix',
+      '.getCell(',
+      '.isWrapped',
+    ]);
+  });
+
+  it('keeps WebGL atlas repair in the pool and the manual shortcut lazy', () => {
+    expect(webglPoolSource).toContain('export function requestVisibleWebglAtlasRepair');
+    expect(webglPoolSource).toContain('entry.addon.clearTextureAtlas()');
+    expect(appShortcutsSource).toContain("import('../lib/webglPool')");
+    expect(appShortcutsSource).not.toMatch(/import\s+[^;]+\s+from\s+['"]\.\.\/lib\/webglPool['"]/u);
+    expectSourceNotToContain('TerminalView', terminalViewSource, [
+      'clearTextureAtlas',
+      'requestVisibleWebglAtlasRepair',
+    ]);
   });
 
   it('keeps the terminal implementation behind an explicit startup loader', () => {

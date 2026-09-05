@@ -981,7 +981,7 @@ describe('desktop session startup sequencing', () => {
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.ReadPlanContent, {
       relativePath: 'docs/plans/current-plan.md',
-      worktreePath: '/tmp/task-1',
+      taskId: 'task-1',
     });
     expect(setPlanContentMock).toHaveBeenCalledWith(
       'task-1',
@@ -1072,8 +1072,8 @@ describe('desktop session startup sequencing', () => {
             {
               agentId: 'agent-background',
               cols: 80,
-              created: true,
-              existed: false,
+              generation: 1,
+              kind: 'restored',
               rows: 24,
               taskId: 'task-background',
             },
@@ -1105,13 +1105,6 @@ describe('desktop session startup sequencing', () => {
       requests: [
         {
           agentId: 'agent-background',
-          args: ['watch'],
-          cols: 80,
-          command: 'claude',
-          cwd: '/tmp/task-background',
-          env: {},
-          resumeOnStart: false,
-          rows: 24,
           taskId: 'task-background',
         },
       ],
@@ -1207,10 +1200,10 @@ describe('desktop session startup sequencing', () => {
     expect(invokeMock).toHaveBeenCalledWith(IPC.EnsureAgentSessionsBatch, {
       reason: 'startup-restore',
       requests: [
-        expect.objectContaining({
+        {
           agentId: 'agent-background',
           taskId: 'task-background',
-        }),
+        },
       ],
     });
 

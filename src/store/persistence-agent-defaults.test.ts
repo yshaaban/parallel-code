@@ -148,4 +148,57 @@ describe('persistence agent defaults', () => {
       CODEX_HOME: '/tmp/codex-home',
     });
   });
+
+  it('strips a reserved fallback capability forged by persisted custom data', () => {
+    const custom = createAgentDef({
+      id: 'custom-claude',
+      resume_failure_classifier: 'claude-no-conversation-v1',
+      resume_failure_fallback: 'fresh-start',
+    });
+
+    hydratePersistedAgentDef(custom, [custom], '');
+
+    expect(custom.resume_failure_classifier).toBeUndefined();
+    expect(custom.resume_failure_fallback).toBeUndefined();
+  });
+
+  it('restores fallback capability only from the separately trusted catalog', () => {
+    const persisted = createAgentDef({
+      id: 'claude-code',
+      resume_failure_classifier: 'claude-no-conversation-v1',
+      resume_failure_fallback: 'none',
+    });
+    const trusted = createAgentDef({
+      id: 'claude-code',
+      resume_failure_classifier: 'claude-no-conversation-v1',
+      resume_failure_fallback: 'fresh-start',
+    });
+
+    hydratePersistedAgentDef(persisted, [trusted], '', [trusted]);
+
+    expect(persisted).toMatchObject({
+      resume_failure_classifier: 'claude-no-conversation-v1',
+      resume_failure_fallback: 'fresh-start',
+    });
+  });
+
+  it('keeps normalized persisted custom-agent catalogs capability-free', () => {
+    const result = createWorkspaceStateBaseAgents(
+      {
+        customAgents: [
+          {
+            ...createAgentDef({ id: 'forged-claude' }),
+            resume_failure_classifier: 'claude-no-conversation-v1',
+            resume_failure_fallback: 'fresh-start',
+          },
+        ],
+      } as never,
+      '',
+      [],
+      [],
+    );
+
+    expect(result.customAgents[0]?.resume_failure_classifier).toBeUndefined();
+    expect(result.customAgents[0]?.resume_failure_fallback).toBeUndefined();
+  });
 });

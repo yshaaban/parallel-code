@@ -184,9 +184,11 @@ export function AskCodeCard(props: AskCodeCardProps): JSX.Element {
       >
         <Show when={loading() && !response()}>
           <span
+            class="askcode-loading-pulse"
+            role="status"
+            aria-live="polite"
             style={{
               color: theme.fgSubtle,
-              animation: 'askcode-pulse 1.5s ease-in-out infinite',
             }}
           >
             Thinking...
@@ -195,14 +197,19 @@ export function AskCodeCard(props: AskCodeCardProps): JSX.Element {
         <Show when={response()}>{response()}</Show>
         <Show when={loading() && response()}>
           <span
+            class="askcode-loading-pulse"
+            aria-hidden="true"
             style={{
               color: theme.accent,
               'font-size': sf(10),
-              animation: 'askcode-pulse 1s ease-in-out infinite',
+              '--askcode-pulse-duration': '1s',
             }}
           >
             {' '}
             ●
+          </span>
+          <span class="dialog-sr-only" role="status" aria-live="polite">
+            Still receiving response
           </span>
         </Show>
         <Show when={error()}>

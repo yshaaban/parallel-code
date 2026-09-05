@@ -6,22 +6,50 @@ import {
   parseSavedStateTasksRecordFromRoot,
 } from '../src/domain/saved-state-tasks.js';
 import { isRecord } from '../src/lib/type-guards.js';
+import {
+  createTaskContentAuthorityCoordinator,
+  type TaskContentAuthorityAccess,
+  type TaskContentAuthorityCoordinator,
+} from './task-content-authority-coordinator.js';
 
 type RemoteWorktreeOwnership = NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>;
 type RemoteTaskGitIsolation = NonNullable<RemoteAgentTaskMeta['gitIsolation']>;
 type RemoteTaskProjectMode = NonNullable<RemoteAgentTaskMeta['projectMode']>;
 
 export interface TaskNameRegistry {
+  readonly taskContentAuthorityCoordinator: TaskContentAuthorityCoordinator;
+  classifyTaskContentRoot: (taskId: string) => CanonicalTaskRootDisposition;
   deleteTask: (taskId: string) => void;
   deleteTaskName: (taskId: string) => void;
   deleteTaskMetadata: (taskId: string) => void;
   getTaskName: (taskId: string) => string;
   getTaskMetadata: (taskId: string, agentId?: string) => RemoteAgentTaskMeta | null;
+  markTaskClosing: (taskId: string) => void;
+  markTaskTombstoned: (taskId: string) => void;
+  readTaskContentRootUnderAuthorityCoordinator: (
+    access: TaskContentAuthorityAccess,
+    taskId: string,
+  ) => CanonicalTaskRootDisposition;
   registerCreatedTask: (taskId: string, task: CreatedTaskRegistryEntry) => void;
+  restoreAuthorizedTaskRoots: (savedState: string | SavedStateDocument) => void;
   setTaskName: (taskId: string, taskName: string) => void;
   setTaskMetadata: (taskId: string, meta: RemoteAgentTaskMeta) => void;
   syncFromSavedState: (savedState: string | SavedStateDocument) => void;
 }
+
+export type CanonicalTaskRootDisposition =
+  | {
+      generation: bigint;
+      kind: 'live';
+      provenance: 'created' | 'restored';
+      root: string;
+    }
+  | {
+      generation: bigint;
+      kind: 'closing' | 'removed' | 'tombstoned' | 'unknown';
+    };
+
+const UNKNOWN_TASK_CONTENT_ROOT_GENERATION = 0n;
 
 const LAST_PROMPT_LIMIT = 120;
 
@@ -280,10 +308,126 @@ function parseTaskAgentMetadata(
   return metadata;
 }
 
-export function createTaskNameRegistry(): TaskNameRegistry {
+function normalizeAuthorizedTaskRoot(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.includes('\0') ||
+    !path.isAbsolute(value)
+  ) {
+    return null;
+  }
+
+  return path.resolve(value);
+}
+
+export function createTaskNameRegistry(
+  taskContentAuthorityCoordinator = createTaskContentAuthorityCoordinator(),
+): TaskNameRegistry {
   const taskNames = new Map<string, string>();
   const taskMetadata = new Map<string, RemoteAgentTaskMeta>();
   const agentMetadata = new Map<string, AgentMetadataRecord>();
+  const taskContentRoots = new Map<string, CanonicalTaskRootDisposition>();
+  let nextTaskContentRootGeneration = 1n;
+  let authorizedTaskRootsRestored = false;
+
+  function allocateTaskContentRootGeneration(): bigint {
+    const generation = nextTaskContentRootGeneration;
+    nextTaskContentRootGeneration += 1n;
+    return generation;
+  }
+
+  function readTaskContentRootUnderAuthorityCoordinator(
+    access: TaskContentAuthorityAccess,
+    taskId: string,
+  ): CanonicalTaskRootDisposition {
+    taskContentAuthorityCoordinator.assertAccess(access);
+    return (
+      taskContentRoots.get(taskId) ?? {
+        generation: UNKNOWN_TASK_CONTENT_ROOT_GENERATION,
+        kind: 'unknown',
+      }
+    );
+  }
+
+  function classifyTaskContentRoot(taskId: string): CanonicalTaskRootDisposition {
+    return taskContentAuthorityCoordinator.run((access) =>
+      readTaskContentRootUnderAuthorityCoordinator(access, taskId),
+    );
+  }
+
+  function setTaskContentRootDisposition(
+    taskId: string,
+    disposition:
+      | { kind: 'live'; provenance: 'created' | 'restored'; root: string }
+      | { kind: 'closing' | 'removed' | 'tombstoned' },
+  ): void {
+    taskContentAuthorityCoordinator.run(() => {
+      const current = taskContentRoots.get(taskId);
+      if (
+        current?.kind === disposition.kind &&
+        (current.kind !== 'live' ||
+          (disposition.kind === 'live' &&
+            current.provenance === disposition.provenance &&
+            current.root === disposition.root))
+      ) {
+        return;
+      }
+      taskContentRoots.set(taskId, {
+        ...disposition,
+        generation: allocateTaskContentRootGeneration(),
+      });
+    });
+  }
+
+  function restoreAuthorizedTaskRoots(savedState: string | SavedStateDocument): void {
+    if (authorizedTaskRootsRestored) {
+      return;
+    }
+
+    let tasks: SavedStateTask[] | null;
+    try {
+      tasks = parseSavedStateTasks(savedState);
+    } catch (error) {
+      console.warn('Ignoring malformed saved task roots:', error);
+      authorizedTaskRootsRestored = true;
+      return;
+    }
+
+    taskContentAuthorityCoordinator.run(() => {
+      if (authorizedTaskRootsRestored) {
+        return;
+      }
+      authorizedTaskRootsRestored = true;
+
+      for (const task of tasks ?? []) {
+        if (typeof task.id !== 'string') {
+          continue;
+        }
+
+        const existing = taskContentRoots.get(task.id);
+        if (existing && existing.kind !== 'unknown') {
+          continue;
+        }
+
+        const root = normalizeAuthorizedTaskRoot(task.worktreePath);
+        taskContentRoots.set(
+          task.id,
+          root
+            ? {
+                generation: allocateTaskContentRootGeneration(),
+                kind: 'live',
+                provenance: 'restored',
+                root,
+              }
+            : {
+                generation: allocateTaskContentRootGeneration(),
+                kind: 'tombstoned',
+              },
+        );
+      }
+    });
+  }
 
   function syncFromSavedState(savedState: string | SavedStateDocument): void {
     try {
@@ -368,6 +512,16 @@ export function createTaskNameRegistry(): TaskNameRegistry {
         worktreeOwnership: task.worktreeOwnership ?? null,
       }),
     );
+
+    const root = normalizeAuthorizedTaskRoot(task.worktreePath);
+    setTaskContentRootDisposition(
+      taskId,
+      root
+        ? { kind: 'live', provenance: 'created', root }
+        : {
+            kind: 'tombstoned',
+          },
+    );
   }
 
   function deleteTaskName(taskId: string): void {
@@ -380,19 +534,34 @@ export function createTaskNameRegistry(): TaskNameRegistry {
   }
 
   function deleteTask(taskId: string): void {
+    setTaskContentRootDisposition(taskId, { kind: 'removed' });
     deleteTaskName(taskId);
     deleteTaskMetadata(taskId);
   }
 
+  function markTaskClosing(taskId: string): void {
+    setTaskContentRootDisposition(taskId, { kind: 'closing' });
+  }
+
+  function markTaskTombstoned(taskId: string): void {
+    setTaskContentRootDisposition(taskId, { kind: 'tombstoned' });
+  }
+
   return {
+    classifyTaskContentRoot,
     deleteTask,
     deleteTaskName,
     deleteTaskMetadata,
     getTaskName,
     getTaskMetadata,
+    markTaskClosing,
+    markTaskTombstoned,
+    readTaskContentRootUnderAuthorityCoordinator,
     registerCreatedTask,
+    restoreAuthorizedTaskRoots,
     setTaskName,
     setTaskMetadata,
     syncFromSavedState,
+    taskContentAuthorityCoordinator,
   };
 }

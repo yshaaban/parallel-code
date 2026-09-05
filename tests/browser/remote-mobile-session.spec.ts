@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { IPC } from '../../electron/ipc/channels.js';
 import { expect, test } from './harness/fixtures.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
 
@@ -40,12 +41,33 @@ test.describe('browser-lab remote mobile session flow', () => {
   test('prompts for a session name, surfaces it on desktop, and releases input focus after send', async ({
     browser,
     browserLab,
+    request,
     scenario,
   }) => {
     const desktopSession = await browserLab.openSession(browser, {
       displayName: 'Desktop Seeder',
     });
     await browserLab.waitForTerminalReady(desktopSession.page);
+    const restoredMarker = 'REMOTE_RESTORED_BEFORE_LIVE_OUTPUT';
+    await browserLab.runInTerminal(desktopSession.page, `console.log("${restoredMarker}")`);
+    await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, restoredMarker);
+
+    // Seeding restored output makes the desktop terminal the focused typing surface. Move focus
+    // away before this unrelated mobile-input journey so the canonical lease is released normally.
+    await desktopSession.page
+      .locator(`[data-sidebar-task-id="${browserLab.server.taskId}"]`)
+      .click();
+    await expect
+      .poll(async () => {
+        const result = await browserLab.invokeIpc<{
+          controllers: Array<{ controllerId: string | null; taskId: string }>;
+        }>(request, IPC.GetTaskCommandControllers);
+        return (
+          result.controllers.find((controller) => controller.taskId === browserLab.server.taskId)
+            ?.controllerId ?? null
+        );
+      })
+      .toBeNull();
 
     const remoteContext = await browser.newContext({
       hasTouch: true,
@@ -76,6 +98,7 @@ test.describe('browser-lab remote mobile session flow', () => {
     await expect(detailHeader).toBeVisible();
     await expect(terminalShell).toBeVisible();
     await expect(commandInput).toBeVisible();
+    await expect(terminalShell.locator('.xterm-rows')).toContainText(restoredMarker);
 
     const detailHeaderBox = await detailHeader.boundingBox();
     const terminalShellBox = await terminalShell.boundingBox();

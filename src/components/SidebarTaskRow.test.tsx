@@ -80,6 +80,38 @@ function renderCollapsedSidebarTaskRow(): void {
   render(() => <CollapsedSidebarTaskRow taskId="task-1" />);
 }
 
+function stubReducedMotion(matches: boolean): ReturnType<typeof vi.fn> {
+  const matchMedia = vi.fn((query: string) => ({
+    addEventListener: vi.fn(),
+    addListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    matches,
+    media: query,
+    onchange: null,
+    removeEventListener: vi.fn(),
+    removeListener: vi.fn(),
+  }));
+  vi.stubGlobal('matchMedia', matchMedia);
+  return matchMedia;
+}
+
+function dispatchAnimation(
+  target: Element,
+  type: 'animationcancel' | 'animationend',
+  name: string,
+) {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperty(event, 'animationName', { value: name });
+  target.dispatchEvent(event);
+}
+
+function requireElement<T extends Element>(element: T | null, label: string): T {
+  if (!element) {
+    throw new Error(`Missing ${label}`);
+  }
+  return element;
+}
+
 function createTestConvergenceSnapshot(
   taskId: string,
   overrides: Partial<TaskConvergenceSnapshot> = {},
@@ -123,8 +155,64 @@ describe('SidebarTaskRow', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it('owns a regular row appearance class until its exact root animation completes', () => {
+    const matchMedia = stubReducedMotion(false);
+    renderSidebarTaskRow();
+    const row = requireElement(
+      screen.getByText('Task').closest('[data-sidebar-task-id="task-1"]'),
+      'regular sidebar task row',
+    );
+    const nested = screen.getByText('Task');
+
+    expect(row.classList.contains('task-item-appearing')).toBe(true);
+    expect(matchMedia).toHaveBeenCalledTimes(1);
+    dispatchAnimation(nested, 'animationend', 'taskItemAppear');
+    expect(row.classList.contains('task-item-appearing')).toBe(true);
+    dispatchAnimation(row, 'animationend', 'taskItemAppear');
+    expect(row.classList.contains('task-item-appearing')).toBe(false);
+  });
+
+  it('skips reduced-motion appearance for regular and collapsed rows', () => {
+    const regularMedia = stubReducedMotion(true);
+    renderSidebarTaskRow();
+    const regular = requireElement(
+      screen.getByText('Task').closest('[data-sidebar-task-id="task-1"]'),
+      'reduced-motion regular row',
+    );
+    expect(regular.classList.contains('task-item-appearing')).toBe(false);
+    expect(regularMedia).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    const collapsedMedia = stubReducedMotion(true);
+    renderCollapsedSidebarTaskRow();
+    const collapsed = requireElement(
+      document.querySelector('[data-sidebar-task-id="task-1"]'),
+      'reduced-motion collapsed row',
+    );
+    expect(collapsed.classList.contains('task-item-appearing')).toBe(false);
+    expect(collapsedMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears collapsed appearance on cancellation and gives removal precedence', () => {
+    stubReducedMotion(false);
+    renderCollapsedSidebarTaskRow();
+    const row = requireElement(
+      document.querySelector('[data-sidebar-task-id="task-1"]'),
+      'collapsed sidebar task row',
+    );
+    expect(row.classList.contains('task-item-appearing')).toBe(true);
+
+    dispatchAnimation(row, 'animationcancel', 'taskItemAppear');
+    expect(row.classList.contains('task-item-appearing')).toBe(false);
+
+    setStore('tasks', 'task-1', 'closeState', { kind: 'removing' });
+    expect(row.classList.contains('task-item-removing')).toBe(true);
+    expect(row.classList.contains('task-item-appearing')).toBe(false);
   });
 
   it('shows compact, text-based context for terminal tasks in the project root', () => {
@@ -143,7 +231,9 @@ describe('SidebarTaskRow', () => {
 
     expect(screen.getByRole('img', { name: 'Terminal task' })).toBeDefined();
     expect(screen.getByText('root')).toBeDefined();
-    expect(screen.getByTitle('Works directly in the project root on main')).toBeDefined();
+    expect(
+      screen.getByTitle(/Works directly in the project root on main; shares files and Git state/),
+    ).toBeDefined();
   });
 
   it('renders waiting-input as a compact inline label without preview noise', () => {

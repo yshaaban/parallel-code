@@ -273,7 +273,7 @@ vi.mock('./PromptInput', () => ({
   },
 }));
 
-vi.mock('./task-panel/TaskNotesFilesSection', () => ({
+vi.mock('./task-panel/TaskNotesFilesSectionEntry', () => ({
   createTaskNotesFilesSection: vi.fn(() => ({
     id: 'notes-files',
     content: () => <div>Notes and files</div>,
@@ -329,8 +329,10 @@ vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
     store: core.store,
-    clearInitialPrompt: vi.fn(),
-    clearPendingAction: clearPendingActionMock,
+    clearPendingAction: () => {
+      clearPendingActionMock();
+      core.setStore('pendingAction', null);
+    },
     clearPrefillPrompt: vi.fn(),
     getProject: vi.fn((projectId: string) =>
       projectId === 'project-1'
@@ -434,6 +436,24 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
     expect(await screen.findByText('Close task dialog')).toBeDefined();
+  });
+
+  it('routes a denied title-bar Git intent to one warning without opening a dialog', async () => {
+    vi.useRealTimers();
+    const task = createTestTask({ agentIds: ['agent-1'], projectMode: 'non-git' });
+    setStore('tasks', { 'task-1': task });
+
+    render(() => <TaskPanel task={task} isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open merge' }));
+
+    await waitFor(() => {
+      expect(showNotificationMock).toHaveBeenCalledWith(
+        "Merge isn't available for non-Git tasks.",
+        { kind: 'warning' },
+      );
+    });
+    expect(showNotificationMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Merge dialog')).toBeNull();
   });
 
   it('owns task-level switch-window lifecycle when the panel gains or loses activity', () => {

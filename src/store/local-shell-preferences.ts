@@ -1,4 +1,5 @@
 import { parsePersistedKeybindingOverrides } from '../domain/keybindings';
+import { copyNewTaskDefaults, resolveNewTaskDefaults } from '../domain/new-task-defaults';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
 import { isFiniteNumber } from '../lib/type-guards';
@@ -80,6 +81,7 @@ export function getLocalShellPreferencesSnapshot(
     globalScale: source.globalScale,
     inactiveColumnOpacity: source.inactiveColumnOpacity,
     keybindings: parsePersistedKeybindingOverrides(source.keybindings),
+    newTaskDefaults: copyNewTaskDefaults(source.newTaskDefaults),
     panelSizes: { ...source.panelSizes },
     showPlans: source.showPlans,
     sidebarSectionCollapsed: { ...source.sidebarSectionCollapsed },
@@ -131,6 +133,7 @@ export function resolveLocalShellPreferences(
     globalScale: isFiniteNumber(raw.globalScale) ? raw.globalScale : DEFAULT_GLOBAL_SCALE,
     inactiveColumnOpacity: normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity),
     keybindings: parsePersistedKeybindingOverrides(raw.keybindings),
+    newTaskDefaults: resolveNewTaskDefaults(raw.newTaskDefaults),
     panelSizes: isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {},
     showPlans: typeof raw.showPlans === 'boolean' ? raw.showPlans : true,
     sidebarSectionCollapsed: normalizeSidebarSectionCollapsedState(raw.sidebarSectionCollapsed),

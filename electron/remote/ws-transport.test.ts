@@ -147,6 +147,64 @@ describe('createWebSocketTransport', () => {
     });
   });
 
+  it('isolates live controller events and reconnect replay from sockets without control-stream access', () => {
+    const transport = createTransport();
+    const terminalReader = createFakeClient();
+    const catalogOnly = createFakeClient();
+
+    expect(
+      transport.authenticateClient(terminalReader, 'terminal-reader', {
+        receiveControlEvents: true,
+      }).ok,
+    ).toBe(true);
+    expect(
+      transport.authenticateClient(catalogOnly, 'catalog-only', {
+        receiveControlEvents: false,
+      }).ok,
+    ).toBe(true);
+
+    expect(transport.claimAgentControl(terminalReader, 'agent-1')).toEqual({
+      controllerId: 'terminal-reader',
+      ok: true,
+    });
+
+    expect(terminalReader.sentBroadcast.map((message) => JSON.parse(message))).toEqual([
+      {
+        agentId: 'agent-1',
+        controllerId: 'terminal-reader',
+        seq: 0,
+        type: 'agent-controller',
+      },
+    ]);
+    expect(catalogOnly.sentBroadcast).toEqual([]);
+
+    const terminalReconnect = createFakeClient();
+    const catalogReconnect = createFakeClient();
+    expect(
+      transport.authenticateClient(terminalReconnect, 'terminal-reconnect', {
+        receiveControlEvents: true,
+      }).ok,
+    ).toBe(true);
+    expect(
+      transport.authenticateClient(catalogReconnect, 'catalog-reconnect', {
+        receiveControlEvents: false,
+      }).ok,
+    ).toBe(true);
+
+    transport.replayControlEvents(terminalReconnect, -1);
+    transport.replayControlEvents(catalogReconnect, -1);
+
+    expect(terminalReconnect.sentDirect.map((message) => JSON.parse(message))).toEqual([
+      {
+        agentId: 'agent-1',
+        controllerId: 'terminal-reader',
+        seq: 0,
+        type: 'agent-controller',
+      },
+    ]);
+    expect(catalogReconnect.sentDirect).toEqual([]);
+  });
+
   it('caps replay at the provided control-event high-water mark', () => {
     const transport = createTransport();
     const replay = createFakeClient();

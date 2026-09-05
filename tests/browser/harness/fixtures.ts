@@ -18,7 +18,7 @@ import {
   type BrowserLabServerLifecycleSnapshot,
 } from './standalone-server.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../../../src/domain/browser-ipc.js';
-import { waitForShellTerminalCreation } from './terminal-creation.js';
+import { waitForShellTerminalTileInsertion } from './terminal-creation.js';
 
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
@@ -27,6 +27,7 @@ const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const TERMINAL_STATUS_HISTORY_STORAGE_KEY = '__parallelCodeTerminalStatusHistory';
 const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
+const ACTIVE_TERMINAL_STATUS_SELECTOR = '[data-terminal-active-command-target="true"]';
 const TERMINAL_LOADING_OVERLAY_SELECTOR = '[data-terminal-loading-overlay="true"]';
 const BROWSER_LAB_PAGE_LIFECYCLE_STORAGE_KEY = '__parallelCodeBrowserLabPageLifecycle';
 const DEFAULT_TERMINAL_TYPE_DELAY_MS = 20;
@@ -48,9 +49,12 @@ interface BrowserLabOpenPageOptions {
 
 interface WaitForTerminalReadyOptions {
   requireLiveRenderReady?: boolean;
+  timeoutMs?: number;
 }
 
-type WaitForTerminalInteractiveReadyOptions = WaitForTerminalReadyOptions;
+interface WaitForTerminalInteractiveReadyOptions {
+  timeoutMs?: number;
+}
 
 interface TypeInTerminalOptions {
   requireInteractiveReady?: boolean;
@@ -106,6 +110,10 @@ interface BrowserLabHarness {
     terminalIndexOrOptions?: number | TypeInTerminalOptions,
   ) => Promise<void>;
   waitForTerminalLogicalReady: (page: Page, terminalIndex?: number) => Promise<void>;
+  waitForActiveTerminalInteractiveReady: (
+    page: Page,
+    options?: WaitForTerminalInteractiveReadyOptions,
+  ) => Promise<void>;
   waitForTerminalInteractiveReady: (
     page: Page,
     terminalIndex?: number,
@@ -420,10 +428,42 @@ async function waitForTerminalKeyboardFocus(page: Page, terminalIndex: number): 
     });
 }
 
+interface TerminalWaitBudget {
+  remainingMs: () => number | undefined;
+}
+
+function createTerminalWaitBudget(timeoutMs?: number): TerminalWaitBudget {
+  const deadlineAtMs = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+  return {
+    remainingMs: () => (deadlineAtMs === null ? undefined : Math.max(1, deadlineAtMs - Date.now())),
+  };
+}
+
+async function waitForTerminalLogicalReadyInput(
+  input: Locator,
+  budget: TerminalWaitBudget,
+): Promise<void> {
+  await input.waitFor({ state: 'attached', timeout: budget.remainingMs() });
+  await expect
+    .poll(() => readTerminalLogicalReady(input), { timeout: budget.remainingMs() })
+    .toBe(true);
+}
+
+async function waitForTerminalPaintReadyInput(
+  input: Locator,
+  budget: TerminalWaitBudget,
+): Promise<void> {
+  await waitForTerminalLogicalReadyInput(input, budget);
+  await expect
+    .poll(() => readTerminalPaintReady(input), { timeout: budget.remainingMs() })
+    .toBe(true);
+}
+
 async function waitForTerminalLogicalReady(page: Page, terminalIndex = 0): Promise<void> {
-  const input = getTerminalInput(page, terminalIndex);
-  await input.waitFor({ state: 'attached' });
-  await expect.poll(() => readTerminalLogicalReady(input)).toBe(true);
+  await waitForTerminalLogicalReadyInput(
+    getTerminalInput(page, terminalIndex),
+    createTerminalWaitBudget(),
+  );
 }
 
 async function waitForTerminalPaintReady(
@@ -431,9 +471,10 @@ async function waitForTerminalPaintReady(
   terminalIndex = 0,
   options: { timeoutMs?: number } = {},
 ): Promise<void> {
-  const input = getTerminalInput(page, terminalIndex);
-  await waitForTerminalLogicalReady(page, terminalIndex);
-  await expect.poll(() => readTerminalPaintReady(input), { timeout: options.timeoutMs }).toBe(true);
+  await waitForTerminalPaintReadyInput(
+    getTerminalInput(page, terminalIndex),
+    createTerminalWaitBudget(options.timeoutMs),
+  );
 }
 
 async function readTerminalKeyboardFocusState(
@@ -1042,13 +1083,30 @@ export const test = base.extend<
       options: WaitForTerminalReadyOptions = {},
     ): Promise<void> {
       const input = getTerminalInput(page, terminalIndex);
+      const budget = createTerminalWaitBudget(options.timeoutMs);
       if (options.requireLiveRenderReady === false) {
-        await waitForTerminalLogicalReady(page, terminalIndex);
+        await waitForTerminalLogicalReadyInput(input, budget);
         return;
       }
 
-      await input.waitFor({ state: 'attached' });
-      await expect.poll(() => readTerminalFullReady(input)).toBe(true);
+      await input.waitFor({ state: 'attached', timeout: budget.remainingMs() });
+      await expect
+        .poll(() => readTerminalFullReady(input), { timeout: budget.remainingMs() })
+        .toBe(true);
+    }
+
+    async function waitForTerminalInteractiveReadyInput(
+      input: Locator,
+      options: WaitForTerminalInteractiveReadyOptions,
+    ): Promise<void> {
+      const budget = createTerminalWaitBudget(options.timeoutMs);
+      await waitForTerminalPaintReadyInput(input, budget);
+      await expect
+        .poll(() => readTerminalRestoreBlocked(input), { timeout: budget.remainingMs() })
+        .toBe(false);
+      await expect
+        .poll(() => readTerminalCursorBlink(input), { timeout: budget.remainingMs() })
+        .toBe(true);
     }
 
     async function waitForTerminalInteractiveReady(
@@ -1056,11 +1114,18 @@ export const test = base.extend<
       terminalIndex = 0,
       options: WaitForTerminalInteractiveReadyOptions = {},
     ): Promise<void> {
-      void options;
-      const input = getTerminalInput(page, terminalIndex);
-      await waitForTerminalPaintReady(page, terminalIndex);
-      await expect.poll(() => readTerminalRestoreBlocked(input)).toBe(false);
-      await expect.poll(() => readTerminalCursorBlink(input)).toBe(true);
+      await waitForTerminalInteractiveReadyInput(getTerminalInput(page, terminalIndex), options);
+    }
+
+    async function waitForActiveTerminalInteractiveReady(
+      page: Page,
+      options: WaitForTerminalInteractiveReadyOptions = {},
+    ): Promise<void> {
+      const input = page
+        .locator(ACTIVE_TERMINAL_STATUS_SELECTOR)
+        .locator(TERMINAL_INPUT_SELECTOR)
+        .first();
+      await waitForTerminalInteractiveReadyInput(input, options);
     }
 
     async function beginTerminalStatusHistory(page: Page, terminalIndex = 0): Promise<void> {
@@ -1238,7 +1303,7 @@ export const test = base.extend<
       const terminalStatusList = page.locator(TERMINAL_STATUS_SELECTOR);
       const terminalCount = await terminalStatusList.count();
       const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
-      await waitForShellTerminalCreation({
+      await waitForShellTerminalTileInsertion({
         clickCreateTerminal: async () => {
           await createTerminalButton.scrollIntoViewIfNeeded();
           await createTerminalButton.click();
@@ -1285,6 +1350,7 @@ export const test = base.extend<
         runInTerminal,
         server,
         typeInTerminal,
+        waitForActiveTerminalInteractiveReady,
         waitForTerminalLogicalReady,
         waitForTerminalInteractiveReady,
         waitForTerminalReady,

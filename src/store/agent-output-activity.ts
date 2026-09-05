@@ -12,6 +12,7 @@ import {
   recordAgentOutputAnalysisBackgroundCheck,
   recordAgentOutputAnalysisRuntime,
   recordAgentOutputAnalysisSchedule,
+  recordLocalQuestionStaleGenerationDrop,
 } from '../app/runtime-diagnostics';
 import {
   clearTerminalFocusedInputAgent,
@@ -19,7 +20,13 @@ import {
 } from '../app/terminal-focused-input';
 import { isExitedRemoteAgentStatus } from '../domain/server-state';
 import { clearAgentReadyCallback, maybeFireAgentReadyCallback } from './agent-ready-callbacks';
-import { isAgentAskingQuestion, setAgentQuestionState } from './agent-question-state';
+import {
+  clearLocalQuestion,
+  isLocalAgentQuestionActive,
+  markLocalQuestion,
+  removeLocalQuestion,
+  resetLocalQuestionForGeneration,
+} from './agent-question-state';
 import { createAutoTrustController } from './auto-trust';
 import { setStore, store } from './core';
 
@@ -39,6 +46,7 @@ const strippedTailBuffers = new Map<string, string>();
 const outputTailHasAnsi = new Map<string, boolean>();
 const latestOutputChunks = new Map<string, string>();
 const agentDecoders = new Map<string, TextDecoder>();
+const questionEvidenceRevisionByAgent = new Map<string, number>();
 
 const lastAnalysisAt = new Map<string, number>();
 const pendingAnalysis = new Map<string, ReturnType<typeof setTimeout>>();
@@ -178,7 +186,28 @@ export function isAutoTrustSettling(agentId: string): boolean {
   return autoTrust.isSettling(agentId);
 }
 
+function getCurrentAgentGeneration(agentId: string): number {
+  return store.agents?.[agentId]?.generation ?? 0;
+}
+
+function getQuestionEvidenceRevision(agentId: string): number {
+  return questionEvidenceRevisionByAgent.get(agentId) ?? 0;
+}
+
+function setCurrentLocalQuestionState(agentId: string, active: boolean): void {
+  const generation = getCurrentAgentGeneration(agentId);
+  const evidenceRevision = getQuestionEvidenceRevision(agentId);
+  if (active) {
+    markLocalQuestion(agentId, generation, evidenceRevision);
+  } else {
+    clearLocalQuestion(agentId, generation, evidenceRevision);
+  }
+}
+
 export function markAgentSpawned(agentId: string): void {
+  const generation = getCurrentAgentGeneration(agentId);
+  questionEvidenceRevisionByAgent.set(agentId, 0);
+  resetLocalQuestionForGeneration(agentId, generation);
   clearTerminalFocusedInputAgent(agentId);
   clearAgentTailBuffer(agentId);
   lastOutputAtByAgent.delete(agentId);
@@ -196,7 +225,7 @@ function analyzeAgentOutput(agentId: string): void {
   const suppressPromptSignals = isTerminalFocusedInputPromptSuppressionActive(agentId);
   const latestChunk = latestOutputChunks.get(agentId) ?? '';
   if (
-    isAgentAskingQuestion(agentId) &&
+    isLocalAgentQuestionActive(agentId, getCurrentAgentGeneration(agentId)) &&
     latestChunk.length > 0 &&
     clearsQuestionState(latestChunk)
   ) {
@@ -209,7 +238,7 @@ function analyzeAgentOutput(agentId: string): void {
   const visibleTail = strippedTail.slice(-VISIBLE_ANALYSIS_TAIL_MAX);
 
   if (suppressPromptSignals) {
-    setAgentQuestionState(agentId, false);
+    setCurrentLocalQuestionState(agentId, false);
     recordAgentOutputAnalysis(performance.now() - startedAtMs);
     return;
   }
@@ -223,7 +252,7 @@ function analyzeAgentOutput(agentId: string): void {
     }
   }
 
-  setAgentQuestionState(agentId, hasQuestion);
+  setCurrentLocalQuestionState(agentId, hasQuestion);
   if (!hasQuestion && !autoTrust.hasScheduledSubmit(agentId)) {
     maybeFireAgentReadyCallback(agentId, strippedTail);
   }
@@ -257,7 +286,7 @@ function handlePromptLine(
       !looksLikeQuestionInVisibleTail(strippedTail) &&
       !hasPromptAdjacentInteractiveChoiceInVisibleTail(strippedTail)
     ) {
-      setAgentQuestionState(agentId, false);
+      setCurrentLocalQuestionState(agentId, false);
     }
     maybeFireAgentReadyCallback(agentId, strippedTail);
   }
@@ -310,12 +339,18 @@ export function markAgentOutput(
   expectedGeneration?: number,
 ): void {
   if (!matchesExpectedGeneration(agentId, expectedGeneration)) {
+    if (processingMode === 'full') {
+      recordLocalQuestionStaleGenerationDrop(agentId, expectedGeneration ?? -1);
+    }
     return;
   }
 
   const now = Date.now();
   const isActiveTask = !taskId || taskId === store.activeTaskId;
   reviveExitedAgentFromOutput(agentId, processingMode, expectedGeneration);
+  if (processingMode === 'full') {
+    questionEvidenceRevisionByAgent.set(agentId, getQuestionEvidenceRevision(agentId) + 1);
+  }
 
   let decoder = agentDecoders.get(agentId);
   if (!decoder) {
@@ -341,7 +376,7 @@ export function markAgentOutput(
       looksLikeQuestionInVisibleTail(visibleQuestionTail) ||
       hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleQuestionTail);
     if (hasVisibleQuestion) {
-      setAgentQuestionState(agentId, true);
+      setCurrentLocalQuestionState(agentId, true);
       return;
     }
 
@@ -463,6 +498,7 @@ export function clearAgentBusyState(agentId: string): void {
 export function clearAgentActivity(agentId: string): void {
   clearTerminalFocusedInputAgent(agentId);
   lastOutputAtByAgent.delete(agentId);
+  questionEvidenceRevisionByAgent.delete(agentId);
   lastBackgroundOutputSampleAt.delete(agentId);
   clearAgentTailBuffer(agentId);
   latestOutputChunks.delete(agentId);
@@ -472,7 +508,7 @@ export function clearAgentActivity(agentId: string): void {
   lastAnalysisAt.delete(agentId);
   clearPendingAnalysisTimer(agentId);
   clearAgentBusyState(agentId);
-  setAgentQuestionState(agentId, false);
+  removeLocalQuestion(agentId);
 }
 
 export function resetAgentOutputActivityRuntimeState(): void {
@@ -485,6 +521,7 @@ export function resetAgentOutputActivityRuntimeState(): void {
   lastOutputAtByAgent.clear();
   latestOutputChunks.clear();
   agentDecoders.clear();
+  questionEvidenceRevisionByAgent.clear();
   lastAnalysisAt.clear();
   lastBackgroundOutputSampleAt.clear();
 

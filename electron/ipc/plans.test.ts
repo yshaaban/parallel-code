@@ -4,13 +4,23 @@ import os from 'os';
 import path from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createTaskNameRegistry } from '../../server/task-names.js';
+import { createTerminalContentRootAuthority } from './terminal-root-authority.js';
 
 import {
   ensurePlansDirectory,
-  readPlanForWorktree,
+  PLAN_FILE_MAX_BYTES,
+  readPlan,
   startPlanWatcher,
   stopPlanWatcher,
 } from './plans.js';
+
+function createBeginAdmission(worktreePath: string) {
+  const registry = createTaskNameRegistry();
+  registry.registerCreatedTask('task-1', { worktreePath });
+  const authority = createTerminalContentRootAuthority(registry);
+  return () => authority.beginCanonicalTaskAdmission('task-1');
+}
 
 function createWorktree(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-plans-'));
@@ -97,7 +107,7 @@ describe('plans', () => {
     const now = Date.now();
     fs.utimesSync(docsPlanPath, now / 1_000, (now + 5_000) / 1_000);
 
-    expect(readPlanForWorktree(worktreePath)).toEqual({
+    expect(readPlan(createBeginAdmission(worktreePath))).toEqual({
       content: '# Newer plan',
       fileName: 'newer.md',
       relativePath: 'docs/plans/newer.md',
@@ -110,7 +120,7 @@ describe('plans', () => {
 
     writePlan(worktreePath, 'docs/plans', 'restored.md', '# Restored plan');
 
-    expect(readPlanForWorktree(worktreePath, 'docs/plans/restored.md')).toEqual({
+    expect(readPlan(createBeginAdmission(worktreePath), 'docs/plans/restored.md')).toEqual({
       content: '# Restored plan',
       fileName: 'restored.md',
       relativePath: 'docs/plans/restored.md',
@@ -125,19 +135,22 @@ describe('plans', () => {
     fs.mkdirSync(path.join(worktreePath, 'docs', 'plans'), { recursive: true });
     const onPlanContent = vi.fn();
 
-    startPlanWatcher('task-1', worktreePath, onPlanContent);
+    startPlanWatcher('task-1', worktreePath, createBeginAdmission(worktreePath), onPlanContent);
     await waitForWatcherSetup();
     writePlan(worktreePath, 'docs/plans', 'new-plan.md', '# Fresh plan');
 
-    await vi.waitFor(() => {
-      expect(onPlanContent).toHaveBeenCalledWith({
-        content: '# Fresh plan',
-        fileName: 'new-plan.md',
-        relativePath: 'docs/plans/new-plan.md',
-        taskId: 'task-1',
-      });
-    });
-  });
+    await vi.waitFor(
+      () => {
+        expect(onPlanContent).toHaveBeenCalledWith({
+          content: '# Fresh plan',
+          fileName: 'new-plan.md',
+          relativePath: 'docs/plans/new-plan.md',
+          taskId: 'task-1',
+        });
+      },
+      { timeout: 10_000 },
+    );
+  }, 15_000);
 
   it('keeps pending plan detection intact when the same task watcher is reattached', async () => {
     const worktreePath = createWorktree();
@@ -147,10 +160,11 @@ describe('plans', () => {
     const firstListener = vi.fn();
     const reattachedListener = vi.fn();
 
-    startPlanWatcher('task-1', worktreePath, firstListener);
+    const beginAdmission = createBeginAdmission(worktreePath);
+    startPlanWatcher('task-1', worktreePath, beginAdmission, firstListener);
     await waitForWatcherSetup();
     writePlan(worktreePath, '.claude/plans', 'reattached.md', '# Reattached plan');
-    startPlanWatcher('task-1', worktreePath, reattachedListener);
+    startPlanWatcher('task-1', worktreePath, beginAdmission, reattachedListener);
 
     await vi.waitFor(
       () => {
@@ -173,7 +187,7 @@ describe('plans', () => {
     fs.mkdirSync(path.join(worktreePath, '.claude', 'plans'), { recursive: true });
     const onPlanContent = vi.fn();
 
-    startPlanWatcher('task-1', worktreePath, onPlanContent);
+    startPlanWatcher('task-1', worktreePath, createBeginAdmission(worktreePath), onPlanContent);
     await waitForWatcherSetup();
     const filePath = writePlan(worktreePath, '.claude/plans', 'generated.md', '# Generated plan');
 
@@ -202,4 +216,34 @@ describe('plans', () => {
       { timeout: 10_000 },
     );
   }, 15_000);
+
+  it('rejects plan symlink escapes and non-plan paths', () => {
+    const worktreePath = createWorktree();
+    const outsidePath = createWorktree();
+    worktrees.push(worktreePath, outsidePath);
+    fs.mkdirSync(path.join(worktreePath, 'docs', 'plans'), { recursive: true });
+    fs.writeFileSync(path.join(outsidePath, 'secret.md'), 'secret');
+    fs.symlinkSync(
+      path.join(outsidePath, 'secret.md'),
+      path.join(worktreePath, 'docs', 'plans', 'escape.md'),
+    );
+    fs.writeFileSync(path.join(worktreePath, 'outside.md'), 'outside');
+
+    const beginAdmission = createBeginAdmission(worktreePath);
+    expect(readPlan(beginAdmission, 'docs/plans/escape.md')).toBeNull();
+    expect(readPlan(beginAdmission, 'outside.md')).toBeNull();
+  });
+
+  it('rejects exact plans above the plan byte cap', () => {
+    const worktreePath = createWorktree();
+    worktrees.push(worktreePath);
+    writePlan(
+      worktreePath,
+      '.claude/plans',
+      'large.md',
+      Buffer.alloc(PLAN_FILE_MAX_BYTES + 1).toString(),
+    );
+
+    expect(readPlan(createBeginAdmission(worktreePath), '.claude/plans/large.md')).toBeNull();
+  });
 });

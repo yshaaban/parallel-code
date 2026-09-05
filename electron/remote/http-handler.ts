@@ -14,6 +14,9 @@ const MIME: Record<string, string> = {
 };
 
 const SECURITY_HEADERS: Record<string, string> = {
+  'Content-Security-Policy':
+    "default-src 'self'; base-uri 'none'; connect-src 'self' ws: wss:; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+  'Permissions-Policy': 'camera=(), geolocation=(), microphone=()',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
@@ -26,14 +29,18 @@ export interface RemoteAgentDetail {
 }
 
 export interface CreateRemoteHttpHandlerOptions {
-  checkAuth: (req: IncomingMessage) => boolean;
+  checkAuth: (req: IncomingMessage) => boolean | { terminalRead: boolean };
   getAgentDetail: (agentId: string) => RemoteAgentDetail | null;
   getAgentList: () => RemoteAgent[];
   staticDir: string;
 }
 
 function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
-  res.writeHead(statusCode, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+  res.writeHead(statusCode, {
+    ...SECURITY_HEADERS,
+    'Cache-Control': 'no-store, max-age=0',
+    'Content-Type': 'application/json',
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -65,8 +72,13 @@ export function createRemoteHttpHandler(
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
     if (url.pathname.startsWith('/api/')) {
-      if (!options.checkAuth(req)) {
+      const authorization = options.checkAuth(req);
+      if (!authorization) {
         writeJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if (authorization !== true && !authorization.terminalRead) {
+        writeJson(res, 403, { error: 'forbidden' });
         return;
       }
 

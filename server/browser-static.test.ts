@@ -171,6 +171,45 @@ describe('registerBrowserStaticRoutes', () => {
     }
   });
 
+  it('keeps scoped remote static authority separate from the full browser auth gate', async () => {
+    const distDir = await createTempDist('parallel-code-dist-separated-auth-');
+    tempDirs.push(distDir);
+    await writeFile(path.join(distDir, 'index.html'), '<html><body>shell</body></html>');
+
+    const app = express();
+    registerBrowserStaticRoutes({
+      app,
+      authGatePath: '/auth',
+      distDir,
+      distRemoteDir: distDir,
+      isAuthorizedRemoteRequest: () => false,
+      isAuthorizedRequest: () => true,
+      remoteAuthGatePath: null,
+    });
+
+    const server = await new Promise<import('http').Server>((resolve) => {
+      const nextServer = app.listen(0, () => resolve(nextServer));
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to resolve test server port');
+      }
+      const desktop = await fetch(`http://127.0.0.1:${address.port}/`);
+      const remote = await fetch(`http://127.0.0.1:${address.port}/remote/`, {
+        redirect: 'manual',
+      });
+
+      expect(desktop.status).toBe(200);
+      expect(remote.status).toBe(401);
+      expect(remote.headers.get('location')).toBeNull();
+      await drainResponses(desktop, remote);
+    } finally {
+      await closeTestServer(server);
+    }
+  });
+
   it('selects precompressed variants by encoding preference with identity fallback', () => {
     const siblings = new Set([
       '/dist/assets/app-abcdef12.js.br',

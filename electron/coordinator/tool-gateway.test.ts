@@ -11,6 +11,7 @@ import type { StorageEnv } from '../ipc/storage.js';
 
 const mocks = vi.hoisted(() => {
   const supervisionListeners = new Set<(event: unknown) => void>();
+  const spawnTaskAgentWorkflowMock = vi.fn(() => false);
   return {
     cleanupTaskRuntimeWorkflowMock: vi.fn(() => ({ releasedTaskCommandController: null })),
     createTaskWorkflowMock: vi.fn(),
@@ -27,7 +28,13 @@ const mocks = vi.hoisted(() => {
     killAgentAndWaitForRunnerCleanupMock: vi.fn(async () => undefined),
     mergeTaskMock: vi.fn(),
     normalizeAgentRunnerProfileConfigMock: vi.fn(() => undefined),
-    spawnTaskAgentWorkflowMock: vi.fn(() => false),
+    spawnOwnedTaskAgentWorkflowMock: vi.fn(
+      (context: unknown, ownership: unknown, request: unknown) => {
+        void ownership;
+        return spawnTaskAgentWorkflowMock(context, request);
+      },
+    ),
+    spawnTaskAgentWorkflowMock,
     stopTaskAgentWorkflowsForTaskMock: vi.fn(async () => undefined),
     subscribeAgentSupervisionMock: vi.fn((listener: (event: unknown) => void) => {
       supervisionListeners.add(listener);
@@ -66,6 +73,8 @@ vi.mock('../ipc/task-workflows.js', () => ({
   cleanupTaskRuntimeWorkflow: mocks.cleanupTaskRuntimeWorkflowMock,
   createTaskWorkflow: mocks.createTaskWorkflowMock,
   deleteTaskWorkflow: mocks.deleteTaskWorkflowMock,
+  hasRegisteredSharedRootTask: vi.fn(() => false),
+  spawnOwnedTaskAgentWorkflow: mocks.spawnOwnedTaskAgentWorkflowMock,
   spawnTaskAgentWorkflow: mocks.spawnTaskAgentWorkflowMock,
   stopTaskAgentWorkflowsForTask: mocks.stopTaskAgentWorkflowsForTaskMock,
 }));
@@ -118,9 +127,13 @@ function readCredentialToken(credentialPath: string): string {
   return (JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as { token: string }).token;
 }
 
-function createTaskRegistry(): Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> {
+function createTaskRegistry(): Pick<
+  TaskNameRegistry,
+  'deleteTask' | 'markTaskClosing' | 'registerCreatedTask'
+> {
   return {
     deleteTask: vi.fn(),
+    markTaskClosing: vi.fn(),
     registerCreatedTask: vi.fn(),
   };
 }
@@ -1364,12 +1377,12 @@ describe('coordinator tool gateway', () => {
         gitIsolation: 'worktree',
       }),
     );
-    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(
+    expect(mocks.spawnOwnedTaskAgentWorkflowMock).toHaveBeenCalledWith(
       context,
-      expect.not.objectContaining({ onOutput: expect.anything() }),
-    );
-    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(
-      context,
+      {
+        operationId: expect.stringMatching(/^coordinator-session:v1:[A-Za-z0-9_-]{43}$/),
+        purpose: 'coordinator-session',
+      },
       expect.objectContaining({
         agentId: expect.any(String),
         args: ['--model', 'fast', '--unsafe'],
@@ -1383,11 +1396,14 @@ describe('coordinator tool gateway', () => {
         taskId: 'task-child',
       }),
     );
+    const ownedSpawnRequest = mocks.spawnOwnedTaskAgentWorkflowMock.mock.calls[0]?.[2];
+    expect(ownedSpawnRequest).not.toHaveProperty('onOutput');
+    expect(mocks.spawnTaskAgentWorkflowMock).toHaveBeenCalledWith(context, ownedSpawnRequest);
     expect(response.result).toMatchObject({
       status: 'waiting-for-agent-ready',
       taskId: 'task-child',
     });
-    const spawnRequest = mocks.spawnTaskAgentWorkflowMock.mock.calls[0]?.[1] as {
+    const spawnRequest = ownedSpawnRequest as {
       assertSpawnAdmitted?: () => void;
     };
     expect(() => spawnRequest.assertSpawnAdmitted?.()).not.toThrow();
@@ -4203,6 +4219,8 @@ describe('coordinator tool gateway', () => {
       false,
       'Landed child work',
       false,
+      undefined,
+      expect.any(Function),
     );
     expect(mocks.deleteTaskWorkflowMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4211,6 +4229,10 @@ describe('coordinator tool gateway', () => {
         deleteBranch: true,
         taskId: 'task-child',
       }),
+    );
+    expect(taskNames.markTaskClosing).toHaveBeenCalledWith('task-child');
+    expect(vi.mocked(taskNames.markTaskClosing).mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.deleteTaskWorkflowMock.mock.invocationCallOrder[0] ?? Infinity,
     );
     expect(taskNames.deleteTask).toHaveBeenCalledWith('task-child');
     expect(resolveCoordinatorToken(childCredential.token)).toBeNull();

@@ -67,10 +67,14 @@ declare global {
     __PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__?: boolean;
     __TERMINAL_OUTPUT_DIAGNOSTICS__?: boolean;
     __parallelCodeTerminalDiagnosticsCapture?: {
-      capture: (terminalKey?: string | null) => TerminalDiagnosticsCaptureSnapshot;
-      captureFocused: () => TerminalDiagnosticsCaptureSnapshot;
-      enable: () => void;
-      reset: () => void;
+      capture: (
+        terminalKey?: string | null,
+      ) => TerminalDiagnosticsCaptureSnapshot | Promise<TerminalDiagnosticsCaptureSnapshot>;
+      captureFocused: () =>
+        | TerminalDiagnosticsCaptureSnapshot
+        | Promise<TerminalDiagnosticsCaptureSnapshot>;
+      enable: () => void | Promise<void>;
+      reset: () => void | Promise<void>;
     };
   }
 }

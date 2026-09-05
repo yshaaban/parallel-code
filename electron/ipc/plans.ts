@@ -3,8 +3,11 @@ import path from 'path';
 
 import type { PlanContentUpdate } from '../../src/domain/renderer-events.js';
 import { execGitSync } from './git-sync-exec.js';
+import type { PendingTaskContentRootAdmission } from './terminal-root-authority.js';
+import { readBoundedTaskTextFileSync } from './task-file-access.js';
 
 interface PlanWatcher {
+  beginContentAdmission: BeginPlanContentAdmission;
   currentRelativePath: string | null;
   fsWatchers: fs.FSWatcher[];
   knownFiles: Set<string>;
@@ -24,13 +27,12 @@ interface ResolvedPlanContent {
   relativePath: string;
 }
 
-interface TimestampedPlanContent extends ResolvedPlanContent {
-  mtime: number;
-}
+export type BeginPlanContentAdmission = () => PendingTaskContentRootAdmission | null;
 
 const CHANGE_DEBOUNCE_MS = 200;
 const DIR_POLL_INTERVAL_MS = 3_000;
 const PLAN_DIRS = ['.claude/plans', 'docs/plans'] as const;
+export const PLAN_FILE_MAX_BYTES = 2 * 1024 * 1024;
 const watchers = new Map<string, PlanWatcher>();
 
 const PLAN_SETTINGS_EXCLUDE_ENTRY = '.claude/settings.local.json';
@@ -128,10 +130,6 @@ function getKnownPlanKey(plansDir: string, fileName: string): string {
   return `${plansDir}:${fileName}`;
 }
 
-function getWorktreePathFromPlansDir(plansDir: string): string {
-  return path.resolve(plansDir, '..', '..');
-}
-
 function snapshotExistingPlanFiles(plansDirs: string[]): Set<string> {
   const knownFiles = new Set<string>();
 
@@ -153,7 +151,11 @@ function snapshotExistingPlanFiles(plansDirs: string[]): Set<string> {
   return knownFiles;
 }
 
-function readNewestPlan(plansDir: string, knownFiles?: Set<string>): TimestampedPlanContent | null {
+function findNewestPlan(
+  worktreePath: string,
+  plansDir: string,
+  knownFiles?: Set<string>,
+): { mtime: number; relativePath: string } | null {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(plansDir, { withFileTypes: true });
@@ -188,62 +190,53 @@ function readNewestPlan(plansDir: string, knownFiles?: Set<string>): Timestamped
     return null;
   }
 
-  try {
-    const content = fs.readFileSync(path.join(plansDir, newestFile.fileName), 'utf-8');
-    return {
-      content,
-      fileName: newestFile.fileName,
-      mtime: newestFile.mtime,
-      relativePath: path.relative(
-        getWorktreePathFromPlansDir(plansDir),
-        path.join(plansDir, newestFile.fileName),
-      ),
-    };
-  } catch {
-    return null;
-  }
+  return {
+    mtime: newestFile.mtime,
+    relativePath: path.relative(worktreePath, path.join(plansDir, newestFile.fileName)),
+  };
 }
 
 function readNewestPlanFromDirs(
-  plansDirs: string[],
+  admission: PendingTaskContentRootAdmission,
   knownFiles?: Set<string>,
 ): ResolvedPlanContent | null {
-  let newestPlan: TimestampedPlanContent | null = null;
+  const plansDirs = getPlanDirs(admission.root);
+  let newestPlan: { mtime: number; relativePath: string } | null = null;
 
   for (const plansDir of plansDirs) {
-    const plan = readNewestPlan(plansDir, knownFiles);
+    const plan = findNewestPlan(admission.root, plansDir, knownFiles);
     if (plan && (!newestPlan || plan.mtime > newestPlan.mtime)) {
       newestPlan = plan;
     }
   }
 
-  return newestPlan
-    ? {
-        content: newestPlan.content,
-        fileName: newestPlan.fileName,
-        relativePath: newestPlan.relativePath,
-      }
-    : null;
+  return newestPlan ? readSpecificPlanFile(admission, newestPlan.relativePath) : null;
 }
 
 function readSpecificPlanFile(
-  worktreePath: string,
+  admission: PendingTaskContentRootAdmission,
   relativePath: string,
 ): ResolvedPlanContent | null {
-  if (!isPlanRelativePath(relativePath)) {
+  if (!isPlanRelativePath(relativePath) || path.extname(relativePath).toLowerCase() !== '.md') {
     return null;
   }
 
-  try {
-    const content = fs.readFileSync(path.join(worktreePath, relativePath), 'utf-8');
-    return {
-      content,
-      fileName: path.basename(relativePath),
-      relativePath,
-    };
-  } catch {
+  const result = readBoundedTaskTextFileSync({
+    admission,
+    allowedRoots: getPlanDirs(admission.root),
+    maxBytes: PLAN_FILE_MAX_BYTES,
+    relativePath,
+    acceptCanonicalPath: (canonicalPath) => path.extname(canonicalPath).toLowerCase() === '.md',
+  });
+  if (!result) {
     return null;
   }
+
+  return {
+    content: result.content,
+    fileName: path.basename(result.canonicalPath),
+    relativePath: result.relativePath,
+  };
 }
 
 function createPlanContentMessage(
@@ -296,7 +289,14 @@ function schedulePlanContentUpdate(taskId: string): void {
     }
     currentEntry.timeout = null;
 
-    const nextPlan = readNewestPlanFromDirs(currentEntry.plansDirs, currentEntry.knownFiles);
+    const admission = currentEntry.beginContentAdmission();
+    if (!admission || path.resolve(admission.root) !== path.resolve(currentEntry.worktreePath)) {
+      currentEntry.currentRelativePath = null;
+      currentEntry.onPlanContent?.(createPlanContentMessage(taskId, null));
+      return;
+    }
+
+    const nextPlan = readNewestPlanFromDirs(admission, currentEntry.knownFiles);
     if (nextPlan) {
       currentEntry.currentRelativePath = nextPlan.relativePath;
       currentEntry.onPlanContent?.(createPlanContentMessage(taskId, nextPlan));
@@ -307,10 +307,10 @@ function schedulePlanContentUpdate(taskId: string): void {
       return;
     }
 
-    const currentPlan = readSpecificPlanFile(
-      currentEntry.worktreePath,
-      currentEntry.currentRelativePath,
-    );
+    const currentAdmission = currentEntry.beginContentAdmission();
+    const currentPlan = currentAdmission
+      ? readSpecificPlanFile(currentAdmission, currentEntry.currentRelativePath)
+      : null;
     if (currentPlan) {
       return;
     }
@@ -372,10 +372,12 @@ function startPlanDirPolling(taskId: string): ReturnType<typeof setInterval> | n
 export function startPlanWatcher(
   taskId: string,
   worktreePath: string,
+  beginContentAdmission: BeginPlanContentAdmission,
   onPlanContent?: (message: PlanContentMessage) => void,
 ): void {
   const existingEntry = watchers.get(taskId);
   if (existingEntry?.worktreePath === worktreePath) {
+    existingEntry.beginContentAdmission = beginContentAdmission;
     existingEntry.onPlanContent = onPlanContent;
     return;
   }
@@ -389,6 +391,7 @@ export function startPlanWatcher(
   }
 
   const entry: PlanWatcher = {
+    beginContentAdmission,
     currentRelativePath: null,
     fsWatchers: [],
     knownFiles: snapshotExistingPlanFiles(plansDirs),
@@ -440,15 +443,18 @@ export function stopPlanWatcher(taskId: string): void {
   watchers.delete(taskId);
 }
 
-export function readPlanForWorktree(
-  worktreePath: string,
+export function readPlan(
+  beginContentAdmission: BeginPlanContentAdmission,
   relativePath?: string,
 ): { content: string; fileName: string; relativePath: string } | null {
-  const plansDirs = getPlanDirs(worktreePath);
-  if (relativePath) {
-    return readSpecificPlanFile(worktreePath, relativePath);
+  const admission = beginContentAdmission();
+  if (!admission || admission.kind !== 'canonical-task') {
+    return null;
   }
-  return readNewestPlanFromDirs(plansDirs);
+  if (relativePath) {
+    return readSpecificPlanFile(admission, relativePath);
+  }
+  return readNewestPlanFromDirs(admission);
 }
 
 /** Stops all plan watchers. */

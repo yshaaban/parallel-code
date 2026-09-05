@@ -1473,6 +1473,32 @@ export async function invoke<TChannel extends RendererInvokeChannel>(
   );
 }
 
+/**
+ * Invoke a response-bearing side effect without browser transport replay. A
+ * lost response must remain ambiguous instead of risking duplicate input.
+ */
+export async function invokeOnce<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  ...args: InvokeArgs<TChannel>
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  const [argsValue] = args;
+  const safeArgs = getSafeInvokeArgs(cmd, argsValue);
+  if (isElectronRuntime()) {
+    const electron = window.electron?.ipcRenderer;
+    if (!electron) {
+      throw new Error('Electron IPC bridge is unavailable');
+    }
+
+    return invokeElectronTransport(electron, cmd, safeArgs);
+  }
+
+  if (isBrowserControlChannel(cmd)) {
+    throw new Error(`Single-attempt browser IPC is unsupported for control channel ${cmd}`);
+  }
+
+  return browserHttpClient.fetchOnce(cmd, safeArgs);
+}
+
 export async function invokeWithAbortSignal<TChannel extends RendererInvokeChannel>(
   cmd: TChannel,
   signal: AbortSignal,

@@ -1,5 +1,6 @@
 import { closeMarkdownViewer } from '../app/markdown-viewer';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
+import { requestTaskGitAction } from '../app/task-git-action-capability';
 import { jumpToTaskWithPrewarm, navigateTaskWithPrewarm } from '../app/task-navigation-intents';
 import { initShortcuts, registerShortcut } from '../lib/shortcuts';
 import {
@@ -11,7 +12,7 @@ import {
   toggleHelpDialog,
   toggleSettingsDialog,
 } from '../store/focus';
-import { moveActiveTask, toggleAddProjectDialog, toggleNewTaskDialog } from '../store/navigation';
+import { moveActiveTask, toggleAddProjectDialog } from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
 import { showNotification } from '../store/notification';
@@ -112,19 +113,25 @@ export function registerAppShortcuts(): () => void {
   });
   registerShortcut({
     actionId: 'task.merge',
-    handler: () => {
+    handler: (event) => {
+      if (event.repeat) {
+        return;
+      }
       const taskId = store.activeTaskId;
-      if (taskId && store.tasks[taskId]) {
-        setPendingAction({ type: 'merge', taskId });
+      if (taskId) {
+        requestTaskGitAction('merge', taskId, 'shortcut');
       }
     },
   });
   registerShortcut({
     actionId: 'task.push',
-    handler: () => {
+    handler: (event) => {
+      if (event.repeat) {
+        return;
+      }
       const taskId = store.activeTaskId;
-      if (taskId && store.tasks[taskId]) {
-        setPendingAction({ type: 'push', taskId });
+      if (taskId) {
+        requestTaskGitAction('push', taskId, 'shortcut');
       }
     },
   });
@@ -148,6 +155,22 @@ export function registerAppShortcuts(): () => void {
       if (!event.repeat) {
         createTerminal();
       }
+    },
+  });
+  registerShortcut({
+    actionId: 'app.redraw-terminals',
+    handler: (event) => {
+      if (event.repeat) {
+        return;
+      }
+
+      void import('../lib/webglPool')
+        .then(({ requestVisibleWebglAtlasRepair }) => {
+          requestVisibleWebglAtlasRepair('manual');
+        })
+        .catch((error: unknown) => {
+          console.warn('Failed to redraw terminals:', error);
+        });
     },
   });
   registerShortcut({
@@ -188,10 +211,6 @@ export function registerAppShortcuts(): () => void {
       }
       if (store.showAddProjectDialog) {
         toggleAddProjectDialog(false);
-        return;
-      }
-      if (store.showNewTaskDialog) {
-        toggleNewTaskDialog(false);
       }
     },
   });

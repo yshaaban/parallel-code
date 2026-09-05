@@ -1,18 +1,12 @@
 import { IPC } from '../../electron/ipc/channels';
-import {
-  resolveAgentRunnerProfile,
-  type AgentRunnerProfileConfig,
-} from '../domain/agent-runners.js';
 import type {
   RendererInvokeRequestMap,
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
-import { buildAgentSpawnArgs, shouldResumeAgentOnSpawn } from '../lib/agent-resume';
-import { getAgentSpawnCommand, getAgentSpawnEnvironment } from '../lib/agent-spawn-config';
 import { invoke } from '../lib/ipc';
 import { store } from '../store/state';
 import { getSelectedTaskAgentId } from '../store/task-agent-selection';
-import type { Agent, Project, Task } from '../store/types';
+import type { Agent, Task } from '../store/types';
 import {
   getGlobalTerminalStartupPaintCoordinationSnapshot,
   subscribeTerminalStartupPaintCoordinationChanges,
@@ -24,50 +18,15 @@ type EnsureAgentSessionRequest = EnsureAgentSessionsBatchRequest['requests'][num
 type EnsureAgentSessionResult =
   RendererInvokeResponseMap[IPC.EnsureAgentSessionsBatch]['results'][number];
 
-const DEFAULT_STARTUP_RESTORE_COLS = 80;
-const DEFAULT_STARTUP_RESTORE_ROWS = 24;
 const STARTUP_RESTORE_BACKGROUND_FALLBACK_MS = 1_000;
 
 interface StartupRestoreAgentSessionEnsureOptions {
   isDisposed?: () => boolean;
 }
 
-function getProjectForTask(task: Pick<Task, 'projectId'>): Project | undefined {
-  return store.projects.find((project) => project.id === task.projectId);
-}
-
-function getRunnerProfileForTask(
-  task: Pick<Task, 'projectId'>,
-): AgentRunnerProfileConfig | undefined {
-  const project = getProjectForTask(task);
-  const resolution = resolveAgentRunnerProfile(
-    project?.agentRunnerConfig,
-    project?.containerConfig,
-  );
-
-  return resolution.configuredProfile ?? undefined;
-}
-
 function createEnsureAgentSessionRequest(task: Task, agent: Agent): EnsureAgentSessionRequest {
-  const agentDef = agent.def;
-  const runnerProfile = getRunnerProfileForTask(task);
-
   return {
     agentId: agent.id,
-    args: buildAgentSpawnArgs(agentDef, {
-      resumed: agent.resumed,
-      skipPermissions: task.skipPermissions === true,
-    }),
-    ...(agentDef.adapter !== undefined ? { adapter: agentDef.adapter } : {}),
-    ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
-    cols: DEFAULT_STARTUP_RESTORE_COLS,
-    command: getAgentSpawnCommand(agentDef, store.hydraCommand),
-    cwd: task.worktreePath,
-    env: getAgentSpawnEnvironment(agentDef, store.hydraStartupMode) ?? {},
-    ...(task.projectMode !== undefined ? { projectMode: task.projectMode } : {}),
-    resumeOnStart: shouldResumeAgentOnSpawn(agentDef, agent.resumed),
-    rows: DEFAULT_STARTUP_RESTORE_ROWS,
-    ...(runnerProfile !== undefined ? { runnerProfile } : {}),
     taskId: task.id,
   };
 }
@@ -193,12 +152,15 @@ function collectStartupRestoreBackgroundAgentSessionRequests(): EnsureAgentSessi
 
 function getBatchEnsureFailures(
   response: RendererInvokeResponseMap[IPC.EnsureAgentSessionsBatch] | null | undefined,
-): EnsureAgentSessionResult[] {
+): Array<Extract<EnsureAgentSessionResult, { kind: 'unavailable' }>> {
   if (!response || !Array.isArray(response.results)) {
     return [];
   }
 
-  return response.results.filter((result) => result.error !== undefined);
+  return response.results.filter(
+    (result): result is Extract<EnsureAgentSessionResult, { kind: 'unavailable' }> =>
+      result.kind === 'unavailable',
+  );
 }
 
 async function ensureAgentSessionsForStartupRestore(
@@ -235,21 +197,26 @@ async function ensureAgentSessionsForStartupRestore(
     '[terminal] Startup restore prewarm failed for some agent sessions:',
     failures.map((failure) => ({
       agentId: failure.agentId,
-      error: failure.error,
+      reason: failure.reason,
       taskId: failure.taskId,
     })),
   );
 }
 
-const inFlightDeferredEnsureAgentIds = new Set<string>();
+const inFlightDeferredEnsureKeys = new Set<string>();
 const ensuredDeferredAgentTaskIds = new Map<string, string>();
+let deferredEnsureEpoch = 0;
 
 // Cold-hidden non-shell terminals defer their renderer attach until
 // visibility/prewarm intent; this keeps the backend session (and with it
 // supervision/attention) live for them through the existing
 // EnsureAgentSessionsBatch path, deduped per agent.
 export function ensureAgentSessionForDeferredTerminal(taskId: string, agentId: string): void {
-  if (inFlightDeferredEnsureAgentIds.has(agentId) || ensuredDeferredAgentTaskIds.has(agentId)) {
+  const ensureKey = `${taskId}\u0000${agentId}`;
+  if (
+    inFlightDeferredEnsureKeys.has(ensureKey) ||
+    ensuredDeferredAgentTaskIds.get(agentId) === taskId
+  ) {
     return;
   }
 
@@ -259,13 +226,25 @@ export function ensureAgentSessionForDeferredTerminal(taskId: string, agentId: s
     return;
   }
 
-  inFlightDeferredEnsureAgentIds.add(agentId);
+  const requestEpoch = deferredEnsureEpoch;
+  inFlightDeferredEnsureKeys.add(ensureKey);
   void invoke(IPC.EnsureAgentSessionsBatch, {
     reason: 'startup-restore',
     requests: [createEnsureAgentSessionRequest(task, agent)],
   })
     .then((response) => {
-      if (getBatchEnsureFailures(response).length === 0) {
+      const result = response.results[0];
+      const currentTask = store.tasks[taskId];
+      const currentAgent = store.agents[agentId];
+      if (
+        result?.kind !== 'unavailable' &&
+        result?.agentId === agentId &&
+        result.taskId === taskId &&
+        currentTask?.agentIds?.includes(agentId) === true &&
+        currentAgent?.id === agentId &&
+        currentAgent.taskId === taskId &&
+        requestEpoch === deferredEnsureEpoch
+      ) {
         ensuredDeferredAgentTaskIds.set(agentId, taskId);
       }
     })
@@ -273,7 +252,7 @@ export function ensureAgentSessionForDeferredTerminal(taskId: string, agentId: s
       console.warn('[terminal] Failed to ensure deferred terminal session:', error);
     })
     .finally(() => {
-      inFlightDeferredEnsureAgentIds.delete(agentId);
+      inFlightDeferredEnsureKeys.delete(ensureKey);
     });
 }
 
@@ -284,6 +263,7 @@ export function ensureAgentSessionForDeferredTerminal(taskId: string, agentId: s
 // restore reconciliation are skipped by the store lookups, and terminals that
 // attached in the meantime treat the ensure as a backend no-op.
 export function reEnsureDeferredAgentSessionsAfterReconnectRestore(): void {
+  deferredEnsureEpoch += 1;
   const previouslyEnsured = [...ensuredDeferredAgentTaskIds.entries()];
   ensuredDeferredAgentTaskIds.clear();
   for (const [agentId, taskId] of previouslyEnsured) {
@@ -292,7 +272,8 @@ export function reEnsureDeferredAgentSessionsAfterReconnectRestore(): void {
 }
 
 export function resetDeferredAgentSessionEnsureForTests(): void {
-  inFlightDeferredEnsureAgentIds.clear();
+  deferredEnsureEpoch += 1;
+  inFlightDeferredEnsureKeys.clear();
   ensuredDeferredAgentTaskIds.clear();
 }
 

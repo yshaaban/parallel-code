@@ -106,7 +106,12 @@ export interface BrowserWebSocketServer {
   pruneDisconnectedAgentCommandResults: () => void;
 }
 
-type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
+type AuthenticatedClientMessage = Exclude<
+  ClientMessage,
+  | { type: 'auth' }
+  | { type: 'subscribe-task-creation-operation' }
+  | { type: 'unsubscribe-task-creation-operation' }
+>;
 type BrowserClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
 
 interface BrowserSocketAuthContext {
@@ -256,14 +261,7 @@ export function registerBrowserWebSocketServer(
     sendMessage: options.sendMessage,
   });
   const unsubscribeExit = onPtyEvent('exit', (agentId, data) => {
-    agentOutputSubscriptions.emitExit(
-      agentId,
-      (data ?? {}) as {
-        exitCode?: number | null;
-        lastOutput?: string[];
-        signal?: unknown;
-      },
-    );
+    agentOutputSubscriptions.emitExit(agentId, data);
   });
 
   function cleanupClient(client: WebSocket): void {
@@ -671,6 +669,13 @@ export function registerBrowserWebSocketServer(
 
     if (!options.transport.isAuthenticated(client)) {
       client.close(4001, 'Unauthorized');
+      return;
+    }
+
+    if (
+      message.type === 'subscribe-task-creation-operation' ||
+      message.type === 'unsubscribe-task-creation-operation'
+    ) {
       return;
     }
 

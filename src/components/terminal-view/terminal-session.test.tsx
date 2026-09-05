@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../electron/ipc/channels';
+import type { AttachTerminalSessionResult } from '../../domain/renderer-invoke';
 import { resetBrowserPagehideStateForTests } from '../../lib/browser-pagehide';
 import { resetTerminalPerformanceExperimentConfigForTests } from '../../lib/terminal-performance-experiments';
+import {
+  clearCompatibilityTerminalCreationsForTests,
+  completeCompatibilityTerminalCreation,
+  isCompatibilityTerminalCreationPending,
+  markCompatibilityTerminalCreationPending,
+} from '../../runtime/compatibility-terminal-creation';
 import {
   noteTerminalFocusedInput,
   settleTerminalFocusedInput,
@@ -44,6 +51,7 @@ const {
   preloadWebglAddonMock,
   registerTerminalMock,
   releaseWebglAddonMock,
+  runWithTaskCommandLeaseMock,
   scheduleFitIfDirtyMock,
   setWebglAddonPriorityMock,
   touchWebglAddonMock,
@@ -56,11 +64,24 @@ const {
           provideLinks: (
             lineNumber: number,
             callback: (
-              links?: Array<{ activate: (event: MouseEvent) => void; text: string }>,
+              links?: Array<{
+                activate: (event: MouseEvent) => void;
+                range: {
+                  end: { x: number; y: number };
+                  start: { x: number; y: number };
+                };
+                text: string;
+              }>,
             ) => void,
           ) => void;
         }
       | undefined;
+    lineLinkProviderDispose?: ReturnType<typeof vi.fn>;
+    lineRows: Array<{
+      cells?: Array<{ chars: string; width: number }>;
+      isWrapped?: boolean;
+      text: string;
+    }>;
     lineText: string;
     hasSuppressedOutputSinceHibernation: boolean;
     lastOutputChannel?:
@@ -79,6 +100,7 @@ const {
     writeInFlight: boolean;
   } = {
     fitAddonFits: [],
+    lineRows: [],
     lineText: '',
     hasSuppressedOutputSinceHibernation: false,
     onChunkRendered: undefined,
@@ -186,11 +208,8 @@ const {
       preventDefault: false,
     })),
     invokeMock: vi.fn<(channel: IPC, args?: unknown) => Promise<unknown>>(async (channel: IPC) => {
-      if (channel === IPC.SpawnAgent) {
-        return { attachedExistingSession: false };
-      }
       if (channel === IPC.AttachTerminalSession) {
-        return { attachedExistingSession: false, channelBound: true, recovery: null };
+        return createAttachedSessionResult();
       }
       return undefined;
     }),
@@ -205,16 +224,55 @@ const {
       buffer = {
         active: {
           getLine: (index: number) => {
-            if (index !== 0 || state.lineText.length === 0) {
+            const rows =
+              state.lineRows.length > 0
+                ? state.lineRows
+                : state.lineText.length > 0
+                  ? [{ text: state.lineText }]
+                  : [];
+            const row = rows[index];
+            if (!row) {
               return null;
             }
 
+            const cells =
+              row.cells ??
+              [...row.text].flatMap((chars) =>
+                chars === '界'
+                  ? [
+                      { chars, width: 2 },
+                      { chars: '', width: 0 },
+                    ]
+                  : [{ chars, width: 1 }],
+              );
+
             return {
-              translateToString: () => state.lineText,
+              getCell: (column: number) => {
+                const cell = cells[column];
+                return cell
+                  ? {
+                      getChars: () => cell.chars,
+                      getCode: () => 0,
+                      getWidth: () => cell.width,
+                    }
+                  : undefined;
+              },
+              isWrapped: row.isWrapped === true,
+              length: cells.length,
+              translateToString: () => row.text,
             };
           },
+          getNullCell: () => ({
+            getChars: () => '',
+            getCode: () => 0,
+            getWidth: () => 1,
+          }),
           get length(): number {
-            return state.lineText.length > 0 ? 1 : 0;
+            return state.lineRows.length > 0
+              ? state.lineRows.length
+              : state.lineText.length > 0
+                ? 1
+                : 0;
           },
         },
       };
@@ -241,7 +299,8 @@ const {
       scrollPages = vi.fn();
       registerLinkProvider = vi.fn((provider: typeof state.lineLinkProvider) => {
         state.lineLinkProvider = provider;
-        return { dispose: vi.fn() };
+        state.lineLinkProviderDispose = vi.fn();
+        return { dispose: state.lineLinkProviderDispose };
       });
       write = vi.fn((_chunk?: unknown, callback?: () => void) => {
         callback?.();
@@ -257,6 +316,9 @@ const {
     preloadWebglAddonMock: vi.fn(async () => undefined),
     registerTerminalMock: vi.fn(),
     releaseWebglAddonMock: vi.fn(),
+    runWithTaskCommandLeaseMock: vi.fn(
+      async (_taskId: string, _action: string, run: () => Promise<unknown>) => run(),
+    ),
     scheduleFitIfDirtyMock: vi.fn(),
     setWebglAddonPriorityMock: vi.fn(),
     touchWebglAddonMock: vi.fn(),
@@ -349,6 +411,19 @@ function createAttachRecoveryEntry(): {
   };
 }
 
+function createAttachedSessionResult(
+  overrides: Partial<Extract<AttachTerminalSessionResult, { kind: 'attached' }>> = {},
+): Extract<AttachTerminalSessionResult, { kind: 'attached' }> {
+  return {
+    channelBound: true,
+    disposition: 'created',
+    generation: 1,
+    kind: 'attached',
+    recovery: null,
+    ...overrides,
+  };
+}
+
 function createTestTerminalRecoveryRuntime(
   overrides: Partial<TerminalRecoveryRuntime> = {},
 ): TerminalRecoveryRuntime {
@@ -417,6 +492,7 @@ vi.mock('../../lib/ipc', () => ({
   isBrowserControlAuthenticated: vi.fn(() => false),
   isElectronRuntime: vi.fn(() => true),
   listenServerMessage: vi.fn(() => vi.fn()),
+  markBrowserChannelBound: vi.fn(),
   onBrowserAuthenticated: vi.fn(() => vi.fn()),
   onBrowserTransportEvent: vi.fn(() => vi.fn()),
   sendPagehideInvoke: vi.fn(),
@@ -472,6 +548,14 @@ vi.mock('../../lib/shortcuts', () => ({
 }));
 
 vi.mock('../../lib/theme', () => ({
+  getTerminalSearchDecorationTheme: vi.fn(() => ({
+    activeMatchBackground: '#ffffff',
+    activeMatchBorder: '#ffffff',
+    activeMatchColorOverviewRuler: '#ffffff',
+    matchBackground: '#777777',
+    matchBorder: '#777777',
+    matchOverviewRuler: '#777777',
+  })),
   getTerminalTheme: vi.fn(() => ({})),
 }));
 
@@ -496,6 +580,11 @@ vi.mock('../../app/runtime-diagnostics', () => ({
 
 vi.mock('../../app/markdown-viewer', () => ({
   openMarkdownViewer: openMarkdownViewerMock,
+}));
+
+vi.mock('../../app/task-command-lease-session', () => ({
+  isTaskCommandLeaseSkipped: (value: unknown) => value === 'lease-skipped',
+  runWithTaskCommandLease: runWithTaskCommandLeaseMock,
 }));
 
 vi.mock('../../store/notification', () => ({
@@ -626,6 +715,7 @@ describe('startTerminalSession render hibernation', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     resetBrowserPagehideStateForTests();
+    clearCompatibilityTerminalCreationsForTests();
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
     resetTerminalPerformanceExperimentConfigForTests();
     vi.mocked(isElectronRuntime).mockReturnValue(true);
@@ -633,14 +723,14 @@ describe('startTerminalSession render hibernation', () => {
     vi.mocked(getBrowserTransportConnectionState).mockReturnValue('disconnected');
     vi.mocked(getTaskCommandController).mockReturnValue(null);
     invokeMock.mockImplementation(async (channel: IPC) => {
-      if (channel === IPC.SpawnAgent) {
-        return { attachedExistingSession: false };
-      }
       if (channel === IPC.AttachTerminalSession) {
-        return { attachedExistingSession: false, channelBound: true, recovery: null };
+        return createAttachedSessionResult();
       }
       return undefined;
     });
+    runWithTaskCommandLeaseMock.mockImplementation(
+      async (_taskId: string, _action: string, run: () => Promise<unknown>) => run(),
+    );
     openMarkdownViewerMock.mockReset();
     openMarkdownViewerMock.mockResolvedValue(true);
     isWebglAddonRuntimeReadyMock.mockReturnValue(true);
@@ -662,6 +752,8 @@ describe('startTerminalSession render hibernation', () => {
     outputPipelineFactoryState.fitAddonFits = [];
     outputPipelineFactoryState.hasSuppressedOutputSinceHibernation = false;
     outputPipelineFactoryState.lineLinkProvider = undefined;
+    outputPipelineFactoryState.lineLinkProviderDispose = undefined;
+    outputPipelineFactoryState.lineRows = [];
     outputPipelineFactoryState.lineText = '';
     outputPipelineFactoryState.onChunkRendered = undefined;
     outputPipelineFactoryState.onQueueEmpty = undefined;
@@ -799,7 +891,7 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
-  it('passes the task base branch through the spawn request', async () => {
+  it('keeps renderer launch configuration out of managed attach requests', async () => {
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
       getOutputPriority: () => 'focused',
@@ -812,10 +904,14 @@ describe('startTerminalSession render hibernation', () => {
       IPC.AttachTerminalSession,
       expect.objectContaining({
         agentId: 'agent-1',
-        baseBranch: 'release/main',
+        sessionOwner: 'managed-agent',
         taskId: 'task-1',
       }),
     );
+    const attachRequest = invokeMock.mock.calls.find(
+      ([channel]) => channel === IPC.AttachTerminalSession,
+    )?.[1] as Record<string, unknown>;
+    expect(attachRequest).not.toHaveProperty('baseBranch');
 
     session.cleanup();
   });
@@ -842,13 +938,11 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
-  it('passes one-shot session replacement intent through the spawn request', async () => {
-    const onSpawnResolved = vi.fn();
+  it('keeps replacement intent out of managed identity-only attach requests', async () => {
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
       getOutputPriority: () => 'focused',
       props: createProps({
-        onSpawnResolved,
         replaceExistingSession: true,
       }),
     });
@@ -859,27 +953,233 @@ describe('startTerminalSession render hibernation', () => {
       IPC.AttachTerminalSession,
       expect.objectContaining({
         agentId: 'agent-1',
-        replaceExistingSession: true,
+        sessionOwner: 'managed-agent',
         taskId: 'task-1',
       }),
     );
-    await vi.waitFor(() => {
-      expect(onSpawnResolved).toHaveBeenCalledTimes(1);
-    });
+    const attachRequest = invokeMock.mock.calls.find(
+      ([channel]) => channel === IPC.AttachTerminalSession,
+    )?.[1] as Record<string, unknown>;
+    expect(attachRequest).not.toHaveProperty('replaceExistingSession');
 
     session.cleanup();
   });
 
-  it('ignores a late spawn result after cleanup', async () => {
-    const spawnDeferred = createDeferredPromise<{
-      attachedExistingSession: boolean;
-      channelBound: boolean;
-      recovery: null;
-    }>();
+  it('keeps typed restore unavailability retryable without emitting a false process exit', async () => {
+    const onExit = vi.fn();
+    const onAttachUnavailable = vi.fn();
+    invokeMock
+      .mockResolvedValueOnce({
+        channelBound: false,
+        kind: 'unavailable',
+        reason: 'restore-failed',
+        recovery: null,
+      })
+      .mockResolvedValueOnce({
+        channelBound: true,
+        disposition: 'restored',
+        generation: 3,
+        kind: 'attached',
+        recovery: createAttachRecoveryEntry(),
+      });
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachUnavailable,
+      props: createProps({ onExit }),
+    });
+
+    await flushSessionStartup(4);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith('restore-failed');
+    expect(onExit).not.toHaveBeenCalled();
+
+    session.retryAttach();
+    await flushSessionStartup(6);
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AttachTerminalSession),
+    ).toHaveLength(2);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith(null);
+    expect(onExit).not.toHaveBeenCalled();
+    session.cleanup();
+  });
+
+  it('retries response loss with the same explicit compatibility creation identity', async () => {
+    const onExit = vi.fn();
+    const onAttachUnavailable = vi.fn();
+    markCompatibilityTerminalCreationPending('task-1', 'agent-1');
+    invokeMock.mockRejectedValueOnce(new Error('attach response lost')).mockResolvedValueOnce({
+      channelBound: true,
+      disposition: 'existing',
+      generation: 1,
+      kind: 'attached',
+      recovery: createAttachRecoveryEntry(),
+    });
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachUnavailable,
+      props: createProps({ isShell: true, onExit, sessionOwner: 'compatibility-shell' }),
+    });
+
+    await flushSessionStartup(4);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith('attach-transport-unavailable');
+    expect(onExit).not.toHaveBeenCalled();
+    expect(isCompatibilityTerminalCreationPending('task-1', 'agent-1')).toBe(true);
+    expect(session.term.write).toHaveBeenCalledWith(
+      expect.stringContaining('The terminal connection was interrupted while attaching.'),
+    );
+    expect(session.term.write).not.toHaveBeenCalledWith(expect.stringContaining('response lost'));
+
+    session.retryAttach();
+    await flushSessionStartup(6);
+
+    const attachRequests = invokeMock.mock.calls
+      .filter(([channel]) => channel === IPC.AttachTerminalSession)
+      .map(([, request]) => request);
+    expect(attachRequests).toHaveLength(2);
+    expect(attachRequests).toEqual([
+      expect.objectContaining({
+        agentId: 'agent-1',
+        compatibilityIntent: 'create',
+        sessionOwner: 'compatibility-shell',
+        taskId: 'task-1',
+      }),
+      expect.objectContaining({
+        agentId: 'agent-1',
+        compatibilityIntent: 'create',
+        sessionOwner: 'compatibility-shell',
+        taskId: 'task-1',
+      }),
+    ]);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith(null);
+    expect(onExit).not.toHaveBeenCalled();
+    expect(isCompatibilityTerminalCreationPending('task-1', 'agent-1')).toBe(false);
+    session.cleanup();
+  });
+
+  it('holds browser task control around a fresh compatibility attach', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    markCompatibilityTerminalCreationPending('task-1', 'agent-1');
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps({ isShell: true, sessionOwner: 'compatibility-shell' }),
+    });
+
+    await flushSessionStartup(6);
+
+    expect(runWithTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'open a terminal',
+      expect.any(Function),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.AttachTerminalSession,
+      expect.objectContaining({
+        compatibilityIntent: 'create',
+        controllerId: 'client-1',
+        sessionOwner: 'compatibility-shell',
+      }),
+    );
+    session.cleanup();
+  });
+
+  it('keeps peer-controlled browser creation pending without invoking attach', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    runWithTaskCommandLeaseMock.mockResolvedValueOnce('lease-skipped');
+    markCompatibilityTerminalCreationPending('task-1', 'agent-1');
+    const onAttachDispatched = vi.fn();
+    const onAttachSettledWithoutDispatch = vi.fn();
+    const onAttachUnavailable = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachDispatched,
+      onAttachSettledWithoutDispatch,
+      onAttachUnavailable,
+      props: createProps({ isShell: true, sessionOwner: 'compatibility-shell' }),
+    });
+
+    await flushSessionStartup(6);
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.AttachTerminalSession, expect.anything());
+    expect(onAttachDispatched).not.toHaveBeenCalled();
+    expect(onAttachSettledWithoutDispatch).toHaveBeenCalledTimes(1);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith('task-control-unavailable');
+    expect(session.term.write).toHaveBeenCalledWith(
+      '\x1b[33mAnother client currently controls this task terminal. ' +
+        'Retry when task control is available.\x1b[0m\r\n',
+    );
+    expect(isCompatibilityTerminalCreationPending('task-1', 'agent-1')).toBe(true);
+    session.cleanup();
+  });
+
+  it('does not dispatch browser creation after the shell closes while awaiting task control', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    const leaseReady = createDeferredPromise<undefined>();
+    runWithTaskCommandLeaseMock.mockImplementationOnce(
+      async (_taskId: string, _action: string, run: () => Promise<unknown>) => {
+        await leaseReady.promise;
+        return run();
+      },
+    );
+    markCompatibilityTerminalCreationPending('task-1', 'agent-1');
+    const onAttachDispatched = vi.fn();
+    const onAttachSettledWithoutDispatch = vi.fn();
+    const onAttachUnavailable = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachDispatched,
+      onAttachSettledWithoutDispatch,
+      onAttachUnavailable,
+      props: createProps({ isShell: true, sessionOwner: 'compatibility-shell' }),
+    });
+
+    await flushSessionStartup(3);
+    expect(runWithTaskCommandLeaseMock).toHaveBeenCalledTimes(1);
+
+    completeCompatibilityTerminalCreation('task-1', 'agent-1');
+    session.cleanup();
+    leaseReady.resolve(undefined);
+    await flushSessionStartup(6);
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.AttachTerminalSession, expect.anything());
+    expect(onAttachDispatched).not.toHaveBeenCalled();
+    expect(onAttachSettledWithoutDispatch).toHaveBeenCalledTimes(1);
+    expect(onAttachUnavailable).not.toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('treats an invalid attach response as transport unavailability', async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    const onAttachUnavailable = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachUnavailable,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(5);
+
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith('attach-transport-unavailable');
+    expect(session.term.write).toHaveBeenCalledWith(
+      expect.stringContaining('The terminal connection was interrupted while attaching.'),
+    );
+    session.cleanup();
+  });
+
+  it('hands a late existing-session recovery to its disposed owner after cleanup', async () => {
+    const attachDeferred = createDeferredPromise<AttachTerminalSessionResult>();
+    const lateRecovery = {
+      ...createAttachRecoveryEntry(),
+      batchPauseId: 'recovery-pause-late-attach',
+    };
     const onAttachBound = vi.fn();
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.AttachTerminalSession) {
-        return spawnDeferred.promise;
+        return attachDeferred.promise;
       }
       return undefined;
     });
@@ -897,10 +1197,13 @@ describe('startTerminalSession render hibernation', () => {
     const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
     const outputPipeline = createTerminalOutputPipelineMock.mock.results[0]?.value;
     session.cleanup();
-    spawnDeferred.resolve({ attachedExistingSession: false, channelBound: true, recovery: null });
+    attachDeferred.resolve(
+      createAttachedSessionResult({ disposition: 'existing', recovery: lateRecovery }),
+    );
     await flushSessionStartup(4);
 
     expect(onAttachBound).not.toHaveBeenCalled();
+    expect(recoveryRuntime?.applyInitialAttachRecoveryEntry).toHaveBeenCalledWith(lateRecovery);
     expect(recoveryRuntime?.notifySpawnReady).not.toHaveBeenCalled();
     expect(outputPipeline?.recoverFlowControlIfIdle).not.toHaveBeenCalled();
   });
@@ -925,13 +1228,18 @@ describe('startTerminalSession render hibernation', () => {
 
   it('uses pagehide-safe detach cleanup after pagehide has started', async () => {
     vi.mocked(isElectronRuntime).mockReturnValue(false);
+    const onAttachBound = vi.fn();
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
       getOutputPriority: () => 'focused',
+      onAttachBound,
       props: createProps(),
     });
 
     await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushSessionStartup(4);
+    expect(onAttachBound).toHaveBeenCalledOnce();
     vi.mocked(fireAndForget).mockClear();
     vi.mocked(sendPagehideInvoke).mockClear();
     window.dispatchEvent(new Event('pagehide'));
@@ -1049,7 +1357,132 @@ describe('startTerminalSession render hibernation', () => {
       agentId: 'agent-1',
       relativePath: 'docs/guide.md',
       taskId: 'task-1',
-      worktreePath: '/tmp/project',
+    });
+
+    session.cleanup();
+  });
+
+  it('maps wrapped Unicode paths from either contributing row and follows current reflow', async () => {
+    outputPipelineFactoryState.lineRows = [
+      { text: 'prefix 界 /tmp/project/docs/very-' },
+      { isWrapped: true, text: 'long.md tail' },
+    ];
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: '/tmp/project',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const provider = outputPipelineFactoryState.lineLinkProvider;
+    const firstRowCallback = vi.fn();
+    const secondRowCallback = vi.fn();
+    provider?.provideLinks(1, firstRowCallback);
+    provider?.provideLinks(2, secondRowCallback);
+
+    expect(firstRowCallback).toHaveBeenCalledTimes(1);
+    expect(secondRowCallback).toHaveBeenCalledTimes(1);
+    const firstRowLinks = firstRowCallback.mock.calls[0]?.[0];
+    const secondRowLinks = secondRowCallback.mock.calls[0]?.[0];
+    expect(
+      firstRowLinks?.map((link: { range: unknown; text: string }) => ({
+        range: link.range,
+        text: link.text,
+      })),
+    ).toEqual(
+      secondRowLinks?.map((link: { range: unknown; text: string }) => ({
+        range: link.range,
+        text: link.text,
+      })),
+    );
+    expect(secondRowCallback.mock.calls[0]?.[0]).toMatchObject([
+      {
+        range: {
+          end: { x: 7, y: 2 },
+          start: { x: 11, y: 1 },
+        },
+        text: '/tmp/project/docs/very-long.md',
+      },
+    ]);
+
+    outputPipelineFactoryState.lineRows = [
+      { text: 'prefix 界 /tmp/project/docs/very-long.md tail' },
+    ];
+    const reflowedCallback = vi.fn();
+    provider?.provideLinks(1, reflowedCallback);
+
+    expect(reflowedCallback).toHaveBeenCalledTimes(1);
+    expect(reflowedCallback.mock.calls[0]?.[0]).toMatchObject([
+      {
+        range: {
+          end: { x: 40, y: 1 },
+          start: { x: 11, y: 1 },
+        },
+      },
+    ]);
+
+    session.cleanup();
+  });
+
+  it('disposes the exact provider and rejects stale hover and activation callbacks', async () => {
+    outputPipelineFactoryState.lineText = 'See docs/guide.md';
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: '/tmp/project',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const provider = outputPipelineFactoryState.lineLinkProvider;
+    const activeCallback = vi.fn();
+    provider?.provideLinks(1, activeCallback);
+    const activeLink = activeCallback.mock.calls[0]?.[0]?.[0];
+
+    session.cleanup();
+
+    expect(outputPipelineFactoryState.lineLinkProviderDispose).toHaveBeenCalledTimes(1);
+    activeLink?.activate(new MouseEvent('click', { ctrlKey: true }));
+    expect(openMarkdownViewerMock).not.toHaveBeenCalled();
+
+    const staleCallback = vi.fn();
+    provider?.provideLinks(1, staleCallback);
+    expect(staleCallback).toHaveBeenCalledTimes(1);
+    expect(staleCallback).toHaveBeenCalledWith(undefined);
+  });
+
+  it('captures exact terminal identity for activation instead of mutable props', async () => {
+    outputPipelineFactoryState.lineText = 'See docs/guide.md';
+    const props = {
+      ...createProps(),
+      cwd: '/tmp/project',
+    };
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props,
+    });
+
+    await flushSessionStartup(4);
+
+    const callback = vi.fn();
+    outputPipelineFactoryState.lineLinkProvider?.provideLinks(1, callback);
+    props.agentId = 'replacement-agent';
+    props.taskId = 'replacement-task';
+    props.cwd = '/tmp/replacement';
+    callback.mock.calls[0]?.[0]?.[0]?.activate(new MouseEvent('click', { ctrlKey: true }));
+
+    expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      relativePath: 'docs/guide.md',
+      taskId: 'task-1',
     });
 
     session.cleanup();
@@ -1082,7 +1515,6 @@ describe('startTerminalSession render hibernation', () => {
       agentId: 'agent-1',
       relativePath: 'docs/guide.md',
       taskId: 'task-1',
-      worktreePath: '/tmp/project',
     });
 
     session.cleanup();
@@ -1115,7 +1547,6 @@ describe('startTerminalSession render hibernation', () => {
       agentId: 'agent-1',
       relativePath: 'docs/Guide.md',
       taskId: 'task-1',
-      worktreePath: 'C:\\work\\repo',
     });
 
     session.cleanup();
@@ -1178,8 +1609,8 @@ describe('startTerminalSession render hibernation', () => {
     );
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'paste', preventDefault: true });
     invokeMock.mockImplementation(async (channel: IPC) => {
-      if (channel === IPC.SpawnAgent) {
-        return { attachedExistingSession: false };
+      if (channel === IPC.AttachTerminalSession) {
+        return createAttachedSessionResult();
       }
       if (channel === IPC.ResolveClipboardPaste) {
         return { kind: 'image', path: '/tmp/parallel code clipboard.png' };
@@ -1304,6 +1735,87 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('routes terminal find to the exact local search capability without PTY or lease work', async () => {
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'find', preventDefault: true });
+    const onSearchRequested = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onSearchRequested,
+      props: createProps(),
+      sessionIdentity: 'task-1:agent-1:7',
+    });
+
+    await flushSessionStartup(4);
+    invokeMock.mockClear();
+    const inputPipeline = createTerminalInputPipelineMock.mock.results.at(-1)?.value;
+    const keyHandler = getTerminalKeyHandler(session);
+    const event = new KeyboardEvent('keydown', {
+      cancelable: true,
+      ctrlKey: true,
+      key: 'f',
+    });
+
+    expect(keyHandler?.(event)).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+    expect(onSearchRequested).toHaveBeenCalledTimes(1);
+    expect(onSearchRequested).toHaveBeenCalledWith('task-1:agent-1:7', session.search);
+    expect(inputPipeline?.enqueueProgrammaticInput).not.toHaveBeenCalled();
+    expect(inputPipeline?.handleTerminalData).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('keeps terminal find local when stdin is disabled without reaching xterm input', async () => {
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'find', preventDefault: true });
+    const onSearchRequested = vi.fn();
+    const containerRef = createMeasuredContainer();
+    const session = startTerminalSession({
+      containerRef,
+      getOutputPriority: () => 'focused',
+      onSearchRequested,
+      props: createProps(),
+      sessionIdentity: 'task-1:agent-1:read-only',
+    });
+
+    await flushSessionStartup(4);
+    session.term.options.disableStdin = true;
+    invokeMock.mockClear();
+    const inputPipeline = createTerminalInputPipelineMock.mock.results.at(-1)?.value;
+    const xtermTextarea = document.createElement('textarea');
+    const xtermKeyListener = vi.fn();
+    xtermTextarea.addEventListener('keydown', xtermKeyListener);
+    containerRef.append(xtermTextarea);
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: 'f',
+    });
+
+    xtermTextarea.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(xtermKeyListener).not.toHaveBeenCalled();
+    expect(onSearchRequested).toHaveBeenCalledTimes(1);
+    expect(onSearchRequested).toHaveBeenCalledWith('task-1:agent-1:read-only', session.search);
+    expect(inputPipeline?.enqueueProgrammaticInput).not.toHaveBeenCalled();
+    expect(inputPipeline?.handleTerminalData).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    session.cleanup();
+    xtermTextarea.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: 'f',
+      }),
+    );
+    expect(onSearchRequested).toHaveBeenCalledTimes(1);
+  });
+
   it('pastes dropped native file paths into the terminal before xterm sees basenames', async () => {
     const runtimeWindow = getTestElectronWindow();
     const previousElectron = runtimeWindow.electron;
@@ -1340,8 +1852,8 @@ describe('startTerminalSession render hibernation', () => {
       getPathForFile: vi.fn(() => ''),
     };
     invokeMock.mockImplementation(async (channel: IPC) => {
-      if (channel === IPC.SpawnAgent) {
-        return { attachedExistingSession: false };
+      if (channel === IPC.AttachTerminalSession) {
+        return createAttachedSessionResult();
       }
       if (channel === IPC.SaveDroppedImage) {
         return '/tmp/parallel-code-drop-screen.png';
@@ -1526,11 +2038,12 @@ describe('startTerminalSession render hibernation', () => {
   it('ignores late existing-session attach recovery after cleanup', async () => {
     const restoreDeferred = createDeferredPromise<undefined>();
 
-    invokeMock.mockResolvedValueOnce({
-      attachedExistingSession: true,
-      channelBound: true,
-      recovery: createAttachRecoveryEntry(),
-    });
+    invokeMock.mockResolvedValueOnce(
+      createAttachedSessionResult({
+        disposition: 'existing',
+        recovery: createAttachRecoveryEntry(),
+      }),
+    );
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(() =>
       createTestTerminalRecoveryRuntime({
         applyInitialAttachRecoveryEntry: vi.fn(async () => {
@@ -1922,9 +2435,7 @@ describe('startTerminalSession render hibernation', () => {
       IPC.AttachTerminalSession,
       expect.objectContaining({
         agentId: 'agent-1',
-        baseBranch: undefined,
-        cols: 80,
-        rows: 24,
+        sessionOwner: 'managed-agent',
         taskId: 'task-1',
       }),
     );
@@ -1938,11 +2449,10 @@ describe('startTerminalSession render hibernation', () => {
     invokeMock.mockImplementation(async (channel: IPC) => {
       callsByChannel.set(channel, (callsByChannel.get(channel) ?? 0) + 1);
       if (channel === IPC.AttachTerminalSession) {
-        return {
-          attachedExistingSession: true,
-          channelBound: true,
+        return createAttachedSessionResult({
+          disposition: 'existing',
           recovery: createAttachRecoveryEntry(),
-        };
+        });
       }
       return undefined;
     });
@@ -1975,11 +2485,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   it('releases the scheduler slot at dispatch before the attach RPC resolves', async () => {
-    const attachDeferred = createDeferredPromise<{
-      attachedExistingSession: boolean;
-      channelBound: boolean;
-      recovery: null;
-    }>();
+    const attachDeferred = createDeferredPromise<AttachTerminalSessionResult>();
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.AttachTerminalSession) {
         return attachDeferred.promise;
@@ -2002,7 +2508,7 @@ describe('startTerminalSession render hibernation', () => {
     expect(onAttachDispatched).toHaveBeenCalledTimes(1);
     expect(onAttachBound).not.toHaveBeenCalled();
 
-    attachDeferred.resolve({ attachedExistingSession: false, channelBound: true, recovery: null });
+    attachDeferred.resolve(createAttachedSessionResult());
     await flushSessionStartup(4);
     expect(onAttachBound).toHaveBeenCalledTimes(1);
 
@@ -2034,7 +2540,7 @@ describe('startTerminalSession render hibernation', () => {
       IPC.AttachTerminalSession,
       expect.objectContaining({
         agentId: 'agent-1',
-        baseBranch: undefined,
+        sessionOwner: 'managed-agent',
         taskId: 'task-1',
       }),
     );
@@ -2280,11 +2786,12 @@ describe('startTerminalSession render hibernation', () => {
     const container = createMeasuredContainer();
     let recoveryOptions: RecoveryRuntimeTestOptions | undefined;
 
-    invokeMock.mockResolvedValueOnce({
-      attachedExistingSession: true,
-      channelBound: true,
-      recovery: createAttachRecoveryEntry(),
-    });
+    invokeMock.mockResolvedValueOnce(
+      createAttachedSessionResult({
+        disposition: 'existing',
+        recovery: createAttachRecoveryEntry(),
+      }),
+    );
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(
       (options: RecoveryRuntimeTestOptions) => {
         recoveryOptions = options;
@@ -2314,11 +2821,12 @@ describe('startTerminalSession render hibernation', () => {
   it('notifies spawn ready after the existing-session attach restore settles', async () => {
     const callSequence: string[] = [];
 
-    invokeMock.mockResolvedValueOnce({
-      attachedExistingSession: true,
-      channelBound: true,
-      recovery: createAttachRecoveryEntry(),
-    });
+    invokeMock.mockResolvedValueOnce(
+      createAttachedSessionResult({
+        disposition: 'existing',
+        recovery: createAttachRecoveryEntry(),
+      }),
+    );
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(() =>
       createTestTerminalRecoveryRuntime({
         applyInitialAttachRecoveryEntry: vi.fn(async () => {

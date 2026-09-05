@@ -37,6 +37,32 @@ describe('agent supervision', () => {
     });
   });
 
+  it('publishes generation-bound snapshots with monotonic per-agent admission versions', () => {
+    const controller = createAgentSupervisionController({ now: () => currentTime });
+
+    controller.recordSpawn({
+      agentId: 'agent-1',
+      generation: 4,
+      isShell: false,
+      taskId: 'task-1',
+    });
+    const spawned = controller.getSnapshot('agent-1');
+    controller.recordOutput('agent-1', 'Proceed? [Y/n]');
+    const question = controller.getSnapshot('agent-1');
+    controller.recordSpawn({
+      agentId: 'agent-1',
+      generation: 5,
+      isShell: false,
+      taskId: 'task-1',
+    });
+    const restarted = controller.getSnapshot('agent-1');
+
+    expect(spawned).toMatchObject({ generation: 4, supervisionVersion: expect.any(Number) });
+    expect(question?.supervisionVersion).toBeGreaterThan(spawned?.supervisionVersion ?? 0);
+    expect(restarted).toMatchObject({ generation: 5, supervisionVersion: expect.any(Number) });
+    expect(restarted?.supervisionVersion).toBeGreaterThan(question?.supervisionVersion ?? 0);
+  });
+
   it('marks agents awaiting input when the tail shows a question', () => {
     const controller = createAgentSupervisionController({
       now: () => currentTime,

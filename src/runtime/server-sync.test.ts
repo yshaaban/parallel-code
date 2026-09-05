@@ -9,6 +9,7 @@ const {
   applyLoadedWorkspaceStateJsonMock,
   getLoadedWorkspaceRevisionMock,
   hydrateAgentGenerationMock,
+  hydrateAgentSessionIdentityMock,
   isBrowserColdBootstrapPendingMock,
   invokeMock,
   loadWorkspaceStateMock,
@@ -25,6 +26,7 @@ const {
   applyLoadedWorkspaceStateJsonMock: vi.fn(),
   getLoadedWorkspaceRevisionMock: vi.fn(() => 0),
   hydrateAgentGenerationMock: vi.fn(),
+  hydrateAgentSessionIdentityMock: vi.fn(),
   isBrowserColdBootstrapPendingMock: vi.fn(() => false),
   invokeMock: vi.fn(),
   loadWorkspaceStateMock: vi.fn(),
@@ -65,6 +67,7 @@ vi.mock('../store/autosave', () => ({
 
 vi.mock('../store/agents', () => ({
   hydrateAgentGeneration: hydrateAgentGenerationMock,
+  hydrateAgentSessionIdentity: hydrateAgentSessionIdentityMock,
   markAgentExited: markAgentExitedMock,
   markAgentRunning: markAgentRunningMock,
   setAgentStatus: setAgentStatusMock,

@@ -23,6 +23,7 @@ export type KeybindingActionId =
   | 'task.new-shell'
   | 'task.send-prompt'
   | 'app.new-terminal'
+  | 'app.redraw-terminals'
   | 'app.new-task'
   | 'app.new-task-alt'
   | 'app.toggle-sidebar'
@@ -180,6 +181,13 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     category: 'App',
     defaultChords: [{ key: 'D', cmdOrCtrl: true, shift: true }],
     description: 'New standalone terminal',
+    global: true,
+  },
+  {
+    actionId: 'app.redraw-terminals',
+    category: 'App',
+    defaultChords: [{ key: 'L', cmdOrCtrl: true, shift: true }],
+    description: 'Redraw terminals (fix rendering glitches)',
     global: true,
   },
   {

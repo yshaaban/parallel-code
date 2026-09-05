@@ -18,33 +18,16 @@ describe('browser IPC task-command args', () => {
     });
   });
 
-  it('strips nested batch ensure identity when the browser client identity is missing', () => {
-    expect(
-      normalizeBrowserIpcTaskCommandArgs(
-        IPC.EnsureAgentSessionsBatch,
-        {
-          clientId: 'spoofed-client',
-          reason: 'startup-restore',
-          requests: [
-            {
-              agentId: 'agent-1',
-              args: [],
-              controllerId: 'spoofed-client',
-              taskId: 'task-1',
-            },
-          ],
-        },
-        null,
-      ),
-    ).toEqual({
-      reason: 'startup-restore',
-      requests: [
-        {
-          agentId: 'agent-1',
-          args: [],
-        },
-      ],
-    });
+  it('rejects process-admitting channels when browser client identity is missing', () => {
+    for (const channel of [
+      IPC.SpawnAgent,
+      IPC.AttachTerminalSession,
+      IPC.EnsureAgentSessionsBatch,
+    ]) {
+      expect(() => normalizeBrowserIpcTaskCommandArgs(channel, { taskId: 'task-1' }, null)).toThrow(
+        'Browser client identity is required for terminal session admission',
+      );
+    }
   });
 
   it('injects browser controller identity into spawned agents', () => {
@@ -67,8 +50,10 @@ describe('browser IPC task-command args', () => {
         IPC.AttachTerminalSession,
         {
           clientId: 'spoofed-client',
+          compatibilityIntent: 'create',
           controllerId: 'spoofed-client',
           isShell: true,
+          sessionOwner: 'compatibility-shell',
           startsTaskWatchers: true,
           taskId: 'task-1',
         },
@@ -76,9 +61,31 @@ describe('browser IPC task-command args', () => {
       ),
     ).toEqual({
       clientId: 'browser-client-1',
+      compatibilityIntent: 'create',
       controllerId: 'browser-client-1',
       isShell: true,
+      sessionOwner: 'compatibility-shell',
       startsTaskWatchers: true,
+      taskId: 'task-1',
+    });
+  });
+
+  it('does not inject task-command authority into managed terminal restore', () => {
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.AttachTerminalSession,
+        {
+          agentId: 'agent-1',
+          controllerId: 'spoofed-client',
+          sessionOwner: 'managed-agent',
+          taskId: 'task-1',
+        },
+        'browser-client-1',
+      ),
+    ).toEqual({
+      agentId: 'agent-1',
+      clientId: 'browser-client-1',
+      sessionOwner: 'managed-agent',
       taskId: 'task-1',
     });
   });
@@ -93,9 +100,6 @@ describe('browser IPC task-command args', () => {
           requests: [
             {
               agentId: 'agent-1',
-              args: [],
-              cols: 120,
-              rows: 40,
               taskId: 'task-1',
             },
           ],
@@ -108,9 +112,6 @@ describe('browser IPC task-command args', () => {
       requests: [
         {
           agentId: 'agent-1',
-          args: [],
-          cols: 120,
-          rows: 40,
           taskId: 'task-1',
         },
       ],
@@ -175,6 +176,30 @@ describe('browser IPC task-command args', () => {
       controllerId: 'client-1',
       data: 'echo ok\n',
       taskId: 'task-from-agent',
+    });
+    expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('binds semantic prompt input to authenticated control and backend agent ownership', () => {
+    const getAgentTaskId = vi.fn(() => 'task-from-agent');
+
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.SendTaskPromptInput,
+        {
+          agentId: 'agent-1',
+          controllerId: 'spoofed-client',
+          taskId: 'spoofed-task',
+          text: 'continue',
+        },
+        'client-1',
+        getAgentTaskId,
+      ),
+    ).toEqual({
+      agentId: 'agent-1',
+      controllerId: 'client-1',
+      taskId: 'task-from-agent',
+      text: 'continue',
     });
     expect(getAgentTaskId).toHaveBeenCalledWith('agent-1');
   });
@@ -290,7 +315,7 @@ describe('browser IPC task-command args', () => {
       taskId: 'task-from-worktree',
       worktreePath: '/repo/.worktrees/task-1',
     });
-    expect(getWorktreeTaskId).toHaveBeenCalledWith('/repo/.worktrees/task-1');
+    expect(getWorktreeTaskId).toHaveBeenCalledWith('/repo/.worktrees/task-1', 'spoofed-task');
   });
 
   it('keeps unregistered worktree git mutations outside task command ownership', () => {
@@ -315,6 +340,26 @@ describe('browser IPC task-command args', () => {
       squash: true,
       worktreePath: '/repo/.arena/a',
     });
+  });
+
+  it('retains the requested shared-root task after backend membership resolution', () => {
+    const getWorktreeTaskId = vi.fn((_path: string, taskId?: string) =>
+      taskId === 'root-2' ? 'root-2' : 'root-1',
+    );
+    expect(
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.CommitAll,
+        {
+          message: 'shared root change',
+          taskId: 'root-2',
+          controllerId: 'forged',
+          worktreePath: '/repo',
+        },
+        'client-2',
+        () => undefined,
+        getWorktreeTaskId,
+      ),
+    ).toMatchObject({ taskId: 'root-2', controllerId: 'client-2' });
   });
 
   it('injects browser controller identity into task container mutations', () => {

@@ -4,7 +4,7 @@ import { cp, mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   assertBrowserServerBuildArtifactsExist,
@@ -14,6 +14,10 @@ import {
 import { rewriteDistServerRelativeImports } from '../../../server/rewrite-dist-server-relative-imports.mjs';
 import { createTestShellEnv } from '../../../src/lib/test-shell-env.js';
 import type { AgentDef } from '../../../src/ipc/types.js';
+import {
+  buildProjectGitIsolationFields,
+  buildTaskGitIsolationFields,
+} from '../../../src/store/task-git-isolation.js';
 import type {
   PersistedState,
   PersistedTask,
@@ -38,12 +42,20 @@ const DIST_SERVER_DIR = path.join(PROJECT_ROOT, 'dist-server');
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist');
 const DIST_REMOTE_DIR = path.join(PROJECT_ROOT, 'dist-remote');
 const BROWSER_SERVER_ENTRY = path.join(PROJECT_ROOT, 'dist-server', 'server', 'main.js');
+const TASK_NOTES_ENTITLEMENT_ENTRY = path.join(
+  PROJECT_ROOT,
+  'dist-server',
+  'electron',
+  'ipc',
+  'task-notes-writer-entitlements.js',
+);
 const STANDALONE_SERVER_START_TIMEOUT_MS = 20_000;
 const STANDALONE_SERVER_STOP_TIMEOUT_MS = 5_000;
 const STANDALONE_SERVER_FORCE_KILL_SETTLE_MS = 1_000;
 const STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS = 8_192;
 const STATIC_ARTIFACT_COPY_RETRY_DELAY_MS = 50;
 const STATIC_ARTIFACT_COPY_RETRIES = 5;
+const BROWSER_LAB_DEFAULT_TASK_GIT_ISOLATION = 'worktree' satisfies TaskGitIsolationMode;
 
 export interface BrowserLabServer {
   agentId: string;
@@ -116,32 +128,10 @@ function createProject(projectId: string, repoDir: string): Project {
     color: '#2f8fdd',
     baseBranch: 'main',
     branchPrefix: 'browser-lab',
+    ...buildProjectGitIsolationFields({
+      defaultTaskGitIsolation: BROWSER_LAB_DEFAULT_TASK_GIT_ISOLATION,
+    }),
   };
-}
-
-type SeedTaskGitIsolationFields = Pick<
-  PersistedTask,
-  'directMode' | 'gitIsolation' | 'worktreeOwnership'
->;
-
-function getSeedTaskGitIsolationFields(
-  gitIsolation: TaskGitIsolationMode | undefined,
-): Partial<SeedTaskGitIsolationFields> {
-  switch (gitIsolation) {
-    case 'current-branch':
-      return {
-        directMode: true,
-        gitIsolation,
-      };
-    case 'existing-worktree':
-      return {
-        gitIsolation,
-        worktreeOwnership: 'external',
-      };
-    case 'worktree':
-    case undefined:
-      return gitIsolation ? { gitIsolation } : {};
-  }
 }
 
 function createPersistedBrowserLabTask(
@@ -150,22 +140,23 @@ function createPersistedBrowserLabTask(
   agentId: string,
   taskName: string,
   agentDef: AgentDef,
-  branchName: string,
-  taskGitIsolation: TaskGitIsolationMode | undefined,
+  gitLocation: { branchName: string; worktreePath: string },
+  taskGitIsolation: TaskGitIsolationMode,
 ): PersistedTask {
   return {
     id: taskId,
     name: taskName,
     projectId: project.id,
-    branchName,
-    worktreePath: project.path,
+    branchName: gitLocation.branchName,
+    worktreePath: gitLocation.worktreePath,
     notes: '',
     lastPrompt: '',
     shellCount: 0,
     agentId,
     shellAgentIds: [],
     agentDef,
-    ...getSeedTaskGitIsolationFields(taskGitIsolation),
+    taskMode: 'agent',
+    ...buildTaskGitIsolationFields({ gitIsolation: taskGitIsolation }),
   };
 }
 
@@ -175,11 +166,17 @@ function createSeededTaskEntries(
   branchName: string,
 ): Array<{ agentId: string; task: PersistedTask; taskId: string }> {
   const taskNames = [scenario.taskName, ...(scenario.additionalTaskNames ?? [])];
+  const taskGitIsolation = scenario.taskGitIsolation ?? BROWSER_LAB_DEFAULT_TASK_GIT_ISOLATION;
 
   return taskNames.map((taskName, index) => {
     const suffix = index === 0 ? '' : `-${index + 1}`;
     const taskId = `task-browser-lab${suffix}`;
     const agentId = `agent-browser-lab${suffix}`;
+
+    const gitLocation = scenario.resolveTaskGitLocation?.(project.path, index) ?? {
+      branchName,
+      worktreePath: project.path,
+    };
 
     return {
       agentId,
@@ -190,8 +187,8 @@ function createSeededTaskEntries(
         agentId,
         taskName,
         scenario.agentDef,
-        branchName,
-        scenario.taskGitIsolation,
+        gitLocation,
+        taskGitIsolation,
       ),
     };
   });
@@ -201,6 +198,7 @@ function createLegacyState(
   project: Project,
   taskEntries: Array<{ task: PersistedTask; taskId: string }>,
   agentDef: AgentDef,
+  includeCustomAgent: boolean,
 ): PersistedState {
   const taskOrder = taskEntries.map((entry) => entry.taskId);
   const firstTaskId = taskOrder[0] ?? 'task-browser-lab';
@@ -222,7 +220,7 @@ function createLegacyState(
     hydraCommand: '',
     hydraForceDispatchFromPromptPanel: true,
     hydraStartupMode: 'auto',
-    customAgents: [agentDef],
+    customAgents: includeCustomAgent ? [agentDef] : [],
   };
 }
 
@@ -230,6 +228,7 @@ function createWorkspaceState(
   project: Project,
   taskEntries: Array<{ task: PersistedTask; taskId: string }>,
   agentDef: AgentDef,
+  includeCustomAgent: boolean,
 ): WorkspaceSharedState {
   const taskOrder = taskEntries.map((entry) => entry.taskId);
 
@@ -246,7 +245,7 @@ function createWorkspaceState(
     hydraCommand: '',
     hydraForceDispatchFromPromptPanel: true,
     hydraStartupMode: 'auto',
-    customAgents: [agentDef],
+    customAgents: includeCustomAgent ? [agentDef] : [],
   };
 }
 
@@ -287,6 +286,43 @@ async function ensureStandaloneServerImportsAreRunnable(): Promise<void> {
       ...unresolvedImportLines,
     ].join('\n'),
   );
+}
+
+function taskNotesProofIdentity(writerTrain: 'desktop' | 'remote', seed: number) {
+  const digest = (offset: number) => ((seed + offset) % 16).toString(16).repeat(64);
+  return {
+    artifactDigest: digest(1),
+    commandManifestDigest: digest(2),
+    dependencyEdgeDigest: digest(3),
+    fixtureSeedDigest: digest(4),
+    formatVersion: 1,
+    proofDigest: digest(5),
+    relevantTreeDigest: digest(6),
+    sourceManifestDigest: digest(7),
+    toolchainDigest: digest(8),
+    writerTrain,
+  };
+}
+
+async function writeTaskNotesTestLauncher(testDir: string): Promise<string> {
+  const launcherPath = path.join(testDir, 'task-notes-proof-launcher.mjs');
+  const desktop = taskNotesProofIdentity('desktop', 1);
+  const remote = taskNotesProofIdentity('remote', 2);
+  const source = [
+    `import { startConfiguredBrowserServer } from ${JSON.stringify(pathToFileURL(BROWSER_SERVER_ENTRY).href)};`,
+    `import { createTaskNotesWriterEntitlements } from ${JSON.stringify(pathToFileURL(TASK_NOTES_ENTITLEMENT_ENTRY).href)};`,
+    `const desktop = ${JSON.stringify(desktop)};`,
+    `const remote = ${JSON.stringify(remote)};`,
+    'await startConfiguredBrowserServer({',
+    '  taskNotesWriterEntitlements: createTaskNotesWriterEntitlements({',
+    '    desktop: { reportIdentity: desktop, promotionIdentity: desktop },',
+    '    remote: { reportIdentity: remote, promotionIdentity: remote },',
+    '  }),',
+    '});',
+    '',
+  ].join('\n');
+  await writeFile(launcherPath, source, 'utf8');
+  return launcherPath;
 }
 
 function delay(ms: number): Promise<void> {
@@ -404,8 +440,19 @@ export async function seedBrowserState(
   const agentIds = taskEntries.map((entry) => entry.agentId);
   const taskId = taskIds[0] ?? 'task-browser-lab';
   const agentId = agentIds[0] ?? 'agent-browser-lab';
-  const legacyState = createLegacyState(project, taskEntries, scenario.agentDef);
-  const workspaceState = createWorkspaceState(project, taskEntries, scenario.agentDef);
+  const includeCustomAgent = scenario.agentCatalogSource !== 'built-in';
+  const legacyState = createLegacyState(
+    project,
+    taskEntries,
+    scenario.agentDef,
+    includeCustomAgent,
+  );
+  const workspaceState = createWorkspaceState(
+    project,
+    taskEntries,
+    scenario.agentDef,
+    includeCustomAgent,
+  );
 
   await writeSeededStateFiles(stateDir, legacyState, workspaceState);
 
@@ -499,10 +546,16 @@ export async function startStandaloneBrowserServer(
     const seededState = await seedBrowserState(testDir, options.scenario);
     const authToken = `browser-lab-token-${randomUUID()}`;
     const skipBrowserBuildArtifactCheck = options.validateBrowserBuildArtifacts === false;
-    serverProcess = spawnStandaloneServerProcess(process.execPath, [BROWSER_SERVER_ENTRY], {
+    const serverLauncher = await writeTaskNotesTestLauncher(testDir);
+    serverProcess = spawnStandaloneServerProcess(process.execPath, [serverLauncher], {
       cwd: PROJECT_ROOT,
       env: {
         ...process.env,
+        ...(options.scenario.prependRepoBinToPath
+          ? {
+              PATH: `${path.join(seededState.repoDir, 'bin')}${path.delimiter}${process.env.PATH ?? ''}`,
+            }
+          : {}),
         AUTH_TOKEN: authToken,
         PARALLEL_CODE_USER_DATA_DIR: seededState.userDataPath,
         ...createTestShellEnv(seededState.userDataPath),

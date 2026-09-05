@@ -1,9 +1,11 @@
 import {
+  ErrorBoundary,
   Show,
   Suspense,
   createEffect,
   createSignal,
   createUniqueId,
+  onMount,
   onCleanup,
   type Accessor,
   type JSX,
@@ -11,6 +13,13 @@ import {
 } from 'solid-js';
 
 import { openMarkdownViewer } from '../../app/markdown-viewer';
+import { getPromptCanonicalAgentState, getPromptInputPolicy } from '../../app/prompt-input-policy';
+import {
+  DESKTOP_TASK_NOTES_CAPABILITY,
+  type TaskNotesCapability,
+} from '../../app/task-notes-capability';
+import { loadDesktopTaskNotesCapability } from '../../app/desktop-task-notes-capability';
+import type { mountDesktopTaskNotes } from '../../app/task-notes-runtime';
 import { sendPrompt } from '../../app/task-workflows';
 import { isTerminalTask } from '../../domain/task-mode';
 import { lazyNamed } from '../../lib/lazy-named';
@@ -22,28 +31,31 @@ import type { ChangedFile } from '../../ipc/types';
 import {
   getProject,
   getSelectedTaskAgentId,
-  isAgentAskingQuestion,
+  getLocalAgentQuestionGeneration,
+  isTaskCommandControlledByPeer,
   setReviewPanelOpen,
   setTaskFocusedPanel,
   showNotification,
   store,
-  updateTaskNotes,
 } from '../../store/store';
 import { isNonGitProject } from '../../store/project-mode';
 import type { Task } from '../../store/types';
 import { ChangedFilesList } from '../ChangedFilesList';
 import { Dialog } from '../Dialog';
 import { IconButton } from '../IconButton';
-import type { PanelChild } from '../ResizablePanel';
 import { ResizablePanel } from '../ResizablePanel';
 import { ScalablePanel } from '../ScalablePanel';
 
 const ReviewPanel = lazyNamed(() => import('../ReviewPanel'), 'ReviewPanel');
 const TaskPlanContent = lazyNamed(() => import('./TaskPlanContent'), 'TaskPlanContent');
+const TypedTaskNotesEditor = lazyNamed(
+  () => import('./TypedTaskNotesEditor'),
+  'TypedTaskNotesEditor',
+);
 
-type TaskNotesTab = 'notes' | 'plan';
+export type TaskNotesTab = 'notes' | 'plan';
 
-interface TaskNotesFilesSectionProps {
+export interface TaskNotesFilesSectionProps {
   isActive: Accessor<boolean>;
   isHydraTask: Accessor<boolean>;
   notesTab: Accessor<TaskNotesTab>;
@@ -53,6 +65,8 @@ interface TaskNotesFilesSectionProps {
   setPlanFocusRef: (element: HTMLDivElement | undefined) => void;
   setNotesTab: Setter<TaskNotesTab>;
   task: Accessor<Task>;
+  taskNotesCapability?: TaskNotesCapability;
+  mountTaskNotes?: typeof mountDesktopTaskNotes;
 }
 
 function getNotesTabButtonStyle(tab: TaskNotesTab, selectedTab: TaskNotesTab): JSX.CSSProperties {
@@ -68,15 +82,6 @@ function getNotesTabButtonStyle(tab: TaskNotesTab, selectedTab: TaskNotesTab): J
   };
 }
 
-export function createTaskNotesFilesSection(props: TaskNotesFilesSectionProps): PanelChild {
-  return {
-    id: 'notes-files',
-    initialSize: 150,
-    minSize: 60,
-    content: () => <TaskNotesFilesSection {...props} />,
-  };
-}
-
 export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.Element {
   const fullscreenTitleId = createUniqueId();
   const task = () => props.task();
@@ -85,6 +90,31 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
   const reviewOpen = () => store.reviewPanelOpen[task().id];
   const filesPanelTitle = () => (reviewOpen() ? 'Review' : 'Changed Files');
   const [sendingNotes, setSendingNotes] = createSignal(false);
+  const [typedNotesDraft, setTypedNotesDraft] = createSignal('');
+  const [advertisedTaskNotesCapability, setAdvertisedTaskNotesCapability] = createSignal(
+    DESKTOP_TASK_NOTES_CAPABILITY,
+  );
+  let typedNotesTaskId: string | undefined;
+  const taskNotesCapability = () => props.taskNotesCapability ?? advertisedTaskNotesCapability();
+
+  onMount(() => {
+    if (props.taskNotesCapability) return;
+    let active = true;
+    void loadDesktopTaskNotesCapability().then((capability) => {
+      if (active) setAdvertisedTaskNotesCapability(capability);
+    });
+    onCleanup(() => {
+      active = false;
+    });
+  });
+
+  createEffect(() => {
+    const taskId = task().id;
+    if (taskId !== typedNotesTaskId) {
+      typedNotesTaskId = taskId;
+      setTypedNotesDraft('');
+    }
+  });
 
   function isPlanVisible(): boolean {
     return props.notesTab() === 'plan' && store.showPlans && Boolean(task().planContent);
@@ -131,6 +161,38 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     props.setPlanFocusRef(undefined);
   });
 
+  function visibleNotes(): string {
+    return typedNotesDraft();
+  }
+
+  function notesTextarea(options: {
+    disabled?: boolean;
+    onInput?: JSX.EventHandler<HTMLTextAreaElement, InputEvent>;
+    placeholder?: string;
+    value: Accessor<string>;
+  }): JSX.Element {
+    return (
+      <textarea
+        aria-label="Task notes"
+        ref={props.setNotesRef}
+        value={options.value()}
+        disabled={options.disabled}
+        onInput={options.onInput}
+        placeholder={options.placeholder ?? 'Notes...'}
+        style={{
+          width: '100%',
+          flex: '1',
+          background: theme.taskPanelBg,
+          border: 'none',
+          padding: '6px 34px 30px 8px',
+          color: theme.fg,
+          resize: 'none',
+          ...typography.monoUi,
+        }}
+      />
+    );
+  }
+
   function closeFilesFullscreen(): void {
     setShowFilesFullscreen(false);
   }
@@ -161,9 +223,8 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
         agentId,
         relativePath: currentTask.planRelativePath,
         taskId: currentTask.id,
-        worktreePath: currentTask.worktreePath,
       });
-      if (opened) {
+      if (opened !== 'unavailable') {
         return;
       }
     }
@@ -194,15 +255,33 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     return reviewOpen() ? 'Show changed files' : 'Open review';
   }
 
-  const notesPromptText = (): string => task().notes.trim();
+  const notesPromptText = (): string => visibleNotes().trim();
   const canSendNotes = (): boolean => {
     const agentId = selectedAiAgentId();
-    return (
-      !sendingNotes() &&
-      notesPromptText().length > 0 &&
-      agentId !== undefined &&
-      !isAgentAskingQuestion(agentId)
-    );
+    if (agentId === undefined) {
+      return false;
+    }
+
+    const generation = store.agents[agentId]?.generation ?? 0;
+    const localQuestionGeneration = getLocalAgentQuestionGeneration(agentId, generation);
+    return getPromptInputPolicy({
+      canonicalAgentState: getPromptCanonicalAgentState(
+        store.agentSupervision[agentId]?.state,
+        store.agents[agentId]?.status,
+        {
+          canonicalGeneration: generation,
+          ...(store.agentSupervision[agentId]?.generation !== undefined
+            ? { supervisionGeneration: store.agentSupervision[agentId].generation }
+            : {}),
+        },
+      ),
+      canonicalGeneration: generation,
+      composing: false,
+      control: isTaskCommandControlledByPeer(task().id) ? 'peer' : 'local',
+      hasText: notesPromptText().length > 0,
+      ...(localQuestionGeneration !== undefined ? { localQuestionGeneration } : {}),
+      sendInFlight: sendingNotes(),
+    }).dispatchAllowed;
   };
 
   function getSendNotesButtonStyle(): JSX.CSSProperties {
@@ -239,7 +318,10 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
 
     setSendingNotes(true);
     try {
-      await sendPrompt(task().id, agentId, prompt);
+      const sent = await sendPrompt(task().id, agentId, prompt);
+      if (!sent) {
+        showNotification('Notes were not sent because another session controls this task');
+      }
     } catch (error) {
       logWarn('notes', 'Failed to send notes as prompt', { error });
       showNotification('Failed to send notes to agent');
@@ -356,23 +438,43 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                         position: 'relative',
                       }}
                     >
-                      <textarea
-                        ref={props.setNotesRef}
-                        value={task().notes}
-                        onInput={(event) => updateTaskNotes(task().id, event.currentTarget.value)}
-                        placeholder="Notes..."
-                        style={{
-                          width: '100%',
-                          flex: '1',
-                          background: theme.taskPanelBg,
-                          border: 'none',
-                          padding: '6px 34px 30px 8px',
-                          color: theme.fg,
-                          resize: 'none',
-                          outline: 'none',
-                          ...typography.monoUi,
-                        }}
-                      />
+                      <ErrorBoundary
+                        fallback={() => (
+                          <>
+                            {notesTextarea({ disabled: true, value: typedNotesDraft })}
+                            <div
+                              aria-live="polite"
+                              role="status"
+                              style={{
+                                position: 'absolute',
+                                left: '8px',
+                                bottom: '6px',
+                                color: theme.error,
+                                ...typography.monoMeta,
+                              }}
+                            >
+                              Notes are temporarily unavailable
+                            </div>
+                          </>
+                        )}
+                      >
+                        <Suspense
+                          fallback={notesTextarea({
+                            disabled: true,
+                            placeholder: 'Loading notes...',
+                            value: typedNotesDraft,
+                          })}
+                        >
+                          <TypedTaskNotesEditor
+                            capability={taskNotesCapability()}
+                            mountTaskNotes={props.mountTaskNotes}
+                            onDraftChange={setTypedNotesDraft}
+                            setNotesRef={props.setNotesRef}
+                            taskId={task().id}
+                            taskName={task().name}
+                          />
+                        </Suspense>
+                      </ErrorBoundary>
                       <Show when={!isTerminalTask(task())}>
                         <button
                           type="button"

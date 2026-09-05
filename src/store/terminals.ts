@@ -4,6 +4,10 @@ import { isTerminalCloseInProgress } from '../domain/task-closing';
 import { invoke } from '../lib/ipc';
 import { warn as logWarn } from '../lib/log';
 import { createRandomId } from '../lib/random-id';
+import {
+  completeCompatibilityTerminalCreation,
+  markCompatibilityTerminalCreationPending,
+} from '../runtime/compatibility-terminal-creation';
 import { setStore, store, updateWindowTitle } from './core';
 import { getTaskFocusedPanel, triggerFocus } from './focus';
 import { saveCurrentRuntimeState } from './persistence-save';
@@ -69,6 +73,7 @@ export function createTerminal(): void {
 
   const terminal: Terminal = { id, name, agentId };
 
+  markCompatibilityTerminalCreationPending(id, agentId);
   setStore('terminals', id, terminal);
   setStore('taskOrder', store.taskOrder.length, id);
   setStore('focusedPanel', id, 'terminal');
@@ -83,6 +88,8 @@ export function createTerminal(): void {
 export async function closeTerminal(terminalId: string): Promise<void> {
   const terminal = store.terminals[terminalId];
   if (!terminal || isTerminalCloseInProgress(terminal)) return;
+
+  completeCompatibilityTerminalCreation(terminalId, terminal.agentId);
 
   // Set closing status synchronously to prevent concurrent close calls
   setStore('terminals', terminalId, 'closingStatus', 'closing');
@@ -134,9 +141,9 @@ export function updateTerminalName(terminalId: string, name: string): void {
 export function syncTerminalCounter(): void {
   let max = 0;
   for (const id of store.taskOrder) {
-    const t = store.terminals[id];
-    if (!t) continue;
-    const match = t.name.match(/^Terminal (\d+)$/);
+    const terminal = store.terminals[id];
+    if (!terminal) continue;
+    const match = terminal.name.match(/^Terminal (\d+)$/u);
     if (match) max = Math.max(max, Number(match[1]));
   }
   terminalCounter = max;

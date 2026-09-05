@@ -17,7 +17,8 @@ import {
   cleanupTaskRuntimeWorkflow,
   createTaskWorkflow,
   deleteTaskWorkflow,
-  spawnTaskAgentWorkflow,
+  hasRegisteredSharedRootTask,
+  spawnOwnedTaskAgentWorkflow,
   stopTaskAgentWorkflowsForTask,
 } from '../ipc/task-workflows.js';
 import {
@@ -179,7 +180,8 @@ const COORDINATOR_ORPHAN_CLEANUP_RETRY_DELAY_MS = 1_000;
 
 interface CoordinatorToolGatewayContext {
   context: HandlerContext;
-  taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>;
+  taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> &
+    Partial<Pick<TaskNameRegistry, 'markTaskClosing'>>;
 }
 
 interface CoordinatorToolInvocation {
@@ -198,10 +200,10 @@ interface WorkflowSpawnedLane {
 
 let coordinatorSchedulerCleanup: (() => void) | null = null;
 let coordinatorSchedulerContext: HandlerContext | null = null;
-let coordinatorSchedulerTaskNames: Pick<
-  TaskNameRegistry,
-  'deleteTask' | 'registerCreatedTask'
-> | null = null;
+let coordinatorSchedulerTaskNames:
+  | (Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> &
+      Partial<Pick<TaskNameRegistry, 'markTaskClosing'>>)
+  | null = null;
 let promptDeliveryReferences = 0;
 let workflowExecutionPromise: Promise<void> | null = null;
 let workflowExecutionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1783,7 +1785,8 @@ function processCoordinatorWorkflowExecutionQueue(): Promise<void> {
 
 export function startCoordinatorPromptDeliveryRuntime(
   context: HandlerContext,
-  taskNames?: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
+  taskNames?: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'> &
+    Partial<Pick<TaskNameRegistry, 'markTaskClosing'>>,
 ): () => Promise<void> {
   if (promptDeliveryReferences === 0) {
     if (coordinatorProducerShutdownPromise) {
@@ -2565,23 +2568,39 @@ function prepareCoordinatorSubtaskAgentLaunch(
   };
   const runnerProfile = normalizeAgentRunnerProfileConfig(undefined);
   const spawnAgent = async (): Promise<void> => {
-    await spawnTaskAgentWorkflow(gateway.context, {
-      agentId: options.agentId,
-      args: launchArgs,
-      assertSpawnAdmitted: () => {
-        assertCoordinatorRunAdmitsSpawn(options.run.id);
+    const operationId = `coordinator-session:v1:${createHash('sha256')
+      .update(
+        JSON.stringify([
+          options.run.id,
+          options.taskId,
+          options.agentId,
+          credential.tokenId,
+          options.replaceExistingSession === true,
+        ]),
+        'utf8',
+      )
+      .digest('base64url')}`;
+    await spawnOwnedTaskAgentWorkflow(
+      gateway.context,
+      { operationId, purpose: 'coordinator-session' },
+      {
+        agentId: options.agentId,
+        args: launchArgs,
+        assertSpawnAdmitted: () => {
+          assertCoordinatorRunAdmitsSpawn(options.run.id);
+        },
+        command: options.agent.command,
+        cols: DEFAULT_TERMINAL_COLS,
+        cwd: options.worktreePath,
+        env,
+        isShell: false,
+        projectMode: options.run.projectMode,
+        ...(options.replaceExistingSession === true ? { replaceExistingSession: true } : {}),
+        rows: DEFAULT_TERMINAL_ROWS,
+        taskId: options.taskId,
+        ...(runnerProfile !== undefined ? { runnerProfile } : {}),
       },
-      command: options.agent.command,
-      cols: DEFAULT_TERMINAL_COLS,
-      cwd: options.worktreePath,
-      env,
-      isShell: false,
-      projectMode: options.run.projectMode,
-      ...(options.replaceExistingSession === true ? { replaceExistingSession: true } : {}),
-      rows: DEFAULT_TERMINAL_ROWS,
-      taskId: options.taskId,
-      ...(runnerProfile !== undefined ? { runnerProfile } : {}),
-    });
+    );
   };
 
   return { credential, spawnAgent, usesSeededStartup };
@@ -2593,6 +2612,10 @@ async function createHiddenSubtaskAfterDedupe(
   run: CoordinatorRunMetaSnapshot,
   dedupeKey: string,
 ): Promise<CoordinatorSubtaskSnapshot> {
+  // Hidden subtasks are a coordinator-owned compound runtime: this step creates only their
+  // transient worktree/task shell, while prepareCoordinatorSubtaskAgentLaunch owns the custom
+  // agent command and credential. Routing this through the top-level managed creation facade would
+  // launch a second catalog agent and falsely assign coordinatorMode to a non-top-level task.
   assertSupportedSeededInitialAssignment(payload.agent);
   const agentId = randomUUID();
   const projectMode = getTaskProjectMode(run.projectMode);
@@ -3704,6 +3727,8 @@ async function landCoordinatorSubtask(
       false,
       payload.summary,
       false,
+      undefined,
+      hasRegisteredSharedRootTask,
     );
     const cleanup = {
       ...merged,
@@ -3711,6 +3736,7 @@ async function landCoordinatorSubtask(
       status: 'cleanup' as const,
     };
     upsertCoordinatorLanding({ landing: cleanup, runId: run.id });
+    gateway.taskNames.markTaskClosing?.(subtask.taskId);
     const cleanupResult = await deleteTaskWorkflow({
       agentIds: [subtask.agentId],
       branchName: subtask.branchName,

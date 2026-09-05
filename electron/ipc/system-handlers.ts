@@ -21,7 +21,7 @@ import { execFileWithDeadline } from './bounded-process.js';
 import { getAgentDefsWithLastKnownAvailability } from './agents.js';
 import { BadRequestError } from './errors.js';
 import type { IpcHandlerMap } from './handlers.js';
-import type { HandlerContext } from './handler-context.js';
+import type { HandlerContext, WorkspaceMutationHost } from './handler-context.js';
 import {
   requireDialog,
   requireRemoteAccess,
@@ -52,12 +52,29 @@ import { createSavedStateDocument, type SavedStateDocument } from './saved-state
 import {
   loadAppStateDocumentForEnv,
   loadArenaDataForEnv,
+  loadElectronWorkspaceStateDocumentForEnv,
+  loadElectronWorkspaceStateForEnv,
   loadWorkspaceStateDocumentForEnv,
   loadWorkspaceStateForEnv,
   saveAppStateForEnv,
   saveArenaDataForEnv,
-  saveWorkspaceStateForEnv,
 } from './storage.js';
+import {
+  WorkspaceProtectedFieldConflictError,
+  WorkspaceRevisionConflictError,
+  createWorkspaceMutationService,
+  type WorkspaceMutationService,
+} from './workspace-state-mutations.js';
+import {
+  WORKSPACE_HOST_ENVELOPE_KEY,
+  cloneJsonObject,
+  splitElectronPersistedState,
+  type JsonObject,
+} from './workspace-state-storage.js';
+import { TaskStructureMutationService } from './task-structure-mutations.js';
+import type { TaskRemovalLifecycleEvent } from './task-removal-owner.js';
+import { WorkspaceTaskMergeLegacyWriterGate } from './task-merge-legacy-writer-gate.js';
+import { WorkspaceTaskRemovalLegacyWriterGate } from './task-removal-legacy-writer-gate.js';
 import {
   compareDirectoryNames,
   getErrorMessage,
@@ -71,9 +88,10 @@ import {
 import { discoverProjects, getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { execGit } from './git-exec.js';
-import { readMarkdownFileForWorktree } from './markdown-files.js';
+import { readMarkdownFile } from './markdown-files.js';
 import { inspectArenaCompetitor } from './arena-competitors.js';
-import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
+import { isPlanRelativePath, readPlan } from './plans.js';
+import type { PendingTaskContentRootAdmission } from './terminal-root-authority.js';
 import { getServerStateBootstrap } from './server-state-bootstrap.js';
 import { handleRendererLogPayload } from '../log.js';
 import {
@@ -108,13 +126,32 @@ type ReconnectSavedStateSnapshot = Pick<
 >;
 
 export interface SavedStateSyncOptions {
+  onTaskRemovalLifecycle?: (event: TaskRemovalLifecycleEvent) => void;
   syncProjectBaseBranchesFromJson: (state: SavedStateDocument) => void;
   syncTaskConvergenceFromJson: (state: SavedStateDocument) => void;
   syncTaskNamesFromJson: (state: SavedStateDocument) => void;
   syncTaskReviewSignalsFromJson: (state: SavedStateDocument) => void;
   syncTaskStepsFromJson: (state: SavedStateDocument) => void;
   syncTaskWorkflowWorktreesFromJson: (state: SavedStateDocument) => void;
+  syncTaskCatalogFromJson?: (state: SavedStateDocument) => void;
 }
+
+interface TaskContentReadAuthorityOptions {
+  beginTaskContentRootAdmission: (taskId: string) => PendingTaskContentRootAdmission | null;
+  beginTerminalContentRootAdmission: (request: {
+    agentId?: string;
+    taskId: string;
+  }) => PendingTaskContentRootAdmission | null;
+}
+
+type SystemIpcHandlerOptions = SavedStateSyncOptions &
+  TaskContentReadAuthorityOptions & {
+    getTaskMetadata?: (
+      taskId: string,
+      agentId: string,
+    ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
+    getTaskName: (taskId: string) => string;
+  };
 
 interface LoadedWorkspaceState {
   json: string | null;
@@ -222,7 +259,10 @@ function loadSavedWorkspaceState(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): LoadedWorkspaceState {
-  const savedWorkspace = loadWorkspaceStateDocumentForEnv(context);
+  const savedWorkspace =
+    context.workspaceStorageKind === 'electron'
+      ? loadElectronWorkspaceStateDocumentForEnv(context)
+      : loadWorkspaceStateDocumentForEnv(context);
   if (savedWorkspace) {
     syncSavedStateDocument(savedWorkspace.document, options);
     return {
@@ -249,13 +289,47 @@ function syncSavedStateDocument(state: SavedStateDocument, options: SavedStateSy
   options.syncTaskStepsFromJson(state);
   options.syncTaskWorkflowWorktreesFromJson(state);
   options.syncProjectBaseBranchesFromJson(state);
+  options.syncTaskCatalogFromJson?.(state);
+}
+
+function parseWorkspaceMutationJson(json: string): JsonObject {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new BadRequestError('Persisted state must be valid JSON');
+  }
+  if (!isRecord(parsed)) {
+    throw new BadRequestError('Persisted state must be a JSON object');
+  }
+  if (WORKSPACE_HOST_ENVELOPE_KEY in parsed) {
+    throw new BadRequestError('Persisted state contains a reserved host field');
+  }
+  try {
+    return cloneJsonObject(parsed as JsonObject);
+  } catch (error) {
+    throw new BadRequestError(error instanceof Error ? error.message : 'Invalid persisted state');
+  }
+}
+
+function rethrowWorkspaceMutationError(error: unknown): never {
+  if (
+    error instanceof WorkspaceRevisionConflictError ||
+    error instanceof WorkspaceProtectedFieldConflictError
+  ) {
+    throw new BadRequestError(error.message);
+  }
+  throw error;
 }
 
 function createBrowserReconnectSavedStateSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): ReconnectSavedStateSnapshot {
-  const savedWorkspace = loadWorkspaceStateDocumentForEnv(context);
+  const savedWorkspace =
+    context.workspaceStorageKind === 'electron'
+      ? loadElectronWorkspaceStateDocumentForEnv(context)
+      : loadWorkspaceStateDocumentForEnv(context);
   if (savedWorkspace) {
     syncSavedStateDocument(savedWorkspace.document, options);
     return {
@@ -311,7 +385,10 @@ function getAgentGenerationMap(agentIds: string[]): Record<string, number> {
 
 function getBrowserReconnectStatus(context: HandlerContext): BrowserReconnectStatus {
   const runningAgentIds = getActiveAgentIds();
-  const workspace = loadWorkspaceStateForEnv(context);
+  const workspace =
+    context.workspaceStorageKind === 'electron'
+      ? loadElectronWorkspaceStateForEnv(context)
+      : loadWorkspaceStateForEnv(context);
   return {
     agentGenerations: getAgentGenerationMap(runningAgentIds),
     runningAgentIds,
@@ -326,6 +403,7 @@ function getBrowserReconnectStatus(context: HandlerContext): BrowserReconnectSta
 // by task count and total bytes, per-file errors swallowed.
 function collectColdBootstrapPlanContents(
   projection: BrowserColdBootstrapProjection,
+  beginTaskContentRootAdmission: (taskId: string) => PendingTaskContentRootAdmission | null,
 ): BrowserColdBootstrapPlanContent[] {
   const planContents: BrowserColdBootstrapPlanContent[] = [];
   let totalBytes = 0;
@@ -336,7 +414,7 @@ function collectColdBootstrapPlanContents(
     }
 
     const task = projection.tasks[taskId];
-    if (!task?.worktreePath || !task.planRelativePath) {
+    if (!task?.planRelativePath) {
       continue;
     }
     if (!isPlanRelativePath(task.planRelativePath)) {
@@ -344,7 +422,7 @@ function collectColdBootstrapPlanContents(
     }
 
     try {
-      const plan = readPlanForWorktree(task.worktreePath, task.planRelativePath);
+      const plan = readPlan(() => beginTaskContentRootAdmission(taskId), task.planRelativePath);
       if (!plan) {
         continue;
       }
@@ -392,9 +470,10 @@ function collectColdBootstrapProjectPathsExist(
 // spawns and probing. Agent defs ship with last-known sticky availability.
 function createBrowserColdBootstrapSnapshot(
   context: HandlerContext,
-  options: SavedStateSyncOptions,
+  savedStateSyncOptions: SavedStateSyncOptions,
+  taskContentReadAuthority: TaskContentReadAuthorityOptions,
 ): BrowserColdBootstrapSnapshot {
-  const workspace = loadSavedWorkspaceState(context, options);
+  const workspace = loadSavedWorkspaceState(context, savedStateSyncOptions);
   const remoteAccess = requireRemoteAccess(context);
   const availableAgents = getAgentDefsWithLastKnownAvailability();
   const bootstrapContext = {
@@ -413,7 +492,10 @@ function createBrowserColdBootstrapSnapshot(
   });
 
   return {
-    planContents: collectColdBootstrapPlanContents(workspaceProjection),
+    planContents: collectColdBootstrapPlanContents(
+      workspaceProjection,
+      taskContentReadAuthority.beginTaskContentRootAdmission,
+    ),
     projectPathsExist: collectColdBootstrapProjectPathsExist(workspaceProjection),
     serverStateBootstrap: serverStateBootstrap.filter(
       (snapshot) => snapshot.category !== 'peer-presence',
@@ -635,17 +717,281 @@ function parseDiscoveredProjectsRequest(args: unknown): DiscoveredProjectsReques
   return { force: args.force };
 }
 
+const CONTEXT_OWNED_WORKSPACE_RUNTIME = Symbol('contextOwnedWorkspaceRuntime');
+
+const SAVED_STATE_SYNC_OPTION_KEYS = [
+  'onTaskRemovalLifecycle',
+  'syncProjectBaseBranchesFromJson',
+  'syncTaskCatalogFromJson',
+  'syncTaskConvergenceFromJson',
+  'syncTaskNamesFromJson',
+  'syncTaskReviewSignalsFromJson',
+  'syncTaskStepsFromJson',
+  'syncTaskWorkflowWorktreesFromJson',
+] as const satisfies readonly (keyof SavedStateSyncOptions)[];
+
+interface ContextOwnedWorkspaceRuntime {
+  host: WorkspaceMutationHost;
+  reconnectSnapshotCache: Map<string, CachedReconnectSnapshot>;
+  savedStateSyncOptions: SavedStateSyncOptions;
+  workspaceStorageKind: NonNullable<HandlerContext['workspaceStorageKind']>;
+}
+
+type HandlerContextWithWorkspaceRuntime = HandlerContext & {
+  [CONTEXT_OWNED_WORKSPACE_RUNTIME]?: ContextOwnedWorkspaceRuntime;
+};
+
+function snapshotSavedStateSyncOptions(options: SavedStateSyncOptions): SavedStateSyncOptions {
+  return {
+    ...(options.onTaskRemovalLifecycle
+      ? { onTaskRemovalLifecycle: options.onTaskRemovalLifecycle }
+      : {}),
+    syncProjectBaseBranchesFromJson: options.syncProjectBaseBranchesFromJson,
+    ...(options.syncTaskCatalogFromJson
+      ? { syncTaskCatalogFromJson: options.syncTaskCatalogFromJson }
+      : {}),
+    syncTaskConvergenceFromJson: options.syncTaskConvergenceFromJson,
+    syncTaskNamesFromJson: options.syncTaskNamesFromJson,
+    syncTaskReviewSignalsFromJson: options.syncTaskReviewSignalsFromJson,
+    syncTaskStepsFromJson: options.syncTaskStepsFromJson,
+    syncTaskWorkflowWorktreesFromJson: options.syncTaskWorkflowWorktreesFromJson,
+  };
+}
+
+function assertCompatibleWorkspaceRecomposition(
+  owned: SavedStateSyncOptions,
+  requested: SavedStateSyncOptions,
+): void {
+  const changedOption = SAVED_STATE_SYNC_OPTION_KEYS.find((key) => owned[key] !== requested[key]);
+  if (changedOption) {
+    throw new Error(
+      `System handler recomposition requires the same saved-state callback identity: ${changedOption}`,
+    );
+  }
+}
+
+function createContextOwnedWorkspaceMutationHost(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+  workspaceStorageKind: NonNullable<HandlerContext['workspaceStorageKind']>,
+  reconnectSnapshotCache: Map<string, CachedReconnectSnapshot>,
+): WorkspaceMutationHost {
+  let workspaceMutationService: WorkspaceMutationService | null = null;
+  let workspaceMutationServicePromise: Promise<WorkspaceMutationService> | null = null;
+  let taskMergeLegacyWriterGate: WorkspaceTaskMergeLegacyWriterGate | null = null;
+  let taskMergeLegacyWriterGatePromise: Promise<WorkspaceTaskMergeLegacyWriterGate> | null = null;
+  let taskRemovalLegacyWriterGate: WorkspaceTaskRemovalLegacyWriterGate | null = null;
+  let taskStructureService: TaskStructureMutationService | null = null;
+  let taskStructureServicePromise: Promise<TaskStructureMutationService> | null = null;
+  let stopTaskRemovalLifecycleSubscription: (() => void) | null = null;
+  let workspaceMutationCleanupPromise: Promise<void> | null = null;
+  let workspaceMutationServiceAdmissionClosed = false;
+  let workspaceMutationServiceClosed = false;
+
+  function assertWorkspaceMutationServiceAdmission(): void {
+    if (workspaceMutationServiceAdmissionClosed) {
+      throw new Error('Workspace mutation service is closing or closed');
+    }
+  }
+
+  function getRawWorkspaceMutationService(): Promise<WorkspaceMutationService> {
+    assertWorkspaceMutationServiceAdmission();
+    if (workspaceMutationService) return Promise.resolve(workspaceMutationService);
+    if (workspaceMutationServicePromise) return workspaceMutationServicePromise;
+
+    const attempt = createWorkspaceMutationService(context, workspaceStorageKind, {
+      emitWorkspaceStateChanged: (payload) => {
+        context.emitIpcEvent?.(IPC.WorkspaceStateChanged, payload);
+      },
+      invalidateSharedStateCaches: () => {
+        clearReconnectSnapshotCache(reconnectSnapshotCache, context.userDataPath);
+      },
+      prepareProjections: (proposed, changes) => {
+        if (!changes.sharedChanged) return {};
+        return {
+          sharedProjection: createSavedStateDocument(JSON.stringify(proposed.sharedState)),
+        };
+      },
+      publishSharedProjection: (prepared) => {
+        syncSavedStateDocument(prepared as SavedStateDocument, options);
+      },
+    }).then((service) => {
+      workspaceMutationService = service;
+      return service;
+    });
+    workspaceMutationServicePromise = attempt;
+    void attempt.catch(() => {
+      if (workspaceMutationServicePromise === attempt) workspaceMutationServicePromise = null;
+    });
+    return attempt;
+  }
+
+  function ensureTaskRemovalLifecycleSubscription(structure: TaskStructureMutationService): void {
+    if (!stopTaskRemovalLifecycleSubscription && options.onTaskRemovalLifecycle) {
+      stopTaskRemovalLifecycleSubscription = structure.subscribeTaskRemovalLifecycle(
+        options.onTaskRemovalLifecycle,
+      );
+    }
+  }
+
+  function getTaskStructureService(): Promise<TaskStructureMutationService> {
+    assertWorkspaceMutationServiceAdmission();
+    if (taskStructureServicePromise) return taskStructureServicePromise;
+
+    const attempt = taskStructureService
+      ? (async () => {
+          ensureTaskRemovalLifecycleSubscription(taskStructureService);
+          await taskStructureService.ensurePreManagedWriterCutover();
+          return taskStructureService;
+        })()
+      : getRawWorkspaceMutationService().then(async (workspace) => {
+          assertWorkspaceMutationServiceAdmission();
+          const structure = new TaskStructureMutationService(workspace, {
+            removalOwner: { serverInstanceId: getServerInstanceId() },
+          });
+          taskStructureService = structure;
+          ensureTaskRemovalLifecycleSubscription(structure);
+          await structure.ensurePreManagedWriterCutover();
+          return structure;
+        });
+    taskStructureServicePromise = attempt;
+    void attempt.catch(() => {
+      if (taskStructureServicePromise === attempt) taskStructureServicePromise = null;
+    });
+    return attempt;
+  }
+
+  function getTaskMergeLegacyWriterGate(): Promise<WorkspaceTaskMergeLegacyWriterGate> {
+    assertWorkspaceMutationServiceAdmission();
+    if (taskMergeLegacyWriterGate) return Promise.resolve(taskMergeLegacyWriterGate);
+    if (taskMergeLegacyWriterGatePromise) return taskMergeLegacyWriterGatePromise;
+
+    const attempt = getRawWorkspaceMutationService().then((workspace) => {
+      assertWorkspaceMutationServiceAdmission();
+      const gate = new WorkspaceTaskMergeLegacyWriterGate(
+        workspace.createPrivateMutationAuthority(),
+      );
+      taskMergeLegacyWriterGate = gate;
+      return gate;
+    });
+    taskMergeLegacyWriterGatePromise = attempt;
+    void attempt.catch(() => {
+      if (taskMergeLegacyWriterGatePromise === attempt) {
+        taskMergeLegacyWriterGatePromise = null;
+      }
+    });
+    return attempt;
+  }
+
+  function getTaskRemovalLegacyWriterGate(): Promise<WorkspaceTaskRemovalLegacyWriterGate> {
+    assertWorkspaceMutationServiceAdmission();
+    taskRemovalLegacyWriterGate ??= new WorkspaceTaskRemovalLegacyWriterGate();
+    return Promise.resolve(taskRemovalLegacyWriterGate);
+  }
+
+  async function getWorkspaceMutationService(): Promise<WorkspaceMutationService> {
+    assertWorkspaceMutationServiceAdmission();
+    await getTaskStructureService();
+    return getRawWorkspaceMutationService();
+  }
+
+  const host: WorkspaceMutationHost = {
+    getTaskMergeLegacyWriterGate,
+    getTaskRemovalLegacyWriterGate,
+    getTaskStructureService,
+    getWorkspaceService: getWorkspaceMutationService,
+  };
+
+  context.registerWorkspaceMutationCleanup?.(() => {
+    workspaceMutationServiceAdmissionClosed = true;
+    if (workspaceMutationServiceClosed) return Promise.resolve();
+    if (workspaceMutationCleanupPromise) return workspaceMutationCleanupPromise;
+
+    const cleanupPromise = (async () => {
+      const structureAttempt = taskStructureServicePromise;
+      await structureAttempt?.catch(() => undefined);
+
+      const stopLifecycleSubscription = stopTaskRemovalLifecycleSubscription;
+      if (stopLifecycleSubscription) {
+        stopLifecycleSubscription();
+        if (stopTaskRemovalLifecycleSubscription === stopLifecycleSubscription) {
+          stopTaskRemovalLifecycleSubscription = null;
+        }
+      }
+      const serviceAttempt = workspaceMutationServicePromise;
+      await serviceAttempt?.catch(() => undefined);
+      await workspaceMutationService?.close();
+      reconnectSnapshotCache.clear();
+      workspaceMutationServiceClosed = true;
+    })().catch((error: unknown) => {
+      if (workspaceMutationCleanupPromise === cleanupPromise) {
+        workspaceMutationCleanupPromise = null;
+      }
+      throw error;
+    });
+    workspaceMutationCleanupPromise = cleanupPromise;
+    return cleanupPromise;
+  });
+
+  return host;
+}
+
+function getOrCreateContextOwnedWorkspaceRuntime(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+  workspaceStorageKind: NonNullable<HandlerContext['workspaceStorageKind']>,
+): ContextOwnedWorkspaceRuntime {
+  const ownedContext = context as HandlerContextWithWorkspaceRuntime;
+  const existing = ownedContext[CONTEXT_OWNED_WORKSPACE_RUNTIME];
+  if (existing) {
+    if (context.workspaceMutations !== existing.host) {
+      throw new Error('The context-owned workspace mutation host cannot be replaced');
+    }
+    if (existing.workspaceStorageKind !== workspaceStorageKind) {
+      throw new Error('System handler recomposition cannot change the workspace storage kind');
+    }
+    assertCompatibleWorkspaceRecomposition(existing.savedStateSyncOptions, options);
+    return existing;
+  }
+  if (context.workspaceMutations) {
+    throw new Error('System handlers do not accept an externally supplied workspace mutation host');
+  }
+
+  const reconnectSnapshotCache = new Map<string, CachedReconnectSnapshot>();
+  const savedStateSyncOptions = snapshotSavedStateSyncOptions(options);
+  const host = createContextOwnedWorkspaceMutationHost(
+    context,
+    savedStateSyncOptions,
+    workspaceStorageKind,
+    reconnectSnapshotCache,
+  );
+  const runtime = {
+    host,
+    reconnectSnapshotCache,
+    savedStateSyncOptions,
+    workspaceStorageKind,
+  };
+  Object.defineProperty(ownedContext, CONTEXT_OWNED_WORKSPACE_RUNTIME, {
+    enumerable: false,
+    value: runtime,
+  });
+  context.workspaceMutations = host;
+  return runtime;
+}
+
 export function createSystemIpcHandlers(
   context: HandlerContext,
-  options: SavedStateSyncOptions & {
-    getTaskMetadata?: (
-      taskId: string,
-      agentId: string,
-    ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
-    getTaskName: (taskId: string) => string;
-  },
+  options: SystemIpcHandlerOptions,
 ): IpcHandlerMap {
-  const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
+  const workspaceStorageKind = context.workspaceStorageKind ?? 'standalone';
+  const workspaceRuntime = getOrCreateContextOwnedWorkspaceRuntime(
+    context,
+    options,
+    workspaceStorageKind,
+  );
+  const workspaceMutationHost = workspaceRuntime.host;
+  const reconnectSnapshotCacheByUserDataPath = workspaceRuntime.reconnectSnapshotCache;
+  const savedStateSyncOptions = workspaceRuntime.savedStateSyncOptions;
 
   return {
     [IPC.WindowFocus]: () => null,
@@ -656,27 +1002,73 @@ export function createSystemIpcHandlers(
     [IPC.PlanContent]: () => null,
     [IPC.ReadPlanContent]: defineIpcHandler<IPC.ReadPlanContent>(IPC.ReadPlanContent, (args) => {
       const request = args;
-      validatePath(request.worktreePath, 'worktreePath');
+      assertString(request.taskId, 'taskId');
+      if ('worktreePath' in request) {
+        throw new BadRequestError('worktreePath is not accepted');
+      }
       if (request.relativePath !== undefined) {
         validateRelativePath(request.relativePath, 'relativePath');
         if (!isPlanRelativePath(request.relativePath)) {
           throw new BadRequestError('relativePath must be inside a plan directory');
         }
       }
-      return readPlanForWorktree(request.worktreePath, request.relativePath);
+      return readPlan(
+        () => options.beginTaskContentRootAdmission(request.taskId),
+        request.relativePath,
+      );
     }),
-    [IPC.ReadMarkdownFile]: defineIpcHandler<IPC.ReadMarkdownFile>(IPC.ReadMarkdownFile, (args) => {
-      const request = args;
-      validatePath(request.worktreePath, 'worktreePath');
-      validateRelativePath(request.relativePath, 'relativePath');
-      return readMarkdownFileForWorktree(request.worktreePath, request.relativePath);
-    }),
+    [IPC.ReadMarkdownFile]: defineIpcHandler<IPC.ReadMarkdownFile>(
+      IPC.ReadMarkdownFile,
+      async (args) => {
+        const request = args;
+        assertString(request.taskId, 'taskId');
+        assertOptionalString(request.agentId, 'agentId');
+        if ('worktreePath' in request) {
+          throw new BadRequestError('worktreePath is not accepted');
+        }
+        validateRelativePath(request.relativePath, 'relativePath');
+        const admission = options.beginTerminalContentRootAdmission({
+          ...(request.agentId !== undefined ? { agentId: request.agentId } : {}),
+          taskId: request.taskId,
+        });
+        return admission ? readMarkdownFile(admission, request.relativePath) : null;
+      },
+    ),
 
-    [IPC.SaveAppState]: defineIpcHandler<IPC.SaveAppState>(IPC.SaveAppState, (args) => {
+    [IPC.SaveAppState]: defineIpcHandler<IPC.SaveAppState>(IPC.SaveAppState, async (args) => {
       const request = args;
       assertString(request.json, 'json');
       assertOptionalString(request.sourceId, 'sourceId');
-      syncSavedStateJson(request.json, options);
+
+      if (workspaceStorageKind === 'electron') {
+        const root = parseWorkspaceMutationJson(request.json);
+        const proposed = splitElectronPersistedState(root);
+        const expectedSharedRevision = isFiniteNumber(request.baseRevision)
+          ? Math.max(0, Math.floor(request.baseRevision))
+          : undefined;
+        try {
+          await (
+            await workspaceMutationHost.getWorkspaceService()
+          ).replaceElectronState(
+            {
+              ...(expectedSharedRevision !== undefined ? { expectedSharedRevision } : {}),
+              operation: 'save-app-state',
+              sourceId: request.sourceId ?? null,
+            },
+            proposed,
+            undefined,
+          );
+        } catch (error) {
+          rethrowWorkspaceMutationError(error);
+        }
+        context.emitIpcEvent?.(IPC.SaveAppState, {
+          sourceId: request.sourceId ?? null,
+          savedAt: Date.now(),
+        });
+        return undefined;
+      }
+
+      syncSavedStateJson(request.json, savedStateSyncOptions);
       clearReconnectSnapshotCache(reconnectSnapshotCacheByUserDataPath, context.userDataPath);
       saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
@@ -687,42 +1079,44 @@ export function createSystemIpcHandlers(
     }),
 
     [IPC.LoadAppState]: () => {
-      return loadSavedAppStateJson(context, options);
+      return loadSavedAppStateJson(context, savedStateSyncOptions);
     },
 
     [IPC.SaveWorkspaceState]: defineIpcHandler<IPC.SaveWorkspaceState>(
       IPC.SaveWorkspaceState,
-      (args) => {
+      async (args) => {
         const request = args;
         assertString(request.json, 'json');
         assertOptionalString(request.sourceId, 'sourceId');
-
-        const current = loadWorkspaceStateForEnv(context);
-        const currentRevision = current?.revision ?? 0;
+        const proposal = parseWorkspaceMutationJson(request.json);
         const requestedBaseRevision = isFiniteNumber(request.baseRevision)
           ? Math.max(0, Math.floor(request.baseRevision))
-          : currentRevision;
+          : undefined;
 
-        if (requestedBaseRevision !== currentRevision) {
-          throw new BadRequestError('Workspace state revision conflict');
+        try {
+          const result = await (
+            await workspaceMutationHost.getWorkspaceService()
+          ).replaceSharedState(
+            {
+              ...(requestedBaseRevision !== undefined
+                ? { expectedSharedRevision: requestedBaseRevision }
+                : {}),
+              operation: 'save-workspace-state',
+              sourceId: request.sourceId ?? null,
+            },
+            proposal,
+            undefined,
+          );
+          return { revision: result.revision };
+        } catch (error) {
+          rethrowWorkspaceMutationError(error);
         }
-
-        syncSavedStateJson(request.json, options);
-
-        const nextRevision = currentRevision + 1;
-        clearReconnectSnapshotCache(reconnectSnapshotCacheByUserDataPath, context.userDataPath);
-        saveWorkspaceStateForEnv(context, request.json, nextRevision);
-        context.emitIpcEvent?.(IPC.WorkspaceStateChanged, {
-          revision: nextRevision,
-          savedAt: Date.now(),
-          sourceId: request.sourceId ?? null,
-        });
-        return { revision: nextRevision };
       },
     ),
 
-    [IPC.LoadWorkspaceState]: () => {
-      return loadSavedWorkspaceState(context, options);
+    [IPC.LoadWorkspaceState]: async () => {
+      await workspaceMutationHost.getWorkspaceService();
+      return loadSavedWorkspaceState(context, savedStateSyncOptions);
     },
 
     [IPC.ReportClientTaskFocus]: defineIpcHandler<IPC.ReportClientTaskFocus>(
@@ -777,13 +1171,14 @@ export function createSystemIpcHandlers(
 
         return getBrowserReconnectSnapshot(
           context,
-          options,
+          savedStateSyncOptions,
           reconnectSnapshotCacheByUserDataPath,
           request.knownWorkspaceRevision,
         );
       },
     ),
-    [IPC.GetBrowserColdBootstrap]: () => createBrowserColdBootstrapSnapshot(context, options),
+    [IPC.GetBrowserColdBootstrap]: () =>
+      createBrowserColdBootstrapSnapshot(context, savedStateSyncOptions, options),
 
     [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {
       const request = args;

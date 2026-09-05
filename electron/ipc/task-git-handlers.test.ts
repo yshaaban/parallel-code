@@ -1,11 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import type { HandlerContext } from './handler-context.js';
+import type { WorkspaceTaskMergeLegacyWriterGate } from './task-merge-legacy-writer-gate.js';
+import type { WorkspaceTaskRemovalLegacyWriterGate } from './task-removal-legacy-writer-gate.js';
+import type {
+  TaskRemovalDispatchResult,
+  TaskStructureMutationService,
+} from './task-structure-mutations.js';
+import type { WorkspaceMutationService } from './workspace-state-mutations.js';
 
 const {
   cleanupTaskRuntimeWorkflowMock,
   cleanupCoordinatorTaskStateAndOwnedSubtasksMock,
   commitAllWorkflowMock,
+  createWorktreeMock,
   createTaskWorkflowMock,
   deleteTaskWorkflowMock,
   discardUncommittedWorkflowMock,
@@ -15,10 +23,12 @@ const {
   getBranchCommitHistoryMock,
   getFileDiffFromBranchMock,
   getGitRepoRootMock,
+  getWorktreeSymlinkCandidatesMock,
   listBranchesMock,
   listImportableWorktreesMock,
   mergeTaskMock,
   rebaseTaskWorkflowMock,
+  removeWorktreeMock,
   isTaskCommandLeaseHeldMock,
   streamPushTaskMock,
   stopTaskAgentWorkflowsForTaskMock,
@@ -26,6 +36,7 @@ const {
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
   cleanupCoordinatorTaskStateAndOwnedSubtasksMock: vi.fn(),
   commitAllWorkflowMock: vi.fn(),
+  createWorktreeMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
   deleteTaskWorkflowMock: vi.fn(),
   discardUncommittedWorkflowMock: vi.fn(),
@@ -37,10 +48,12 @@ const {
   getBranchCommitHistoryMock: vi.fn(),
   getFileDiffFromBranchMock: vi.fn(),
   getGitRepoRootMock: vi.fn(),
+  getWorktreeSymlinkCandidatesMock: vi.fn(),
   listBranchesMock: vi.fn(),
   listImportableWorktreesMock: vi.fn(),
   mergeTaskMock: vi.fn(),
   rebaseTaskWorkflowMock: vi.fn(),
+  removeWorktreeMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
   streamPushTaskMock: vi.fn(),
   stopTaskAgentWorkflowsForTaskMock: vi.fn(),
@@ -56,6 +69,7 @@ vi.mock('./task-workflows.js', () => ({
   createTaskWorkflow: createTaskWorkflowMock,
   deleteTaskWorkflow: deleteTaskWorkflowMock,
   findRegisteredTaskIdForWorktreePath: findRegisteredTaskIdForWorktreePathMock,
+  hasRegisteredSharedRootTask: vi.fn(() => false),
   stopTaskAgentWorkflowsForTask: stopTaskAgentWorkflowsForTaskMock,
 }));
 
@@ -83,17 +97,29 @@ vi.mock('./git.js', async () => {
   const actual = await vi.importActual<typeof import('./git.js')>('./git.js');
   return {
     ...actual,
+    createWorktree: createWorktreeMock,
     getBranchCommitHistory: getBranchCommitHistoryMock,
     getFileDiffFromBranch: getFileDiffFromBranchMock,
     getGitRepoRoot: getGitRepoRootMock,
     listBranches: listBranchesMock,
     listImportableWorktrees: listImportableWorktreesMock,
     mergeTask: mergeTaskMock,
+    removeWorktree: removeWorktreeMock,
     streamPushTask: streamPushTaskMock,
   };
 });
 
-import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
+vi.mock('./git-worktree-symlinks.js', async () => {
+  const actual = await vi.importActual<typeof import('./git-worktree-symlinks.js')>(
+    './git-worktree-symlinks.js',
+  );
+  return {
+    ...actual,
+    getWorktreeSymlinkCandidates: getWorktreeSymlinkCandidatesMock,
+  };
+});
+
+import { createTaskAndGitIpcHandlers, executeBackendTaskMergeGit } from './task-git-handlers.js';
 
 function createContext(): HandlerContext {
   return {
@@ -101,6 +127,53 @@ function createContext(): HandlerContext {
     sendToChannel: vi.fn(),
     userDataPath: '/tmp/parallel-code-task-git-handlers-test',
   };
+}
+
+function createWorkspaceMutationContext() {
+  const addTask = vi.fn().mockResolvedValue({
+    changed: true,
+    result: { task: {}, taskId: 'task-1' },
+    revision: 1,
+  });
+  const removeTask = vi.fn().mockResolvedValue({
+    changed: true,
+    result: { removed: true, taskId: 'task-1' },
+    revision: 2,
+  });
+  const removeTaskWithLegacyFallback = vi.fn(
+    async (
+      mutation: { operation: string },
+      taskId: string,
+      effect: () => Promise<unknown>,
+    ): Promise<TaskRemovalDispatchResult<unknown>> => ({
+      effectResult: await effect(),
+      kind: 'legacy-fallback',
+      removal: await removeTask(mutation, taskId),
+    }),
+  );
+  const taskStructure = {
+    addTask,
+    removeTask,
+    removeTaskWithLegacyFallback,
+  } as unknown as TaskStructureMutationService;
+  const runLegacyRemoval = vi.fn(async <TResult>(effect: () => Promise<TResult>) => effect());
+  const context: HandlerContext = {
+    ...createContext(),
+    workspaceMutations: {
+      getTaskMergeLegacyWriterGate: vi.fn(
+        async () =>
+          ({
+            runLegacyMerge: async <TResult>(effect: () => Promise<TResult>) => effect(),
+          }) as WorkspaceTaskMergeLegacyWriterGate,
+      ),
+      getTaskRemovalLegacyWriterGate: vi.fn(
+        async () => ({ runLegacyRemoval }) as unknown as WorkspaceTaskRemovalLegacyWriterGate,
+      ),
+      getTaskStructureService: vi.fn(async () => taskStructure),
+      getWorkspaceService: vi.fn(async () => ({}) as WorkspaceMutationService),
+    },
+  };
+  return { addTask, context, removeTask, removeTaskWithLegacyFallback, runLegacyRemoval };
 }
 
 describe('createTaskAndGitIpcHandlers', () => {
@@ -122,12 +195,52 @@ describe('createTaskAndGitIpcHandlers', () => {
       lines_removed: 0,
     });
     commitAllWorkflowMock.mockResolvedValue(undefined);
+    createWorktreeMock.mockResolvedValue({
+      branch: 'arena/test',
+      path: '/tmp/project/.worktrees/arena/test',
+    });
     discardUncommittedWorkflowMock.mockResolvedValue(undefined);
     destroyManagedTaskContainersByLabelsMock.mockResolvedValue(undefined);
     rebaseTaskWorkflowMock.mockResolvedValue(undefined);
+    removeWorktreeMock.mockResolvedValue(undefined);
     streamPushTaskMock.mockResolvedValue(undefined);
     stopTaskAgentWorkflowsForTaskMock.mockResolvedValue(undefined);
     findRegisteredTaskIdForWorktreePathMock.mockReturnValue(null);
+    getGitRepoRootMock.mockResolvedValue('/tmp/project');
+    getWorktreeSymlinkCandidatesMock.mockResolvedValue({
+      candidates: [],
+      truncated: false,
+    });
+  });
+
+  it('forces cleanup off in the backend operation adapter', async () => {
+    mergeTaskMock.mockResolvedValueOnce({
+      lines_added: 11,
+      lines_removed: 4,
+      main_branch: 'main',
+    });
+
+    await expect(
+      executeBackendTaskMergeGit({
+        branchName: 'task/auth',
+        cleanup: false,
+        message: 'Merge safely',
+        projectRoot: '/tmp/project',
+        squash: true,
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).resolves.toEqual({ linesAdded: 11, linesRemoved: 4 });
+    expect(mergeTaskMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      '/tmp/project/.worktrees/task-auth',
+      'task/auth',
+      true,
+      'Merge safely',
+      false,
+      undefined,
+      expect.any(Function),
+    );
   });
 
   it('registers created task metadata through the shared registry owner', async () => {
@@ -140,6 +253,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
     const taskRegistry = {
       deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
       registerCreatedTask: vi.fn(),
     };
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
@@ -185,6 +299,149 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
   });
 
+  it('awaits managed creation activation before any effect and never falls back afterward', async () => {
+    const { addTask, context } = createWorkspaceMutationContext();
+    let activate: ((command: { create: ReturnType<typeof vi.fn> }) => void) | undefined;
+    const activation = new Promise<{ create: ReturnType<typeof vi.fn> }>((resolve) => {
+      activate = resolve;
+    });
+    const create = vi.fn(async () => ({
+      agent_def_id: 'codex',
+      agent_def_name: 'Canonical Codex',
+      branch_name: 'task/managed',
+      creation_writer_epoch: 'managed-initial-shell-v1' as const,
+      git_isolation: 'worktree' as const,
+      id: 'task-managed',
+      project_mode: 'git' as const,
+      session_id: 'session-managed',
+      task_name: 'Canonical managed task',
+      worktree_path: '/tmp/project/.worktrees/task-managed',
+    }));
+    context.getTaskCreationCommand = vi.fn(() => activation as never);
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    const pending = handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      coordinatorMode: true,
+      initialPrompt: 'Coordinate this',
+      name: 'Managed task',
+      operationId: 'managed-operation-1',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      skipPermissions: true,
+      symlinkDirs: [],
+    });
+    await Promise.resolve();
+
+    expect(createTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+
+    activate?.({ create });
+    await expect(pending).resolves.toMatchObject({
+      id: 'task-managed',
+      session_id: 'session-managed',
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDefId: 'codex',
+        coordinatorMode: true,
+        initialPrompt: 'Coordinate this',
+        adapterOperationId: 'managed-operation-1',
+        skipPermissions: true,
+      }),
+    );
+    expect(createTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+    expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith(
+      'task-managed',
+      expect.objectContaining({
+        agentDefId: 'codex',
+        agentDefName: 'Canonical Codex',
+        taskName: 'Canonical managed task',
+      }),
+    );
+  });
+
+  it('fails closed when managed creation activation fails', async () => {
+    const context = createContext();
+    context.getTaskCreationCommand = vi.fn(async () => {
+      throw new Error('managed creation activation failed');
+    });
+    const handlers = createTaskAndGitIpcHandlers(context, {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateTask]?.({
+        name: 'No legacy fallback',
+        operationId: 'managed-operation-2',
+        projectId: 'project-1',
+        projectRoot: '/tmp/project',
+        symlinkDirs: [],
+      }),
+    ).rejects.toThrow('managed creation activation failed');
+    expect(createTaskWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it('commits a backend-constructed task before publishing created task metadata', async () => {
+    createTaskWorkflowMock.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/auth',
+      worktree_path: '/tmp/project/.worktrees/task-auth',
+      base_branch: 'main',
+      git_isolation: 'worktree',
+      project_mode: 'git',
+    });
+    const { addTask, context } = createWorkspaceMutationContext();
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    await handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchPrefix: 'task',
+      githubUrl: 'https://example.test/repo',
+      name: 'Auth Task',
+      operationId: 'create-task-1',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+      stepsTracking: true,
+    });
+
+    expect(addTask).toHaveBeenCalledWith(
+      { operation: 'create-task:create-task-1' },
+      {
+        baseBranch: 'main',
+        branchName: 'task/auth',
+        gitIsolation: 'worktree',
+        githubUrl: 'https://example.test/repo',
+        name: 'Auth Task',
+        projectId: 'project-1',
+        projectMode: 'git',
+        projectRoot: '/tmp/project',
+        stepsTracking: true,
+        taskId: 'task-1',
+        taskMode: 'agent',
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      },
+    );
+    expect(addTask.mock.invocationCallOrder[0]).toBeLessThan(
+      taskRegistry.registerCreatedTask.mock.invocationCallOrder[0] ?? Infinity,
+    );
+  });
+
   it.each(['', '   ', 'x'.repeat(129)])(
     'rejects malformed task operation id %j',
     async (operationId) => {
@@ -206,6 +463,166 @@ describe('createTaskAndGitIpcHandlers', () => {
       expect(createTaskWorkflowMock).not.toHaveBeenCalled();
     },
   );
+
+  it('routes Arena link hints through the canonical V1 owner exactly once', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateArenaWorktree]?.({
+        agentId: 'agent-arena',
+        branchName: 'arena/test',
+        projectRoot: '/tmp/project',
+        symlinkDirs: ['z', 'a', 'z'],
+        taskId: 'competitor-1',
+      }),
+    ).resolves.toEqual({
+      branch: 'arena/test',
+      launchToken: expect.any(String),
+      path: '/tmp/project/.worktrees/arena/test',
+    });
+
+    expect(createWorktreeMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      'arena/test',
+      expect.objectContaining({
+        encodedLength: 8,
+        format: 1,
+        names: ['a', 'z'],
+      }),
+      true,
+    );
+  });
+
+  it('returns typed worktree symlink discovery instead of the compatibility name list', async () => {
+    getWorktreeSymlinkCandidatesMock.mockResolvedValue({
+      candidates: [
+        {
+          isDefault: true,
+          name: 'node_modules',
+        },
+      ],
+      truncated: false,
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.GetGitignoredDirs]?.({ projectRoot: '/tmp/project' }),
+    ).resolves.toEqual({
+      candidates: [{ isDefault: true, name: 'node_modules' }],
+      truncated: false,
+    });
+    expect(getWorktreeSymlinkCandidatesMock).toHaveBeenCalledWith('/tmp/project');
+  });
+
+  it('uses the backend-canonical repository root for Arena creation and removal', async () => {
+    getGitRepoRootMock.mockResolvedValue('/real/project');
+    createWorktreeMock.mockResolvedValue({
+      branch: 'arena/canonical',
+      path: '/real/project/.worktrees/arena/canonical',
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateArenaWorktree]?.({
+        agentId: 'agent-arena',
+        branchName: 'arena/canonical',
+        projectRoot: '/alias/project',
+        taskId: 'competitor-1',
+      }),
+    ).resolves.toEqual({
+      branch: 'arena/canonical',
+      launchToken: expect.any(String),
+      path: '/real/project/.worktrees/arena/canonical',
+    });
+    await handlers[IPC.RemoveArenaWorktree]?.({
+      branchName: 'arena/canonical',
+      projectRoot: '/alias/project',
+    });
+
+    expect(getGitRepoRootMock).toHaveBeenNthCalledWith(1, '/alias/project');
+    expect(getGitRepoRootMock).toHaveBeenNthCalledWith(2, '/alias/project');
+    expect(createWorktreeMock).toHaveBeenCalledWith(
+      '/real/project',
+      'arena/canonical',
+      expect.anything(),
+      true,
+    );
+    expect(removeWorktreeMock).toHaveBeenCalledWith('/real/project', 'arena/canonical', true);
+  });
+
+  it('rejects Arena creation outside a backend-confirmed Git repository', async () => {
+    getGitRepoRootMock.mockResolvedValue(null);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateArenaWorktree]?.({
+        agentId: 'agent-arena',
+        branchName: 'arena/untrusted',
+        projectRoot: '/tmp/not-a-repository',
+        taskId: 'competitor-1',
+      }),
+    ).rejects.toThrow('projectRoot must identify a Git repository');
+
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([IPC.CreateArenaWorktree, IPC.RemoveArenaWorktree])(
+    'rejects non-Arena branches on %s',
+    async (channel) => {
+      const handlers = createTaskAndGitIpcHandlers(createContext(), {
+        deleteTask: vi.fn(),
+        registerCreatedTask: vi.fn(),
+      });
+      const request =
+        channel === IPC.CreateArenaWorktree
+          ? {
+              agentId: 'agent-arena',
+              branchName: 'task/not-arena',
+              projectRoot: '/tmp/project',
+              taskId: 'competitor-1',
+            }
+          : {
+              branchName: 'task/not-arena',
+              projectRoot: '/tmp/project',
+            };
+
+      await expect(handlers[channel]?.(request)).rejects.toThrow(
+        'branchName must be an arena branch',
+      );
+      expect(createWorktreeMock).not.toHaveBeenCalled();
+      expect(removeWorktreeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects oversized Arena link hints before worktree creation', async () => {
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.CreateArenaWorktree]?.({
+        agentId: 'agent-arena',
+        branchName: 'arena/oversized',
+        projectRoot: '/tmp/project',
+        symlinkDirs: Array(129).fill('cache'),
+        taskId: 'competitor-1',
+      }),
+    ).rejects.toThrow('symlinkDirs must contain at most 128 entries');
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+  });
 
   it('routes current-branch task creation through backend workflow metadata', async () => {
     createTaskWorkflowMock.mockResolvedValue({
@@ -452,6 +869,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     const context = createContext();
     const taskRegistry = {
       deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
       registerCreatedTask: vi.fn(),
     };
     const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
@@ -467,11 +885,92 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
 
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
+    expect(taskRegistry.markTaskClosing).toHaveBeenCalledWith('task-1');
+    expect(taskRegistry.markTaskClosing.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteTaskWorkflowMock.mock.invocationCallOrder[0] ?? Infinity,
+    );
     expect(executeCoordinatorProducerMock).toHaveBeenCalledWith(context, expect.any(Function));
     expect(cleanupCoordinatorTaskStateAndOwnedSubtasksMock).toHaveBeenCalledWith(
       { context: expect.anything(), taskNames: taskRegistry },
       'task-1',
     );
+  });
+
+  it('commits canonical task removal before deleting registry metadata', async () => {
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const { context, removeTask, runLegacyRemoval } = createWorkspaceMutationContext();
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    await handlers[IPC.DeleteTask]?.({
+      agentIds: [],
+      branchName: 'task/auth',
+      controllerId: 'client-1',
+      deleteBranch: true,
+      projectRoot: '/tmp/project',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/.worktrees/task-auth',
+    });
+
+    expect(removeTask).toHaveBeenCalledWith({ operation: 'delete-task:task-1' }, 'task-1');
+    expect(removeTask.mock.invocationCallOrder[0]).toBeLessThan(
+      taskRegistry.deleteTask.mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(runLegacyRemoval).toHaveBeenCalledTimes(1);
+    expect(runLegacyRemoval.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteTaskWorkflowMock.mock.invocationCallOrder[0] ?? Infinity,
+    );
+  });
+
+  it('routes managed-worktree deletion through the generic owner without legacy effects', async () => {
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const { context, removeTaskWithLegacyFallback, runLegacyRemoval } =
+      createWorkspaceMutationContext();
+    removeTaskWithLegacyFallback.mockResolvedValueOnce({
+      kind: 'generic-owner',
+      removal: {
+        changed: true,
+        result: {
+          deletionOperationId: 'deletion-operation-1',
+          removed: false,
+          removalState: 'cleanup-pending',
+          taskId: 'task-1',
+        },
+        revision: 3,
+      },
+    });
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+    await expect(
+      handlers[IPC.DeleteTask]?.({
+        agentIds: ['renderer-stale-agent'],
+        branchName: 'renderer/stale-branch',
+        controllerId: 'client-1',
+        deleteBranch: false,
+        projectRoot: '/renderer/stale-project',
+        taskId: 'task-1',
+        worktreePath: '/renderer/stale-worktree',
+      }),
+    ).resolves.toEqual({ cleanupWarnings: [], removalState: 'cleanup-pending' });
+
+    expect(removeTaskWithLegacyFallback).toHaveBeenCalledWith(
+      { operation: 'delete-task:task-1' },
+      'task-1',
+      expect.any(Function),
+    );
+    expect(runLegacyRemoval).not.toHaveBeenCalled();
+    expect(deleteTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(cleanupCoordinatorTaskStateAndOwnedSubtasksMock).not.toHaveBeenCalled();
+    expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
   });
 
   it('emits released task command ownership when deleting a controlled task', async () => {
@@ -492,6 +991,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     };
     const taskRegistry = {
       deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
       registerCreatedTask: vi.fn(),
     };
     const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
@@ -682,6 +1182,38 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(mergeTaskMock).not.toHaveBeenCalled();
   });
 
+  it('routes the legacy merge effect through the workspace cutover gate', async () => {
+    const { context } = createWorkspaceMutationContext();
+    const workspaceMutations = context.workspaceMutations;
+    if (!workspaceMutations) throw new Error('workspace mutation host fixture is missing');
+    const disabled = new Error('legacy merge disabled');
+    const runLegacyMerge = vi.fn(async () => {
+      throw disabled;
+    });
+    workspaceMutations.getTaskMergeLegacyWriterGate = vi.fn(
+      async () => ({ runLegacyMerge }) as unknown as WorkspaceTaskMergeLegacyWriterGate,
+    );
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const handlers = createTaskAndGitIpcHandlers(context, {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.MergeTask]?.({
+        branchName: 'task/auth',
+        controllerId: 'controller-1',
+        projectRoot: '/tmp/project',
+        squash: false,
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).rejects.toBe(disabled);
+
+    expect(runLegacyMerge).toHaveBeenCalledOnce();
+    expect(mergeTaskMock).not.toHaveBeenCalled();
+  });
+
   it('rejects task pushes without lease identity before pushing', async () => {
     const handlers = createTaskAndGitIpcHandlers(createContext(), {
       deleteTask: vi.fn(),
@@ -755,6 +1287,33 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(commitAllWorkflowMock).not.toHaveBeenCalled();
   });
 
+  it('uses the requested shared-root task membership and its exact command lease', async () => {
+    findRegisteredTaskIdForWorktreePathMock.mockImplementation((_path: string, taskId?: string) =>
+      taskId === 'root-2' ? 'root-2' : 'root-1',
+    );
+    isTaskCommandLeaseHeldMock.mockReturnValue(true);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+    await handlers[IPC.CommitAll]?.({
+      controllerId: 'client-2',
+      message: 'shared changes',
+      taskId: 'root-2',
+      worktreePath: '/repo',
+    });
+    expect(isTaskCommandLeaseHeldMock).toHaveBeenCalledWith('root-2', 'client-2');
+    await expect(
+      handlers[IPC.CommitAll]?.({
+        controllerId: 'client-2',
+        message: 'invalid',
+        taskId: 'unrelated-task',
+        worktreePath: '/repo',
+      }),
+    ).rejects.toThrow('taskId must match');
+    expect(commitAllWorkflowMock).toHaveBeenCalledOnce();
+  });
+
   it('rejects registered task worktree discards when the lease is held by another client', async () => {
     findRegisteredTaskIdForWorktreePathMock.mockReturnValue('task-1');
     isTaskCommandLeaseHeldMock.mockReturnValue(false);
@@ -798,6 +1357,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       'arena: merge Codex',
       true,
       undefined,
+      expect.any(Function),
     );
   });
 
@@ -849,6 +1409,7 @@ describe('createTaskAndGitIpcHandlers', () => {
     const context = createContext();
     const taskRegistry = {
       deleteTask: vi.fn(),
+      markTaskClosing: vi.fn(),
       registerCreatedTask: vi.fn(),
     };
     const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
@@ -873,7 +1434,63 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
     expect(stopTaskAgentWorkflowsForTaskMock).toHaveBeenCalledWith('task-1', ['agent-1']);
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
+    expect(taskRegistry.markTaskClosing).toHaveBeenCalledWith('task-1');
+    expect(taskRegistry.markTaskClosing.mock.invocationCallOrder[0]).toBeLessThan(
+      stopTaskAgentWorkflowsForTaskMock.mock.invocationCallOrder[0] ?? Infinity,
+    );
   });
+
+  it.each(['terminal', 'agent'] as const)(
+    'routes final root-backed %s cleanup through canonical generic-owner inputs',
+    async () => {
+      isTaskCommandLeaseHeldMock.mockReturnValue(true);
+      const { context, removeTaskWithLegacyFallback, runLegacyRemoval } =
+        createWorkspaceMutationContext();
+      removeTaskWithLegacyFallback.mockResolvedValueOnce({
+        kind: 'generic-owner',
+        removal: {
+          changed: true,
+          result: {
+            deletionOperationId: 'deletion-operation-1',
+            removed: true,
+            removalState: 'complete',
+            taskId: 'task-1',
+          },
+          revision: 3,
+        },
+      });
+      const taskRegistry = {
+        deleteTask: vi.fn(),
+        markTaskClosing: vi.fn(),
+        registerCreatedTask: vi.fn(),
+      };
+      const handlers = createTaskAndGitIpcHandlers(context, taskRegistry);
+
+      await expect(
+        handlers[IPC.CleanupTaskRuntime]?.({
+          agentIds: ['renderer-stale-agent'],
+          controllerId: 'client-1',
+          projectMode: 'non-git',
+          projectRoot: '/renderer/stale-project',
+          removeTaskState: true,
+          taskId: 'task-1',
+          worktreePath: '/renderer/stale-worktree',
+        }),
+      ).resolves.toEqual({ cleanupWarnings: [], removalState: 'complete' });
+
+      expect(removeTaskWithLegacyFallback).toHaveBeenCalledWith(
+        { operation: 'cleanup-task-runtime:task-1' },
+        'task-1',
+        expect.any(Function),
+      );
+      expect(runLegacyRemoval).not.toHaveBeenCalled();
+      expect(stopTaskAgentWorkflowsForTaskMock).not.toHaveBeenCalled();
+      expect(destroyManagedTaskContainersByLabelsMock).not.toHaveBeenCalled();
+      expect(cleanupTaskRuntimeWorkflowMock).not.toHaveBeenCalled();
+      expect(cleanupCoordinatorTaskStateAndOwnedSubtasksMock).not.toHaveBeenCalled();
+      expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns a warning after releasing final task state when runner cleanup fails', async () => {
     isTaskCommandLeaseHeldMock.mockReturnValue(true);
