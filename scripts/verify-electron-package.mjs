@@ -5,6 +5,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  getLockPackageName,
+  RENDERER_BUNDLED_DEPENDENCY_NAMES,
+} from './lib/dependency-exposure.mjs';
+
+export { RENDERER_BUNDLED_DEPENDENCY_NAMES } from './lib/dependency-exposure.mjs';
 
 const require = createRequire(import.meta.url);
 const asar = require('@electron/asar');
@@ -26,18 +32,6 @@ export const REQUIRED_ELECTRON_PACKAGE_FILES = [
   '/dist-remote/index.html',
 ];
 export const FORBIDDEN_ELECTRON_PACKAGE_FILES = ['/dist-electron/main.js'];
-export const RENDERER_BUNDLED_DEPENDENCY_NAMES = [
-  '@xterm/addon-fit',
-  '@xterm/addon-web-links',
-  '@xterm/addon-webgl',
-  '@xterm/xterm',
-  'marked',
-  'mermaid',
-  'monaco-editor',
-  'qrcode',
-  'shiki',
-  'solid-js',
-];
 export const DEVELOPMENT_ARTIFACT_FILE_KINDS = [
   'bench',
   'benchmark',
@@ -132,10 +126,6 @@ const FRESHNESS_TOLERANCE_MS = 1_000;
 const RENDERER_BUNDLED_DEPENDENCY_SEGMENTS = RENDERER_BUNDLED_DEPENDENCY_NAMES.map(
   (dependencyName) => `/node_modules/${dependencyName}/`,
 );
-
-function getLockPackageName(packagePath) {
-  return packagePath.split('node_modules/').at(-1);
-}
 
 function getRuntimePackageIdentity(runtimePackage) {
   return `${runtimePackage.name}@${runtimePackage.version}`;

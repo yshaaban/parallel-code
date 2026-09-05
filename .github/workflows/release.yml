@@ -16,12 +16,27 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '24.19.0'
           cache: npm
 
+      - name: Use lockfile npm
+        run: |
+          required_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [ "$(npm --version)" != "$required_npm" ]; then
+            npm install --global "npm@$required_npm"
+          fi
+          npm --version
+
       - run: npm ci
+      - run: npm run audit:dependencies
       - run: npm run check
       - run: npm test
+
+      - name: Install Playwright Chromium
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Active feature browser acceptance
+        run: npm run test:browser:active-features
 
   create-release:
     needs: preflight
@@ -46,8 +61,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '24.19.0'
           cache: npm
+
+      - name: Use lockfile npm
+        run: |
+          required_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [ "$(npm --version)" != "$required_npm" ]; then
+            npm install --global "npm@$required_npm"
+          fi
+          npm --version
 
       - run: npm ci
       - run: npm run build -- --publish never
@@ -69,8 +92,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '24.19.0'
           cache: npm
+
+      - name: Use lockfile npm
+        run: |
+          required_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [ "$(npm --version)" != "$required_npm" ]; then
+            npm install --global "npm@$required_npm"
+          fi
+          npm --version
 
       - name: Import code signing certificate
         env:

@@ -7,6 +7,29 @@ on:
     branches: [main]
 
 jobs:
+  minimum-node-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+
+      - name: Use lockfile npm
+        run: |
+          required_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [ "$(npm --version)" != "$required_npm" ]; then
+            npm install --global "npm@$required_npm"
+          fi
+          npm --version
+
+      - run: npm ci
+
+      - name: Build browser, remote, server, and Electron adapters
+        run: npm run prepare:browser-artifacts && npm run compile
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -14,8 +37,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '24.19.0'
           cache: npm
+
+      - name: Use lockfile npm
+        run: |
+          required_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [ "$(npm --version)" != "$required_npm" ]; then
+            npm install --global "npm@$required_npm"
+          fi
+          npm --version
 
       - name: PR description check
         if: github.event_name == 'pull_request'
@@ -25,6 +56,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Dependency exposure audit
+        run: npm run audit:dependencies
+
       - name: Validation guard tests
         run: npm run test:validation-guards
 
@@ -33,3 +67,9 @@ jobs:
 
       - name: Owner-local behavior tests
         run: npm test
+
+      - name: Install Playwright Chromium
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Active feature browser acceptance
+        run: npm run test:browser:active-features
