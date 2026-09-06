@@ -153,8 +153,8 @@ Navigate panels, create tasks, send prompts, merge branches, and push to remote 
 
    `docker compose up --build`
 
-   The compose stack publishes the same browser-mode default:
-   `http://127.0.0.1:43117?token=parallel-code-local-browser`
+   Open the authenticated URL printed in the container logs. The stack explicitly enables
+   network listening and generates a private token unless `AUTH_TOKEN` is configured.
 
 This installs the app dependencies into the image and keeps container-managed `node_modules`
 separate from your host checkout.
@@ -179,11 +179,10 @@ npm install
 npm run server        # builds everything, starts on port 43117
 ```
 
-Open the URL printed in the terminal. Fresh checkouts load the checked-in local defaults from `.env.example`, so local browser mode uses a stable port and token across server restarts:
-
-```text
-http://127.0.0.1:43117?token=parallel-code-local-browser
-```
+Open the authenticated URL printed in the terminal. Fresh checkouts use port 43117, listen only
+on `127.0.0.1`, and generate a private token at each restart. To keep a stable login, configure
+your own random `AUTH_TOKEN` in `.env`. The former public development token is rejected; remove
+it from an existing `.env` or replace it with a private token.
 
 Copy `.env.example` to `.env` only when you want to customize the local values:
 
@@ -191,7 +190,9 @@ Copy `.env.example` to `.env` only when you want to customize the local values:
 cp .env.example .env
 ```
 
-Change `AUTH_TOKEN` before exposing the server beyond local development.
+Set `PARALLEL_CODE_SERVER_HOST=0.0.0.0` only when deliberately enabling LAN or container access.
+Use a trusted network or HTTPS/auth gateway; do not expose a developer workstation to untrusted
+clients. Local-only listeners do not advertise WiFi or Tailscale URLs.
 
 The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
 Before exposing browser mode outside localhost, read [PRIVACY.md](PRIVACY.md). Authenticated
@@ -241,6 +242,14 @@ Useful operational commands:
 
 ### Troubleshooting & local setup notes
 
+- **Reopening older collapsed tasks.** If a saved task has already lost its original session IDs,
+  reopening stops with an explicit recovery message and leaves its files unchanged. Restore a
+  workspace backup containing the original IDs, or create a new task to continue. Current collapse
+  and reopen preserve session identity; a missing ID is not silently replaced with a new process.
+- **Merging while root tasks are open.** Close project-root tasks before automatically merging a
+  worktree task into their checkout, even when the target branch is already checked out. Failed
+  merges and rebases retain Git's recoverable state; inspect that checkout and resolve or abort
+  manually before retrying.
 - **macOS native dependencies.** A `postinstall` step (`scripts/postinstall-native-fixups.mjs`) runs automatically after `npm install`/`npm ci` to repair two macOS install issues: the `node-pty` `spawn-helper` execute bit (a missing `+x` causes every terminal to fail with `posix_spawnp failed`) and a half-extracted Electron binary. If you hit `posix_spawnp failed` or `Electron failed to install correctly`, re-run `node scripts/postinstall-native-fixups.mjs`. The Electron repair re-extracts from the local download cache; if the cache is absent, run `node node_modules/electron/install.js` with network access first.
 - **Tests build their own artifacts.** `npm run test:node` builds the full browser artifacts (frontend, remote, server) before running because some browser-free integration tests boot the standalone server and assert on `dist/`. You do not need to build anything by hand first.
 - **Docker test lanes are opt-in.** The `test:node:docker:*` lanes are skipped unless Docker is available; the default `npm test` / `npm run test:node` runs do not require Docker.

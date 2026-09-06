@@ -122,7 +122,8 @@ For ordinary task-prompt and question-state work:
   Shift+Enter unchanged, and blocks button/keyboard/programmatic dispatch; use real Chromium for
   focus because a component mock cannot prove browser focus stability
 - prove local question evidence ignores stale generations and revisions, resets on lifecycle
-  replacement, and shares prompt/question fixtures with backend supervision
+  replacement, survives duplicate same-generation running/spawn observations and same-PTY
+  pause/resume, and shares prompt/question fixtures with backend supervision
 - prove backend byte admission keeps ordinary non-question states eligible, makes initial delivery
   ready-only, and rejects task-closing, question, generation, version, control, and lease changes
   before bytes; separately prove a transition or throw after first-frame admission is ambiguous
@@ -671,6 +672,13 @@ For many-terminal performance work, move from specialized harnesses to browser p
   post-restore resize after the terminal is interactive before asserting resize diagnostics; resize
   attempts while the surface is still masked may be correctness pressure without producing render
   counters
+- match browser fixture lifetime to the asserted journey: `createPromptReadyScenario()` exits after
+  its startup frames. Reload or reconnect scenarios that require the seeded agent to remain ready,
+  including whole-page terminal anomaly checks, must use `createPersistentPromptReadyScenario()`
+  or another long-lived fixture. Keep finite fixtures for startup-only output proof; never restore
+  an exited managed agent automatically or weaken readiness assertions to compensate for fixture
+  exit. `tests/harness/prompt-ready-fixture.test.ts` exercises both scenario factories against real
+  processes.
 - when a browser-lab render test needs diagnostics or lifecycle capture, route it through the
   shared harness `openSession(...)` path instead of raw `browser.newContext()` so teardown and
   artifact capture stay unified
@@ -735,12 +743,18 @@ The current required state-machine set is:
      - create terminal task -> exactly one task-scoped shell and no AI runtime
      - active -> closing -> removed
      - active -> collapsed
-     - collapsed terminal task -> restored with a fresh primary shell and restarted task watchers
+     - collapsed agent/terminal task -> canonical session identity restored with an authorized next
+       generation and restarted task watchers, including repeated same-host cycles and restart
+     - failed collapse stop/permit persistence -> reopen retries suspension before admitting attach;
+       shutdown drains admitted transitions before journal disposal
+     - collapsed load/save -> exact canonical IDs retained; old erased-ID snapshots stay collapsed
+       with explicit recovery guidance instead of inventing session authority
      - cleanup failure -> retained task with visible error state
      - worktree missing during cleanup
      - lease-valid -> lease-lost during destructive action
-     - concurrent canonical project-root admission -> exactly one creator reaches checkout; failure
-       releases admission and lagging saved snapshots neither free live roots nor resurrect removals
+     - concurrent canonical project-root admission -> memberships coexist without checkout mutation;
+       merge is rejected before mutation while any membership remains, and lagging saved snapshots
+       neither free live roots nor resurrect removals
      - legacy saved worktree subdirectory -> canonical registry owner without collapsing a nested
        worktree root or mapping a missing worktree onto its ancestor checkout
      - response lost after task creation commit -> retry with the same operation id replays the
@@ -956,7 +970,9 @@ Those wrappers:
 
 Shared-root task acceptance includes `parallel-project-root-tasks.spec.ts`: real creation on a
 dirty custom branch with an obsolete project default, subtle shared-location cues, and continued
-terminal use after closing a sibling. Backend proof additionally covers canonical aliases,
+terminal use after closing a sibling. It also covers repeated agent/terminal collapse and reopen,
+active/collapsed reload, exact session identity, and continued sibling process state. Backend proof
+additionally covers canonical aliases,
 concurrent creation/merge ordering, exact task-command leases, retained watcher/snapshot ownership,
 and single-writer checkout-scoped integrations. Browser success alone does not prove those races.
 
@@ -1089,6 +1105,9 @@ Validate these failure patterns:
   writes or emits, or a private-only mutation advances the shared revision/event
 - a remote canonical replacement silently loses a pending local rename/reorder/project edit, or a
   generic JSON diff overwrites a same-field remote edit
+- a pagehide save commits after the next browser page's startup read: a rejected browser save must
+  refresh once, preserve pending edits through the canonical rebase, and use the new revision and
+  snapshot on the next save; an older refresh must not rewind newer live state
 
 Edge cases that are easy to miss:
 
@@ -1134,6 +1153,12 @@ Edge cases that are easy to miss:
   and exercise the canonical pre-journal migration once without turning later absence into another
   initial launch. Exact attach tests must also prove task/session/classification metadata is
   immutable on both success and mismatch
+- browser scratch-shell attachment must cross initial creation, cleared creation intent, and reload
+  of the same live process. Prove transport identity overrides forged body fields, authenticated
+  observers attach without spawning, resizing, or transferring control, task/session/generation
+  mismatches cannot bind, missing process/provenance cannot respawn from restore, and PTY exit retires
+  provenance. Shared task auxiliary shells must retain their canonical
+  membership semantics; client session-storage layout is not backend admission proof
 - managed initial-prompt delivery needs exact-generation queue/write proof, missed-event safety
   observation for runtime discovery/readiness/post-write evidence, manual ambiguity and
   draft-conflict coverage, exact lost-response draft replay before one coalesced trailing edit,

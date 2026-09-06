@@ -106,7 +106,8 @@ export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existin
 Task semantics:
 
 - `Task.branchName`
-  - the branch the task is actively operating on
+  - the managed/imported task branch, or the project-root checkout observed at creation;
+    a project-root value is historical context, not current checkout truth
 - `Task.baseBranch`
   - the branch used as the diff/merge/review base for this task
 - `Task.gitIsolation`
@@ -149,7 +150,9 @@ Behavior:
 
 - reuses the project root instead of creating a worktree
 - `task.worktreePath === project.path`
-- `task.branchName` is the checked-out branch the task will operate on
+- `task.branchName` records the checked-out branch at creation; another shared-root writer may
+  switch it later. Root badges and remote catalog labels must not present this snapshot as live
+  branch truth
 - `task.baseBranch` is still explicit and may differ from `task.branchName`
 - close only stops agents/shells and clears task runtime state; it does not delete worktrees or task branches
 - merge/delete-worktree assumptions must not run for this mode
@@ -204,7 +207,8 @@ custom branches, before consulting `init.defaultBranch`. A managed worktree must
 comparison base simply because its branch is checked out there. Explicit project/task defaults are
 never silently replaced when unavailable: managed creation reports the invalid selection.
 
-Branch labels resolve through the backend ref owner for creation, status, history, and rebase, so a
+Branch labels resolve through explicit local/remote branch namespaces in the backend ref owner
+for creation, status, history, and rebase, so a same-named tag cannot change branch intent and a
 remote-only custom default remains usable without first creating a local branch. Remote-qualified
 review bases preserve their remote identity. Committed review compares a local base with its
 configured tracking remote (not always `origin`), so stale local refs do not resurrect changes already
@@ -212,8 +216,15 @@ landed upstream. Merging requires a resolved local branch: remote refs, tags, ra
 revision expressions, and missing targets are rejected before mutation. The user must create/select
 a local tracking branch rather than unknowingly land changes on detached HEAD; symbolic aliases
 such as `HEAD` are resolved to their local branch name before checkout.
-A merge cannot switch the project checkout while project-root tasks use it; merging into the already
-checked-out branch remains available after the normal clean-tree check.
+A merge cannot mutate the project checkout while any project-root task is registered, including
+when its target is already checked out. Root admission and this guard share the repository lock;
+the user closes the shared-root tasks before merging. A clean-tree check alone cannot prevent
+their subsequent writes from entering a commit or being erased by recovery.
+
+Failed merge, squash-commit, and rebase operations preserve Git's native recoverable checkout and
+index state. The app never automatically resets, aborts, or switches back on failure. Error copy
+identifies the operation/branch and directs the user to inspect and resolve the retained state;
+this does not claim isolation from arbitrary external editors or Git hooks.
 
 ### Why task-level `baseBranch` is required
 

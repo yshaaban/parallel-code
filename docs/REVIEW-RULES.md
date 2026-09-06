@@ -640,7 +640,7 @@ project root, existing worktree, or non-git folder answers where that runtime wo
 axes independently:
 
 - persist and migrate explicit `taskMode`; never infer terminal mode from an empty `agentIds` array
-  because collapsed agent tasks also have no live agents
+  because collapsed agent tasks have no live agents and older snapshots may have erased their IDs
 - project task-creation form state into a discriminated launch request so agent-only prompt,
   permission, and coordinator fields cannot leak into terminal launches
 - keep root/existing-worktree admission and canonical filesystem identity backend-owned across
@@ -648,6 +648,26 @@ axes independently:
 - shared location is not shared task identity: root tasks may coexist, but leases and cleanup must
   select exact task membership. Branch-changing Git operations and root admission must share a
   repository lock; a read-then-check guard alone does not protect concurrent creation
+- cleanup identity hints must be checked against backend membership before effects; ignoring a
+  foreign live process while removing its supervision is still a cross-task cleanup bug
+- focus, idle, and unmount cleanup must release the same typing-session-owned hold idempotently.
+  A task-wide reference decrement can consume a concurrent command's hold; characterize overlapping
+  acquisition, focus loss, and unmount while asserting the command still succeeds exactly once
+- collapse is a canonical lifecycle transition, not renderer-owned replacement session creation.
+  Failed suspension must have a reachable retry before reopen, and host shutdown must drain admitted
+  visibility transitions before disposing session journals. A row can publish before the command's
+  cleanup finishes; preserve an opposite visibility intent behind that turn instead of dropping it
+- delayed command responses and cold-bootstrap projections must not replace a newer workspace
+  revision after command-lease release. Reject stale snapshots before runtime cleanup or rebasing
+  pending edits, at the shared projection owner rather than in individual command callers. Once
+  live canonical state exists, even an equal-revision cold reset can erase a newly acquired control
+  lease; use incremental reconciliation instead
+- a browser save rejected for revision conflict must refresh and rebase through the canonical
+  owner before autosave submits a new snapshot. A pagehide write can commit after the next page's
+  startup read; repeatedly retrying its old revision is not recovery
+- a successful clean-tree preflight does not own future file/index writes. Automatic merge into an
+  occupied project root is unsafe even without a branch switch. Failure recovery must not use
+  reset/abort/checkout to erase concurrent edits; characterize hooks and conflicts with real Git
 - show subtle but persistent terminal/root context on task surfaces, and derive close/removal copy
   from the same mode/location policy so it names the runtimes stopped and filesystem state kept or
   removed truthfully

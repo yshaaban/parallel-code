@@ -83,7 +83,7 @@ All three shells operate on the same underlying concepts:
 - a `Task` is the user-facing unit of work and has an explicit execution mode:
   `taskMode: 'agent'` owns one or more AI-agent runtimes, while `taskMode: 'terminal'` owns
   project-backed shell runtimes without an AI agent. Missing persisted modes migrate to `agent`;
-  an empty `agentIds` array is never used to infer the mode because collapsed agent tasks are empty
+  an empty `agentIds` array is never used to infer the mode, including older collapsed snapshots
 - an `Agent` is the long-lived PTY-backed AI worker attached to an agent-mode task
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
@@ -261,10 +261,26 @@ Two current ownership splits matter in review:
   typed `symlink_warnings`; `src/app/task-lifecycle-workflows.ts` keeps the successful task, logs
   bounded reason counts without filenames, and shows one user-facing summary
 - `src/domain/task-mode.ts` owns the canonical task-mode vocabulary and legacy default;
-  `src/app/task-lifecycle-workflows.ts` owns creation/collapse/restore mode variation;
+  `src/app/task-lifecycle-workflows.ts` translates creation/collapse/restore intent. Collapse and
+  reopen use `electron/ipc/task-collapse-workflow.ts` through leased `SetTaskCollapsed`, preserving
+  canonical session IDs and delegating durable clean-stop/restart proof to the existing agent and
+  shell session owners instead of constructing replacement renderer identities;
   `src/components/TaskPanel.tsx` branches section composition once so terminal tasks never mount AI
   terminal, prompt, permission, or coordinator surfaces. The first terminal-task shell explicitly
   owns task watcher restart after restore; ordinary secondary shells do not restart shared watchers
+- canonical publication can precede initial shell admission. Managed shell attachment joins only
+  the exact in-flight creation operation, outside the shell queue needed by that creator, then
+  revalidates canonical ownership. Persisted-only or ambiguous launch records do not authorize a
+  retry or replacement process
+- collapse persists a canonical visibility barrier, closes and drains task-scoped spawn admission,
+  and asks both session owners to stop and retain exact next-generation permits. Reopen retries any
+  retained suspension before making the task active. Hydration keeps canonical IDs while omitting
+  live agent projections for collapsed tasks. Old snapshots that already erased those IDs remain
+  collapsed with a visible recovery error; missing identity is never proof that a replacement
+  process is safe. Generic workspace saves cannot edit collapsed state or move a task across active
+  and collapsed lists. Host shutdown drains this owner before disposing session journals and
+  finishes retained exact clean-stop proof writes, including sessions already stopped by a failed
+  collapse. Verified successful removal retires those task-owned proofs; failed removal retains them
 - project-root admission is backend-owned in `electron/ipc/task-workflows.ts`. The backend resolves
   the Git top-level path, reserves its canonical filesystem identity across checkout and runtime
   registration, and keeps live registrations authoritative over lagging renderer snapshots. This
@@ -447,6 +463,9 @@ Browser startup now has an explicit split:
   renderer-local panel or project shape. The backend builds the
   typed workspace projection through `src/domain/browser-cold-bootstrap-projection-builder.ts`
   while the renderer applies it through `src/store/browser-cold-bootstrap-projection.ts`
+- if live canonical workspace publication wins the cold-bootstrap fetch, startup preserves its
+  controllers, focus, and pending edits. Equal/older cold projections do not reset live state; a
+  newer cold revision uses the existing bounded incremental full-state loader and reconciliation
 - on the successful backend-projection path, the cold-bootstrap fetch is the only awaited network
   round trip before the selected-task startup tier: app shortcuts register before any startup
   await (handlers no-op on an empty store), the fetch starts before window chrome and runs
@@ -565,7 +584,8 @@ affordance and never replaces backend Git validation or task-command lease autho
 One workflow split worth calling out explicitly now:
 
 - `src/app/task-command-lease-session.ts` owns the public task-command lease API and retained
-  session behavior
+  session behavior. Focus loss releases only the shared typing session's own hold; unmount and
+  idle cleanup are idempotent and cannot consume a concurrent command's retained hold
 - `src/app/task-command-lease-runtime.ts` is the public runtime facade for lease acquisition and
   release behavior
 - `src/app/task-command-lease-runtime-state.ts` owns local retained-lease maps and invalidator
@@ -1748,6 +1768,22 @@ Extra standalone terminal panels stored in `src/store/types.ts` and `src/store/t
 These are not task agents. They are UI panels backed by shell agents, but conceptually they are
 side terminals rather than the primary task execution lane.
 
+Browser scratch-panel layout lives in client session storage, not canonical workspace task state.
+Shared scoped-state reconciliation treats both canonical tasks and live local terminals as owners:
+workspace refreshes preserve scratch focus, layout, input, and retained control. Explicit terminal
+close and full application-state replacement retire that panel's scoped runtime state. Removal
+revokes all old local lease holders; delayed command cleanup releases only its captured hold and
+cannot consume a newly created same-ID lease.
+On an explicitly admitted standalone creation, the backend records the transport-normalized
+creating client on that live PTY as initial-admission provenance, not an exclusive read permission.
+Authenticated full-browser clients may reattach or observe the exact live task/session/generation
+after canonical removal checks and live channel binding; attach never resizes the PTY or transfers
+task-command control. This is existing-session authority, never a replacement-spawn permit. The
+provenance disappears with the process and is not restored after host restart. Missing provenance,
+missing processes, or mismatched identities cannot use browser layout alone to authorize attachment
+or a new process. Shared task auxiliary shells
+continue to use canonical task membership instead of this scratch-panel admission rule.
+
 ### Channels
 
 Browser mode uses channel IDs to route PTY output over websocket.
@@ -1931,6 +1967,12 @@ Flow:
 
 1. `server/main.ts` bootstraps `server/browser-server.ts`; boot is snapshot-first and
    demand-driven:
+   - `server/server-listener-policy.ts` validates the credential and bind address before acquiring
+     runtime owners. Ordinary startup defaults to `127.0.0.1`; explicit scoped HTTPS configuration
+     defaults to `0.0.0.0`, and `PARALLEL_CODE_SERVER_HOST` may select either address. Missing/empty
+     `AUTH_TOKEN` generates a fresh private token in the entrypoint; the retired public development
+     token is rejected even on localhost. The selected bind policy flows to server-info projection,
+     which advertises WiFi/Tailscale URLs only for a network-accessible listener
    - `startBrowserServer` activates the one production task-experience runtime before opening any
      HTTP or websocket surface. `BrowserServerController.whenReady()` resolves only after that
      owner is active and the listener is accepting requests; activation, transport composition,
