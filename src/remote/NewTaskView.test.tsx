@@ -174,10 +174,227 @@ function renderView(currentFacade = facade(), onCreated = vi.fn(), currentCatalo
   return { facade: currentFacade, onCreated, result };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function multiProjectCatalog(): TaskCatalogProjection {
+  return {
+    ...catalog(),
+    projects: new Map([
+      ['project-1', project()],
+      ['project-2', { ...project(), id: 'project-2', label: 'Second project' }],
+    ]),
+  };
+}
+
 describe('NewTaskView', () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+  });
+
+  it('clears all project-scoped choices and consent before the next project loads', async () => {
+    const currentFacade = facade();
+    const branches = deferred<TaskCreationPickerPage>();
+    const worktrees = deferred<TaskCreationPickerPage>();
+    const links =
+      deferred<Awaited<ReturnType<TaskCreationClientFacade['getWorktreeLinkCandidates']>>>();
+    vi.mocked(currentFacade.getPickerPage).mockImplementation((request) =>
+      request.projectId === 'project-1'
+        ? Promise.resolve(pickerPage(request.kind))
+        : request.kind === 'base-branch'
+          ? branches.promise
+          : worktrees.promise,
+    );
+    vi.mocked(currentFacade.getWorktreeLinkCandidates).mockImplementation((request) =>
+      request.projectId === 'project-1'
+        ? Promise.resolve({
+            kind: 'found',
+            candidates: [{ name: 'node_modules', isDefault: true }],
+            truncated: false,
+          })
+        : links.promise,
+    );
+    renderView(currentFacade, vi.fn(), multiProjectCatalog());
+    await screen.findByRole('option', { name: 'main' });
+    await fireEvent.change(screen.getByLabelText('Base branch (optional)'), {
+      target: { value: 'branch-main' },
+    });
+    await fireEvent.click(screen.getByLabelText('Reuse selected project dependencies'));
+    await fireEvent.change(screen.getByLabelText('Working location'), {
+      target: { value: 'existing-worktree' },
+    });
+    await fireEvent.change(screen.getByLabelText('Imported worktree'), {
+      target: { value: 'worktree-1' },
+    });
+
+    await fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project-2' } });
+    const branchSelect = screen.getByLabelText('Base branch (optional)') as HTMLSelectElement;
+    const worktreeSelect = screen.getByLabelText('Imported worktree') as HTMLSelectElement;
+    expect(branchSelect.disabled).toBe(true);
+    expect(branchSelect.value).toBe('');
+    expect(worktreeSelect.disabled).toBe(true);
+    expect(worktreeSelect.value).toBe('');
+    expect(screen.queryByRole('option', { name: 'main' })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Imported worktree —/ })).toBeNull();
+    expect(screen.getByText('Loading worktrees…')).toBeDefined();
+    await fireEvent.change(screen.getByLabelText('Working location'), {
+      target: { value: 'managed-worktree' },
+    });
+    expect(screen.queryByLabelText('Reuse selected project dependencies')).toBeNull();
+    expect(screen.queryByText(/Links: node_modules/)).toBeNull();
+
+    branches.resolve({
+      ...pickerPage('base-branch'),
+      items: [{ kind: 'base-branch', label: 'trunk', branchLabel: 'trunk', ref: 'branch-trunk' }],
+    });
+    worktrees.resolve({ ...pickerPage('existing-worktree'), items: [] });
+    links.resolve({
+      kind: 'found',
+      candidates: [{ name: '.env', isDefault: true }],
+      truncated: false,
+    });
+    await screen.findByRole('option', { name: 'trunk' });
+    expect(branchSelect.disabled).toBe(false);
+    expect(
+      (screen.getByLabelText('Reuse selected project dependencies') as HTMLInputElement).checked,
+    ).toBe(false);
+    expect(screen.queryByText(/Loading/)).toBeNull();
+    expect(screen.queryByText(/Links:/)).toBeNull();
+  });
+
+  it('retries failed choices independently and clears failure text when requests recover', async () => {
+    const currentFacade = facade();
+    vi.mocked(currentFacade.getPickerPage)
+      .mockRejectedValueOnce(new Error('Branches offline'))
+      .mockRejectedValueOnce(new Error('Worktrees offline'));
+    vi.mocked(currentFacade.getWorktreeLinkCandidates).mockResolvedValueOnce({
+      kind: 'unavailable',
+    });
+    renderView(currentFacade);
+    const retryBranches = await screen.findByRole('button', { name: 'Retry branches' });
+    const retryLinks = await screen.findByRole('button', { name: 'Retry reusable dependencies' });
+    await fireEvent.click(retryBranches);
+    await screen.findByRole('option', { name: 'main' });
+    expect(screen.queryByText(/Could not load branches/)).toBeNull();
+    expect(currentFacade.getPickerPage).toHaveBeenCalledTimes(3);
+    await fireEvent.click(retryLinks);
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Retry reusable dependencies' })).toBeNull(),
+    );
+    await fireEvent.change(screen.getByLabelText('Working location'), {
+      target: { value: 'existing-worktree' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry worktrees' }));
+    await screen.findByRole('option', { name: /Imported worktree —/ });
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(currentFacade.getPickerPage).toHaveBeenCalledTimes(4);
+  });
+
+  it('allows root creation without waiting for unrelated metadata', async () => {
+    const currentFacade = facade();
+    vi.mocked(currentFacade.getPickerPage).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(currentFacade.getWorktreeLinkCandidates).mockImplementation(
+      () => new Promise(() => {}),
+    );
+    vi.mocked(currentFacade.create).mockResolvedValue({
+      kind: 'snapshot',
+      outcome: 'accepted',
+      snapshot: createdNeedsAttentionSnapshot(),
+    });
+    renderView(currentFacade);
+    await fireEvent.change(screen.getByLabelText('Working location'), {
+      target: { value: 'project-root' },
+    });
+    await fireEvent.input(screen.getByLabelText('Task name'), {
+      target: { value: 'Root while offline' },
+    });
+    expect((screen.getByLabelText('Agent') as HTMLSelectElement).disabled).toBe(false);
+    expect(screen.queryByText(/Loading/)).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Ready to create' }));
+    await waitFor(() => expect(currentFacade.create).toHaveBeenCalledOnce());
+    expect(vi.mocked(currentFacade.create).mock.calls[0]?.[0]).toMatchObject({
+      location: { kind: 'project-root' },
+    });
+  });
+
+  it('ignores obsolete successes and errors after A → B → A, and aborts on teardown', async () => {
+    const currentFacade = facade();
+    const oldBranches = deferred<TaskCreationPickerPage>();
+    const oldWorktrees = deferred<TaskCreationPickerPage>();
+    const oldLinks =
+      deferred<Awaited<ReturnType<TaskCreationClientFacade['getWorktreeLinkCandidates']>>>();
+    vi.mocked(currentFacade.getPickerPage)
+      .mockImplementationOnce(() => oldBranches.promise)
+      .mockImplementationOnce(() => oldWorktrees.promise);
+    vi.mocked(currentFacade.getWorktreeLinkCandidates).mockImplementationOnce(
+      () => oldLinks.promise,
+    );
+    const current = renderView(currentFacade, vi.fn(), multiProjectCatalog());
+    await fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project-2' } });
+    await fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project-1' } });
+    await screen.findByRole('option', { name: 'main' });
+    await fireEvent.change(screen.getByLabelText('Base branch (optional)'), {
+      target: { value: 'branch-main' },
+    });
+
+    oldBranches.resolve({
+      ...pickerPage('base-branch'),
+      items: [
+        { kind: 'base-branch', label: 'obsolete', branchLabel: 'obsolete', ref: 'branch-obsolete' },
+      ],
+    });
+    oldWorktrees.reject(new Error('Obsolete failure'));
+    oldLinks.resolve({
+      kind: 'found',
+      candidates: [{ name: 'obsolete-secret', isDefault: true }],
+      truncated: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.queryByRole('option', { name: 'obsolete' })).toBeNull();
+    expect((screen.getByLabelText('Base branch (optional)') as HTMLSelectElement).value).toBe(
+      'branch-main',
+    );
+    expect(screen.queryByLabelText('Reuse selected project dependencies')).toBeNull();
+    await fireEvent.change(screen.getByLabelText('Working location'), {
+      target: { value: 'existing-worktree' },
+    });
+    expect(screen.getByRole('option', { name: /Imported worktree —/ })).toBeDefined();
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    const pickerCalls = vi.mocked(currentFacade.getPickerPage).mock.calls;
+    expect(pickerCalls).toHaveLength(6);
+    expect(pickerCalls.slice(0, 4).every((call) => call[1]?.aborted)).toBe(true);
+    expect(pickerCalls.slice(4).every((call) => call[1]?.aborted === false)).toBe(true);
+    current.result.unmount();
+    expect(pickerCalls.every((call) => call[1]?.aborted)).toBe(true);
+    expect(
+      vi
+        .mocked(currentFacade.getWorktreeLinkCandidates)
+        .mock.calls.every((call) => call[1]?.aborted),
+    ).toBe(true);
+  });
+
+  it('bounds cyclic picker pagination and exposes retry instead of spinning', async () => {
+    const currentFacade = facade();
+    vi.mocked(currentFacade.getPickerPage).mockImplementation(async (request) => ({
+      ...pickerPage(request.kind),
+      items: [],
+      nextCursor: 'repeated-cursor',
+    }));
+    renderView(currentFacade);
+    await screen.findByRole('button', { name: 'Retry branches' });
+    expect(currentFacade.getPickerPage).toHaveBeenCalledTimes(4);
+    expect((screen.getByLabelText('Base branch (optional)') as HTMLSelectElement).disabled).toBe(
+      true,
+    );
   });
 
   it('focuses and associates an exact UTF-8 validation error before ticket issue', async () => {

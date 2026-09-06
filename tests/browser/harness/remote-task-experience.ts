@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
+import type { RemoteProjectSummary } from '../../../src/domain/task-catalog.js';
 
 const CSRF = 'C'.repeat(43);
 const TOKEN = 'A'.repeat(43);
@@ -25,6 +26,7 @@ export interface RemoteTaskExperienceMock {
 }
 
 export interface RemoteTaskExperienceMockOptions {
+  projects?: RemoteProjectSummary[];
   creationScenario?: 'immediate' | 'pending-cancel' | 'response-loss';
   liveCreationEvents?: boolean;
   notesScenario?: 'always-saved' | 'save-conflict' | 'response-loss-replay';
@@ -517,7 +519,12 @@ export async function installRemoteTaskExperienceMock(
             kind: 'found',
             value: {
               catalogVersion: 1,
-              counts: { project: 1, session: 1, 'static-agent': 1, task: 1 },
+              counts: {
+                project: options.projects?.length ?? 1,
+                session: 1,
+                'static-agent': 1,
+                task: 1,
+              },
               mode: 'replace-paged',
               pageByteLimit: 49_152,
               pageItemLimit: 50,
@@ -534,7 +541,7 @@ export async function installRemoteTaskExperienceMock(
             : null;
         const items =
           kind === 'project'
-            ? [project()]
+            ? (options.projects ?? [project()])
             : kind === 'task'
               ? [task()]
               : kind === 'session'

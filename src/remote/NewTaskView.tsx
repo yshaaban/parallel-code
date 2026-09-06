@@ -19,7 +19,6 @@ import {
   type TaskCreationCapabilities,
   type TaskCreationClientFacade,
   type TaskCreationOperationLiveEventSource,
-  type TaskCreationPickerItem,
   type TaskCreationOperationSnapshot,
 } from '../domain/task-creation';
 import { TASK_INITIAL_PROMPT_DRAFT_MAX_UTF8_BYTES } from '../domain/task-initial-prompt-delivery';
@@ -39,6 +38,7 @@ import {
 import { remoteTaskCreationOperationLiveEvents } from './task-creation-live-events';
 import { remoteTaskCreationFacade } from './remote-task-creation-ipc';
 import type { TaskCatalogProjection } from './task-catalog-store';
+import { createNewTaskProjectChoices, type ProjectChoiceState } from './new-task-project-choices';
 import './task-experience.css';
 import './new-task-view.css';
 
@@ -96,6 +96,33 @@ function shouldShowNewSubmission(snapshot: TaskCreationOperationSnapshot): boole
   );
 }
 
+function ProjectChoiceStatus(props: {
+  label: string;
+  state: ProjectChoiceState<unknown>;
+  onRetry: () => void;
+}): JSX.Element {
+  return (
+    <Show
+      when={
+        props.state.status === 'loading' || props.state.status === 'error' || props.state.truncated
+      }
+    >
+      <div aria-live="polite" class="new-task-form__hint" role="status">
+        <Show when={props.state.status === 'loading'}>Loading {props.label}…</Show>
+        <Show when={props.state.status === 'error'}>
+          Could not load {props.label}.{' '}
+          <button class="task-experience__button" type="button" onClick={() => props.onRetry()}>
+            Retry {props.label}
+          </button>
+        </Show>
+        <Show when={props.state.status === 'ready' && props.state.truncated}>
+          Some {props.label} are not shown.
+        </Show>
+      </div>
+    </Show>
+  );
+}
+
 export function NewTaskView(props: NewTaskViewProps): JSX.Element {
   let agentSelect: HTMLSelectElement | undefined;
   let branchPrefixInput: HTMLInputElement | undefined;
@@ -106,7 +133,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
   let projectSelect: HTMLSelectElement | undefined;
   let promptInput: HTMLTextAreaElement | undefined;
   let taskModeGroup: HTMLFieldSetElement | undefined;
-  const pickerGenerations = { 'base-branch': 0, 'existing-worktree': 0 };
   let createdNotificationKey: string | null = null;
 
   const stored = loadRemoteNewTaskPreferences();
@@ -154,14 +180,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
   const [stepsTracking, setStepsTracking] = createSignal(initialStepsTracking);
   const [skipPermissions, setSkipPermissions] = createSignal(initialSkipPermissions);
   const [reuseDependencies, setReuseDependencies] = createSignal(initialReuseDependencies);
-  const [baseBranches, setBaseBranches] = createSignal<
-    Extract<TaskCreationPickerItem, { kind: 'base-branch' }>[]
-  >([]);
-  const [existingWorktrees, setExistingWorktrees] = createSignal<
-    Extract<TaskCreationPickerItem, { kind: 'existing-worktree' }>[]
-  >([]);
-  const [linkCandidates, setLinkCandidates] = createSignal<string[]>([]);
-  const [pickerNotice, setPickerNotice] = createSignal<string | null>(null);
   const [errors, setErrors] = createSignal<RemoteNewTaskFormErrors>({});
   const controller = new TaskCreationController({
     facade: initial.facade,
@@ -169,6 +187,19 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
   });
   const [controllerState, setControllerState] = createSignal(controller.getSnapshot());
   const currentProject = createMemo(() => props.catalog.projects.get(projectId()) ?? null);
+  const choicesProjectId = createMemo(() =>
+    currentProject()?.projectMode === 'git' ? projectId() : '',
+  );
+  const choices = createNewTaskProjectChoices({
+    facade: initial.facade,
+    projectId: choicesProjectId,
+    resetBaseBranch: () => setBaseBranchRef(''),
+    resetExistingWorktree: () => {
+      setExistingWorktreeRef('');
+      clearErrors('existingWorktree');
+    },
+    resetReuseDependencies: () => setReuseDependencies(false),
+  });
   const mutable = createMemo(() => isMutable(controllerState()));
   const dirty = createMemo(
     () =>
@@ -189,8 +220,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
 
   const unsubscribe = controller.subscribe(setControllerState);
   onCleanup(() => {
-    pickerGenerations['base-branch'] += 1;
-    pickerGenerations['existing-worktree'] += 1;
     unsubscribe();
     controller.dispose();
   });
@@ -237,14 +266,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    const selectedProjectId = projectId();
-    if (!selectedProjectId) return;
-    void loadPickerPages(selectedProjectId, 'base-branch');
-    void loadPickerPages(selectedProjectId, 'existing-worktree');
-    void loadLinkCandidates(selectedProjectId);
-  });
-
-  createEffect(() => {
     const snapshot = controllerState().operation.snapshot;
     if (
       !snapshot ||
@@ -259,70 +280,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
     createdNotificationKey = notificationKey;
     props.onCreated(snapshot.current.task.taskId, snapshot);
   });
-
-  async function loadPickerPages(
-    selectedProjectId: string,
-    kind: 'base-branch' | 'existing-worktree',
-  ): Promise<void> {
-    const generation = ++pickerGenerations[kind];
-    const items: TaskCreationPickerItem[] = [];
-    let cursor: string | undefined;
-    try {
-      do {
-        const page = await initial.facade.getPickerPage({
-          kind,
-          projectId: selectedProjectId,
-          ...(cursor === undefined ? {} : { cursor }),
-        });
-        if (generation !== pickerGenerations[kind] || projectId() !== selectedProjectId) return;
-        if (
-          page.kind !== kind ||
-          page.items.some((item) => item.kind !== kind) ||
-          items.length + page.items.length > 512
-        ) {
-          throw new Error('Invalid picker page');
-        }
-        items.push(...page.items);
-        cursor = page.nextCursor ?? undefined;
-        if (page.truncated && cursor === undefined) {
-          setPickerNotice(
-            'Some choices are hidden. Narrower search support requires the backend picker query.',
-          );
-        }
-      } while (cursor !== undefined);
-      if (generation !== pickerGenerations[kind]) return;
-      if (kind === 'base-branch') {
-        setBaseBranches(items as Extract<TaskCreationPickerItem, { kind: 'base-branch' }>[]);
-      } else {
-        setExistingWorktrees(
-          items as Extract<TaskCreationPickerItem, { kind: 'existing-worktree' }>[],
-        );
-      }
-    } catch {
-      if (generation !== pickerGenerations[kind]) return;
-      setPickerNotice('Some project choices are temporarily unavailable.');
-      if (kind === 'base-branch') setBaseBranches([]);
-      else setExistingWorktrees([]);
-    }
-  }
-
-  async function loadLinkCandidates(selectedProjectId: string): Promise<void> {
-    try {
-      const result = await initial.facade.getWorktreeLinkCandidates({
-        projectId: selectedProjectId,
-      });
-      if (projectId() !== selectedProjectId) return;
-      setLinkCandidates(
-        result.kind === 'found'
-          ? result.candidates
-              .filter((candidate) => candidate.isDefault)
-              .map((candidate) => candidate.name)
-          : [],
-      );
-    } catch {
-      if (projectId() === selectedProjectId) setLinkCandidates([]);
-    }
-  }
 
   function clearErrors(...fields: RemoteNewTaskFormField[]): void {
     setErrors((current) => {
@@ -409,7 +366,7 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
         selectedLocation === 'managed-worktree'
           ? {
               kind: 'managed-worktree',
-              requestedLinkNames: reuseDependencies() ? linkCandidates() : [],
+              requestedLinkNames: reuseDependencies() ? choices.links.state().items : [],
             }
           : selectedLocation === 'project-root'
             ? { kind: 'project-root' }
@@ -517,8 +474,6 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                   value={projectId()}
                   onChange={(event) => {
                     setProjectId(event.currentTarget.value);
-                    setBaseBranchRef('');
-                    setExistingWorktreeRef('');
                     clearErrors('project', 'location', 'existingWorktree');
                   }}
                 >
@@ -730,6 +685,7 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                     }
                     aria-invalid={Boolean(errors().existingWorktree)}
                     class="new-task-form__control"
+                    disabled={choices.worktrees.state().status !== 'ready'}
                     id="new-task-worktree"
                     ref={existingWorktreeSelect}
                     value={existingWorktreeRef()}
@@ -738,8 +694,13 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                       clearErrors('existingWorktree');
                     }}
                   >
-                    <option value="">Choose a worktree</option>
-                    <For each={existingWorktrees()}>
+                    <option value="">
+                      {choices.worktrees.state().status === 'ready' &&
+                      choices.worktrees.state().items.length === 0
+                        ? 'No imported worktrees available'
+                        : 'Choose a worktree'}
+                    </option>
+                    <For each={choices.worktrees.state().items}>
                       {(worktree) => (
                         <option value={worktree.ref}>
                           {worktree.label}
@@ -748,6 +709,11 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                       )}
                     </For>
                   </select>
+                  <ProjectChoiceStatus
+                    label="worktrees"
+                    state={choices.worktrees.state()}
+                    onRetry={choices.worktrees.retry}
+                  />
                   <span class="new-task-form__hint" id="new-task-worktree-hint">
                     Imported worktrees are externally owned. Parallel Code will not treat their
                     files as disposable.
@@ -762,21 +728,28 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                 </div>
               </Show>
 
-              <Show when={location() === 'managed-worktree' && linkCandidates().length > 0}>
-                <label class="new-task-form__choice">
-                  <input
-                    checked={reuseDependencies()}
-                    type="checkbox"
-                    onChange={(event) => setReuseDependencies(event.currentTarget.checked)}
-                  />
-                  Reuse selected project dependencies
-                </label>
-                <Show when={reuseDependencies()}>
-                  <p class="new-task-form__disclosure">
-                    Links: {linkCandidates().join(', ')}. Linked entries such as .env may contain
-                    secrets. Matching .git/info/exclude entries are append-only and remain after
-                    rollback.
-                  </p>
+              <Show when={location() === 'managed-worktree'}>
+                <ProjectChoiceStatus
+                  label="reusable dependencies"
+                  state={choices.links.state()}
+                  onRetry={choices.links.retry}
+                />
+                <Show when={choices.links.state().items.length > 0}>
+                  <label class="new-task-form__choice">
+                    <input
+                      checked={reuseDependencies()}
+                      type="checkbox"
+                      onChange={(event) => setReuseDependencies(event.currentTarget.checked)}
+                    />
+                    Reuse selected project dependencies
+                  </label>
+                  <Show when={reuseDependencies()}>
+                    <p class="new-task-form__disclosure">
+                      Links: {choices.links.state().items.join(', ')}. Linked entries such as .env
+                      may contain secrets. Matching .git/info/exclude entries are append-only and
+                      remain after rollback.
+                    </p>
+                  </Show>
                 </Show>
               </Show>
 
@@ -787,23 +760,22 @@ export function NewTaskView(props: NewTaskViewProps): JSX.Element {
                   </label>
                   <select
                     class="new-task-form__control"
+                    disabled={choices.branches.state().status !== 'ready'}
                     id="new-task-base-branch"
                     value={baseBranchRef()}
                     onChange={(event) => setBaseBranchRef(event.currentTarget.value)}
                   >
                     <option value="">Project default</option>
-                    <For each={baseBranches()}>
+                    <For each={choices.branches.state().items}>
                       {(branch) => <option value={branch.ref}>{branch.label}</option>}
                     </For>
                   </select>
+                  <ProjectChoiceStatus
+                    label="branches"
+                    state={choices.branches.state()}
+                    onRetry={choices.branches.retry}
+                  />
                 </div>
-              </Show>
-              <Show when={location() !== 'project-root' && pickerNotice()}>
-                {(notice) => (
-                  <p aria-live="polite" class="new-task-form__hint" role="status">
-                    {notice()}
-                  </p>
-                )}
               </Show>
             </fieldset>
 
