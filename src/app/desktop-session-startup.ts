@@ -237,7 +237,7 @@ function applyColdBootstrapPlanContents(
   }
 }
 
-async function restorePersistedPlanContent(): Promise<void> {
+async function restorePersistedPlanContent(isDisposed: () => boolean = () => false): Promise<void> {
   const taskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
   const restoreRequests = taskIds
     .map((taskId) => {
@@ -245,13 +245,22 @@ async function restorePersistedPlanContent(): Promise<void> {
       if (!task?.worktreePath || !task.planRelativePath) {
         return null;
       }
+      const { worktreePath, planRelativePath, planContent } = task;
 
       return invoke(IPC.ReadPlanContent, {
-        relativePath: task.planRelativePath,
+        relativePath: planRelativePath,
         taskId,
       })
         .then((result) => {
-          if (result) {
+          const currentTask = store.tasks[taskId];
+          if (
+            result &&
+            !isDisposed() &&
+            currentTask?.worktreePath === worktreePath &&
+            currentTask.planRelativePath === planRelativePath &&
+            currentTask.planContent === planContent &&
+            result.relativePath === planRelativePath
+          ) {
             setPlanContent(taskId, result.content, result.fileName, result.relativePath);
           }
         })
@@ -276,6 +285,7 @@ export async function runDesktopSessionStartup(
   },
   isDisposed: () => boolean,
 ): Promise<void> {
+  let refreshBrowserPlans = false;
   emitStartupBreadcrumb('desktop-startup:begin');
   // Presentation pending begins before any awaited startup work so skeleton
   // surfaces never race the first await; clearAppStartupStatus (completion,
@@ -408,6 +418,7 @@ export async function runDesktopSessionStartup(
     // so no ReadPlanContent or CheckPathsExist round trips sit on this path; the
     // delayed background validation below still runs reconciliation refreshes.
     applyColdBootstrapPlanContents(coldBootstrap?.planContents);
+    refreshBrowserPlans = coldBootstrap?.planContents === undefined;
     if (coldBootstrap?.projectPathsExist) {
       applyProjectPathExistence(coldBootstrap.projectPathsExist);
     }
@@ -486,6 +497,7 @@ export async function runDesktopSessionStartup(
     disposeCleanup,
   );
   emitStartupBreadcrumb('desktop-startup:after-plan-listener');
+  if (refreshBrowserPlans && !isDisposed()) void restorePersistedPlanContent(isDisposed);
 
   if (options.electronRuntime) {
     resources.cleanupBrowserRuntime = replaceDesktopSessionResource(

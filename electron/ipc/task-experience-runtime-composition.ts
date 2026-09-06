@@ -15,6 +15,7 @@ import {
   type TrustedCoordinatorTaskCreationWorkflow,
 } from './coordinator-task-creation-workflow.js';
 import { createProductionAgentSessionRuntime } from './agent-session-runtime.js';
+import { createTaskCollapseWorkflow, type TaskCollapseWorkflow } from './task-collapse-workflow.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { stopAllTaskAgentWorkflows } from './task-workflows.js';
 import type { HandlerContext } from './handler-context.js';
@@ -30,6 +31,7 @@ import {
 } from './task-creation-local-reconciliation.js';
 import { createProductionTaskCreationPreparationOwner } from './task-creation-preparation-owner.js';
 import { activateTaskCreationRuntime, type TaskCreationRuntime } from './task-creation-runtime.js';
+import type { ActiveTaskCreationWorkflow } from './task-creation-workflow.js';
 import type { TaskExperienceRemoteRuntime } from './task-experience-remote-registrations.js';
 import {
   createProductionTaskInitialPromptRuntime,
@@ -59,6 +61,7 @@ export interface ProductionTaskExperienceRuntime extends TaskExperienceRemoteRun
   localReconciliation: TaskCreationLocalReconciliationCommands;
   merge: ActiveTaskMergeBackend;
   shell: ProductionTaskShellSessionRuntime;
+  collapse: TaskCollapseWorkflow;
 }
 
 export interface CreateProductionTaskExperienceRuntimeDependencies {
@@ -394,11 +397,16 @@ export async function createProductionTaskExperienceRuntime(
     structure,
     writer,
   });
+  let creationWorkflow: ActiveTaskCreationWorkflow | undefined;
   const shell = createProductionTaskShellSessionRuntime({
     catalog: dependencies.catalog,
     context: dependencies.context,
     creationJournal,
     privateAuthority,
+    waitForInFlightInitialLaunch: async (request) => {
+      if (!creationWorkflow) throw new Error('Task creation runtime is not active');
+      await creationWorkflow.waitForInFlightInitialLaunch(request);
+    },
     removalGate: structure.createTaskRemovalParticipantGate(
       'task-runtime',
       TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION,
@@ -531,6 +539,7 @@ export async function createProductionTaskExperienceRuntime(
       shellJournal: shell.journal,
       structure,
     });
+    creationWorkflow = creationRuntime.workflow;
     coordinatorCreation.bindCreationWorkflow(creationRuntime.workflow);
     const localReconciliation = createTaskCreationLocalReconciliationCommands({
       audit: (event) => {
@@ -583,6 +592,12 @@ export async function createProductionTaskExperienceRuntime(
         : {}),
     });
     agentSession.activateAutomaticRecovery();
+    const collapse = createTaskCollapseWorkflow({
+      agentSession,
+      shell,
+      privateAuthority,
+      structure,
+    });
     let closePromise: Promise<void> | null = null;
     return {
       agentSession,
@@ -592,21 +607,24 @@ export async function createProductionTaskExperienceRuntime(
       ),
       async close() {
         if (!closePromise) {
-          const attempt = coordinateTaskExperienceCleanShutdown({
-            agentSession: {
-              closeWithoutRestartPermit: () => agentSession.journal.close(),
-              completeCleanShutdown: () => agentSession.completeCleanShutdown(),
-              prepareCleanShutdown: () => agentSession.prepareCleanShutdown(),
-            },
-            closeOwners: takeTaskExperienceBaseCloseOwners(creationRuntime.journal),
-            shell: {
-              abortCleanRestartDrain: () => shell.abortCleanRestartDrain(),
-              beginCleanRestartDrain: () => shell.beginCleanRestartDrain(),
-              close: () => shell.close(),
-              persistCleanRestartPermit: (candidate) => shell.persistCleanRestartPermit(candidate),
-            },
-            stopAgentRunners: () => stopAllTaskAgentWorkflows({ keepAdmissionClosed: true }),
-          });
+          const attempt = collapse.drain().then(() =>
+            coordinateTaskExperienceCleanShutdown({
+              agentSession: {
+                closeWithoutRestartPermit: () => agentSession.journal.close(),
+                completeCleanShutdown: () => agentSession.completeCleanShutdown(),
+                prepareCleanShutdown: () => agentSession.prepareCleanShutdown(),
+              },
+              closeOwners: takeTaskExperienceBaseCloseOwners(creationRuntime.journal),
+              shell: {
+                abortCleanRestartDrain: () => shell.abortCleanRestartDrain(),
+                beginCleanRestartDrain: () => shell.beginCleanRestartDrain(),
+                close: () => shell.close(),
+                persistCleanRestartPermit: (candidate) =>
+                  shell.persistCleanRestartPermit(candidate),
+              },
+              stopAgentRunners: () => stopAllTaskAgentWorkflows({ keepAdmissionClosed: true }),
+            }),
+          );
           closePromise = attempt;
           void attempt.catch(() => {
             if (closePromise === attempt) closePromise = null;
@@ -623,6 +641,7 @@ export async function createProductionTaskExperienceRuntime(
       merge,
       notes,
       shell,
+      collapse,
     };
   } catch (activationError) {
     return rethrowTaskExperienceActivationFailure(activationError, () =>

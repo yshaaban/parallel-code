@@ -9,6 +9,7 @@ import {
 import { createProductionAgentSessionRuntime } from './agent-session-runtime.js';
 import { createAgentSessionWriterRuntime } from './agent-session-writer-authority.js';
 import type { HandlerContext } from './handler-context.js';
+import { createTaskCollapseWorkflow } from './task-collapse-workflow.js';
 import type { TaskStructureMutationService } from './task-structure-mutations.js';
 import type { WorkspacePrivateMutationAuthority } from './workspace-state-mutations.js';
 import type { JsonObject } from './workspace-state-storage.js';
@@ -69,6 +70,8 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
     worktreePath: '/tmp/task-1',
   };
   const sharedState: JsonObject = {
+    collapsedTaskOrder: [],
+    taskOrder: [TASK_ID],
     projects: [{ id: 'project-1' }],
     tasks: { [TASK_ID]: task },
   };
@@ -82,6 +85,8 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
         sharedState,
         storageGeneration: '1',
       });
+      if (decision.kind === 'changed' && decision.nextSharedState)
+        Object.assign(sharedState, decision.nextSharedState);
       return { changed: decision.kind === 'changed', result: decision.result, revision: 7 };
     },
   } satisfies WorkspacePrivateMutationAuthority;
@@ -98,7 +103,7 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
       hookSetVersion: AGENT_SESSION_OWNER_HOOK_SET_VERSION,
       kind: 'active' as const,
     }),
-    verifyCommittedRemoval: async () => true,
+    verifyCommittedRemoval: vi.fn(async () => true),
   };
   const structure = {
     createTaskRemovalParticipantGate: () => gate,
@@ -131,6 +136,10 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
     lastGeneration = permit.targetGeneration;
     return { channelAttached: false, kind: 'created-session' as const };
   });
+  const stopAgent = vi.fn(async () => {
+    events.push('stop');
+    metadata = null;
+  });
   const runtime = createProductionAgentSessionRuntime({
     adapters: {
       getActiveAgentIds: () => (metadata ? [AGENT_ID] : []),
@@ -141,10 +150,7 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
       hasAgentSession: () => metadata !== null,
       onPtyEvent: () => () => {},
       spawnAllocated,
-      stopAgent: async () => {
-        events.push('stop');
-        metadata = null;
-      },
+      stopAgent,
       stopTask: async () => {},
     },
     context: {
@@ -169,14 +175,211 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
       metadata = null;
       lastGeneration = null;
     },
+    changeProcessGeneration(generation: number) {
+      if (metadata) metadata.generation = generation;
+      lastGeneration = generation;
+    },
     events,
     journal,
+    privateAuthority,
     runtime,
+    sharedState,
     spawnAllocated,
+    stopAgent,
+    structure,
+    verifyCommittedRemoval: gate.verifyCommittedRemoval,
   };
 }
 
 describe('managed agent clean restart', () => {
+  it('retires retained and prepared shutdown proofs only after verified task removal completes', async () => {
+    const harness = createHarness({ initialGeneration: 2 });
+    await harness.runtime.startup();
+    vi.mocked(harness.journal.saveIdentityMarkers).mockRejectedValueOnce(
+      new Error('disk unavailable'),
+    );
+    await expect(harness.runtime.suspendTaskSessions(TASK_ID)).rejects.toThrow('disk unavailable');
+    await harness.runtime.prepareCleanShutdown();
+    harness.sharedState.tasks = {};
+    harness.sharedState.taskOrder = [];
+    await expect(
+      harness.runtime.workflow.removalHooks.finalizeRemovedTaskAgentSessionState({
+        deletionOperationId: 'delete-1',
+        taskId: TASK_ID,
+      }),
+    ).resolves.toMatchObject({ kind: 'already-complete' });
+    await expect(harness.runtime.close()).resolves.toBeUndefined();
+    expect(harness.journal.getIdentityMarker(TASK_ID, AGENT_ID)).toBeNull();
+    expect(harness.journal.saveIdentityMarkers).toHaveBeenLastCalledWith([]);
+  });
+
+  it.each(['witness', 'journal'])(
+    'retains exact stop proof after failed %s removal finalization',
+    async (failure) => {
+      const harness = createHarness({ initialGeneration: 2 });
+      await harness.runtime.startup();
+      vi.mocked(harness.journal.saveIdentityMarkers).mockRejectedValueOnce(
+        new Error('disk unavailable'),
+      );
+      await expect(harness.runtime.suspendTaskSessions(TASK_ID)).rejects.toThrow(
+        'disk unavailable',
+      );
+      if (failure === 'witness') harness.verifyCommittedRemoval.mockResolvedValueOnce(false);
+      else
+        vi.spyOn(harness.journal, 'deleteTaskRecords').mockRejectedValueOnce(
+          new Error('delete failed'),
+        );
+      await expect(
+        harness.runtime.workflow.removalHooks.finalizeRemovedTaskAgentSessionState({
+          deletionOperationId: 'delete-1',
+          taskId: TASK_ID,
+        }),
+      ).resolves.toMatchObject({ kind: 'retry-required' });
+      await harness.runtime.close();
+      expect(harness.journal.getIdentityMarker(TASK_ID, AGENT_ID)).toMatchObject({
+        cleanRestart: { phase: 'available', sourceGeneration: 2, targetGeneration: 3 },
+      });
+    },
+  );
+
+  it('finishes retained failed-collapse proof at clean host shutdown and reopens on a new runtime', async () => {
+    const harness = createHarness({ initialGeneration: 2 });
+    const owner = createTaskCollapseWorkflow({
+      agentSession: harness.runtime,
+      shell: { suspendTaskSessions: async () => {} },
+      privateAuthority: harness.privateAuthority,
+      structure: harness.structure,
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    await harness.runtime.startup();
+    vi.mocked(harness.journal.saveIdentityMarkers).mockRejectedValueOnce(
+      new Error('disk unavailable'),
+    );
+    await expect(
+      owner.setCollapsed({ taskId: TASK_ID, collapsed: true }, () => {}),
+    ).rejects.toThrow('suspension');
+    expect(harness.stopAgent).toHaveBeenCalledOnce();
+    await owner.drain();
+    await harness.runtime.close();
+    const persisted = harness.journal.getIdentityMarker(TASK_ID, AGENT_ID);
+    expect(persisted).toMatchObject({
+      cleanRestart: { phase: 'available', sourceGeneration: 2, targetGeneration: 3 },
+    });
+    if (!persisted) throw new Error('Expected the retained clean-stop proof to be persisted');
+    const restarted = createHarness({});
+    Object.assign(restarted.sharedState, structuredClone(harness.sharedState));
+    await restarted.journal.saveIdentityMarkers([persisted]);
+    await restarted.runtime.startup();
+    await expect(
+      restarted.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+    const reopenedOwner = createTaskCollapseWorkflow({
+      agentSession: restarted.runtime,
+      shell: { suspendTaskSessions: async () => {} },
+      privateAuthority: restarted.privateAuthority,
+      structure: restarted.structure,
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    await reopenedOwner.setCollapsed({ taskId: TASK_ID, collapsed: false }, () => {});
+    await expect(
+      restarted.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).resolves.toMatchObject({ kind: 'restored', generation: 3 });
+    await expect(
+      restarted.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).resolves.toMatchObject({ kind: 'existing', generation: 3 });
+    expect(restarted.spawnAllocated).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])(
+    'deduplicates retained live proof but rejects changed generation (changed=%s)',
+    async (changed) => {
+      const harness = createHarness({ initialGeneration: 2 });
+      await harness.runtime.startup();
+      harness.stopAgent.mockRejectedValueOnce(new Error('stop failed'));
+      await expect(harness.runtime.suspendTaskSessions(TASK_ID)).rejects.toThrow('stop failed');
+      if (changed) {
+        harness.changeProcessGeneration(3);
+        await expect(harness.runtime.close()).rejects.toThrow('retained clean-stop proof');
+        expect(harness.journal.saveIdentityMarkers).not.toHaveBeenCalled();
+      } else {
+        await harness.runtime.close();
+        expect(harness.journal.saveIdentityMarkers).toHaveBeenCalledExactlyOnceWith([
+          expect.objectContaining({
+            agentId: AGENT_ID,
+            cleanRestart: expect.objectContaining({ sourceGeneration: 2, targetGeneration: 3 }),
+          }),
+        ]);
+      }
+    },
+  );
+
+  it('collapses and reopens repeatedly with canonical identity and an exact clean-stop permit', async () => {
+    const harness = createHarness({ initialGeneration: 3 });
+    const owner = createTaskCollapseWorkflow({
+      agentSession: harness.runtime,
+      shell: { suspendTaskSessions: async () => {} },
+      privateAuthority: harness.privateAuthority,
+      structure: harness.structure,
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    await harness.runtime.startup();
+    for (const generation of [4, 5, 6]) {
+      await owner.setCollapsed({ taskId: TASK_ID, collapsed: true }, () => {});
+      expect(harness.sharedState.taskOrder).toEqual([]);
+      expect(harness.sharedState.collapsedTaskOrder).toEqual([TASK_ID]);
+      await expect(
+        harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+      ).resolves.toMatchObject({ kind: 'unavailable' });
+      // Reload/reattach cannot invent a renderer-only identity.
+      expect((harness.sharedState.tasks as JsonObject)[TASK_ID]).toMatchObject({
+        agentId: AGENT_ID,
+        collapsed: true,
+      });
+      await owner.setCollapsed({ taskId: TASK_ID, collapsed: false }, () => {});
+      await expect(
+        harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+      ).resolves.toMatchObject({ kind: 'restored', generation });
+      await expect(
+        harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+      ).resolves.toMatchObject({ kind: 'existing', generation });
+    }
+    expect(harness.spawnAllocated).toHaveBeenCalledTimes(3);
+    expect(harness.sharedState.taskOrder).toEqual([TASK_ID]);
+    expect(harness.sharedState.collapsedTaskOrder).toEqual([]);
+  });
+
+  it('reopen retries a failed permit write before clearing collapsed admission, including after a host restart', async () => {
+    const harness = createHarness({ initialGeneration: 2 });
+    const owner = createTaskCollapseWorkflow({
+      agentSession: harness.runtime,
+      shell: { suspendTaskSessions: async () => {} },
+      privateAuthority: harness.privateAuthority,
+      structure: harness.structure,
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    await harness.runtime.startup();
+    vi.mocked(harness.journal.saveIdentityMarkers).mockRejectedValueOnce(
+      new Error('disk unavailable'),
+    );
+    await expect(
+      owner.setCollapsed({ taskId: TASK_ID, collapsed: true }, () => {}),
+    ).rejects.toThrow('suspension');
+    expect((harness.sharedState.tasks as JsonObject)[TASK_ID]).toMatchObject({ collapsed: true });
+    await owner.setCollapsed({ taskId: TASK_ID, collapsed: false }, () => {});
+    expect(harness.stopAgent).toHaveBeenCalledOnce();
+    harness.clearProcessState();
+    await expect(
+      harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).resolves.toMatchObject({ kind: 'restored', generation: 3 });
+    harness.clearProcessState();
+    await expect(
+      harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+  });
   it('restores one exact next generation and never reuses an ambiguous or consumed permit', async () => {
     const harness = createHarness({});
     await harness.journal.saveIdentityMarkers([cleanMarker(3)]);

@@ -38,8 +38,11 @@ describe('production task-experience activation architecture', () => {
     const activation = browser.indexOf(
       'const taskExperienceRuntimeStarted = createProductionTaskExperienceRuntime(',
     );
-    const listen = browser.indexOf("server.listen(options.port, '0.0.0.0'");
+    const listen = browser.indexOf('server.listen(options.port, host');
+    const listenerPolicy = browser.indexOf('const host = resolveBrowserServerHost(');
 
+    expect(listenerPolicy).toBeGreaterThan(-1);
+    expect(activation).toBeGreaterThan(listenerPolicy);
     expect(activation).toBeGreaterThan(-1);
     expect(listen).toBeGreaterThan(activation);
     expect(browser).toContain('whenReady: () => browserServerReady');

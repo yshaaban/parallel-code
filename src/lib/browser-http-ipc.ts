@@ -82,6 +82,7 @@ const UNDEFINED_RENDERER_INVOKE_CHANNELS = {
   [IPC.ResumeAgent]: true,
   [IPC.SaveAppState]: true,
   [IPC.SaveArenaData]: true,
+  [IPC.SetTaskCollapsed]: true,
   [IPC.ShellOpenInEditor]: true,
   [IPC.ShellReveal]: true,
   [IPC.ShowNotification]: true,

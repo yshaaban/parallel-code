@@ -321,6 +321,205 @@ describe('task command lease helper', () => {
     );
   });
 
+  it('does not spend a pending command hold twice when typing focus leaves and its view unmounts', async () => {
+    const refresh = createDeferred<undefined>();
+    const work = createDeferred<string>();
+    invokeMock.mockImplementation(
+      async (channel: IPC, args: { taskId: string; action?: string }) => {
+        if (channel === IPC.AcquireTaskCommandLease) {
+          if (args.action === 'collapse this task') await refresh.promise;
+          return withControllerVersion({
+            acquired: true,
+            action: args.action ?? '',
+            controllerId: 'client-self',
+            taskId: args.taskId,
+          });
+        }
+        if (channel === IPC.ReleaseTaskCommandLease)
+          return withControllerVersion({ action: null, controllerId: null, taskId: args.taskId });
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      },
+    );
+    const typing = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await typing.acquire();
+    const run = vi.fn(() => work.promise);
+    const command = runWithTaskCommandLease('task-1', 'collapse this task', run);
+    await Promise.resolve();
+    syncFocusedTypingTaskCommandLease('task-2', 'ai-terminal');
+    typing.cleanup();
+    await vi.advanceTimersByTimeAsync(250);
+    const earlyReleases = invokeMock.mock.calls.filter(
+      ([channel]) => channel === IPC.ReleaseTaskCommandLease,
+    ).length;
+    refresh.resolve(undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    work.resolve('done');
+    await expect(command).resolves.toBe('done');
+    expect(earlyReleases).toBe(0);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    'shares one command and typing epoch (typing acquire pending first: %s)',
+    async (typingFirst) => {
+      const backend = await import('../../electron/ipc/task-command-leases');
+      const runtime = await import('./task-command-lease-runtime');
+      backend.resetTaskCommandLeasesForTest();
+      const started = createDeferred<undefined>();
+      const acquireStarted = createDeferred<undefined>();
+      const acquireGate = createDeferred<undefined>();
+      const work = createDeferred<boolean>();
+      invokeMock.mockImplementation(
+        async (
+          channel: IPC,
+          args: {
+            taskId: string;
+            clientId: string;
+            ownerId: string;
+            action: string;
+            leaseGeneration?: number;
+          },
+        ) => {
+          if (channel === IPC.AcquireTaskCommandLease) {
+            if (typingFirst && args.action === 'type in the terminal') {
+              acquireStarted.resolve(undefined);
+              await acquireGate.promise;
+            }
+            return backend.acquireTaskCommandLease(
+              args.taskId,
+              args.clientId,
+              args.ownerId,
+              args.action,
+            );
+          }
+          if (channel === IPC.ReleaseTaskCommandLease) {
+            return backend.releaseTaskCommandLease(
+              args.taskId,
+              args.clientId,
+              args.ownerId,
+              Date.now(),
+              args.leaseGeneration,
+            ).snapshot;
+          }
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+        },
+      );
+      const typing = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+      const pendingTypingAcquire = typingFirst ? typing.acquire() : null;
+      if (typingFirst) {
+        await acquireStarted.promise;
+      }
+      let commandGeneration: number | null = null;
+      const command = runWithTaskCommandLease('task-1', 'collapse this task', async () => {
+        commandGeneration = runtime.getRetainedTaskCommandLeaseGeneration('task-1');
+        started.resolve(undefined);
+        return work.promise;
+      });
+      if (!typingFirst) {
+        await started.promise;
+      }
+      const typingAcquire = pendingTypingAcquire ?? typing.acquire();
+      acquireGate.resolve(undefined);
+      await started.promise;
+      await expect(typingAcquire).resolves.toBe(true);
+      work.resolve(
+        commandGeneration !== null &&
+          backend.isTaskCommandLeaseGenerationHeld(
+            'task-1',
+            'client-self',
+            'runtime-owner-self',
+            commandGeneration,
+          ),
+      );
+      const stillAdmitted = await command;
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+      ).toHaveLength(0);
+      await typing.release();
+      typing.cleanup();
+      await Promise.resolve();
+      backend.resetTaskCommandLeasesForTest();
+      expect(stillAdmitted).toBe(true);
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+      ).toHaveLength(1);
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('keeps a new command generation when an older typing release reaches the backend late', async () => {
+    const backend = await import('../../electron/ipc/task-command-leases');
+    const runtime = await import('./task-command-lease-runtime');
+    backend.resetTaskCommandLeasesForTest();
+    const releaseGate = createDeferred<undefined>();
+    const started = createDeferred<undefined>();
+    const work = createDeferred<boolean>();
+    let releaseCount = 0;
+    invokeMock.mockImplementation(
+      async (
+        channel: IPC,
+        args: {
+          taskId: string;
+          clientId: string;
+          ownerId: string;
+          action: string;
+          leaseGeneration?: number;
+        },
+      ) => {
+        if (channel === IPC.AcquireTaskCommandLease) {
+          return backend.acquireTaskCommandLease(
+            args.taskId,
+            args.clientId,
+            args.ownerId,
+            args.action,
+          );
+        }
+        if (channel === IPC.ReleaseTaskCommandLease) {
+          if (++releaseCount === 1) await releaseGate.promise;
+          return backend.releaseTaskCommandLease(
+            args.taskId,
+            args.clientId,
+            args.ownerId,
+            Date.now(),
+            args.leaseGeneration,
+          ).snapshot;
+        }
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      },
+    );
+    const typing = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await typing.acquire();
+    const released = typing.release();
+    let commandGeneration: number | null = null;
+    const command = runWithTaskCommandLease('task-1', 'collapse this task', async () => {
+      commandGeneration = runtime.getRetainedTaskCommandLeaseGeneration('task-1');
+      started.resolve(undefined);
+      return work.promise;
+    });
+    await started.promise;
+    releaseGate.resolve(undefined);
+    await released;
+    work.resolve(
+      commandGeneration !== null &&
+        backend.isTaskCommandLeaseGenerationHeld(
+          'task-1',
+          'client-self',
+          'runtime-owner-self',
+          commandGeneration,
+        ),
+    );
+    await expect(command).resolves.toBe(true);
+    typing.cleanup();
+    await Promise.resolve();
+    backend.resetTaskCommandLeasesForTest();
+  });
+
   it('returns the skipped sentinel when the owner denies a takeover request', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {
@@ -1977,5 +2176,204 @@ describe('task command lease helper', () => {
     );
 
     session.cleanup();
+  });
+
+  it('retires overlapping removed holds without spending a replacement or sibling lease', async () => {
+    const backend = await import('../../electron/ipc/task-command-leases');
+    const runtime = await import('./task-command-lease-runtime');
+    backend.resetTaskCommandLeasesForTest();
+    const started = createDeferred<undefined>();
+    const work = createDeferred<string>();
+    const releaseStarted = createDeferred<undefined>();
+    const releaseGate = createDeferred<undefined>();
+    let releases = 0;
+    invokeMock.mockImplementation(async (channel, args) => {
+      if (channel === IPC.AcquireTaskCommandLease) {
+        return backend.acquireTaskCommandLease(
+          args.taskId,
+          args.clientId,
+          args.ownerId,
+          args.action,
+        );
+      }
+      if (channel === IPC.ReleaseTaskCommandLease) {
+        if (++releases === 1) {
+          releaseStarted.resolve(undefined);
+          await releaseGate.promise;
+        }
+        return backend.releaseTaskCommandLease(
+          args.taskId,
+          args.clientId,
+          args.ownerId,
+          Date.now(),
+          args.leaseGeneration,
+        ).snapshot;
+      }
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+    const command = runWithTaskCommandLease('task-1', 'open a terminal', async () => {
+      started.resolve(undefined);
+      return work.promise;
+    });
+    await started.promise;
+    const typing = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    const sibling = createTaskCommandLeaseSession('task-2', 'type in the terminal');
+    await expect(typing.acquire()).resolves.toBe(true);
+    await expect(sibling.acquire()).resolves.toBe(true);
+    const removal = clearRemovedTaskCommandLeaseState('task-1');
+    await releaseStarted.promise;
+    expect(typing.touch()).toBe(false);
+    await expect(typing.acquire()).resolves.toBe(true);
+    const replacementGeneration = runtime.getRetainedTaskCommandLeaseGeneration('task-1');
+    work.resolve('done');
+    await expect(command).resolves.toBe('done');
+    releaseGate.resolve(undefined);
+    await removal;
+    expect(typing.touch()).toBe(true);
+    expect(sibling.touch()).toBe(true);
+    expect(
+      backend.isTaskCommandLeaseGenerationHeld(
+        'task-1',
+        'client-self',
+        'runtime-owner-self',
+        replacementGeneration ?? -1,
+      ),
+    ).toBe(true);
+    expect(releases).toBe(1);
+    await typing.release();
+    await sibling.release();
+    typing.cleanup();
+    sibling.cleanup();
+    expect(releases).toBe(3);
+    backend.resetTaskCommandLeasesForTest();
+  });
+
+  it('releases a removed pending acquisition without running work or retaining renewal state', async () => {
+    const backend = await import('../../electron/ipc/task-command-leases');
+    const state = await import('./task-command-lease-runtime-state');
+    backend.resetTaskCommandLeasesForTest();
+    const acquireStarted = createDeferred<undefined>();
+    const acquireGate = createDeferred<undefined>();
+    invokeMock.mockImplementation(async (channel, args) => {
+      if (channel === IPC.AcquireTaskCommandLease) {
+        acquireStarted.resolve(undefined);
+        await acquireGate.promise;
+        return backend.acquireTaskCommandLease(
+          args.taskId,
+          args.clientId,
+          args.ownerId,
+          args.action,
+        );
+      }
+      if (channel === IPC.ReleaseTaskCommandLease) {
+        return backend.releaseTaskCommandLease(
+          args.taskId,
+          args.clientId,
+          args.ownerId,
+          Date.now(),
+          args.leaseGeneration,
+        ).snapshot;
+      }
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+    const run = vi.fn().mockResolvedValue('must not run');
+    const command = runWithTaskCommandLease('task-1', 'open a terminal', run);
+    await acquireStarted.promise;
+    const removal = clearRemovedTaskCommandLeaseState('task-1');
+    acquireGate.resolve(undefined);
+    await expect(command).resolves.toBe(TASK_COMMAND_LEASE_SKIPPED);
+    await expect(removal).resolves.toBe(true);
+    expect(run).not.toHaveBeenCalled();
+    expect(backend.isTaskCommandLeaseHeld('task-1', 'client-self')).toBe(false);
+    expect([...state.getLocalTaskCommandLeaseEntries()]).toEqual([]);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(invokeMock.mock.calls.map(([channel]) => channel)).toEqual([
+      IPC.AcquireTaskCommandLease,
+      IPC.ReleaseTaskCommandLease,
+    ]);
+    backend.resetTaskCommandLeasesForTest();
+  });
+
+  it('revokes all overlapping holds when a removed task is not replaced', async () => {
+    const state = await import('./task-command-lease-runtime-state');
+    const started = createDeferred<undefined>();
+    const work = createDeferred<string>();
+    const command = runWithTaskCommandLease('task-1', 'open a terminal', async () => {
+      started.resolve(undefined);
+      return work.promise;
+    });
+    await started.promise;
+    const typing = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await expect(typing.acquire()).resolves.toBe(true);
+    await expect(clearRemovedTaskCommandLeaseState('task-1')).resolves.toBe(true);
+    expect(typing.touch()).toBe(false);
+    expect([...state.getLocalTaskCommandLeaseEntries()]).toEqual([]);
+    work.resolve('done');
+    await expect(command).resolves.toBe('done');
+    await typing.release();
+    typing.cleanup();
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+  });
+
+  it.each(['renew', 'reclaim'] as const)(
+    'ignores a delayed old %s result after removal and same-ID acquisition',
+    async (kind) => {
+      const runtime = await import('./task-command-lease-runtime');
+      const oldResponse = createDeferred<ReturnType<typeof withControllerVersion>>();
+      const old = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+        idleReleaseMs: 60_000,
+      });
+      await expect(old.acquire()).resolves.toBe(true);
+      const oldGeneration = runtime.getRetainedTaskCommandLeaseGeneration('task-1');
+      const response = withControllerVersion({
+        acquired: true,
+        renewed: true,
+        action: 'type in the terminal',
+        controllerId: 'client-self',
+        taskId: 'task-1',
+      });
+      response.leaseGeneration = oldGeneration ?? -1;
+      invokeMock.mockImplementationOnce(() => oldResponse.promise);
+      if (kind === 'renew') await vi.advanceTimersByTimeAsync(5_000);
+      else {
+        emitBrowserTransportState('disconnected');
+        emitBrowserTransportState('connected');
+      }
+      await expect(clearRemovedTaskCommandLeaseState('task-1')).resolves.toBe(true);
+      await expect(old.acquire()).resolves.toBe(true);
+      const replacementGeneration = runtime.getRetainedTaskCommandLeaseGeneration('task-1');
+      expect(replacementGeneration).not.toBe(oldGeneration);
+      oldResponse.resolve(response);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(runtime.getRetainedTaskCommandLeaseGeneration('task-1')).toBe(replacementGeneration);
+      expect(old.touch()).toBe(true);
+      await old.release();
+      old.cleanup();
+    },
+  );
+
+  it('releases an acquisition completed after its last session handle was disposed', async () => {
+    const acquireGate = createDeferred<ReturnType<typeof withControllerVersion>>();
+    invokeMock.mockImplementationOnce(() => acquireGate.promise);
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    const acquire = session.acquire();
+    await Promise.resolve();
+    session.cleanup();
+    acquireGate.resolve(
+      withControllerVersion({
+        acquired: true,
+        action: 'type in the terminal',
+        controllerId: 'client-self',
+        taskId: 'task-1',
+      }),
+    );
+    await expect(acquire).resolves.toBe(false);
+    expect(invokeMock.mock.calls.map(([channel]) => channel)).toEqual([
+      IPC.AcquireTaskCommandLease,
+      IPC.ReleaseTaskCommandLease,
+    ]);
   });
 });

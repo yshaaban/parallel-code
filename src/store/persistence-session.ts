@@ -45,6 +45,9 @@ export function recordLoadedWorkspaceState(
   json: string,
   revision: number,
 ): readonly WorkspaceIntentConflict[] {
+  // Save acknowledgements can also arrive after a newer canonical push. They must not
+  // rewind the revision used by the next save or discard edits against that newer base.
+  if (revision < lastLoadedWorkspaceRevision) return [];
   lastLoadedWorkspaceStateJson = json;
   lastLoadedWorkspaceRevision = revision;
   const parsed = parseWorkspaceStateObject(json);

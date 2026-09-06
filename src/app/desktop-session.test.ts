@@ -558,6 +558,7 @@ describe('desktop session startup sequencing', () => {
     applyTaskReviewEventMock.mockReset();
     applyAgentSupervisionEventMock.mockReset();
     applyBrowserColdBootstrapWorkspaceProjectionMock.mockReset();
+    applyBrowserColdBootstrapWorkspaceProjectionMock.mockReturnValue(true);
     fetchBrowserColdBootstrapMock.mockReset();
     fetchBrowserColdBootstrapMock.mockResolvedValue({
       serverStateBootstrap: [],
@@ -992,6 +993,54 @@ describe('desktop session startup sequencing', () => {
 
     cleanup();
   });
+
+  it.each(['unchanged', 'content', 'path', 'checkout'])(
+    'refreshes missing browser plan metadata without overwriting changed %s evidence',
+    async (change) => {
+      const pending = createDeferred<unknown>();
+      const task = {
+        id: 'task-1',
+        agentIds: [],
+        shellAgentIds: [],
+        planContent: 'Current plan',
+        planRelativePath: 'docs/plan.md',
+        worktreePath: '/tmp/task-1',
+      };
+      storeState.taskOrder = ['task-1'];
+      storeState.tasks = { 'task-1': task };
+      invokeMock.mockImplementation((channel: IPC) =>
+        channel === IPC.ReadPlanContent ? pending.promise : Promise.resolve([]),
+      );
+      const cleanup = startDesktopAppSession({
+        electronRuntime: false,
+        mainElement: createMainElementStub(),
+        setConnectionBanner: vi.fn(),
+        setPathInputDialog: vi.fn(),
+        setWindowFocused: vi.fn(),
+        setWindowMaximized: vi.fn(),
+      });
+      await flushResolvedPromises();
+      expect(invokeMock).toHaveBeenCalledWith(IPC.ReadPlanContent, {
+        taskId: 'task-1',
+        relativePath: 'docs/plan.md',
+      });
+      expect(validateProjectPathsMock).toHaveBeenCalled();
+      if (change === 'content') task.planContent = 'New live plan';
+      if (change === 'path') task.planRelativePath = 'docs/new.md';
+      if (change === 'checkout') task.worktreePath = '/tmp/new-checkout';
+      pending.resolve({ content: 'Read plan', fileName: 'plan.md', relativePath: 'docs/plan.md' });
+      await flushResolvedPromises();
+      if (change === 'unchanged')
+        expect(setPlanContentMock).toHaveBeenCalledWith(
+          'task-1',
+          'Read plan',
+          'plan.md',
+          'docs/plan.md',
+        );
+      else expect(setPlanContentMock).not.toHaveBeenCalled();
+      cleanup();
+    },
+  );
 
   it('prewarms restored Electron background task agent sessions after selected startup fallback', async () => {
     vi.useFakeTimers();

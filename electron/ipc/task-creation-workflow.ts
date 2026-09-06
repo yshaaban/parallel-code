@@ -266,7 +266,20 @@ export interface TaskCreationRecordProjector {
   ): Promise<TaskCreationOperationSnapshot>;
 }
 
-export type ActiveTaskCreationWorkflow = TaskCreationWorkflow & TaskCreationRecordProjector;
+export interface TaskCreationInitialLaunchWaiter {
+  waitForInFlightInitialLaunch(
+    request: Readonly<{
+      creationOperationId: TaskCreationOperationId;
+      launchOperationId: string;
+      sessionId: string;
+      taskId: string;
+    }>,
+  ): Promise<void>;
+}
+
+export type ActiveTaskCreationWorkflow = TaskCreationWorkflow &
+  TaskCreationRecordProjector &
+  TaskCreationInitialLaunchWaiter;
 
 interface TaskCreationOperationSubscription {
   capabilityHash: string;
@@ -685,6 +698,26 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
     );
     this.lookupWorkspace = createWorkspaceBucket(LOOKUP_WORKSPACE_CAPACITY, initialNow);
     this.createWorkspace = createWorkspaceBucket(CREATE_WORKSPACE_CAPACITY, initialNow);
+  }
+
+  async waitForInFlightInitialLaunch(
+    request: Readonly<{
+      creationOperationId: TaskCreationOperationId;
+      launchOperationId: string;
+      sessionId: string;
+      taskId: string;
+    }>,
+  ): Promise<void> {
+    const record = this.dependencies.journal.getByOperationId(request.creationOperationId);
+    if (
+      !record ||
+      record.identities.taskId !== request.taskId ||
+      record.identities.launchOperationId !== request.launchOperationId ||
+      record.identities.sessionId !== request.sessionId
+    )
+      return;
+    const pending = this.inFlight.get(`${record.workspacePrincipalHash}:${record.operationId}`);
+    if (pending) await pending.promise;
   }
 
   async getCapabilities(

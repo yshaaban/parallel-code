@@ -429,6 +429,7 @@ export function registerAllHandlers(
   context.getTaskCreationCommand = async () => (await getTaskExperienceRuntime()).localCreation;
   context.getTaskMergeWorkflow = async () => (await getTaskExperienceRuntime()).merge.workflow;
   context.getTaskNotesService = async () => (await getTaskExperienceRuntime()).notes;
+  context.getTaskCollapseWorkflow = async () => (await getTaskExperienceRuntime()).collapse;
   context.restoreCanonicalAgentSession = async (request) =>
     (await getTaskExperienceRuntime()).agentSession.restoreCanonicalSession(request);
   context.classifyCanonicalAgentSessionIdentity = async (request) =>

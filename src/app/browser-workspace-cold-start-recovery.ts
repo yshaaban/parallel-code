@@ -5,7 +5,10 @@ import {
   applyBrowserColdBootstrapWorkspaceProjection,
   loadWorkspaceState,
 } from '../store/persistence-load';
-import { getLoadedWorkspaceStateJson } from '../store/persistence-session';
+import {
+  getLoadedWorkspaceRevision,
+  getLoadedWorkspaceStateJson,
+} from '../store/persistence-session';
 import { showNotification } from '../store/notification';
 import { store } from '../store/state';
 import { fetchBrowserColdBootstrap } from './browser-cold-bootstrap';
@@ -271,7 +274,7 @@ function applyBrowserWorkspaceProjection(
     return false;
   }
 
-  applyBrowserColdBootstrapWorkspaceProjection(projection, workspaceRevision);
+  if (!applyBrowserColdBootstrapWorkspaceProjection(projection, workspaceRevision)) return false;
   emitStartupBreadcrumb('desktop-startup:browser-projection-applied');
   return true;
 }
@@ -286,6 +289,28 @@ async function restoreBrowserWorkspace(
 
   const coldBootstrap = coldBootstrapResult.snapshot;
   const workspaceRevision = coldBootstrap?.workspaceRevision ?? 0;
+  if (hasLoadedCanonicalWorkspaceSnapshot()) {
+    // Live workspace publication can win the startup fetch. Never cold-reset its controllers,
+    // focus, or pending edits; refresh a newer snapshot through the normal incremental owner.
+    if (workspaceRevision > getLoadedWorkspaceRevision()) {
+      const refresh = await runBoundedAttempt(loadWorkspaceState, options.signal);
+      if (refresh.status === 'cancelled' || isRecoveryStopped(options)) return null;
+      if (refresh.status === 'failed' || getLoadedWorkspaceRevision() < workspaceRevision) {
+        console.warn(
+          'Could not refresh the newer cold-bootstrap workspace; keeping current state.',
+        );
+        options.scheduleImmediateSync();
+      }
+    }
+    const liveBootstrap = coldBootstrap ? { ...coldBootstrap } : null;
+    if (liveBootstrap) {
+      // These observations have no revision witness. Do not replay them over live plan/path
+      // evidence; startup refreshes current identities instead. Category snapshots are versioned.
+      delete liveBootstrap.planContents;
+      delete liveBootstrap.projectPathsExist;
+    }
+    return { coldBootstrap: liveBootstrap, shouldSchedulePostRestoreSync: false };
+  }
   let appliedWorkspaceProjection = applyBrowserWorkspaceProjection(
     coldBootstrap?.workspaceProjection ?? null,
     workspaceRevision,

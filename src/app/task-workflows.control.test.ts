@@ -5,6 +5,7 @@ import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { consumePendingShellCommand } from '../lib/bookmarks';
 import { setStore, store } from '../store/core';
 import { resetPersistenceSessionStateForTests } from '../store/persistence-session';
+import { applyLoadedWorkspaceStateJson } from '../store/persistence-load';
 import { resetTaskCommandControllerStateForTests } from '../store/task-command-controllers';
 import { clearAgentBusyState, markAgentOutput } from '../store/taskStatus';
 import {
@@ -1934,70 +1935,25 @@ describe('task workflow control leases', () => {
     expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
   });
 
-  it('removes killed shell agents from store state when collapsing a task', async () => {
-    setStore('agentActive', {
-      'agent-1': true,
-      'shell-1': true,
+  it('preserves canonical multi-agent definitions and selection even if renderer agents are missing', async () => {
+    const agentDefs = [createTestAgentDef({ id: 'claude' }), createTestAgentDef({ id: 'codex' })];
+    installVisibilityBackend({
+      task: { agentIds: ['agent-1', 'agent-2'], agentDefs, selectedAgentId: 'agent-2' },
     });
-    setStore('agentSupervision', {
-      'agent-1': {} as never,
-      'shell-1': {} as never,
+    setStore('agents', {});
+    await collapseTask('task-1');
+    expect(store.tasks['task-1']).toMatchObject({
+      collapsed: true,
+      agentIds: ['agent-1', 'agent-2'],
+      selectedAgentId: 'agent-2',
+      savedAgentDefs: agentDefs,
     });
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
-    expect(store.agents['agent-1']).toBeUndefined();
-    expect(store.agents['shell-1']).toBeUndefined();
-    expect(store.agentActive['agent-1']).toBeUndefined();
-    expect(store.agentActive['shell-1']).toBeUndefined();
-    expect(store.agentSupervision['agent-1']).toBeUndefined();
-    expect(store.agentSupervision['shell-1']).toBeUndefined();
-  });
-
-  it('preserves all task agent definitions when collapsing a multi-agent task', async () => {
-    const codexDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
-    setStore('tasks', 'task-1', 'agentIds', ['agent-1', 'agent-2']);
-    setStore('tasks', 'task-1', 'selectedAgentId', 'agent-2');
-    setStore('agents', 'agent-2', createTestAgent({ def: codexDef, id: 'agent-2' }));
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.selectedAgentId).toBeUndefined();
-    expect(store.tasks['task-1']?.savedAgentDef?.id).toBe('claude');
-    expect(store.tasks['task-1']?.savedAgentDefs?.map((agentDef) => agentDef.id)).toEqual([
+    await uncollapseTask('task-1');
+    expect(store.tasks['task-1']?.selectedAgentId).toBe('agent-2');
+    expect(store.tasks['task-1']?.agentIds.map((id) => store.agents[id]?.def.id)).toEqual([
       'claude',
       'codex',
     ]);
-    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBe(1);
-  });
-
-  it('does not shift saved multi-agent definitions when an agent record is missing during collapse', async () => {
-    const codexDef = createTestAgentDef({ id: 'codex', name: 'Codex' });
-    setStore('tasks', 'task-1', 'agentIds', ['missing-agent', 'agent-2']);
-    setStore('tasks', 'task-1', 'selectedAgentId', 'agent-2');
-    setStore('agents', 'agent-2', createTestAgent({ def: codexDef, id: 'agent-2' }));
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.selectedAgentId).toBeUndefined();
-    expect(store.tasks['task-1']?.savedAgentDef).toBeUndefined();
-    expect(store.tasks['task-1']?.savedAgentDefs).toBeUndefined();
-    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBeUndefined();
-  });
-
-  it('stops backend task watchers when collapsing a task', async () => {
-    await collapseTask('task-1');
-
-    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
-      agentIds: ['agent-1', 'shell-1'],
-      controllerId: 'client-self',
-      taskId: 'task-1',
-    });
   });
 
   it('keeps a task untouched when another client holds the close lease', async () => {
@@ -2089,361 +2045,274 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']).toBeUndefined();
   });
 
-  it('ignores duplicate collapse requests while collapse cleanup is still in flight', async () => {
-    const cleanupDeferred = createDeferredPromise<undefined>();
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(args, (args as { action: string }).action),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult(args));
-        case IPC.KillAgent:
-          return Promise.resolve(undefined);
-        case IPC.CleanupTaskRuntime:
-          return cleanupDeferred.promise;
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(createRenewLeaseResult(args));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
+  function installVisibilityBackend(
+    options: {
+      terminal?: boolean;
+      pending?: Promise<undefined>;
+      task?: Record<string, unknown>;
+    } = {},
+  ) {
+    const fallback = requireInvokeImplementation();
+    let collapsed = false;
+    let revision = 10;
+    const canonicalTask = {
+      ...createTestTask(),
+      agentId: options.terminal ? null : 'agent-1',
+      agentDef: options.terminal ? null : createTestAgentDef(),
+      agentIds: options.terminal ? [] : ['agent-1'],
+      taskMode: options.terminal ? 'terminal' : 'agent',
+      shellAgentIds: ['shell-1'],
+      shellCount: 1,
+      ...(options.terminal
+        ? {
+            taskInitialShellOwnership: {
+              kind: 'managed-terminal-v1',
+              sessionId: 'shell-1',
+              launchOperationId: 'launch-1',
+              expectedGeneration: 0,
+            },
+          }
+        : {}),
+      ...options.task,
+    };
+    invokeMock.mockImplementation(async (channel: IPC, args?: unknown) => {
+      if (channel === IPC.SetTaskCollapsed) {
+        await options.pending;
+        collapsed = (args as { collapsed: boolean }).collapsed;
+        revision += 1;
+        return undefined;
       }
+      if (channel === IPC.LoadWorkspaceState)
+        return {
+          revision,
+          json: JSON.stringify({
+            projects: store.projects,
+            tasks: { 'task-1': { ...canonicalTask, ...(collapsed ? { collapsed: true } : {}) } },
+            taskOrder: collapsed ? [] : ['task-1'],
+            collapsedTaskOrder: collapsed ? ['task-1'] : [],
+          }),
+        };
+      return fallback(channel, args);
     });
+  }
 
-    const firstCollapse = collapseTask('task-1');
-    await vi.waitFor(() => {
-      expect(
-        invokeMock.mock.calls.filter(([channel]) => channel === IPC.CleanupTaskRuntime),
-      ).toHaveLength(1);
+  it('deduplicates collapse while awaiting the backend and retains canonical sessions', async () => {
+    const pending = createDeferredPromise<undefined>();
+    installVisibilityBackend({ pending: pending.promise });
+    const first = collapseTask('task-1');
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        IPC.SetTaskCollapsed,
+        expect.objectContaining({ collapsed: true, taskId: 'task-1' }),
+      ),
+    );
+    const second = collapseTask('task-1');
+    pending.resolve(undefined);
+    await Promise.all([first, second]);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.SetTaskCollapsed),
+    ).toHaveLength(1);
+    expect(store.tasks['task-1']).toMatchObject({
+      collapsed: true,
+      agentIds: ['agent-1'],
+      shellAgentIds: ['shell-1'],
     });
-    const secondCollapse = collapseTask('task-1');
-    await vi.waitFor(() => {
-      expect(
-        invokeMock.mock.calls.filter(([channel]) => channel === IPC.CleanupTaskRuntime),
-      ).toHaveLength(1);
-    });
-
-    cleanupDeferred.resolve(undefined);
-    await Promise.all([firstCollapse, secondCollapse]);
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(
+      invokeMock.mock.calls.some(
+        ([channel]) => channel === IPC.KillAgent || channel === IPC.CleanupTaskRuntime,
+      ),
+    ).toBe(false);
   });
 
-  it('still collapses the task locally when backend runtime cleanup fails', async () => {
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(args, (args as { action: string }).action),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult(args));
-        case IPC.KillAgent:
-          return Promise.resolve(undefined);
-        case IPC.CleanupTaskRuntime:
-          return Promise.reject(new Error('cleanup failed'));
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(createRenewLeaseResult(args));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
-      }
-    });
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+  it('uses the canonical identity after repeated collapse and reopen cycles', async () => {
+    installVisibilityBackend();
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await collapseTask('task-1');
+      expect(store.tasks['task-1']?.collapsed).toBe(true);
+      await uncollapseTask('task-1');
+      expect(store.tasks['task-1']?.collapsed).toBeFalsy();
+      expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+      expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+      expect(store.agents['agent-1']?.taskId).toBe('task-1');
+      expect(store.activeTaskId).toBe('task-1');
+    }
+    expect(store.taskOrder).toEqual(['task-1']);
+    expect(store.collapsedTaskOrder).toEqual([]);
   });
 
-  it('keeps the task untouched when collapse cleanup loses task control mid-flight', async () => {
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(args, (args as { action: string }).action),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult(args));
-        case IPC.KillAgent:
-          return Promise.resolve(undefined);
-        case IPC.CleanupTaskRuntime:
-          return Promise.reject(new Error('Task is controlled by another client'));
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(createRenewLeaseResult(args));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
+  it('retains a restore clicked after collapsed publication until collapse and its lease finish', async () => {
+    installVisibilityBackend();
+    const backend = requireInvokeImplementation();
+    const published = createDeferredPromise<undefined>();
+    const finishCollapse = createDeferredPromise<undefined>();
+    const releasing = createDeferredPromise<undefined>();
+    const finishRelease = createDeferredPromise<undefined>();
+    let releaseCount = 0;
+    invokeMock.mockImplementation(async (channel: IPC, args?: unknown) => {
+      if (channel === IPC.SetTaskCollapsed && (args as { collapsed: boolean }).collapsed) {
+        const result = await backend(channel, args);
+        const canonical = (await backend(
+          IPC.LoadWorkspaceState,
+        )) as RendererInvokeResponseMap[IPC.LoadWorkspaceState];
+        if (!canonical?.json) throw new Error('Missing canonical visibility fixture');
+        applyLoadedWorkspaceStateJson(canonical.json, canonical.revision);
+        published.resolve(undefined);
+        await finishCollapse.promise;
+        return result;
       }
+      if (channel === IPC.ReleaseTaskCommandLease && ++releaseCount === 1) {
+        releasing.resolve(undefined);
+        await finishRelease.promise;
+      }
+      return backend(channel, args);
     });
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    const collapsing = collapseTask('task-1');
+    await published.promise;
+    const restoring = uncollapseTask('task-1');
+    const duplicateRestore = uncollapseTask('task-1');
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    finishCollapse.resolve(undefined);
+    await releasing.promise;
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.SetTaskCollapsed),
+    ).toHaveLength(1);
+    finishRelease.resolve(undefined);
+    await Promise.all([collapsing, restoring, duplicateRestore]);
+    expect(
+      invokeMock.mock.calls
+        .filter(([channel]) => channel === IPC.SetTaskCollapsed)
+        .map(([, args]) => (args as { collapsed: boolean }).collapsed),
+    ).toEqual([true, false]);
+    expect(store.tasks['task-1']?.collapsed).toBeFalsy();
     expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
     expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
   });
 
-  it('allows a later collapse after collapse cleanup loses task control mid-flight', async () => {
-    let cleanupCalls = 0;
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(args, (args as { action: string }).action),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult(args));
-        case IPC.KillAgent:
-          return Promise.resolve(undefined);
-        case IPC.CleanupTaskRuntime:
-          cleanupCalls += 1;
-          return cleanupCalls === 1
-            ? Promise.reject(new Error('Task is controlled by another client'))
-            : Promise.resolve(undefined);
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(createRenewLeaseResult(args));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
+  it.each(['rapid alternation', 'failed collapse', 'removed task'] as const)(
+    'revalidates queued visibility requests after %s',
+    async (scenario) => {
+      installVisibilityBackend();
+      const backend = requireInvokeImplementation();
+      const published = createDeferredPromise<undefined>();
+      const finishCollapse = createDeferredPromise<undefined>();
+      let first = true;
+      let removed = false;
+      invokeMock.mockImplementation(async (channel: IPC, args?: unknown) => {
+        if (channel === IPC.LoadWorkspaceState && removed) {
+          return {
+            revision: 30,
+            json: JSON.stringify({
+              projects: store.projects,
+              tasks: {},
+              taskOrder: [],
+              collapsedTaskOrder: [],
+            }),
+          };
+        }
+        if (channel === IPC.SetTaskCollapsed && first) {
+          first = false;
+          const result = await backend(channel, args);
+          const canonical = (await backend(
+            IPC.LoadWorkspaceState,
+          )) as RendererInvokeResponseMap[IPC.LoadWorkspaceState];
+          if (!canonical?.json) throw new Error('Missing canonical visibility fixture');
+          applyLoadedWorkspaceStateJson(canonical.json, canonical.revision);
+          published.resolve(undefined);
+          await finishCollapse.promise;
+          if (scenario === 'failed collapse') throw new Error('Suspension permit write failed');
+          return result;
+        }
+        return backend(channel, args);
+      });
+      const operations = [collapseTask('task-1')];
+      await published.promise;
+      operations.push(collapseTask('task-1'), uncollapseTask('task-1'));
+      if (scenario === 'rapid alternation') {
+        operations.push(collapseTask('task-1'), collapseTask('task-1'), uncollapseTask('task-1'));
       }
-    });
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
-  });
-
-  it('retries collapse successfully after task control is restored', async () => {
-    let cleanupCalls = 0;
-    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(args, (args as { action: string }).action),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult(args));
-        case IPC.KillAgent:
-          return Promise.resolve(undefined);
-        case IPC.CleanupTaskRuntime:
-          cleanupCalls += 1;
-          return cleanupCalls === 1
-            ? Promise.reject(new Error('Task is controlled by another client'))
-            : Promise.resolve(undefined);
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(createRenewLeaseResult(args));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
+      removed = scenario === 'removed task';
+      finishCollapse.resolve(undefined);
+      await Promise.all(operations);
+      const transitions = invokeMock.mock.calls
+        .filter(([channel]) => channel === IPC.SetTaskCollapsed)
+        .map(([, args]) => (args as { collapsed: boolean }).collapsed);
+      expect(transitions).toEqual(
+        scenario === 'rapid alternation'
+          ? [true, false, true, false]
+          : removed
+            ? [true]
+            : [true, false],
+      );
+      if (removed) expect(store.tasks['task-1']).toBeUndefined();
+      else expect(store.tasks['task-1']?.collapsed).toBeFalsy();
+      if (scenario === 'failed collapse') {
+        expect(showNotificationMock).toHaveBeenCalledWith(
+          expect.stringContaining('Suspension permit write failed'),
+          { kind: 'error' },
+        );
       }
-    });
+    },
+  );
 
+  it('reopens a terminal task using its immutable initial-shell identity', async () => {
+    setStore('tasks', 'task-1', 'taskMode', 'terminal');
+    installVisibilityBackend({ terminal: true });
     await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
-    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
-  });
-
-  it('recycles a collapsed task to active state with a restored runtime agent', async () => {
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        savedAgentDef: {
-          args: [],
-          command: 'agent',
-          description: 'Agent',
-          id: 'agent-1',
-          name: 'Agent',
-          resume_args: [],
-          skip_permissions_args: [],
-        },
-        shellAgentIds: [],
-      }),
-    });
-    setStore('agents', {});
-
     await uncollapseTask('task-1');
-
     expect(store.tasks['task-1']).toMatchObject({
-      collapsed: false,
-      agentIds: expect.any(Array),
-      shellAgentIds: [],
-    });
-    expect(store.tasks['task-1']?.agentIds.length).toBe(1);
-    expect(store.taskOrder).toContain('task-1');
-    expect(store.collapsedTaskOrder).not.toContain('task-1');
-    expect(store.activeTaskId).toBe('task-1');
-    expect(store.agents[store.tasks['task-1']?.agentIds[0] ?? '']).toMatchObject({
-      def: {
-        id: 'agent-1',
-        name: 'Agent',
-      },
-      taskId: 'task-1',
-      resumed: true,
-    });
-    expect(store.tasks['task-1']?.agentIds[0]).not.toBe('agent-1');
-  });
-
-  it('restores a collapsed terminal-only task with a fresh primary shell', async () => {
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        shellAgentIds: [],
-        taskMode: 'terminal',
-      }),
-    });
-    setStore('agents', {});
-
-    await uncollapseTask('task-1');
-
-    const restoredTask = store.tasks['task-1'];
-    expect(restoredTask).toMatchObject({
       agentIds: [],
-      collapsed: false,
-      shellAgentIds: [expect.any(String)],
+      shellAgentIds: ['shell-1'],
+      taskInitialShellOwnership: { sessionId: 'shell-1' },
       taskMode: 'terminal',
     });
-    expect(restoredTask?.savedAgentDef).toBeUndefined();
-    expect(store.activeAgentId).toBe(restoredTask?.shellAgentIds[0]);
+    expect(store.activeAgentId).toBe('shell-1');
     expect(store.focusedPanel['task-1']).toBe('shell:0');
+    expect(isCompatibilityTerminalCreationPending('task-1', 'shell-1')).toBe(false);
   });
 
-  it('restores every saved agent definition when recycling a multi-agent collapsed task', async () => {
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        savedAgentDefs: [
-          createTestAgentDef({ id: 'claude', name: 'Claude' }),
-          createTestAgentDef({ id: 'codex', name: 'Codex' }),
-        ],
-        shellAgentIds: [],
-      }),
+  it('reports rejected collapse without inventing a local success and permits retry', async () => {
+    installVisibilityBackend();
+    const fallback = requireInvokeImplementation();
+    let reject = true;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      if (channel === IPC.SetTaskCollapsed && reject) {
+        reject = false;
+        return Promise.reject(new Error('Task is controlled by another client'));
+      }
+      return fallback(channel, args);
     });
-    setStore('agents', {});
-
-    await uncollapseTask('task-1');
-
-    const restoredTask = store.tasks['task-1'];
-    expect(restoredTask?.agentIds).toHaveLength(2);
-    expect(restoredTask?.selectedAgentId).toBe(restoredTask?.agentIds[0]);
-    expect(restoredTask?.savedAgentDefs).toBeUndefined();
-    expect(restoredTask?.agentIds.map((agentId) => store.agents[agentId]?.def.id)).toEqual([
-      'claude',
-      'codex',
-    ]);
-  });
-
-  it('restores the selected saved agent when recycling a multi-agent collapsed task', async () => {
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        savedAgentDefs: [
-          createTestAgentDef({ id: 'claude', name: 'Claude' }),
-          createTestAgentDef({ id: 'codex', name: 'Codex' }),
-        ],
-        savedSelectedAgentIndex: 1,
-        shellAgentIds: [],
-      }),
-    });
-    setStore('agents', {});
-
-    await uncollapseTask('task-1');
-
-    const restoredTask = store.tasks['task-1'];
-    expect(restoredTask?.selectedAgentId).toBe(restoredTask?.agentIds[1]);
-    expect(restoredTask?.savedSelectedAgentIndex).toBeUndefined();
+    await collapseTask('task-1');
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    expect(showNotificationMock).toHaveBeenCalledWith(
+      expect.stringContaining('Could not collapse task'),
+      { kind: 'error' },
+    );
+    await collapseTask('task-1');
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
   });
 
   it('no-ops restoring an already-active task', async () => {
     invokeMock.mockReset();
     await uncollapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBeFalsy();
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('keeps a collapsed task untouched when restore lease is skipped by another client', async () => {
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        savedAgentDef: {
-          args: [],
-          command: 'agent',
-          description: 'Agent',
-          id: 'agent-1',
-          name: 'Agent',
-          resume_args: [],
-          skip_permissions_args: [],
-        },
-        shellAgentIds: [],
-      }),
-    });
-    setStore('agents', {});
+  it('does not reopen while another client holds the task lease', async () => {
+    setStore('tasks', 'task-1', 'collapsed', true);
     invokeMock.mockImplementation((channel: IPC) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            createAcquireLeaseResult(
-              { taskId: 'task-1' },
-              'restore this task',
-              false,
-              'peer-client',
-            ),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(createReleaseLeaseResult({ taskId: 'task-1' }));
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
-      }
+      if (channel === IPC.AcquireTaskCommandLease)
+        return Promise.resolve(
+          createAcquireLeaseResult({ taskId: 'task-1' }, 'reopen task', false, 'peer-client'),
+        );
+      if (channel === IPC.ReleaseTaskCommandLease)
+        return Promise.resolve(createReleaseLeaseResult({ taskId: 'task-1' }));
+      throw new Error(`Unexpected IPC channel: ${channel}`);
     });
     confirmMock.mockResolvedValue(false);
-
     await uncollapseTask('task-1');
-
     expect(store.tasks['task-1']?.collapsed).toBe(true);
-  });
-
-  it('ignores a collapse request when the task is already collapsed', async () => {
-    setStore('tasks', {
-      'task-1': createTestTask({
-        agentIds: [],
-        collapsed: true,
-        shellAgentIds: [],
-      }),
-    });
-    setStore('taskOrder', []);
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('agents', {});
-
-    await collapseTask('task-1');
-
-    expect(store.tasks['task-1']?.collapsed).toBe(true);
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.some(([channel]) => channel === IPC.SetTaskCollapsed)).toBe(false);
   });
 
   it('does not merge direct-mode tasks and does not attempt backend merge recovery', async () => {

@@ -15,7 +15,7 @@ const {
   applyBrowserColdBootstrapWorkspaceProjectionMock: vi.fn(),
   emitStartupBreadcrumbMock: vi.fn(),
   fetchBrowserColdBootstrapMock: vi.fn(),
-  loadedWorkspaceState: { json: null as string | null },
+  loadedWorkspaceState: { json: null as string | null, revision: 0 },
   loadWorkspaceStateMock: vi.fn(),
   showNotificationMock: vi.fn(),
   storeState: {
@@ -49,6 +49,7 @@ vi.mock('../store/notification', () => ({
 
 vi.mock('../store/persistence-session', () => ({
   getLoadedWorkspaceStateJson: () => loadedWorkspaceState.json,
+  getLoadedWorkspaceRevision: () => loadedWorkspaceState.revision,
 }));
 
 vi.mock('../store/state', () => ({
@@ -105,6 +106,21 @@ function createRecoveryOptions() {
   };
 }
 
+function withUnversionedMetadata(
+  snapshot: BrowserColdBootstrapSnapshot,
+): BrowserColdBootstrapSnapshot {
+  return {
+    ...snapshot,
+    planContents: [
+      { taskId: 'task-1', content: 'Old plan', fileName: 'old.md', relativePath: 'old.md' },
+    ],
+    projectPathsExist: { '/tmp/project': false },
+    serverStateBootstrap: [
+      { category: 'task-command-controller', mode: 'replace', payload: [], version: 9 },
+    ],
+  };
+}
+
 describe('browser workspace cold-start recovery', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -116,8 +132,10 @@ describe('browser workspace cold-start recovery', () => {
     storeState.tasks = {};
     storeState.terminals = {};
     loadedWorkspaceState.json = null;
+    loadedWorkspaceState.revision = 0;
+    applyBrowserColdBootstrapWorkspaceProjectionMock.mockReturnValue(true);
     fetchBrowserColdBootstrapMock.mockResolvedValue(createSnapshot(createEmptyProjection(), 7));
-    loadWorkspaceStateMock.mockResolvedValue(false);
+    loadWorkspaceStateMock.mockReset().mockResolvedValue(false);
     takeBrowserColdBootstrapHandoffProjectionMock.mockReturnValue(null);
   });
 
@@ -149,6 +167,54 @@ describe('browser workspace cold-start recovery', () => {
     expect(takeBrowserColdBootstrapHandoffProjectionMock).not.toHaveBeenCalled();
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(options.wait).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 5])(
+    'preserves live state when cold bootstrap revision %s arrives after revision 4',
+    async (revision) => {
+      const options = createRecoveryOptions();
+      loadedWorkspaceState.json = '{}';
+      loadedWorkspaceState.revision = 4;
+      const snapshot = withUnversionedMetadata(createSnapshot(createEmptyProjection(), revision));
+      fetchBrowserColdBootstrapMock.mockResolvedValue(snapshot);
+      if (revision > 4) {
+        loadWorkspaceStateMock.mockImplementationOnce(async () => {
+          loadedWorkspaceState.revision = revision;
+          return true;
+        });
+      }
+
+      const result = await startBrowserWorkspaceColdStartRecovery(options).restore();
+
+      expect(result?.shouldSchedulePostRestoreSync).toBe(false);
+      expect(result?.coldBootstrap).not.toHaveProperty('planContents');
+      expect(result?.coldBootstrap).not.toHaveProperty('projectPathsExist');
+      expect(result?.coldBootstrap?.serverStateBootstrap).toBe(snapshot.serverStateBootstrap);
+      expect(snapshot.planContents).toHaveLength(1);
+      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
+      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(revision > 4 ? 1 : 0);
+      expect(options.ensureAgentCatalogRefresh).not.toHaveBeenCalled();
+      expect(takeBrowserColdBootstrapHandoffProjectionMock).not.toHaveBeenCalled();
+      expect(options.scheduleImmediateSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps live state and schedules reconciliation when a newer canonical refresh fails', async () => {
+    const options = createRecoveryOptions();
+    loadedWorkspaceState.json = '{"preserved":true}';
+    loadedWorkspaceState.revision = 4;
+    fetchBrowserColdBootstrapMock.mockResolvedValue(
+      withUnversionedMetadata(createSnapshot(createEmptyProjection(), 7)),
+    );
+    loadWorkspaceStateMock.mockRejectedValueOnce(new Error('refresh unavailable'));
+
+    const result = await startBrowserWorkspaceColdStartRecovery(options).restore();
+
+    expect(result?.coldBootstrap).not.toHaveProperty('planContents');
+    expect(result?.coldBootstrap).not.toHaveProperty('projectPathsExist');
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
+    expect(loadedWorkspaceState.json).toBe('{"preserved":true}');
+    expect(options.scheduleImmediateSync).toHaveBeenCalledOnce();
   });
 
   it('retries a transient bootstrap failure with the exact bounded delay policy', async () => {

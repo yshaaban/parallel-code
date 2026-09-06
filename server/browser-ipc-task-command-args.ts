@@ -9,6 +9,7 @@ type BrowserIpcArgs = Record<string, unknown> | undefined;
 type GetAgentTaskId = (agentId: string) => string | undefined;
 type GetWorktreeTaskId = (worktreePath: string, preferredTaskId?: string) => string | null;
 type BrowserIpcTaskMutationArgChannel =
+  | IPC.SetTaskCollapsed
   | IPC.CleanupTaskRuntime
   | IPC.DeleteTask
   | IPC.GetTaskMergeOperationStatus
@@ -168,6 +169,7 @@ function stripTaskCommandLeaseIdentity(args: Record<string, unknown>): Record<st
 }
 
 const BROWSER_IPC_TASK_MUTATION_ARG_NORMALIZERS = {
+  [IPC.SetTaskCollapsed]: normalizeBrowserOwnedTaskArgs,
   [IPC.CleanupTaskRuntime]: normalizeBrowserOwnedTaskArgs,
   [IPC.DeleteTask]: normalizeBrowserOwnedTaskArgs,
   [IPC.GetTaskMergeOperationStatus]: normalizeBrowserOwnedTaskArgs,

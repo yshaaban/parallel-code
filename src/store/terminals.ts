@@ -9,10 +9,14 @@ import {
   markCompatibilityTerminalCreationPending,
 } from '../runtime/compatibility-terminal-creation';
 import { setStore, store, updateWindowTitle } from './core';
-import { getTaskFocusedPanel, triggerFocus } from './focus';
+import { getTaskFocusedPanel, triggerFocus, unfocusPlaceholder } from './focus';
 import { saveCurrentRuntimeState } from './persistence-save';
 import { getSelectedTaskRuntimeAgentId } from './task-agent-selection';
-import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
+import {
+  clearRemovedTaskRuntimeState,
+  removeAgentScopedStoreState,
+  removeTerminalStoreState,
+} from './task-state-cleanup';
 import { clearAgentActivity } from './taskStatus';
 import type { Task, Terminal } from './types';
 
@@ -65,6 +69,7 @@ export function createTerminal(): void {
   const now = Date.now();
   if (now - lastCreateTime < 300) return;
   lastCreateTime = now;
+  unfocusPlaceholder();
 
   terminalCounter++;
   const id = createRandomId();
@@ -120,6 +125,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
     }),
   );
 
+  clearRemovedTaskRuntimeState([terminalId]);
   const activeId = store.activeTaskId;
   if (activeId) {
     updateWindowTitle(getPanelTitle(activeId));

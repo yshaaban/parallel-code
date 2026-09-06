@@ -10,7 +10,7 @@ import {
   cleanupPendingDockerAgentRunnerBuilds,
   createDockerAgentRunnerLaunch,
 } from './agent-runner-docker.js';
-import { removeAgentSupervision, removeTaskSupervision } from './agent-supervision.js';
+import { getAgentSupervisionSnapshot, removeTaskSupervision } from './agent-supervision.js';
 import { removeGitStatusSnapshot } from './git-status-state.js';
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
@@ -113,6 +113,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   bindOutputChannel?: () => boolean;
   cols: number;
   command: string;
+  compatibilityCreatorClientId?: string;
   contentAuthorityClass?: 'explicit-transient';
   contentAuthorityRoot?: string;
   cwd: string;
@@ -261,6 +262,7 @@ const latestTaskAgentSpawnByAgentId = new Map<string, PendingTaskAgentSpawn>();
 const hydraWorkspaceByAgentId = new Map<string, string>();
 const pendingSpawnAdmissions: PendingSpawnAdmission[] = [];
 const closingTaskSpawnIds = new Set<string>();
+const suspendedTaskSpawnIds = new Set<string>();
 const preparedRunnerCleanups = new Set<PreparedRunnerCleanup>();
 const taskAgentStopWorkflowsByAgentId = new Map<string, TaskAgentStopWorkflowOwner>();
 let activeSpawnAdmissions = 0;
@@ -279,6 +281,8 @@ function getSpawnAbortError(operation: PendingTaskAgentSpawn): Error {
 }
 
 function getTaskAgentSpawnAdmissionError(agentId: string, taskId: string): Error | null {
+  if (suspendedTaskSpawnIds.has(taskId))
+    return new Error(`Task ${taskId} is collapsed and does not admit agent spawns`);
   if (taskAgentStopWorkflowsByAgentId.has(agentId)) {
     return new Error(`Agent ${agentId} is stopping and does not admit new spawns`);
   }
@@ -317,6 +321,13 @@ function attachExistingTaskAgentSession(
   context: TaskWorkflowContext,
   request: SpawnTaskAgentWorkflowRequest,
 ): AgentSpawnDisposition {
+  if (
+    request.compatibilityCreatorClientId !== undefined &&
+    getAgentMeta(request.agentId)?.compatibilityCreatorClientId !==
+      request.compatibilityCreatorClientId
+  ) {
+    throw new Error('Compatibility shell belongs to another client');
+  }
   if (request.contentAuthorityClass === 'explicit-transient') {
     throw new Error('A transient Arena launch cannot attach to an existing PTY session');
   }
@@ -772,6 +783,7 @@ export function clearTaskWorkflowWorktreeRegistryForTests(): void {
   hydraWorkspaceByAgentId.clear();
   pendingSpawnAdmissions.splice(0, pendingSpawnAdmissions.length);
   closingTaskSpawnIds.clear();
+  suspendedTaskSpawnIds.clear();
   preparedRunnerCleanups.clear();
   taskAgentStopWorkflowsByAgentId.clear();
   activeSpawnAdmissions = 0;
@@ -1074,9 +1086,8 @@ export function stopTaskWorktreeWatchers(taskId: string): void {
 export function cleanupTaskRuntimeWorkflow(
   request: CleanupTaskRuntimeWorkflowRequest,
 ): CleanupTaskRuntimeWorkflowResult {
-  for (const agentId of request.agentIds) {
-    removeAgentSupervision(agentId);
-  }
+  assertTaskRuntimeAgentHints(request.taskId, request.agentIds);
+  removeTaskSupervision(request.taskId);
 
   stopTaskWorktreeWatchers(request.taskId);
 
@@ -1087,7 +1098,6 @@ export function cleanupTaskRuntimeWorkflow(
   }
 
   const releasedTaskCommandController = clearTaskCommandLeaseForTask(request.taskId);
-  removeTaskSupervision(request.taskId);
   removeTaskConvergence(request.taskId);
   removeTaskReview(request.taskId);
   removeTaskReviewSignals(request.taskId);
@@ -1095,6 +1105,7 @@ export function cleanupTaskRuntimeWorkflow(
   removeTaskPorts(request.taskId);
   removeTaskContainerPreviewTargets(request.taskId);
   forgetTaskCreationOperations(request.taskId);
+  suspendedTaskSpawnIds.delete(request.taskId);
   removeTaskWorktreeIdentity(request.taskId);
   if (
     request.projectMode !== 'non-git' &&
@@ -1109,6 +1120,16 @@ export function cleanupTaskRuntimeWorkflow(
       ? releasedTaskCommandController.snapshot
       : null,
   };
+}
+
+/** Caller IDs are compatibility hints, never authority to mutate another task's runtime. */
+export function assertTaskRuntimeAgentHints(taskId: string, agentIds: readonly string[]): void {
+  for (const agentId of agentIds) {
+    const owner = getAgentMeta(agentId)?.taskId ?? getAgentSupervisionSnapshot(agentId)?.taskId;
+    if (owner !== undefined && owner !== taskId) {
+      throw new Error('Agent runtime identity belongs to another task');
+    }
+  }
 }
 
 function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpawnLaunch {
@@ -1247,6 +1268,9 @@ async function executeTaskAgentSpawn(
         ? { agentSessionResumed: request.agentSessionResumed }
         : {}),
       command: resolvedLaunch.command,
+      ...(request.compatibilityCreatorClientId !== undefined
+        ? { compatibilityCreatorClientId: request.compatibilityCreatorClientId }
+        : {}),
       ...(request.contentAuthorityClass !== undefined
         ? { contentAuthorityClass: request.contentAuthorityClass }
         : {}),
@@ -1627,10 +1651,29 @@ async function closeTaskAgentSpawns(taskId: string): Promise<void> {
   await drainCancelledTaskAgentSpawns(completions);
 }
 
+/** Visibility owner barrier: pending compatibility and managed launches settle before stop proof. */
+export async function setTaskAgentSpawnsSuspended(
+  taskId: string,
+  suspended: boolean,
+): Promise<void> {
+  if (!suspended) {
+    suspendedTaskSpawnIds.delete(taskId);
+    return;
+  }
+  suspendedTaskSpawnIds.add(taskId);
+  await drainCancelledTaskAgentSpawns(
+    cancelTaskAgentSpawnOperations(
+      (operation) => operation.taskId === taskId,
+      `Task ${taskId} was collapsed before agent spawn completed`,
+    ),
+  );
+}
+
 export async function stopTaskAgentWorkflowsForTask(
   taskId: string,
   agentIds: readonly string[],
 ): Promise<void> {
+  assertTaskRuntimeAgentHints(taskId, agentIds);
   revokeTaskAgentContentAuthorities(taskId, agentIds);
   await closeTaskAgentSpawns(taskId);
   await cleanupTaskAgentRunners(agentIds, taskId);

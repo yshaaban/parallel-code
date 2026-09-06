@@ -609,6 +609,62 @@ describe('task-shell-session workflow', () => {
     });
   });
 
+  it('retires failed-suspension candidates after verified removal, retaining them across a failed finalizer write', async () => {
+    const journal = await makeJournal();
+    const test = harness({ current: managedCurrent(), journal });
+    const { request } = reservationRequest();
+    await test.workflow.reserveForTaskCommit(request);
+    await test.workflow.admitAfterTaskCommit({
+      committedWorkspaceRevision: 1,
+      creationOperationId: request.creationOperationId,
+      operationId: request.operationId,
+      taskId: request.taskId,
+    });
+    vi.mocked(test.authority.inspectExactTuple)
+      .mockResolvedValueOnce({ kind: 'not-admitted' })
+      .mockResolvedValue({ kind: 'running', supervisorIdentityHash: digest('supervisor') });
+    await test.workflow.start(request);
+    const [candidate] = await test.workflow.beginTaskSuspension(request.taskId);
+    if (!candidate) throw new Error('Expected retained suspension candidate');
+    vi.mocked(test.authority.inspectExactTuple).mockResolvedValue({ kind: 'failed' });
+    vi.spyOn(journal, 'save').mockResolvedValueOnce({
+      kind: 'not-committed',
+      cause: new Error('permit write failed'),
+    });
+    await expect(test.workflow.persistCleanRestartPermit(candidate)).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'journal-unavailable',
+    });
+    await test.workflow.prepareTaskRemoval({
+      deletionOperationId: 'delete-1',
+      launchOperationId: request.operationId,
+      preparedWorkspaceRevision: 2,
+      taskId: request.taskId,
+      taskIdentityWitness: digest('task-identity'),
+    });
+    const removal = {
+      deletionOperationId: 'delete-1',
+      launchOperationId: request.operationId,
+      removedWorkspaceRevision: 3,
+      taskId: request.taskId,
+    };
+    await test.workflow.markTaskRemovalCommitted(removal);
+    vi.mocked(journal.save).mockResolvedValueOnce({
+      kind: 'not-committed',
+      cause: new Error('tombstone write failed'),
+    });
+    await expect(test.workflow.finalizeTaskRemoval(removal)).rejects.toThrow();
+    await expect(test.workflow.beginCleanRestartDrain()).resolves.toEqual([candidate]);
+    await expect(test.workflow.finalizeTaskRemoval(removal)).resolves.toMatchObject({
+      outcome: 'task-removed-no-replay',
+    });
+    await expect(test.workflow.beginCleanRestartDrain()).resolves.toEqual([]);
+    await expect(test.workflow.persistCleanRestartPermit(candidate)).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'candidate-unavailable',
+    });
+  });
+
   it('maps journal capacity to the typed terminal-launch error', async () => {
     const journal = await makeJournal();
     for (let index = 0; index < TASK_SHELL_SESSION_JOURNAL_ACTIVE_PER_PRINCIPAL_LIMIT; index += 1) {

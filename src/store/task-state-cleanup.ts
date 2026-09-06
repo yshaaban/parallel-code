@@ -105,7 +105,7 @@ export function removeTerminalStoreState(
   }
 
   options.agentIdsToDelete?.add(terminal.agentId);
-  cleanupPanelEntries(storeState, terminalId);
+  removeTaskScopedStoreState(storeState, terminalId, null);
   deleteRecordEntry(storeState.terminals, terminalId);
 }
 
@@ -128,7 +128,9 @@ export function reconcileTaskScopedStoreStateForExistingTasks(storeState: AppSto
   const removedTaskIds = new Set<string>();
 
   function removeIfTaskMissing(taskId: string): void {
-    if (storeState.tasks[taskId]) {
+    // Scratch panels share controller and focus state, but live outside canonical tasks.
+    // A workspace refresh is not authority to remove a still-live local terminal.
+    if (storeState.tasks[taskId] || storeState.terminals[taskId]) {
       return;
     }
 

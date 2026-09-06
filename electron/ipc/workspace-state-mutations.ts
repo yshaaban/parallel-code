@@ -35,6 +35,7 @@ const ACTIVE_POLICY_VERSION = '1';
 const TASK_IDENTITY_FIELDS = Object.freeze([
   'baseBranch',
   'branchName',
+  'collapsed',
   'gitIsolation',
   'id',
   'projectId',
@@ -405,6 +406,18 @@ function createTaskStructurePolicy(): WorkspaceProtectedPolicyDefinition {
           // Electron's legacy combined order may still carry adapter-local terminal panel IDs.
           // They are not task membership; count only IDs backed by canonical task records.
           if (!canonicalSet.has(orderedId)) continue;
+          const canonicalTask = getTasks(canonical)[orderedId];
+          const isCollapsed =
+            canonicalTask !== null &&
+            typeof canonicalTask === 'object' &&
+            !Array.isArray(canonicalTask) &&
+            canonicalTask.collapsed === true;
+          if (isCollapsed !== (orderField === 'collapsedTaskOrder')) {
+            throw new WorkspaceProtectedFieldConflictError(
+              'task-structure',
+              `Task ${orderedId} visibility differs from canonical state`,
+            );
+          }
           proposedTaskOrderCounts.set(orderedId, (proposedTaskOrderCounts.get(orderedId) ?? 0) + 1);
         }
       }

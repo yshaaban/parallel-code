@@ -706,6 +706,7 @@ async function runAgentSpawnRequest(
   request: AgentSpawnRequestFields,
   normalized: NormalizedAgentSpawnRequest,
   bindOutputChannel?: () => boolean,
+  compatibilityCreatorClientId?: string,
 ): Promise<AgentSpawnDisposition> {
   const { channelId, replaceExistingSession, requestedCols, requestedRows } = normalized;
   const assertProcessAdmission = (): void =>
@@ -776,6 +777,7 @@ async function runAgentSpawnRequest(
         ...(contentAuthorityClass !== undefined ? { contentAuthorityClass } : {}),
         ...(contentAuthorityRoot !== undefined ? { contentAuthorityRoot } : {}),
         command: typeof request.command === 'string' ? request.command : '',
+        ...(compatibilityCreatorClientId !== undefined ? { compatibilityCreatorClientId } : {}),
         args: request.args,
         assertSpawnAdmitted: assertProcessAdmission,
         ...(bindOutputChannel !== undefined ? { bindOutputChannel } : {}),
@@ -1025,6 +1027,7 @@ export function createAgentIpcHandlers(
           throw new BadRequestError('arena-transient requires a non-shell Arena launch token');
         }
 
+        let standaloneShell = false;
         if (request.sessionOwner !== 'arena-transient') {
           if (request.sessionOwner === 'compatibility-shell') {
             const classifyCanonicalAgentSessionIdentity =
@@ -1068,8 +1071,13 @@ export function createAgentIpcHandlers(
                   sessionId: request.agentId,
                   taskId: request.taskId,
                 },
-                compatibilityRequest?.compatibilityIntent === 'create'
-                  ? { compatibilityIntent: 'create' }
+                compatibilityRequest?.sessionOwner === 'compatibility-shell'
+                  ? {
+                      ...(compatibilityRequest.compatibilityIntent === 'create'
+                        ? { compatibilityIntent: 'create' as const }
+                        : {}),
+                      ...(context.bindChannelForClient && clientId !== null ? { clientId } : {}),
+                    }
                   : undefined,
               );
             } catch {
@@ -1087,6 +1095,8 @@ export function createAgentIpcHandlers(
             if (restoredShell.kind === 'existing' || restoredShell.kind === 'restored') {
               return attachExactSession(restoredShell.generation, true, restoredShell.kind);
             }
+            standaloneShell =
+              restoredShell.kind === 'unmanaged' && restoredShell.standalone === true;
             if (request.sessionOwner === 'managed-task-shell') {
               return unavailableAttachResult('task-shell-restore-unavailable');
             }
@@ -1104,6 +1114,9 @@ export function createAgentIpcHandlers(
             compatibilityRequest,
             normalized,
             bindChannel,
+            standaloneShell && context.bindChannelForClient && clientId !== null
+              ? clientId
+              : undefined,
           );
         } catch (error) {
           if (channelBindingFailed) return unavailableAttachResult('channel-unavailable');

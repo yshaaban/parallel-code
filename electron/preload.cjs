@@ -55,6 +55,7 @@ const ALLOWED_CHANNELS = new Set([
   'execute_task_creation_reconciliation',
   'delete_task',
   'cleanup_task_runtime',
+  'set_task_collapsed',
   'acquire_task_command_lease',
   'renew_task_command_lease',
   'release_task_command_lease',

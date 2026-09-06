@@ -3,7 +3,14 @@ import { IPC } from '../../electron/ipc/channels';
 import {
   createTaskCommandLeaseSession,
   resetTaskCommandLeaseStateForTests,
+  runWithTaskCommandLease,
 } from '../app/task-command-lease';
+import {
+  acquireTaskCommandLease,
+  isTaskCommandLeaseHeld,
+  releaseTaskCommandLease,
+  resetTaskCommandLeasesForTest,
+} from '../../electron/ipc/task-command-leases';
 import { markTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import {
   getCurrentMergeProgressSnapshot,
@@ -398,6 +405,42 @@ describe('persistence integration', () => {
       'codex',
     ]);
     expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBe(1);
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+  });
+
+  it('preserves exact collapsed session identities through a load-save-load round trip', () => {
+    const json = JSON.stringify({
+      projects: [createTestProject()],
+      taskOrder: [],
+      collapsedTaskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          ...createTestTask(),
+          collapsed: true,
+          agentId: 'agent-1',
+          agentDef: createTestAgentDef(),
+          shellAgentIds: ['sidecar-1'],
+          shellCount: 1,
+        },
+      },
+    });
+    isElectronRuntimeMock.mockReturnValue(true);
+    expect(applyLoadedStateJson(json)).toBe(true);
+    expect(store.tasks['task-1']).toMatchObject({
+      agentIds: ['agent-1'],
+      shellAgentIds: ['sidecar-1'],
+    });
+    const roundTrip = getWorkspaceStateSnapshotJson();
+    expect(JSON.parse(roundTrip).tasks['task-1']).toMatchObject({
+      agentId: 'agent-1',
+      shellAgentIds: ['sidecar-1'],
+    });
+    resetStoreForTest();
+    expect(applyLoadedStateJson(roundTrip)).toBe(true);
+    expect(store.tasks['task-1']).toMatchObject({
+      agentIds: ['agent-1'],
+      shellAgentIds: ['sidecar-1'],
+    });
   });
 
   it('omits git-only project fields for non-git projects during save and hydration', () => {
@@ -2667,6 +2710,101 @@ describe('persistence integration', () => {
     expect(store.pendingAction).toBeNull();
   });
 
+  it.each([
+    { syncKind: 'repeated', typing: false },
+    { syncKind: 'newer', typing: false },
+    { syncKind: 'repeated', typing: true },
+    { syncKind: 'newer', typing: true },
+  ])(
+    'preserves an in-flight scratch creation lease during $syncKind canonical workspace sync (typing=$typing)',
+    async ({ syncKind, typing }) => {
+      resetTaskCommandLeasesForTest();
+      const json = JSON.stringify({ projects: [], taskOrder: [], tasks: {}, terminals: {} });
+      expect(applyLoadedWorkspaceStateJson(json, 1)).toBe(true);
+      const terminalId = 'scratch-pending';
+      const clientId = getRuntimeClientId();
+      setStore('terminals', terminalId, {
+        id: terminalId,
+        agentId: 'scratch-agent',
+        name: 'Scratch',
+      });
+      setStore('taskOrder', [terminalId]);
+      setStore('activeTaskId', terminalId);
+      setStore('focusedPanel', terminalId, 'terminal');
+      setStore('fontScales', `${terminalId}:terminal`, 1.2);
+      setStore('panelSizes', `${terminalId}:terminal`, 320);
+      invokeMock.mockImplementation(async (channel: IPC, args) => {
+        if (channel === IPC.AcquireTaskCommandLease) {
+          return acquireTaskCommandLease(args.taskId, args.clientId, args.ownerId, args.action);
+        }
+        if (channel === IPC.ReleaseTaskCommandLease) {
+          return releaseTaskCommandLease(
+            args.taskId,
+            args.clientId,
+            args.ownerId,
+            Date.now(),
+            args.leaseGeneration,
+          ).snapshot;
+        }
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      });
+      let enterCreation!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enterCreation = resolve;
+      });
+      let finishCreation!: () => void;
+      const finish = new Promise<void>((resolve) => {
+        finishCreation = resolve;
+      });
+      const creation = runWithTaskCommandLease(terminalId, 'open a terminal', async () => {
+        enterCreation();
+        await finish;
+        // The actual backend spawn boundary checks this same authority after preparation.
+        if (!isTaskCommandLeaseHeld(terminalId, clientId))
+          throw new Error('Creation lease was lost');
+        return 'created';
+      });
+      const typingSession = typing
+        ? createTaskCommandLeaseSession(terminalId, 'type in the terminal')
+        : null;
+      try {
+        await entered;
+        if (typingSession) expect(await typingSession.acquire()).toBe(true);
+        expect(isTaskCommandLeaseHeld(terminalId, clientId)).toBe(true);
+        expect(applyLoadedWorkspaceStateJson(json, syncKind === 'repeated' ? 1 : 2)).toBe(
+          syncKind === 'newer',
+        );
+        await Promise.resolve();
+        expect(isTaskCommandLeaseHeld(terminalId, clientId)).toBe(true);
+        expect(store.taskOrder).toEqual([terminalId]);
+        expect(store.activeTaskId).toBe(terminalId);
+        expect(store.focusedPanel[terminalId]).toBe('terminal');
+        expect(store.fontScales[`${terminalId}:terminal`]).toBe(1.2);
+        expect(store.panelSizes[`${terminalId}:terminal`]).toBe(320);
+        expect(
+          invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+        ).toHaveLength(0);
+        finishCreation();
+        await expect(creation).resolves.toBe('created');
+        if (typingSession) {
+          expect(typingSession.touch()).toBe(true);
+          expect(isTaskCommandLeaseHeld(terminalId, clientId)).toBe(true);
+          await typingSession.release();
+        }
+        expect(isTaskCommandLeaseHeld(terminalId, clientId)).toBe(false);
+        expect(
+          invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+        ).toHaveLength(1);
+      } finally {
+        finishCreation();
+        await creation.catch(() => undefined);
+        typingSession?.cleanup();
+        resetTaskCommandLeaseStateForTests();
+        resetTaskCommandLeasesForTest();
+      }
+    },
+  );
+
   it('invalidates retained task-command lease sessions for removed tasks during incremental workspace apply', async () => {
     vi.useFakeTimers();
 
@@ -2754,92 +2892,104 @@ describe('persistence integration', () => {
     vi.useRealTimers();
   });
 
-  it('invalidates retained task-command lease sessions during full app-state load', async () => {
-    vi.useFakeTimers();
+  it.each(['task', 'scratch'] as const)(
+    'invalidates retained %s lease sessions during full app-state load',
+    async (kind) => {
+      vi.useFakeTimers();
 
-    const clientId = getRuntimeClientId();
-    invokeMock.mockImplementation((channel: IPC, payload?: { taskId?: string }) => {
-      switch (channel) {
-        case IPC.AcquireTaskCommandLease:
-          return Promise.resolve(
-            withControllerVersion({
-              acquired: true,
-              action: 'type in the terminal',
-              controllerId: clientId,
-              taskId: 'task-1',
-            }),
-          );
-        case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve(
-            withControllerVersion({
-              action: null,
-              controllerId: null,
-              taskId: payload?.taskId ?? 'task-1',
-            }),
-          );
-        case IPC.RenewTaskCommandLease:
-          return Promise.resolve(
-            withControllerVersion({
-              action: 'type in the terminal',
-              controllerId: clientId,
-              renewed: true,
-              taskId: payload?.taskId ?? 'task-1',
-            }),
-          );
-        default:
-          throw new Error(`Unexpected IPC channel: ${channel}`);
+      const clientId = getRuntimeClientId();
+      invokeMock.mockImplementation((channel: IPC, payload?: { taskId?: string }) => {
+        switch (channel) {
+          case IPC.AcquireTaskCommandLease:
+            return Promise.resolve(
+              withControllerVersion({
+                acquired: true,
+                action: 'type in the terminal',
+                controllerId: clientId,
+                taskId: 'task-1',
+              }),
+            );
+          case IPC.ReleaseTaskCommandLease:
+            return Promise.resolve(
+              withControllerVersion({
+                action: null,
+                controllerId: null,
+                taskId: payload?.taskId ?? 'task-1',
+              }),
+            );
+          case IPC.RenewTaskCommandLease:
+            return Promise.resolve(
+              withControllerVersion({
+                action: 'type in the terminal',
+                controllerId: clientId,
+                renewed: true,
+                taskId: payload?.taskId ?? 'task-1',
+              }),
+            );
+          default:
+            throw new Error(`Unexpected IPC channel: ${channel}`);
+        }
+      });
+
+      setStore('taskOrder', ['task-1']);
+      setStore('tasks', {
+        'task-1': {
+          taskMode: 'agent',
+          id: 'task-1',
+          name: 'Task 1',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          agentIds: [],
+          shellAgentIds: [],
+          notes: '',
+          lastPrompt: '',
+        },
+      });
+
+      if (kind === 'scratch') {
+        setStore('tasks', {});
+        setStore('terminals', 'task-1', {
+          id: 'task-1',
+          agentId: 'scratch-agent',
+          name: 'Scratch',
+        });
       }
-    });
 
-    setStore('taskOrder', ['task-1']);
-    setStore('tasks', {
-      'task-1': {
-        taskMode: 'agent',
-        id: 'task-1',
-        name: 'Task 1',
-        projectId: 'project-1',
-        branchName: 'feature/task-1',
-        worktreePath: '/tmp/project/task-1',
-        agentIds: [],
-        shellAgentIds: [],
-        notes: '',
-        lastPrompt: '',
-      },
-    });
+      const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+        idleReleaseMs: 60_000,
+      });
 
-    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
-      idleReleaseMs: 60_000,
-    });
+      expect(await session.acquire()).toBe(true);
+      expect(session.touch()).toBe(true);
 
-    expect(await session.acquire()).toBe(true);
-    expect(session.touch()).toBe(true);
+      const persistedJson = JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+        terminals: {},
+      });
 
-    const persistedJson = JSON.stringify({
-      projects: [],
-      taskOrder: [],
-      tasks: {},
-      terminals: {},
-    });
+      expect(applyLoadedStateJson(persistedJson)).toBe(true);
+      expect(session.touch()).toBe(false);
+      await Promise.resolve();
 
-    expect(applyLoadedStateJson(persistedJson)).toBe(true);
-    expect(session.touch()).toBe(false);
-    await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_100);
+      await Promise.resolve();
 
-    await vi.advanceTimersByTimeAsync(5_100);
-    await Promise.resolve();
+      expect(invokeMock).toHaveBeenCalledWith(
+        IPC.ReleaseTaskCommandLease,
+        expect.objectContaining({ taskId: 'task-1' }),
+      );
+      const renewCalls = invokeMock.mock.calls.filter(
+        ([channel, args]) => channel === IPC.RenewTaskCommandLease && args?.taskId === 'task-1',
+      );
+      expect(renewCalls).toEqual([]);
 
-    expect(invokeMock).toHaveBeenCalledWith(
-      IPC.ReleaseTaskCommandLease,
-      expect.objectContaining({ taskId: 'task-1' }),
-    );
-    const renewCalls = invokeMock.mock.calls.filter(
-      ([channel, args]) => channel === IPC.RenewTaskCommandLease && args?.taskId === 'task-1',
-    );
-    expect(renewCalls).toEqual([]);
-
-    session.cleanup();
-    vi.useRealTimers();
-  });
+      session.cleanup();
+      vi.useRealTimers();
+    },
+  );
 
   it('clears incoming takeover requests for removed tasks during incremental browser sync', () => {
     setStore('taskOrder', ['task-1', 'task-2']);

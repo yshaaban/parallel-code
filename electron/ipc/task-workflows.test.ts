@@ -110,6 +110,7 @@ vi.mock('./git.js', () => ({
 }));
 
 vi.mock('./agent-supervision.js', () => ({
+  getAgentSupervisionSnapshot: vi.fn(),
   removeAgentSupervision: removeAgentSupervisionMock,
   removeTaskSupervision: removeTaskSupervisionMock,
 }));
@@ -161,6 +162,7 @@ import {
   spawnTaskAgentWorkflow,
   stopAllTaskAgentWorkflows,
   stopTaskAgentWorkflow,
+  setTaskAgentSpawnsSuspended,
   syncTaskWorkflowWorktreesFromSavedState,
   type CreateTaskWorkflowRequest,
   type TaskWorkflowContext,
@@ -857,37 +859,48 @@ describe('task workflows', () => {
     expect(spawnAgentMock).not.toHaveBeenCalled();
   });
 
-  it('cancels pending Docker setup before a killed agent can spawn late', async () => {
-    const context = createContext();
-    createDockerAgentRunnerLaunchMock.mockImplementationOnce(
-      ({ signal }: { signal: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-        }),
-    );
+  it.each(['stop', 'collapse'])(
+    'cancels pending Docker setup before %s can allow a late spawn',
+    async (mode) => {
+      const context = createContext();
+      createDockerAgentRunnerLaunchMock.mockImplementationOnce(
+        ({ signal }: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          }),
+      );
 
-    const spawn = spawnTaskAgentWorkflow(context, {
-      agentId: 'agent-pending-build',
-      args: [],
-      cols: 80,
-      command: 'codex',
-      cwd: '/tmp/task-pending-build',
-      env: {},
-      rows: 24,
-      runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
-      taskId: 'task-pending-build',
-    });
-    await vi.waitFor(() => {
-      expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
-    });
-    expect(countRunningAndPendingTaskAgents()).toBe(1);
+      const spawn = spawnTaskAgentWorkflow(context, {
+        agentId: 'agent-pending-build',
+        args: [],
+        cols: 80,
+        command: 'codex',
+        cwd: '/tmp/task-pending-build',
+        env: {},
+        rows: 24,
+        runnerProfile: { dockerfile: 'Dockerfile', provider: 'docker-container' },
+        taskId: 'task-pending-build',
+      });
+      await vi.waitFor(() => {
+        expect(createDockerAgentRunnerLaunchMock).toHaveBeenCalledOnce();
+      });
+      expect(countRunningAndPendingTaskAgents()).toBe(1);
 
-    await expect(stopTaskAgentWorkflow('agent-pending-build')).resolves.toBeUndefined();
-    await expect(spawn).rejects.toThrow('Agent agent-pending-build was stopped');
+      await expect(
+        mode === 'stop'
+          ? stopTaskAgentWorkflow('agent-pending-build')
+          : setTaskAgentSpawnsSuspended('task-pending-build', true),
+      ).resolves.toBeUndefined();
+      await expect(spawn).rejects.toThrow(
+        mode === 'stop'
+          ? 'Agent agent-pending-build was stopped'
+          : 'Task task-pending-build was collapsed',
+      );
 
-    expect(spawnAgentMock).not.toHaveBeenCalled();
-    expect(countRunningAndPendingTaskAgents()).toBe(0);
-  });
+      expect(spawnAgentMock).not.toHaveBeenCalled();
+      expect(countRunningAndPendingTaskAgents()).toBe(0);
+    },
+  );
 
   it('removes a cancelled spawn from the global admission queue without waiting for active builds', async () => {
     const context = createContext();
@@ -3145,10 +3158,9 @@ describe('task workflows', () => {
       taskId: 'task-3',
     });
 
-    expect(removeAgentSupervisionMock).toHaveBeenCalledWith('agent-1');
+    expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
     expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
     expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
-    expect(removeTaskSupervisionMock).not.toHaveBeenCalled();
     expect(removeTaskConvergenceMock).not.toHaveBeenCalled();
     expect(removeTaskReviewMock).not.toHaveBeenCalled();
     expect(removeTaskPortsMock).not.toHaveBeenCalled();

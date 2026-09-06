@@ -672,6 +672,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
   };
   handlerContext.getTaskNotesService = async () => (await taskExperienceRuntimeStarted).notes;
+  handlerContext.getTaskCollapseWorkflow = async () =>
+    (await taskExperienceRuntimeStarted).collapse;
   handlerContext.restoreCanonicalAgentSession = async (request) =>
     (await taskExperienceRuntimeStarted).agentSession.restoreCanonicalSession(request);
   handlerContext.classifyCanonicalAgentSessionIdentity = async (request) =>

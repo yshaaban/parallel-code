@@ -423,6 +423,7 @@ export interface RendererInvokeRequestMap {
     taskId: string;
     worktreePath?: string;
   };
+  [IPC.SetTaskCollapsed]: { collapsed: boolean; controllerId: string; taskId: string };
   [IPC.AcquireTaskCommandLease]: {
     action: string;
     clientId: string;
@@ -835,6 +836,7 @@ export interface RendererInvokeResponseMap {
   [IPC.ExecuteTaskCreationReconciliation]: TaskCreationReconciliationActionResult;
   [IPC.DeleteTask]: TaskCleanupResult;
   [IPC.CleanupTaskRuntime]: TaskCleanupResult;
+  [IPC.SetTaskCollapsed]: undefined;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
     acquired: boolean;
     leaseGeneration: number;

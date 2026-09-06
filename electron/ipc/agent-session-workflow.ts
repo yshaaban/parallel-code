@@ -145,7 +145,7 @@ export interface AgentSessionRemovalOwnerHooks {
 }
 
 export interface AgentSessionWorkflow {
-  drain(): Promise<void>;
+  drain(taskId?: string): Promise<void>;
   execute(request: AgentSessionOperationRequest): Promise<AgentSessionOperationResult>;
   getOwnerAvailability(taskId: string): Promise<AgentSessionOwnerAvailability>;
   readonly removalHooks: AgentSessionRemovalOwnerHooks;
@@ -370,7 +370,8 @@ class AgentSessionWorkflowImpl implements AgentSessionWorkflow {
     return this.dependencies.getOwnerAvailability(taskId);
   }
 
-  async drain(): Promise<void> {
+  async drain(taskId?: string): Promise<void> {
+    if (taskId !== undefined) return this.waitForTaskOperations(taskId);
     while (this.inFlightByOperation.size > 0 || this.agentQueues.size > 0) {
       await Promise.allSettled([
         ...[...this.inFlightByOperation.values()].map((operation) => operation.promise),

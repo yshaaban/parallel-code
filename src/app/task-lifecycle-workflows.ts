@@ -10,7 +10,6 @@ import type { AgentDef, WorktreeSymlinkWarning, WorktreeSymlinkWarningReason } f
 import { confirm } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { isElectronRuntime } from '../lib/browser-auth';
-import { createRandomId } from '../lib/random-id';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import {
   getProject,
@@ -22,17 +21,13 @@ import {
 import { showNotification } from '../store/notification';
 import { saveCurrentRuntimeState } from '../store/persistence';
 import { applyLoadedWorkspaceStateJson } from '../store/persistence-load';
-import {
-  enqueueWorkspaceOrderEdit,
-  enqueueWorkspaceTaskFieldEdit,
-} from '../store/persistence-session';
 import { getProjectMode } from '../store/project-mode';
 import { setStore, store, updateWindowTitle } from '../store/state';
 import { isExistingWorktreeTask, isManagedWorktreeTask } from '../store/task-git-isolation';
 import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
-import type { Agent, ProjectMode, Task, TaskGitIsolationMode } from '../store/types';
+import type { ProjectMode, Task, TaskGitIsolationMode } from '../store/types';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 import { clearTaskCloseState, markTaskCloseError, markTaskClosing } from './task-close-state';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
@@ -58,11 +53,7 @@ import {
   completeDesktopTaskNotesRemoval,
 } from './task-notes-recovery-channel';
 
-const collapsingTaskIds = new Set<string>();
-
-function getSharedOrderedTaskIds(order: readonly string[]): string[] {
-  return order.filter((taskId) => store.tasks[taskId] !== undefined);
-}
+const taskVisibilityRequests = new Map<string, { collapsed: boolean; promise: Promise<void> }>();
 
 interface TaskRuntimeCleanupRequest {
   agentIds: string[];
@@ -156,64 +147,6 @@ async function cleanupTaskRuntimeForTask(
   }
 
   return cleanupTaskRuntimeState(request);
-}
-
-async function killTaskAgentsBestEffort(
-  task: Pick<Task, 'agentIds' | 'shellAgentIds'>,
-): Promise<void> {
-  await Promise.allSettled(
-    getRuntimeAgentIds(task).map((agentId) => invoke(IPC.KillAgent, { agentId })),
-  );
-}
-
-function getCompleteTaskAgentDefs(task: Pick<Task, 'agentIds'>): AgentDef[] | null {
-  const agentDefs: AgentDef[] = [];
-  for (const agentId of task.agentIds) {
-    const agentDef = store.agents[agentId]?.def;
-    if (!agentDef) {
-      return null;
-    }
-
-    agentDefs.push(agentDef);
-  }
-
-  return agentDefs;
-}
-
-function getSelectedTaskAgentIndex(
-  task: Pick<Task, 'agentIds' | 'selectedAgentId'>,
-): number | null {
-  if (!task.selectedAgentId) {
-    return null;
-  }
-
-  const index = task.agentIds.indexOf(task.selectedAgentId);
-  return index === -1 ? null : index;
-}
-
-function createRestoredAgent(taskId: string, agentDef: AgentDef): Agent {
-  return {
-    id: createRandomId(),
-    taskId,
-    def: agentDef,
-    resumed: true,
-    status: 'running',
-    exitCode: null,
-    signal: null,
-    lastOutput: [],
-    generation: 0,
-  };
-}
-
-function getSelectedRestoredAgent(
-  restoredAgents: Agent[],
-  savedSelectedAgentIndex: number | undefined,
-): Agent | undefined {
-  if (savedSelectedAgentIndex === undefined) {
-    return restoredAgents[0];
-  }
-
-  return restoredAgents[savedSelectedAgentIndex] ?? restoredAgents[0];
 }
 
 function getTaskActiveAgentId(
@@ -782,186 +715,68 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
   }
 }
 
-export async function collapseTask(taskId: string): Promise<void> {
+function setTaskCollapsed(taskId: string, collapsed: boolean): Promise<void> {
+  // The sidebar can publish visibility before cleanup and lease release finish. Preserve
+  // an opposite user intent behind that turn; repeated requests for its tail share the work.
+  const previous = taskVisibilityRequests.get(taskId);
+  if (previous?.collapsed === collapsed) return previous.promise;
+  const promise = (previous?.promise ?? Promise.resolve()).then(() =>
+    executeTaskVisibilityChange(taskId, collapsed),
+  );
+  const request = { collapsed, promise };
+  taskVisibilityRequests.set(taskId, request);
+  const release = () => {
+    if (taskVisibilityRequests.get(taskId) === request) taskVisibilityRequests.delete(taskId);
+  };
+  void promise.then(release, release);
+  return promise;
+}
+
+async function executeTaskVisibilityChange(taskId: string, collapsed: boolean): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.collapsed || hasTaskClosingState(task) || collapsingTaskIds.has(taskId)) {
-    return;
-  }
-
-  collapsingTaskIds.add(taskId);
-  let result: Awaited<ReturnType<typeof runWithTaskCommandLease<void>>>;
+  if (!task || (task.collapsed === true) === collapsed || hasTaskClosingState(task)) return;
   try {
-    result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
-      try {
-        const agentDefs = getCompleteTaskAgentDefs(task);
-        const agentDef = agentDefs?.[0];
-        const selectedAgentIndex = getSelectedTaskAgentIndex(task);
-        const runtimeAgentIds = getRuntimeAgentIds(task);
-
-        await killTaskAgentsBestEffort(task);
-        await cleanupTaskRuntimeForTask(task, {
-          bestEffort: true,
-          includeWorktreePath: false,
-          removeTaskState: false,
+    const result = await runWithTaskCommandLease(
+      taskId,
+      collapsed ? 'collapse this task' : 'restore this task',
+      async () => {
+        await invoke(IPC.SetTaskCollapsed, {
+          collapsed,
+          controllerId: getRuntimeClientId(),
+          taskId,
         });
-        for (const agentId of runtimeAgentIds) {
-          clearAgentActivity(agentId);
-        }
-        clearAgentSupervisionSnapshots(runtimeAgentIds);
-
-        const baseActiveOrder = getSharedOrderedTaskIds(store.taskOrder);
-        const baseCollapsedOrder = getSharedOrderedTaskIds(store.collapsedTaskOrder);
-        setStore(
-          produce((state) => {
-            const currentTask = state.tasks[taskId];
-            if (!currentTask) {
-              return;
-            }
-
-            currentTask.collapsed = true;
-            if (agentDef) {
-              currentTask.savedAgentDef = agentDef;
-            } else {
-              delete currentTask.savedAgentDef;
-            }
-            if (agentDefs && agentDefs.length > 1) {
-              currentTask.savedAgentDefs = agentDefs;
-              if (selectedAgentIndex !== null) {
-                currentTask.savedSelectedAgentIndex = selectedAgentIndex;
-              } else {
-                delete currentTask.savedSelectedAgentIndex;
-              }
-            } else {
-              delete currentTask.savedAgentDefs;
-              delete currentTask.savedSelectedAgentIndex;
-            }
-            currentTask.agentIds = [];
-            delete currentTask.selectedAgentId;
-            currentTask.shellAgentIds = [];
-            const index = state.taskOrder.indexOf(taskId);
-            if (index !== -1) {
-              state.taskOrder.splice(index, 1);
-            }
-            state.collapsedTaskOrder.push(taskId);
-
-            removeAgentScopedStoreState(state, runtimeAgentIds);
-
-            if (state.activeTaskId === taskId) {
-              const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
-              state.activeTaskId = neighbor;
-              const neighborTask = neighbor ? state.tasks[neighbor] : null;
-              state.activeAgentId = getTaskActiveAgentId(neighborTask);
-            }
-          }),
-        );
-        enqueueWorkspaceOrderEdit(
-          'active',
-          baseActiveOrder,
-          getSharedOrderedTaskIds(store.taskOrder),
-        );
-        enqueueWorkspaceOrderEdit(
-          'collapsed',
-          baseCollapsedOrder,
-          getSharedOrderedTaskIds(store.collapsedTaskOrder),
-        );
-        enqueueWorkspaceTaskFieldEdit(taskId, 'collapsed', undefined, true);
-
-        syncWindowTitleToActiveSelection();
-      } catch (error) {
-        console.error('Failed to collapse task:', error);
-      }
-    });
-  } finally {
-    collapsingTaskIds.delete(taskId);
-  }
-
-  if (isTaskCommandLeaseSkipped(result)) {
-    return;
+        const canonical = await invoke(IPC.LoadWorkspaceState);
+        if (!canonical?.json) throw new Error('Canonical task state is unavailable');
+        return canonical;
+      },
+    );
+    if (isTaskCommandLeaseSkipped(result) || !result?.json) return;
+    // Projection may retire local runtimes and lease state; apply only after the command lease ends.
+    applyLoadedWorkspaceStateJson(result.json, result.revision);
+    const currentTask = store.tasks[taskId];
+    if (!collapsed && currentTask && !currentTask.collapsed) {
+      setStore('activeTaskId', taskId);
+      setStore('activeAgentId', getTaskActiveAgentId(currentTask));
+      if (isTerminalTask(currentTask)) setStore('focusedPanel', taskId, 'shell:0');
+    }
+    syncWindowTitleToActiveSelection();
+  } catch (error) {
+    showNotification(
+      `Could not ${collapsed ? 'collapse' : 'reopen'} task: ${error instanceof Error ? error.message : String(error)}`,
+      { kind: 'error' },
+    );
   }
 }
 
-export async function uncollapseTask(taskId: string): Promise<void> {
-  const task = store.tasks[taskId];
-  if (!task || !task.collapsed) {
-    return;
-  }
+export function collapseTask(taskId: string): Promise<void> {
+  return setTaskCollapsed(taskId, true);
+}
 
-  const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
-    const terminalShellId = isTerminalTask(task) ? createRandomId() : null;
-    const savedDefs = isTerminalTask(task)
-      ? []
-      : (task.savedAgentDefs ?? (task.savedAgentDef ? [task.savedAgentDef] : []));
-    const restoredAgents = savedDefs.map((agentDef) => createRestoredAgent(taskId, agentDef));
-    const selectedRestoredAgent = getSelectedRestoredAgent(
-      restoredAgents,
-      task.savedSelectedAgentIndex,
-    );
-
-    const baseActiveOrder = getSharedOrderedTaskIds(store.taskOrder);
-    const baseCollapsedOrder = getSharedOrderedTaskIds(store.collapsedTaskOrder);
-    setStore(
-      produce((state) => {
-        const currentTask = state.tasks[taskId];
-        if (!currentTask) {
-          return;
-        }
-
-        currentTask.collapsed = false;
-        state.collapsedTaskOrder = state.collapsedTaskOrder.filter((id) => id !== taskId);
-        state.taskOrder.push(taskId);
-        state.activeTaskId = taskId;
-
-        if (terminalShellId) {
-          currentTask.agentIds = [];
-          delete currentTask.selectedAgentId;
-          currentTask.shellAgentIds = [terminalShellId];
-          delete currentTask.savedAgentDef;
-          delete currentTask.savedAgentDefs;
-          delete currentTask.savedSelectedAgentIndex;
-          state.focusedPanel[taskId] = 'shell:0';
-        } else if (restoredAgents.length > 0) {
-          for (const agent of restoredAgents) {
-            state.agents[agent.id] = agent;
-          }
-          currentTask.agentIds = restoredAgents.map((agent) => agent.id);
-          const selectedAgentId = selectedRestoredAgent?.id ?? restoredAgents[0]?.id;
-          if (selectedAgentId) {
-            currentTask.selectedAgentId = selectedAgentId;
-          } else {
-            delete currentTask.selectedAgentId;
-          }
-          delete currentTask.savedAgentDef;
-          delete currentTask.savedAgentDefs;
-          delete currentTask.savedSelectedAgentIndex;
-        }
-
-        state.activeAgentId = getTaskActiveAgentId(currentTask);
-      }),
-    );
-    enqueueWorkspaceOrderEdit('active', baseActiveOrder, getSharedOrderedTaskIds(store.taskOrder));
-    enqueueWorkspaceOrderEdit(
-      'collapsed',
-      baseCollapsedOrder,
-      getSharedOrderedTaskIds(store.collapsedTaskOrder),
-    );
-    enqueueWorkspaceTaskFieldEdit(taskId, 'collapsed', true, undefined);
-
-    for (const agent of restoredAgents) {
-      markAgentSpawned(agent.id);
-    }
-    if (terminalShellId) {
-      markAgentSpawned(terminalShellId);
-    }
-
-    updateWindowTitle(task.name);
-  });
-
-  if (isTaskCommandLeaseSkipped(result)) {
-    return;
-  }
+export function uncollapseTask(taskId: string): Promise<void> {
+  return setTaskCollapsed(taskId, false);
 }
 
 export function resetTaskLifecycleRuntimeStateForTests(): void {
-  collapsingTaskIds.clear();
+  taskVisibilityRequests.clear();
   resetRetainedTaskMergeOperationsForTests();
 }

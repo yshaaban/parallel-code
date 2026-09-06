@@ -106,7 +106,21 @@ export interface UpdateController {
   installUpdate: () => Promise<AppUpdateStatus>;
 }
 
+/** Internal attach context; browser client identity is supplied by the transport normalizer. */
+export interface CanonicalTaskShellRestoreOptions {
+  clientId?: string;
+  compatibilityIntent?: 'create';
+}
+
+export type CanonicalTaskShellRestoreResult = ManagedTaskShellSessionRestoreResult & {
+  /** Backend-only classification; never accepted from an attach request. */
+  standalone?: true;
+};
+
 export interface HandlerContext extends StorageEnv {
+  getTaskCollapseWorkflow?: () => Promise<
+    import('./task-collapse-workflow.js').TaskCollapseWorkflow
+  >;
   agentSessionWriter?: AgentSessionWriterRuntime;
   /** Identity-only bridge to the canonical managed agent-session owner. */
   restoreCanonicalAgentSession?: (
@@ -119,8 +133,8 @@ export interface HandlerContext extends StorageEnv {
   /** Identity-only bridge to the canonical terminal-task initial-shell owner. */
   restoreCanonicalTaskShellSession?: (
     request: Readonly<ManagedTaskShellSessionRestoreRequest>,
-    options?: Readonly<{ compatibilityIntent: 'create' }>,
-  ) => Promise<ManagedTaskShellSessionRestoreResult>;
+    options?: Readonly<CanonicalTaskShellRestoreOptions>,
+  ) => Promise<CanonicalTaskShellRestoreResult>;
   /** One server-lifecycle queue owns byte admission for every task-prompt producer. */
   taskPromptInputAdmission?: TaskPromptInputAdmissionService;
   /** Awaits managed creation activation before any task-creation effect. */

@@ -11,6 +11,7 @@ import {
   WorkspaceMutationService,
   WorkspaceProtectedFieldConflictError,
   WorkspaceRevisionConflictError,
+  PROTECTED_WORKSPACE_POLICY_REGISTRY,
   activateProtectedPolicyForTest,
   changed,
   type WorkspaceHostMutationSlices,
@@ -47,6 +48,27 @@ afterEach(async () => {
 });
 
 describe('workspace mutation authority', () => {
+  it('reserves collapsed visibility and order membership for the canonical lifecycle owner', () => {
+    const canonical: JsonObject = {
+      tasks: { task: { id: 'task' } },
+      taskOrder: ['task'],
+      collapsedTaskOrder: [],
+    };
+    const proposal: JsonObject = {
+      tasks: { task: { id: 'task', collapsed: true } },
+      taskOrder: [],
+      collapsedTaskOrder: ['task'],
+    };
+    expect(() =>
+      PROTECTED_WORKSPACE_POLICY_REGISTRY['task-identity-location'].mergeCanonical(
+        canonical,
+        proposal,
+      ),
+    ).toThrow('collapsed');
+    expect(() =>
+      PROTECTED_WORKSPACE_POLICY_REGISTRY['task-structure'].mergeCanonical(canonical, proposal),
+    ).toThrow('visibility differs');
+  });
   it('inspects a detached snapshot without writing, publishing, or advancing revision', async () => {
     const env = createEnv();
     const prepare = vi.fn();

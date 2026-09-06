@@ -64,6 +64,7 @@ interface PtySession {
   sendToChannel: (channelId: string, msg: unknown) => void;
   taskId: string;
   agentId: string;
+  compatibilityCreatorClientId?: string;
   contentAuthorityClass: PtyContentAuthorityClass;
   contentAuthorityGeneration: bigint;
   contentAuthorityRevoked: boolean;
@@ -876,14 +877,9 @@ export function revokeAllAgentContentAuthorities(): void {
 
 export function revokeTaskAgentContentAuthorities(
   taskId: string,
-  knownAgentIds: readonly string[] = [],
+  _knownAgentIds: readonly string[] = [],
 ): void {
   const ownedSessions = new Set<PtySession>();
-  for (const agentId of knownAgentIds) {
-    for (const session of getOwnedSessionsForAgent(agentId)) {
-      ownedSessions.add(session);
-    }
-  }
   for (const session of sessions.values()) {
     if (session.taskId === taskId) {
       ownedSessions.add(session);
@@ -1512,6 +1508,7 @@ export function spawnAgent(
   args: {
     taskId: string;
     agentId: string;
+    compatibilityCreatorClientId?: string;
     command: string;
     args: string[];
     cwd: string;
@@ -1537,6 +1534,12 @@ export function spawnAgent(
 
   const existing = sessions.get(args.agentId);
   if (existing && args.replaceExistingSession !== true) {
+    if (
+      args.compatibilityCreatorClientId !== undefined &&
+      existing.compatibilityCreatorClientId !== args.compatibilityCreatorClientId
+    ) {
+      throw new Error('Compatibility shell belongs to another client');
+    }
     if (
       args.contentAuthorityClass !== undefined &&
       args.contentAuthorityClass !== existing.contentAuthorityClass
@@ -1627,6 +1630,9 @@ export function spawnAgent(
     sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
+    ...(args.compatibilityCreatorClientId !== undefined
+      ? { compatibilityCreatorClientId: args.compatibilityCreatorClientId }
+      : {}),
     contentAuthorityClass: args.contentAuthorityClass ?? 'task-backed',
     contentAuthorityGeneration: 0n,
     contentAuthorityRevoked: false,
@@ -2104,10 +2110,10 @@ export async function killAllAgentsAndWaitForRunnerCleanup(): Promise<void> {
 
 export async function killTaskAgentsAndWaitForRunnerCleanup(
   taskId: string,
-  knownAgentIds: readonly string[] = [],
+  _knownAgentIds: readonly string[] = [],
 ): Promise<void> {
-  revokeTaskAgentContentAuthorities(taskId, knownAgentIds);
-  const agentIds = new Set(knownAgentIds);
+  revokeTaskAgentContentAuthorities(taskId);
+  const agentIds = new Set<string>();
   for (const session of sessions.values()) {
     if (session.taskId === taskId) {
       agentIds.add(session.agentId);
@@ -2129,7 +2135,12 @@ export async function killTaskAgentsAndWaitForRunnerCleanup(
   }
 
   const results = await Promise.allSettled(
-    [...agentIds].map((agentId) => killAgentAndWaitForRunnerCleanup(agentId)),
+    [...agentIds].map(async (agentId) => {
+      if ([...getOwnedSessionsForAgent(agentId)].some((session) => session.taskId !== taskId)) {
+        throw new Error('Agent runtime identity belongs to another task');
+      }
+      await killAgentAndWaitForRunnerCleanup(agentId);
+    }),
   );
   const failures = results.flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : [],
@@ -2333,6 +2344,7 @@ export function getActiveAgentIds(): string[] {
 /** Return metadata for a specific agent, or null if not found. */
 export function getAgentMeta(agentId: string): {
   agentId: string;
+  compatibilityCreatorClientId?: string;
   agentSessionLaunchReason?: AgentSessionLaunchReason;
   agentSessionOperationId?: string;
   agentSessionResumed?: boolean;
@@ -2345,6 +2357,9 @@ export function getAgentMeta(agentId: string): {
   return s
     ? {
         agentId: s.agentId,
+        ...(s.compatibilityCreatorClientId !== undefined
+          ? { compatibilityCreatorClientId: s.compatibilityCreatorClientId }
+          : {}),
         ...(s.agentSessionLaunchReason !== undefined
           ? { agentSessionLaunchReason: s.agentSessionLaunchReason }
           : {}),

@@ -65,11 +65,20 @@ export async function saveBrowserWorkspaceState(): Promise<void> {
 }
 
 export async function saveBrowserWorkspaceStateSnapshot(json: string): Promise<void> {
-  const response = await invoke(
-    IPC.SaveWorkspaceState,
-    createBrowserWorkspaceStateSaveRequest(json),
-  );
-  recordLoadedWorkspaceState(json, response.revision);
+  try {
+    const response = await invoke(
+      IPC.SaveWorkspaceState,
+      createBrowserWorkspaceStateSaveRequest(json),
+    );
+    recordLoadedWorkspaceState(json, response.revision);
+  } catch (error) {
+    if (isWorkspaceRevisionConflict(error)) {
+      // A pagehide write can commit after the next page reads its startup revision. Rebase
+      // through the canonical owner before autosave schedules a new snapshot, not this stale one.
+      await refreshCanonicalWorkspaceAfterConflict();
+    }
+    throw error;
+  }
 }
 
 export function saveBrowserWorkspaceStateOnPagehide(): void {

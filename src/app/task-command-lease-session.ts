@@ -11,10 +11,9 @@ import {
   handleTaskCommandTakeoverResult,
   hasLocalTaskCommandLeaseOwnership,
   hasTaskCommandLeaseTransportAvailability,
-  releaseTaskCommandLeaseHold,
   resetTaskCommandLeaseRuntimeStateForTests,
-  retainTaskCommandLease,
-  syncFocusedTypingTaskCommandLease as syncFocusedTypingTaskCommandLeaseRuntime,
+  retainTaskCommandLeaseHold,
+  type RetainedTaskCommandLeaseHold,
   type TaskCommandLeaseOptions,
 } from './task-command-lease-runtime';
 
@@ -143,8 +142,8 @@ export async function runWithTaskCommandLease<T>(
   run: () => Promise<T>,
   options: TaskCommandLeaseOptions = {},
 ): Promise<TaskCommandLeaseResult<T>> {
-  const acquired = await retainTaskCommandLease(taskId, actionDescription, options);
-  if (!acquired) {
+  const hold = await retainTaskCommandLeaseHold(taskId, actionDescription, options);
+  if (!hold || !hold.isCurrent()) {
     return TASK_COMMAND_LEASE_SKIPPED;
   }
 
@@ -160,7 +159,7 @@ export async function runWithTaskCommandLease<T>(
     runFailure = error;
   }
 
-  const released = await releaseTaskCommandLeaseHold(taskId);
+  const released = await hold.release();
   if (runFailed) {
     throw runFailure;
   }
@@ -261,7 +260,7 @@ function createSharedTaskCommandLeaseSession(
   const clientId = getRuntimeClientId();
   let releaseTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let cleanupGraceTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-  let retained = false;
+  let retained: RetainedTaskCommandLeaseHold | null = null;
   let subscriberCount = 0;
   let finalizeGeneration = 0;
   let finalizing = false;
@@ -310,7 +309,8 @@ function createSharedTaskCommandLeaseSession(
 
   function hasRetainedSessionLeaseOwnership(): boolean {
     return (
-      retained &&
+      retained !== null &&
+      retained.isCurrent() &&
       hasTaskCommandLeaseTransportAvailability() &&
       hasLocalTaskCommandLeaseOwnership(taskId, clientId)
     );
@@ -328,9 +328,10 @@ function createSharedTaskCommandLeaseSession(
       return;
     }
 
-    retained = false;
+    const hold = retained;
+    retained = null;
     clearReleaseTimer();
-    await releaseTaskCommandLeaseHold(taskId, {
+    await hold.release({
       notifyBackend: nextOptions.notifyBackend,
     });
   }
@@ -355,12 +356,17 @@ function createSharedTaskCommandLeaseSession(
       return true;
     }
 
-    const acquired = await retainTaskCommandLease(taskId, actionDescription, nextOptions);
-    if (!acquired) {
+    const hold = await retainTaskCommandLeaseHold(taskId, actionDescription, nextOptions);
+    if (!hold || !hold.isCurrent()) {
+      return false;
+    }
+    if (subscriberCount === 0 || sharedTaskCommandLeaseSessions.get(sessionKey) !== sharedSession) {
+      await hold.release();
       return false;
     }
 
-    retained = true;
+    if (retained) await hold.release();
+    else retained = hold;
     scheduleRelease();
     return true;
   }
@@ -428,7 +434,7 @@ function createSharedTaskCommandLeaseSession(
     },
     disposeForReset(): void {
       subscriberCount = 0;
-      retained = false;
+      retained = null;
       clearCleanupGraceTimer();
       clearReleaseTimer();
       removeTypingLeaseTouchCallback();
@@ -457,7 +463,17 @@ export function syncFocusedTypingTaskCommandLease(
   focusedSurface: string | null,
 ): void {
   syncFocusedTypingLeaseTouchTimer(activeTaskId, focusedSurface);
-  syncFocusedTypingTaskCommandLeaseRuntime(activeTaskId, focusedSurface);
+  const releases: Promise<void>[] = [];
+  for (const taskId of typingLeaseTouchCallbacksByTaskId.keys()) {
+    if (taskId === focusedTypingLeaseTaskId) continue;
+    const session = sharedTaskCommandLeaseSessions.get(
+      getTaskCommandLeaseSessionKey(taskId, 'type in the terminal'),
+    );
+    // The typing session owns one hold. Releasing through it makes focus loss, idle expiry,
+    // and view disposal idempotent without spending a concurrently retained command hold.
+    if (session) releases.push(session.release());
+  }
+  void Promise.allSettled(releases);
 }
 
 export function resetTaskCommandLeaseStateForTests(): void {

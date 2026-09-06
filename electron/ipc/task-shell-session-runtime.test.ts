@@ -9,6 +9,7 @@ import type {
 } from './task-shell-session-journal.js';
 import { createAgentSessionWriterRuntime } from './agent-session-writer-authority.js';
 import { createTaskCatalogState } from './task-catalog-state.js';
+import { createTaskCollapseWorkflow } from './task-collapse-workflow.js';
 import { createProductionTaskShellSessionRuntime } from './task-shell-session-runtime.js';
 import type { WorkspacePrivateMutationAuthority } from './workspace-state-mutations.js';
 import type { JsonObject } from './workspace-state-storage.js';
@@ -64,6 +65,7 @@ function sharedState(task: JsonObject | null = canonicalTask()): JsonObject {
 function privateAuthority(
   readSharedState: () => JsonObject,
   readLocalState: () => JsonObject = () => ({}),
+  writeSharedState?: (state: JsonObject) => void,
 ): WorkspacePrivateMutationAuthority {
   return {
     async mutate(request, mutator) {
@@ -76,7 +78,9 @@ function privateAuthority(
         storageGeneration: 'generation-1',
       });
       if (decision.kind !== 'unchanged') {
-        throw new Error(`Unexpected write from ${request.operation}`);
+        if (!writeSharedState || !decision.nextSharedState)
+          throw new Error(`Unexpected write from ${request.operation}`);
+        writeSharedState(decision.nextSharedState);
       }
       return { changed: false, result: decision.result, revision: 7 };
     },
@@ -151,6 +155,9 @@ function buildHarness(
     journal?: TaskShellSessionJournal;
     localState?: JsonObject;
     task?: JsonObject | null;
+    waitForInFlightInitialLaunch?: Parameters<
+      typeof createProductionTaskShellSessionRuntime
+    >[0]['waitForInFlightInitialLaunch'];
   } = {},
 ) {
   let currentSharedState = sharedState(
@@ -163,9 +170,16 @@ function buildHarness(
   });
   const metadata = new Map<
     string,
-    { agentId: string; generation: number; isShell: boolean; taskId: string }
+    {
+      agentId: string;
+      compatibilityCreatorClientId?: string;
+      generation: number;
+      isShell: boolean;
+      taskId: string;
+    }
   >();
   const generations = new Map<string, number>();
+  const getAgentMetadata = vi.fn((agentId: string) => metadata.get(agentId) ?? null);
   const writer = createAgentSessionWriterRuntime({
     getCurrentGeneration: (agentId) => generations.get(agentId) ?? null,
   });
@@ -185,6 +199,13 @@ function buildHarness(
   const verifyTaskIdentityForRemoval = vi.fn(async () => true);
   const shellJournal = overrides.journal ?? memoryShellJournal();
   const record = creationRecord();
+  const workspace = privateAuthority(
+    () => currentSharedState,
+    () => overrides.localState ?? {},
+    (state) => {
+      currentSharedState = state;
+    },
+  );
   const runtime = createProductionTaskShellSessionRuntime({
     adapters: {
       closeAgent: vi.fn(async (agentId) => {
@@ -192,7 +213,7 @@ function buildHarness(
       }),
       getAgentCols: () => 80,
       getAgentGeneration: (agentId) => generations.get(agentId) ?? null,
-      getAgentMetadata: (agentId) => metadata.get(agentId) ?? null,
+      getAgentMetadata,
       getAgentRows: () => 24,
       spawnAllocated,
     },
@@ -208,10 +229,8 @@ function buildHarness(
         operationId === record.operationId ? structuredClone(record) : null,
     } as TaskCreationJournal,
     journal: shellJournal,
-    privateAuthority: privateAuthority(
-      () => currentSharedState,
-      () => overrides.localState ?? {},
-    ),
+    privateAuthority: workspace,
+    waitForInFlightInitialLaunch: overrides.waitForInFlightInitialLaunch,
     removalGate: {
       getTaskSnapshot: () => ({
         current: catalog.getCurrentTaskProjection('task-1'),
@@ -226,7 +245,10 @@ function buildHarness(
   return {
     catalog,
     record,
+    getAgentMetadata,
     runtime,
+    workspace,
+    readSharedState: () => currentSharedState,
     setRemovalCommitted: () => {
       removalCommitted = true;
     },
@@ -236,6 +258,16 @@ function buildHarness(
     stopSession: (sessionId: string) => {
       metadata.delete(sessionId);
     },
+    setSession: (session: {
+      agentId: string;
+      compatibilityCreatorClientId?: string;
+      generation: number;
+      isShell: boolean;
+      taskId: string;
+    }) => {
+      metadata.set(session.agentId, session);
+      generations.set(session.agentId, session.generation);
+    },
     shellJournal,
     spawnAllocated,
     verifyTaskIdentityForRemoval,
@@ -243,6 +275,281 @@ function buildHarness(
 }
 
 describe('production task-shell-session runtime', () => {
+  it('reattaches an admitted live browser scratch shell for its creator and authenticated observers', async () => {
+    const harness = buildHarness({ task: null });
+    const request = { sessionId: 'scratch-shell', taskId: 'scratch-panel' };
+    const options = { clientId: 'browser-owner' };
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, {
+        ...options,
+        compatibilityIntent: 'create',
+      }),
+    ).resolves.toMatchObject({ kind: 'unmanaged' });
+    harness.setSession({
+      agentId: request.sessionId,
+      taskId: request.taskId,
+      isShell: true,
+      generation: 3,
+      compatibilityCreatorClientId: options.clientId,
+    });
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, options),
+    ).resolves.toMatchObject({ kind: 'existing', generation: 3, ...request });
+    for (const compatibilityIntent of [undefined, 'create'] as const) {
+      await expect(
+        harness.runtime.restoreCanonicalTaskShellSession(request, {
+          clientId: 'observer-client',
+          ...(compatibilityIntent ? { compatibilityIntent } : {}),
+        }),
+      ).resolves.toMatchObject({ kind: 'existing', generation: 3, ...request });
+    }
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(
+        { ...request, sessionId: 'foreign-shell' },
+        options,
+      ),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+    await expect(harness.runtime.restoreCanonicalTaskShellSession(request)).resolves.toMatchObject({
+      kind: 'unavailable',
+    });
+    const original = harness.getAgentMetadata(request.sessionId);
+    if (!original) throw new Error('Scratch fixture lost its live session');
+    for (const changed of [
+      { ...original, taskId: 'foreign-task' },
+      { ...original, isShell: false },
+      { ...original, compatibilityCreatorClientId: undefined },
+    ]) {
+      harness.setSession(changed);
+      await expect(
+        harness.runtime.restoreCanonicalTaskShellSession(request, {
+          ...options,
+          compatibilityIntent: 'create',
+        }),
+      ).resolves.toMatchObject({ kind: 'unavailable' });
+    }
+    harness.setSession(original);
+    harness.getAgentMetadata.mockImplementationOnce(() => {
+      harness.setSession({ ...original, generation: original.generation + 1 });
+      return original;
+    });
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, options),
+    ).resolves.toMatchObject({ kind: 'unavailable', reason: 'identity-unavailable' });
+    harness.stopSession(request.sessionId);
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, options),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+    expect(harness.spawnAllocated).not.toHaveBeenCalled();
+  });
+
+  it('does not use scratch provenance to bypass task removal or restrict shared task sidecars', async () => {
+    const harness = buildHarness({
+      task: canonicalTask({ taskMode: 'agent', agentIds: ['agent-1'], shellAgentIds: ['sidecar'] }),
+    });
+    const request = { sessionId: 'sidecar', taskId: 'task-1' };
+    harness.setSession({
+      agentId: request.sessionId,
+      taskId: request.taskId,
+      isShell: true,
+      generation: 1,
+      compatibilityCreatorClientId: 'first-client',
+    });
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, { clientId: 'second-client' }),
+    ).resolves.toMatchObject({ kind: 'unmanaged' });
+    harness.setSharedState(sharedState(null));
+    harness.catalog.replace({ sharedState: sharedState(null) });
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession(request, {
+        clientId: 'first-client',
+        compatibilityIntent: 'create',
+      }),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+    expect(harness.spawnAllocated).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'joins live initial creation before the shell queue and revalidates collapse (%s)',
+    async (collapseWhileWaiting) => {
+      let release!: () => void;
+      let entered!: () => void;
+      const enteredWait = new Promise<undefined>((resolve) => {
+        entered = () => resolve(undefined);
+      });
+      const completedCreation = new Promise<undefined>((resolve) => {
+        release = () => resolve(undefined);
+      });
+      const waitForInFlightInitialLaunch = vi.fn(async () => {
+        entered();
+        await completedCreation;
+      });
+      const harness = buildHarness({ waitForInFlightInitialLaunch });
+      const ids = harness.record.identities;
+      await harness.runtime.workflow.reserveForTaskCommit({
+        capabilityHash: harness.record.capabilityHash,
+        creationOperationId: harness.record.operationId,
+        expectedGeneration: 0,
+        operationId: ids.launchOperationId,
+        sessionId: ids.sessionId,
+        taskId: ids.taskId,
+        workspacePrincipalHash: harness.record.workspacePrincipalHash,
+      });
+      const restore = harness.runtime.restoreCanonicalTaskShellSession({
+        sessionId: ids.sessionId,
+        taskId: ids.taskId,
+      });
+      await enteredWait;
+      expect(waitForInFlightInitialLaunch).toHaveBeenCalledWith({
+        creationOperationId: harness.record.operationId,
+        launchOperationId: ids.launchOperationId,
+        sessionId: ids.sessionId,
+        taskId: ids.taskId,
+      });
+      expect(harness.spawnAllocated).not.toHaveBeenCalled();
+      // The live creator can enter both shell operations while restore is waiting.
+      await harness.runtime.workflow.admitAfterTaskCommit({
+        committedWorkspaceRevision: 7,
+        creationOperationId: harness.record.operationId,
+        operationId: ids.launchOperationId,
+        taskId: ids.taskId,
+      });
+      await harness.runtime.workflow.start({
+        creationOperationId: harness.record.operationId,
+        operationId: ids.launchOperationId,
+        taskId: ids.taskId,
+      });
+      if (collapseWhileWaiting)
+        harness.setSharedState(sharedState(canonicalTask({ collapsed: true })));
+      release();
+      await expect(restore).resolves.toMatchObject(
+        collapseWhileWaiting
+          ? { kind: 'unavailable', reason: 'task-unavailable' }
+          : { kind: 'existing', generation: 0, sessionId: ids.sessionId, taskId: ids.taskId },
+      );
+      expect(harness.spawnAllocated).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not start an initial managed shell while its canonical task is collapsed', async () => {
+    const harness = buildHarness({ task: canonicalTask({ collapsed: true }) });
+    await harness.runtime.workflow.reserveForTaskCommit({
+      capabilityHash: harness.record.capabilityHash,
+      creationOperationId: harness.record.operationId,
+      expectedGeneration: 0,
+      operationId: harness.record.identities.launchOperationId,
+      sessionId: harness.record.identities.sessionId,
+      taskId: harness.record.identities.taskId,
+      workspacePrincipalHash: harness.record.workspacePrincipalHash,
+    });
+    await harness.runtime.workflow.admitAfterTaskCommit({
+      committedWorkspaceRevision: 7,
+      creationOperationId: harness.record.operationId,
+      operationId: harness.record.identities.launchOperationId,
+      taskId: harness.record.identities.taskId,
+    });
+    const result = await harness.runtime.workflow.start({
+      creationOperationId: harness.record.operationId,
+      operationId: harness.record.identities.launchOperationId,
+      taskId: harness.record.identities.taskId,
+    });
+    expect(result).toMatchObject({ phase: 'admitted' });
+    expect(harness.spawnAllocated).not.toHaveBeenCalled();
+    expect(harness.runtime.workflow.isTaskSpawnQuarantined('task-1')).toBe(false);
+    const owner = createTaskCollapseWorkflow({
+      agentSession: { suspendTaskSessions: async () => {} },
+      shell: harness.runtime,
+      privateAuthority: harness.workspace,
+      structure: { isTaskMutationAdmissionClosed: () => false },
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    await owner.setCollapsed({ taskId: 'task-1', collapsed: false }, () => {});
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession({
+        taskId: 'task-1',
+        sessionId: 'session-1',
+      }),
+    ).resolves.toMatchObject({ kind: 'restored', generation: 0, sessionId: 'session-1' });
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession({
+        taskId: 'task-1',
+        sessionId: 'session-1',
+      }),
+    ).resolves.toMatchObject({ kind: 'existing', generation: 0 });
+    expect(harness.spawnAllocated).toHaveBeenCalledOnce();
+  });
+
+  it('reopens a managed terminal repeatedly without changing initial shell ownership or allowing invented identities', async () => {
+    const harness = buildHarness();
+    await harness.runtime.workflow.reserveForTaskCommit({
+      capabilityHash: harness.record.capabilityHash,
+      creationOperationId: harness.record.operationId,
+      expectedGeneration: 0,
+      operationId: harness.record.identities.launchOperationId,
+      sessionId: harness.record.identities.sessionId,
+      taskId: harness.record.identities.taskId,
+      workspacePrincipalHash: harness.record.workspacePrincipalHash,
+    });
+    await harness.runtime.workflow.admitAfterTaskCommit({
+      committedWorkspaceRevision: 7,
+      creationOperationId: harness.record.operationId,
+      operationId: harness.record.identities.launchOperationId,
+      taskId: harness.record.identities.taskId,
+    });
+    await harness.runtime.workflow.start({
+      creationOperationId: harness.record.operationId,
+      operationId: harness.record.identities.launchOperationId,
+      taskId: harness.record.identities.taskId,
+    });
+    const owner = createTaskCollapseWorkflow({
+      agentSession: { suspendTaskSessions: async () => {} },
+      shell: harness.runtime,
+      privateAuthority: harness.workspace,
+      structure: { isTaskMutationAdmissionClosed: () => false },
+      stopRemainingSessions: async () => {},
+      cleanupRuntime: () => ({ releasedTaskCommandController: null }),
+    });
+    const request = { taskId: 'task-1', sessionId: 'session-1' };
+    for (const generation of [1, 2, 3]) {
+      await owner.setCollapsed({ taskId: 'task-1', collapsed: true }, () => {});
+      await expect(
+        harness.runtime.restoreCanonicalTaskShellSession(request),
+      ).resolves.toMatchObject({ kind: 'unavailable' });
+      await owner.setCollapsed({ taskId: 'task-1', collapsed: false }, () => {});
+      if (generation === 2) {
+        harness.spawnAllocated.mockImplementationOnce(async () => {
+          harness.setSharedState(sharedState(canonicalTask({ collapsed: true })));
+          throw new Error('Collapsed while preparing the process');
+        });
+        await expect(
+          harness.runtime.restoreCanonicalTaskShellSession(request),
+        ).resolves.toMatchObject({ kind: 'unavailable' });
+        expect(harness.shellJournal.get('launch-1')).toMatchObject({
+          phase: 'clean-restart-pending',
+        });
+        expect(harness.runtime.workflow.isTaskSpawnQuarantined('task-1')).toBe(false);
+        await owner.setCollapsed({ taskId: 'task-1', collapsed: false }, () => {});
+      }
+      await expect(
+        harness.runtime.restoreCanonicalTaskShellSession(request),
+      ).resolves.toMatchObject({ kind: 'restored', generation });
+      await expect(
+        harness.runtime.restoreCanonicalTaskShellSession(request),
+      ).resolves.toMatchObject({ kind: 'existing', generation });
+      expect((harness.readSharedState().tasks as JsonObject)['task-1']).toMatchObject({
+        shellAgentIds: ['session-1'],
+        taskInitialShellOwnership: { expectedGeneration: 0, sessionId: 'session-1' },
+      });
+    }
+    expect(harness.spawnAllocated).toHaveBeenCalledTimes(5);
+    await expect(
+      harness.runtime.restoreCanonicalTaskShellSession({
+        taskId: 'task-1',
+        sessionId: 'invented-session',
+      }),
+    ).resolves.toMatchObject({ kind: 'unavailable' });
+  });
+
   it('reserves from the exact creation record and spawns one admitted shell tuple', async () => {
     const harness = buildHarness();
     await harness.runtime.workflow.reserveForTaskCommit({

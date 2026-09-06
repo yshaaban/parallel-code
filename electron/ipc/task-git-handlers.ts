@@ -606,6 +606,24 @@ export function createTaskAndGitIpcHandlers(
       });
     }),
 
+    [IPC.SetTaskCollapsed]: defineIpcHandler<IPC.SetTaskCollapsed>(
+      IPC.SetTaskCollapsed,
+      async (request) => {
+        assertString(request.taskId, 'taskId');
+        assertString(request.controllerId, 'controllerId');
+        assertBoolean(request.collapsed, 'collapsed');
+        const getTaskCollapseWorkflow = context.getTaskCollapseWorkflow;
+        if (!getTaskCollapseWorkflow) throw new Error('Canonical task lifecycle is unavailable');
+        return executeTaskLeaseProtectedCoordinatorProducer(context, request, async () => {
+          const owner = await getTaskCollapseWorkflow();
+          await owner.setCollapsed(request, () =>
+            assertTaskCommandLeaseHeld(request.taskId, request.controllerId),
+          );
+          return undefined;
+        });
+      },
+    ),
+
     [IPC.CleanupTaskRuntime]: defineIpcHandler<IPC.CleanupTaskRuntime>(
       IPC.CleanupTaskRuntime,
       async (args) => {

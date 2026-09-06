@@ -391,6 +391,7 @@ function makeHarness(
       return currentShell;
     }),
     beginCleanRestartDrain: vi.fn(async () => []),
+    beginTaskSuspension: vi.fn(async () => []),
     cancelBeforeTaskCommit: vi.fn(async () => {
       if (!currentShell) throw new Error('shell was not reserved');
       return currentShell;
@@ -550,6 +551,61 @@ describe('task-creation workflow', () => {
         operationId: 'launch-1',
       }),
     );
+  });
+
+  it('joins only the exact live initial creation after canonical publication, never a persisted record alone', async () => {
+    const test = makeHarness('terminal');
+    let published!: () => void;
+    let finishCommit!: () => void;
+    const publication = new Promise<undefined>((resolve) => {
+      published = () => resolve(undefined);
+    });
+    const commitGate = new Promise<undefined>((resolve) => {
+      finishCommit = () => resolve(undefined);
+    });
+    const commit = test.structure.addManagedTask.getMockImplementation();
+    if (!commit) throw new Error('Missing canonical commit fixture');
+    test.structure.addManagedTask.mockImplementation(async (...args) => {
+      const result = await commit(...args);
+      published();
+      await commitGate;
+      return result;
+    });
+    const intent = await test.intent();
+    const creation = test.workflow.create(test.auth, intent);
+    await publication;
+    const exact = {
+      creationOperationId: intent.operationId,
+      launchOperationId: 'launch-1',
+      sessionId: 'shell-1',
+      taskId: 'task-1',
+    };
+    let settled = false;
+    const joined = test.workflow.waitForInFlightInitialLaunch(exact).then(() => {
+      settled = true;
+    });
+    for (const other of [
+      { ...exact, taskId: 'other' },
+      { ...exact, sessionId: 'other' },
+      { ...exact, launchOperationId: 'other' },
+    ]) {
+      await test.workflow.waitForInFlightInitialLaunch(other);
+    }
+    const restarted = makeHarness('terminal', { journal: test.journal });
+    await restarted.workflow.waitForInFlightInitialLaunch(exact);
+    expect(restarted.shell.start).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    expect(test.shell.start).not.toHaveBeenCalled();
+    finishCommit();
+    await expect(creation).resolves.toMatchObject({
+      kind: 'snapshot',
+      snapshot: { phase: 'active' },
+    });
+    await joined;
+    expect(test.shell.start).toHaveBeenCalledTimes(1);
+    expect(test.shell.restoreManagedSession).not.toHaveBeenCalled();
+    await test.workflow.waitForInFlightInitialLaunch(exact);
+    expect(test.shell.start).toHaveBeenCalledTimes(1);
   });
 
   it('accepts the canonical empty-branch representation for non-Git terminal creation', async () => {

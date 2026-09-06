@@ -62,6 +62,7 @@ function createHydratedShellAgentIds(
   if (Array.isArray(persistedTask.shellAgentIds)) {
     return persistedTask.shellAgentIds.filter((value): value is string => isNonEmptyString(value));
   }
+  if (persistedTask.collapsed) return [];
 
   const shellAgentIds = [...(existingTask?.shellAgentIds ?? [])];
   if (shellAgentIds.length === 0) {
@@ -104,6 +105,14 @@ function createHydratedAgentIds(
     candidateAgentIds = persistedAgentIds;
   } else if (persistedTask.agentId) {
     candidateAgentIds = [persistedTask.agentId];
+  }
+  if (persistedTask.collapsed) {
+    // Collapsed state is a projection, never authority to manufacture a replacement session.
+    return candidateAgentIds.length === agentCount &&
+      candidateAgentIds.every(isNonEmptyString) &&
+      new Set(candidateAgentIds).size === agentCount
+      ? candidateAgentIds.map(resolvePersistedAgentId)
+      : [];
   }
   const usedAgentIds = new Set<string>();
 
@@ -289,8 +298,9 @@ export function buildCollapsedHydratedTask(
     shellAgentIds: hydratedTask.shellAgentIds,
     task: {
       ...hydratedTask.taskBase,
-      agentIds: [],
-      shellAgentIds: [],
+      agentIds: hydratedTask.agentIds,
+      ...(hydratedTask.selectedAgentId ? { selectedAgentId: hydratedTask.selectedAgentId } : {}),
+      shellAgentIds: hydratedTask.shellAgentIds,
       collapsed: true,
       ...(hydratedTask.agentDefs[0] ? { savedAgentDef: hydratedTask.agentDefs[0] } : {}),
       ...(hydratedTask.agentDefs.length > 1 ? { savedAgentDefs: hydratedTask.agentDefs } : {}),

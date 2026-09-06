@@ -44,6 +44,7 @@ export enum IPC {
   ExecuteTaskCreationReconciliation = 'execute_task_creation_reconciliation',
   DeleteTask = 'delete_task',
   CleanupTaskRuntime = 'cleanup_task_runtime',
+  SetTaskCollapsed = 'set_task_collapsed',
   GetTaskPorts = 'get_task_ports',
   GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',

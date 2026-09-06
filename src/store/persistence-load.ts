@@ -217,7 +217,7 @@ export function applyLoadedStateJson(json: string): boolean {
   }
 
   const restoredRunningAgentIds: string[] = [];
-  const previousTaskIds = Object.keys(store.tasks);
+  const previousTaskIds = [...Object.keys(store.tasks), ...Object.keys(store.terminals)];
   const today = getLocalDateKey();
   const { raw } = context;
   const electronRuntime = isElectronRuntime();
@@ -346,6 +346,9 @@ export function applyLoadedStateJson(json: string): boolean {
 }
 
 export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boolean {
+  // A command response can outlive its lease while a newer push is applied. Stale snapshots
+  // must not rewind tasks, runtime ownership, or the pending-edit canonical base.
+  if (revision < getLoadedWorkspaceRevision()) return false;
   const repeatedLoadedWorkspaceState =
     json === getLoadedWorkspaceStateJson() && revision === getLoadedWorkspaceRevision();
 
@@ -503,6 +506,10 @@ export function applyBrowserColdBootstrapWorkspaceProjection(
   projection: BrowserColdBootstrapProjection,
   revision = 0,
 ): boolean {
+  // Cold hydration resets runtime-only state, including acquired command controllers. Once a
+  // canonical workspace exists, the startup recovery owner must use incremental full-state load.
+  if (getLoadedWorkspaceStateJson() !== null) return false;
+  if (revision < getLoadedWorkspaceRevision()) return false;
   const didApply = applyBrowserColdBootstrapProjection(projection);
   if (!didApply) {
     return false;

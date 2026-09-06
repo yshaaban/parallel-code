@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import type { TaskCreationCommittedCurrentProjection } from '../../src/domain/task-creation.js';
-import { isTaskCreationOperationId } from '../../src/domain/task-creation-ticket.js';
+import {
+  isTaskCreationOperationId,
+  type TaskCreationOperationId,
+} from '../../src/domain/task-creation-ticket.js';
 import {
   isTaskCreationOperationLink,
   isTaskInitialShellOwnership,
@@ -9,16 +12,20 @@ import {
 import {
   isManagedTaskShellSessionRestoreRequest,
   type ManagedTaskShellSessionRestoreRequest,
-  type ManagedTaskShellSessionRestoreResult,
   type TaskShellSessionCurrentProjection,
 } from '../../src/domain/task-shell-session-operation.js';
 import {
   TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION,
   type TaskRemovalParticipantGate,
 } from '../../src/domain/task-removal-owner.js';
-import type { HandlerContext } from './handler-context.js';
+import type {
+  CanonicalTaskShellRestoreOptions,
+  CanonicalTaskShellRestoreResult,
+  HandlerContext,
+} from './handler-context.js';
 import type { TaskCatalogState } from './task-catalog-state.js';
 import type { TaskCreationJournal } from './task-creation-journal.js';
+import type { TaskCreationInitialLaunchWaiter } from './task-creation-workflow.js';
 import {
   createTaskShellSessionJournal,
   type TaskShellSessionIdentity,
@@ -55,6 +62,7 @@ import {
 
 interface ManagedShellMapping {
   baseBranch?: string;
+  collapsed: boolean;
   committedWorkspaceRevision: number;
   projectMode: 'git' | 'non-git';
   worktreePath: string;
@@ -66,8 +74,9 @@ type ManagedShellMappingRead =
   | { kind: 'mapped'; value: ManagedShellMapping };
 
 type CanonicalTaskShellOwnershipRead =
-  | { kind: 'managed'; launchOperationId: string }
-  | { kind: 'unmanaged'; reason: 'compatibility-shell' | 'legacy-unmanaged' }
+  | { kind: 'managed'; creationOperationId: TaskCreationOperationId; launchOperationId: string }
+  | { kind: 'unmanaged'; reason: 'compatibility-shell' | 'legacy-unmanaged'; standalone?: true }
+  | { kind: 'existing-standalone'; generation: number }
   | {
       kind: 'unavailable';
       reason: 'identity-unavailable' | 'session-state-unavailable' | 'task-unavailable';
@@ -91,6 +100,7 @@ export interface CreateProductionTaskShellSessionRuntimeDependencies {
   journalOptions?: TaskShellSessionJournalOptions;
   privateAuthority: WorkspacePrivateMutationAuthority;
   removalGate: TaskRemovalParticipantGate<typeof TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION>;
+  waitForInFlightInitialLaunch?: TaskCreationInitialLaunchWaiter['waitForInFlightInitialLaunch'];
   verifyTaskIdentityForRemoval(
     request: Readonly<PrepareTaskShellSessionRemovalRequest>,
     identity: Readonly<TaskShellSessionIdentity>,
@@ -115,9 +125,10 @@ export interface ProductionTaskShellSessionRuntime {
   ): Promise<TaskShellSessionCleanRestartPermitResult>;
   restoreCanonicalTaskShellSession(
     request: Readonly<ManagedTaskShellSessionRestoreRequest>,
-    options?: Readonly<{ compatibilityIntent: 'create' }>,
-  ): Promise<ManagedTaskShellSessionRestoreResult>;
+    options?: Readonly<CanonicalTaskShellRestoreOptions>,
+  ): Promise<CanonicalTaskShellRestoreResult>;
   startup(): Promise<void>;
+  suspendTaskSessions(taskId: string, assertAdmitted?: () => void): Promise<void>;
   workflow: TaskShellSessionWorkflow;
 }
 
@@ -204,6 +215,7 @@ function shellMappingFromTask(
   if (task.projectMode === 'non-git') {
     if (task.baseBranch !== undefined || task.gitIsolation !== undefined) return null;
     return {
+      collapsed: task.collapsed === true,
       committedWorkspaceRevision: revision,
       projectMode: 'non-git',
       worktreePath: task.worktreePath,
@@ -220,6 +232,7 @@ function shellMappingFromTask(
   }
   return {
     ...(typeof task.baseBranch === 'string' ? { baseBranch: task.baseBranch } : {}),
+    collapsed: task.collapsed === true,
     committedWorkspaceRevision: revision,
     projectMode: 'git',
     worktreePath: task.worktreePath,
@@ -310,7 +323,7 @@ export function createProductionTaskShellSessionRuntime(
 
   async function readCanonicalTaskShellOwnership(
     request: Readonly<ManagedTaskShellSessionRestoreRequest>,
-    compatibilityIntent: 'create' | undefined,
+    options: Readonly<CanonicalTaskShellRestoreOptions> | undefined,
   ): Promise<CanonicalTaskShellOwnershipRead> {
     const removalSnapshot = dependencies.removalGate.getTaskSnapshot(request.taskId);
     const removalAdmitted =
@@ -319,7 +332,7 @@ export function createProductionTaskShellSessionRuntime(
       removalSnapshot.current.taskState === 'present' &&
       !removalSnapshot.current.taskClosing;
     const explicitCreationAdmitted =
-      compatibilityIntent === 'create' &&
+      options?.compatibilityIntent === 'create' &&
       removalSnapshot.kind === 'active' &&
       removalSnapshot.hookSetVersion === TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION &&
       removalSnapshot.current.taskState === 'not-visible';
@@ -332,6 +345,23 @@ export function createProductionTaskShellSessionRuntime(
         }
         const task = tasks[request.taskId];
         if (task === undefined) {
+          const metadata = adapters.getAgentMetadata(request.sessionId);
+          if (metadata?.compatibilityCreatorClientId !== undefined) {
+            // Creator provenance proves initial admission, not private output ownership.
+            // Authenticated browser observers may attach; input/resize still need task control.
+            return unchanged(
+              removalSnapshot.kind === 'active' &&
+                removalSnapshot.hookSetVersion === TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION &&
+                removalSnapshot.current.taskState === 'not-visible' &&
+                typeof options?.clientId === 'string' &&
+                options.clientId.trim().length > 0 &&
+                metadata.agentId === request.sessionId &&
+                metadata.taskId === request.taskId &&
+                metadata.isShell
+                ? ({ kind: 'existing-standalone', generation: metadata.generation } as const)
+                : ({ kind: 'unavailable', reason: 'identity-unavailable' } as const),
+            );
+          }
           const terminals = slices.localState.terminals;
           const terminal = isJsonObject(terminals) ? terminals[request.taskId] : undefined;
           return unchanged(
@@ -342,15 +372,19 @@ export function createProductionTaskShellSessionRuntime(
                 : (isJsonObject(terminal) &&
                       terminal.id === request.taskId &&
                       terminal.agentId === request.sessionId) ||
-                    explicitCreationAdmitted
-                  ? ({ kind: 'unmanaged', reason: 'compatibility-shell' } as const)
+                    (explicitCreationAdmitted && metadata === null)
+                  ? ({
+                      kind: 'unmanaged',
+                      reason: 'compatibility-shell',
+                      standalone: true,
+                    } as const)
                   : ({ kind: 'unavailable', reason: 'task-unavailable' } as const),
           );
         }
         if (!isJsonObject(task) || task.id !== request.taskId) {
           return unchanged({ kind: 'unavailable', reason: 'identity-unavailable' } as const);
         }
-        if (!removalAdmitted) {
+        if (!removalAdmitted || task.collapsed === true) {
           return unchanged({ kind: 'unavailable', reason: 'task-unavailable' } as const);
         }
         const shellAgentIds = task.shellAgentIds;
@@ -366,7 +400,7 @@ export function createProductionTaskShellSessionRuntime(
             return unchanged({ kind: 'unavailable', reason: 'identity-unavailable' } as const);
           }
           return unchanged(
-            shellAgentIds.includes(request.sessionId) || compatibilityIntent === 'create'
+            shellAgentIds.includes(request.sessionId) || options?.compatibilityIntent === 'create'
               ? ({ kind: 'unmanaged', reason: 'compatibility-shell' } as const)
               : ({ kind: 'unavailable', reason: 'identity-unavailable' } as const),
           );
@@ -380,7 +414,7 @@ export function createProductionTaskShellSessionRuntime(
         }
         if (ownership.kind === 'legacy-unmanaged-terminal') {
           return unchanged(
-            shellAgentIds.includes(request.sessionId) || compatibilityIntent === 'create'
+            shellAgentIds.includes(request.sessionId) || options?.compatibilityIntent === 'create'
               ? ({
                   kind: 'unmanaged',
                   reason: shellAgentIds.includes(request.sessionId)
@@ -395,7 +429,7 @@ export function createProductionTaskShellSessionRuntime(
         }
         if (ownership.sessionId !== request.sessionId) {
           return unchanged(
-            shellAgentIds.includes(request.sessionId) || compatibilityIntent === 'create'
+            shellAgentIds.includes(request.sessionId) || options?.compatibilityIntent === 'create'
               ? ({ kind: 'unmanaged', reason: 'compatibility-shell' } as const)
               : ({ kind: 'unavailable', reason: 'identity-unavailable' } as const),
           );
@@ -404,11 +438,13 @@ export function createProductionTaskShellSessionRuntime(
         if (
           !isTaskCreationOperationLink(operationLink) ||
           operationLink.kind !== 'creation-v1' ||
+          !isTaskCreationOperationId(operationLink.creationOperationId) ||
           operationLink.launchOperationId !== ownership.launchOperationId
         ) {
           return unchanged({ kind: 'unavailable', reason: 'identity-unavailable' } as const);
         }
         return unchanged({
+          creationOperationId: operationLink.creationOperationId,
           kind: 'managed',
           launchOperationId: ownership.launchOperationId,
         } as const);
@@ -462,6 +498,12 @@ export function createProductionTaskShellSessionRuntime(
       if (mapping.kind !== 'mapped' || !removalAdmitsTask(identity.taskId)) {
         return { kind: 'ambiguous', supervisorIdentityHash: null };
       }
+      if (mapping.value.collapsed) {
+        const inspection = await authority.inspectExactTuple(identity);
+        return inspection.kind === 'not-admitted'
+          ? { kind: 'deferred-before-process' }
+          : { kind: 'ambiguous', supervisorIdentityHash: null };
+      }
       if (
         identity.committedWorkspaceRevision === null ||
         mapping.value.committedWorkspaceRevision < identity.committedWorkspaceRevision
@@ -471,8 +513,9 @@ export function createProductionTaskShellSessionRuntime(
       const expectedSourceGeneration =
         identity.expectedGeneration === 0 ? null : identity.expectedGeneration - 1;
       const isCleanRestart = identity.admissionKind === 'clean-restart';
+      const processSourceGeneration = adapters.getAgentGeneration(identity.sessionId);
       let allocation;
-      if (isCleanRestart) {
+      if (isCleanRestart && processSourceGeneration === null) {
         if (expectedSourceGeneration === null) {
           return { kind: 'ambiguous', supervisorIdentityHash: null };
         }
@@ -538,10 +581,21 @@ export function createProductionTaskShellSessionRuntime(
             supervisorIdentityHash: supervisorIdentityHash(metadata),
           };
         }
-        const provenPreProcessGeneration = isCleanRestart ? null : expectedSourceGeneration;
-        return adapters.getAgentGeneration(identity.sessionId) === provenPreProcessGeneration
-          ? { kind: 'failed-before-process' }
-          : { kind: 'ambiguous', supervisorIdentityHash: null };
+        const provenPreProcessGeneration =
+          isCleanRestart && processSourceGeneration === null ? null : expectedSourceGeneration;
+        if (adapters.getAgentGeneration(identity.sessionId) !== provenPreProcessGeneration) {
+          return { kind: 'ambiguous', supervisorIdentityHash: null };
+        }
+        const currentMapping = await readManagedShellMapping(identity);
+        if (
+          adapters.getAgentMetadata(identity.sessionId) !== null ||
+          adapters.getAgentGeneration(identity.sessionId) !== provenPreProcessGeneration
+        ) {
+          return { kind: 'ambiguous', supervisorIdentityHash: null };
+        }
+        return currentMapping.kind === 'mapped' && currentMapping.value.collapsed
+          ? { kind: 'deferred-before-process' }
+          : { kind: 'failed-before-process' };
       } finally {
         writer.release(identity.operationId);
       }
@@ -654,21 +708,54 @@ export function createProductionTaskShellSessionRuntime(
 
   async function restoreCanonicalTaskShellSession(
     request: Readonly<ManagedTaskShellSessionRestoreRequest>,
-    options?: Readonly<{ compatibilityIntent: 'create' }>,
-  ): Promise<ManagedTaskShellSessionRestoreResult> {
+    options?: Readonly<CanonicalTaskShellRestoreOptions>,
+  ): Promise<CanonicalTaskShellRestoreResult> {
     if (!isManagedTaskShellSessionRestoreRequest(request)) {
       return { kind: 'unavailable', reason: 'identity-unavailable' };
     }
     try {
       await startup();
-      const ownership = await readCanonicalTaskShellOwnership(
-        request,
-        options?.compatibilityIntent,
-      );
+      const ownership = await readCanonicalTaskShellOwnership(request, options);
       if (ownership.kind === 'unavailable') return ownership;
       if (ownership.kind === 'unmanaged') {
-        return { ...request, kind: 'unmanaged', reason: ownership.reason };
+        return { ...request, ...ownership };
       }
+      if (ownership.kind === 'existing-standalone') {
+        const metadata = adapters.getAgentMetadata(request.sessionId);
+        if (
+          !metadata ||
+          metadata.agentId !== request.sessionId ||
+          metadata.taskId !== request.taskId ||
+          !metadata.isShell ||
+          metadata.generation !== ownership.generation ||
+          metadata.compatibilityCreatorClientId === undefined
+        ) {
+          return { kind: 'unavailable', reason: 'identity-unavailable' };
+        }
+        return {
+          ...request,
+          kind: 'existing',
+          generation: ownership.generation,
+          cols: adapters.getAgentCols(request.sessionId),
+          rows: adapters.getAgentRows(request.sessionId),
+        };
+      }
+      // Canonical task publication can precede its initial shell admission. Join only
+      // the exact live creation owner, outside the shell queue that it must enter.
+      await dependencies.waitForInFlightInitialLaunch?.({
+        creationOperationId: ownership.creationOperationId,
+        launchOperationId: ownership.launchOperationId,
+        sessionId: request.sessionId,
+        taskId: request.taskId,
+      });
+      const latestOwnership = await readCanonicalTaskShellOwnership(request, undefined);
+      if (latestOwnership.kind === 'unavailable') return latestOwnership;
+      if (
+        latestOwnership.kind !== 'managed' ||
+        latestOwnership.creationOperationId !== ownership.creationOperationId ||
+        latestOwnership.launchOperationId !== ownership.launchOperationId
+      )
+        return { kind: 'unavailable', reason: 'identity-unavailable' };
       const restored = await workflow.restoreManagedSession({
         launchOperationId: ownership.launchOperationId,
         sessionId: request.sessionId,
@@ -705,6 +792,34 @@ export function createProductionTaskShellSessionRuntime(
     readCreationCurrent,
     readShellCurrent,
     restoreCanonicalTaskShellSession,
+    async suspendTaskSessions(taskId, assertAdmitted = () => {}) {
+      assertAdmitted();
+      const candidates = await workflow.beginTaskSuspension(taskId);
+      const results = await Promise.allSettled(
+        candidates.map(async (candidate) => {
+          assertAdmitted();
+          const metadata = adapters.getAgentMetadata(candidate.sessionId);
+          if (
+            metadata &&
+            (metadata.taskId !== taskId ||
+              !metadata.isShell ||
+              metadata.generation !== candidate.sourceGeneration)
+          ) {
+            throw new Error('Task shell identity changed before suspension');
+          }
+          if (metadata) await adapters.closeAgent(candidate.sessionId);
+          assertAdmitted();
+          const result = await workflow.persistCleanRestartPermit(candidate);
+          if (result.kind !== 'prepared')
+            throw new Error(`Task shell suspension failed: ${result.reason}`);
+        }),
+      );
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (failures.length)
+        throw Object.assign(new Error('Task shell suspension failed'), { failures });
+    },
     startup,
     workflow,
   };

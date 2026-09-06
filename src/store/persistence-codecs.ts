@@ -52,7 +52,10 @@ function getPrimaryAgentDef(task: Task, fallbackAgentDefs: AgentDef[] = []): Age
     return fallbackAgentDefs[0] ?? null;
   }
 
-  return store.agents[agentId]?.def ?? null;
+  return (
+    store.agents[agentId]?.def ??
+    (fallbackAgentDefs.length === task.agentIds.length ? (fallbackAgentDefs[0] ?? null) : null)
+  );
 }
 
 function getCompleteTaskAgentDefs(
@@ -64,8 +67,10 @@ function getCompleteTaskAgentDefs(
   }
 
   const agentDefs: AgentDef[] = [];
-  for (const agentId of task.agentIds) {
-    const agentDef = store.agents[agentId]?.def;
+  for (const [index, agentId] of task.agentIds.entries()) {
+    const agentDef =
+      store.agents[agentId]?.def ??
+      (fallbackAgentDefs.length === task.agentIds.length ? fallbackAgentDefs[index] : undefined);
     if (!agentDef) {
       return null;
     }

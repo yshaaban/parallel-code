@@ -186,7 +186,8 @@ describe('PTY content-authority withdrawal', () => {
         env: {},
       });
     }
-    await killTaskAgentsAndWaitForRunnerCleanup('root-task-1', ['root-agent-1']);
+    // Caller hints are not authority: a foreign ID must neither be killed nor revoked.
+    await killTaskAgentsAndWaitForRunnerCleanup('root-task-1', ['root-agent-1', 'root-agent-2']);
     expect(first.kill).toHaveBeenCalledOnce();
     expect(second.kill).not.toHaveBeenCalled();
     expect(getAgentMeta('root-agent-2')).toMatchObject({ taskId: 'root-task-2' });
@@ -305,6 +306,39 @@ describe('validateCommand', () => {
 });
 
 describe('spawnAgent', () => {
+  it('keeps browser scratch provenance on only the exact live PTY generation', () => {
+    const first = createMockProc();
+    const second = createMockProc();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const args = {
+      taskId: 'scratch-task',
+      agentId: 'scratch-agent',
+      command: existingAbsoluteCommand,
+      args: [],
+      cwd: process.cwd(),
+      env: {},
+      cols: 80,
+      rows: 24,
+      isShell: true,
+      compatibilityCreatorClientId: 'browser-owner',
+    };
+    spawnAgent(vi.fn(), args);
+    expect(getAgentMeta(args.agentId)).toMatchObject({
+      compatibilityCreatorClientId: 'browser-owner',
+      generation: 0,
+    });
+    expect(() =>
+      spawnAgent(vi.fn(), { ...args, compatibilityCreatorClientId: 'foreign-client' }),
+    ).toThrow('another client');
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    first.emitExit({ exitCode: 0 });
+    expect(getAgentMeta(args.agentId)).toBeNull();
+    const { compatibilityCreatorClientId: _discardedOwner, ...next } = args;
+    spawnAgent(vi.fn(), next);
+    expect(getAgentMeta(args.agentId)).toMatchObject({ generation: 1 });
+    expect(getAgentMeta(args.agentId)).not.toHaveProperty('compatibilityCreatorClientId');
+  });
+
   it('requests raw PTY output bytes on Unix-like platforms', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);

@@ -144,6 +144,7 @@ export interface ProductionAgentSessionRuntime {
   journal: AgentSessionOperationJournal;
   legacyWriterCutover: AgentSessionLegacyWriterCutover;
   prepareCleanShutdown(): Promise<void>;
+  suspendTaskSessions(taskId: string, assertAdmitted?: () => void): Promise<void>;
   restoreCanonicalSession(
     request: Readonly<ManagedAgentSessionRestoreRequest>,
   ): Promise<ManagedAgentSessionRestoreResult>;
@@ -575,7 +576,7 @@ class WorkspaceAgentSessionWorkflowAuthority implements AgentSessionWorkflowAuth
       request.taskId,
       request.agentId,
     );
-    if (!canonical) return null;
+    if (!canonical || canonical.task.collapsed === true) return null;
     const currentGeneration = this.adapters.getAgentLifecycleGeneration(request.agentId);
     const activeMeta = this.adapters.getAgentMeta(request.agentId);
     if (
@@ -769,9 +770,14 @@ export function createProductionAgentSessionRuntime(
   const projectionListeners = new Set<(projection: AgentSessionOperationProjection) => void>();
   let lifecycleState: 'closed' | 'closing' | 'ready' | 'starting' | 'uninitialized' =
     'uninitialized';
+  const suspendingTasks = new Set<string>();
 
   function getOwnerAvailability(taskId: string): AgentSessionOwnerAvailability {
-    if (lifecycleState === 'closing' || lifecycleState === 'closed') {
+    if (
+      lifecycleState === 'closing' ||
+      lifecycleState === 'closed' ||
+      suspendingTasks.has(taskId)
+    ) {
       return { kind: 'unavailable', reason: 'journal-unavailable' };
     }
     const removal = dependencies.structure.getTaskRemovalOwnerCapability();
@@ -810,14 +816,29 @@ export function createProductionAgentSessionRuntime(
     }
   }
   const workflow: AgentSessionWorkflow = {
-    drain: () => coreWorkflow.drain(),
+    drain: (taskId) => coreWorkflow.drain(taskId),
     async execute(request) {
       const result = await coreWorkflow.execute(request);
       if (result.kind === 'operation') publishProjection(result.projection);
       return result;
     },
     getOwnerAvailability: (taskId) => coreWorkflow.getOwnerAvailability(taskId),
-    removalHooks: coreWorkflow.removalHooks,
+    removalHooks: {
+      ...coreWorkflow.removalHooks,
+      async finalizeRemovedTaskAgentSessionState(request) {
+        const result =
+          await coreWorkflow.removalHooks.finalizeRemovedTaskAgentSessionState(request);
+        if (result.kind === 'complete' || result.kind === 'already-complete') {
+          taskSuspensionSnapshots.delete(request.taskId);
+          if (cleanRestartShutdownSnapshot !== null) {
+            cleanRestartShutdownSnapshot = cleanRestartShutdownSnapshot.filter(
+              (snapshot) => snapshot.taskId !== request.taskId,
+            );
+          }
+        }
+        return result;
+      },
+    },
   };
   const recovery = createAgentSessionRecoveryAdapter({
     async acquireSystemLease(exit) {
@@ -877,6 +898,7 @@ export function createProductionAgentSessionRuntime(
   const pendingRecoveries = new Set<Promise<void>>();
   const pendingRecoveryKeys = new Set<string>();
   const pendingRestores = new Map<string, Promise<ManagedAgentSessionRestoreResult>>();
+  const taskSuspensionSnapshots = new Map<string, CleanRestartShutdownSnapshot[]>();
   let cleanRestartShutdownSnapshot: CleanRestartShutdownSnapshot[] | null = null;
   let cleanShutdownNeedsPermitPersistence = false;
   let cleanShutdownPreparation: Promise<void> | null = null;
@@ -1149,17 +1171,18 @@ export function createProductionAgentSessionRuntime(
       request.taskId,
       request.agentId,
     );
-    if (!canonical) return { kind: 'unavailable', reason: 'task-unavailable' };
+    if (!canonical || canonical.task.collapsed === true)
+      return { kind: 'unavailable', reason: 'task-unavailable' };
     const marker = journal.getIdentityMarker(request.taskId, request.agentId);
     const metadata = adapters.getAgentMeta(request.agentId);
     if (metadata) {
       return reconcileExistingRestore(request, marker?.cleanRestart);
     }
-    if (adapters.getAgentLifecycleGeneration(request.agentId) !== null) {
-      return { kind: 'unavailable', reason: 'restore-failed' };
-    }
     const cleanRestart = marker?.cleanRestart;
     if (!cleanRestart) {
+      if (adapters.getAgentLifecycleGeneration(request.agentId) !== null) {
+        return { kind: 'unavailable', reason: 'restore-failed' };
+      }
       return restoreLegacyInitialSession(request, canonical);
     }
     if (cleanRestart.phase !== 'available') {
@@ -1167,6 +1190,13 @@ export function createProductionAgentSessionRuntime(
     }
     if (cleanRestart.agentDefId !== canonical.agentDef.id) {
       return { kind: 'unavailable', reason: 'identity-unavailable' };
+    }
+    const processSourceGeneration = adapters.getAgentLifecycleGeneration(request.agentId);
+    if (
+      processSourceGeneration !== null &&
+      processSourceGeneration !== cleanRestart.sourceGeneration
+    ) {
+      return { kind: 'unavailable', reason: 'restore-failed' };
     }
     const operationId = deriveAgentSessionCleanRestartOperationId({
       agentDefId: cleanRestart.agentDefId,
@@ -1184,16 +1214,18 @@ export function createProductionAgentSessionRuntime(
       ]);
       if (
         !restoreAdmissionOpen(request) ||
-        adapters.getAgentLifecycleGeneration(request.agentId) !== null
+        adapters.getAgentLifecycleGeneration(request.agentId) !== processSourceGeneration
       ) {
         return { kind: 'unavailable', reason: 'restore-failed' };
       }
       const allocation = dependencies.writer.allocate({
         agentId: request.agentId,
-        durableSourceGeneration: cleanRestart.sourceGeneration,
-        expectedSourceGeneration: null,
+        ...(processSourceGeneration === null
+          ? { durableSourceGeneration: cleanRestart.sourceGeneration }
+          : {}),
+        expectedSourceGeneration: processSourceGeneration,
         operationId,
-        purpose: 'startup-restore',
+        purpose: processSourceGeneration === null ? 'startup-restore' : 'agent-session-operation',
         targetGeneration: cleanRestart.targetGeneration,
         taskId: request.taskId,
       });
@@ -1206,7 +1238,7 @@ export function createProductionAgentSessionRuntime(
         assertSpawnAdmitted: () => {
           if (
             !restoreAdmissionOpen(request) ||
-            adapters.getAgentLifecycleGeneration(request.agentId) !== null
+            adapters.getAgentLifecycleGeneration(request.agentId) !== processSourceGeneration
           ) {
             throw new Error('Clean-restart admission changed before spawn');
           }
@@ -1240,11 +1272,14 @@ export function createProductionAgentSessionRuntime(
     }
   }
 
-  async function snapshotCleanRestartSessions(): Promise<CleanRestartShutdownSnapshot[]> {
+  async function snapshotCleanRestartSessions(
+    taskId?: string,
+  ): Promise<CleanRestartShutdownSnapshot[]> {
     const snapshots: CleanRestartShutdownSnapshot[] = [];
     for (const agentId of adapters.getActiveAgentIds()) {
       const metadata = adapters.getAgentMeta(agentId);
-      if (!metadata || metadata.isShell) continue;
+      if (!metadata || metadata.isShell || (taskId !== undefined && metadata.taskId !== taskId))
+        continue;
       const canonical = await readCanonicalAgentTask(
         dependencies.privateAuthority,
         metadata.taskId,
@@ -1272,9 +1307,13 @@ export function createProductionAgentSessionRuntime(
     return snapshots;
   }
 
-  async function stopCleanRestartSessions(): Promise<void> {
-    await Promise.all(
-      (cleanRestartShutdownSnapshot ?? []).map(async (snapshot) => {
+  async function stopCleanRestartSessions(
+    snapshots = cleanRestartShutdownSnapshot ?? [],
+    assertAdmitted: () => void = () => {},
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      snapshots.map(async (snapshot) => {
+        assertAdmitted();
         const metadata = adapters.getAgentMeta(snapshot.agentId);
         if (
           metadata &&
@@ -1287,14 +1326,37 @@ export function createProductionAgentSessionRuntime(
         if (metadata) await adapters.stopAgent(snapshot.agentId);
       }),
     );
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length) {
+      const details = results.flatMap((result, index) => {
+        if (result.status !== 'rejected') return [];
+        const snapshot = snapshots[index];
+        const cause =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        return [
+          `${snapshot?.taskId}/${snapshot?.agentId}@${snapshot?.marker.sourceGeneration}: ${cause.slice(0, 300)}`,
+        ];
+      });
+      throw Object.assign(new Error(`Managed session stop failed: ${details.join('; ')}`), {
+        failures,
+      });
+    }
   }
 
-  async function persistCleanRestartSessions(): Promise<void> {
-    const snapshots = cleanRestartShutdownSnapshot ?? [];
+  async function persistCleanRestartSessions(
+    snapshots = cleanRestartShutdownSnapshot ?? [],
+  ): Promise<void> {
     if (snapshots.some((snapshot) => adapters.hasAgentSession(snapshot.agentId))) {
       throw new Error('Managed session remained live after clean-shutdown stop');
     }
     for (const snapshot of snapshots) {
+      if (
+        adapters.getAgentLifecycleGeneration(snapshot.agentId) !== snapshot.marker.sourceGeneration
+      ) {
+        throw new Error('Managed session generation changed before clean-stop persistence');
+      }
       const canonical = await readCanonicalAgentTask(
         dependencies.privateAuthority,
         snapshot.taskId,
@@ -1311,6 +1373,36 @@ export function createProductionAgentSessionRuntime(
     );
   }
 
+  async function suspendTaskSessions(
+    taskId: string,
+    assertAdmitted: () => void = () => {},
+  ): Promise<void> {
+    assertAdmitted();
+    suspendingTasks.add(taskId);
+    try {
+      await workflow.drain(taskId);
+      await Promise.allSettled(
+        [...pendingRestores]
+          .filter(([key]) => key.startsWith(`${taskId}\u0000`))
+          .map(([, pending]) => pending),
+      );
+      assertAdmitted();
+      // Keep the exact observed generation across a failed stop/persist attempt. A retry may finish
+      // this operation, but must never invent permission from an unexplained absent process.
+      let snapshots = taskSuspensionSnapshots.get(taskId);
+      if (!snapshots) {
+        snapshots = await snapshotCleanRestartSessions(taskId);
+        taskSuspensionSnapshots.set(taskId, snapshots);
+      }
+      await stopCleanRestartSessions(snapshots, assertAdmitted);
+      assertAdmitted();
+      await persistCleanRestartSessions(snapshots);
+      taskSuspensionSnapshots.delete(taskId);
+    } finally {
+      suspendingTasks.delete(taskId);
+    }
+  }
+
   async function prepareCleanShutdown(): Promise<void> {
     if (lifecycleState === 'closed') return;
     if (cleanShutdownPreparation) return cleanShutdownPreparation;
@@ -1322,7 +1414,28 @@ export function createProductionAgentSessionRuntime(
       await workflow.drain();
       await Promise.allSettled([...pendingRecoveries, ...pendingRestores.values()]);
       if (cleanShutdownNeedsPermitPersistence) {
-        cleanRestartShutdownSnapshot ??= await snapshotCleanRestartSessions();
+        if (cleanRestartShutdownSnapshot === null) {
+          const snapshots = new Map<string, CleanRestartShutdownSnapshot>();
+          for (const snapshot of [
+            ...(await snapshotCleanRestartSessions()),
+            ...[...taskSuspensionSnapshots.values()].flat(),
+          ]) {
+            const key = `${snapshot.taskId}\u0000${snapshot.agentId}`;
+            const existing = snapshots.get(key);
+            if (
+              existing &&
+              (existing.marker.agentDefId !== snapshot.marker.agentDefId ||
+                existing.marker.sourceGeneration !== snapshot.marker.sourceGeneration ||
+                existing.marker.targetGeneration !== snapshot.marker.targetGeneration)
+            ) {
+              throw new Error('Managed session changed after retained clean-stop proof');
+            }
+            snapshots.set(key, snapshot);
+          }
+          // A stopped session can still have an unpersisted clean-stop witness. Host shutdown
+          // must finish that exact write too, subject to the usual generation/canonical checks.
+          cleanRestartShutdownSnapshot = [...snapshots.values()];
+        }
       }
     })();
     cleanShutdownPreparation = attempt;
@@ -1390,6 +1503,7 @@ export function createProductionAgentSessionRuntime(
       dependencies.writer,
     ),
     prepareCleanShutdown,
+    suspendTaskSessions,
     restoreCanonicalSession(request) {
       if (!isManagedAgentSessionRestoreRequest(request)) {
         return Promise.resolve({ kind: 'unavailable', reason: 'identity-unavailable' });

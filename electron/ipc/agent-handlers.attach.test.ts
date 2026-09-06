@@ -12,6 +12,7 @@ const {
   getAgentTerminalStartupRecoveryMock,
   hasAgentSessionMock,
   pauseAgentMock,
+  resizeAgentMock,
   resumeAgentMock,
   spawnTaskAgentWorkflowMock,
 } = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ const {
   getAgentTerminalStartupRecoveryMock: vi.fn(),
   hasAgentSessionMock: vi.fn(),
   pauseAgentMock: vi.fn(),
+  resizeAgentMock: vi.fn(),
   resumeAgentMock: vi.fn(),
   spawnTaskAgentWorkflowMock: vi.fn(),
 }));
@@ -43,6 +45,7 @@ vi.mock('./pty.js', async () => {
     getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
     hasAgentSession: hasAgentSessionMock,
     pauseAgent: pauseAgentMock,
+    resizeAgent: resizeAgentMock,
     resumeAgent: resumeAgentMock,
   };
 });
@@ -78,7 +81,12 @@ import {
   registerArenaTerminalLaunch,
   resetArenaTerminalLaunchesForTest,
 } from './arena-terminal-launches.js';
-import { acquireTaskCommandLease, resetTaskCommandLeasesForTest } from './task-command-leases.js';
+import {
+  acquireTaskCommandLease,
+  getTaskCommandLeaseIdentity,
+  resetTaskCommandLeasesForTest,
+} from './task-command-leases.js';
+import { normalizeBrowserIpcTaskCommandArgs } from '../../server/browser-ipc-task-command-args.js';
 
 function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
   return {
@@ -433,6 +441,104 @@ describe('AttachTerminalSession', () => {
         buildAttachRequest({ compatibilityIntent: 'create', controllerId: 'client-1' }),
       ),
     ).resolves.toMatchObject({ kind: 'attached' });
+  });
+
+  it('binds standalone creation provenance to transport identity and uses exact existing attach on reload', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockReturnValue({ channelAttached: true, kind: 'created-session' });
+    const restore = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'unmanaged',
+        reason: 'compatibility-shell',
+        standalone: true,
+        taskId: 'task-1',
+        sessionId: 'agent-1',
+      })
+      .mockResolvedValue({
+        kind: 'existing',
+        taskId: 'task-1',
+        sessionId: 'agent-1',
+        generation: 7,
+        cols: 132,
+        rows: 43,
+      });
+    const bindChannelForClient = vi.fn(() => true);
+    const handlers = createIpcHandlers(
+      buildContext({ bindChannelForClient, restoreCanonicalTaskShellSession: restore }),
+    );
+    acquireTaskCommandLease('task-1', 'browser-owner', 'owner', 'open a terminal');
+    const normalized = (create: boolean, clientId = 'browser-owner') =>
+      normalizeBrowserIpcTaskCommandArgs(
+        IPC.AttachTerminalSession,
+        buildAttachRequest({
+          clientId: 'forged',
+          controllerId: 'forged',
+          compatibilityCreatorClientId: 'forged',
+          ...(create ? { compatibilityIntent: 'create' } : {}),
+        }),
+        clientId,
+      );
+    await expect(handlers[IPC.AttachTerminalSession]?.(normalized(true))).resolves.toMatchObject({
+      kind: 'attached',
+      disposition: 'created',
+    });
+    expect(spawnTaskAgentWorkflowMock.mock.calls[0]?.[1]).toMatchObject({
+      compatibilityCreatorClientId: 'browser-owner',
+    });
+    expect(restore).toHaveBeenNthCalledWith(
+      1,
+      { sessionId: 'agent-1', taskId: 'task-1' },
+      { clientId: 'browser-owner', compatibilityIntent: 'create' },
+    );
+
+    hasAgentSessionMock.mockReturnValue(true);
+    await expect(handlers[IPC.AttachTerminalSession]?.(normalized(false))).resolves.toMatchObject({
+      kind: 'attached',
+      disposition: 'existing',
+      generation: 7,
+    });
+    expect(restore).toHaveBeenLastCalledWith(
+      { sessionId: 'agent-1', taskId: 'task-1' },
+      { clientId: 'browser-owner' },
+    );
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(attachExistingAgentSessionExactMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        generation: 7,
+        isShell: true,
+      }),
+    );
+    const controller = getTaskCommandLeaseIdentity('task-1', 'browser-owner');
+    for (const create of [false, true]) {
+      await expect(
+        handlers[IPC.AttachTerminalSession]?.(normalized(create, 'browser-observer')),
+      ).resolves.toMatchObject({ kind: 'attached', disposition: 'existing', generation: 7 });
+    }
+    expect(getTaskCommandLeaseIdentity('task-1', 'browser-owner')).toEqual(controller);
+    expect(getTaskCommandLeaseIdentity('task-1', 'browser-observer')).toBeNull();
+    expect(getAgentColsMock('agent-1')).toBe(132);
+    expect(getAgentRowsMock('agent-1')).toBe(43);
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(() =>
+      handlers[IPC.ResizeAgent]?.({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        controllerId: 'browser-observer',
+        cols: 80,
+        rows: 20,
+      }),
+    ).toThrow('controlled by another client');
+    expect(resizeAgentMock).not.toHaveBeenCalled();
+    bindChannelForClient.mockReturnValue(false);
+    await expect(handlers[IPC.AttachTerminalSession]?.(normalized(false))).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'channel-unavailable',
+    });
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports channelBound true on Electron where channel binding is implicit', async () => {

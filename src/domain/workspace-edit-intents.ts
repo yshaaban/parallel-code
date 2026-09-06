@@ -14,7 +14,6 @@ export type WorkspaceProjectEditableField =
   | 'terminalBookmarks';
 
 export type WorkspaceTaskEditableField =
-  | 'collapsed'
   | 'name'
   | 'planFileName'
   | 'planRelativePath'

@@ -78,6 +78,7 @@ export type TaskShellTupleInspection =
 
 export type TaskShellTupleSpawnResult =
   | { kind: 'accepted'; supervisorIdentityHash: string }
+  | { kind: 'deferred-before-process' }
   | { kind: 'failed-before-process' }
   | { kind: 'ambiguous'; supervisorIdentityHash: string | null };
 
@@ -194,6 +195,7 @@ export interface TaskShellSessionWorkflow {
   ): Promise<TaskShellSessionOperationReplay>;
   abortCleanRestartDrain(): boolean;
   beginCleanRestartDrain(): Promise<TaskShellSessionCleanRestartCandidate[]>;
+  beginTaskSuspension(taskId: string): Promise<TaskShellSessionCleanRestartCandidate[]>;
   cancelBeforeTaskCommit(operationId: string): Promise<TaskShellSessionOperationReplay>;
   finalizeTaskRemoval(
     request: FinalizeTaskShellSessionRemovalRequest,
@@ -664,10 +666,28 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
     this.cleanRestartDrainActive = true;
     this.cleanRestartPermitPersisted = false;
     await this.waitForOperations();
+    return this.captureCleanRestartCandidates();
+  }
 
+  beginTaskSuspension(taskId: string): Promise<TaskShellSessionCleanRestartCandidate[]> {
+    return this.captureCleanRestartCandidates(taskId);
+  }
+
+  private async captureCleanRestartCandidates(
+    taskId?: string,
+  ): Promise<TaskShellSessionCleanRestartCandidate[]> {
     for (const observed of this.dependencies.journal.list()) {
+      if (taskId !== undefined && observed.taskId !== taskId) continue;
       await this.serialized(observed.operationId, async () => {
         const record = requireRecord(this.dependencies.journal, observed.operationId);
+        if (
+          [...this.cleanRestartCandidates.values()].some(
+            ({ candidate }) =>
+              candidate.launchOperationId === record.operationId &&
+              candidate.expectedRecordVersion === record.recordVersion,
+          )
+        )
+          return;
         if (!isRunningRecord(record) || this.quarantinedTaskIds.has(record.taskId)) return;
         const current = await this.dependencies.readCurrent(identity(record));
         if (current.taskState !== 'present' || current.taskClosing) return;
@@ -692,8 +712,8 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
         });
       });
     }
-    return [...this.cleanRestartCandidates.values()].map(({ candidate }) =>
-      structuredClone(candidate),
+    return [...this.cleanRestartCandidates.values()].flatMap(({ candidate }) =>
+      taskId === undefined || candidate.taskId === taskId ? [structuredClone(candidate)] : [],
     );
   }
 
@@ -760,7 +780,16 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
   ): Promise<TaskShellSessionOperationReplay> {
     return this.serialized(request.launchOperationId, async () => {
       const record = requireRecord(this.dependencies.journal, request.launchOperationId);
-      if (record.kind === 'deletion-tombstone') return this.replay(record);
+      if (record.kind === 'deletion-tombstone') {
+        if (
+          record.taskId === request.taskId &&
+          record.outcome === 'task-removed-no-replay' &&
+          (await this.dependencies.verifyRemovalCommit(request))
+        ) {
+          this.retireTaskCleanRestartCandidates(request.taskId, request.launchOperationId);
+        }
+        return this.replay(record);
+      }
       if (
         record.kind !== 'deletion-pending' ||
         record.deletion.deletionOperationId !== request.deletionOperationId ||
@@ -790,8 +819,16 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
         outcome: 'task-removed-no-replay',
       };
       await this.persist(tombstone, record.recordVersion);
+      this.retireTaskCleanRestartCandidates(request.taskId, request.launchOperationId);
       return this.replay(tombstone);
     });
+  }
+
+  private retireTaskCleanRestartCandidates(taskId: string, launchOperationId: string): void {
+    for (const [id, { candidate }] of this.cleanRestartCandidates) {
+      if (candidate.taskId === taskId && candidate.launchOperationId === launchOperationId)
+        this.cleanRestartCandidates.delete(id);
+    }
   }
 
   async get(operationId: string): Promise<TaskShellSessionOperationReplay | null> {
@@ -892,7 +929,7 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
   async persistCleanRestartPermit(
     candidate: Readonly<TaskShellSessionCleanRestartCandidate>,
   ): Promise<TaskShellSessionCleanRestartPermitResult> {
-    if (!this.cleanRestartDrainActive || !this.isValidCleanRestartCandidate(candidate)) {
+    if (!this.isValidCleanRestartCandidate(candidate)) {
       return { kind: 'unavailable', reason: 'candidate-unavailable' };
     }
     const issued = this.cleanRestartCandidates.get(candidate.candidateId);
@@ -945,7 +982,7 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
         return { kind: 'unavailable', reason: 'journal-unavailable' } as const;
       }
       this.cleanRestartCandidates.delete(candidate.candidateId);
-      this.cleanRestartPermitPersisted = true;
+      if (this.cleanRestartDrainActive) this.cleanRestartPermitPersisted = true;
       return {
         kind: 'prepared',
         operationId: pending.restartOperationId,
@@ -1237,6 +1274,20 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
         }
 
         if (record.kind === 'full') {
+          if (record.phase === 'admitted') {
+            // Durable admitted state proves that no initial process attempt is outstanding.
+            await this.startInsideQueue(record);
+            const started = requireRecord(this.dependencies.journal, record.operationId);
+            if (isRunningRecord(started)) {
+              return {
+                kind: 'restored',
+                generation: runtimeTupleIdentity(started).expectedGeneration,
+                sessionId: started.sessionId,
+                taskId: started.taskId,
+              } as const;
+            }
+            return { kind: 'unavailable', reason: 'session-state-unavailable' } as const;
+          }
           if (record.phase === 'manual-reconciliation-required') {
             return {
               kind: 'unavailable',
@@ -1379,6 +1430,16 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
       return this.replay(manual);
     }
     const spawned = await this.dependencies.authority.spawnExactTuple(runtimeTupleIdentity(record));
+    if (spawned.kind === 'deferred-before-process') {
+      const admitted: TaskShellSessionFullRecord = {
+        ...baseReplacement(record, this.now()),
+        committedWorkspaceRevision: requireCommittedRevision(record),
+        kind: 'full',
+        phase: 'admitted',
+      };
+      await this.persist(admitted, record.recordVersion);
+      return this.replay(admitted);
+    }
     if (spawned.kind === 'failed-before-process') {
       const failed = toFailed(record, true, this.now());
       await this.persist(failed, record.recordVersion);
@@ -1521,6 +1582,15 @@ class TaskShellSessionWorkflowImpl implements TaskShellSessionWorkflow {
       );
       await this.persist(manual, spawning.recordVersion);
       return { kind: 'unavailable', reason: 'initial-shell-reconciliation-required' };
+    }
+    if (spawned.kind === 'deferred-before-process') {
+      const deferred: RestartRecordForPhase<'clean-restart-pending'> = {
+        ...pending,
+        recordVersion: spawning.recordVersion + 1,
+        updatedAtMs: this.now(),
+      };
+      await this.persist(deferred, spawning.recordVersion);
+      return { kind: 'unavailable', reason: 'task-unavailable' };
     }
     if (spawned.kind === 'failed-before-process') {
       const failed = toRestartFailed(spawning, this.now());

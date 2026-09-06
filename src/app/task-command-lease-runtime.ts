@@ -1,7 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
 import { isTransportAttemptCurrent } from '../domain/task-command-lease-runtime-primitives';
 import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
-import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { ensureBrowserPagehideTracking, isBrowserPagehidePending } from '../lib/browser-pagehide';
 import { invoke, sendPagehideInvoke } from '../lib/ipc';
 import { getRuntimeClientId, getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
@@ -32,7 +31,6 @@ import {
   clearTaskCommandLeaseRenewal,
   decrementTaskCommandLeaseHold,
   getLocalTaskCommandLease,
-  getLocalTaskCommandLeaseEntries,
   getOrCreateLocalTaskCommandLease,
   getSuspendedTaskCommandLeases,
   invalidateTaskCommandLeaseSessions,
@@ -79,6 +77,13 @@ async function reclaimSuspendedTaskCommandLease(
 ): Promise<void> {
   const clientId = getRuntimeClientId();
   const ownerId = getRuntimeLeaseOwnerId();
+  const transportGeneration = getTaskCommandLeaseTransportGeneration();
+  const leaseGeneration = lease.leaseGeneration;
+  const isCurrent = () =>
+    getLocalTaskCommandLease(taskId) === lease &&
+    !lease.removed &&
+    lease.leaseGeneration === leaseGeneration &&
+    getTaskCommandLeaseTransportGeneration() === transportGeneration;
   try {
     const result = await acquireTaskCommandLease(
       taskId,
@@ -87,6 +92,7 @@ async function reclaimSuspendedTaskCommandLease(
       lease.actionDescription,
       false,
     );
+    if (!isCurrent()) return;
     if (result.acquired && result.controllerId === clientId) {
       resumeTaskCommandLease(taskId, result.leaseGeneration);
       if (!lease.renewTimer && !lease.removed) {
@@ -98,6 +104,7 @@ async function reclaimSuspendedTaskCommandLease(
     // Re-claim failed; fall through to invalidation below.
   }
 
+  if (!isCurrent()) return;
   clearSuspendedTaskCommandLeaseMark(taskId);
   clearTaskCommandLeaseRenewal(taskId);
   invalidateTaskCommandLeaseSessions(taskId);
@@ -106,6 +113,11 @@ async function reclaimSuspendedTaskCommandLease(
 export interface TaskCommandLeaseOptions {
   confirmTakeover?: boolean;
   takeover?: boolean;
+}
+
+export interface RetainedTaskCommandLeaseHold {
+  isCurrent(): boolean;
+  release(options?: { notifyBackend?: boolean }): Promise<boolean>;
 }
 
 type TaskCommandLeaseAcquireResult = RendererInvokeResponseMap[IPC.AcquireTaskCommandLease];
@@ -246,6 +258,8 @@ function startTaskCommandLeaseRenewal(
 ): ReturnType<typeof globalThis.setInterval> {
   return globalThis.setInterval(() => {
     const lease = getLocalTaskCommandLease(taskId);
+    const leaseGeneration = lease?.leaseGeneration;
+    const transportGeneration = getTaskCommandLeaseTransportGeneration();
     void invoke(IPC.RenewTaskCommandLease, {
       clientId,
       ownerId,
@@ -253,10 +267,17 @@ function startTaskCommandLeaseRenewal(
       ...(lease?.leaseGeneration !== undefined ? { leaseGeneration: lease.leaseGeneration } : {}),
     })
       .then((result) => {
+        if (
+          !lease ||
+          lease.removed ||
+          getLocalTaskCommandLease(taskId) !== lease ||
+          lease.leaseGeneration !== leaseGeneration ||
+          getTaskCommandLeaseTransportGeneration() !== transportGeneration
+        )
+          return;
         applyTaskCommandControllerChanged(result);
-        const refreshedLease = getLocalTaskCommandLease(taskId);
-        if (refreshedLease && result.renewed) {
-          updateLocalTaskCommandLeaseGeneration(refreshedLease, result.leaseGeneration);
+        if (result.renewed) {
+          updateLocalTaskCommandLeaseGeneration(lease, result.leaseGeneration);
         }
         if (!hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
           clearTaskCommandLeaseRenewalIfActive(taskId);
@@ -323,7 +344,9 @@ function startTaskCommandLeaseAcquire(
         return false;
       }
 
-      lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
+      if (!lease.removed && getLocalTaskCommandLease(taskId) === lease) {
+        lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
+      }
       return true;
     })
     .finally(() => {
@@ -345,11 +368,14 @@ async function releaseTaskCommandLeaseToBackend(
   ownerId: string,
   lease: LocalTaskCommandLease,
 ): Promise<boolean> {
-  if (getLocalTaskCommandLease(taskId) !== lease) {
+  if (
+    getLocalTaskCommandLease(taskId) !== lease &&
+    (!lease.removed || lease.leaseGeneration === undefined)
+  ) {
     return false;
   }
 
-  clearTaskCommandLeaseRenewalIfActive(taskId);
+  if (getLocalTaskCommandLease(taskId) === lease) clearTaskCommandLeaseRenewalIfActive(taskId);
   const result = await invoke(IPC.ReleaseTaskCommandLease, {
     clientId,
     ownerId,
@@ -403,11 +429,11 @@ function releaseTaskCommandLeaseOnPagehide(
   cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
 }
 
-export async function retainTaskCommandLease(
+async function retainLocalTaskCommandLease(
   taskId: string,
   actionDescription: string,
   options: TaskCommandLeaseOptions = {},
-): Promise<boolean> {
+): Promise<LocalTaskCommandLease | null> {
   ensureBrowserPagehideTracking();
   ensureTaskCommandLeaseSubscriptions();
   const clientId = getRuntimeClientId();
@@ -422,7 +448,9 @@ export async function retainTaskCommandLease(
       clearTaskCommandLeaseRenewalIfActive(taskId);
     }
 
-    if (ownsLease && lease.actionDescription === actionDescription) {
+    // Overlapping local holders share one admitted epoch. Acquiring again merely to
+    // change its action label would invalidate work already using that generation.
+    if (ownsLease && lease.leaseGeneration !== undefined && lease.suspendedAt === undefined) {
       return true;
     }
 
@@ -448,9 +476,10 @@ export async function retainTaskCommandLease(
   if (lease.renewTimer) {
     const acquired = await refreshHeldLease();
     if (!acquired) {
-      return releaseFailedTaskCommandLeaseHold(taskId, lease);
+      await releaseFailedTaskCommandLeaseHold(taskId, lease);
+      return null;
     }
-    return true;
+    return !lease.removed && getLocalTaskCommandLease(taskId) === lease ? lease : null;
   }
 
   const shouldEscalatePendingAcquire =
@@ -461,6 +490,7 @@ export async function retainTaskCommandLease(
   }
 
   let acquired = await lease.acquirePromise;
+  if (lease.removed || getLocalTaskCommandLease(taskId) !== lease) return null;
   if (
     !acquired &&
     shouldEscalatePendingAcquire &&
@@ -479,24 +509,58 @@ export async function retainTaskCommandLease(
   }
 
   if (!acquired) {
-    return releaseFailedTaskCommandLeaseHold(taskId, lease);
+    await releaseFailedTaskCommandLeaseHold(taskId, lease);
+    return null;
   }
 
-  return refreshHeldLease();
+  return (await refreshHeldLease()) && !lease.removed && getLocalTaskCommandLease(taskId) === lease
+    ? lease
+    : null;
+}
+
+/** Each caller releases only the local lease it retained, even after removal and ID reuse. */
+export async function retainTaskCommandLeaseHold(
+  taskId: string,
+  actionDescription: string,
+  options: TaskCommandLeaseOptions = {},
+): Promise<RetainedTaskCommandLeaseHold | null> {
+  const lease = await retainLocalTaskCommandLease(taskId, actionDescription, options);
+  if (!lease) return null;
+  let released = false;
+  return {
+    isCurrent: () => !released && !lease.removed && getLocalTaskCommandLease(taskId) === lease,
+    release(releaseOptions = {}) {
+      if (released) return Promise.resolve(true);
+      released = true;
+      return releaseTaskCommandLeaseHold(taskId, { ...releaseOptions, expectedLease: lease });
+    },
+  };
+}
+
+export async function retainTaskCommandLease(
+  taskId: string,
+  actionDescription: string,
+  options: TaskCommandLeaseOptions = {},
+): Promise<boolean> {
+  return (await retainLocalTaskCommandLease(taskId, actionDescription, options)) !== null;
 }
 
 export async function releaseTaskCommandLeaseHold(
   taskId: string,
   options: {
     notifyBackend?: boolean;
+    expectedLease?: LocalTaskCommandLease;
   } = {},
 ): Promise<boolean> {
   const clientId = getRuntimeClientId();
   const ownerId = getRuntimeLeaseOwnerId();
   const lease = getLocalTaskCommandLease(taskId);
+  if (options.expectedLease && lease !== options.expectedLease) return true;
   if (!lease) {
     return false;
   }
+  // Final owner removal, not individual holders, releases this retired epoch.
+  if (lease.removed) return true;
 
   decrementTaskCommandLeaseHold(lease);
   if (lease.holdCount > 0) {
@@ -528,44 +592,6 @@ export async function releaseTaskCommandLeaseHold(
   return releaseTaskCommandLeaseToBackend(taskId, clientId, ownerId, lease);
 }
 
-function isTypingTaskCommandAction(actionDescription: string): boolean {
-  return actionDescription === 'type in the terminal';
-}
-
-async function releaseInactiveTypingTaskCommandLeases(
-  activeTaskId: string | null,
-  focusedSurface: string | null,
-): Promise<void> {
-  const keepActiveTypingLease =
-    activeTaskId !== null && isTypingTaskCommandFocusedSurface(focusedSurface);
-  const releasePromises: Promise<unknown>[] = [];
-
-  for (const [taskId, lease] of getLocalTaskCommandLeaseEntries()) {
-    if (!isTypingTaskCommandAction(lease.actionDescription)) {
-      continue;
-    }
-
-    if (keepActiveTypingLease && taskId === activeTaskId) {
-      continue;
-    }
-
-    releasePromises.push(releaseTaskCommandLeaseHold(taskId));
-  }
-
-  if (releasePromises.length === 0) {
-    return;
-  }
-
-  await Promise.allSettled(releasePromises);
-}
-
-export function syncFocusedTypingTaskCommandLease(
-  activeTaskId: string | null,
-  focusedSurface: string | null,
-): void {
-  void releaseInactiveTypingTaskCommandLeases(activeTaskId, focusedSurface);
-}
-
 export function addTaskCommandLeaseSessionInvalidator(
   taskId: string,
   invalidate: () => void,
@@ -591,12 +617,29 @@ export async function clearRemovedTaskCommandLeaseState(taskId: string): Promise
     lease.removed = true;
   }
   clearTaskCommandLeaseRenewalIfActive(taskId);
-  // Removed tasks must attempt the backend release before local retained sessions are invalidated.
-  // Session invalidation clears retained leases with notifyBackend=false, so reversing this order
-  // would strand backend ownership until TTL expiry.
-  const released = await releaseTaskCommandLeaseHold(taskId);
+  // Invalidate the old holders synchronously: a replacement may arrive during release.
+  // Their individual releases cannot consume or clear this retired epoch.
   invalidateTaskCommandLeaseSessions(taskId);
-  return released;
+  // Removal retires every holder, including a command still preparing a process.
+  // Wait for an already-issued acquire, then revoke that exact lease epoch once.
+  if (lease?.acquirePromise) await lease.acquirePromise.catch(() => undefined);
+  if (!lease) return false;
+  lease.holdCount = 0;
+  if (isBrowserPagehidePending() && getLocalTaskCommandLease(taskId) === lease) {
+    releaseTaskCommandLeaseOnPagehide(
+      taskId,
+      getRuntimeClientId(),
+      getRuntimeLeaseOwnerId(),
+      lease,
+    );
+    return true;
+  }
+  return releaseTaskCommandLeaseToBackend(
+    taskId,
+    getRuntimeClientId(),
+    getRuntimeLeaseOwnerId(),
+    lease,
+  );
 }
 
 export {
