@@ -57,6 +57,8 @@ describe('git phase 1 parity', () => {
     detectMainBranchMock.mockResolvedValue('main');
     worktreeExistsMock.mockResolvedValue(true);
     setExecImplementation(async (args) => {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/main')
+        return { stderr: '', stdout: 'main123\n' };
       if (args[0] === 'status') {
         return { stderr: '', stdout: '' };
       }
@@ -83,6 +85,8 @@ describe('git phase 1 parity', () => {
   it('uses the merge base when loading the branch log', async () => {
     detectMainBranchMock.mockResolvedValue('main');
     setExecImplementation(async (args) => {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/main')
+        return { stderr: '', stdout: 'main123\n' };
       if (args[0] === 'merge-base') {
         return { stderr: '', stdout: 'base456\n' };
       }

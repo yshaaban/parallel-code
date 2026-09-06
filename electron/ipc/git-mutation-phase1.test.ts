@@ -64,13 +64,15 @@ describe('git mutation phase 1 parity', () => {
     detectMainBranchMock.mockResolvedValue('main');
     getCurrentBranchNameMock.mockResolvedValue('feature/task');
     setExecImplementation(async (args) => {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/main')
+        return { stderr: '', stdout: 'main123\n' };
       if (args[0] === 'rev-list') {
         expect(args).toEqual([
           'rev-list',
           '--count',
           '--cherry-pick',
           '--right-only',
-          'HEAD...main',
+          'HEAD...refs/heads/main',
         ]);
         return { stderr: '', stdout: '0\n' };
       }
@@ -90,13 +92,15 @@ describe('git mutation phase 1 parity', () => {
     detectMainBranchMock.mockResolvedValue('release/main');
     getCurrentBranchNameMock.mockResolvedValue('feature/task');
     setExecImplementation(async (args) => {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/release/main')
+        return { stderr: '', stdout: 'main123\n' };
       if (args[0] === 'rev-list') {
         expect(args).toEqual([
           'rev-list',
           '--count',
           '--cherry-pick',
           '--right-only',
-          'HEAD...release/main',
+          'HEAD...refs/heads/release/main',
         ]);
         return { stderr: '', stdout: '2\n' };
       }
@@ -146,28 +150,30 @@ describe('git mutation phase 1 parity', () => {
       if (args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
         return { stderr: '', stdout: '.git\n' };
       }
-      if (args[0] === 'rev-parse' && args[1] === '--symbolic-full-name') {
-        expect(args).toEqual(['rev-parse', '--symbolic-full-name', 'main']);
-        return { stderr: '', stdout: 'refs/heads/main\n' };
-      }
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/main')
+        return { stderr: '', stdout: 'main123\n' };
+      if (args[0] === 'rev-parse' && args[2] === 'refs/heads/feature/task')
+        return { stderr: '', stdout: 'task123\n' };
       if (args[0] === 'merge-base') {
         expect(options.cwd).toBe('/repo');
-        expect(args).toEqual(['merge-base', 'main', 'feature/task']);
+        expect(args).toEqual(['merge-base', 'refs/heads/main', 'task123']);
         return { stderr: '', stdout: 'base789\n' };
       }
       if (args[0] === 'diff') {
-        expect(args).toEqual(['diff', '--numstat', 'base789..feature/task']);
+        expect(args).toEqual(['diff', '--numstat', 'base789..task123']);
         return { stderr: '', stdout: '4\t1\tsrc/feature.ts\n' };
       }
       if (args[0] === 'status') {
         return { stderr: '', stdout: '' };
       }
-      if (args[0] === 'checkout') {
+      if (args[0] === 'switch') {
         return { stderr: '', stdout: '' };
       }
       if (args[0] === 'merge') {
         return { stderr: '', stdout: '' };
       }
+      if (args[0] === 'fmt-merge-msg')
+        return { stderr: '', stdout: "Merge branch 'feature/task'\n" };
       throw new Error(`Unexpected git args: ${args.join(' ')}`);
     });
 

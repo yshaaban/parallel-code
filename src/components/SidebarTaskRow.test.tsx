@@ -232,7 +232,7 @@ describe('SidebarTaskRow', () => {
     expect(screen.getByRole('img', { name: 'Terminal task' })).toBeDefined();
     expect(screen.getByText('root')).toBeDefined();
     expect(
-      screen.getByTitle(/Works directly in the project root on main; shares files and Git state/),
+      screen.getByTitle(/Works directly in the project root; shares files and Git state/),
     ).toBeDefined();
   });
 

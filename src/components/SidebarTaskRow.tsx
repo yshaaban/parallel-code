@@ -512,7 +512,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
                 fallbackLabel={isTerminalTask(currentTask()) ? 'Terminal task' : undefined}
               />
               <Show when={isCurrentBranchTask(currentTask())}>
-                <ProjectRootBadge branchName={currentTask().branchName} compact />
+                <ProjectRootBadge />
               </Show>
               <span
                 style={{
@@ -627,7 +627,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             fallbackLabel={isTerminalTask(currentTask()) ? 'Terminal task' : undefined}
           />
           <Show when={isCurrentBranchTask(currentTask())}>
-            <ProjectRootBadge branchName={currentTask().branchName} compact />
+            <ProjectRootBadge />
           </Show>
           <TaskReviewBadge taskId={props.taskId} />
           <TaskTerminalStartupBadge taskId={props.taskId} />

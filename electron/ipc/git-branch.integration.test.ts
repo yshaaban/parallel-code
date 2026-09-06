@@ -11,6 +11,8 @@ import { encodeTaskWorktreeLinkRequestV1 } from './git-worktree-symlinks.js';
 import { getBranchLog, getWorktreeStatus } from './git.js';
 import { checkMergeStatus, mergeTask, rebaseTask } from './git-mutation-ops.js';
 import { withRepositoryWorktreeLock } from './git-worktree-lock.js';
+import { resolveBranchRef } from './git-branch-ref.js';
+import { getBranchCommitHistory } from './git-commit-history.js';
 
 const roots: string[] = [];
 
@@ -39,6 +41,69 @@ afterEach(() => {
 });
 
 describe('repository default branches', { timeout: 30_000 }, () => {
+  it.each(['local', 'origin', 'upstream'])(
+    'does not resolve a selected %s branch through a same-named tag',
+    async (kind) => {
+      const root = repository('trunk');
+      git(root, 'tag', 'trunk');
+      fs.writeFileSync(path.join(root, 'latest.txt'), 'latest branch bytes\n');
+      git(root, 'add', 'latest.txt');
+      git(root, 'commit', '-m', 'latest');
+      const tip = git(root, 'rev-parse', 'refs/heads/trunk');
+      let label = 'trunk';
+      if (kind !== 'local') {
+        git(root, 'branch', '-m', 'feature/local');
+        git(root, 'update-ref', `refs/remotes/${kind}/trunk`, tip);
+        if (kind === 'upstream') {
+          label = 'upstream/trunk';
+          git(root, 'tag', label, 'trunk');
+        }
+      }
+      const task = await createWorktree(
+        root,
+        `task/${kind}`,
+        encodeTaskWorktreeLinkRequestV1([]),
+        false,
+        label,
+      );
+      expect(git(task.path, 'rev-parse', 'HEAD')).toBe(tip);
+      expect(fs.readFileSync(path.join(task.path, 'latest.txt'), 'utf8')).toBe(
+        'latest branch bytes\n',
+      );
+      expect((await resolveBranchRef(root, label)).refName).toBe(
+        kind === 'local' ? 'refs/heads/trunk' : `refs/remotes/${kind}/trunk`,
+      );
+      fs.writeFileSync(path.join(task.path, 'task-only.txt'), 'task bytes\n');
+      git(task.path, 'add', 'task-only.txt');
+      git(task.path, 'commit', '-m', 'task commit');
+      git(root, 'tag', task.branch, tip);
+      expect(await getChangedFilesFromBranch(root, task.branch, label)).toEqual([
+        expect.objectContaining({ path: 'task-only.txt' }),
+      ]);
+      const history = await getBranchCommitHistory({
+        projectRoot: root,
+        branchName: task.branch,
+        baseBranch: label,
+      });
+      expect(history.commits.map((commit) => commit.subject)).toEqual(['task commit']);
+      expect(await getBranchLog(task.path, label)).toContain('task commit');
+      if (kind === 'local') {
+        await expect(
+          mergeTask(root, task.path, task.branch, false, null, false, label),
+        ).resolves.toMatchObject({ main_branch: 'trunk', lines_added: 1 });
+      }
+    },
+  );
+
+  it('keeps explicit HEAD revision semantics but rejects tags and raw revisions as branch selections', async () => {
+    const root = repository('trunk');
+    git(root, 'tag', 'release');
+    const sha = git(root, 'rev-parse', 'HEAD');
+    expect(await resolveBranchRef(root, 'HEAD')).toMatchObject({ exists: true, refName: 'HEAD' });
+    for (const value of ['release', 'refs/tags/release', sha, 'HEAD~0']) {
+      expect(await resolveBranchRef(root, value)).toMatchObject({ exists: false });
+    }
+  });
   it.each(['main', 'master', 'trunk', 'develop', 'release/stable'])(
     'uses the actual %s branch instead of the global initialization preference',
     async (branch) => {
@@ -255,7 +320,7 @@ describe('repository default branches', { timeout: 30_000 }, () => {
     expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
   });
 
-  it('does not switch the checkout underneath shared-root tasks, but allows same-branch merge', async () => {
+  it('requires closing shared-root tasks before merging even into the same branch', async () => {
     const root = repository('trunk');
     git(root, 'branch', 'other');
     const task = await createWorktree(
@@ -269,11 +334,11 @@ describe('repository default branches', { timeout: 30_000 }, () => {
     const rootHead = git(root, 'rev-parse', 'HEAD');
     await expect(
       mergeTask(root, task.path, task.branch, false, null, false, 'other', () => true),
-    ).rejects.toThrow('Project-root tasks are using "trunk"');
+    ).rejects.toThrow('Close project-root tasks');
     expect(git(root, 'rev-parse', 'HEAD')).toBe(rootHead);
     expect(git(root, 'symbolic-ref', '--short', 'HEAD')).toBe('trunk');
     await expect(
-      mergeTask(root, task.path, task.branch, false, null, false, 'trunk', () => true),
+      mergeTask(root, task.path, task.branch, false, null, false, 'trunk', () => false),
     ).resolves.toMatchObject({ main_branch: 'trunk' });
     expect(git(root, 'rev-parse', 'HEAD')).toBe(git(task.path, 'rev-parse', 'HEAD'));
   });
@@ -316,7 +381,7 @@ describe('repository default branches', { timeout: 30_000 }, () => {
     );
     release();
     await admission;
-    await expect(merge).rejects.toThrow('Project-root tasks are using "trunk"');
+    await expect(merge).rejects.toThrow('Close project-root tasks');
     expect(git(root, 'symbolic-ref', '--short', 'HEAD')).toBe('trunk');
   });
 });

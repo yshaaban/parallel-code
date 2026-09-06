@@ -261,9 +261,9 @@ describe('TaskTitleBar', () => {
       />
     ));
 
-    expect(screen.getByText('root · main')).toBeDefined();
+    expect(screen.getByText('root')).toBeDefined();
     expect(
-      screen.getByTitle(/Works directly in the project root on main; shares files and Git state/),
+      screen.getByTitle(/Works directly in the project root; shares files and Git state/),
     ).toBeDefined();
     expect(screen.getByText('terminal')).toBeDefined();
     expect(screen.getByTitle('Terminal-only task with no AI agent')).toBeDefined();

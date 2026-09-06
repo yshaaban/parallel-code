@@ -238,9 +238,9 @@ describe('TaskBranchInfoBar', () => {
     ));
 
     const badge = screen.getByLabelText(
-      /Works directly in the project root on task\/example; shares files and Git state/,
+      /Works directly in the project root; shares files and Git state/,
     );
-    expect(badge.textContent).toBe('root · task/example');
+    expect(badge.textContent).toBe('root');
     expect(screen.getAllByTitle('Click to copy the project root path')).toHaveLength(2);
 
     fireEvent.click(badge);

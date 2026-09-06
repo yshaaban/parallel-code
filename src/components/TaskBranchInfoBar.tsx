@@ -230,7 +230,7 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
           <span>{props.task.branchName}</span>
         </Show>
         <Show when={isProjectRoot()}>
-          <ProjectRootBadge branchName={props.task.branchName} />
+          <ProjectRootBadge />
         </Show>
         <Show when={!isNonGitProject(props.task) && isExistingWorktreeTask(props.task)}>
           <span

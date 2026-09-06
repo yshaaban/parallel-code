@@ -127,11 +127,11 @@ describe('git-worktree', () => {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
 
-      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'feature/base') {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/feature/base') {
         throw new Error('missing local base branch');
       }
 
-      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'origin/feature/base') {
+      if (args[0] === 'show-ref' && args[3] === 'refs/remotes/origin/feature/base') {
         return { stdout: 'abc123\n' };
       }
 
@@ -145,7 +145,7 @@ describe('git-worktree', () => {
         args[2] === '-b' &&
         args[3] === 'task/test' &&
         args[4] === '/repo/.worktrees/task/test' &&
-        args[5] === 'origin/feature/base'
+        args[5] === 'refs/remotes/origin/feature/base'
       ) {
         return {};
       }
@@ -175,7 +175,7 @@ describe('git-worktree', () => {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
 
-      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'feature/base') {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/feature/base') {
         return { stdout: 'abc123\n' };
       }
 
@@ -189,7 +189,7 @@ describe('git-worktree', () => {
         args[2] === '-b' &&
         args[3] === 'task/test' &&
         args[4] === '/repo/.worktrees/task/test' &&
-        args[5] === 'feature/base'
+        args[5] === 'refs/heads/feature/base'
       ) {
         return {};
       }

@@ -7,6 +7,7 @@ import type {
 import { MAX_BUFFER } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
 import { execGit } from './git-exec.js';
+import { resolveBranchRef } from './git-branch-ref.js';
 import { getMainBranch } from './git.js';
 const FIELD_SEPARATOR = '\x1f';
 
@@ -185,10 +186,12 @@ export async function getBranchCommitHistory(options: {
   projectRoot: string;
 }): Promise<BranchCommitHistoryResult> {
   const mainBranch = await getMainBranch(options.projectRoot, options.baseBranch);
-  const headHash = await getRevisionHash(options.projectRoot, options.branchName);
+  const branch = await resolveBranchRef(options.projectRoot, options.branchName);
+  if (!branch.exists) throw new Error(`Branch "${options.branchName}" does not exist.`);
+  const headHash = await getRevisionHash(options.projectRoot, branch.refName);
   const diffBase = await detectDiffBase(options.projectRoot, mainBranch, headHash);
   const baseHash = diffBase.sha;
-  const headers = await getCommitHeaders(options.projectRoot, baseHash, options.branchName);
+  const headers = await getCommitHeaders(options.projectRoot, baseHash, headHash);
   const commits: ReviewCommitSummary[] = [];
 
   for (const header of headers) {

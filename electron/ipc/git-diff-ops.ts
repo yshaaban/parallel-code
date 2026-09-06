@@ -10,7 +10,7 @@ import { isBinaryDiff } from '../../src/lib/diff-parser.js';
 import { terminateBoundedSpawnAndWait } from './bounded-process.js';
 import { NotFoundError } from './errors.js';
 import { detectMainBranch } from './git-branch.js';
-import { getBranchUpstreamRef } from './git-branch-ref.js';
+import { getBranchUpstreamRef, resolveBranchRef } from './git-branch-ref.js';
 import { looksBinaryBuffer } from './git-binary.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { detectDiffBase } from './git-diff-base.js';
@@ -40,7 +40,9 @@ async function resolveRevisionHash(cwd: string, revision: string): Promise<strin
 }
 
 async function getBranchHead(projectRoot: string, branchName: string): Promise<string> {
-  return resolveRevisionHash(projectRoot, branchName);
+  const branch = await resolveBranchRef(projectRoot, branchName);
+  if (!branch.exists) throw new Error(`Branch "${branchName}" does not exist.`);
+  return resolveRevisionHash(projectRoot, branch.refName);
 }
 
 interface BranchDiffContext {
@@ -138,22 +140,27 @@ async function getMainComparisonState(
   mainBranch?: string,
 ): Promise<MainComparisonState> {
   const branch = mainBranch ?? (await detectMainBranch(repoRoot));
-  const remoteRef = await getBranchUpstreamRef(repoRoot, branch);
+  const [local, remoteRef] = await Promise.all([
+    resolveBranchRef(repoRoot, branch),
+    getBranchUpstreamRef(repoRoot, branch),
+  ]);
   const [mainBranchHead, remoteMainBranchHead] = await Promise.all([
-    resolveRevisionHash(repoRoot, branch),
-    resolveRevisionHash(repoRoot, remoteRef),
+    local.exists ? resolveRevisionHash(repoRoot, local.refName) : Promise.resolve(null),
+    remoteRef === null ? Promise.resolve(null) : resolveRevisionHash(repoRoot, remoteRef),
   ]);
 
-  const refs = [mainBranchHead];
-  let fingerprint = mainBranchHead;
+  const refs = mainBranchHead === null ? [] : [mainBranchHead];
 
-  if (remoteMainBranchHead !== remoteRef && remoteMainBranchHead !== mainBranchHead) {
+  if (
+    remoteMainBranchHead !== null &&
+    remoteMainBranchHead !== remoteRef &&
+    remoteMainBranchHead !== mainBranchHead
+  ) {
     refs.push(remoteMainBranchHead);
-    fingerprint = `${mainBranchHead}:${remoteMainBranchHead}`;
   }
 
   return {
-    fingerprint,
+    fingerprint: refs.join(':') || `missing:${branch}`,
     refs,
   };
 }

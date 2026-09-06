@@ -366,8 +366,11 @@ function buildTaskAndSessionRows(
 
     const location = taskLocation(task, projectMode(project));
     const name = truncateDisplay(task.name, 'Untitled task', 256);
+    // Root tasks retain their creation identity, not a live observation of the shared checkout.
     const branch =
-      typeof task.branchName === 'string' && task.branchName.trim().length > 0
+      location !== 'project-root' &&
+      typeof task.branchName === 'string' &&
+      task.branchName.trim().length > 0
         ? truncateDisplay(task.branchName, '', 96)
         : null;
     const selectedSessionId =

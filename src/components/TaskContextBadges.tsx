@@ -32,17 +32,11 @@ function ContextBadge(props: ContextBadgeProps): JSX.Element {
   );
 }
 
-export function ProjectRootBadge(props: { branchName?: string; compact?: boolean }): JSX.Element {
-  const branchName = () => props.branchName?.trim();
-  const title = () =>
-    branchName()
-      ? `Works directly in the project root on ${branchName()}; shares files and Git state with other project-root tasks`
-      : 'Works directly in the project root; shares files and Git state with other project-root tasks';
-
+export function ProjectRootBadge(): JSX.Element {
   return (
     <ContextBadge
-      label={props.compact || !branchName() ? 'root' : `root · ${branchName()}`}
-      title={title()}
+      label="root"
+      title="Works directly in the project root; shares files and Git state with other project-root tasks"
       tone={theme.warning}
     />
   );

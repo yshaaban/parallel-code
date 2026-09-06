@@ -186,8 +186,10 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
 }
 
 export async function getCurrentBranchName(repoRoot: string): Promise<string> {
-  const { stdout } = await execGit(['symbolic-ref', '--short', 'HEAD'], { cwd: repoRoot });
-  return stdout.trim();
+  const { stdout } = await execGit(['symbolic-ref', 'HEAD'], { cwd: repoRoot });
+  const ref = stdout.trim();
+  if (!ref.startsWith('refs/heads/')) throw new Error('HEAD does not name a local branch');
+  return ref.slice('refs/heads/'.length);
 }
 
 function splitRemoteBranch(refName: string): { branchName: string; remoteName: string } | null {

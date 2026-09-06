@@ -237,7 +237,7 @@ export function TaskDetail(props: TaskDetailProps): JSX.Element {
               <span class="task-chip task-chip--warning">Needs attention</span>
             </Show>
           </div>
-          <Show when={props.task.branchLabel}>
+          <Show when={props.task.location !== 'project-root' && props.task.branchLabel}>
             {(branch) => <p class="task-experience__subtitle">Branch: {branch()}</p>}
           </Show>
         </section>

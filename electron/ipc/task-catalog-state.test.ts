@@ -94,6 +94,19 @@ function foundPage(
 }
 
 describe('TaskCatalogState', () => {
+  it('omits creation-time branch snapshots for shared roots without changing worktree labels', () => {
+    for (const gitIsolation of ['current-branch', 'worktree']) {
+      const state = createTaskCatalogState({ serverInstanceId: SERVER_ID });
+      state.replace({ sharedState: sharedState({ 'task-1': task('task-1', { gitIsolation }) }) });
+      const manifest = foundManifest(state);
+      expect(foundPage(state, manifest, 'task').items).toEqual([
+        expect.objectContaining({
+          branchLabel: gitIsolation === 'current-branch' ? null : 'feature/private-branch',
+          branchLabelTruncated: false,
+        }),
+      ]);
+    }
+  });
   it('migrates an omitted legacy task mode but rejects explicit invalid values', () => {
     const legacyTask = task();
     delete legacyTask.taskMode;

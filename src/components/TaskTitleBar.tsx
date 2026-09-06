@@ -201,7 +201,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           </button>
         </Show>
         <Show when={isCurrentBranchTask(props.task)}>
-          <ProjectRootBadge branchName={props.task.branchName} />
+          <ProjectRootBadge />
         </Show>
         <Show when={isTerminalTask(props.task)}>
           <TerminalTaskBadge />

@@ -51,13 +51,6 @@ export async function getCurrentBranch(projectRoot: string): Promise<string> {
 
 export { listBranches };
 
-export async function checkoutBranch(projectRoot: string, branchName: string): Promise<void> {
-  await execGit(['checkout', branchName], {
-    cwd: projectRoot,
-    maxBuffer: MAX_BUFFER,
-  });
-}
-
 export async function getGitRepoRoot(candidatePath: string): Promise<string | null> {
   try {
     const { stdout } = await execGit(['rev-parse', '--show-toplevel'], {
@@ -104,7 +97,8 @@ export async function getGitCommonDirectory(candidatePath: string): Promise<stri
 }
 
 async function getMergeBaseForHead(worktreePath: string, mainBranch: string): Promise<string> {
-  const { refName } = await resolveBranchRef(worktreePath, mainBranch);
+  const { exists, refName } = await resolveBranchRef(worktreePath, mainBranch);
+  if (!exists) return 'HEAD';
   return getMergeBaseOrFallback(worktreePath, refName, 'HEAD', refName);
 }
 

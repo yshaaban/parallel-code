@@ -68,7 +68,7 @@ export function PendingTaskColumn(props: PendingTaskColumnProps): JSX.Element {
             {props.pending.name}
           </span>
           <Show when={props.pending.gitIsolation === 'current-branch'}>
-            <ProjectRootBadge branchName={props.pending.baseBranch} compact />
+            <ProjectRootBadge />
           </Show>
         </div>
         <Show when={props.pending.state.kind === 'creating'}>

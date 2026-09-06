@@ -325,8 +325,8 @@ describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
         return { stdout: 'refs/remotes/origin/main\n' };
       }
 
-      if (args[0] === 'symbolic-ref' && args[1] === '--short' && args[2] === 'HEAD') {
-        return { stdout: 'feature/local\n' };
+      if (args[0] === 'symbolic-ref' && args[1] === 'HEAD') {
+        return { stdout: 'refs/heads/feature/local\n' };
       }
 
       if (

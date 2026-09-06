@@ -131,6 +131,7 @@ describe('remote task-first experience', () => {
     expect(screen.getByLabelText('1 task visible')).toBeTruthy();
     expect(screen.getByText('Terminal only')).toBeTruthy();
     expect(screen.getByText('Project root')).toBeTruthy();
+    expect(screen.queryByText('feature/reliable-terminal')).toBeNull();
     await fireEvent.click(
       screen.getByRole('button', {
         name: 'Open Reliable terminal. Running. Terminal-only task.',
@@ -178,6 +179,7 @@ describe('remote task-first experience', () => {
     const heading = screen.getByRole('heading', { level: 1, name: 'Reliable terminal' });
     expect(document.activeElement).toBe(heading);
     expect(screen.getByText('Imported')).toBeTruthy();
+    expect(screen.getByText('Branch: feature/reliable-terminal')).toBeTruthy();
     expect(screen.getByLabelText('1 session')).toBeTruthy();
     await fireEvent.click(screen.getByRole('button', { name: 'Open Terminal. Running.' }));
     expect(onOpenSession).toHaveBeenCalledWith(currentSession);
@@ -196,6 +198,7 @@ describe('remote task-first experience', () => {
     ));
 
     expect(screen.getByText('Closing')).toBeTruthy();
+    expect(screen.queryByText('Branch: feature/reliable-terminal')).toBeNull();
     expect(
       (screen.getByRole('button', { name: 'Open Terminal. Running.' }) as HTMLButtonElement)
         .disabled,

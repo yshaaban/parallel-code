@@ -1,19 +1,10 @@
 import { MAX_BUFFER } from './git-cache.js';
 import { execGit } from './git-exec.js';
-import { getBranchUpstreamRef } from './git-branch-ref.js';
+import { getBranchUpstreamRef, resolveBranchRef } from './git-branch-ref.js';
 
 export interface PickedDiffBase {
   ref: string;
   sha: string;
-}
-
-async function gitRefExists(cwd: string, ref: string): Promise<boolean> {
-  try {
-    await execGit(['rev-parse', '--verify', ref], { cwd });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function getMergeBase(
@@ -56,29 +47,27 @@ async function pickClosestDiffBase(
   mainBranch: string,
   headRef: string,
 ): Promise<PickedDiffBase> {
-  const localRef = mainBranch;
-  const remoteRef = await getBranchUpstreamRef(repoRoot, mainBranch);
-  const [hasLocalRef, hasRemoteRef] = await Promise.all([
-    gitRefExists(repoRoot, `refs/heads/${mainBranch}`).then(async (exists) =>
-      exists ? true : gitRefExists(repoRoot, `refs/remotes/${mainBranch}`),
-    ),
-    gitRefExists(repoRoot, remoteRef.startsWith('refs/') ? remoteRef : `refs/remotes/${remoteRef}`),
+  const [local, remoteRef] = await Promise.all([
+    resolveBranchRef(repoRoot, mainBranch),
+    getBranchUpstreamRef(repoRoot, mainBranch),
   ]);
+  const localRef = local.refName;
+  const hasLocalRef = local.exists;
 
   const [localMergeBase, remoteMergeBase] = await Promise.all([
     getMergeBaseForExistingRef(repoRoot, hasLocalRef, localRef, headRef),
-    getMergeBaseForExistingRef(repoRoot, hasRemoteRef, remoteRef, headRef),
+    remoteRef === null ? Promise.resolve(null) : getMergeBase(repoRoot, remoteRef, headRef),
   ]);
 
   if (localMergeBase === null) {
-    if (remoteMergeBase === null) {
+    if (remoteMergeBase === null || remoteRef === null) {
       return { ref: headRef, sha: headRef };
     }
 
     return { ref: remoteRef, sha: remoteMergeBase };
   }
 
-  if (remoteMergeBase === null) {
+  if (remoteMergeBase === null || remoteRef === null) {
     return { ref: localRef, sha: localMergeBase };
   }
 

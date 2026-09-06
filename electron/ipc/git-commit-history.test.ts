@@ -41,7 +41,8 @@ describe('git commit history', () => {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
 
-      if (args[0] === 'rev-parse' && args[1] === 'feature/task') {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/feature/task') return 'headhash\n';
+      if (args[0] === 'rev-parse' && args[1] === 'refs/heads/feature/task') {
         return 'headhash\n';
       }
 
@@ -154,7 +155,8 @@ describe('git commit history', () => {
         throw new Error(`Unexpected cwd: ${cwd}`);
       }
 
-      if (args[0] === 'rev-parse' && args[1] === 'feature/task') {
+      if (args[0] === 'show-ref' && args[3] === 'refs/heads/feature/task') return 'mergehash\n';
+      if (args[0] === 'rev-parse' && args[1] === 'refs/heads/feature/task') {
         return 'mergehash\n';
       }
 

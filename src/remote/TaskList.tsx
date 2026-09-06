@@ -134,7 +134,7 @@ function TaskCard(props: {
           <span class="task-chip task-chip--accent">Terminal only</span>
         </Show>
         <TaskLocationChip task={props.task} />
-        <Show when={props.task.branchLabel}>
+        <Show when={props.task.location !== 'project-root' && props.task.branchLabel}>
           {(label) => (
             <span class="task-chip" title={label()}>
               {label()}
@@ -158,7 +158,7 @@ export function TaskList(props: TaskListProps): JSX.Element {
     for (const task of current.tasks.values()) {
       const project = current.projects.get(task.projectId);
       const searchable =
-        `${task.name} ${task.branchLabel ?? ''} ${project?.label ?? ''}`.toLocaleLowerCase();
+        `${task.name} ${task.location === 'project-root' ? '' : (task.branchLabel ?? '')} ${project?.label ?? ''}`.toLocaleLowerCase();
       if (normalizedQuery && !searchable.includes(normalizedQuery)) continue;
       const tasks = tasksByProject.get(task.projectId) ?? [];
       tasks.push(task);

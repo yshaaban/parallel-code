@@ -99,10 +99,11 @@ export async function checkMergeStatus(
   worktreePath: string,
   baseBranch?: string,
 ): Promise<MergeStatus> {
-  const { refName: mainBranch } = await resolveBranchRef(
+  const { exists, refName: mainBranch } = await resolveBranchRef(
     worktreePath,
     await detectMainBranch(worktreePath, baseBranch),
   );
+  if (!exists) throw new Error(`Base branch "${baseBranch ?? mainBranch}" is unavailable.`);
   const currentBranch = await getCurrentBranchOrNull(worktreePath);
 
   const mainAheadCount = await countBaseBranchCommitsAhead(worktreePath, mainBranch);
@@ -155,27 +156,39 @@ export async function mergeTask(
   isProjectRootShared?: (projectRoot: string) => boolean,
 ): Promise<MergeResult> {
   return withRepositoryWorktreeLock(projectRoot, async () => {
+    if (isProjectRootShared?.(projectRoot)) {
+      throw new Error(
+        'Close project-root tasks before merging. Running agents and shells share this checkout and its index; automatic merges require an unoccupied project root.',
+      );
+    }
     const currentBranch = await getCurrentBranchOrNull(worktreePath);
     if (currentBranch !== branchName) {
       throw createMergeBranchMismatchError(branchName, currentBranch);
     }
 
     const requestedBaseBranch = await detectMainBranch(projectRoot, baseBranch);
-    const targetRef = await execGit(['rev-parse', '--symbolic-full-name', requestedBaseBranch], {
-      cwd: projectRoot,
-    })
-      .then(({ stdout }) => stdout.trim())
-      .catch(() => '');
-    if (!targetRef.startsWith('refs/heads/') || targetRef.includes('\n')) {
+    const target = await resolveBranchRef(projectRoot, requestedBaseBranch);
+    const targetRef =
+      target.refName === 'HEAD'
+        ? await execGit(['symbolic-ref', '--quiet', 'HEAD'], { cwd: projectRoot })
+            .then(({ stdout }) => stdout.trim())
+            .catch(() => '')
+        : target.refName;
+    if (!target.exists || !targetRef.startsWith('refs/heads/') || targetRef.includes('\n')) {
       throw new Error(
         `Merge target "${requestedBaseBranch}" is not a local branch. Create or select a local tracking branch before merging.`,
       );
     }
     const mainBranch = targetRef.slice('refs/heads/'.length);
+    const { stdout: sourceTip } = await execGit(
+      ['rev-parse', '--verify', `refs/heads/${branchName}`],
+      { cwd: projectRoot },
+    );
+    const sourceCommit = sourceTip.trim();
     const { linesAdded, linesRemoved } = await computeBranchDiffStats(
       projectRoot,
-      mainBranch,
-      branchName,
+      targetRef,
+      sourceCommit,
     );
 
     const { stdout: statusOut } = await execGit(['status', '--porcelain'], {
@@ -189,53 +202,56 @@ export async function mergeTask(
 
     const originalBranch = await getCurrentBranchName(projectRoot).catch(() => null);
     if (originalBranch !== mainBranch) {
-      if (isProjectRootShared?.(projectRoot)) {
-        throw new Error(
-          `Project-root tasks are using "${originalBranch ?? 'detached HEAD'}". Close them or select that branch as the merge target before switching to "${mainBranch}".`,
-        );
-      }
-      await execGit(['checkout', mainBranch], { cwd: projectRoot });
+      await execGit(['switch', '--', mainBranch], { cwd: projectRoot });
     }
 
     const restoreBranch = async (): Promise<void> => {
       if (!originalBranch || originalBranch === mainBranch) return;
       try {
-        await execGit(['checkout', originalBranch], { cwd: projectRoot });
+        await execGit(['switch', '--', originalBranch], { cwd: projectRoot });
       } catch (error) {
         console.warn(`Failed to restore branch '${originalBranch}':`, error);
       }
     };
 
+    const recoveryMessage = `The checkout and index were preserved on "${mainBranch}". Inspect the project root and resolve or abort the operation manually before retrying.`;
+
     if (squash) {
       try {
-        await execGit(['merge', '--squash', '--', branchName], { cwd: projectRoot });
+        await execGit(['merge', '--squash', '--', sourceCommit], { cwd: projectRoot });
       } catch (error) {
-        await execGit(['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((recoverErr) =>
-          console.warn('git reset --hard failed during squash recovery:', recoverErr),
-        );
-        await restoreBranch();
-        throw new Error(`Squash merge failed: ${error}`);
+        invalidateGitQueryCacheForPath(projectRoot);
+        throw new Error(`Squash merge failed: ${error}. ${recoveryMessage}`);
       }
 
       const commitMessage = message ?? 'Squash merge';
       try {
         await execGit(['commit', '-m', commitMessage], { cwd: projectRoot });
       } catch (error) {
-        await execGit(['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((recoverErr) =>
-          console.warn('git reset --hard failed during commit recovery:', recoverErr),
-        );
-        await restoreBranch();
-        throw new Error(`Commit failed: ${error}`);
+        invalidateGitQueryCacheForPath(projectRoot);
+        throw new Error(`Commit failed: ${error}. ${recoveryMessage}`);
       }
     } else {
       try {
-        await execGit(['merge', '--', branchName], { cwd: projectRoot });
+        const { stdout: mergeMessage } = await execGit(['fmt-merge-msg'], {
+          cwd: projectRoot,
+          input: `${sourceCommit}\t\tbranch '${branchName}' of .\n`,
+        });
+        await execGit(['merge', '-m', mergeMessage.trim(), '--', sourceCommit], {
+          cwd: projectRoot,
+        });
       } catch (error) {
-        await execGit(['merge', '--abort'], { cwd: projectRoot }).catch((recoverErr) =>
-          console.warn('git merge --abort failed:', recoverErr),
-        );
-        await restoreBranch();
-        throw new Error(`Merge failed: ${error}`);
+        invalidateGitQueryCacheForPath(projectRoot);
+        const alreadyContained = await execGit(
+          ['merge-base', '--is-ancestor', sourceCommit, targetRef],
+          { cwd: projectRoot },
+        )
+          .then(() => true)
+          .catch(() => false);
+        const outcome = alreadyContained
+          ? 'The target branch already contains the task commit, but the merge command failed'
+          : 'Merge failed';
+        throw new Error(`${outcome}: ${error}. ${recoveryMessage}`);
       }
     }
 
@@ -346,17 +362,18 @@ export async function streamPushTask(
 
 export async function rebaseTask(worktreePath: string, baseBranch?: string): Promise<void> {
   return withRepositoryWorktreeLock(worktreePath, async () => {
-    const { refName: mainBranch } = await resolveBranchRef(
+    const { exists, refName: mainBranch } = await resolveBranchRef(
       worktreePath,
       await detectMainBranch(worktreePath, baseBranch),
     );
+    if (!exists) throw new Error(`Base branch "${baseBranch ?? mainBranch}" is unavailable.`);
     try {
       await execGit(['rebase', mainBranch], { cwd: worktreePath });
     } catch (error) {
-      await execGit(['rebase', '--abort'], { cwd: worktreePath }).catch((recoverErr) =>
-        console.warn('git rebase --abort failed:', recoverErr),
+      invalidateGitQueryCacheForPath(worktreePath);
+      throw new Error(
+        `Rebase failed: ${error}. The checkout and index were preserved. Inspect the task checkout and continue or abort the rebase manually before retrying.`,
       );
-      throw new Error(`Rebase failed: ${error}`);
     }
 
     invalidateGitQueryCacheForPath(worktreePath);
