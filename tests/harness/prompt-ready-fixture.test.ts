@@ -10,9 +10,12 @@ import {
   type TaskInitialPromptDeliverySnapshot,
 } from '../../src/domain/task-initial-prompt-delivery.js';
 import { classifyPromptDeliveryEvidence } from '../../src/lib/prompt-delivery-readiness.js';
+import {
+  createPersistentPromptReadyScenario,
+  createPromptReadyScenario,
+} from '../browser/harness/scenarios.js';
 
 const execFileAsync = promisify(execFile);
-const FIXTURE_PATH = path.resolve('scripts/fixtures/tui-prompt-ready.mjs');
 const QUESTION_FIXTURE_PATH = path.resolve('scripts/fixtures/tui-prompt-question.mjs');
 
 function countReadyPrompts(output: string): number {
@@ -87,7 +90,8 @@ function waitForOutputFragment(
 
 describe('prompt-ready browser fixture', () => {
   it('emits evidence accepted by supervision and managed prompt delivery', async () => {
-    const { stdout } = await execFileAsync(process.execPath, [FIXTURE_PATH, '0']);
+    const { agentDef } = createPromptReadyScenario(0);
+    const { stdout } = await execFileAsync(agentDef.command, agentDef.args);
 
     expect(classifyOutputState(stdout).state).toBe('idle-at-prompt');
 
@@ -113,7 +117,8 @@ describe('prompt-ready browser fixture', () => {
   });
 
   it('redraws a trusted prompt after a persistent input line and supplies delivery evidence', async () => {
-    const child = spawn(process.execPath, [FIXTURE_PATH, '0', '--persistent']);
+    const { agentDef } = createPersistentPromptReadyScenario(0);
+    const child = spawn(agentDef.command, agentDef.args);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let stdout = '';

@@ -584,6 +584,39 @@ describe('TerminalView', () => {
     expect(session.term.focus).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves terminal-search input and query while the same terminal recovers', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+    getLastSearchRequestedHandler()?.(
+      getLastSessionOptions()?.sessionIdentity ?? '',
+      session.search,
+    );
+    const input = result.getByLabelText('Find in terminal') as HTMLInputElement;
+    input.focus();
+    fireEvent.input(input, { target: { value: 'keep query' } });
+    session.term.focus.mockClear();
+    getLastStatusChangeHandler()?.('restoring');
+    getLastStatusChangeHandler()?.('ready');
+    await Promise.resolve();
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('keep query');
+    expect(session.term.focus).not.toHaveBeenCalled();
+    hasFocusSpy.mockRestore();
+  });
+
   it('ignores stale search owners and result callbacks', () => {
     const session = createMockTerminalSession();
     session.search.getSelectionSeed.mockReturnValue('needle');
@@ -1759,6 +1792,52 @@ describe('TerminalView', () => {
     expect(session.term.focus).not.toHaveBeenCalled();
     hasFocusSpy.mockRestore();
   });
+
+  it.each(['input', 'textarea', 'select', 'contenteditable'])(
+    'preserves a focused %s during recovery even when terminal intent is stale',
+    async (kind) => {
+      const session = createMockTerminalSession();
+      startTerminalSessionMock.mockReturnValueOnce(session);
+      const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const [focused, setFocused] = createSignal(true);
+      const editor = document.createElement(kind === 'contenteditable' ? 'div' : kind);
+      if (kind === 'contenteditable') {
+        editor.setAttribute('contenteditable', 'true');
+        editor.tabIndex = 0;
+      }
+      document.body.append(editor);
+      try {
+        render(() => (
+          <TerminalView
+            taskId="task-1"
+            agentId="agent-1"
+            command="claude"
+            args={[]}
+            cwd="/tmp/project"
+            isFocused={focused()}
+          />
+        ));
+        getLastStatusChangeHandler()?.('restoring');
+        editor.focus();
+        session.term.focus.mockClear();
+        getLastStatusChangeHandler()?.('ready');
+        getLastPaintReadyChangeHandler()?.(true);
+        await Promise.resolve();
+
+        expect(document.activeElement).toBe(editor);
+        expect(session.term.focus).not.toHaveBeenCalled();
+
+        // A subsequent explicit request for terminal focus still wins.
+        setFocused(false);
+        setFocused(true);
+        await Promise.resolve();
+        expect(session.term.focus).toHaveBeenCalledTimes(1);
+      } finally {
+        editor.remove();
+        hasFocusSpy.mockRestore();
+      }
+    },
+  );
 
   it('suppresses cursor blinking while another client controls the terminal', () => {
     setStore('activeTaskId', 'task-1');

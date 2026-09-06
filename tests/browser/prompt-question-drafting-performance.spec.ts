@@ -136,18 +136,20 @@ test.describe('prompt question drafting performance', () => {
       terminalIndex: noisyTerminalIndex,
     });
     await browserLab.waitForAgentScrollback(request, noisyAgentId, 'PROMPT_NOISE_');
+    const textarea = page.locator('textarea.prompt-textarea');
+    await expect(textarea).toBeVisible();
+    await installLatencyProbe(textarea);
+    const baselineSamples = await measurePhase(page, textarea, 'baseline');
+
+    // Native focus now correctly leaves the noisy terminal and releases its typing intent.
+    // This out-of-band fixture write must acquire control at the operation boundary, not
+    // borrow a lease from before the user moved into the prompt editor.
     await browserLab.retainSessionAgentTaskCommandLease(
       request,
       page,
       browserLab.server.agentId,
       'type in the terminal',
     );
-
-    const textarea = page.locator('textarea.prompt-textarea');
-    await expect(textarea).toBeVisible();
-    await installLatencyProbe(textarea);
-    const baselineSamples = await measurePhase(page, textarea, 'baseline');
-
     await browserLab.invokeSessionIpc<undefined>(request, page, IPC.WriteToAgent, {
       agentId: browserLab.server.agentId,
       data: 'question\r',

@@ -53,6 +53,7 @@ vi.mock('../../store/store', () => ({
   markAgentOutput: markAgentOutputMock,
   registerFocusFn: registerFocusFnMock,
   setTaskFocusedPanel: setTaskFocusedPanelMock,
+  observeTaskPanelFocus: setTaskFocusedPanelMock,
   setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
   store: storeRef.current,
   unregisterFocusFn: unregisterFocusFnMock,
@@ -107,7 +108,7 @@ vi.mock('../TerminalView', () => ({
     const [local, rest] = splitProps(props, ['agentId']);
     const agentId = untrack(() => local.agentId);
     terminalViewProps.set(agentId, { agentId, ...rest });
-    return <div>Terminal</div>;
+    return <div tabIndex={0}>Terminal</div>;
   },
 }));
 
@@ -310,6 +311,8 @@ describe('TaskShellSection', () => {
 
     const terminalProps = terminalViewProps.get('shell-1');
     expect(terminalProps?.manageTaskSwitchWindowLifecycle).toBe(false);
+    screen.getByText('Terminal').focus();
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'shell:0');
   });
 
   it('assigns task watcher ownership only to the primary task shell', () => {

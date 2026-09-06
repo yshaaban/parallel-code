@@ -1,7 +1,7 @@
 import { IPC } from '../../electron/ipc/channels.js';
 
 import { expect, test } from './harness/fixtures.js';
-import { createPromptReadyScenario } from './harness/scenarios.js';
+import { createPersistentPromptReadyScenario } from './harness/scenarios.js';
 
 const RUN_TERMINAL_STARTUP_EXPERIMENT = process.env.RUN_TERMINAL_STARTUP_EXPERIMENT === '1';
 
@@ -1515,7 +1515,7 @@ test.describe('browser-lab terminal startup experiments', () => {
   );
 
   test.use({
-    scenario: createPromptReadyScenario(),
+    scenario: createPersistentPromptReadyScenario(),
   });
 
   for (const experimentVariant of TERMINAL_STARTUP_EXPERIMENT_VARIANTS) {

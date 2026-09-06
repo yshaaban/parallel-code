@@ -35,6 +35,7 @@ import {
   isTaskCommandControlledByPeer,
   setReviewPanelOpen,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
   showNotification,
   store,
 } from '../../store/store';
@@ -404,6 +405,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     display: 'flex',
                     'flex-direction': 'column',
                   }}
+                  onFocusIn={() => observeTaskPanelFocus(task().id, 'notes')}
                   onClick={() => setTaskFocusedPanel(task().id, 'notes')}
                 >
                   <Show when={store.showPlans && task().planContent}>
@@ -529,6 +531,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     display: 'flex',
                     'flex-direction': 'column',
                   }}
+                  onFocusIn={() => observeTaskPanelFocus(task().id, 'changed-files')}
                   onClick={() => setTaskFocusedPanel(task().id, 'changed-files')}
                 >
                   <div

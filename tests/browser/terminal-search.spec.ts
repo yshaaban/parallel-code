@@ -59,6 +59,7 @@ test.describe('browser-lab terminal search', () => {
     test.setTimeout(120_000);
     const addonRequests: string[] = [];
     const leaseRequests: string[] = [];
+    const writeRequests: string[] = [];
     const { context, page } = await browserLab.openSession(browser, {
       displayName: 'Terminal Search Tester',
       prepareContext: async (browserContext) => {
@@ -69,13 +70,19 @@ test.describe('browser-lab terminal search', () => {
           if (resourceRequest.url().includes(IPC.AcquireTaskCommandLease)) {
             leaseRequests.push(resourceRequest.url());
           }
+          if (resourceRequest.url().includes(IPC.WriteToAgent)) {
+            writeRequests.push(resourceRequest.url());
+          }
         });
         await disableWebgl(browserContext);
       },
     });
 
     try {
-      await browserLab.waitForTerminalReady(page);
+      // Focusing can commit the initial PTY resize and make the REPL redisplay its prompt.
+      // Finish that setup before recording the immutable search-only scrollback baseline.
+      await browserLab.focusTerminal(page);
+      await browserLab.waitForActiveTerminalInteractiveReady(page);
       await browserLab.retainSessionAgentTaskCommandLease(
         request,
         page,
@@ -98,11 +105,12 @@ test.describe('browser-lab terminal search', () => {
       );
       expect(scrollbackBeforeSearch).toBeTruthy();
       leaseRequests.length = 0;
+      writeRequests.length = 0;
 
-      await browserLab.focusTerminal(page);
       await openTerminalSearch(page);
       expect(addonRequests).toHaveLength(0);
       expect(leaseRequests).toHaveLength(0);
+      expect(writeRequests).toHaveLength(0);
 
       const search = page.getByRole('search');
       const input = search.getByLabel('Find in terminal');
@@ -128,6 +136,7 @@ test.describe('browser-lab terminal search', () => {
         scrollbackBeforeSearch,
       );
       expect(leaseRequests).toHaveLength(0);
+      expect(writeRequests).toHaveLength(0);
       expect(addonRequests).toHaveLength(1);
 
       await input.press('Escape');

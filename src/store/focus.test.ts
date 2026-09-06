@@ -7,6 +7,7 @@ import {
   navigateColumn,
   navigateRow,
   navigateTask,
+  observeTaskPanelFocus,
   registerAction,
   registerFocusFn,
   resetFocusStateForTests,
@@ -107,6 +108,24 @@ describe('focus shell toolbar navigation', () => {
     expect(store.focusedPanel['task-2']).toBe('prompt');
     expect(store.sidebarFocused).toBe(false);
     expect(store.placeholderFocused).toBe(false);
+  });
+
+  it('observes native focus without invoking a panel default or replaying stale focus', () => {
+    setupTwoTaskNavigationState();
+    const promptFocus = vi.fn();
+    registerFocusFn('task-2:prompt', promptFocus);
+    triggerFocus('task-1:ai-terminal');
+
+    observeTaskPanelFocus('task-2', 'prompt');
+
+    expect(store.activeTaskId).toBe('task-2');
+    expect(store.focusedPanel['task-2']).toBe('prompt');
+    expect(promptFocus).not.toHaveBeenCalled();
+    const lateTerminalFocus = vi.fn();
+    registerFocusFn('task-1:ai-terminal', lateTerminalFocus);
+    expect(lateTerminalFocus).not.toHaveBeenCalled();
+    setTaskFocusedPanel('task-2', 'prompt');
+    expect(promptFocus).toHaveBeenCalledOnce();
   });
 
   it('defaults terminal-only tasks to their first shell and selects that runtime', () => {

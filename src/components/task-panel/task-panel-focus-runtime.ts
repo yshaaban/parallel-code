@@ -88,7 +88,9 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
     const storedFocusedPanel = options.getStoredTaskFocusedPanel(taskId);
     if (storedFocusedPanel) {
       clearDefaultFocusTimer();
-      options.triggerFocus(getFocusTargetId(storedFocusedPanel));
+      if (!options.getPanelRef()?.contains(document.activeElement)) {
+        options.triggerFocus(getFocusTargetId(storedFocusedPanel));
+      }
       return;
     }
 

@@ -24,6 +24,7 @@ import {
   markAgentOutput,
   registerFocusFn,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
   setTaskFocusedPanelState,
   store,
   unregisterFocusFn,
@@ -253,6 +254,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       position: 'relative',
                       background: theme.taskPanelBg,
                     }}
+                    onFocusIn={() => observeTaskPanelFocus(taskId, `shell:${index()}`)}
                     onClick={() => setTaskFocusedPanel(taskId, `shell:${index()}`)}
                   >
                     <button

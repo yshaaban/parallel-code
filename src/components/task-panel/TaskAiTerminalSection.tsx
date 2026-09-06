@@ -44,6 +44,7 @@ import {
   setActiveAgent,
   setLastPrompt,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
   setTaskTerminalLayoutMode,
   store,
   unregisterFocusFn,
@@ -647,7 +648,9 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
       </Show>
 
       <Show when={`${agentId}:${getAgentTerminalSessionVersion(props.agent)}`} keyed>
-        {(() => {
+        {(_sessionKey) => {
+          // Snapshot launch inputs inside the keyed lifetime. Same-session restore metadata
+          // must not dispose the terminal (and its pending input) while attach is in flight.
           const sessionAgentId = agentId;
           const sessionGeneration = props.agent.generation;
           const sessionAgentDef = props.agent.def;
@@ -706,7 +709,7 @@ function TaskAiTerminalTile(props: TaskAiTerminalTileProps): JSX.Element {
               fontSize={Math.round(store.terminalFontSize * getFontScale(sessionPanelId))}
             />
           );
-        })()}
+        }}
       </Show>
     </div>
   );
@@ -835,6 +838,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
           display: 'flex',
           'flex-direction': 'column',
         }}
+        onFocusIn={() => observeTaskPanelFocus(task().id, 'ai-terminal')}
         onClick={() => setTaskFocusedPanel(task().id, 'ai-terminal')}
       >
         <InfoBar

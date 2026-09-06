@@ -25,31 +25,34 @@ describe('agent status sync generation contracts', () => {
     resetStoreForTest();
   });
 
-  it('hydrates a newer spawn before resetting generation-scoped question state', () => {
-    installAgent('agent-1', { generation: 3, status: 'paused', terminalSessionVersion: 4 });
-    markLocalQuestion('agent-1', 3, 1);
+  it.each(['paused', 'running'] as const)(
+    'hydrates a newer spawn from %s before resetting generation-scoped question state',
+    (status) => {
+      installAgent('agent-1', { generation: 3, status, terminalSessionVersion: 4 });
+      markLocalQuestion('agent-1', 3, 1);
 
-    handleAgentLifecycleMessage({
-      agentId: 'agent-1',
-      event: 'spawn',
-      generation: 4,
-      isShell: false,
-      status: 'running',
-      taskId: 'task-1',
-    });
+      handleAgentLifecycleMessage({
+        agentId: 'agent-1',
+        event: 'spawn',
+        generation: 4,
+        isShell: false,
+        status: 'running',
+        taskId: 'task-1',
+      });
 
-    expect(store.agents['agent-1']).toMatchObject({
-      generation: 4,
-      status: 'running',
-      terminalSessionVersion: 5,
-    });
-    expect(isLocalAgentQuestionActive('agent-1', 4)).toBe(false);
-    expect(getLocalAgentQuestionState('agent-1')).toMatchObject({
-      active: false,
-      evidenceRevision: 0,
-      generation: 4,
-    });
-  });
+      expect(store.agents['agent-1']).toMatchObject({
+        generation: 4,
+        status: 'running',
+        terminalSessionVersion: 5,
+      });
+      expect(isLocalAgentQuestionActive('agent-1', 4)).toBe(false);
+      expect(getLocalAgentQuestionState('agent-1')).toMatchObject({
+        active: false,
+        evidenceRevision: 0,
+        generation: 4,
+      });
+    },
+  );
 
   it('correlates managed launch metadata and surfaces successful resume fallback once', () => {
     installAgent('agent-1', { generation: 3, resumed: true, status: 'exited' });
@@ -112,6 +115,36 @@ describe('agent status sync generation contracts', () => {
     expect(store.agents['agent-1']).toMatchObject({ generation: 4, status: 'running' });
     expect(isLocalAgentQuestionActive('agent-1', 4)).toBe(true);
   });
+
+  it.each(['status snapshot', 'spawn replay', 'pause/resume'])(
+    'preserves current question evidence across a same-generation %s',
+    (observation) => {
+      installAgent('agent-1', { generation: 4, status: 'running' });
+      markLocalQuestion('agent-1', 4, 7);
+
+      if (observation === 'status snapshot') {
+        syncAgentStatusesFromServer([{ agentId: 'agent-1', status: 'running' }]);
+      } else if (observation === 'spawn replay') {
+        handleAgentLifecycleMessage({
+          agentId: 'agent-1',
+          event: 'spawn',
+          generation: 4,
+          isShell: false,
+          status: 'running',
+          taskId: 'task-1',
+        });
+      } else {
+        syncAgentStatusesFromServer([{ agentId: 'agent-1', status: 'paused' }]);
+        syncAgentStatusesFromServer([{ agentId: 'agent-1', status: 'running' }]);
+      }
+
+      expect(getLocalAgentQuestionState('agent-1')).toMatchObject({
+        active: true,
+        evidenceRevision: 7,
+        generation: 4,
+      });
+    },
+  );
 
   it('clears generation-scoped question state on an exact-generation exit', () => {
     installAgent('agent-1', { generation: 4, status: 'running' });

@@ -73,6 +73,42 @@ describe('ResizablePanel', () => {
     });
   });
 
+  it.each(['horizontal', 'vertical'] as const)(
+    'keeps the focused middle panel connected when %s descriptors refresh',
+    (direction) => {
+      const [revision, setRevision] = createSignal(0);
+      const panelChildren = () => {
+        revision();
+        return [
+          { id: 'left', content: () => <div>Left</div> },
+          { id: 'editor', content: () => <textarea aria-label="Focused draft" /> },
+          { id: 'right', content: () => <div>Right</div> },
+        ];
+      };
+      const result = render(() => (
+        <ResizablePanel direction={direction} fitContent children={panelChildren()} />
+      ));
+      const textarea = screen.getByLabelText<HTMLTextAreaElement>('Focused draft');
+      textarea.value = 'keep my cursor and draft';
+      textarea.focus();
+      textarea.setSelectionRange(5, 9);
+      const handles = [...result.container.querySelectorAll('.resize-handle')];
+      const blur = vi.fn();
+      textarea.addEventListener('blur', blur);
+
+      for (let revision = 1; revision <= 3; revision++) {
+        setRevision(revision);
+        expect(screen.getByLabelText('Focused draft')).toBe(textarea);
+        expect(document.activeElement).toBe(textarea);
+        expect(textarea.selectionStart).toBe(5);
+        expect(textarea.selectionEnd).toBe(9);
+        expect(textarea.value).toBe('keep my cursor and draft');
+        expect([...result.container.querySelectorAll('.resize-handle')]).toEqual(handles);
+      }
+      expect(blur).not.toHaveBeenCalled();
+    },
+  );
+
   it('ends panel resize drag state when unmounted mid-drag', () => {
     const result = render(() => (
       <ResizablePanel

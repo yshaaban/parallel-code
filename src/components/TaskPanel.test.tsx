@@ -370,6 +370,10 @@ vi.mock('../store/store', async () => {
       setTaskFocusedPanelMock(taskId, panelId);
       core.setStore('focusedPanel', taskId, panelId);
     }),
+    observeTaskPanelFocus: vi.fn((taskId: string, panelId: string) => {
+      setTaskFocusedPanelMock(taskId, panelId);
+      core.setStore('focusedPanel', taskId, panelId);
+    }),
     triggerFocus: triggerFocusMock,
     unregisterFocusFn: unregisterFocusFnMock,
     updateTaskName: updateTaskNameMock,
@@ -426,6 +430,26 @@ describe('TaskPanel', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
   });
+
+  it.each(['editor', 'button'])(
+    'observes prompt %s focus without clicking or redirecting to its default',
+    (target) => {
+      const task = createTestTask({ agentIds: ['agent-1'] });
+      setStore('focusedPanel', 'task-1', 'ai-terminal');
+      render(() => <TaskPanel task={task} isActive />);
+
+      triggerFocusMock.mockClear();
+      const control =
+        target === 'editor'
+          ? screen.getByLabelText('Prompt input')
+          : screen.getByRole('button', { name: 'Approve permission' });
+      control.focus();
+
+      expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'prompt');
+      expect(document.activeElement).toBe(control);
+      expect(triggerFocusMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('opens the close dialog from the title bar action', async () => {
     vi.useRealTimers();
@@ -779,6 +803,35 @@ describe('TaskPanel', () => {
 
     expect(triggerFocusMock).toHaveBeenCalledWith('task-1:ai-terminal');
   });
+
+  it.each(['sidebarFocused', 'placeholderFocused'] as const)(
+    'cancels queued default focus when %s takes ownership',
+    async (owner) => {
+      render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+      expect(triggerFocusMock).not.toHaveBeenCalled();
+
+      setStore(owner, true);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(triggerFocusMock).not.toHaveBeenCalled();
+      setStore(owner, false);
+      await vi.runOnlyPendingTimersAsync();
+      expect(triggerFocusMock).toHaveBeenCalledWith('task-1:ai-terminal');
+    },
+  );
+
+  it.each(['sidebarFocused', 'placeholderFocused'] as const)(
+    'does not replay stored panel focus while %s owns focus',
+    async (owner) => {
+      setStore(owner, true);
+      setStore('focusedPanel', 'task-1', 'prompt');
+      render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(triggerFocusMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('retries a failed close from the error overlay', async () => {
     render(() => (

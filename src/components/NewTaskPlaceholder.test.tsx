@@ -2,10 +2,9 @@ import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetFocusStateForTests, triggerFocus } from '../store/focus';
 
-const { createTerminalMock, openNewTaskDialogMock, unfocusPlaceholderMock } = vi.hoisted(() => ({
+const { createTerminalMock, openNewTaskDialogMock } = vi.hoisted(() => ({
   createTerminalMock: vi.fn(),
   openNewTaskDialogMock: vi.fn(),
-  unfocusPlaceholderMock: vi.fn(),
 }));
 
 vi.mock('../app/new-task-dialog-workflows', () => ({
@@ -14,7 +13,6 @@ vi.mock('../app/new-task-dialog-workflows', () => ({
 
 vi.mock('../store/store', () => ({
   createTerminal: createTerminalMock,
-  unfocusPlaceholder: unfocusPlaceholderMock,
 }));
 
 import { NewTaskPlaceholder } from './NewTaskPlaceholder';
@@ -53,8 +51,12 @@ describe('NewTaskPlaceholder', () => {
     fireEvent.keyDown(taskButton, { key: 'Enter' });
     expect(openNewTaskDialogMock).toHaveBeenCalledTimes(2);
 
-    fireEvent.keyDown(terminalButton, { key: ' ' });
-    expect(unfocusPlaceholderMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(terminalButton);
     expect(createTerminalMock).toHaveBeenCalledTimes(1);
+    expect(fireEvent.keyDown(terminalButton, { key: ' ' })).toBe(false);
+    expect(fireEvent.keyDown(terminalButton, { key: 'Enter' })).toBe(false);
+    expect(createTerminalMock).toHaveBeenCalledTimes(3);
+    fireEvent.keyDown(terminalButton, { key: 'ArrowDown' });
+    expect(createTerminalMock).toHaveBeenCalledTimes(3);
   });
 });

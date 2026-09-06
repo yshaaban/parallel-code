@@ -12,6 +12,7 @@ import {
   unregisterFocusFn,
   triggerFocus,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
 } from '../store/store';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
@@ -53,9 +54,9 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
 
   // Respond to focus panel changes
   createEffect(() => {
-    if (!props.isActive) return;
+    if (!props.isActive || store.sidebarFocused || store.placeholderFocused) return;
     const panel = getTaskFocusedPanel(terminalId);
-    triggerFocus(`${terminalId}:${panel}`);
+    if (!panelRef?.contains(document.activeElement)) triggerFocus(`${terminalId}:${panel}`);
   });
 
   function handleTitleMouseDown(event: MouseEvent): void {
@@ -153,6 +154,7 @@ export function TerminalPanel(props: TerminalPanelProps): JSX.Element {
             height: '100%',
             position: 'relative',
           }}
+          onFocusIn={() => observeTaskPanelFocus(terminalId, 'terminal')}
           onClick={() => setTaskFocusedPanel(terminalId, 'terminal')}
         >
           <TerminalView

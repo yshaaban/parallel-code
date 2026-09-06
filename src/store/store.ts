@@ -77,6 +77,7 @@ export {
   isTaskPanelFocused,
   setTaskFocusedPanelState,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
   focusSidebar,
   unfocusSidebar,
   unfocusPlaceholder,

@@ -23,7 +23,7 @@ import {
   readTerminalAttributeHistory,
 } from './harness/terminal-render.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
-import { createPromptReadyScenario } from './harness/scenarios.js';
+import { createPersistentPromptReadyScenario } from './harness/scenarios.js';
 
 const LARGE_SCROLLBACK_FIXTURE_WAIT_TIMEOUT_MS = 45_000;
 
@@ -742,7 +742,7 @@ test.describe('browser-lab terminal restore', () => {
 
 test.describe('browser-lab large scrollback restore', () => {
   test.use({
-    scenario: createPromptReadyScenario(),
+    scenario: createPersistentPromptReadyScenario(),
   });
 
   test('keeps a large-history shell interactive after reload', async ({

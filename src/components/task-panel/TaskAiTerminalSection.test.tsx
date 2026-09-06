@@ -12,6 +12,7 @@ import { setStore } from '../../store/core';
 import { store, triggerFocus } from '../../store/store';
 import { TaskAiTerminalSection } from './TaskAiTerminalSection';
 import { IPC } from '../../../electron/ipc/channels';
+import { handleAgentLifecycleMessage } from '../../runtime/agent-status-sync';
 
 const readyCallbacks = new Map<string, (focusFn: () => void) => void>();
 const { invokeMock, runManualAgentSessionActionMock, saveCurrentRuntimeStateMock } = vi.hoisted(
@@ -31,6 +32,7 @@ vi.mock('../TerminalView', () => ({
     runnerProfile?: { provider: string };
   }) => (
     <div
+      tabIndex={0}
       data-command-target={props.isCommandTarget === true ? 'true' : 'false'}
       data-manage-switch-window={String(props.manageTaskSwitchWindowLifecycle)}
       data-runner-provider={props.runnerProfile?.provider ?? 'host'}
@@ -41,6 +43,7 @@ vi.mock('../TerminalView', () => ({
       }}
     >
       Terminal {props.agentId}
+      <input aria-label={`Queued input ${props.agentId}`} />
     </div>
   ),
 }));
@@ -143,6 +146,60 @@ describe('TaskAiTerminalSection', () => {
 
     expect(screen.getByText('Terminal agent-2')).toBeDefined();
     expect(screen.queryByText('Terminal agent-1')).toBeNull();
+    screen.getByText('Terminal agent-2').focus();
+    expect(store.focusedPanel['task-1']).toBe('ai-terminal');
+  });
+
+  it('keeps the mounted terminal and early input through same-generation restore lifecycle metadata', () => {
+    const task = createTestTask({ agentIds: ['agent-1'], selectedAgentId: 'agent-1' });
+    setStore('tasks', { 'task-1': task });
+    setStore('agents', { 'agent-1': createTestAgent({ resumed: true }) });
+    render(() => (
+      <TaskAiTerminalSection isActive={() => true} onReuseLastPrompt={vi.fn()} task={() => task} />
+    ));
+    const terminal = screen.getByText('Terminal agent-1');
+    const input = screen.getByRole('textbox', { name: 'Queued input agent-1' }) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'early input awaiting attach' } });
+    input.focus();
+
+    handleAgentLifecycleMessage({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      isShell: false,
+      event: 'pause',
+      generation: 0,
+      resumed: false,
+      operationId: 'initial-launch',
+      launchReason: 'initial',
+    });
+
+    expect(store.agents['agent-1']?.resumed).toBe(false);
+    expect(screen.getByText('Terminal agent-1')).toBe(terminal);
+    expect(screen.getByRole('textbox', { name: 'Queued input agent-1' })).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('early input awaiting attach');
+
+    handleAgentLifecycleMessage({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      isShell: false,
+      event: 'resume',
+      generation: 0,
+      resumed: false,
+    });
+    expect(screen.getByText('Terminal agent-1')).toBe(terminal);
+    handleAgentLifecycleMessage({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      isShell: false,
+      event: 'spawn',
+      generation: 1,
+      resumed: false,
+    });
+    expect(screen.getByText('Terminal agent-1')).not.toBe(terminal);
+    expect(
+      (screen.getByRole('textbox', { name: 'Queued input agent-1' }) as HTMLInputElement).value,
+    ).toBe('');
   });
 
   it('lets the active agent override stale selected-agent metadata for the active task', () => {

@@ -395,9 +395,7 @@ describe('TilingLayout', () => {
     const pendingColumn = result.container.querySelector(`[data-pending-task-id="${pendingId}"]`);
     expect(pendingColumn).not.toBeNull();
     expect(
-      screen.getByLabelText(
-        /Works directly in the project root on main; shares files and Git state/,
-      ),
+      screen.getByLabelText(/Works directly in the project root; shares files and Git state/),
     ).toBeDefined();
     expect(screen.getByText('root')).toBeDefined();
   });

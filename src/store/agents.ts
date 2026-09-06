@@ -14,6 +14,7 @@ import { createRandomId } from '../lib/random-id';
 import { isNonNegativeInteger } from '../lib/type-guards';
 import { store, setStore } from './core';
 import { saveCurrentRuntimeState } from './persistence-save';
+import { getLocalAgentQuestionState } from './agent-question-state';
 import { getSelectedTaskAgentId } from './task-agent-selection';
 import { removeAgentScopedStoreState } from './task-state-cleanup';
 import type { Agent, AgentStatus, Task } from './types';
@@ -202,6 +203,11 @@ export function markAgentRunning(agentId: string): void {
 export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'exited'>): void {
   const agent = store.agents[agentId];
   if (!agent) return;
+  // A live-status replay is not a new process. Keep newer output/question evidence when
+  // this generation has already been observed, including pause/resume of the same PTY.
+  const needsActivityReset =
+    agent.status === 'exited' ||
+    getLocalAgentQuestionState(agentId)?.generation !== agent.generation;
 
   setStore(
     produce((s) => {
@@ -213,7 +219,7 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
     }),
   );
 
-  if (isRunningRemoteAgentStatus(status)) {
+  if (isRunningRemoteAgentStatus(status) && needsActivityReset) {
     markAgentSpawned(agentId);
   }
 }

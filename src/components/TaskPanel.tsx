@@ -66,6 +66,7 @@ import {
   reorderTask,
   setActiveTask,
   setTaskFocusedPanel,
+  observeTaskPanelFocus,
   store,
   triggerFocus,
   unregisterFocusFn,
@@ -205,7 +206,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     getStoredTaskFocusedPanel,
     getTitleEditHandle: () => titleEditHandle,
     hasPromptPanel: !terminalTask,
-    isActive: () => props.isActive,
+    isActive: () => props.isActive && !store.sidebarFocused && !store.placeholderFocused,
     notesTab,
     registerFocusFn,
     showPlans: () => store.showPlans,
@@ -348,6 +349,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
           <div
+            onFocusIn={() => observeTaskPanelFocus(props.task.id, 'prompt')}
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
             style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
           >

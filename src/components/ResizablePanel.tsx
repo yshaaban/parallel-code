@@ -3,6 +3,7 @@ import {
   createMemo,
   createSignal,
   For,
+  Show,
   onCleanup,
   onMount,
   untrack,
@@ -560,32 +561,28 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
               >
                 {renderedChild.content()}
               </div>
-              {(() => {
-                const idx = i();
-                /* eslint-disable solid/components-return-once */
-                if (idx >= props.children.length - 1) return null;
-
-                if (showHandle()) {
-                  return (
-                    <div
-                      class={`resize-handle resize-handle-${isHorizontal() ? 'h' : 'v'} ${dragging() === idx ? 'dragging' : ''}`}
-                      onDblClick={resetSizes}
-                      onMouseDown={(e) => handleMouseDown(idx, e)}
-                    />
-                  );
+              {/* Stable separators keep descriptor refreshes from moving focused neighbors. */}
+              <Show
+                when={
+                  i() < props.children.length - 1 &&
+                  !(child().fixed && props.children[i() + 1]?.fixed)
                 }
-
-                // No spacer between two adjacent fixed panels
-                if (child().fixed && props.children[idx + 1]?.fixed) return null;
-
-                // Non-interactive spacer (preserves gap without hover effect)
-                return (
+              >
+                <Show
+                  when={showHandle()}
+                  fallback={
+                    <div
+                      style={{ [isHorizontal() ? 'width' : 'height']: '12px', 'flex-shrink': '0' }}
+                    />
+                  }
+                >
                   <div
-                    style={{ [isHorizontal() ? 'width' : 'height']: '12px', 'flex-shrink': '0' }}
+                    class={`resize-handle resize-handle-${isHorizontal() ? 'h' : 'v'} ${dragging() === i() ? 'dragging' : ''}`}
+                    onDblClick={resetSizes}
+                    onMouseDown={(e) => handleMouseDown(i(), e)}
                   />
-                );
-                /* eslint-enable solid/components-return-once */
-              })()}
+                </Show>
+              </Show>
             </>
           );
         }}

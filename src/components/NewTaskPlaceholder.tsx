@@ -1,6 +1,6 @@
 import { onMount, onCleanup } from 'solid-js';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
-import { createTerminal, unfocusPlaceholder } from '../store/store';
+import { createTerminal } from '../store/store';
 import { registerFocusFn, unregisterFocusFn } from '../store/focus';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
@@ -73,7 +73,6 @@ export function NewTaskPlaceholder() {
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            unfocusPlaceholder();
             createTerminal();
           }
         }}

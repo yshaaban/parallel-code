@@ -932,6 +932,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function shouldRestoreTerminalFocusAfterRecovery(
     status: TerminalViewStatus,
     mode: TerminalPresentationMode['kind'],
+    gainedFocusIntent: boolean,
   ): boolean {
     if (!pendingRecoveryFocusRestore || status !== 'ready' || mode !== 'live') {
       return false;
@@ -944,8 +945,24 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       !hasDocumentFocus() ||
       store.sidebarFocused ||
       store.placeholderFocused ||
+      searchOpen() ||
       hasBlockingDialogOpen()
     ) {
+      return false;
+    }
+
+    const activeElement = document.activeElement;
+    // Recovery is not a new request to leave an editor. Focus can move through Tab,
+    // browser restoration, or an editor outside a task panel while app intent lags.
+    if (
+      !gainedFocusIntent &&
+      activeElement instanceof HTMLElement &&
+      !isTerminalDomFocused(shellRef) &&
+      activeElement.matches(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+      )
+    ) {
+      pendingRecoveryFocusRestore = false;
       return false;
     }
 
@@ -2682,7 +2699,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     const activeSession = session;
-    if (hibernating || !activeSession || !shouldRestoreTerminalFocusAfterRecovery(status, mode)) {
+    if (
+      hibernating ||
+      !activeSession ||
+      !shouldRestoreTerminalFocusAfterRecovery(status, mode, gainedFocusIntent)
+    ) {
       return;
     }
 

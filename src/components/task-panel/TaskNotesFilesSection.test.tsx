@@ -64,6 +64,7 @@ vi.mock('../../store/store', async () => {
     isTaskCommandControlledByPeer: () => false,
     setReviewPanelOpen: setReviewPanelOpenMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
+    observeTaskPanelFocus: setTaskFocusedPanelMock,
     showNotification: showNotificationMock,
   };
 });
@@ -71,6 +72,7 @@ vi.mock('../../store/store', async () => {
 vi.mock('../ChangedFilesList', () => ({
   ChangedFilesList: (props: { setRootRef?: (element: HTMLDivElement | undefined) => void }) => (
     <div
+      tabIndex={0}
       ref={(element) => {
         props.setRootRef?.(element);
       }}
@@ -230,6 +232,10 @@ describe('TaskNotesFilesSection', () => {
       expect(notesRefs.at(-1)).toBeInstanceOf(HTMLTextAreaElement);
     });
 
+    await waitFor(() => expect(notesRefs.at(-1)?.disabled).toBe(false));
+    notesRefs.at(-1)?.focus();
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'notes');
+
     setNotesTab('plan');
 
     await waitFor(() => {
@@ -262,6 +268,9 @@ describe('TaskNotesFilesSection', () => {
     await waitFor(() => {
       expect(changedFilesRefs.at(-1)).toBeInstanceOf(HTMLDivElement);
     });
+
+    changedFilesRefs.at(-1)?.focus();
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'changed-files');
 
     setStore('reviewPanelOpen', 'task-1', true);
 

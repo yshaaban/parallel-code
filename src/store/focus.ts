@@ -336,7 +336,9 @@ export function reconcileTaskFocusedPanelState(taskId: string): void {
   });
 }
 
-export function setTaskFocusedPanel(taskId: string, panel: string): void {
+/** Records focus that already moved in the DOM, without redirecting it to a panel default. */
+export function observeTaskPanelFocus(taskId: string, panel: string): void {
+  clearPendingFocusRequest();
   const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
   batch(() => {
     setStore('focusedPanel', taskId, normalizedPanel);
@@ -347,6 +349,11 @@ export function setTaskFocusedPanel(taskId: string, panel: string): void {
     }
     selectFocusedTaskRuntime(taskId, normalizedPanel);
   });
+}
+
+export function setTaskFocusedPanel(taskId: string, panel: string): void {
+  observeTaskPanelFocus(taskId, panel);
+  const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
   triggerFocus(`${taskId}:${normalizedPanel}`);
   scrollTaskIntoView(taskId);
 }

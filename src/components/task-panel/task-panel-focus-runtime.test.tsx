@@ -121,36 +121,40 @@ describe('task-panel focus runtime', () => {
     expect(unregisterFocusFn).not.toHaveBeenCalledWith('task-terminal:prompt');
   });
 
-  it('does not steal focus from an already focused child control', async () => {
-    vi.useFakeTimers();
-    const panel = document.createElement('div');
-    const child = document.createElement('button');
-    const registerFocusFn = vi.fn();
-    const unregisterFocusFn = vi.fn();
-    const triggerFocus = vi.fn();
+  it.each([null, 'prompt'])(
+    'preserves an already focused child control with stored panel %s',
+    async (storedPanel) => {
+      vi.useFakeTimers();
+      const panel = document.createElement('div');
+      const child = document.createElement('button');
+      const registerFocusFn = vi.fn();
+      const unregisterFocusFn = vi.fn();
+      const triggerFocus = vi.fn();
 
-    panel.append(child);
-    document.body.append(panel);
-    child.focus();
+      panel.append(child);
+      document.body.append(panel);
+      child.focus();
 
-    try {
-      render(() => (
-        <FocusRuntimeHarness
-          getPanelRef={() => panel}
-          taskId={() => 'task-1'}
-          registerFocusFn={registerFocusFn}
-          triggerFocus={triggerFocus}
-          unregisterFocusFn={unregisterFocusFn}
-        />
-      ));
+      try {
+        render(() => (
+          <FocusRuntimeHarness
+            getPanelRef={() => panel}
+            getStoredTaskFocusedPanel={() => storedPanel}
+            taskId={() => 'task-1'}
+            registerFocusFn={registerFocusFn}
+            triggerFocus={triggerFocus}
+            unregisterFocusFn={unregisterFocusFn}
+          />
+        ));
 
-      await vi.runAllTimersAsync();
+        await vi.runAllTimersAsync();
 
-      expect(triggerFocus).not.toHaveBeenCalledWith('task-1:ai-terminal');
-    } finally {
-      panel.remove();
-    }
-  });
+        expect(triggerFocus).not.toHaveBeenCalled();
+      } finally {
+        panel.remove();
+      }
+    },
+  );
 
   it('prefers stored focus over the default panel', () => {
     const registerFocusFn = vi.fn();
