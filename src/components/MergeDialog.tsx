@@ -83,7 +83,6 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const [rebaseError, setRebaseError] = createSignal('');
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
-  const [gitStatusReady, setGitStatusReady] = createSignal(false);
   let gitStatusRefreshGeneration = 0;
   let rebaseGeneration = 0;
   let mergeGeneration = 0;
@@ -139,10 +138,8 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
   const mergeTargetLabel = () => mergeBaseBranch() ?? 'base branch';
   const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
-  const isGitStatusVerified = () =>
-    !gitStatusLoading() && gitStatusReady() && isTaskGitStatusFresh(worktreeStatus());
-  const gitStatusUnavailable = () =>
-    !gitStatusLoading() && (!gitStatusReady() || !isTaskGitStatusFresh(worktreeStatus()));
+  const isGitStatusVerified = () => !gitStatusLoading() && isTaskGitStatusFresh(worktreeStatus());
+  const gitStatusUnavailable = () => !gitStatusLoading() && !isTaskGitStatusFresh(worktreeStatus());
   const gitStatusErrorMessage = () => worktreeStatus()?.errorMessage ?? '';
 
   function getRebaseBlockedReason(): string | null {
@@ -210,7 +207,6 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   }
 
   function resetGitStatusValidation(): void {
-    setGitStatusReady(false);
     setGitStatusLoading(false);
   }
 
@@ -243,24 +239,15 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
 
   function refreshDialogGitStatus(taskId: string): void {
     const generation = nextGitStatusRefreshGeneration();
-    setGitStatusReady(false);
     setGitStatusLoading(true);
 
-    void refreshTaskGitStatusForTask(taskId)
-      .then((refreshed) => {
-        if (generation !== gitStatusRefreshGeneration) {
-          return;
-        }
+    void refreshTaskGitStatusForTask(taskId).finally(() => {
+      if (generation !== gitStatusRefreshGeneration) {
+        return;
+      }
 
-        setGitStatusReady(refreshed);
-      })
-      .finally(() => {
-        if (generation !== gitStatusRefreshGeneration) {
-          return;
-        }
-
-        setGitStatusLoading(false);
-      });
+      setGitStatusLoading(false);
+    });
   }
 
   function rebaseTaskFromDialog(): void {

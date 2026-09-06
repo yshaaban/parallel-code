@@ -491,6 +491,46 @@ describe('MergeDialog', () => {
     expect((screen.getByTestId('confirm-action') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it.each(['before refresh settles', 'after refresh fails'] as const)(
+    'recovers merge readiness from a fresh shared status %s',
+    async (timing) => {
+      mergeTaskMock.mockResolvedValueOnce(undefined);
+      const refresh = createDeferredPromise<boolean>();
+      refreshTaskGitStatusForTaskMock.mockReturnValueOnce(refresh.promise);
+      render(() => (
+        <MergeDialog
+          open
+          task={createTestTask()}
+          initialCleanup={false}
+          onDone={() => {}}
+          onDiffFileClick={() => {}}
+        />
+      ));
+      const confirm = screen.getByTestId('confirm-action') as HTMLButtonElement;
+      expect(confirm.disabled).toBe(true);
+      if (timing === 'after refresh fails') {
+        refresh.resolve(false);
+        await screen.findByText(/Unable to verify current git status/u);
+      }
+
+      setStore('taskGitStatus', 'task-1', {
+        freshness: 'fresh',
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      });
+      refresh.resolve(false);
+
+      await waitFor(() => expect(confirm.disabled).toBe(false));
+      expect(screen.queryByText(/Unable to verify current git status/u)).toBeNull();
+      fireEvent.click(confirm);
+      expect(mergeTaskMock).toHaveBeenCalledWith('task-1', {
+        cleanup: false,
+        message: undefined,
+        squash: false,
+      });
+    },
+  );
+
   it('does not treat stale failed git status as authoritative after refresh settles', async () => {
     refreshTaskGitStatusForTaskMock.mockResolvedValueOnce(true);
     setStore('taskGitStatus', 'task-1', {

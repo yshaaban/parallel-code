@@ -317,6 +317,34 @@ describe('CloseTaskDialog', () => {
     );
   });
 
+  it.each(['before refresh settles', 'after refresh fails'] as const)(
+    'replaces the unavailable warning with authoritative risks %s',
+    async (timing) => {
+      const refresh = createDeferredPromise<boolean>();
+      refreshTaskGitStatusForTaskMock.mockReturnValueOnce(refresh.promise);
+      render(() => <CloseTaskDialog open task={createTestTask()} onDone={() => {}} />);
+      if (timing === 'after refresh fails') {
+        refresh.resolve(false);
+        await screen.findByText(/Unable to verify current git status/u);
+      }
+
+      setStore('taskGitStatus', 'task-1', {
+        freshness: 'fresh',
+        has_committed_changes: false,
+        has_uncommitted_changes: true,
+      });
+      refresh.resolve(false);
+
+      await screen.findByText(
+        'Warning: There are uncommitted changes that will be permanently lost.',
+      );
+      expect(screen.queryByText(/Unable to verify current git status/u)).toBeNull();
+      expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    },
+  );
+
   it('does not treat stale failed git status as authoritative after refresh settles', async () => {
     refreshTaskGitStatusForTaskMock.mockResolvedValueOnce(true);
     setStore('taskGitStatus', 'task-1', {

@@ -20,7 +20,8 @@ const { getProjectPathMock, invokeMock, setStoreMock, storeState } = vi.hoisted(
     }
 
     if (args.length === 2 && typeof args[0] === 'string') {
-      storeState.taskGitStatus[args[0]] = args[1];
+      storeState.taskGitStatus[args[0]] =
+        typeof args[1] === 'function' ? args[1](storeState.taskGitStatus[args[0]]) : args[1];
     }
   }),
   storeState: {
@@ -254,6 +255,46 @@ describe('task git status owner', () => {
     expect(isTaskGitStatusFresh(getStoredTaskGitStatus('task-1'))).toBe(false);
   });
 
+  it.each(['success', 'failure'] as const)(
+    'keeps a newer pushed status authoritative after an older refresh %s',
+    async (outcome) => {
+      const request = createDeferred<BasicWorktreeStatus>();
+      invokeMock.mockReturnValueOnce(request.promise);
+      const result = refreshTaskGitStatusForTask('task-1');
+      const pushedStatus = { has_committed_changes: true, has_uncommitted_changes: false };
+      handleGitStatusSyncEvent({ worktreePath: '/tmp/task-1', status: pushedStatus });
+
+      if (outcome === 'success') {
+        request.resolve({ has_committed_changes: false, has_uncommitted_changes: true });
+      } else {
+        request.reject(new Error('superseded failure'));
+      }
+
+      await expect(result).resolves.toBe(true);
+      expect(getStoredTaskGitStatus('task-1')).toEqual(createFreshStatus(pushedStatus));
+    },
+  );
+
+  it('invalidates cached freshness until the newest refresh or a pushed observation verifies it', async () => {
+    const older = createDeferred<BasicWorktreeStatus>();
+    const newer = createDeferred<BasicWorktreeStatus>();
+    storeState.taskGitStatus['task-1'] = createFreshStatus({
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    invokeMock.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+    const olderResult = refreshTaskGitStatusForTask('task-1');
+    const newerResult = refreshTaskGitStatusForTask('task-1');
+    expect(isTaskGitStatusFresh(getStoredTaskGitStatus('task-1'))).toBe(false);
+    older.resolve({ has_committed_changes: false, has_uncommitted_changes: false });
+    await expect(olderResult).resolves.toBe(false);
+    expect(isTaskGitStatusFresh(getStoredTaskGitStatus('task-1'))).toBe(false);
+
+    newer.resolve({ has_committed_changes: true, has_uncommitted_changes: true });
+    await expect(newerResult).resolves.toBe(true);
+  });
+
   it('matches worktree, branch, and project invalidations through one shared helper', () => {
     expect(
       gitStatusEventMatchesTarget(
@@ -406,7 +447,7 @@ describe('task git status owner', () => {
     await expect(secondResult).resolves.toBe(true);
 
     firstRefresh.reject(new Error('old refresh failed'));
-    await expect(firstResult).resolves.toBe(false);
+    await expect(firstResult).resolves.toBe(true);
 
     expect(getStoredTaskGitStatus('task-1')).toEqual(createFreshStatus(newerStatus));
   });

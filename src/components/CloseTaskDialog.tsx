@@ -23,7 +23,6 @@ interface CloseTaskDialogProps {
 
 export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
-  const [gitStatusReady, setGitStatusReady] = createSignal(false);
   const [unsavedTaskNotes, setUnsavedTaskNotes] = createSignal(false);
   const closePolicy = () => getTaskClosePolicy(props.task, getProject(props.task.projectId));
   const isManagedWorktree = () => closePolicy().location === 'managed-worktree';
@@ -41,30 +40,20 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   }
 
   function resetGitStatusValidation(): void {
-    setGitStatusReady(false);
     setGitStatusLoading(false);
   }
 
   function refreshDialogGitStatus(taskId: string): void {
     const generation = nextGitStatusRefreshGeneration();
-    setGitStatusReady(false);
     setGitStatusLoading(true);
 
-    void refreshTaskGitStatusForTask(taskId)
-      .then((refreshed) => {
-        if (generation !== gitStatusRefreshGeneration) {
-          return;
-        }
+    void refreshTaskGitStatusForTask(taskId).finally(() => {
+      if (generation !== gitStatusRefreshGeneration) {
+        return;
+      }
 
-        setGitStatusReady(refreshed);
-      })
-      .finally(() => {
-        if (generation !== gitStatusRefreshGeneration) {
-          return;
-        }
-
-        setGitStatusLoading(false);
-      });
+      setGitStatusLoading(false);
+    });
   }
 
   createEffect(() => {
@@ -91,12 +80,9 @@ export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
     normalizeTaskBaseBranch(props.task) ??
     getProject(props.task.projectId)?.baseBranch ??
     'base branch';
-  const isGitStatusVerified = () =>
-    !gitStatusLoading() && gitStatusReady() && isTaskGitStatusFresh(worktreeStatus());
+  const isGitStatusVerified = () => !gitStatusLoading() && isTaskGitStatusFresh(worktreeStatus());
   const gitStatusUnavailable = () =>
-    isManagedWorktree() &&
-    !gitStatusLoading() &&
-    (!gitStatusReady() || !isTaskGitStatusFresh(worktreeStatus()));
+    isManagedWorktree() && !gitStatusLoading() && !isTaskGitStatusFresh(worktreeStatus());
   const hasRiskyGitStatus = () =>
     Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
   const gitStatusErrorMessage = () => worktreeStatus()?.errorMessage ?? '';

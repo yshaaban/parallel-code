@@ -168,6 +168,11 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
 
   const refreshGeneration = (gitStatusRefreshGenerationByTaskId.get(taskId) ?? 0) + 1;
   gitStatusRefreshGenerationByTaskId.set(taskId, refreshGeneration);
+  // A pending replacement is not verification of the cached observation. Keep its facts for
+  // display, but let every consumer use the same fail-closed freshness until a response or push.
+  setStore('taskGitStatus', taskId, (previousStatus) =>
+    createStaleWorktreeStatus(previousStatus, previousStatus?.errorMessage),
+  );
 
   try {
     const status = await invoke(IPC.GetWorktreeStatus, {
@@ -175,7 +180,7 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
       ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
     });
     if (gitStatusRefreshGenerationByTaskId.get(taskId) !== refreshGeneration) {
-      return false;
+      return isTaskGitStatusFresh(getTaskGitStatus(taskId));
     }
 
     const refreshedAt = Date.now();
@@ -185,7 +190,7 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
   } catch (error) {
     // Worktree may not exist yet or was removed.
     if (gitStatusRefreshGenerationByTaskId.get(taskId) !== refreshGeneration) {
-      return false;
+      return isTaskGitStatusFresh(getTaskGitStatus(taskId));
     }
 
     setStore(
