@@ -30,7 +30,6 @@ const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
 const RESET_BACKEND_RUNTIME_DIAGNOSTICS = 'reset_backend_runtime_diagnostics';
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
-const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const APP_SHELL_SELECTOR = '.app-shell';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
@@ -145,7 +144,7 @@ function parsePositiveInteger(value, fallback) {
 function parseArgs(argv) {
   const defaultVariant = getTerminalUiFluidityVariant(DEFAULT_VARIANT);
   const options = {
-    authToken: process.env.AUTH_TOKEN ?? DEFAULT_AUTH_TOKEN,
+    authToken: process.env.AUTH_TOKEN,
     durationMs: DEFAULT_DURATION_MS,
     experimentConfig: defaultVariant.experiments,
     injectedExperimentConfig: defaultVariant.injectExperiments ? defaultVariant.experiments : null,

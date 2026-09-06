@@ -1,9 +1,15 @@
 .git
+.env
+.env.*
+!.env.example
 .server-data
 artifacts
 dist
+dist-browser-dev
 dist-electron
 dist-remote
+dist-remote-dev
 dist-server
 node_modules
 release
+tmp

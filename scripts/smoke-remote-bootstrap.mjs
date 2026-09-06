@@ -7,7 +7,6 @@ import { runOperationWithCleanups } from './lib/cleanup-outcome.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 100;
@@ -112,7 +111,7 @@ function getChromiumLaunchOptions(env = process.env) {
 
 export function parseArgs(argv, env = process.env) {
   const options = {
-    authToken: getEnvOption(env, 'AUTH_TOKEN', DEFAULT_AUTH_TOKEN),
+    authToken: getEnvOption(env, 'AUTH_TOKEN', ''),
     ignoreHttpsErrors: false,
     serverUrl: getEnvOption(env, 'SERVER_URL', DEFAULT_SERVER_URL),
     timeoutMs: DEFAULT_TIMEOUT_MS,

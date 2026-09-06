@@ -3,14 +3,13 @@ import process from 'node:process';
 
 import { createBrowserServerClient } from './browser-server-client.mjs';
 
-const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
 const DEFAULT_SAMPLE_FILES = 5;
 const DEFAULT_WARM_RUNS = 3;
 
 function parseArgs(argv) {
   const options = {
-    authToken: process.env.AUTH_TOKEN ?? DEFAULT_AUTH_TOKEN,
+    authToken: process.env.AUTH_TOKEN,
     branchName: process.env.BRANCH_NAME,
     files: [],
     mode: process.env.REVIEW_DIFF_MODE ?? 'all',

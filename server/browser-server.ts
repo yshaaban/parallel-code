@@ -107,6 +107,7 @@ import {
 } from '../electron/ipc/task-ports.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
+import { resolveBrowserServerHost } from './server-listener-policy.js';
 import {
   buildSecureSessionBootstrapUrl,
   type RemotePeerTrustPolicy,
@@ -172,6 +173,7 @@ export interface StartBrowserServerOptions {
   browserControlMaxMissedPongs?: number;
   distDir: string;
   distRemoteDir: string;
+  host?: string;
   port: number;
   registerProcessHandlers?: boolean;
   simulateJitterMs?: number;
@@ -331,6 +333,11 @@ function getBrowserServerStartupMessages(
 // - browser-control-plane.ts for presence, control broadcasts, and lifecycle glue
 
 export function startBrowserServer(options: StartBrowserServerOptions): BrowserServerController {
+  const host = resolveBrowserServerHost({
+    ...(options.host === undefined ? {} : { host: options.host }),
+    scopedRemote: options.scopedCommands !== undefined,
+    token: options.token,
+  });
   const taskNotesWriterEntitlements = snapshotTaskNotesWriterEntitlements(
     options.taskNotesWriterEntitlements,
   );
@@ -525,6 +532,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       getTaskName: taskNames.getTaskName,
     });
   const controlPlane = createBrowserControlPlane({
+    networkAccessible: host === '0.0.0.0',
     buildAgentList: getRemoteAgentList,
     cleanupSocketClient: (client) => {
       browserSocketServer?.cleanupClient(client);
@@ -972,7 +980,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       server.once('error', handleListenError);
       serverListenPending = true;
       try {
-        server.listen(options.port, '0.0.0.0', () => {
+        server.listen(options.port, host, () => {
           serverListenPending = false;
           server.off('error', handleListenError);
           if (lifecycle.kind !== 'running') {

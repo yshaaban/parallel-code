@@ -22,7 +22,6 @@ const GET_BACKEND_RUNTIME_DIAGNOSTICS = 'get_backend_runtime_diagnostics';
 const RESET_BACKEND_RUNTIME_DIAGNOSTICS = 'reset_backend_runtime_diagnostics';
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:43117';
-const DEFAULT_AUTH_TOKEN = 'parallel-code-local-browser';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
 const BUILD_METADATA_PATH = '/build-metadata.json';
@@ -48,7 +47,7 @@ const STANDALONE_SERVER_ENTRY = path.resolve(__dirname, '..', 'dist-server', 'se
 
 function parseArgs(argv) {
   const options = {
-    authToken: process.env.AUTH_TOKEN ?? DEFAULT_AUTH_TOKEN,
+    authToken: process.env.AUTH_TOKEN,
     help: false,
     keepServer: false,
     keepProfileTerminal: false,

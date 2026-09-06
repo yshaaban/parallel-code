@@ -30,6 +30,27 @@ function readPinnedNpmVersion(value: string | undefined): [number, number, numbe
 }
 
 describe('dependency install-script policy', () => {
+  it('keeps the Docker install on the pinned runtime and lifecycle policy', () => {
+    const dockerfile = readFileSync(path.join(projectRoot, 'Dockerfile'), 'utf8');
+    const nodeVersion = readFileSync(path.join(projectRoot, '.nvmrc'), 'utf8')
+      .trim()
+      .replace(/^v/u, '');
+    const npmVersion = packageJson.packageManager?.replace(/^npm@/u, '');
+    expect(dockerfile).toContain(`FROM node:${nodeVersion}-trixie AS dev`);
+    expect(dockerfile).toContain(`npm install -g npm@${npmVersion} `);
+    const policyCopy = dockerfile.indexOf('package.json package-lock.json .npmrc ./');
+    expect(policyCopy).toBeGreaterThan(-1);
+    expect(policyCopy).toBeLessThan(dockerfile.indexOf('npm ci'));
+    const nativeFixupsCopy = dockerfile.indexOf(
+      'scripts/postinstall-native-fixups.mjs ./scripts/postinstall-native-fixups.mjs',
+    );
+    expect(nativeFixupsCopy).toBeGreaterThan(-1);
+    expect(nativeFixupsCopy).toBeLessThan(dockerfile.indexOf('npm ci'));
+    expect(dockerfile).not.toMatch(/(?:dangerously-allow-all-scripts|ignore-scripts)/iu);
+    const ignored = readFileSync(path.join(projectRoot, '.dockerignore'), 'utf8').split('\n');
+    expect(ignored).toEqual(expect.arrayContaining(['.env', '.env.*', 'tmp']));
+  });
+
   it('pins and approves exactly every executable dependency lifecycle in the lock', () => {
     const executableLockIdentities = [
       ...new Set(

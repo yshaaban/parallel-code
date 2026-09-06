@@ -21,6 +21,7 @@ export type BrowserRemoteStatus = EnabledRemoteAccessStatus;
 export interface CreateBrowserServerInfoOptions {
   getAuthenticatedClientCount: () => number;
   getPort: () => number;
+  networkAccessible?: boolean;
   secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
   token: string;
 }
@@ -58,7 +59,9 @@ export function createBrowserServerInfo(
   }
 
   function getServerInfo(): BrowserServerInfo {
-    const { wifi, tailscale } = getNetworkIps();
+    const { wifi, tailscale } = options.networkAccessible
+      ? getNetworkIps()
+      : { wifi: null, tailscale: null };
     return {
       url: buildAccessUrl('127.0.0.1'),
       wifiUrl: buildOptionalAccessUrl(wifi),

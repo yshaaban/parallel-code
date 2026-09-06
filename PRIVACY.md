@@ -31,9 +31,13 @@ Browser mode serves the desktop UI at `/` and the mobile remote UI at `/remote`.
 clients can view task state, send terminal input when they hold the task command lease, interact
 with remote terminal controls, and open authenticated task preview routes.
 
-Access is protected by an access token. Local development defaults come from `.env.example` so the
-URL is stable on a fresh checkout, but you must set a different `AUTH_TOKEN` before exposing the
-server beyond local development.
+Access is protected by a private token. Fresh checkouts generate a token on each startup and bind
+only to `127.0.0.1`. Set your own random `AUTH_TOKEN` for a stable login; the former public
+development token is rejected on every listener. Set `PARALLEL_CODE_SERVER_HOST=0.0.0.0` to opt
+into LAN/container listening. Configured scoped HTTPS remote access also opts into network
+listening, unless explicitly overridden to localhost. Its scoped token and grants do not replace
+the separate full-browser administrator credential. Bind addresses and advertised access URLs
+are kept consistent.
 
 The server accepts tokens through the auth form, bearer auth, or the `token` query parameter. Query
 tokens are convenient for local setup and QR-code flows, but they can appear in browser history,

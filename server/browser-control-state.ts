@@ -38,6 +38,7 @@ export interface CreateBrowserControlStateOptions {
   getPeerPresenceSnapshots: () => PeerPresenceSnapshot[];
   getPeerPresenceVersion: () => number;
   getAuthenticatedClientCount: () => number;
+  networkAccessible?: boolean;
   port: number;
   secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
   token: string;
@@ -48,6 +49,7 @@ export function createBrowserControlState(
 ): BrowserControlState {
   let serverPort = options.port;
   const serverInfo = createBrowserServerInfo({
+    networkAccessible: options.networkAccessible === true,
     getAuthenticatedClientCount: options.getAuthenticatedClientCount,
     getPort: () => serverPort,
     ...(options.secureSessionBootstrap

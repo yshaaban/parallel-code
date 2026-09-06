@@ -45,9 +45,9 @@ function createBodyTextPage(texts: string[]): MockPage {
 }
 
 describe('smoke-remote-bootstrap', () => {
-  it('uses stable local server defaults when no remote values are provided', () => {
+  it('uses the local port without inventing authentication when no credential is provided', () => {
     expect(parseArgs([], {})).toEqual({
-      authToken: 'parallel-code-local-browser',
+      authToken: '',
       ignoreHttpsErrors: false,
       serverUrl: 'http://127.0.0.1:43117',
       timeoutMs: 30_000,

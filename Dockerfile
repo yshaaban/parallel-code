@@ -1,10 +1,10 @@
-FROM node:24-trixie AS dev
+FROM node:24.19.0-trixie AS dev
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g npm@11.12.1 husky @anthropic-ai/claude-code
+RUN npm install -g npm@11.17.0 husky @anthropic-ai/claude-code
 
 RUN echo "Setting up Codex CLI..."; \
     CODEX_VERSION=$(curl -fsSL https://api.github.com/repos/openai/codex/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') && \
@@ -24,7 +24,8 @@ WORKDIR /parallel
 
 RUN chown parallel:parallel /parallel
 
-COPY --chown=parallel:parallel package.json package-lock.json ./
+COPY --chown=parallel:parallel package.json package-lock.json .npmrc ./
+COPY --chown=parallel:parallel scripts/postinstall-native-fixups.mjs ./scripts/postinstall-native-fixups.mjs
 
 ENV SSH_AUTH_SOCK=/ssh-agent
 

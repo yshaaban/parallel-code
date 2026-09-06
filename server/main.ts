@@ -157,6 +157,9 @@ export async function startConfiguredBrowserServer(
     ...getBrowserChannelServerOptions(),
     distDir,
     distRemoteDir,
+    ...(process.env.PARALLEL_CODE_SERVER_HOST === undefined
+      ? {}
+      : { host: process.env.PARALLEL_CODE_SERVER_HOST }),
     port: getServerPort(process.env),
     simulateJitterMs: Number(process.env.SIMULATE_JITTER_MS) || 0,
     simulateLatencyMs: Number(process.env.SIMULATE_LATENCY_MS) || 0,

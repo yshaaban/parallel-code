@@ -36,7 +36,8 @@ INVALID
     const parsed = parseEnvFile(readFileSync(new URL('../.env.example', import.meta.url), 'utf8'));
 
     expect(parsed.PORT).toBe('43117');
-    expect(parsed.AUTH_TOKEN).toBe('parallel-code-local-browser');
+    expect(parsed.AUTH_TOKEN).toBe('');
+    expect(parsed.PARALLEL_CODE_SERVER_HOST).toBeUndefined();
   });
 
   it('loads missing keys without overwriting existing environment variables', () => {

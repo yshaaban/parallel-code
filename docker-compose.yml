@@ -12,6 +12,7 @@ services:
       - ${HOST_SSH_AUTH_SOCK:?Set HOST_SSH_AUTH_SOCK in .env or your shell}:/ssh-agent
     environment:
       SSH_AUTH_SOCK: /ssh-agent
+      PARALLEL_CODE_SERVER_HOST: 0.0.0.0
     env_file:
       - .env
     command: npm run server

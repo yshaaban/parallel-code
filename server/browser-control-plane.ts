@@ -134,6 +134,7 @@ export interface CreateBrowserControlPlaneOptions {
   controlEventBufferSize?: number;
   heartbeatIntervalMs?: number;
   maxMissedPongs?: number;
+  networkAccessible?: boolean;
   port: number;
   remoteAccess?: {
     secureSessionBootstrap?: SecureSessionBootstrapUrlOptions;
@@ -342,6 +343,7 @@ export function createBrowserControlPlane(
 
   const remoteAccess = options.remoteAccess ?? { token: options.token };
   const controlState = createBrowserControlState({
+    networkAccessible: options.networkAccessible === true,
     getPeerPresenceSnapshots: peerPresence.getPeerPresenceSnapshots,
     getPeerPresenceVersion: peerPresence.getPeerPresenceVersion,
     getAuthenticatedClientCount: () => transport.getAuthenticatedClientCount(),

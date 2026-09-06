@@ -127,11 +127,13 @@ Prefer repo entrypoints that launch a fresh standalone server for you:
 Do not make a hand-managed `npm run server` process your primary validation path. The scripted
 paths avoid the stale-server problem that is easy to miss during browser terminal debugging.
 
-For manual browser-mode development, run `npm run browser:dev`. The checked-in `.env.example`
-values are loaded as local defaults, so the development URL is stable across restarts:
-`http://127.0.0.1:43117?token=parallel-code-local-browser`. Copy `.env.example` to `.env` only when
-customizing local values, and change `AUTH_TOKEN` before exposing the server outside local
-development. Browser watch mode writes to `dist-browser-dev/` and `dist-remote-dev/`; it does not
+For manual browser-mode development, run `npm run browser:dev` and open its printed authenticated
+URL. The port defaults to 43117 and the listener to localhost. A private token is generated on
+each restart unless a private `AUTH_TOKEN` is configured in `.env`; the former public token is
+rejected. Set `PARALLEL_CODE_SERVER_HOST=0.0.0.0` only for intentional network access. Profilers
+that launch their own server already generate run-specific credentials; tools connecting to an
+existing server require `--auth-token` or `AUTH_TOKEN`. Browser watch mode writes to
+`dist-browser-dev/` and `dist-remote-dev/`; it does not
 mutate the production/test `dist/` artifacts that browser-lab validation serves. The watch-mode
 server intentionally bypasses the production build-artifact freshness guard, because that guard is
 for built `dist/` outputs and can race the live dev rebuilds.

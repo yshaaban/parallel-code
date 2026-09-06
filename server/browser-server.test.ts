@@ -4,7 +4,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { WebSocket } from 'ws';
 
 import { runIndependentCleanups } from '../scripts/lib/cleanup-outcome.mjs';
@@ -445,6 +445,27 @@ describe('browser runtime cleanup observation', () => {
 
 describe('startBrowserServer', () => {
   const tempDirs: string[] = [];
+
+  it.each([
+    { token: 'parallel-code-local-browser' },
+    { token: 'private-test-token', host: 'example.invalid' },
+  ])(
+    'rejects unsafe listener configuration before acquiring runtime state: %j',
+    async (configuration) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-listener-admission-'));
+      tempDirs.push(rootDir);
+      expect(() =>
+        startBrowserServer({
+          ...configuration,
+          distDir: path.join(rootDir, 'dist'),
+          distRemoteDir: path.join(rootDir, 'remote'),
+          port: 0,
+          userDataPath: rootDir,
+        }),
+      ).toThrow();
+      expect(await readdir(rootDir)).toEqual([]);
+    },
+  );
 
   afterEach(async () => {
     clearTaskPortRegistry();
