@@ -747,7 +747,14 @@ export function createProductionTaskInitialPromptRuntime(
       return result;
     },
     getOwnerAvailability,
-    getProjection: (deliveryId) => coreService.getProjection(deliveryId),
+    async getProjection(deliveryId) {
+      const projection = await coreService.getProjection(deliveryId);
+      if (!projection && getOwnerAvailability().kind === 'active') {
+        const issue = await persistence.getMissingLegacyDeliveryIssue(deliveryId);
+        if (issue) throw new Error(issue);
+      }
+      return projection;
+    },
     async expireDueDelivery(deliveryId, nowMs) {
       const result = await coreService.expireDueDelivery(deliveryId, nowMs);
       if (result.kind === 'snapshot') {
@@ -833,6 +840,16 @@ export function createProductionTaskInitialPromptRuntime(
       throw new Error('Initial prompt activation gate is unavailable or mismatched');
     }
 
+    await persistence.recoverLegacyDrafts(capability.cutoverEpoch, (taskId) => {
+      const gate = removalGate.getTaskSnapshot(taskId);
+      return (
+        gate.kind === 'active' &&
+        gate.cutoverEpoch === capability.cutoverEpoch &&
+        gate.hookSetVersion === TASK_INITIAL_PROMPT_HOOK_SET_VERSION &&
+        gate.current.taskState === 'present' &&
+        !gate.current.taskClosing
+      );
+    });
     await coreService.repairAfterRestart();
     const records = await persistence.journal.listRecords();
     for (const record of records) trackDelivery(record.request, record.snapshot);

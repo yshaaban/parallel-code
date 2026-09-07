@@ -163,6 +163,25 @@ describe('browser-lab standalone seeded state', () => {
     );
   });
 
+  it('seeds an untracked legacy prompt only on the primary task in both persistence files', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-lab-state-'));
+    tempDirs.push(tempDir);
+    const seededState = await seedBrowserState(tempDir, {
+      ...createInteractiveNodeScenario(),
+      additionalTaskNames: ['Unrelated task'],
+      legacyInitialPrompt: 'Inspect this legacy task before sending again',
+    });
+    const { legacyState, workspaceState } = await readSeededStateFiles(seededState);
+
+    for (const state of [legacyState, workspaceState.state]) {
+      expect(state.tasks[seededState.taskId]?.savedInitialPrompt).toBe(
+        'Inspect this legacy task before sending again',
+      );
+      expect(state.tasks[seededState.taskId]?.initialPromptDeliveryId).toBeUndefined();
+      expect(state.tasks[seededState.taskIds[1] ?? '']?.savedInitialPrompt).toBeUndefined();
+    }
+  });
+
   it('preserves an explicit current-branch task through the renderer projection', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-lab-state-'));
     tempDirs.push(tempDir);

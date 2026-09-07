@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -17,7 +21,10 @@ import {
   type TaskInitialPromptDraftSnapshot,
 } from '../../src/domain/task-initial-prompt-delivery.js';
 import { createMemoryTaskInitialPromptDeliveryJournal } from './task-initial-prompt-delivery.js';
-import type { WorkspaceTaskInitialPromptPersistence } from './task-initial-prompt-delivery-persistence.js';
+import {
+  createWorkspaceTaskInitialPromptPersistence,
+  type WorkspaceTaskInitialPromptPersistence,
+} from './task-initial-prompt-delivery-persistence.js';
 import {
   createProductionTaskInitialPromptRuntime,
   type ProductionTaskInitialPromptRuntimeAdapters,
@@ -28,7 +35,8 @@ import {
   readTaskPromptInputAdmissionCurrentState,
 } from './task-prompt-input-handler.js';
 import type { TaskStructureMutationService } from './task-structure-mutations.js';
-import type { WorkspaceMutationService } from './workspace-state-mutations.js';
+import { WorkspaceMutationService } from './workspace-state-mutations.js';
+import { createStandaloneWorkspaceStateStorage } from './workspace-state-storage.js';
 
 const FINGERPRINT = 'ab'.repeat(32);
 const REQUEST: TaskInitialPromptDeliveryRequest = {
@@ -57,6 +65,7 @@ const MANUAL_REQUEST = {
 function createHarness(
   options: {
     draftText?: string;
+    persistence?: WorkspaceTaskInitialPromptPersistence;
     promptAdmissionSleep?: (delayMs: number) => Promise<void>;
     removalActive?: boolean;
     runningAgent?: boolean;
@@ -79,7 +88,9 @@ function createHarness(
       protectedPolicyVersion: '1' as const,
     })),
     ensureDarkJournalReady: vi.fn(async () => undefined),
+    getMissingLegacyDeliveryIssue: vi.fn(async () => null),
     journal,
+    recoverLegacyDrafts: vi.fn(async () => undefined),
     repository: {
       clearAfterAcceptedOutcome: vi.fn(
         async ({ deliveryId, expectedDraftFingerprint, expectedEditRevision }) => {
@@ -219,7 +230,7 @@ function createHarness(
   const runtime = createProductionTaskInitialPromptRuntime({
     adapters,
     authorize: () => true,
-    persistence,
+    persistence: options.persistence ?? persistence,
     promptInputAdmission,
     removalGate: gate,
     structure,
@@ -267,6 +278,54 @@ describe('production initial prompt runtime activation', () => {
     vi.useRealTimers();
   });
 
+  it('recovers an already-cut-over legacy draft on activation without automatic delivery', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-legacy-prompt-runtime-'));
+    const storage = await createStandaloneWorkspaceStateStorage({
+      isPackaged: true,
+      userDataPath: root,
+    });
+    const workspace = new WorkspaceMutationService(storage);
+    const persistence = createWorkspaceTaskInitialPromptPersistence(workspace);
+    const harness = createHarness({ persistence });
+    try {
+      await workspace.replaceSharedState(
+        { operation: 'seed-legacy-task' },
+        {
+          tasks: {
+            'task-1': {
+              agentId: 'agent-1',
+              id: 'task-1',
+              savedInitialPrompt: 'Inspect this legacy task',
+              taskMode: 'agent',
+            },
+          },
+        },
+        undefined,
+      );
+      await persistence.ensureDarkJournalReady();
+      await persistence.activatePromptProtectionAndDisableLegacyWriters('epoch-1');
+      const task = (await storage.loadCurrent()).record.sharedState.tasks as Record<
+        string,
+        { initialPromptDeliveryId: string }
+      >;
+      const deliveryId = task['task-1'].initialPromptDeliveryId;
+      expect(await persistence.journal.load(deliveryId)).toBeNull();
+
+      await harness.runtime.activate();
+      expect(await harness.runtime.service.getProjection(deliveryId)).toMatchObject({
+        currentDraft: { mode: 'manual-only', text: 'Inspect this legacy task' },
+        delivery: { attempts: 0, priorDeliveryUnknown: true, status: 'manual-required' },
+      });
+      await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_READY_DEADLINE_MS * 2);
+      expect(harness.acquireLease).not.toHaveBeenCalled();
+      expect(harness.writeFrame).not.toHaveBeenCalled();
+    } finally {
+      await harness.runtime.close();
+      await storage.close();
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it('stays effect-free and handler-dark before the exact removal cutover', async () => {
     const harness = createHarness();
     await harness.runtime.startup();
@@ -280,6 +339,19 @@ describe('production initial prompt runtime activation', () => {
     expect(harness.acquireLease).not.toHaveBeenCalled();
     expect(harness.writeFrame).not.toHaveBeenCalled();
     expect(harness.journal.recordCount()).toBe(0);
+  });
+
+  it('keeps handlers dark on recovery failure and retries activation without starting delivery', async () => {
+    const harness = createHarness();
+    vi.mocked(harness.persistence.recoverLegacyDrafts).mockRejectedValueOnce(
+      new Error('legacy journal write failed'),
+    );
+    await expect(harness.runtime.activate()).rejects.toThrow('legacy journal write failed');
+    expect(harness.runtime.getHandlers()).toBeNull();
+    expect(harness.writeFrame).not.toHaveBeenCalled();
+    await expect(harness.runtime.activate()).resolves.toMatchObject({ kind: 'active' });
+    expect(harness.writeFrame).not.toHaveBeenCalled();
+    await harness.runtime.close();
   });
 
   it('rejects activation when the generic owner or exact participant gate is absent', async () => {

@@ -5,7 +5,17 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentSessionOperationResult } from '../../src/domain/agent-session-operation.js';
+import {
+  AGENT_SESSION_OWNER_HOOK_SET_VERSION,
+  type AgentSessionOperationResult,
+} from '../../src/domain/agent-session-operation.js';
+import { createMemoryAgentSessionOperationJournal } from './agent-session-operation-journal.js';
+import { createProductionAgentSessionRuntime } from './agent-session-runtime.js';
+import { createAgentSessionWriterRuntime } from './agent-session-writer-authority.js';
+import type { TaskStructureMutationService } from './task-structure-mutations.js';
+import type { WorkspacePrivateMutationAuthority } from './workspace-state-mutations.js';
+import type { JsonObject } from './workspace-state-storage.js';
+import type { QueueTaskInitialPromptDeliveryResult } from '../../src/domain/task-initial-prompt-delivery.js';
 import {
   TASK_CREATION_JOURNAL_TOMBSTONE_RETENTION_MS,
   TaskCreationConflictAdmissionError,
@@ -258,9 +268,9 @@ function makeHarness(
   let committed: { mode: 'agent' | 'terminal'; sessionId: string; taskId: string } | undefined;
   let currentShell: TaskShellSessionOperationReplay | null = null;
   const identities: TaskCreationIdentityFactory = args.identities ?? {
-    allocate: () => ({
+    allocate: ({ hasInitialPrompt }) => ({
       agentId: 'agent-1',
-      deliveryId: null,
+      deliveryId: hasInitialPrompt ? 'delivery-1' : null,
       launchOperationId: 'launch-1',
       sessionId: mode === 'agent' ? 'agent-1' : 'shell-1',
       taskId: 'task-1',
@@ -489,15 +499,31 @@ function makeHarness(
             },
     ),
   };
+  const initialPrompt = {
+    getProjection: vi.fn(async () => null),
+    queue: vi.fn(
+      async (request): Promise<QueueTaskInitialPromptDeliveryResult> => ({
+        kind: 'accepted',
+        replayed: false,
+        snapshot: {
+          agentId: request.agentId,
+          attempts: 0,
+          createdAt: new Date(NOW).toISOString(),
+          deliveryId: request.deliveryId,
+          status: 'waiting-agent-session',
+          taskId: request.taskId,
+          updatedAt: new Date(NOW).toISOString(),
+          version: 1,
+        },
+      }),
+    ),
+  };
   const workflow = createTaskCreationWorkflow({
     agentSession: { execute },
     authorization: { authorize: vi.fn(() => true) },
     current,
     identities,
-    initialPrompt: {
-      getProjection: vi.fn(async () => null),
-      queue: vi.fn(),
-    },
+    initialPrompt,
     journal: args.journal ?? journal,
     now: () => NOW,
     ownerCapability,
@@ -523,10 +549,193 @@ function makeHarness(
       ...overrides,
     };
   }
-  return { auth, current, execute, intent, journal, preparation, shell, structure, workflow };
+  return {
+    auth,
+    current,
+    execute,
+    initialPrompt,
+    intent,
+    journal,
+    preparation,
+    shell,
+    structure,
+    workflow,
+  };
 }
 
 describe('task-creation workflow', () => {
+  it.each([false, true])(
+    'joins published agent creation through the real runtime, without duplicate or failed-launch revival (launch fails: %s)',
+    async (launchFails) => {
+      const test = makeHarness('agent');
+      const state: JsonObject = { projects: [{ id: 'project-1', path: '/repo' }], tasks: {} };
+      let metadata: { agentId: string; generation: number; isShell: false; taskId: string } | null =
+        null;
+      let generation: number | null = null;
+      let published!: () => void;
+      let releaseCommit!: () => void;
+      let joined!: () => void;
+      const publication = new Promise<void>((resolve) => {
+        published = resolve;
+      });
+      const commitGate = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      const joinEntered = new Promise<void>((resolve) => {
+        joined = resolve;
+      });
+      const privateAuthority: WorkspacePrivateMutationAuthority = {
+        async mutate(_request, mutator) {
+          const decision = mutator({
+            localState: {},
+            payloadDigest: 'digest',
+            privateState: {},
+            sharedRevision: 1,
+            sharedState: state,
+            storageGeneration: '1',
+          });
+          if (decision.kind === 'changed' && decision.nextSharedState)
+            Object.assign(state, decision.nextSharedState);
+          return { changed: decision.kind === 'changed', result: decision.result, revision: 1 };
+        },
+      };
+      const current = {
+        catalogVersion: 1,
+        serverInstanceId: 'server-1',
+        taskClosing: false,
+        taskState: 'present' as const,
+      };
+      const structure = {
+        createTaskRemovalParticipantGate: () => ({
+          getTaskSnapshot: () => ({
+            current,
+            cutoverEpoch: 'cutover-1',
+            hookSetVersion: AGENT_SESSION_OWNER_HOOK_SET_VERSION,
+            kind: 'active' as const,
+          }),
+          verifyCommittedRemoval: () => true,
+        }),
+        getTaskRemovalOwnerCapability: () => ({ cutoverEpoch: 'cutover-1' }),
+        isTaskMutationAdmissionClosed: () => false,
+      } as unknown as TaskStructureMutationService;
+      const writer = createAgentSessionWriterRuntime({ getCurrentGeneration: () => generation });
+      writer.activate('cutover-1');
+      const spawn = vi.fn(async (_context, request, permit) => {
+        request.assertSpawnAdmitted?.();
+        if (launchFails) throw new Error('fixture launch failed');
+        generation = permit.targetGeneration;
+        metadata = {
+          agentId: request.agentId,
+          generation: permit.targetGeneration,
+          isShell: false,
+          taskId: request.taskId,
+        };
+        return { channelAttached: false, kind: 'created-session' as const };
+      });
+      const waitForInFlightInitialLaunch = vi.fn(async (request) => {
+        joined();
+        await test.workflow.waitForInFlightInitialLaunch(request);
+      });
+      const runtime = createProductionAgentSessionRuntime({
+        adapters: {
+          getActiveAgentIds: () => (metadata ? [metadata.agentId] : []),
+          getAgentCols: () => 80,
+          getAgentRows: () => 24,
+          getAgentLifecycleGeneration: () => generation,
+          getAgentMeta: () => metadata,
+          hasAgentSession: () => metadata !== null,
+          onPtyEvent: () => () => {},
+          spawnAllocated: spawn,
+          stopAgent: async () => {
+            metadata = null;
+          },
+          stopTask: async () => {
+            metadata = null;
+          },
+        },
+        context: {
+          agentSessionWriter: writer,
+          isPackaged: true,
+          sendToChannel: vi.fn(),
+          userDataPath: '/unused',
+        },
+        journal: createMemoryAgentSessionOperationJournal(),
+        privateAuthority,
+        structure,
+        waitForInFlightInitialLaunch,
+        writer,
+      });
+      const commit = test.structure.addManagedTask.getMockImplementation();
+      if (!commit) throw new Error('Missing commit fixture');
+      test.structure.addManagedTask.mockImplementation(async (mutation, request) => {
+        const committed = await commit(mutation, request);
+        state.tasks = {
+          [request.taskId]: {
+            agentId: request.sessionId,
+            agentDef: {
+              args: [],
+              command: 'node',
+              description: 'Fixture',
+              id: 'agent-def-1',
+              name: 'Fixture',
+              resume_args: [],
+              skip_permissions_args: [],
+            },
+            id: request.taskId,
+            projectId: request.projectId,
+            taskMode: 'agent',
+            worktreePath: '/repo',
+            taskCreationOperationLink: {
+              creationOperationId: request.creationOperationId,
+              kind: 'creation-v1',
+              launchOperationId: request.launchOperationId,
+            },
+          },
+        };
+        published();
+        await commitGate;
+        return committed;
+      });
+      test.execute.mockImplementation((request) => runtime.workflow.execute(request));
+      await runtime.startup();
+      const creation = test.workflow.create(test.auth, await test.intent());
+      try {
+        await publication;
+        const request = { agentId: 'agent-1', taskId: 'task-1' };
+        const attachment = runtime.restoreCanonicalSession(request);
+        expect(runtime.restoreCanonicalSession(request)).toBe(attachment);
+        expect(
+          await Promise.race([
+            joinEntered.then(() => 'joined'),
+            attachment.then(() => 'returned-before-launch'),
+          ]),
+        ).toBe('joined');
+        expect(test.execute).not.toHaveBeenCalled();
+        releaseCommit();
+        expect(await creation).toMatchObject({
+          kind: 'snapshot',
+          snapshot: {
+            phase: launchFails ? 'created-needs-attention' : 'active',
+          },
+        });
+        expect(await attachment).toMatchObject(
+          launchFails
+            ? { kind: 'unavailable', reason: 'restore-failed' }
+            : { kind: 'existing', generation: 0 },
+        );
+        expect(await runtime.restoreCanonicalSession(request)).toMatchObject(
+          launchFails ? { kind: 'unavailable' } : { kind: 'existing', generation: 0 },
+        );
+        expect(test.execute).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledOnce();
+      } finally {
+        releaseCommit();
+        await creation;
+        await runtime.close();
+      }
+    },
+  );
+
   it('commits and starts an agent through one durable phase sequence', async () => {
     const test = makeHarness('agent');
     const result = await test.workflow.create(test.auth, await test.intent());
@@ -1279,6 +1488,94 @@ describe('task-creation workflow', () => {
       },
     });
     expect(test.structure.addManagedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    'records the initial prompt before launch (launch fails: %s)',
+    async (launchFails) => {
+      const test = makeHarness('agent', { launchFails });
+      const request = await test.intent({
+        launch: {
+          agentDefId: 'agent-def-1',
+          initialPrompt: 'Preserve this draft',
+          kind: 'agent',
+          skipPermissions: false,
+        },
+      });
+      const result = await test.workflow.create(test.auth, request);
+      expect(result).toMatchObject({
+        kind: 'snapshot',
+        snapshot: { phase: launchFails ? 'created-needs-attention' : 'active' },
+      });
+      expect(test.initialPrompt.queue).toHaveBeenCalledTimes(1);
+      expect(test.initialPrompt.queue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          deliveryId: 'delivery-1',
+          taskId: 'task-1',
+        }),
+      );
+      expect(test.structure.addManagedTask.mock.invocationCallOrder[0]).toBeLessThan(
+        test.initialPrompt.queue.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(test.initialPrompt.queue.mock.invocationCallOrder[0]).toBeLessThan(
+        test.execute.mock.invocationCallOrder[0] ?? 0,
+      );
+      await test.workflow.create(test.auth, request);
+      expect(test.initialPrompt.queue).toHaveBeenCalledTimes(1);
+      expect(test.execute).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['unavailable', 'throw'] as const)(
+    'does not start a process when prompt tracking is %s',
+    async (failure) => {
+      const test = makeHarness('agent');
+      if (failure === 'throw')
+        test.initialPrompt.queue.mockRejectedValueOnce(new Error('Storage unavailable'));
+      else
+        test.initialPrompt.queue.mockResolvedValueOnce({
+          kind: 'admission-unavailable',
+          reason: 'journal-unavailable',
+          replayed: false,
+        });
+      const result = await test.workflow.create(
+        test.auth,
+        await test.intent({
+          launch: {
+            agentDefId: 'agent-def-1',
+            initialPrompt: 'Keep this draft safe',
+            kind: 'agent',
+            skipPermissions: false,
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: 'snapshot',
+        snapshot: {
+          commit: 'committed',
+          phase: 'created-needs-attention',
+          issue: { code: 'projection-repair-required' },
+        },
+      });
+      expect(test.execute).not.toHaveBeenCalled();
+      expect(test.structure.addManagedTask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('releases a rejected creation flight without an unhandled cleanup rejection or relaunch', async () => {
+    const test = makeHarness('agent');
+    test.execute.mockRejectedValueOnce(new Error('Launch transport unavailable'));
+    const request = await test.intent();
+    await expect(test.workflow.create(test.auth, request)).rejects.toThrow(
+      'Launch transport unavailable',
+    );
+    await expect(test.workflow.create(test.auth, request)).resolves.toMatchObject({
+      kind: 'snapshot',
+      outcome: 'replayed',
+      snapshot: { commit: 'committed', phase: 'starting' },
+    });
+    expect(test.execute).toHaveBeenCalledTimes(1);
   });
 
   it.each([

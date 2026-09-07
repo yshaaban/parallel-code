@@ -204,9 +204,11 @@ export function getTaskInitialPromptPresentation(
     action: { kind: 'send' },
     actionAllowed,
     message:
-      projection.delivery.status === 'manual-required'
-        ? 'Automatic delivery stopped. Send the acknowledged draft manually.'
-        : 'Waiting for the agent to become ready.',
+      projection.delivery.priorDeliveryUnknown === true
+        ? 'Previous delivery is unknown. Inspect the terminal before sending this saved prompt.'
+        : projection.delivery.status === 'manual-required'
+          ? 'Automatic delivery stopped. Send the acknowledged draft manually.'
+          : 'Waiting for the agent to become ready.',
     tone: projection.delivery.status === 'manual-required' ? 'warning' : 'progress',
   };
 }

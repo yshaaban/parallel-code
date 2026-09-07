@@ -1528,7 +1528,10 @@ export function createTaskInitialPromptDeliveryService(
             recovery: { kind: 'wait-and-retry-same-action', retryAfterMs: rate.retryAfterMs },
           };
         }
-        const possiblePriorAutomaticWrite = record.writeBegan || record.snapshot.attempts > 0;
+        const possiblePriorAutomaticWrite =
+          record.snapshot.priorDeliveryUnknown === true ||
+          record.writeBegan ||
+          record.snapshot.attempts > 0;
         const now = clock.toIso(clock.nowMs());
         operation = {
           acknowledgedDraftFingerprint: request.expectedDraftFingerprint,
@@ -1839,6 +1842,9 @@ export function createTaskInitialPromptDeliveryService(
         }
 
         const operation = record.manualSendOperation;
+        // This is a durable question awaiting the user, not an interrupted write.
+        // Converting it into a safe retry would discard the required confirmation.
+        if (operation?.phase === 'confirmation-required') return;
         if (!operation || isManualInitialPromptSendSettled(operation)) {
           if (record.snapshot.status === 'delivered') {
             await dependencies.draftRepository.clearAfterAcceptedOutcome({
@@ -1854,7 +1860,6 @@ export function createTaskInitialPromptDeliveryService(
         if (
           operation.phase === 'admitted' ||
           operation.phase === 'automation-sealed' ||
-          operation.phase === 'confirmation-required' ||
           operation.phase === 'waiting-lease'
         ) {
           await persistManualFailure(record, { code: 'backend-restarted-before-write' });

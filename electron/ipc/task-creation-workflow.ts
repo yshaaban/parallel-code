@@ -1432,6 +1432,38 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
       await this.persist(record, initial.recordVersion);
       return this.snapshotCreateResult('accepted', record);
     }
+    const prompt = resolved.semanticRequest.launch.initialPrompt;
+    const deliveryId = record.identities.deliveryId;
+    // Track the canonical draft before any process can consume it. Failed launches retain a
+    // waiting-session delivery, and no readiness deadline runs until a generation exists.
+    if (prompt && deliveryId) {
+      let tracked = false;
+      try {
+        const queued = await this.dependencies.initialPrompt.queue({
+          agentId: record.identities.sessionId,
+          deliveryId,
+          expectedDraftFingerprint: deriveTaskInitialPromptDraftFingerprint({
+            agentId: record.identities.sessionId,
+            readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+            taskId: record.identities.taskId,
+            text: prompt,
+          }),
+          readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+          taskId: record.identities.taskId,
+        });
+        tracked = queued.kind === 'accepted';
+      } catch {
+        // Keep the committed task/draft, but never spawn past unavailable tracking authority.
+      }
+      if (!tracked) {
+        record = this.nextRecord(record, {
+          issueCode: 'projection-repair-required',
+          phase: 'created-needs-attention',
+        });
+        await this.persist(record, initial.recordVersion);
+        return this.snapshotCreateResult('accepted', record);
+      }
+    }
     const launch = await this.dependencies.agentSession.execute({
       admission: {
         committedWorkspaceRevision: this.committedRevision(record),
@@ -1455,8 +1487,6 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
       await this.persist(record, initial.recordVersion);
       return this.snapshotCreateResult('accepted', record);
     }
-    const prompt = resolved.semanticRequest.launch.initialPrompt;
-    const deliveryId = record.identities.deliveryId;
     if (!prompt || !deliveryId) {
       record = this.nextRecord(record, { phase: 'active' });
       await this.persist(record, initial.recordVersion);
@@ -1465,21 +1495,9 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
     const delivering = this.nextRecord(record, { phase: 'delivering-prompt' });
     await this.persist(delivering, record.recordVersion);
     record = delivering;
-    const queued = await this.dependencies.initialPrompt.queue({
-      agentId: record.identities.sessionId,
-      deliveryId,
-      expectedDraftFingerprint: deriveTaskInitialPromptDraftFingerprint({
-        agentId: record.identities.sessionId,
-        readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
-        taskId: record.identities.taskId,
-        text: prompt,
-      }),
-      readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
-      taskId: record.identities.taskId,
-    });
     record = this.nextRecord(record, {
-      issueCode: queued.kind === 'accepted' ? null : 'projection-repair-required',
-      phase: queued.kind === 'accepted' ? 'active' : 'created-needs-attention',
+      issueCode: null,
+      phase: 'active',
     });
     await this.persist(record, delivering.recordVersion);
     return this.snapshotCreateResult('accepted', record);
@@ -1785,11 +1803,10 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
     fingerprint: string,
     operation: () => Promise<CreateTaskCreationOperationResult>,
   ): Promise<CreateTaskCreationOperationResult> {
-    const promise = operation();
-    this.inFlight.set(operationKey, { capabilityHash, fingerprint, promise });
-    void promise.finally(() => {
+    const promise = operation().finally(() => {
       if (this.inFlight.get(operationKey)?.promise === promise) this.inFlight.delete(operationKey);
     });
+    this.inFlight.set(operationKey, { capabilityHash, fingerprint, promise });
     return promise;
   }
 

@@ -2,7 +2,11 @@ import {
   isTaskRemovalCurrentProjection,
   type TaskRemovalCurrentProjection,
 } from './task-catalog.js';
-import { isRecord } from '../lib/type-guards.js';
+import {
+  hasExactOwnEnumerableKeys as hasExactKeys,
+  isNonNegativeSafeInteger,
+  isRecord,
+} from '../lib/type-guards.js';
 import { isWellFormedUnicodeScalarString } from '../lib/unicode-scalar.js';
 
 export const TASK_INITIAL_PROMPT_READINESS_POLICY = 'agent-prompt-v1' as const;
@@ -75,6 +79,8 @@ export interface TaskInitialPromptDeliverySnapshot {
   attempts: 0 | 1 | 2;
   createdAt: string;
   deliveryId: string;
+  /** Legacy history is absent: zero recorded attempts is not proof of non-delivery. */
+  priorDeliveryUnknown?: true;
   reason?: TaskInitialPromptDeliveryReason;
   status: TaskInitialPromptDeliveryStatus;
   targetGeneration?: number;
@@ -433,18 +439,6 @@ const MANUAL_SEND_PHASES = new Set<ManualInitialPromptSendPhase>([
   'write-intent-persisted',
 ]);
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const expected = new Set(keys);
-  return (
-    Object.keys(value).length === expected.size &&
-    Object.keys(value).every((key) => expected.has(key))
-  );
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
 function isBoundedWireString(value: unknown, maxLength = 1_024): value is string {
   return (
     typeof value === 'string' &&
@@ -487,6 +481,7 @@ export function isTaskInitialPromptDeliverySnapshot(
       'attempts',
       'createdAt',
       'deliveryId',
+      ...(value.priorDeliveryUnknown === undefined ? [] : ['priorDeliveryUnknown']),
       ...(reason === undefined ? [] : ['reason']),
       'status',
       ...(targetGeneration === undefined ? [] : ['targetGeneration']),
@@ -498,6 +493,8 @@ export function isTaskInitialPromptDeliverySnapshot(
     (value.attempts === 0 || value.attempts === 1 || value.attempts === 2) &&
     isTimestamp(value.createdAt) &&
     isBoundedWireString(value.deliveryId) &&
+    (value.priorDeliveryUnknown === undefined ||
+      (value.priorDeliveryUnknown === true && value.status === 'manual-required')) &&
     (reason === undefined ||
       (typeof reason === 'string' &&
         DELIVERY_REASONS.has(reason as TaskInitialPromptDeliveryReason))) &&
@@ -1358,7 +1355,12 @@ function transitionSnapshot(
 }
 
 function hasPossibleAutomaticWrite(snapshot: TaskInitialPromptDeliverySnapshot): boolean {
-  return snapshot.attempts > 0 || snapshot.status === 'writing' || snapshot.status === 'verifying';
+  return (
+    snapshot.priorDeliveryUnknown === true ||
+    snapshot.attempts > 0 ||
+    snapshot.status === 'writing' ||
+    snapshot.status === 'verifying'
+  );
 }
 
 export function reduceTaskInitialPromptDelivery(

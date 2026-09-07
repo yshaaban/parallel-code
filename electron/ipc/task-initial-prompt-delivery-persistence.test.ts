@@ -336,6 +336,206 @@ async function createDurableServiceHarness(
 }
 
 describe('durable initial prompt persistence', () => {
+  it('recovers missing legacy history atomically and preserves the exact record across restart', async () => {
+    const { cutover, deliveryId } = await activatePromptOwner();
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+    const record = await persistence.journal.load(deliveryId);
+    expect(record).toMatchObject({
+      automationSealed: true,
+      draftEditRevision: 0,
+      snapshot: { attempts: 0, priorDeliveryUnknown: true, status: 'manual-required' },
+      writeBegan: false,
+    });
+    expect(record?.snapshot).not.toHaveProperty('targetGeneration');
+    expect(await persistence.repository.loadCurrentDraft('task-1', deliveryId)).toMatchObject({
+      mode: 'manual-only',
+      text: 'Ship it',
+    });
+    const before = (await storage.loadCurrent()).record;
+    await storage.close();
+    storage = await createStandaloneWorkspaceStateStorage(env());
+    workspace = new WorkspaceMutationService(storage);
+    persistence = createWorkspaceTaskInitialPromptPersistence(workspace, { now: () => 4_000 });
+    await persistence.ensureDarkJournalReady();
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+    expect(await persistence.journal.load(deliveryId)).toEqual(record);
+    expect((await storage.loadCurrent()).record).toEqual(before);
+  });
+
+  it('never replaces valid legacy records or their canonical mode', async () => {
+    const { cutover, deliveryId } = await activateAndSeedJournal();
+    const before = (await storage.loadCurrent()).record;
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+    expect((await storage.loadCurrent()).record).toEqual(before);
+    expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toBeNull();
+  });
+
+  it.each([
+    ['edited draft', { initialPrompt: 'A newer saved draft' }],
+    ['changed agent', { agentId: 'agent-2' }],
+    ['changed task', { id: 'another-task' }],
+    ['terminal-only task', { taskMode: 'terminal' }],
+    ['missing agent', { agentId: null }],
+  ] as const)(
+    'preserves and explains an unsafe legacy %s without inventing a record',
+    async (_label, change) => {
+      const { cutover, deliveryId } = await activatePromptOwner();
+      await workspace
+        .createPrivateMutationAuthority()
+        .mutate({ operation: 'seed-unsafe-legacy-identity' }, (slices) => {
+          const shared = cloneJsonObject(slices.sharedState);
+          const task = getTask(shared, 'task-1');
+          if (!task) throw new Error('fixture task missing');
+          Object.assign(task, change);
+          return changed({ nextSharedState: shared }, undefined);
+        });
+      const before = (await storage.loadCurrent()).record;
+      await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+      expect((await storage.loadCurrent()).record).toEqual(before);
+      expect(await persistence.journal.load(deliveryId)).toBeNull();
+      expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toContain(
+        'cannot be recovered safely',
+      );
+    },
+  );
+
+  it('does not recover a closing or removed task or an unknown delivery ID', async () => {
+    const { cutover, deliveryId } = await activatePromptOwner();
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => false);
+    expect(await persistence.journal.load(deliveryId)).toBeNull();
+    await workspace
+      .createPrivateMutationAuthority()
+      .mutate({ operation: 'remove-legacy-task' }, (slices) =>
+        changed({ nextSharedState: { ...slices.sharedState, tasks: {} } }, undefined),
+      );
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+    expect(await persistence.journal.listRecords()).toEqual([]);
+    expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toBeNull();
+    expect(await persistence.getMissingLegacyDeliveryIssue('legacy:unknown')).toBeNull();
+  });
+
+  it('retains the original canonical draft and missing journal on a failed recovery write', async () => {
+    const { cutover, deliveryId } = await activatePromptOwner();
+    const before = (await storage.loadCurrent()).record;
+    const failure = vi
+      .spyOn(storage, 'commitHostRecord')
+      .mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true)).rejects.toThrow(
+      'disk unavailable',
+    );
+    expect((await storage.loadCurrent()).record).toEqual(before);
+    expect(await persistence.journal.load(deliveryId)).toBeNull();
+    failure.mockRestore();
+    await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+    expect(await persistence.journal.load(deliveryId)).not.toBeNull();
+  });
+
+  it('requires durable confirmation for unknown prior delivery and replays a completed manual send without writing twice', async () => {
+    const harness = await createDurableServiceHarness();
+    await persistence.recoverLegacyDrafts('removal-cutover-v1', () => true);
+    const request = harness.manualRequest();
+    expect(await harness.service.queue(harness.deliveryRequest)).toMatchObject({ replayed: true });
+    expect(await harness.service.sendManually(request)).toMatchObject({
+      operation: { phase: 'confirmation-required', possiblePriorAutomaticWrite: true },
+    });
+    expect(harness.admitPrompt).not.toHaveBeenCalled();
+    expect(harness.acquireCommandLease).not.toHaveBeenCalled();
+    const restarted = createTaskInitialPromptDeliveryService(harness.dependencies);
+    await restarted.repairAfterRestart();
+    expect(await restarted.sendManually(request)).toMatchObject({
+      operation: { phase: 'confirmation-required' },
+    });
+    expect(harness.admitPrompt).not.toHaveBeenCalled();
+    const confirmed = { ...request, confirmPossiblePriorAutomaticWrite: true };
+    expect(await restarted.sendManually(confirmed)).toMatchObject({
+      operation: { phase: 'completed' },
+    });
+    expect(harness.admitPrompt).toHaveBeenCalledOnce();
+    expect(await persistence.repository.loadCurrentDraft('task-1', harness.deliveryId)).toBeNull();
+    await restarted.repairAfterRestart();
+    expect(await restarted.sendManually(confirmed)).toMatchObject({
+      operation: { phase: 'completed' },
+      replayed: true,
+    });
+    expect(harness.admitPrompt).toHaveBeenCalledOnce();
+    expect(await persistence.journal.load(harness.deliveryId)).toMatchObject({
+      snapshot: { priorDeliveryUnknown: true, status: 'manual-required' },
+    });
+  });
+
+  it('keeps unknown history after edits and drains/removes only with committed removal authority', async () => {
+    const harness = await createDurableServiceHarness();
+    await persistence.recoverLegacyDrafts('removal-cutover-v1', () => true);
+    const revised = await harness.service.reviseDraft({
+      editOperationId: 'legacy-user-edit',
+      expectedDraftFingerprint: harness.deliveryRequest.expectedDraftFingerprint,
+      expectedEditRevision: 0,
+      revisedText: 'Preserve this edited legacy draft',
+      sourceDeliveryId: harness.deliveryId,
+      taskId: 'task-1',
+    });
+    if (revised.kind !== 'saved-manual-draft' || !revised.current)
+      throw new Error('edit not saved');
+    expect(
+      await harness.service.sendManually(harness.manualRequest(revised.current)),
+    ).toMatchObject({
+      operation: { phase: 'confirmation-required' },
+    });
+    expect(harness.admitPrompt).not.toHaveBeenCalled();
+    await expect(
+      harness.service.drainTaskForRemoval({
+        deletionOperationId: 'remove-legacy-task',
+        taskId: 'task-1',
+      }),
+    ).resolves.toMatchObject({ kind: 'complete' });
+    expect(await persistence.journal.load(harness.deliveryId)).toMatchObject({
+      manualSendOperation: {
+        phase: 'failed-before-write',
+        terminalReceipt: { outcome: { issue: { code: 'task-closing' } } },
+      },
+      snapshot: { priorDeliveryUnknown: true, status: 'manual-required' },
+    });
+    harness.dependencies.removalGate.verifyCommittedRemoval = () => false;
+    const removal = { deletionOperationId: 'remove-legacy-task', taskId: 'task-1' };
+    expect(await harness.service.finalizeRemovedTaskInitialPromptState(removal)).toMatchObject({
+      kind: 'retry-required',
+      reason: 'removal-witness-mismatch',
+    });
+    expect(await persistence.journal.load(harness.deliveryId)).not.toBeNull();
+    harness.dependencies.removalGate.verifyCommittedRemoval = () => true;
+    expect(await harness.service.finalizeRemovedTaskInitialPromptState(removal)).toEqual({
+      kind: 'complete',
+    });
+    expect(await persistence.journal.load(harness.deliveryId)).toBeNull();
+    await workspace
+      .createPrivateMutationAuthority()
+      .mutate({ operation: 'commit-removed-legacy-task' }, (slices) =>
+        changed({ nextSharedState: { ...slices.sharedState, tasks: {} } }, undefined),
+      );
+    await persistence.recoverLegacyDrafts('removal-cutover-v1', () => false);
+    expect(await persistence.journal.listRecords()).toEqual([]);
+  });
+
+  it('cannot send unknown legacy history when its confirmation cannot be journaled', async () => {
+    const harness = await createDurableServiceHarness();
+    await persistence.recoverLegacyDrafts('removal-cutover-v1', () => true);
+    const before = await persistence.journal.load(harness.deliveryId);
+    const failure = vi
+      .spyOn(storage, 'commitHostRecord')
+      .mockRejectedValueOnce(new Error('confirmation write failed'));
+    await expect(harness.service.sendManually(harness.manualRequest())).rejects.toThrow(
+      'confirmation write failed',
+    );
+    expect(await persistence.journal.load(harness.deliveryId)).toEqual(before);
+    expect(harness.admitPrompt).not.toHaveBeenCalled();
+    expect(harness.acquireCommandLease).not.toHaveBeenCalled();
+    failure.mockRestore();
+    expect(await harness.service.sendManually(harness.manualRequest())).toMatchObject({
+      operation: { phase: 'confirmation-required' },
+    });
+    expect(harness.admitPrompt).not.toHaveBeenCalled();
+  });
+
   it('prepares a dark empty journal without changing shared revision', async () => {
     await persistence.ensureDarkJournalReady();
     const first = await storage.loadCurrent();

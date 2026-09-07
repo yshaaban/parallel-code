@@ -145,6 +145,104 @@ describe('InitialPromptDeliveryControl', () => {
     });
   });
 
+  it('explains unknown legacy history, preserves its draft, and requires explicit confirmation before sending', async () => {
+    const recovered = projection({
+      delivery: { ...projection().delivery, attempts: 0, priorDeliveryUnknown: true },
+    });
+    let current = recovered;
+    getProjectionMock.mockImplementation(async () => current);
+    sendManuallyMock.mockImplementation(async (request) => {
+      const nextOperation = {
+        ...operation(
+          request.confirmPossiblePriorAutomaticWrite ? 'completed' : 'confirmation-required',
+        ),
+        possiblePriorAutomaticWrite: true,
+      };
+      current = { ...recovered, manualSendOperation: nextOperation };
+      return {
+        ...current,
+        kind: 'operation',
+        operation: nextOperation,
+        recovery: { kind: 'none' },
+        replayed: false,
+      };
+    });
+    const inspectTerminal = vi.fn();
+    let result = renderControl({ onInspectTerminal: inspectTerminal });
+    expect(
+      await result.findByText(
+        'Previous delivery is unknown. Inspect the terminal before sending this saved prompt.',
+      ),
+    ).toBeTruthy();
+    expect((result.getByLabelText('Initial prompt draft') as HTMLTextAreaElement).value).toBe(
+      'Ship it',
+    );
+    expect(result.getByRole('button', { name: 'Copy draft' })).toBeTruthy();
+    result.getByRole('button', { name: 'Inspect terminal' }).click();
+    expect(inspectTerminal).toHaveBeenCalledWith('agent-1');
+    expect(sendManuallyMock).not.toHaveBeenCalled();
+    result.getByRole('button', { name: 'Send initial prompt' }).click();
+    await result.findByRole('button', { name: 'Confirm send' });
+    expect(sendManuallyMock).toHaveBeenCalledOnce();
+    expect(sendManuallyMock.mock.calls[0]?.[0].confirmPossiblePriorAutomaticWrite).toBe(false);
+    result.unmount();
+    result = renderControl({ onInspectTerminal: inspectTerminal });
+    const confirm = await result.findByRole('button', { name: 'Confirm send' });
+    expect(sendManuallyMock).toHaveBeenCalledOnce();
+    confirm.click();
+    await vi.waitFor(() => expect(sendManuallyMock).toHaveBeenCalledTimes(2));
+    expect(sendManuallyMock.mock.calls[1]?.[0]).toMatchObject({
+      confirmPossiblePriorAutomaticWrite: true,
+      expectedDraftFingerprint: recovered.currentDraft?.fingerprint,
+      expectedEditRevision: 0,
+    });
+  });
+
+  it('offers inspection but no send for an unrecoverable legacy identity and clears the error after a successful refresh', async () => {
+    const message =
+      'This saved prompt no longer matches its original task or draft. It cannot be recovered safely.';
+    getProjectionMock.mockRejectedValueOnce(new Error(message));
+    const inspectTerminal = vi.fn();
+    const result = renderControl({ onInspectTerminal: inspectTerminal });
+    expect(await result.findByText(message)).toBeTruthy();
+    expect(result.queryByRole('button', { name: 'Send initial prompt' })).toBeNull();
+    result.getByRole('button', { name: 'Inspect terminal' }).click();
+    expect(inspectTerminal).toHaveBeenCalledWith('agent-1');
+    result.getByRole('button', { name: 'Refresh status' }).click();
+    expect(await result.findByLabelText('Initial prompt draft')).toBeTruthy();
+    expect(result.queryByText(message)).toBeNull();
+    expect(sendManuallyMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a recovered legacy draft inspectable but not writable under peer control', async () => {
+    getProjectionMock.mockResolvedValue(
+      projection({
+        delivery: { ...projection().delivery, attempts: 0, priorDeliveryUnknown: true },
+      }),
+    );
+    const result = renderControl({ readOnly: true });
+    const textarea = (await result.findByLabelText('Initial prompt draft')) as HTMLTextAreaElement;
+    expect(textarea.readOnly).toBe(true);
+    const send = result.getByRole('button', { name: 'Send initial prompt' }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    send.click();
+    expect(sendManuallyMock).not.toHaveBeenCalled();
+    expect(result.getByRole('button', { name: 'Copy draft' })).toBeTruthy();
+  });
+
+  it('preserves an actionable send rejection when the follow-up status refresh succeeds', async () => {
+    sendManuallyMock.mockResolvedValue({
+      current: projection().current,
+      error: { code: 'not-authorized' },
+      kind: 'admission-rejected',
+      recovery: { kind: 'none' },
+    });
+    const result = renderControl();
+    (await result.findByRole('button', { name: 'Send initial prompt' })).click();
+    await vi.waitFor(() => expect(getProjectionMock).toHaveBeenCalledTimes(2));
+    expect(result.getByText('You no longer control this task.')).toBeTruthy();
+  });
+
   it('dispatches only the exact acknowledged draft and never sends an unsaved edit', async () => {
     const onUnsavedChange = vi.fn();
     let saveDraft!: (result: ReviseTaskInitialPromptDraftResult) => void;

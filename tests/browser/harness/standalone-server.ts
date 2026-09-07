@@ -436,6 +436,9 @@ export async function seedBrowserState(
   const project = createProject(projectId, repoDir);
   const branchName = getCurrentBranchName(repoDir);
   const taskEntries = createSeededTaskEntries(project, scenario, branchName);
+  if (scenario.legacyInitialPrompt !== undefined && taskEntries[0]) {
+    taskEntries[0].task.savedInitialPrompt = scenario.legacyInitialPrompt;
+  }
   const taskIds = taskEntries.map((entry) => entry.taskId);
   const agentIds = taskEntries.map((entry) => entry.agentId);
   const taskId = taskIds[0] ?? 'task-browser-lab';

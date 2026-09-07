@@ -11,6 +11,7 @@ export interface BrowserLabScenario {
   additionalTaskNames?: string[];
   agentCatalogSource?: 'built-in' | 'custom';
   agentDef: AgentDef;
+  legacyInitialPrompt?: string;
   name: string;
   prependRepoBinToPath?: boolean;
   resolveTaskGitLocation?: (

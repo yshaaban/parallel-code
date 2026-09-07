@@ -62,6 +62,17 @@ function projection(
 }
 
 describe('initial prompt renderer projection', () => {
+  it('explains recovered unknown history without claiming automatic delivery failed or was unsent', () => {
+    const recovered = projection({
+      delivery: { ...projection().delivery, priorDeliveryUnknown: true, status: 'manual-required' },
+    });
+    expect(getTaskInitialPromptPresentation(recovered)).toMatchObject({
+      action: { kind: 'send' },
+      message:
+        'Previous delivery is unknown. Inspect the terminal before sending this saved prompt.',
+      tone: 'warning',
+    });
+  });
   it('orders operation and catalog cursors independently', () => {
     const current = projection({
       current: {

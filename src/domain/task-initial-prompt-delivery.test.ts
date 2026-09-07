@@ -13,6 +13,7 @@ import {
   isSendTaskInitialPromptManuallyRequest,
   isSendTaskInitialPromptManuallyResult,
   isTaskInitialPromptDeliveryProjection,
+  isTaskInitialPromptDeliverySnapshot,
   isManualInitialPromptSendTerminalPhase,
   isTaskInitialPromptDraftWithinLimit,
   reduceTaskInitialPromptDelivery,
@@ -39,6 +40,27 @@ function snapshot(
 }
 
 describe('initial prompt delivery domain contract', () => {
+  it('keeps unknown prior delivery distinct from zero attempts through edits and rejects automatic states with unknown history', () => {
+    const recovered = snapshot({ priorDeliveryUnknown: true, status: 'manual-required' });
+    expect(isTaskInitialPromptDeliverySnapshot(recovered)).toBe(true);
+    expect(isTaskInitialPromptDeliverySnapshot({ ...recovered, priorDeliveryUnknown: false })).toBe(
+      false,
+    );
+    expect(
+      isTaskInitialPromptDeliverySnapshot({ ...recovered, status: 'waiting-agent-session' }),
+    ).toBe(false);
+    const edited = reduceTaskInitialPromptDelivery(
+      recovered,
+      { kind: 'edit-accepted' },
+      '2026-08-04T00:00:02.000Z',
+    ).snapshot;
+    expect(edited).toMatchObject({
+      attempts: 0,
+      priorDeliveryUnknown: true,
+      status: 'manual-required',
+    });
+    expect(isTaskInitialPromptDeliverySnapshot(edited)).toBe(true);
+  });
   it('matches the platform SHA-256 and exact manual operation derivation', () => {
     expect(sha256Hex('abc')).toBe(createHash('sha256').update('abc').digest('hex'));
     const fingerprint = 'ab'.repeat(32);

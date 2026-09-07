@@ -16,6 +16,7 @@ import {
   type TaskInitialPromptDeliverySnapshot,
   type TaskInitialPromptDraftSnapshot,
 } from '../../src/domain/task-initial-prompt-delivery.js';
+import { isWellFormedUnicodeScalarString } from '../../src/lib/unicode-scalar.js';
 import {
   activateProtectedPolicies,
   changed,
@@ -70,6 +71,8 @@ export interface WorkspaceTaskInitialPromptPersistence {
     cutoverEpoch: string,
   ): Promise<TaskInitialPromptProtectionCutoverResult>;
   ensureDarkJournalReady(): Promise<void>;
+  recoverLegacyDrafts(cutoverEpoch: string, isTaskOpen: (taskId: string) => boolean): Promise<void>;
+  getMissingLegacyDeliveryIssue(deliveryId: string): Promise<string | null>;
   journal: TaskInitialPromptDeliveryJournal;
   repository: TaskInitialPromptDraftRepository;
   verifyPromptProtectionCutover(cutoverEpoch: string): Promise<void>;
@@ -338,6 +341,7 @@ function isJournalRecord(value: JsonObject, deliveryId: string): boolean {
         hasCoherentManualOperationReceipts(manualSendOperation) &&
         value.automationSealed)) &&
     (snapshot.attempts === 0 || value.writeBegan) &&
+    (snapshot.priorDeliveryUnknown !== true || value.automationSealed) &&
     (!value.automationSealed || terminal) &&
     isJournalSnapshotStateCoherent({
       hasReadyDeadline,
@@ -489,6 +493,38 @@ function getTaskAgentId(task: JsonObject): string | null {
     if (typeof first === 'string') return first;
   }
   return null;
+}
+
+function canRecoverLegacyDraft(taskId: string, task: JsonObject): boolean {
+  const agentId = getTaskAgentId(task);
+  return (
+    task.id === taskId &&
+    task.taskMode !== 'terminal' &&
+    agentId !== null &&
+    typeof task.initialPrompt === 'string' &&
+    task.initialPrompt.trim().length > 0 &&
+    isWellFormedUnicodeScalarString(task.initialPrompt) &&
+    isTaskInitialPromptDraftWithinLimit(task.initialPrompt) &&
+    isTaskInitialPromptDeliveryRequest({
+      agentId,
+      deliveryId: task.initialPromptDeliveryId,
+      expectedDraftFingerprint: deriveTaskInitialPromptDraftFingerprint({
+        agentId,
+        readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+        taskId,
+        text: task.initialPrompt,
+      }),
+      readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+      taskId,
+    }) &&
+    task.initialPromptDeliveryId ===
+      deriveLegacyTaskInitialPromptDeliveryId({
+        agentId,
+        readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+        taskId,
+        text: task.initialPrompt,
+      })
+  );
 }
 
 function getTaskDraft(
@@ -1053,10 +1089,110 @@ export function createWorkspaceTaskInitialPromptPersistence(
     });
   }
 
+  async function recoverLegacyDrafts(
+    cutoverEpoch: string,
+    isTaskOpen: (taskId: string) => boolean,
+  ): Promise<void> {
+    await verifyPromptProtectionCutover(cutoverEpoch);
+    await authority.mutate({ operation: 'recover-legacy-initial-prompt-history' }, (slices) => {
+      if (getOwnerSchema(slices.privateState)?.cutoverEpoch !== cutoverEpoch) {
+        throw new TaskInitialPromptPersistenceRecoveryError('Initial prompt cutover changed');
+      }
+      const state = readJournal(slices.privateState);
+      const tasks = cloneJsonObject(requireTasks(slices.sharedState));
+      let recovered = false;
+      let recordCount = Object.keys(state.recordsByDeliveryId).length;
+      for (const [taskId, task] of Object.entries(tasks)) {
+        if (!isJsonObject(task) || !isTaskOpen(taskId)) continue;
+        const deliveryId = task.initialPromptDeliveryId;
+        if (
+          typeof deliveryId !== 'string' ||
+          !deliveryId.startsWith('legacy:') ||
+          state.recordsByDeliveryId[deliveryId] !== undefined ||
+          !canRecoverLegacyDraft(taskId, task)
+        )
+          continue;
+        if (recordCount >= MAX_JOURNAL_RECORDS) {
+          throw new TaskInitialPromptPersistenceRecoveryError(
+            'Initial prompt journal has no record capacity',
+          );
+        }
+        const draft = getTaskDraft(taskId, task, state);
+        const agentId = getTaskAgentId(task);
+        if (!draft || !agentId) continue;
+        const timestamp = new Date(now()).toISOString();
+        setRecordInJournal(state, {
+          automationSealed: true,
+          draftEditRevision: 0,
+          expectedDraftFingerprint: draft.fingerprint,
+          request: {
+            agentId,
+            deliveryId,
+            expectedDraftFingerprint: draft.fingerprint,
+            readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+            taskId,
+          },
+          schemaVersion: 1,
+          snapshot: {
+            agentId,
+            attempts: 0,
+            createdAt: timestamp,
+            deliveryId,
+            priorDeliveryUnknown: true,
+            status: 'manual-required',
+            taskId,
+            updatedAt: timestamp,
+            version: 1,
+          },
+          writeBegan: false,
+        });
+        task.initialPromptDeliveryMode = 'manual-only';
+        recordCount += 1;
+        recovered = true;
+      }
+      return recovered
+        ? changed(
+            {
+              nextPrivateState: withJournal(slices.privateState, state),
+              nextSharedState: { ...slices.sharedState, tasks },
+            },
+            undefined,
+          )
+        : unchanged(undefined);
+    });
+  }
+
+  async function getMissingLegacyDeliveryIssue(deliveryId: string): Promise<string | null> {
+    requireHealthy();
+    if (!deliveryId.startsWith('legacy:')) return null;
+    const result = await authority.mutate(
+      { operation: 'inspect-missing-legacy-prompt-history' },
+      (slices) => {
+        const state = readJournal(slices.privateState);
+        if (state.recordsByDeliveryId[deliveryId] !== undefined) return unchanged(null);
+        for (const [taskId, task] of Object.entries(requireTasks(slices.sharedState))) {
+          if (
+            isJsonObject(task) &&
+            task.initialPromptDeliveryId === deliveryId &&
+            !canRecoverLegacyDraft(taskId, task)
+          ) {
+            return unchanged(
+              'This saved prompt no longer matches its original task or draft. It cannot be recovered safely. Inspect the terminal; keep this task to preserve its saved draft.',
+            );
+          }
+        }
+        return unchanged(null);
+      },
+    );
+    return result.result;
+  }
+
   return {
     activatePromptProtectionAndDisableLegacyWriters,
     ensureDarkJournalReady,
+    getMissingLegacyDeliveryIssue,
     journal,
+    recoverLegacyDrafts,
     repository,
     verifyPromptProtectionCutover,
   };

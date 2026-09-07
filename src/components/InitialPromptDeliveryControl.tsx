@@ -143,7 +143,7 @@ export function InitialPromptDeliveryControl(
     setLoading(false);
   }
 
-  async function refresh(): Promise<void> {
+  async function refresh(preserveNotice = false): Promise<void> {
     if (disposed) return;
     setLoading(true);
     try {
@@ -154,8 +154,13 @@ export function InitialPromptDeliveryControl(
       }
       const next = await client.initialPromptDelivery.getProjection({ deliveryId }, abort.signal);
       if (disposed) return;
-      if (next) applyProjection(next);
-      else setNotice('Initial-prompt status is temporarily unavailable.');
+      if (next) {
+        if (!preserveNotice) setNotice(null);
+        applyProjection(next);
+      } else
+        setNotice(
+          'Delivery history is unavailable. Refresh status or inspect the terminal before sending.',
+        );
     } catch (error) {
       if (!abort.signal.aborted) {
         setNotice(error instanceof Error ? error.message : 'Initial-prompt status is unavailable.');
@@ -305,7 +310,7 @@ export function InitialPromptDeliveryControl(
         abort.signal,
       );
       setNotice(sendResultMessage(result));
-      await refresh();
+      await refresh(true);
     } catch (error) {
       if (!abort.signal.aborted) {
         setNotice(error instanceof Error ? error.message : 'Initial prompt could not be sent.');
@@ -468,20 +473,30 @@ export function InitialPromptDeliveryControl(
       </Show>
 
       <div class="initial-prompt-delivery__actions">
-        <Show when={presentation()?.action.kind === 'inspect-and-copy'}>
+        <Show
+          when={
+            presentation()?.action.kind === 'inspect-and-copy' ||
+            projection()?.delivery.priorDeliveryUnknown === true ||
+            !projection()
+          }
+        >
           <button
             type="button"
             class="btn-secondary"
             onClick={() => {
-              const targetAgentId = projection()?.delivery.agentId;
+              const targetAgentId = projection()?.delivery.agentId ?? agentId;
               if (targetAgentId) props.onInspectTerminal?.(targetAgentId);
             }}
           >
             Inspect terminal
           </button>
-          <button type="button" class="btn-secondary" onClick={() => void copyDraft()}>
-            Copy draft
-          </button>
+          <Show when={draftState()}>
+            <button type="button" class="btn-secondary" onClick={() => void copyDraft()}>
+              Copy draft
+            </button>
+          </Show>
+        </Show>
+        <Show when={presentation()?.action.kind === 'inspect-and-copy'}>
           <button
             type="button"
             class="btn-secondary"
