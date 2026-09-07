@@ -1,6 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import {
   getTaskReviewQueueGroupOrder,
+  getTaskReviewPresentation,
   getTaskReviewStateQueueGroup,
   getTaskReviewStateQueueOrder,
   isRemovedTaskConvergenceEvent,
@@ -124,9 +125,8 @@ function getQueueLabel(snapshot: TaskConvergenceSnapshot, group: TaskReviewQueue
 
   switch (snapshot.state) {
     case 'merge-blocked':
-      return `${formatCount(snapshot.conflictingFiles.length, 'conflict')} with main`;
     case 'needs-refresh':
-      return `Main ahead by ${formatCount(snapshot.mainAheadCount, 'commit')}`;
+      return getTaskReviewPresentation(snapshot).summary;
     case 'dirty-uncommitted':
       return 'Commit or discard changes';
     case 'review-ready':

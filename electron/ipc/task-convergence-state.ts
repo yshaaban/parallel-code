@@ -14,7 +14,9 @@ import type {
   TaskConvergenceSnapshot,
   TaskOverlapWarning,
   TaskReviewState,
+  TaskReviewReason,
 } from '../../src/domain/task-convergence.js';
+import { getTaskReviewPresentation } from '../../src/domain/task-convergence.js';
 import { enqueueBackendWork, type BackendWorkPriorityClass } from './backend-work-queue.js';
 import { toSavedStateDocument, type SavedStateDocument } from './saved-state-document.js';
 
@@ -30,7 +32,8 @@ interface TaskConvergenceMetadata {
 
 interface ReviewStateResult {
   state: TaskReviewState;
-  summary: string;
+  reviewReason?: TaskReviewReason;
+  summary?: string;
 }
 
 type TaskConvergenceListener = (event: TaskConvergenceEvent) => void;
@@ -66,29 +69,28 @@ function getReviewState(
   if (mergeStatus.current_branch === null) {
     return {
       state: 'needs-refresh',
-      summary: 'Worktree is not on a named branch',
+      reviewReason: 'detached-head',
     };
   }
 
   if (mergeStatus.current_branch !== expectedBranch) {
     return {
       state: 'needs-refresh',
-      summary:
-        "Worktree is on '" + mergeStatus.current_branch + "', expected '" + expectedBranch + "'",
+      reviewReason: 'branch-mismatch',
     };
   }
 
   if (mergeStatus.conflicting_files.length > 0) {
     return {
       state: 'merge-blocked',
-      summary: `${formatCount(mergeStatus.conflicting_files.length, 'conflict')} with main`,
+      reviewReason: 'conflicts',
     };
   }
 
   if (mergeStatus.main_ahead_count > 0) {
     return {
       state: 'needs-refresh',
-      summary: `Main is ahead by ${formatCount(mergeStatus.main_ahead_count, 'commit')}`,
+      reviewReason: 'behind-base',
     };
   }
 
@@ -132,6 +134,7 @@ function emitTaskConvergenceEvent(event: TaskConvergenceEvent): void {
 
 function createUnavailableSnapshot(metadata: TaskConvergenceMetadata): TaskConvergenceSnapshot {
   return {
+    ...(metadata.baseBranch !== undefined ? { baseBranch: metadata.baseBranch } : {}),
     branchFiles: [],
     branchName: metadata.branchName,
     changedFileCount: 0,
@@ -205,6 +208,9 @@ function areSnapshotsEqual(
     left.taskId === right.taskId &&
     left.projectId === right.projectId &&
     left.branchName === right.branchName &&
+    left.baseBranch === right.baseBranch &&
+    left.currentBranch === right.currentBranch &&
+    left.reviewReason === right.reviewReason &&
     left.worktreePath === right.worktreePath &&
     left.state === right.state &&
     left.summary === right.summary &&
@@ -328,29 +334,35 @@ async function loadTaskConvergenceSnapshot(
     const reviewState = getReviewState(worktreeStatus, mergeStatus, metadata.branchName);
     const changedFileCount = projectDiff.files.length;
     const commitCount = countBranchCommits(branchLog);
+    const baseBranch = mergeStatus.base_branch ?? metadata.baseBranch;
 
-    return {
+    const snapshot: TaskConvergenceSnapshot = {
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
       branchFiles: projectDiff.files.map((file) => file.path),
       branchName: metadata.branchName,
       changedFileCount,
       commitCount,
       conflictingFiles: mergeStatus.conflicting_files,
+      currentBranch: mergeStatus.current_branch,
       hasCommittedChanges: worktreeStatus.has_committed_changes,
       hasUncommittedChanges: worktreeStatus.has_uncommitted_changes,
       mainAheadCount: mergeStatus.main_ahead_count,
       overlapWarnings: [],
       projectId: metadata.projectId,
       state: reviewState.state,
+      ...(reviewState.reviewReason !== undefined ? { reviewReason: reviewState.reviewReason } : {}),
       summary:
         reviewState.state === 'review-ready'
           ? `${formatCount(commitCount, 'commit')}, ${formatCount(changedFileCount, 'file')} changed`
-          : reviewState.summary,
+          : (reviewState.summary ?? ''),
       taskId: metadata.taskId,
       totalAdded: projectDiff.totalAdded,
       totalRemoved: projectDiff.totalRemoved,
       updatedAt: Date.now(),
       worktreePath: metadata.worktreePath,
     };
+    snapshot.summary = getTaskReviewPresentation(snapshot).summary;
+    return snapshot;
   } catch {
     return createUnavailableSnapshot(metadata);
   }

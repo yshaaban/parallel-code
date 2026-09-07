@@ -1,5 +1,4 @@
 import {
-  getTaskReviewStateBadgeLabel,
   getTaskReviewStateBadgeTone,
   getTaskReviewStatePanelTone,
   type TaskReviewState,
@@ -26,10 +25,6 @@ function getTaskReviewToneColor(tone: TaskReviewTone): string {
 
 export function getTaskReviewBadgeColor(state: TaskReviewState): string {
   return getTaskReviewToneColor(getTaskReviewStateBadgeTone(state));
-}
-
-export function getTaskReviewBadgeLabelForState(state: TaskReviewState): string | null {
-  return getTaskReviewStateBadgeLabel(state);
 }
 
 export function getTaskReviewPanelColor(state: TaskReviewState): string {

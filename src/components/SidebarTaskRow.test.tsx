@@ -359,7 +359,7 @@ describe('SidebarTaskRow', () => {
 
     renderSidebarTaskRow();
 
-    expect(screen.getByLabelText('Blocked')).toBeDefined();
+    expect(screen.getByRole('status', { name: /^Blocked:/ })).toBeDefined();
     expect(screen.getByText('Blocked')).toBeDefined();
   });
 
@@ -379,8 +379,29 @@ describe('SidebarTaskRow', () => {
 
     renderSidebarTaskRows(['task-1', 'task-2']);
 
-    expect(screen.getByText('Refresh')).toBeDefined();
+    expect(screen.getByText('Needs attention')).toBeDefined();
     expect(screen.getByText('Dirty')).toBeDefined();
+  });
+
+  it('explains a settled behind-base state with its count and custom branch accessibly', () => {
+    setStore(
+      'taskConvergence',
+      'task-1',
+      createTestConvergenceSnapshot('task-1', {
+        state: 'needs-refresh',
+        reviewReason: 'behind-base',
+        mainAheadCount: 3,
+        baseBranch: 'feature/case-platform-transformation',
+      }),
+    );
+    renderSidebarTaskRow();
+
+    const badge = screen.getByRole('status', {
+      name: /Behind 3.*feature\/case-platform-transformation/,
+    });
+    expect(badge.textContent).toBe('Behind 3');
+    expect(badge.title).toContain('3 commits');
+    expect(screen.queryByText('Refresh')).toBeNull();
   });
 
   it('shows a starting activity badge while a task terminal is still attaching', () => {

@@ -281,7 +281,10 @@ describe('repository default branches', { timeout: 30_000 }, () => {
       has_committed_changes: true,
     });
     expect(await getBranchLog(task.path, 'trunk')).toContain('task feature');
-    expect(await checkMergeStatus(task.path, 'trunk')).toMatchObject({ main_ahead_count: 1 });
+    expect(await checkMergeStatus(task.path, 'trunk')).toMatchObject({
+      base_branch: 'origin/trunk',
+      main_ahead_count: 1,
+    });
     await rebaseTask(task.path, 'trunk');
     expect(git(task.path, 'rev-parse', 'HEAD^')).toBe(git(origin, 'rev-parse', 'HEAD'));
     expect(git(root, 'symbolic-ref', '--short', 'HEAD')).toBe('feature/local');

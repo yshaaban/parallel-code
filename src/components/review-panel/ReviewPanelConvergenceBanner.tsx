@@ -1,17 +1,20 @@
-import { Show, type JSX } from 'solid-js';
+import { createMemo, Show, type JSX } from 'solid-js';
 
-import type { TaskConvergenceSnapshot } from '../../domain/task-convergence';
+import {
+  getTaskReviewPresentation,
+  type TaskConvergenceSnapshot,
+} from '../../domain/task-convergence';
 import { theme } from '../../lib/theme';
 
 interface ReviewPanelConvergenceBannerProps {
   snapshot: TaskConvergenceSnapshot;
   stateColor: string;
-  stateLabel: string;
 }
 
 export function ReviewPanelConvergenceBanner(
   props: ReviewPanelConvergenceBannerProps,
 ): JSX.Element {
+  const presentation = createMemo(() => getTaskReviewPresentation(props.snapshot));
   return (
     <div
       style={{
@@ -36,6 +39,9 @@ export function ReviewPanelConvergenceBanner(
         }}
       >
         <span
+          role="status"
+          aria-label={`${presentation().label}: ${presentation().summary}`}
+          title={presentation().summary}
           style={{
             color: props.stateColor,
             padding: '2px 6px',
@@ -45,9 +51,10 @@ export function ReviewPanelConvergenceBanner(
             'flex-shrink': '0',
           }}
         >
-          {props.stateLabel}
+          {presentation().label}
         </span>
         <span
+          title={presentation().summary}
           style={{
             color: theme.fgMuted,
             overflow: 'hidden',
@@ -55,7 +62,7 @@ export function ReviewPanelConvergenceBanner(
             'white-space': 'nowrap',
           }}
         >
-          {props.snapshot.summary}
+          {presentation().summary}
         </span>
       </div>
       <div
@@ -70,7 +77,9 @@ export function ReviewPanelConvergenceBanner(
         <span>{props.snapshot.commitCount} commits</span>
         <span>{props.snapshot.changedFileCount} files</span>
         <Show when={props.snapshot.mainAheadCount > 0}>
-          <span>Main +{props.snapshot.mainAheadCount}</span>
+          <span title={`Base branch: ${props.snapshot.baseBranch ?? 'unavailable'}`}>
+            Base +{props.snapshot.mainAheadCount}
+          </span>
         </Show>
         <Show when={props.snapshot.overlapWarnings[0]}>
           {(warning) => <span>{warning().sharedCount} shared</span>}

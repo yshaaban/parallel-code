@@ -15,7 +15,6 @@ import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { getTaskReviewSignalsSnapshot } from '../app/task-review-signals';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
-import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import type { ReviewCommitSummary } from '../domain/review-commit-history';
 import type { TaskReviewSnapshot } from '../domain/task-review';
 import { isDiffableChangedFilePath } from '../lib/changed-file-display';
@@ -435,7 +434,6 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
           <ReviewPanelConvergenceBanner
             snapshot={snapshot()}
             stateColor={getReviewStateColor(props.taskId)}
-            stateLabel={getTaskReviewStateLabel(snapshot().state)}
           />
         )}
       </Show>

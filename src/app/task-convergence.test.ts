@@ -157,4 +157,28 @@ describe('task convergence projection', () => {
     ]);
     expect(store.taskConvergence['task-1']?.changedFileCount).toBe(4);
   });
+
+  it('uses the same explicit branch reason for bootstrap and pushed review queue entries', () => {
+    const initial = createSnapshot('task-1', {
+      state: 'needs-refresh',
+      reviewReason: 'behind-base',
+      baseBranch: 'feature/platform',
+      mainAheadCount: 4,
+    });
+    replaceTaskConvergenceSnapshots([initial], { replaceVersion: 1 });
+    expect(getTaskReviewQueueEntries()[0]?.label).toContain(
+      'behind "feature/platform" by 4 commits',
+    );
+
+    applyTaskConvergenceEvent({
+      ...initial,
+      reviewReason: 'branch-mismatch',
+      currentBranch: 'task/other',
+      stateVersion: 2,
+    });
+    const entry = getTaskReviewQueueEntries()[0];
+    expect(entry?.label).toContain('"task/other", recorded task branch is "feature/task-1"');
+    expect(entry?.label).not.toContain('ahead');
+    expect(entry?.group).toBe('needs-refresh');
+  });
 });

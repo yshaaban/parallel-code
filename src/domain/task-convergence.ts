@@ -16,6 +16,8 @@ export type TaskReviewState =
   | 'no-changes'
   | 'unavailable';
 
+export type TaskReviewReason = 'behind-base' | 'branch-mismatch' | 'detached-head' | 'conflicts';
+
 export interface TaskOverlapWarning {
   otherTaskId: string;
   otherTaskName: string;
@@ -24,16 +26,20 @@ export interface TaskOverlapWarning {
 }
 
 export interface TaskConvergenceSnapshot {
+  /** Optional so persisted snapshots from older servers remain readable. */
+  baseBranch?: string;
   branchFiles: string[];
   branchName: string;
   changedFileCount: number;
   commitCount: number;
   conflictingFiles: string[];
+  currentBranch?: string | null;
   hasCommittedChanges: boolean;
   hasUncommittedChanges: boolean;
   mainAheadCount: number;
   overlapWarnings: TaskOverlapWarning[];
   projectId: string;
+  reviewReason?: TaskReviewReason;
   state: TaskReviewState;
   summary: string;
   taskId: string;
@@ -88,9 +94,9 @@ const TASK_REVIEW_STATE_METADATA: Record<TaskReviewState, TaskReviewStateMetadat
     queueOrder: 3,
   },
   'needs-refresh': {
-    badgeLabel: 'Refresh',
+    badgeLabel: 'Needs attention',
     badgeTone: 'warning',
-    label: 'Refresh',
+    label: 'Needs attention',
     panelTone: 'warning',
     queueGroup: 'needs-refresh',
     queueOrder: 1,
@@ -132,7 +138,7 @@ const TASK_REVIEW_STATE_METADATA: Record<TaskReviewState, TaskReviewStateMetadat
 const TASK_REVIEW_QUEUE_GROUP_METADATA: Record<TaskReviewQueueGroup, TaskReviewQueueGroupMetadata> =
   {
     'needs-refresh': {
-      label: 'Needs Refresh',
+      label: 'Needs attention',
       order: 0,
     },
     'overlap-risk': {
@@ -169,16 +175,25 @@ export function isTaskConvergenceSnapshot(value: unknown): value is TaskConverge
 
   return (
     isStringArray(value.branchFiles) &&
+    (value.baseBranch === undefined || typeof value.baseBranch === 'string') &&
     typeof value.branchName === 'string' &&
     isNonNegativeInteger(value.changedFileCount) &&
     isNonNegativeInteger(value.commitCount) &&
     isStringArray(value.conflictingFiles) &&
+    (value.currentBranch === undefined ||
+      value.currentBranch === null ||
+      typeof value.currentBranch === 'string') &&
     typeof value.hasCommittedChanges === 'boolean' &&
     typeof value.hasUncommittedChanges === 'boolean' &&
     isNonNegativeInteger(value.mainAheadCount) &&
     isArrayOf(value.overlapWarnings, isTaskOverlapWarning) &&
     typeof value.projectId === 'string' &&
     isTaskReviewState(value.state) &&
+    (value.reviewReason === undefined ||
+      value.reviewReason === 'behind-base' ||
+      value.reviewReason === 'branch-mismatch' ||
+      value.reviewReason === 'detached-head' ||
+      value.reviewReason === 'conflicts') &&
     typeof value.summary === 'string' &&
     typeof value.taskId === 'string' &&
     isNonNegativeInteger(value.totalAdded) &&
@@ -212,6 +227,42 @@ export function getTaskReviewStateLabel(state: TaskReviewState): string {
 
 export function getTaskReviewStateBadgeLabel(state: TaskReviewState): string | null {
   return TASK_REVIEW_STATE_METADATA[state].badgeLabel;
+}
+
+/** Present backend reasons; never infer readiness or branch identity from legacy summary text. */
+export function getTaskReviewPresentation(snapshot: TaskConvergenceSnapshot): {
+  badgeLabel: string | null;
+  label: string;
+  summary: string;
+} {
+  const base = snapshot.baseBranch ? `"${snapshot.baseBranch}"` : 'the base branch';
+  let label = getTaskReviewStateLabel(snapshot.state);
+  let summary = snapshot.summary;
+  if (snapshot.state === 'needs-refresh') {
+    switch (snapshot.reviewReason) {
+      case 'behind-base':
+        label = `Behind ${snapshot.mainAheadCount}`;
+        summary = `This branch is behind ${base} by ${snapshot.mainAheadCount} ${snapshot.mainAheadCount === 1 ? 'commit' : 'commits'}. Review the branch differences before updating this checkout.`;
+        break;
+      case 'branch-mismatch':
+        label = 'Branch changed';
+        summary = `Checkout is on ${snapshot.currentBranch ? `"${snapshot.currentBranch}"` : 'a different branch'}, recorded task branch is "${snapshot.branchName}". Inspect the checkout before changing branches; other tasks may share it.`;
+        break;
+      case 'detached-head':
+        label = 'Detached';
+        summary = `Checkout has no named branch (detached HEAD); the recorded task branch is "${snapshot.branchName}". Inspect the checkout before changing branches; other tasks may share it.`;
+        break;
+    }
+  } else if (snapshot.state === 'merge-blocked' && snapshot.reviewReason === 'conflicts') {
+    const count = snapshot.conflictingFiles.length;
+    label = `Conflicts ${count}`;
+    summary = `${count} ${count === 1 ? 'file conflicts' : 'files conflict'} with ${base}. Resolve the conflicts before merging.`;
+  }
+  return {
+    badgeLabel: getTaskReviewStateBadgeLabel(snapshot.state) === null ? null : label,
+    label,
+    summary,
+  };
 }
 
 export function getTaskReviewStateBadgeTone(state: TaskReviewState): TaskReviewTone {

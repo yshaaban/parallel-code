@@ -82,6 +82,7 @@ describe('git mutation phase 1 parity', () => {
     const { checkMergeStatus } = await import('./git-mutation-ops.js');
 
     await expect(checkMergeStatus('/repo/.worktrees/task')).resolves.toEqual({
+      base_branch: 'main',
       conflicting_files: [],
       current_branch: 'feature/task',
       main_ahead_count: 0,
@@ -113,6 +114,7 @@ describe('git mutation phase 1 parity', () => {
     const { checkMergeStatus } = await import('./git-mutation-ops.js');
 
     await expect(checkMergeStatus('/repo/.worktrees/task', 'release/main')).resolves.toEqual({
+      base_branch: 'release/main',
       conflicting_files: [],
       current_branch: 'feature/task',
       main_ahead_count: 2,

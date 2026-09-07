@@ -104,12 +104,18 @@ export async function checkMergeStatus(
     await detectMainBranch(worktreePath, baseBranch),
   );
   if (!exists) throw new Error(`Base branch "${baseBranch ?? mainBranch}" is unavailable.`);
+  const baseBranchLabel = mainBranch.replace(/^refs\/(?:heads|remotes)\//, '');
   const currentBranch = await getCurrentBranchOrNull(worktreePath);
 
   const mainAheadCount = await countBaseBranchCommitsAhead(worktreePath, mainBranch);
 
   if (mainAheadCount === 0) {
-    return { current_branch: currentBranch, main_ahead_count: 0, conflicting_files: [] };
+    return {
+      base_branch: baseBranchLabel,
+      current_branch: currentBranch,
+      main_ahead_count: 0,
+      conflicting_files: [],
+    };
   }
 
   const conflictingFiles: string[] = [];
@@ -125,6 +131,7 @@ export async function checkMergeStatus(
   }
 
   return {
+    base_branch: baseBranchLabel,
     current_branch: currentBranch,
     main_ahead_count: mainAheadCount,
     conflicting_files: conflictingFiles,

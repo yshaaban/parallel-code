@@ -424,7 +424,134 @@ describe('task convergence state', () => {
 
     expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
       state: 'needs-refresh',
-      summary: "Worktree is on 'feature/other-branch', expected 'feature/task-1'",
+      reviewReason: 'branch-mismatch',
+      currentBranch: 'feature/other-branch',
     });
+  });
+
+  it.each([
+    {
+      currentBranch: null,
+      conflicts: ['src/conflict.ts'],
+      ahead: 3,
+      state: 'needs-refresh',
+      reason: 'detached-head',
+    },
+    {
+      currentBranch: 'feature/other',
+      conflicts: ['src/conflict.ts'],
+      ahead: 3,
+      state: 'needs-refresh',
+      reason: 'branch-mismatch',
+    },
+    {
+      currentBranch: 'feature/task-1',
+      conflicts: ['src/conflict.ts'],
+      ahead: 3,
+      state: 'merge-blocked',
+      reason: 'conflicts',
+    },
+    {
+      currentBranch: 'feature/task-1',
+      conflicts: [],
+      ahead: 3,
+      state: 'needs-refresh',
+      reason: 'behind-base',
+    },
+  ])(
+    'preserves readiness precedence and explains $reason against the resolved custom base',
+    async ({ currentBranch, conflicts, ahead, state, reason }) => {
+      registerTaskConvergenceTask({
+        baseBranch: 'release/platform',
+        branchName: 'feature/task-1',
+        projectId: 'project-1',
+        projectRoot: '/repo/project-1',
+        taskId: 'task-1',
+        taskName: 'Task one',
+        worktreePath: '/tmp/task-1',
+      });
+      mockTaskGitData('/tmp/task-1', 'feature/task-1', 'src/shared.ts', 'src/one.ts');
+      getWorktreeStatusMock.mockResolvedValue({
+        has_committed_changes: true,
+        has_uncommitted_changes: true,
+      });
+      checkMergeStatusMock.mockResolvedValue({
+        base_branch: 'upstream/release/platform',
+        current_branch: currentBranch,
+        conflicting_files: conflicts,
+        main_ahead_count: ahead,
+      });
+
+      await refreshTaskConvergence('task-1');
+
+      const snapshot = getTaskConvergenceSnapshot('task-1');
+      expect(snapshot).toMatchObject({
+        state,
+        reviewReason: reason,
+        baseBranch: 'upstream/release/platform',
+        currentBranch,
+        mainAheadCount: ahead,
+        conflictingFiles: conflicts,
+        hasUncommittedChanges: true,
+      });
+      if (reason === 'behind-base' || reason === 'conflicts') {
+        expect(snapshot?.summary).toContain('upstream/release/platform');
+        expect(snapshot?.summary).not.toMatch(/\bmain\b/i);
+      }
+    },
+  );
+
+  it('publishes a changed resolved base even when the numeric review facts are unchanged', async () => {
+    registerTaskConvergenceTask({
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+    mockTaskGitData('/tmp/task-1', 'feature/task-1', 'src/shared.ts', 'src/one.ts');
+    const events: unknown[] = [];
+    const unsubscribe = subscribeTaskConvergence((event) => events.push(event));
+    checkMergeStatusMock.mockResolvedValue({
+      base_branch: 'trunk',
+      current_branch: 'feature/task-1',
+      main_ahead_count: 0,
+      conflicting_files: [],
+    });
+    await refreshTaskConvergence('task-1');
+    events.length = 0;
+    checkMergeStatusMock.mockResolvedValue({
+      base_branch: 'upstream/platform',
+      current_branch: 'feature/task-1',
+      main_ahead_count: 0,
+      conflicting_files: [],
+    });
+    await refreshTaskConvergence('task-1');
+    unsubscribe();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ state: 'review-ready', baseBranch: 'upstream/platform' });
+  });
+
+  it('keeps an unavailable configured base distinct from a branch that needs an update', async () => {
+    registerTaskConvergenceTask({
+      baseBranch: 'release/missing',
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+    mockTaskGitData('/tmp/task-1', 'feature/task-1', 'src/shared.ts', 'src/one.ts');
+    checkMergeStatusMock.mockRejectedValue(new Error('Base branch is unavailable'));
+    await refreshTaskConvergence('task-1');
+    const snapshot = getTaskConvergenceSnapshot('task-1');
+    expect(snapshot).toMatchObject({
+      baseBranch: 'release/missing',
+      state: 'unavailable',
+      summary: 'Review data unavailable',
+    });
+    expect(snapshot?.reviewReason).toBeUndefined();
   });
 });

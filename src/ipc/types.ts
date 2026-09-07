@@ -159,6 +159,7 @@ export interface ProjectDiffResult {
 }
 
 export interface MergeStatus {
+  base_branch?: string;
   current_branch: string | null;
   main_ahead_count: number;
   conflicting_files: string[];

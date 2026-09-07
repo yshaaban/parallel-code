@@ -8,6 +8,7 @@ import {
 import { requestTerminalPrewarm } from '../app/terminal-prewarm';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
+import { getTaskReviewPresentation } from '../domain/task-convergence';
 import { isTerminalTask } from '../domain/task-mode';
 import type { AgentDef } from '../ipc/types';
 import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
@@ -29,10 +30,7 @@ import { TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { isCurrentBranchTask } from '../store/task-git-isolation';
-import {
-  getTaskReviewBadgeColor,
-  getTaskReviewBadgeLabelForState,
-} from './task-review-presentation';
+import { getTaskReviewBadgeColor } from './task-review-presentation';
 import { ProjectRootBadge } from './TaskContextBadges';
 
 interface SidebarTaskRowProps {
@@ -61,6 +59,7 @@ interface InlineAttentionIndicatorProps {
 interface TaskReviewBadgeState {
   color: string;
   label: string;
+  description: string;
 }
 
 interface TaskTerminalStartupBadgeState {
@@ -185,7 +184,8 @@ function getTaskReviewBadgeState(taskId: string): TaskReviewBadgeState | null {
     return null;
   }
 
-  const label = getTaskReviewBadgeLabelForState(snapshot.state);
+  const presentation = getTaskReviewPresentation(snapshot);
+  const label = presentation.badgeLabel;
   if (!label) {
     return null;
   }
@@ -193,6 +193,7 @@ function getTaskReviewBadgeState(taskId: string): TaskReviewBadgeState | null {
   return {
     color: getTaskReviewBadgeColor(snapshot.state),
     label,
+    description: presentation.summary ? `${label}: ${presentation.summary}` : label,
   };
 }
 
@@ -204,8 +205,8 @@ function TaskReviewBadge(props: { taskId: string }): JSX.Element {
       {(currentBadge) => (
         <span
           role="status"
-          aria-label={currentBadge().label}
-          title={currentBadge().label}
+          aria-label={currentBadge().description}
+          title={currentBadge().description}
           style={{
             display: 'inline-flex',
             'align-items': 'center',
