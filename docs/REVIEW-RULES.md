@@ -65,6 +65,19 @@ product frustration / owner / validation / browser-lane fields in the notes.
 Do not review a port only by comparing file shape to upstream. Review whether the behavior landed
 in the correct local owner.
 
+## Missing History and Recovery Review
+
+An active migration marker does not prove every canonical object has its corresponding owner
+record. Review first cutover and already-active upgrades separately. Repair must validate exact
+identity, preserve valid records, and commit coupled canonical/private state atomically. Missing
+history is not evidence that no external effect occurred: represent uncertainty explicitly and
+preserve outstanding user confirmation across restart instead of downgrading it to a safe retry.
+
+When adding controls inside an interactive terminal, review capture-phase keyboard handlers as
+well as the control's own handler. Enter, Space, Tab, and IME input on a focused control must not
+enter the PTY's early-input buffer while the terminal is attaching or restoring. Recovery must
+also preserve focus on those controls instead of redirecting their next keystroke to the PTY.
+
 ## Authored Dialog Review Checklist
 
 When a modal contains costly user-authored text, explicitly verify:
@@ -75,6 +88,8 @@ When a modal contains costly user-authored text, explicitly verify:
   admission policy instead of mutating visibility independently
 - nested confirmation Escape keeps the underlying form intact and restores a useful connected edit
   target; destructive confirmation does not receive default focus
+- opening a modal moves focus inside it without overriding a child's deliberate autofocus;
+  verify Escape from the actual focused element, including when opened from a terminal
 - successful submit has one named bypass after validation, while synchronous validation failure
   returns to the guarded editing state
 - discard copy is generic and never logs, persists, announces, or interpolates the authored text

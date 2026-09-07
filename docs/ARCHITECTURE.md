@@ -230,7 +230,11 @@ Two current ownership splits matter in review:
   `src/store/task-steps.ts` stores backend snapshots; `src/app/task-steps.ts` owns prompt seeding,
   full-snapshot fetch, next-action prefill, and focus/jump behavior; and
   `src/components/task-panel/TaskStepsSection.tsx` is presentation only behind
-  `src/components/task-panel/task-panel-steps-controller.tsx`. Persisted `Task` state carries only
+  `src/components/task-panel/task-panel-steps-controller.tsx`. The optional Steps view loads only
+  for tracked tasks, with loading/error containment inside its stable panel. The controller remains
+  eager and bounds requests by task and summary revision: a newer in-flight revision gets one
+  follow-up, unchanged failures do not self-retry, and explicit task revisit permits another attempt.
+  Persisted `Task` state carries only
   `stepsTracking`; full step history stays in the worktree file and backend projections rather than
   renderer persistence or client-session state
 - task/project workflow entry points now live in app owners:
@@ -268,10 +272,11 @@ Two current ownership splits matter in review:
   `src/components/TaskPanel.tsx` branches section composition once so terminal tasks never mount AI
   terminal, prompt, permission, or coordinator surfaces. The first terminal-task shell explicitly
   owns task watcher restart after restore; ordinary secondary shells do not restart shared watchers
-- canonical publication can precede initial shell admission. Managed shell attachment joins only
-  the exact in-flight creation operation, outside the shell queue needed by that creator, then
-  revalidates canonical ownership. Persisted-only or ambiguous launch records do not authorize a
-  retry or replacement process
+- canonical publication can precede initial session admission. Managed agent and shell attachment
+  join only the exact in-flight creation operation, outside the session operation queue needed by
+  that creator, then revalidate canonical ownership, collapse, and admission. Agent attachment joins
+  only while its original PTY is absent; existing live agents do not wait for creation completion.
+  Persisted-only or ambiguous launch records do not authorize a retry or replacement process
 - collapse persists a canonical visibility barrier, closes and drains task-scoped spawn admission,
   and asks both session owners to stop and retain exact next-generation permits. Reopen retries any
   retained suspension before making the task active. Hydration keeps canonical IDs while omitting
@@ -411,6 +416,12 @@ Two current ownership splits matter in review:
   `terminalFitManager` may yield non-critical stabilization while another terminal is typing, but
   they must still allow resize/correctness-critical work through instead of letting latency mode
   create stale geometry bugs
+- temporary terminal maximize is renderer-local presentation owned by the mounted
+  `TerminalMaximizeControl` inside `TerminalView`. Exactly one existing surface covers the viewport;
+  neither the surface nor its terminal session is recreated or reparented. Temporary ancestor
+  attributes release CSS containment only while maximized, and disposal or restore removes them.
+  Existing resize/focus paths remain authoritative. Maximize does not persist task layout, collapse
+  tasks, or acquire control. Dialogs and terminal search retain Escape precedence.
 - transitional lifecycle states must remain owner-backed. Browser/runtime/presentation code may
   project `reconnecting`, `restoring`, read-only, or flow-control states, but those projections
   must not outrun the backend/runtime owner that will clear them, and they need deterministic test
@@ -708,12 +719,16 @@ panel summary, and post-merge sibling refreshes all use one model.
 The closed-domain metadata for review state now lives with that domain:
 
 - `src/domain/task-convergence.ts` owns labels, queue grouping, queue ordering, and review-state
-  tone metadata
+  tone metadata, including the presentation of typed readiness reasons and actual base-branch facts
 - `src/components/task-review-presentation.ts` translates those shared tone decisions into theme
   colors for desktop presentation
 
 This keeps queue policy, sidebar badges, and review panel summary color/label behavior aligned when
-new review states are added.
+new review states are added. The backend supplies semantic reasons rather than requiring clients
+to parse summary prose. Older cached snapshots remain readable without guessing a branch name or
+presenting `needs-refresh` as a loading operation.
+Convergence explanations apply to shared project-root checkouts as well as isolated tasks;
+a recorded branch name does not authorize switching or updating that checkout.
 
 Another shared workflow boundary is task closing:
 
@@ -1711,8 +1726,10 @@ next process, `available -> restoring -> restored` (D11) and `pending -> spawnin
 monotonically and a consumed permit is never recreated by renderer reconnect.
 
 Initial prompts use the same composition boundary. `electron/ipc/task-initial-prompt-runtime.ts`
-owns the durable draft/delivery/manual-send state and removal hooks. Managed task creation queues the
-delivery against the allocated agent generation, and `InitialPromptDeliveryControl` is a lazy
+owns the durable draft/delivery/manual-send state and removal hooks. Managed task creation tracks the
+canonical prompt after task commit and before initial process launch. A failed launch retains its
+waiting-session record; unavailable tracking cannot be bypassed by spawning first. Delivery then
+binds to the admitted agent generation, and `InitialPromptDeliveryControl` is a lazy
 renderer projection/editor rather than a second delivery owner. Automatic/manual writes and draft
 clearing occur only through the backend owner after the matching removal cutover epoch is active.
 Supervision events wake this owner but do not solely drive it: a bounded safety observation polls
@@ -1725,6 +1742,12 @@ runtime timer, owns expiry; it can settle missing-runtime `writing`, `retry-wait
 five-second post-acceptance verification states, release the command lease, and retry a failed lease
 release. Runtime observation serializes those core turns, uses the same injected clock, and rearms
 nonterminal work after typed unavailability or thrown persistence/projection work.
+Activation also repairs exact canonical legacy prompt identities that lack a journal record,
+including workspaces whose protection cutover is already active. The persistence owner commits
+manual-only canonical mode and a sealed recovery record atomically, before runtime admission.
+Unknown prior delivery is an explicit durable fact, not a fabricated write attempt. Valid records
+are never replaced; mismatched identities fail closed. Recovery does not authorize automatic replay,
+and manual admission still requires the existing inspection/confirmation protocol.
 Projection fanout has one runtime-owned pending obligation per delivery. A thrown or temporarily
 null projection keeps that obligation dirty, and a later safety turn retries it even when durable
 status did not change. With no listeners the obligation is complete because subscribers bootstrap
@@ -1733,6 +1756,8 @@ Manual takeover persists the automation seal before releasing the automatic comm
 automatic and manual leases remain retained until release succeeds; same-delivery replays retry
 that release inside the delivery serializer before they may resume or return a durable result, so a
 concurrent replay cannot revoke control from an in-flight manual write.
+A durable pending manual-send confirmation survives backend restart unchanged: it is not a failed
+write attempt and cannot become a confirmation-free retry.
 The production persistence repository owns the atomic cross-record mutations: revising a draft
 also advances its journal edit high-water, while clearing an accepted draft also seals and compacts
 that high-water. The service never repeats those writes from a stale pre-mutation record; it reloads

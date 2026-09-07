@@ -507,6 +507,12 @@ Use this split:
   - the scripted browser terminal matrix when terminal runtime behavior changed
   - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
     changed
+  - temporary terminal maximize must prove viewport coverage, fitted terminal rows, and restore
+    through the real browser,
+    retaining the same terminal DOM node, session identity, input and history. Cover agent and shell
+    surfaces, read-only control, repeated maximize/restore, target removal, and Escape precedence
+    for dialogs, search and IME. Dialog proof must dispatch from the actual focused element rather
+    than directly to document. No remount, process restart, or lease takeover is a valid substitute
   - the deterministic render-stress case in `tests/browser/terminal-render-stress.spec.ts`
   - the real Docker integration lane for task-container runtime work:
     - `npm run test:node:docker:integration`
@@ -1152,7 +1158,10 @@ Edge cases that are easy to miss:
   channel and create no process. Repeat the clean cycle to prove generation high-water advances,
   and exercise the canonical pre-journal migration once without turning later absence into another
   initial launch. Exact attach tests must also prove task/session/classification metadata is
-  immutable on both success and mismatch
+  immutable on both success and mismatch. Pause original creation after canonical publication,
+  attach before its PTY exists, and finish that same launch: agent and shell attachment must join
+  only the matching live operation without starting another process. Revalidate identity and
+  removal/collapse admission after the wait; failed or persisted-only launches remain fail-closed
 - browser scratch-shell attachment must cross initial creation, cleared creation intent, and reload
   of the same live process. Prove transport identity overrides forged body fields, authenticated
   observers attach without spawning, resizing, or transferring control, task/session/generation
@@ -1175,6 +1184,15 @@ Edge cases that are easy to miss:
   another status change, exact-once lease release with a rejected first release, and corrupt durable records
   (timestamps, deadline pairs, generation-scoped candidates, fingerprints, attempts/write intent,
   and sealed-state consistency)
+- legacy initial-prompt recovery must cross both first cutover and an already-active cutover with
+  canonical legacy IDs but missing journal records. Prove exact identity/fingerprint checks,
+  atomic repair, restart idempotency, unchanged valid records, removal fencing, and zero automatic
+  byte admissions. Unknown prior delivery must remain explicit through draft edits and restart;
+  zero recorded attempts is not proof that a legacy prompt was never sent. The browser companion
+  must preserve the visible draft across reload and require explicit manual confirmation.
+  Fresh creation must establish tracking after canonical commit but before process launch, preserve
+  it when launch fails, and avoid spawning when tracking rejects or throws. Exact creation replay
+  cannot enqueue or launch again, and rejected flights must not leak cleanup-promise rejections.
 - manual initial-prompt takeover tests must prove seal persistence precedes automatic-lease release,
   a rejected release resumes the same sealed operation without another automatic write, and a
   rejected manual-lease release is retried before replay without reacquisition or readmission. A

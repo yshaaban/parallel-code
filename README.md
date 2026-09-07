@@ -103,7 +103,15 @@ Parallel Code treats task supervision as backend-owned state. If an agent is wai
 
 ### Inline review signals — know what is ready to merge next
 
-Parallel Code derives a convergence model from branch diffs, merge status, and worktree status. Sidebar task rows show compact review signals for tasks that are ready to review, need refresh because main moved ahead, or have blocking uncommitted changes.
+Parallel Code derives review readiness from branch diffs, merge status, and worktree status. Sidebar task rows distinguish commits behind the project's actual base branch, branch changes, detached HEAD, conflicts, and uncommitted work. Hover the status or open the task's review details for the explanation; a behind-base badge is not a refresh spinner. Custom base branches and automatically detected main/master branches use the same rules.
+
+### Temporary terminal maximize
+
+Use the maximize control on any desktop or full-browser terminal to fill the app window, then restore it with the same control or Escape. Agent terminals, task shells, terminal-only tasks, and scratch terminals keep their running session and return to their existing layout. Open dialogs and terminal search handle Escape first. Maximize changes only your view; it does not take control from another session.
+
+### Safe recovery for older initial prompts
+
+After upgrading, an older saved initial prompt may need your review because its previous delivery was not recorded. The app preserves the draft and never automatically sends it again. Inspect the terminal before explicitly confirming a manual send; copying a draft does not send it. A temporary connection or backend failure remains a separate unavailable state.
 
 ### Keyboard-first, mouse-optional
 
@@ -242,6 +250,13 @@ Useful operational commands:
 
 ### Troubleshooting & local setup notes
 
+- **Upgrading initial-prompt recovery.** Stop the server and back up its complete state directory
+  before upgrading. Deploy matching backend and frontend assets, then reload open browser tabs.
+  Recovery adds durable prior-delivery evidence that older builds cannot read safely. If rollback
+  is necessary, stop the new server, preserve a separate copy of its upgraded state, and restore
+  the matching pre-upgrade state backup and old build. The older snapshot lacks post-upgrade
+  task/draft metadata; restoring it does not revert Git files. Do not delete individual journals
+  or replay saved prompts to repair status.
 - **Reopening older collapsed tasks.** If a saved task has already lost its original session IDs,
   reopening stops with an explicit recovery message and leaves its files unchanged. Restore a
   workspace backup containing the original IDs, or create a new task to continue. Current collapse
