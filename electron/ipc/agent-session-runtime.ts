@@ -11,6 +11,7 @@ import {
   type ManagedAgentSessionRestoreResult,
 } from '../../src/domain/agent-session-operation.js';
 import { isTaskCreationOperationLink } from '../../src/domain/task-creation-provenance.js';
+import { isTaskCreationOperationId } from '../../src/domain/task-creation-ticket.js';
 import type { AgentDef } from '../../src/ipc/types.js';
 import { buildAgentSpawnArgs, shouldResumeAgentOnSpawn } from '../../src/lib/agent-resume.js';
 import {
@@ -47,6 +48,7 @@ import {
 } from './agent-session-workflow.js';
 import type { AgentSessionWriterRuntime } from './agent-session-writer-authority.js';
 import type { HandlerContext } from './handler-context.js';
+import type { TaskCreationInitialLaunchWaiter } from './task-creation-workflow.js';
 import {
   getActiveAgentIds,
   getAgentCols,
@@ -127,6 +129,7 @@ export interface CreateProductionAgentSessionRuntimeDependencies {
   journal?: AgentSessionOperationJournal;
   privateAuthority: WorkspacePrivateMutationAuthority;
   structure: TaskStructureMutationService;
+  waitForInFlightInitialLaunch?: TaskCreationInitialLaunchWaiter['waitForInFlightInitialLaunch'];
   writer: AgentSessionWriterRuntime;
 }
 
@@ -1166,17 +1169,56 @@ export function createProductionAgentSessionRuntime(
         reason: lifecycleState === 'ready' ? 'task-unavailable' : 'session-state-unavailable',
       };
     }
-    const canonical = await readCanonicalAgentTask(
+    let canonical = await readCanonicalAgentTask(
       dependencies.privateAuthority,
       request.taskId,
       request.agentId,
     );
     if (!canonical || canonical.task.collapsed === true)
       return { kind: 'unavailable', reason: 'task-unavailable' };
-    const marker = journal.getIdentityMarker(request.taskId, request.agentId);
+    let marker = journal.getIdentityMarker(request.taskId, request.agentId);
     const metadata = adapters.getAgentMeta(request.agentId);
     if (metadata) {
       return reconcileExistingRestore(request, marker?.cleanRestart);
+    }
+    const link = canonical.task.taskCreationOperationLink;
+    if (
+      !marker?.cleanRestart &&
+      isTaskCreationOperationLink(link) &&
+      link.kind === 'creation-v1' &&
+      isTaskCreationOperationId(link.creationOperationId) &&
+      dependencies.waitForInFlightInitialLaunch
+    ) {
+      // Publication precedes initial admission. Join only its exact live creator,
+      // outside the agent operation queue that the creator must remain free to enter.
+      await dependencies.waitForInFlightInitialLaunch({
+        creationOperationId: link.creationOperationId,
+        launchOperationId: link.launchOperationId,
+        sessionId: request.agentId,
+        taskId: request.taskId,
+      });
+      if (!restoreAdmissionOpen(request))
+        return { kind: 'unavailable', reason: 'task-unavailable' };
+      const latest = await readCanonicalAgentTask(
+        dependencies.privateAuthority,
+        request.taskId,
+        request.agentId,
+      );
+      if (!latest || latest.task.collapsed === true || !restoreAdmissionOpen(request))
+        return { kind: 'unavailable', reason: 'task-unavailable' };
+      const latestLink = latest.task.taskCreationOperationLink;
+      if (
+        !isTaskCreationOperationLink(latestLink) ||
+        latestLink.kind !== 'creation-v1' ||
+        latestLink.creationOperationId !== link.creationOperationId ||
+        latestLink.launchOperationId !== link.launchOperationId ||
+        latest.agentDef.id !== canonical.agentDef.id
+      )
+        return { kind: 'unavailable', reason: 'identity-unavailable' };
+      canonical = latest;
+      marker = journal.getIdentityMarker(request.taskId, request.agentId);
+      if (adapters.getAgentMeta(request.agentId))
+        return reconcileExistingRestore(request, marker?.cleanRestart);
     }
     const cleanRestart = marker?.cleanRestart;
     if (!cleanRestart) {

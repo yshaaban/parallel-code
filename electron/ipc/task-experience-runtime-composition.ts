@@ -391,22 +391,25 @@ export async function createProductionTaskExperienceRuntime(
     structure,
     workspace,
   });
+  let creationWorkflow: ActiveTaskCreationWorkflow | undefined;
+  const waitForInFlightInitialLaunch: ActiveTaskCreationWorkflow['waitForInFlightInitialLaunch'] =
+    async (request) => {
+      if (!creationWorkflow) throw new Error('Task creation runtime is not active');
+      await creationWorkflow.waitForInFlightInitialLaunch(request);
+    };
   const agentSession = createProductionAgentSessionRuntime({
     context: dependencies.context,
     privateAuthority,
     structure,
+    waitForInFlightInitialLaunch,
     writer,
   });
-  let creationWorkflow: ActiveTaskCreationWorkflow | undefined;
   const shell = createProductionTaskShellSessionRuntime({
     catalog: dependencies.catalog,
     context: dependencies.context,
     creationJournal,
     privateAuthority,
-    waitForInFlightInitialLaunch: async (request) => {
-      if (!creationWorkflow) throw new Error('Task creation runtime is not active');
-      await creationWorkflow.waitForInFlightInitialLaunch(request);
-    },
+    waitForInFlightInitialLaunch,
     removalGate: structure.createTaskRemovalParticipantGate(
       'task-runtime',
       TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION,

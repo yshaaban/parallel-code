@@ -10,6 +10,7 @@ import { createProductionAgentSessionRuntime } from './agent-session-runtime.js'
 import { createAgentSessionWriterRuntime } from './agent-session-writer-authority.js';
 import type { HandlerContext } from './handler-context.js';
 import { createTaskCollapseWorkflow } from './task-collapse-workflow.js';
+import type { TaskCreationInitialLaunchWaiter } from './task-creation-workflow.js';
 import type { TaskStructureMutationService } from './task-structure-mutations.js';
 import type { WorkspacePrivateMutationAuthority } from './workspace-state-mutations.js';
 import type { JsonObject } from './workspace-state-storage.js';
@@ -17,6 +18,7 @@ import type { JsonObject } from './workspace-state-storage.js';
 const TASK_ID = 'task-1';
 const AGENT_ID = 'agent-1';
 const CUTOVER_EPOCH = 'cutover-1';
+const CREATION_ID = 'AAAAAAAAAAAAAAAAAAAAAA';
 const AGENT_DEF: AgentDef = {
   args: [],
   command: 'codex',
@@ -43,7 +45,11 @@ function cleanMarker(sourceGeneration: number): AgentSessionIdentityMarker {
   };
 }
 
-function createHarness(options: { initialGeneration?: number; preOperation?: boolean }) {
+function createHarness(options: {
+  initialGeneration?: number;
+  preOperation?: boolean;
+  waitForInFlightInitialLaunch?: TaskCreationInitialLaunchWaiter['waitForInFlightInitialLaunch'];
+}) {
   let metadata =
     options.initialGeneration === undefined
       ? null
@@ -62,7 +68,7 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
     taskCreationOperationLink: options.preOperation
       ? { kind: 'pre-operation-journal', migrationSchemaVersion: 1 }
       : {
-          creationOperationId: 'creation-1',
+          creationOperationId: CREATION_ID,
           kind: 'creation-v1',
           launchOperationId: 'launch-1',
         },
@@ -117,7 +123,7 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
       kind: 'active' as const,
       schemaVersion: 1 as const,
     }),
-    isTaskMutationAdmissionClosed: () => false,
+    isTaskMutationAdmissionClosed: () => current.taskClosing,
   } as unknown as TaskStructureMutationService;
   const journal = createMemoryAgentSessionOperationJournal();
   const writer = createAgentSessionWriterRuntime({
@@ -162,6 +168,7 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
     journal,
     privateAuthority,
     structure,
+    waitForInFlightInitialLaunch: options.waitForInFlightInitialLaunch,
     writer,
   });
   const originalSaveIdentityMarkers = journal.saveIdentityMarkers.bind(journal);
@@ -187,11 +194,124 @@ function createHarness(options: { initialGeneration?: number; preOperation?: boo
     spawnAllocated,
     stopAgent,
     structure,
+    setTaskClosing(closing: boolean) {
+      current.taskClosing = closing;
+    },
     verifyCommittedRemoval: gate.verifyCommittedRemoval,
   };
 }
 
 describe('managed agent clean restart', () => {
+  it('attaches an already-live exact process without waiting for creation completion', async () => {
+    const waitForInFlightInitialLaunch = vi.fn(async () => {
+      throw new Error('must not join live process');
+    });
+    const harness = createHarness({ initialGeneration: 0, waitForInFlightInitialLaunch });
+    await harness.runtime.startup();
+    expect(
+      await harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+    ).toMatchObject({ kind: 'existing', generation: 0 });
+    expect(waitForInFlightInitialLaunch).not.toHaveBeenCalled();
+    expect(harness.spawnAllocated).not.toHaveBeenCalled();
+    await harness.runtime.close();
+  });
+
+  it.each(['no live creation', 'failed creator', 'malformed creation link'] as const)(
+    'does not invent initial spawn authority after %s',
+    async (state) => {
+      const waitForInFlightInitialLaunch = vi.fn(async () => {
+        if (state === 'failed creator') throw new Error('creation did not launch');
+      });
+      const harness = createHarness({ waitForInFlightInitialLaunch });
+      if (state === 'malformed creation link') {
+        (
+          (harness.sharedState.tasks as JsonObject)[TASK_ID] as JsonObject
+        ).taskCreationOperationLink = {
+          kind: 'creation-v1',
+          creationOperationId: 'invalid',
+          launchOperationId: 'launch-1',
+        };
+      }
+      await harness.runtime.startup();
+      expect(
+        await harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+      ).toEqual({ kind: 'unavailable', reason: 'restore-failed' });
+      expect(harness.spawnAllocated).not.toHaveBeenCalled();
+      expect(harness.journal.getIdentityMarker(TASK_ID, AGENT_ID)).toBeNull();
+      if (state === 'malformed creation link')
+        expect(waitForInFlightInitialLaunch).not.toHaveBeenCalled();
+      await harness.runtime.close();
+    },
+  );
+
+  it.each(['collapsed', 'removed', 'closing', 'changed-link', 'changed-agent'] as const)(
+    'revalidates %s after joining a live initial creator',
+    async (change) => {
+      const waitForInFlightInitialLaunch = vi.fn(async () => {
+        const task = (harness.sharedState.tasks as JsonObject)[TASK_ID] as JsonObject;
+        if (change === 'collapsed') task.collapsed = true;
+        if (change === 'removed') harness.sharedState.tasks = {};
+        if (change === 'closing') harness.setTaskClosing(true);
+        if (change === 'changed-link')
+          task.taskCreationOperationLink = {
+            creationOperationId: CREATION_ID,
+            kind: 'creation-v1',
+            launchOperationId: 'another-launch',
+          };
+        if (change === 'changed-agent')
+          task.agentDef = { ...AGENT_DEF, id: 'another-definition' } as unknown as JsonObject;
+      });
+      const harness = createHarness({ waitForInFlightInitialLaunch });
+      await harness.runtime.startup();
+      expect(
+        await harness.runtime.restoreCanonicalSession({ agentId: AGENT_ID, taskId: TASK_ID }),
+      ).toMatchObject({ kind: 'unavailable' });
+      expect(waitForInFlightInitialLaunch).toHaveBeenCalledOnce();
+      expect(harness.spawnAllocated).not.toHaveBeenCalled();
+      expect(harness.journal.getIdentityMarker(TASK_ID, AGENT_ID)).toBeNull();
+      await harness.runtime.close();
+    },
+  );
+
+  it('joins the exact live creator before restoring a newly published agent without entering its operation queue', async () => {
+    const initialRequest = {
+      admission: {
+        committedWorkspaceRevision: 7,
+        creationOperationId: CREATION_ID,
+        kind: 'task-creation' as const,
+      },
+      agentId: AGENT_ID,
+      expectedLeaseGeneration: null,
+      expectedSourceGeneration: null,
+      launchReason: 'initial' as const,
+      mode: 'initial' as const,
+      nextAgentDefId: AGENT_DEF.id,
+      operationId: 'launch-1',
+      taskId: TASK_ID,
+    };
+    const waitForInFlightInitialLaunch = vi.fn(async () => {
+      // The creator must remain free to enter the real agent operation queue.
+      expect(await harness.runtime.workflow.execute(initialRequest)).toMatchObject({
+        kind: 'operation',
+        projection: { operation: { phase: 'running' } },
+      });
+    });
+    const harness = createHarness({ waitForInFlightInitialLaunch });
+    await harness.runtime.startup();
+    const request = { agentId: AGENT_ID, taskId: TASK_ID };
+    const first = harness.runtime.restoreCanonicalSession(request);
+    const second = harness.runtime.restoreCanonicalSession(request);
+    expect(second).toBe(first);
+    expect(await first).toMatchObject({ kind: 'existing', generation: 0 });
+    expect(waitForInFlightInitialLaunch).toHaveBeenCalledExactlyOnceWith({
+      creationOperationId: CREATION_ID,
+      launchOperationId: 'launch-1',
+      sessionId: AGENT_ID,
+      taskId: TASK_ID,
+    });
+    expect(harness.spawnAllocated).toHaveBeenCalledOnce();
+    await harness.runtime.close();
+  });
   it('retires retained and prepared shutdown proofs only after verified task removal completes', async () => {
     const harness = createHarness({ initialGeneration: 2 });
     await harness.runtime.startup();
