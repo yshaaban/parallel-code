@@ -6,6 +6,26 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Exact own enumerable string keys; duplicate expected keys count only once. */
+export function hasExactOwnEnumerableKeys(value: object, keys: readonly string[]): boolean {
+  const expected = new Set(keys);
+  return (
+    Object.keys(value).length === expected.size &&
+    Object.keys(value).every((key) => expected.has(key))
+  );
+}
+
+/** Legacy count-and-presence contract: required keys may be inherited or repeated. */
+export function hasKeyCountAndRequiredKeys(value: object, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => key in value);
+}
+
+/** Allows a subset of own enumerable string keys, without requiring the listed keys. */
+export function hasOnlyOwnEnumerableKeys(value: object, allowed: readonly string[]): boolean {
+  const keys = new Set(allowed);
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -16,6 +36,10 @@ export function isInteger(value: unknown): value is number {
 
 export function isNonNegativeInteger(value: unknown): value is number {
   return isInteger(value) && value >= 0;
+}
+
+export function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 export function isPositiveInteger(value: unknown): value is number {

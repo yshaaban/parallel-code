@@ -1,4 +1,9 @@
-import { isRecord } from '../lib/type-guards.js';
+import {
+  hasKeyCountAndRequiredKeys as hasExactKeys,
+  hasOnlyOwnEnumerableKeys as hasOnlyKeys,
+  isNonNegativeSafeInteger,
+  isRecord,
+} from '../lib/type-guards.js';
 import { isWellFormedUnicodeScalarString } from '../lib/unicode-scalar.js';
 
 export const TASK_CATALOG_ENTITY_KINDS = ['project', 'static-agent', 'task', 'session'] as const;
@@ -203,15 +208,6 @@ function encodedBytes(value: unknown): number {
   }
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const allowedKeys = new Set(allowed);
-  return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => key in value);
-}
-
 export function isTaskCatalogIdentifier(value: unknown): value is string {
   return (
     typeof value === 'string' &&
@@ -234,10 +230,6 @@ function isBoundedDisplay(value: unknown, maxEncodedBytes: number): value is str
     isWellFormedUnicodeScalarString(value) &&
     encodedBytes(value) <= maxEncodedBytes
   );
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isTaskCatalogCapability(value: unknown): value is TaskCatalogCapability {

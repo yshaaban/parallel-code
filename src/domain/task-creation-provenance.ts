@@ -1,3 +1,5 @@
+import { hasKeyCountAndRequiredKeys as hasExactKeys } from '../lib/type-guards.js';
+
 export type TaskCreationWriterEpoch = 'pre-managed-v1' | 'managed-initial-shell-v1';
 
 export interface TaskCreationProvenance {
@@ -26,11 +28,6 @@ export function isTaskCreationProvenance(value: unknown): value is TaskCreationP
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const epoch = (value as { creationWriterEpoch?: unknown }).creationWriterEpoch;
   return epoch === 'pre-managed-v1' || epoch === 'managed-initial-shell-v1';
-}
-
-function hasExactKeys(value: object, keys: readonly string[]): boolean {
-  const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => key in value);
 }
 
 function isIdentifier(value: unknown): value is string {

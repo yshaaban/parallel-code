@@ -1,4 +1,5 @@
 import { getLocalDateKey } from '../lib/date.js';
+import { hasKeyCountAndRequiredKeys as hasExactKeys, isRecord } from '../lib/type-guards.js';
 import { isWellFormedUnicodeScalarString } from '../lib/unicode-scalar.js';
 
 export const MERGE_PROGRESS_SCHEMA_VERSION = 1 as const;
@@ -188,14 +189,6 @@ const GIT_RECONCILIATION_ACTIONS = new Set<TaskMergeGitReconciliationAction>([
   'resume-identical-if-proven-no-side-effect',
   'adopt-if-proven-merged',
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => key in value);
-}
 
 function isBoundedIdentifier(value: unknown, maxBytes = 512): value is string {
   return (

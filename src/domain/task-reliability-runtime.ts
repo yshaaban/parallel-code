@@ -8,7 +8,7 @@ import {
   isAgentSessionOperationProjection,
   type AgentSessionOperationProjection,
 } from './agent-session-operation.js';
-import { isRecord } from '../lib/type-guards.js';
+import { hasExactOwnEnumerableKeys as hasExactKeys, isRecord } from '../lib/type-guards.js';
 
 export const TASK_RELIABILITY_RUNTIME_CONTRACT_VERSION = 'task-reliability-runtime-v1' as const;
 
@@ -66,14 +66,6 @@ export type TaskReliabilityRuntimeEvent =
     };
 
 const SAFE_IDENTITY = /^[A-Za-z0-9._:@-]+$/u;
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const expected = new Set(keys);
-  return (
-    Object.keys(value).length === expected.size &&
-    Object.keys(value).every((key) => expected.has(key))
-  );
-}
 
 function isSafeIdentity(value: unknown, maxLength = 512): value is string {
   return (

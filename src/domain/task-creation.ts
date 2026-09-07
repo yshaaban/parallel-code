@@ -1,5 +1,10 @@
 import type { WorktreeSymlinkWarning } from '../ipc/types.js';
-import { isRecord } from '../lib/type-guards.js';
+import {
+  hasKeyCountAndRequiredKeys as hasExactKeys,
+  hasOnlyOwnEnumerableKeys as hasOnlyKeys,
+  isNonNegativeSafeInteger,
+  isRecord,
+} from '../lib/type-guards.js';
 import { isWellFormedUnicodeScalarString } from '../lib/unicode-scalar.js';
 import {
   TASK_INITIAL_PROMPT_DRAFT_MAX_UTF8_BYTES,
@@ -541,19 +546,6 @@ const WARNING_REASONS = new Set([
   'exclude_update_failed',
   'ignore_postcondition_failed',
 ]);
-
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const keys = new Set(allowed);
-  return Object.keys(value).every((key) => keys.has(key));
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => key in value);
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;

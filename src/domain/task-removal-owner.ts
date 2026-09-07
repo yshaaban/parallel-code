@@ -1,4 +1,5 @@
 import type { TaskRemovalCurrentProjection } from './task-catalog.js';
+import { hasKeyCountAndRequiredKeys as hasExactKeys, isRecord } from '../lib/type-guards.js';
 
 export const TASK_REMOVAL_OWNER_SCHEMA_VERSION = 1 as const;
 export const TASK_RUNTIME_REMOVAL_HOOK_SET_VERSION = 'task-runtime-removal-v1' as const;
@@ -32,14 +33,6 @@ export interface TaskRemovalMutationResult {
   removed: boolean;
   removalState?: TaskRemovalState;
   taskId: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => key in value);
 }
 
 export function isTaskRemovalMutationResult(value: unknown): value is TaskRemovalMutationResult {
