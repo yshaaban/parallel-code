@@ -1,0 +1,41 @@
+[data-terminal-maximize-ancestor] {
+  transform: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  perspective: none !important;
+  contain: none !important;
+  content-visibility: visible !important;
+  will-change: auto !important;
+  overflow: visible !important;
+  clip-path: none !important;
+  isolation: auto !important;
+  z-index: auto !important;
+}
+
+[data-terminal-maximized='true'] {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0 !important;
+  background: var(--island-bg);
+  /* Workspace presentation remains below authored dialogs (1000). */
+  z-index: 900;
+}
+
+.terminal-maximize-button {
+  position: absolute;
+  right: 8px;
+  z-index: 13;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  color: var(--fg-muted);
+  background: var(--island-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}

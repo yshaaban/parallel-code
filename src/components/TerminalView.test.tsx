@@ -457,6 +457,44 @@ describe('TerminalView', () => {
     expect(sessionCleanupMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['managed-agent', 'managed-task-shell', 'compatibility-shell'] as const)(
+    'maximizes the same %s surface without rebinding, restarting, or sending input',
+    (sessionOwner) => {
+      const session = createMockTerminalSession();
+      startTerminalSessionMock.mockReturnValueOnce(session);
+      const result = render(() => (
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="node"
+          args={[]}
+          cwd="/tmp/project"
+          isShell={sessionOwner !== 'managed-agent'}
+          sessionOwner={sessionOwner}
+          isFocused
+        />
+      ));
+      const surface = result.container.querySelector('[data-terminal-agent-id]');
+      const liveSurface = result.container.querySelector('[data-terminal-live-surface]');
+      const sessionOptions = getLastSessionOptions();
+      for (let cycle = 0; cycle < 3; cycle++) {
+        fireEvent.click(result.getByRole('button', { name: 'Maximize terminal' }));
+        expect(surface?.getAttribute('data-terminal-maximized')).toBe('true');
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(surface?.hasAttribute('data-terminal-maximized')).toBe(false);
+        expect(result.container.querySelector('[data-terminal-live-surface]')).toBe(liveSurface);
+        expect(getLastSessionOptions()).toBe(sessionOptions);
+      }
+      expect(startTerminalSessionMock).toHaveBeenCalledOnce();
+      expect(sessionCleanupMock).not.toHaveBeenCalled();
+      expect(session.handleTerminalData).not.toHaveBeenCalled();
+      expect(session.requestInputTakeover).not.toHaveBeenCalled();
+      expect(session.prefetchInputLease).not.toHaveBeenCalled();
+      result.unmount();
+      expect(sessionCleanupMock).toHaveBeenCalledOnce();
+    },
+  );
+
   it('passes task watcher ownership into the loaded terminal session', () => {
     render(() => (
       <TerminalView
@@ -1138,6 +1176,68 @@ describe('TerminalView', () => {
     expect(session.handleTerminalData).toHaveBeenCalledWith('\r');
   });
 
+  it.each(['Enter', ' ', 'Tab'])(
+    'keeps %s available to the maximize button while the terminal is restoring',
+    (key) => {
+      setStore('activeTaskId', 'task-1');
+      const result = render(() => (
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused
+        />
+      ));
+      const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+      getLastStatusChangeHandler()?.('restoring');
+      const button = result.getByRole('button', { name: 'Maximize terminal' });
+      button.focus();
+      const keyDown = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      button.dispatchEvent(keyDown);
+
+      expect(keyDown.defaultPrevented).toBe(false);
+      expect(session.handleTerminalData).not.toHaveBeenCalled();
+      fireEvent.click(button);
+      expect(result.container.querySelector('[data-terminal-maximized="true"]')).not.toBeNull();
+    },
+  );
+
+  it.each(['button', 'a', 'div'])(
+    'keeps nested %s control activation out of the restoring input queue',
+    (tagName) => {
+      setStore('activeTaskId', 'task-1');
+      const result = render(() => (
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused
+        />
+      ));
+      const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+      getLastStatusChangeHandler()?.('restoring');
+      const control = document.createElement(tagName);
+      if (tagName === 'a') control.setAttribute('href', '#details');
+      if (tagName === 'div') control.setAttribute('role', 'button');
+      const icon = document.createElement('span');
+      control.append(icon);
+      result.container.querySelector('[data-terminal-agent-id="agent-1"]')?.append(control);
+      const keyDown = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      });
+      icon.dispatchEvent(keyDown);
+
+      expect(keyDown.defaultPrevented).toBe(false);
+      expect(session.handleTerminalData).not.toHaveBeenCalled();
+    },
+  );
+
   it('captures TUI navigation keys for buffering while the focused terminal is restoring', () => {
     setStore('activeTaskId', 'task-1');
     const result = render(() => (
@@ -1793,16 +1893,23 @@ describe('TerminalView', () => {
     hasFocusSpy.mockRestore();
   });
 
-  it.each(['input', 'textarea', 'select', 'contenteditable'])(
+  it.each(['input', 'textarea', 'select', 'contenteditable', 'button', 'link', 'aria-button'])(
     'preserves a focused %s during recovery even when terminal intent is stale',
     async (kind) => {
       const session = createMockTerminalSession();
       startTerminalSessionMock.mockReturnValueOnce(session);
       const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
       const [focused, setFocused] = createSignal(true);
-      const editor = document.createElement(kind === 'contenteditable' ? 'div' : kind);
+      const editor = document.createElement(
+        kind === 'contenteditable' || kind === 'aria-button' ? 'div' : kind === 'link' ? 'a' : kind,
+      );
       if (kind === 'contenteditable') {
         editor.setAttribute('contenteditable', 'true');
+        editor.tabIndex = 0;
+      }
+      if (kind === 'link') editor.setAttribute('href', '#details');
+      if (kind === 'aria-button') {
+        editor.setAttribute('role', 'button');
         editor.tabIndex = 0;
       }
       document.body.append(editor);
@@ -1834,6 +1941,59 @@ describe('TerminalView', () => {
         expect(session.term.focus).toHaveBeenCalledTimes(1);
       } finally {
         editor.remove();
+        hasFocusSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(['recovery', 'panel activation'])(
+    'retains the actual maximize button focus through %s before control activation',
+    async (transition) => {
+      const session = createMockTerminalSession();
+      startTerminalSessionMock.mockReturnValueOnce(session);
+      const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const [focused, setFocused] = createSignal(transition === 'recovery');
+      setStore('activeTaskId', 'task-1');
+      try {
+        const result = render(() => (
+          <TerminalView
+            taskId="task-1"
+            agentId="agent-1"
+            command="claude"
+            args={[]}
+            cwd="/tmp/project"
+            isFocused={focused()}
+          />
+        ));
+        const input = document.createElement('textarea');
+        input.setAttribute('aria-label', 'Terminal input');
+        result.container.querySelector('[data-terminal-agent-id="agent-1"]')?.append(input);
+        session.term.focus.mockImplementation(() => input.focus());
+        getLastStatusChangeHandler()?.('ready');
+        getLastPaintReadyChangeHandler()?.(true);
+        input.focus();
+        if (transition === 'recovery') getLastStatusChangeHandler()?.('restoring');
+        const button = result.getByRole('button', { name: 'Maximize terminal' });
+        button.focus();
+        session.term.focus.mockClear();
+        getLastStatusChangeHandler()?.('ready');
+        getLastPaintReadyChangeHandler()?.(true);
+        setFocused(true);
+        await Promise.resolve();
+
+        expect(document.activeElement).toBe(button);
+        expect(session.term.focus).not.toHaveBeenCalled();
+        const enter = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        });
+        button.dispatchEvent(enter);
+        expect(enter.defaultPrevented).toBe(false);
+        fireEvent.click(button);
+        expect(result.container.querySelector('[data-terminal-maximized="true"]')).not.toBeNull();
+        expect(session.handleTerminalData).not.toHaveBeenCalled();
+      } finally {
         hasFocusSpy.mockRestore();
       }
     },

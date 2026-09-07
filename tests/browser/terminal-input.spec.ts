@@ -3,6 +3,7 @@ import { stripAnsi } from '../../src/lib/prompt-detection.js';
 
 import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
 import { getRendererDiagnostics } from './harness/terminal-render.js';
+import { getBrowserPrimaryFindChord } from './harness/browser-platform.js';
 import {
   getCompletedTerminalInputTraceChars,
   measureHeldKeyTrace,
@@ -14,7 +15,11 @@ import type {
   TerminalInputTraceDiagnosticsSnapshot,
   TerminalInputTraceSample,
 } from '../../src/domain/terminal-input-tracing.js';
-import { createPromptReadyScenario, createTerminalInputEchoScenario } from './harness/scenarios.js';
+import {
+  createInteractiveNodeScenario,
+  createPromptReadyScenario,
+  createTerminalInputEchoScenario,
+} from './harness/scenarios.js';
 
 const RAW_BROWSER_RAPID_RENDER_P50_MAX_MS = 5;
 const RAW_BROWSER_RAPID_RENDER_MAX_MS = 48;
@@ -141,6 +146,127 @@ async function waitForNewRunningAgentId(
   expect(agentId).toBeTruthy();
   return agentId ?? '';
 }
+
+test.describe('browser-lab terminal maximize', () => {
+  test.use({ scenario: createInteractiveNodeScenario() });
+
+  test('temporarily maximizes agent and scratch terminals without replacing or writing to sessions', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Terminal Maximize Tester',
+    });
+    await browserLab.waitForTerminalReady(page);
+    const scratchIndex = await browserLab.createShellTerminal(page);
+    const sessionMutations: string[] = [];
+    page.on('request', (entry) => {
+      if (
+        [
+          IPC.WriteToAgent,
+          IPC.SpawnAgent,
+          IPC.KillAgent,
+          IPC.AttachAgent,
+          IPC.AcquireTaskCommandLease,
+        ].some((channel) => entry.url().includes(channel))
+      ) {
+        sessionMutations.push(entry.url());
+      }
+    });
+
+    for (const terminalIndex of [0, scratchIndex]) {
+      await browserLab.focusTerminal(page, terminalIndex);
+      await browserLab.waitForTerminalInteractiveReady(page, terminalIndex);
+      const surface = page.locator('[data-terminal-agent-id]').nth(terminalIndex);
+      const agentId = await surface.getAttribute('data-terminal-agent-id');
+      if (!agentId) throw new Error('Expected the terminal to retain an exact agent identity');
+      const originalSurface = await surface.elementHandle();
+      const originalInput = await surface
+        .getByRole('textbox', { name: 'Terminal input' })
+        .elementHandle();
+      if (!originalSurface || !originalInput) throw new Error('Expected mounted terminal input');
+      const marker = `__MAXIMIZE_${terminalIndex}_DONE__`;
+      const command = terminalIndex === 0 ? `console.log('${marker}')` : `printf '${marker}\\n'`;
+      await page.keyboard.insertText(command);
+      await waitForRendererInputQueueToSettle(page);
+      sessionMutations.length = 0;
+
+      // Keyboard activation must operate the control, not send Enter to the PTY draft.
+      await surface.getByRole('button', { name: 'Maximize terminal' }).press('Enter');
+      await expect(surface).toHaveAttribute('data-terminal-maximized', 'true');
+      await browserLab.waitForTerminalInteractiveReady(page, terminalIndex);
+      await expect
+        .poll(() =>
+          surface.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            return (
+              rect.x === 0 &&
+              rect.y === 0 &&
+              Math.abs(rect.width - innerWidth) <= 1 &&
+              Math.abs(rect.height - innerHeight) <= 1
+            );
+          }),
+        )
+        .toBe(true);
+      // The usable xterm grid must resize too, not just the outer background.
+      await expect
+        .poll(() =>
+          surface.evaluate((element) => {
+            const live = element.querySelector('[data-terminal-live-surface]');
+            const screen = element.querySelector('.xterm-screen');
+            if (!live || !screen) return false;
+            const available = live.getBoundingClientRect().height;
+            const rendered = screen.getBoundingClientRect().height;
+            return rendered <= available + 1 && rendered >= available - 24;
+          }),
+        )
+        .toBe(true);
+      if (terminalIndex === 0) {
+        await test.info().attach('terminal-maximized', {
+          body: await page.screenshot(),
+          contentType: 'image/png',
+        });
+      }
+
+      await page.keyboard.press(await getBrowserPrimaryFindChord(page));
+      await expect(surface.getByRole('search')).toBeVisible();
+      await surface.getByLabel('Find in terminal').press('Escape');
+      await expect(surface.getByRole('search')).toHaveCount(0);
+      await expect(surface).toHaveAttribute('data-terminal-maximized', 'true');
+      await page.keyboard.press('F1');
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(surface).toHaveAttribute('data-terminal-maximized', 'true');
+      await page.keyboard.press('Escape');
+      await expect(surface).not.toHaveAttribute('data-terminal-maximized', 'true');
+      await browserLab.waitForTerminalInteractiveReady(page, terminalIndex);
+      await expect(surface.getByRole('textbox', { name: 'Terminal input' })).toBeFocused();
+      expect(await originalSurface.evaluate((element) => element.isConnected)).toBe(true);
+      expect(await originalInput.evaluate((element) => element === document.activeElement)).toBe(
+        true,
+      );
+      expect(sessionMutations).toEqual([]);
+      if (terminalIndex === 0) {
+        await test.info().attach('terminal-restored', {
+          body: await page.screenshot(),
+          contentType: 'image/png',
+        });
+      }
+
+      await page.keyboard.press('Enter');
+      await browserLab.waitForAgentScrollback(request, agentId, `${marker}\r\n`);
+      await surface.getByRole('button', { name: 'Maximize terminal' }).click();
+      await surface.getByRole('button', { name: 'Restore terminal' }).click();
+      await expect(surface).not.toHaveAttribute('data-terminal-maximized', 'true');
+      expect(await originalSurface.evaluate((element) => element.isConnected)).toBe(true);
+    }
+    await page.reload();
+    await browserLab.waitForTerminalReady(page);
+    await expect(page.locator('[data-terminal-maximized]')).toHaveCount(0);
+  });
+});
 
 test.describe('browser-lab terminal input latency', () => {
   test.use({

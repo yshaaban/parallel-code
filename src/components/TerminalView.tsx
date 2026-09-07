@@ -58,6 +58,7 @@ import {
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { TerminalSearchOverlay } from './TerminalSearchOverlay';
+import { TerminalMaximizeControl } from './terminal-view/TerminalMaximizeControl';
 import { createTaskControlVisualState } from './task-control-visual-state';
 import { ensureAgentSessionForDeferredTerminal } from '../app/agent-session-ensure';
 import {
@@ -952,15 +953,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     const activeElement = document.activeElement;
-    // Recovery is not a new request to leave an editor. Focus can move through Tab,
-    // browser restoration, or an editor outside a task panel while app intent lags.
+    // Recovery must respect editors and controls reached through Tab or browser restore.
+    // Focusing a control within this surface may itself update the panel focus intent.
     if (
-      !gainedFocusIntent &&
       activeElement instanceof HTMLElement &&
       !isTerminalDomFocused(shellRef) &&
-      activeElement.matches(
-        'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
-      )
+      isInteractiveControl(activeElement) &&
+      (!gainedFocusIntent || shellRef?.contains(activeElement))
     ) {
       pendingRecoveryFocusRestore = false;
       return false;
@@ -1403,11 +1402,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     );
   }
 
-  function isEditableElement(element: Element): boolean {
+  function isInteractiveControl(element: Element): boolean {
     return (
-      element.matches('input, textarea, select, [contenteditable="true"], [role="textbox"]') ||
-      element.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]') !==
-        null
+      element.closest(
+        'button, a[href], summary, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="link"], [role="textbox"]',
+      ) !== null
     );
   }
 
@@ -1432,7 +1431,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // terminal search and controls outside this surface, retain normal input.
     if (
       target instanceof Element &&
-      isEditableElement(target) &&
+      isInteractiveControl(target) &&
       !isOwnedTerminalInputElement(target)
     ) {
       return false;
@@ -2943,7 +2942,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             style={{
               position: 'absolute',
               top: searchOpen() ? '52px' : '8px',
-              right: '8px',
+              right: '44px',
               'z-index': '11',
             }}
           >
@@ -2975,7 +2974,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               position: 'absolute',
               top: searchOpen() ? '52px' : '8px',
               left: '8px',
-              right: '8px',
+              right: '44px',
               'z-index': '12',
               background: 'color-mix(in srgb, var(--island-bg) 88%, rgba(18, 22, 28, 0.18))',
             }}
@@ -2994,6 +2993,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           onQueryChange={handleSearchQueryChange}
         />
       </Show>
+      <TerminalMaximizeControl
+        surface={() => shellRef}
+        searchOpen={searchOpen()}
+        focusTerminal={() => session?.term.focus()}
+      />
       <Show when={isTerminalAnomalyMonitorEnabled() && terminalAnomalyPresentation().label}>
         {(label) => (
           <div

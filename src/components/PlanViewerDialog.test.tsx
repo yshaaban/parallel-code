@@ -56,6 +56,20 @@ vi.mock('mermaid', () => ({
 
 import { PlanViewerDialog, resetPlanViewerDialogMermaidStateForTests } from './PlanViewerDialog';
 
+function selectPlanWithGeometry(element: Element): void {
+  const selection = window.getSelection();
+  const range = document.createRange();
+  const rect = new DOMRect(0, 0, 120, 20);
+  range.selectNodeContents(element);
+  // JSDOM implements Selection but not browser Range geometry. Keep the mocked
+  // plan-selection metadata and its DOM geometry explicit in selection tests.
+  range.getBoundingClientRect = () => rect;
+  range.getClientRects = () =>
+    Object.assign([rect], { item: (index: number) => (index === 0 ? rect : null) });
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
 describe('PlanViewerDialog', () => {
   beforeEach(() => {
     vi.clearAllTimers();
@@ -381,6 +395,7 @@ describe('PlanViewerDialog', () => {
       return;
     }
 
+    selectPlanWithGeometry(planMarkdown);
     fireEvent.mouseUp(planMarkdown);
 
     const input = await screen.findByPlaceholderText('Add review comment...');
@@ -454,6 +469,7 @@ describe('PlanViewerDialog', () => {
       return;
     }
 
+    selectPlanWithGeometry(planMarkdown);
     fireEvent.mouseUp(planMarkdown);
     const input = await screen.findByPlaceholderText('Add review comment...');
     animationFrame.flush();

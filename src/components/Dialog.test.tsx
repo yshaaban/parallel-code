@@ -1,5 +1,6 @@
-import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSignal, onMount } from 'solid-js';
 import { resetDialogStackForTests } from '../lib/dialog-stack';
 import { Dialog } from './Dialog';
 
@@ -48,6 +49,51 @@ describe('Dialog', () => {
 
     expect(closeFirst).not.toHaveBeenCalled();
     expect(closeSecond).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes initial focus from terminal input so Escape reaches the dialog instead of the PTY', async () => {
+    const [open, setOpen] = createSignal(false);
+    const terminalKeys = vi.fn();
+    render(() => (
+      <>
+        <textarea
+          aria-label="Terminal input"
+          onKeyDown={(event) => {
+            terminalKeys(event.key);
+            event.stopPropagation();
+          }}
+        />
+        <Dialog open={open()} onClose={() => setOpen(false)}>
+          <h2>Help</h2>
+        </Dialog>
+      </>
+    ));
+    screen.getByRole('textbox', { name: 'Terminal input' }).focus();
+    setOpen(true);
+    const dialog = screen.getByRole('dialog');
+
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(terminalKeys).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Terminal input' })),
+    );
+  });
+
+  it("preserves a child control's explicit initial focus", () => {
+    function AutofocusInput() {
+      let input: HTMLInputElement | undefined;
+      onMount(() => input?.focus());
+      return <input ref={input} aria-label="Project name" />;
+    }
+    render(() => (
+      <Dialog open={true} onClose={vi.fn()}>
+        <AutofocusInput />
+      </Dialog>
+    ));
+
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Project name' }));
   });
 
   it('only lets the topmost dialog trap Tab focus', () => {

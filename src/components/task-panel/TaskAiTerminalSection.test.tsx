@@ -13,6 +13,7 @@ import { store, triggerFocus } from '../../store/store';
 import { TaskAiTerminalSection } from './TaskAiTerminalSection';
 import { IPC } from '../../../electron/ipc/channels';
 import { handleAgentLifecycleMessage } from '../../runtime/agent-status-sync';
+import { TerminalMaximizeControl } from '../terminal-view/TerminalMaximizeControl';
 
 const readyCallbacks = new Map<string, (focusFn: () => void) => void>();
 const { invokeMock, runManualAgentSessionActionMock, saveCurrentRuntimeStateMock } = vi.hoisted(
@@ -30,22 +31,32 @@ vi.mock('../TerminalView', () => ({
     manageTaskSwitchWindowLifecycle?: boolean;
     onReady?: (focusFn: () => void) => void;
     runnerProfile?: { provider: string };
-  }) => (
-    <div
-      tabIndex={0}
-      data-command-target={props.isCommandTarget === true ? 'true' : 'false'}
-      data-manage-switch-window={String(props.manageTaskSwitchWindowLifecycle)}
-      data-runner-provider={props.runnerProfile?.provider ?? 'host'}
-      ref={() => {
-        if (props.onReady) {
-          readyCallbacks.set(props.agentId, props.onReady);
-        }
-      }}
-    >
-      Terminal {props.agentId}
-      <input aria-label={`Queued input ${props.agentId}`} />
-    </div>
-  ),
+  }) => {
+    let surface: HTMLDivElement | undefined;
+    let input: HTMLInputElement | undefined;
+    return (
+      <div
+        tabIndex={0}
+        data-command-target={props.isCommandTarget === true ? 'true' : 'false'}
+        data-manage-switch-window={String(props.manageTaskSwitchWindowLifecycle)}
+        data-runner-provider={props.runnerProfile?.provider ?? 'host'}
+        ref={(element) => {
+          surface = element;
+          if (props.onReady) {
+            readyCallbacks.set(props.agentId, props.onReady);
+          }
+        }}
+      >
+        Terminal {props.agentId}
+        <input ref={input} aria-label={`Queued input ${props.agentId}`} />
+        <TerminalMaximizeControl
+          surface={() => surface}
+          searchOpen={false}
+          focusTerminal={() => input?.focus()}
+        />
+      </div>
+    );
+  },
 }));
 
 vi.mock('../AgentSwitchMenu', () => ({
@@ -200,6 +211,42 @@ describe('TaskAiTerminalSection', () => {
     expect(
       (screen.getByRole('textbox', { name: 'Queued input agent-1' }) as HTMLInputElement).value,
     ).toBe('');
+  });
+
+  it('selects the exact passive agent when its terminal is maximized without replacing either pane', () => {
+    const task = createTestTask({
+      agentIds: ['agent-1', 'agent-2'],
+      selectedAgentId: 'agent-1',
+      terminalLayoutMode: 'split',
+    });
+    setStore('tasks', { 'task-1': task });
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2' }),
+    });
+    render(() => (
+      <TaskAiTerminalSection isActive={() => true} onReuseLastPrompt={vi.fn()} task={() => task} />
+    ));
+    const first = screen.getByText('Terminal agent-1');
+    const second = screen.getByText('Terminal agent-2');
+    const input = screen.getByRole('textbox', { name: 'Queued input agent-2' }) as HTMLInputElement;
+    input.value = 'pending second agent input';
+    const button = second.querySelector('button');
+    if (!button) throw new Error('Expected the per-terminal maximize control');
+    fireEvent.click(button);
+    expect(store.activeAgentId).toBe('agent-2');
+    expect(second.getAttribute('data-command-target')).toBe('true');
+    expect(second.getAttribute('data-terminal-maximized')).toBe('true');
+    expect(first.getAttribute('data-command-target')).toBe('false');
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByText('Terminal agent-1')).toBe(first);
+    expect(screen.getByText('Terminal agent-2')).toBe(second);
+    expect(input.value).toBe('pending second agent input');
+    expect(document.activeElement).toBe(input);
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(runManualAgentSessionActionMock).not.toHaveBeenCalled();
   });
 
   it('lets the active agent override stale selected-agent metadata for the active task', () => {

@@ -59,6 +59,10 @@ export function Dialog(props: DialogProps): JSX.Element {
     const el = panelRef;
     if (!el) return;
 
+    // A modal owns keyboard input immediately, including when opened from xterm.
+    // Keep any child control's explicit initial focus; otherwise focus the panel.
+    if (!el.contains(document.activeElement)) el.focus();
+
     const step = 40;
     const page = 200;
     const handler = (e: KeyboardEvent) => {
