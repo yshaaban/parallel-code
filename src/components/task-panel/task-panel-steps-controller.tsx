@@ -1,4 +1,12 @@
-import { createEffect, createMemo, createSignal, type Accessor } from 'solid-js';
+import {
+  ErrorBoundary,
+  Suspense,
+  createEffect,
+  createMemo,
+  createSignal,
+  untrack,
+  type Accessor,
+} from 'solid-js';
 import type { ChangedFile } from '../../ipc/types';
 import {
   fetchTaskStepsSnapshotForTask,
@@ -10,7 +18,10 @@ import type { Task } from '../../store/types';
 import type { TaskStepEntry } from '../../domain/task-steps';
 import { isTerminalTask } from '../../domain/task-mode';
 import type { PanelChild } from '../ResizablePanel';
-import { TaskStepsSection } from './TaskStepsSection';
+import { lazyNamed } from '../../lib/lazy-named';
+
+// The optional view is cold; fetching, focus intent and stable panel sizing stay in this owner.
+const TaskStepsSection = lazyNamed(() => import('./TaskStepsSection'), 'TaskStepsSection');
 
 interface TaskPanelStepsControllerOptions {
   focusedPanel: Accessor<string | null>;
@@ -44,6 +55,8 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
   const [loading, setLoading] = createSignal(false);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [naturalHeight, setNaturalHeight] = createSignal(96);
+  let attemptedRequestKey: string | undefined;
+  let previouslyActive = false;
 
   const summary = createMemo(() => getTaskStepsSummary(options.task().id) ?? null);
   const snapshot = createMemo(() => getTaskStepsSnapshot(options.task().id) ?? null);
@@ -65,12 +78,17 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
   }
 
   createEffect(() => {
+    const active = options.isActive();
+    if (active && !previouslyActive) attemptedRequestKey = undefined;
+    previouslyActive = active;
     if (options.task().stepsTracking !== true) {
+      attemptedRequestKey = undefined;
       return;
     }
 
-    const shouldLoad = options.isActive() || options.focusedPanel() === 'steps';
+    const shouldLoad = active || options.focusedPanel() === 'steps';
     if (!shouldLoad) {
+      attemptedRequestKey = undefined;
       return;
     }
 
@@ -84,7 +102,12 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
       return;
     }
 
-    void loadTaskStepsSnapshot();
+    // Completion may admit one newer revision observed in flight, never retry the same failure.
+    if (loading()) return;
+    const requestKey = JSON.stringify([options.task().id, currentSummary?.revisionId ?? null]);
+    if (attemptedRequestKey === requestKey) return;
+    attemptedRequestKey = requestKey;
+    untrack(() => void loadTaskStepsSnapshot());
   });
 
   function handleFocusSteps(): void {
@@ -115,18 +138,26 @@ export function createTaskPanelStepsController(options: TaskPanelStepsController
       stable: true,
       requestSize: () => naturalHeight(),
       content: () => (
-        <TaskStepsSection
-          loadError={loadError}
-          loading={loading}
-          onFileClick={handleFileClick}
-          onFocusSteps={handleFocusSteps}
-          onJumpToStep={handleJumpToStep}
-          onNaturalHeight={setNaturalHeight}
-          onNextClick={isTerminalTask(options.task()) ? undefined : handleNextClick}
-          snapshot={snapshot}
-          summary={summary}
-          taskId={options.task().id}
-        />
+        <ErrorBoundary
+          fallback={
+            <div role="alert">Steps could not be loaded. Reload the page to try again.</div>
+          }
+        >
+          <Suspense fallback={<div role="status">Loading Steps…</div>}>
+            <TaskStepsSection
+              loadError={loadError}
+              loading={loading}
+              onFileClick={handleFileClick}
+              onFocusSteps={handleFocusSteps}
+              onJumpToStep={handleJumpToStep}
+              onNaturalHeight={setNaturalHeight}
+              onNextClick={isTerminalTask(options.task()) ? undefined : handleNextClick}
+              snapshot={snapshot}
+              summary={summary}
+              taskId={options.task().id}
+            />
+          </Suspense>
+        </ErrorBoundary>
       ),
     };
   });

@@ -1,8 +1,9 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import type { CreateTaskResult } from '../../src/ipc/types.js';
 import { expect, test } from './harness/fixtures.js';
-import { createPromptReadyScenario } from './harness/scenarios.js';
+import { createPersistentPromptReadyScenario } from './harness/scenarios.js';
 
-const supportedAgentScenario = createPromptReadyScenario();
+const supportedAgentScenario = createPersistentPromptReadyScenario();
 supportedAgentScenario.agentDef = {
   ...supportedAgentScenario.agentDef,
   skip_permissions_args: ['--dangerously-skip-permissions'],
@@ -11,6 +12,66 @@ supportedAgentScenario.agentDef = {
 test.use({
   scenario: supportedAgentScenario,
 });
+
+for (const failStepsLoad of [false, true]) {
+  test(`loads optional Steps on first use without disturbing terminals (chunk fails: ${failStepsLoad})`, async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Optional Steps Tester',
+    });
+    const stepsChunk = /\/TaskStepsSection-[^/]+\.js(?:\?.*)?$/;
+    expect(
+      await page.evaluate(() =>
+        performance
+          .getEntriesByType('resource')
+          .some((entry) => /\/TaskStepsSection-[^/]+\.js/.test(entry.name)),
+      ),
+    ).toBe(false);
+    if (failStepsLoad) await page.route(stepsChunk, (route) => route.abort('failed'));
+    const firstRequest = page.waitForRequest((entry) => stepsChunk.test(entry.url()));
+    const startedAt = performance.now();
+    const created = await browserLab.invokeSessionIpc<CreateTaskResult>(
+      request,
+      page,
+      IPC.CreateTask,
+      {
+        agentDefId: supportedAgentScenario.agentDef.id,
+        name: 'Optional steps proof',
+        operationId: 'browser-optional-steps',
+        projectId: browserLab.server.projectId,
+        projectRoot: browserLab.server.repoDir,
+        skipPermissions: false,
+        stepsTracking: true,
+        symlinkDirs: [],
+      },
+    );
+    await firstRequest;
+    const panel = page.locator(`[data-task-id="${created.id}"]`);
+    if (failStepsLoad) {
+      await expect(panel.getByRole('alert')).toHaveText(
+        'Steps could not be loaded. Reload the page to try again.',
+      );
+    } else {
+      await expect(panel.getByText('Steps', { exact: true })).toBeVisible();
+      await expect(panel.getByText('Waiting for the first step', { exact: true })).toBeVisible();
+      test.info().annotations.push({
+        type: 'steps-first-use',
+        description: `${(performance.now() - startedAt).toFixed(1)}ms including real task creation`,
+      });
+    }
+    await expect(panel.locator('[data-terminal-agent-id]')).toHaveAttribute(
+      'data-terminal-status',
+      'ready',
+    );
+    await expect(
+      panel.getByPlaceholder('Send a prompt... (Enter to send, Shift+Enter for newline)'),
+    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Optional steps proof' })).toBeVisible();
+  });
+}
 
 test('covers ignored-file discovery, persisted defaults, and protected New Task drafts', async ({
   browser,

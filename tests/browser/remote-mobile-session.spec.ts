@@ -171,6 +171,12 @@ test.describe('browser-lab remote mobile session flow', () => {
 
     const takeoverDialog = remotePage.getByRole('dialog', { name: 'Allow mobile takeover' });
     await expect(takeoverDialog).toBeVisible();
+    await expect(takeoverDialog).toHaveCSS('position', 'fixed');
+    await expect(remotePage.getByRole('button', { name: 'Allow', exact: true })).toBeInViewport();
+    await test.info().attach('mobile-takeover-dialog', {
+      body: await remotePage.screenshot({ animations: 'disabled' }),
+      contentType: 'image/png',
+    });
     await expect(remotePage.getByText(/Desktop Observer wants to take control/u)).toBeVisible();
     await remotePage.getByRole('button', { name: 'Allow' }).click();
 

@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from 'solid-js';
 import type { TaskCommandTakeoverRequestMessage } from '../../electron/remote/protocol';
 import { typography } from '../lib/typography';
+import './remote-task-takeover-dialog.css';
 
 interface RemoteTaskTakeoverDialogProps {
   busyRequestIds: ReadonlySet<string>;
@@ -52,19 +53,7 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
   );
 
   return (
-    <div
-      data-request-id={props.request.requestId}
-      style={{
-        padding: '18px 16px 16px',
-        background:
-          'linear-gradient(180deg, rgba(18, 24, 31, 0.98) 0%, rgba(11, 15, 20, 0.98) 100%)',
-        border: '1px solid rgba(255, 197, 105, 0.22)',
-        'border-radius': '22px',
-        display: 'grid',
-        gap: '14px',
-        'box-shadow': '0 24px 48px rgba(0, 0, 0, 0.34)',
-      }}
-    >
+    <div data-request-id={props.request.requestId} class="remote-takeover-card">
       <div style={{ display: 'grid', gap: '6px' }}>
         <div
           style={{
@@ -145,27 +134,9 @@ export function RemoteTaskTakeoverDialog(props: RemoteTaskTakeoverDialogProps): 
         role="dialog"
         aria-modal="true"
         aria-label="Allow mobile takeover requests"
-        style={{
-          position: 'fixed',
-          inset: '0',
-          display: 'flex',
-          'align-items': 'flex-end',
-          'justify-content': 'center',
-          padding: '16px 12px calc(12px + env(safe-area-inset-bottom))',
-          background: 'rgba(4, 7, 10, 0.58)',
-          'z-index': '120',
-        }}
+        class="remote-takeover-overlay"
       >
-        <div
-          style={{
-            width: 'min(100%, 420px)',
-            display: 'grid',
-            gap: '10px',
-            'max-height': 'min(75vh, 560px)',
-            overflow: 'auto',
-            animation: 'slideUp 0.24s ease-out',
-          }}
-        >
+        <div class="remote-takeover-stack">
           <Show when={props.requests.length > 1}>
             <div
               style={{

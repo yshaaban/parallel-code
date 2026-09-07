@@ -1,0 +1,29 @@
+.remote-takeover-card {
+  padding: 18px 16px 16px;
+  background: linear-gradient(180deg, rgba(18, 24, 31, 0.98) 0%, rgba(11, 15, 20, 0.98) 100%);
+  border: 1px solid rgba(255, 197, 105, 0.22);
+  border-radius: 22px;
+  display: grid;
+  gap: 14px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.34);
+}
+
+.remote-takeover-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px 12px calc(12px + env(safe-area-inset-bottom));
+  background: rgba(4, 7, 10, 0.58);
+  z-index: 120;
+}
+
+.remote-takeover-stack {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 10px;
+  max-height: min(75vh, 560px);
+  overflow: auto;
+  animation: slideUp 0.24s ease-out;
+}
