@@ -1026,7 +1026,7 @@ describe('startTerminalSession render hibernation', () => {
     expect(onAttachUnavailable).toHaveBeenLastCalledWith('attach-transport-unavailable');
     expect(onExit).not.toHaveBeenCalled();
     expect(isCompatibilityTerminalCreationPending('task-1', 'agent-1')).toBe(true);
-    expect(session.term.write).toHaveBeenCalledWith(
+    expect(session.term.write).not.toHaveBeenCalledWith(
       expect.stringContaining('The terminal connection was interrupted while attaching.'),
     );
     expect(session.term.write).not.toHaveBeenCalledWith(expect.stringContaining('response lost'));
@@ -1085,6 +1085,87 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('requests control only after an explicit retry of a blocked auxiliary-shell restore', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    invokeMock.mockResolvedValueOnce({
+      channelBound: false,
+      kind: 'unavailable',
+      reason: 'task-control-unavailable',
+      recovery: null,
+    });
+    const onAttachUnavailable = vi.fn();
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onAttachUnavailable,
+      props: createProps({ isShell: true, sessionOwner: 'compatibility-shell' }),
+    });
+
+    await flushSessionStartup(6);
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith('task-control-unavailable');
+    expect(runWithTaskCommandLeaseMock).not.toHaveBeenCalled();
+    session.retryAttach();
+    await flushSessionStartup(6);
+
+    expect(runWithTaskCommandLeaseMock).toHaveBeenCalledWith(
+      'task-1',
+      'restore a terminal',
+      expect.any(Function),
+    );
+    const requests = invokeMock.mock.calls.filter(
+      ([channel]) => channel === IPC.AttachTerminalSession,
+    );
+    expect(requests).toHaveLength(2);
+    for (const [, request] of requests) {
+      expect(request).toMatchObject({ taskId: 'task-1', agentId: 'agent-1' });
+      expect(request).not.toHaveProperty('compatibilityIntent');
+    }
+    expect(onAttachUnavailable).toHaveBeenLastCalledWith(null);
+    session.cleanup();
+  });
+
+  it.each(['peer-denied', 'unmounted'] as const)(
+    'does not dispatch a blocked auxiliary restore when control is %s',
+    async (outcome) => {
+      vi.mocked(isElectronRuntime).mockReturnValue(false);
+      invokeMock.mockResolvedValueOnce({
+        channelBound: false,
+        kind: 'unavailable',
+        reason: 'task-control-unavailable',
+        recovery: null,
+      });
+      const leaseReady = createDeferredPromise<undefined>();
+      runWithTaskCommandLeaseMock.mockImplementationOnce(
+        async (_taskId: string, _action: string, run: () => Promise<unknown>) => {
+          await leaseReady.promise;
+          return outcome === 'peer-denied' ? 'lease-skipped' : run();
+        },
+      );
+      const onAttachUnavailable = vi.fn();
+      const session = startTerminalSession({
+        containerRef: createMeasuredContainer(),
+        getOutputPriority: () => 'focused',
+        onAttachUnavailable,
+        props: createProps({ isShell: true, sessionOwner: 'compatibility-shell' }),
+      });
+      await flushSessionStartup(6);
+      session.retryAttach();
+      await flushSessionStartup(3);
+      expect(runWithTaskCommandLeaseMock).toHaveBeenCalledTimes(1);
+      if (outcome === 'unmounted') session.cleanup();
+      leaseReady.resolve(undefined);
+      await flushSessionStartup(6);
+
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.AttachTerminalSession),
+      ).toHaveLength(1);
+      if (outcome === 'peer-denied') {
+        expect(onAttachUnavailable).toHaveBeenLastCalledWith('task-control-unavailable');
+        session.cleanup();
+      }
+    },
+  );
+
   it('keeps peer-controlled browser creation pending without invoking attach', async () => {
     vi.mocked(isElectronRuntime).mockReturnValue(false);
     runWithTaskCommandLeaseMock.mockResolvedValueOnce('lease-skipped');
@@ -1107,9 +1188,8 @@ describe('startTerminalSession render hibernation', () => {
     expect(onAttachDispatched).not.toHaveBeenCalled();
     expect(onAttachSettledWithoutDispatch).toHaveBeenCalledTimes(1);
     expect(onAttachUnavailable).toHaveBeenLastCalledWith('task-control-unavailable');
-    expect(session.term.write).toHaveBeenCalledWith(
-      '\x1b[33mAnother client currently controls this task terminal. ' +
-        'Retry when task control is available.\x1b[0m\r\n',
+    expect(session.term.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('Task control is required'),
     );
     expect(isCompatibilityTerminalCreationPending('task-1', 'agent-1')).toBe(true);
     session.cleanup();
@@ -1164,7 +1244,7 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(5);
 
     expect(onAttachUnavailable).toHaveBeenLastCalledWith('attach-transport-unavailable');
-    expect(session.term.write).toHaveBeenCalledWith(
+    expect(session.term.write).not.toHaveBeenCalledWith(
       expect.stringContaining('The terminal connection was interrupted while attaching.'),
     );
     session.cleanup();

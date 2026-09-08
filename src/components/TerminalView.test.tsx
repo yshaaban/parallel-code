@@ -4683,4 +4683,29 @@ describe('TerminalView', () => {
     expect(view.queryByRole('status')).toBeNull();
     expect(startTerminalSessionMock).toHaveBeenCalledOnce();
   });
+
+  it('explains missing task control and exposes an explicit compact shell recovery action', () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    const view = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="shell-1"
+        command="sh"
+        args={[]}
+        cwd="/tmp/project"
+        isShell
+        sessionOwner="compatibility-shell"
+      />
+    ));
+    getLastAttachUnavailableHandler()?.('task-control-unavailable');
+    getLastStatusChangeHandler()?.('error');
+    expect(view.getByRole('status').textContent).toContain('Task control is required');
+    const restore = view.getByRole('button', { name: 'Restore terminal' });
+    expect(restore.classList.contains('compact-action')).toBe(true);
+    expect(session.retryAttach).not.toHaveBeenCalled();
+    fireEvent.click(restore);
+    expect(session.retryAttach).toHaveBeenCalledOnce();
+    expect(startTerminalSessionMock).toHaveBeenCalledOnce();
+  });
 });

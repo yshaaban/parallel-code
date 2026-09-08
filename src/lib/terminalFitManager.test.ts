@@ -122,6 +122,51 @@ describe('terminal fit manager', () => {
     expect(snapshot.noopSkips).toBe(0);
   });
 
+  it('forwards restored geometry even when an earlier fullscreen resize has not committed', async () => {
+    const containerState = {
+      clientHeight: 640,
+      clientWidth: 960,
+      contains: () => false,
+    };
+    const container = containerState as unknown as HTMLDivElement;
+    const terminalState = { cols: 80, rows: 24 };
+    const onResizeObserved = vi.fn();
+    const fitAddon = {
+      fit: vi.fn(),
+      proposeDimensions: vi.fn(() => ({
+        cols: Math.floor(container.clientWidth / 8),
+        rows: Math.floor(container.clientHeight / 16),
+      })),
+    } as unknown as FitAddon;
+
+    fitManagerModule.registerTerminal(
+      'terminal-uncommitted-resize',
+      container,
+      fitAddon,
+      terminalState as unknown as Terminal,
+      () => true,
+      onResizeObserved,
+    );
+    fitManagerModule.markDirty('terminal-uncommitted-resize', 'resize');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(onResizeObserved).toHaveBeenLastCalledWith({ cols: 120, rows: 40 });
+    expect(terminalState).toEqual({ cols: 80, rows: 24 });
+
+    containerState.clientWidth = 640;
+    containerState.clientHeight = 384;
+    fitManagerModule.markDirty('terminal-uncommitted-resize', 'resize');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.runOnlyPendingTimersAsync();
+    fitManagerModule.unregisterTerminal('terminal-uncommitted-resize');
+
+    expect(onResizeObserved).toHaveBeenCalledTimes(2);
+    expect(onResizeObserved).toHaveBeenLastCalledWith({ cols: 80, rows: 24 });
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+    expect(terminalState).toEqual({ cols: 80, rows: 24 });
+  });
+
   it('records explicit font invalidations without suppressing the fit', async () => {
     const container = {
       clientHeight: 240,

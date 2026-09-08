@@ -517,6 +517,8 @@ function assertExistingSessionTaskIdentity(request: { agentId: string; taskId: s
   return true;
 }
 
+class TaskSessionControlUnavailableError extends BadRequestError {}
+
 function assertTaskSessionProcessAdmission(request: {
   agentId: string;
   arenaLaunchToken?: string;
@@ -541,7 +543,7 @@ function assertTaskSessionProcessAdmission(request: {
 
   if (!isTaskCommandLeaseHeld(request.taskId, request.controllerId)) {
     const snapshot = getTaskCommandControllerSnapshot(request.taskId);
-    throw new BadRequestError(
+    throw new TaskSessionControlUnavailableError(
       snapshot.controllerId
         ? `Task is controlled by another client (${snapshot.controllerId})`
         : 'Task is controlled by another client',
@@ -1120,6 +1122,9 @@ export function createAgentIpcHandlers(
           );
         } catch (error) {
           if (channelBindingFailed) return unavailableAttachResult('channel-unavailable');
+          if (error instanceof TaskSessionControlUnavailableError) {
+            return unavailableAttachResult('task-control-unavailable');
+          }
           throw error;
         }
         if (spawnDisposition.channelBound === false) {

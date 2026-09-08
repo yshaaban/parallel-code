@@ -95,7 +95,7 @@ function flush(): void {
 
     if (entry.dirtyReasons.delete('resize') && entry.onResizeObserved) {
       const proposedGeometry = entry.fitAddon.proposeDimensions();
-      if (proposedGeometry && !isSameTerminalGeometry(proposedGeometry, entry.term)) {
+      if (proposedGeometry) {
         entry.onResizeObserved(proposedGeometry);
       }
 

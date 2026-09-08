@@ -283,6 +283,12 @@ describe('TaskShellSection', () => {
       signal: 'SIGTERM',
     });
     expect(screen.getByText('Process exited (1)')).toBeDefined();
+    const badge = screen.getByText('Process exited (1)');
+    expect(badge.style.bottom).toBe('8px');
+    expect(badge.style.top).toBe('');
+    expect(badge.closest('.shell-terminal-container')?.getAttribute('style')).toContain(
+      '--terminal-toolbar-right-inset: 44px',
+    );
 
     terminalProps?.onData?.(new TextEncoder().encode('still running\n'));
     expect(screen.queryByText('Process exited (1)')).toBeNull();

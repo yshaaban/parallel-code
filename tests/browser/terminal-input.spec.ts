@@ -148,7 +148,242 @@ async function waitForNewRunningAgentId(
 }
 
 test.describe('browser-lab terminal maximize', () => {
-  test.use({ scenario: createInteractiveNodeScenario() });
+  test.use({ deviceScaleFactor: 2, scenario: createInteractiveNodeScenario() });
+
+  test('commits fullscreen auxiliary geometry after first input acquires previously unowned control', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Unowned Auxiliary Geometry Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+    await browserLab.waitForTerminalReady(page);
+    await page.getByTitle(/^Open terminal /u).click();
+    const surface = page.locator(
+      `[data-terminal-agent-id]:not([data-terminal-agent-id="${browserLab.server.agentId}"])`,
+    );
+    await expect(surface).toHaveAttribute('data-terminal-status', 'ready');
+    const shellId = await surface.getAttribute('data-terminal-agent-id');
+    if (!shellId) throw new Error('Expected exact auxiliary shell identity');
+    await page.getByPlaceholder('Notes...').focus();
+    await expect
+      .poll(async () => {
+        const state = await browserLab.invokeIpc(request, IPC.GetTaskCommandControllers);
+        return state.controllers.some(
+          (controller) => controller.taskId === browserLab.server.taskId,
+        );
+      })
+      .toBe(false);
+    await resetRendererInputDiagnostics(page);
+    await surface.getByRole('button', { name: 'Maximize terminal' }).click();
+    await expect(surface).toHaveAttribute('data-terminal-maximized', 'true');
+    await expect
+      .poll(
+        async () =>
+          (await getRendererDiagnostics(page))?.terminalResize.commitDeferredCounts['not-live'] ??
+          0,
+      )
+      .toBeGreaterThan(0);
+    const beforeInput = await browserLab.invokeIpc(request, IPC.GetTaskCommandControllers);
+    expect(
+      beforeInput.controllers.some((controller) => controller.taskId === browserLab.server.taskId),
+    ).toBe(false);
+
+    // Fullscreen itself cannot acquire control; first real input may commit retained geometry.
+    await page.keyboard.insertText("printf '\\n__UNOWNED_AUX_GRID__ '; stty size");
+    await page.keyboard.press('Enter');
+    await expect
+      .poll(() =>
+        surface.evaluate((element) => {
+          const live = element.querySelector('[data-terminal-live-surface]');
+          const screen = element.querySelector('.xterm-screen');
+          if (!live || !screen) return false;
+          return screen.getBoundingClientRect().height >= live.getBoundingClientRect().height - 24;
+        }),
+      )
+      .toBe(true);
+    const rowHeight = await surface
+      .getByRole('textbox', { name: 'Terminal input' })
+      .evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight));
+    const screenHeight = await surface
+      .locator('.xterm-screen')
+      .evaluate((element) => element.getBoundingClientRect().height);
+    await expect
+      .poll(async () => {
+        const encoded = await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, {
+          agentId: shellId,
+        });
+        const text = stripAnsi(Buffer.from(encoded, 'base64').toString('utf8'));
+        const rows = text.match(/__UNOWNED_AUX_GRID__ (\d+) (\d+)/u)?.[1];
+        return rows ? Number(rows) * rowHeight : 0;
+      })
+      .toBeCloseTo(screenHeight, 0);
+  });
+
+  test('keeps auxiliary shell grids and PTY rows aligned through focus switches and fullscreen', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Auxiliary Shell Geometry Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+    expect(await page.evaluate(() => devicePixelRatio)).toBe(2);
+    await browserLab.waitForTerminalReady(page);
+    const auxiliary = page.locator(
+      `[data-terminal-agent-id]:not([data-terminal-agent-id="${browserLab.server.agentId}"])`,
+    );
+    for (let count = 1; count <= 2; count++) {
+      await page.getByTitle(/^Open terminal /u).click();
+      await expect(auxiliary).toHaveCount(count);
+      await expect(auxiliary.nth(count - 1)).toHaveAttribute('data-terminal-status', 'ready');
+    }
+    const shellIds = await auxiliary.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('data-terminal-agent-id')),
+    );
+    for (const [index, shellId] of shellIds.entries()) {
+      if (!shellId) throw new Error('Expected exact auxiliary shell identity');
+      const surface = page.locator(`[data-terminal-agent-id="${shellId}"]`);
+      await surface.getByRole('textbox', { name: 'Terminal input' }).focus();
+      await page.keyboard.insertText(
+        `for i in {1..120}; do printf '__AUX_${index}_ROW_%03d__\\n' "$i"; done`,
+      );
+      await page.keyboard.press('Enter');
+      await browserLab.waitForAgentScrollback(request, shellId, `__AUX_${index}_ROW_120__`);
+    }
+    const primary = page.locator(`[data-terminal-agent-id="${browserLab.server.agentId}"]`);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      for (const shellId of shellIds) {
+        if (!shellId) throw new Error('Expected exact auxiliary shell identity');
+        const surface = page.locator(`[data-terminal-agent-id="${shellId}"]`);
+        await surface.getByRole('textbox', { name: 'Terminal input' }).focus();
+        await expect(surface.locator('.xterm')).toHaveCSS('opacity', '1');
+        await expect(surface.locator('.xterm')).toHaveCSS('transition-duration', '0s');
+        await primary.getByRole('textbox', { name: 'Terminal input' }).focus();
+        await expect(surface.locator('.xterm')).toHaveCSS('opacity', '1');
+        await expect(surface.locator('.xterm')).toHaveCSS('transition-duration', '0s');
+      }
+    }
+    await test.info().attach('auxiliary-after-focus-away', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    // Real selection paints without changing output or terminal ownership.
+    const selectionScreen = auxiliary.first().locator('.xterm-screen');
+    const selectionBounds = await selectionScreen.boundingBox();
+    if (!selectionBounds) throw new Error('Expected visible auxiliary terminal screen');
+    const beforeSelection = await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, {
+      agentId: shellIds[0],
+    });
+    await page.mouse.move(selectionBounds.x + 4, selectionBounds.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(selectionBounds.x + 240, selectionBounds.y + 24, { steps: 5 });
+    await page.mouse.up();
+    await test.info().attach('auxiliary-after-selection', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    expect(
+      await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, { agentId: shellIds[0] }),
+    ).toBe(beforeSelection);
+    for (const [index, shellId] of shellIds.entries()) {
+      if (!shellId) throw new Error('Expected exact auxiliary shell identity');
+      const surface = page.locator(`[data-terminal-agent-id="${shellId}"]`);
+      await surface.getByRole('button', { name: 'Maximize terminal' }).click();
+      await expect(surface).toHaveAttribute('data-terminal-maximized', 'true');
+      await expect
+        .poll(() =>
+          surface.evaluate((element) => {
+            const live = element.querySelector('[data-terminal-live-surface]');
+            const screen = element.querySelector('.xterm-screen');
+            if (!live || !screen) return false;
+            const available = live.getBoundingClientRect().height;
+            const rendered = screen.getBoundingClientRect().height;
+            return rendered <= available + 1 && rendered >= available - 24;
+          }),
+        )
+        .toBe(true);
+      await page.keyboard.insertText(`printf '\\n__AUX_GRID_${index}__ '; stty size`);
+      await page.keyboard.press('Enter');
+      const rowHeight = await surface
+        .getByRole('textbox', { name: 'Terminal input' })
+        .evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight));
+      const screenHeight = await surface
+        .locator('.xterm-screen')
+        .evaluate((element) => element.getBoundingClientRect().height);
+      const paintGeometry = await surface.evaluate((element) => {
+        const screen = element.querySelector('.xterm-screen');
+        const input = element.querySelector('.xterm-helper-textarea');
+        if (!screen || !input) return null;
+        const screenRect = screen.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        return {
+          devicePixelRatio,
+          platform: navigator.platform,
+          screen: { width: screenRect.width, height: screenRect.height },
+          cursorInBounds:
+            inputRect.x >= screenRect.x &&
+            inputRect.y >= screenRect.y &&
+            inputRect.x < screenRect.right &&
+            inputRect.y < screenRect.bottom,
+          canvases: Array.from(screen.querySelectorAll('canvas')).map((canvas) => ({
+            width: canvas.width,
+            height: canvas.height,
+            cssWidth: canvas.getBoundingClientRect().width,
+            cssHeight: canvas.getBoundingClientRect().height,
+          })),
+        };
+      });
+      expect(paintGeometry?.devicePixelRatio).toBe(2);
+      expect(paintGeometry?.cursorInBounds).toBe(true);
+      if (paintGeometry?.canvases.length === 0) {
+        await expect(surface.locator('.xterm-rows')).toBeVisible();
+        const diagnostics = await getRendererDiagnostics(page);
+        expect(diagnostics?.terminalRenderer.acquireMisses ?? 0).toBeGreaterThan(0);
+        test.info().annotations.push({
+          type: 'environment-limitation',
+          description:
+            'Chromium used the DOM renderer for this auxiliary terminal; GPU focus corruption was not reproduced.',
+        });
+      }
+      for (const canvas of paintGeometry?.canvases ?? []) {
+        expect(canvas.width).toBeCloseTo(canvas.cssWidth * 2, 0);
+        expect(canvas.height).toBeCloseTo(canvas.cssHeight * 2, 0);
+      }
+      await test.info().attach(`auxiliary-${index}-paint-geometry`, {
+        body: JSON.stringify(paintGeometry),
+        contentType: 'application/json',
+      });
+      await expect
+        .poll(async () => {
+          const encoded = await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, {
+            agentId: shellId,
+          });
+          const text = stripAnsi(Buffer.from(encoded, 'base64').toString('utf8'));
+          const rows = text.match(new RegExp(`__AUX_GRID_${index}__ (\\d+) (\\d+)`))?.[1];
+          return rows ? Number(rows) * rowHeight : 0;
+        })
+        .toBeCloseTo(screenHeight, 0);
+      await test.info().attach(`auxiliary-${index}-fullscreen`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      });
+      await surface.getByRole('button', { name: 'Restore terminal' }).click();
+      await expect(surface).not.toHaveAttribute('data-terminal-maximized', 'true');
+      await primary.getByRole('textbox', { name: 'Terminal input' }).focus();
+    }
+  });
 
   test('temporarily maximizes agent and scratch terminals without replacing or writing to sessions', async ({
     browser,

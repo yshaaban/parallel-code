@@ -15,6 +15,89 @@ test.describe('browser-lab multiclient terminal control', () => {
     scenario: createInteractiveNodeScenario(),
   });
 
+  test('restores an absent auxiliary shell only after explicit task-control approval', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const owner = await browserLab.openSession(browser, {
+      clientId: 'shell-restore-owner',
+      displayName: 'Ivan',
+    });
+    await browserLab.waitForTerminalReady(owner.page);
+    await owner.page.getByTitle(/^Open terminal /u).click();
+    const shell = owner.page.locator(
+      `[data-terminal-agent-id]:not([data-terminal-agent-id="${browserLab.server.agentId}"])`,
+    );
+    await expect(shell).toHaveAttribute('data-terminal-status', 'ready');
+    const shellId = await shell.getAttribute('data-terminal-agent-id');
+    if (!shellId) throw new Error('Expected an exact auxiliary shell identity');
+    await expect
+      .poll(async () => {
+        const state = await browserLab.invokeIpc<{ json: string }>(request, IPC.LoadWorkspaceState);
+        const workspace = JSON.parse(state.json) as {
+          tasks: Record<string, { shellAgentIds: string[] }>;
+        };
+        return workspace.tasks[browserLab.server.taskId]?.shellAgentIds;
+      })
+      .toEqual([shellId]);
+
+    // Close/maximize controls must both remain reachable in the same shell pane.
+    const close = owner.page.getByTitle('Close terminal (Ctrl+Shift+Q)');
+    await shell.hover();
+    await close.click({ trial: true });
+    await shell.getByRole('button', { name: 'Maximize terminal' }).click();
+    await expect(shell).toHaveAttribute('data-terminal-maximized', 'true');
+    await shell.getByRole('button', { name: 'Restore terminal' }).click();
+    await shell.hover();
+    await close.click({ trial: true });
+
+    await browserLab.retainSessionTaskCommandLease(
+      request,
+      owner.page,
+      browserLab.server.taskId,
+      'inspect shell recovery',
+    );
+    await browserLab.invokeSessionIpc(request, owner.page, IPC.KillAgent, { agentId: shellId });
+    await expect
+      .poll(async () =>
+        (await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds)).includes(shellId),
+      )
+      .toBe(false);
+
+    const observer = await browserLab.openSession(browser, {
+      clientId: 'shell-restore-observer',
+      displayName: 'Sara',
+    });
+    const restoredShell = observer.page.locator(`[data-terminal-agent-id="${shellId}"]`);
+    const blocked = restoredShell.locator(
+      '[data-terminal-restore-unavailable="task-control-unavailable"]',
+    );
+    await expect(blocked).toBeVisible();
+    await expect(blocked).toContainText('Task control is required');
+    expect(
+      (await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds)).includes(shellId),
+    ).toBe(false);
+    await expect(owner.page.getByText('Allow takeover?')).toHaveCount(0);
+
+    await blocked.getByRole('button', { name: 'Restore terminal' }).click();
+    await expect(owner.page.getByText('Allow takeover?')).toBeVisible();
+    await owner.page.getByRole('button', { name: 'Keep Control' }).click();
+    await expect(blocked).toBeVisible();
+    expect(
+      (await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds)).includes(shellId),
+    ).toBe(false);
+
+    await blocked.getByRole('button', { name: 'Restore terminal' }).click();
+    await expect(owner.page.getByText('Allow takeover?')).toBeVisible();
+    await owner.page.getByRole('button', { name: 'Allow' }).click();
+    await expect(restoredShell).toHaveAttribute('data-terminal-status', 'ready');
+    await expect(restoredShell).toHaveAttribute('data-terminal-agent-id', shellId);
+    const running = await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds);
+    expect(running.filter((id) => id === shellId)).toHaveLength(1);
+    expect(running).toContain(browserLab.server.agentId);
+  });
+
   test('shows read-only ownership and hands control over after approval', async ({
     browser,
     browserLab,
@@ -201,9 +284,10 @@ test.describe('browser-lab multiclient terminal control', () => {
     browserLab,
     request,
   }) => {
+    const ownerName = 'Ivan with a long collaborator name';
     const ownerSession = await browserLab.openSession(browser, {
       clientId: 'browser-lab-owner-blocked',
-      displayName: 'Ivan',
+      displayName: ownerName,
     });
     const observerSession = await browserLab.openSession(browser, {
       clientId: 'browser-lab-observer-blocked',
@@ -212,6 +296,7 @@ test.describe('browser-lab multiclient terminal control', () => {
 
     await browserLab.waitForTerminalReady(ownerSession.page);
     await browserLab.waitForTerminalReady(observerSession.page);
+    await observerSession.page.setViewportSize({ width: 960, height: 720 });
 
     await browserLab.invokeSessionIpc(request, ownerSession.page, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
@@ -248,6 +333,40 @@ test.describe('browser-lab multiclient terminal control', () => {
       },
     );
 
+    const terminal = observerSession.page.locator(
+      `[data-terminal-agent-id="${browserLab.server.agentId}"]`,
+    );
+    const notice = terminal.locator('.task-control-notice');
+    await expect(notice.getByRole('status')).toHaveText(
+      `${ownerName} is currently typing in this terminal.`,
+    );
+    const bannerGeometry = await notice.evaluate((element) => {
+      const button = element.querySelector('button:last-child');
+      if (!button) throw new Error('Expected a takeover action in the control notice');
+      const bounds = element.getBoundingClientRect();
+      return {
+        height: bounds.height,
+        buttonHeight: button.getBoundingClientRect().height,
+        fits: element.scrollWidth <= element.clientWidth,
+        shadow: getComputedStyle(element).boxShadow,
+      };
+    });
+    expect(bannerGeometry.height).toBeLessThanOrEqual(28.5);
+    expect(bannerGeometry.buttonHeight).toBe(24);
+    expect(bannerGeometry.fits).toBe(true);
+    expect(bannerGeometry.shadow).toBe('none');
+    await test.info().attach('compact-terminal-control-notice', {
+      body: await terminal.screenshot(),
+      contentType: 'image/png',
+    });
+    await notice.getByRole('button', { name: 'Dismiss control notice' }).focus();
+    await observerSession.page.keyboard.press('Enter');
+    await expect(notice.getByRole('status')).toHaveText(`${ownerName} typing`);
+    expect(await notice.evaluate((element) => element.getBoundingClientRect().height)).toBe(
+      bannerGeometry.height,
+    );
+    await expect(notice.getByRole('button', { name: 'Take Over' })).toBeInViewport();
+
     await observerSession.page.getByRole('button', { name: /^Take Over$/u }).click();
     await expect(ownerSession.page.getByText('Allow takeover?')).toBeVisible();
     await ownerSession.page.getByRole('button', { name: 'Allow' }).click();
@@ -268,7 +387,7 @@ test.describe('browser-lab multiclient terminal control', () => {
           taskId: browserLab.server.taskId,
         },
       ]);
-    await expect(observerSession.page.getByText('Ivan typing')).toHaveCount(0);
+    await expect(observerSession.page.getByText(`${ownerName} typing`)).toHaveCount(0);
 
     const approvedMarker = 'ALLOWED_AFTER_TAKEOVER';
     await browserLab.typeInTerminal(observerSession.page, `console.log("${approvedMarker}")`);

@@ -1999,6 +1999,135 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('preserves unowned fullscreen geometry until task control is legitimately acquired', async () => {
+    let ownsInputLease = false;
+    const leaseSession = mockNextTaskCommandLeaseSession({
+      touch: vi.fn(() => ownsInputLease),
+    });
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: createTestTerminal({ cols: 80, rows: 24 }),
+    });
+
+    pipeline.handleTerminalResize(120, 40);
+    await vi.advanceTimersByTimeAsync(48);
+    await flushMicrotasks();
+
+    expect(leaseSession.acquire).not.toHaveBeenCalled();
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+    expect(pipeline.isResizeTransactionPending()).toBe(false);
+
+    ownsInputLease = true;
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'runtime-client-1',
+      taskId: 'task-1',
+      version: 1,
+    });
+    pipeline.handleControllerChange('runtime-client-1');
+    await flushMicrotasks();
+
+    expect(leaseSession.acquire).not.toHaveBeenCalled();
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        cols: 120,
+        controllerId: 'runtime-client-1',
+        rows: 40,
+        taskId: 'task-1',
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it.each([
+    { controllerId: null, flushBeforeControl: false },
+    { controllerId: null, flushBeforeControl: true },
+    { controllerId: 'peer-client', flushBeforeControl: false },
+    { controllerId: 'peer-client', flushBeforeControl: true },
+  ])(
+    'replaces deferred fullscreen geometry after restore with controller $controllerId and flushed=$flushBeforeControl',
+    async ({ controllerId, flushBeforeControl }) => {
+      let ownsInputLease = false;
+      const leaseSession = mockNextTaskCommandLeaseSession({
+        touch: vi.fn(() => ownsInputLease),
+      });
+      applyTaskCommandControllerChanged({
+        action: 'type in the terminal',
+        controllerId,
+        taskId: 'task-1',
+        version: 1,
+      });
+      const pipeline = createTerminalInputPipeline({
+        agentId: 'agent-1',
+        armInteractiveEchoFastPath: vi.fn(),
+        isDisposed: () => false,
+        isProcessExited: () => false,
+        isRestoreBlocked: () => false,
+        isSpawnFailed: () => false,
+        isSpawnReady: () => true,
+        props: {
+          agentId: 'agent-1',
+          args: [],
+          command: 'claude',
+          cwd: '/tmp/project',
+          taskId: 'task-1',
+        },
+        runtimeClientId: 'runtime-client-1',
+        taskId: 'task-1',
+        term: createTestTerminal({ cols: 80, rows: 24 }),
+      });
+
+      pipeline.handleTerminalResize(120, 40);
+      await vi.advanceTimersByTimeAsync(48);
+      pipeline.handleTerminalResize(80, 24);
+      if (flushBeforeControl) {
+        await vi.advanceTimersByTimeAsync(48);
+      }
+
+      expect(leaseSession.acquire).not.toHaveBeenCalled();
+      expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+      ownsInputLease = true;
+      applyTaskCommandControllerChanged({
+        action: 'type in the terminal',
+        controllerId: 'runtime-client-1',
+        taskId: 'task-1',
+        version: 2,
+      });
+      pipeline.handleControllerChange('runtime-client-1');
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(48);
+
+      expect(leaseSession.acquire).not.toHaveBeenCalled();
+      expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+        IPC.ResizeAgent,
+        expect.objectContaining({ cols: 80, rows: 24 }),
+      );
+
+      pipeline.cleanup();
+    },
+  );
+
   it('reports pending resize age while geometry-live resize is deferred', async () => {
     let shouldCommitResize = false;
     const pipeline = createTerminalInputPipeline({

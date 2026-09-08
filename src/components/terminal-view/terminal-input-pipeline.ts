@@ -1500,7 +1500,7 @@ export function createTerminalInputPipeline(
     if (!inputLeaseSession.touch()) {
       if (!controller || controller.controllerId !== runtimeClientId) {
         recordTerminalResizeCommitDeferred('not-live');
-        setResizeIdle();
+        preserveResizeForPeerControl(pendingResize);
         return;
       }
 
@@ -1688,7 +1688,8 @@ export function createTerminalInputPipeline(
         return;
       }
 
-      const nextResize = peerDeferredResize ?? currentGeometry;
+      const nextResize =
+        getPendingResize() ?? getInFlightResize() ?? peerDeferredResize ?? currentGeometry;
       peerDeferredResize = null;
       scheduleResize(nextResize);
       void flushPendingResize();

@@ -253,6 +253,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       overflow: 'hidden',
                       position: 'relative',
                       background: theme.taskPanelBg,
+                      '--terminal-toolbar-right-inset': '44px',
                     }}
                     onFocusIn={() => observeTaskPanelFocus(taskId, `shell:${index()}`)}
                     onClick={() => setTaskFocusedPanel(taskId, `shell:${index()}`)}
@@ -288,8 +289,8 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                         class="exit-badge"
                         style={{
                           position: 'absolute',
-                          top: '8px',
-                          right: '12px',
+                          bottom: '8px',
+                          left: '8px',
                           'z-index': '10',
                           'font-size': sf(11),
                           color: shellExits[shellId]?.exitCode === 0 ? theme.success : theme.error,

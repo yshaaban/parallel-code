@@ -1706,12 +1706,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   function markAttachUnavailable(reason: TerminalSessionAttachUnavailableReason): void {
     attachUnavailableReason = reason;
     setStatus('error');
-    const message = getTerminalRestoreUnavailableMessage(attachUnavailableReason);
-    const retryGuidance =
-      reason === 'task-control-unavailable'
-        ? 'Retry when task control is available.'
-        : 'Retry when the backend is ready.';
-    term.write(`\x1b[33m${message} ${retryGuidance}\x1b[0m\r\n`);
     options.onAttachUnavailable?.(attachUnavailableReason);
   }
 
@@ -1755,6 +1749,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   async function invokeAttachRequest(
     request: AttachTerminalSessionRequest,
+    requestTaskControl: boolean,
   ): Promise<TerminalAttachInvocation> {
     let dispatched = false;
     const dispatch = async (): Promise<TerminalAttachInvocation> => {
@@ -1768,13 +1763,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (
         browserMode &&
         sessionOwner === 'compatibility-shell' &&
-        isCompatibilityTerminalCreationPending(taskId, agentId)
+        (requestTaskControl || isCompatibilityTerminalCreationPending(taskId, agentId))
       ) {
         const result = await runWithTaskCommandLease<TerminalAttachInvocation>(
           taskId,
-          'open a terminal',
+          requestTaskControl ? 'restore a terminal' : 'open a terminal',
           () => {
-            if (disposed || !isCompatibilityTerminalCreationPending(taskId, agentId)) {
+            if (
+              disposed ||
+              (!requestTaskControl && !isCompatibilityTerminalCreationPending(taskId, agentId))
+            ) {
               return Promise.resolve({
                 kind: 'settled-without-dispatch',
                 reason: 'cancelled',
@@ -1807,7 +1805,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return value.kind === 'attached' || value.kind === 'unavailable';
   }
 
-  async function attachTerminalSession(): Promise<void> {
+  async function attachTerminalSession(requestTaskControl = false): Promise<void> {
     if (disposed || attachInFlight || spawnReady) return;
     const activeRecoveryRuntime = recoveryRuntime;
     if (!activeRecoveryRuntime) return;
@@ -1823,7 +1821,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       options.onAttachMilestone?.('attach-requested');
       let attachInvocation: Awaited<ReturnType<typeof invokeAttachRequest>>;
       try {
-        attachInvocation = await invokeAttachRequest(buildAttachRequest(activeRecoveryRuntime));
+        attachInvocation = await invokeAttachRequest(
+          buildAttachRequest(activeRecoveryRuntime),
+          requestTaskControl,
+        );
       } catch {
         if (!disposed) markAttachUnavailable('attach-transport-unavailable');
         return;
@@ -1843,11 +1844,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
       if (attachResult.kind === 'unavailable') {
         if (disposed) return;
-        attachUnavailableReason = attachResult.reason;
-        setStatus('error');
-        const message = getTerminalRestoreUnavailableMessage(attachResult.reason);
-        term.write(`\x1b[33m${message} Retry when the backend is ready.\x1b[0m\r\n`);
-        options.onAttachUnavailable?.(attachResult.reason);
+        markAttachUnavailable(attachResult.reason);
         return;
       }
 
@@ -1986,7 +1983,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     },
     retryAttach(): void {
       if (attachUnavailableReason === null || disposed) return;
-      void attachTerminalSession();
+      void attachTerminalSession(attachUnavailableReason === 'task-control-unavailable');
     },
     search: searchRuntime,
     term,

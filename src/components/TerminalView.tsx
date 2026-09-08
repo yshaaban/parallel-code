@@ -2913,8 +2913,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               position: 'absolute',
               right: '12px',
               bottom: '12px',
+              'max-width': 'calc(100% - 24px)',
               display: 'flex',
               'align-items': 'center',
+              'flex-wrap': 'wrap',
               gap: '8px',
               padding: '6px 8px',
               'border-radius': '8px',
@@ -2926,8 +2928,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             }}
           >
             <span>{getTerminalRestoreUnavailableMessage(reason())}</span>
-            <button type="button" onClick={retryUnavailableTerminalAttach}>
-              Retry restore
+            <button class="compact-action" type="button" onClick={retryUnavailableTerminalAttach}>
+              {reason() === 'task-control-unavailable' ? 'Restore terminal' : 'Retry restore'}
             </button>
           </div>
         )}
@@ -2942,7 +2944,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             style={{
               position: 'absolute',
               top: searchOpen() ? '52px' : '8px',
-              right: '44px',
+              right: 'calc(var(--terminal-toolbar-right-inset, 8px) + 36px)',
+              'max-width': 'calc(100% - var(--terminal-toolbar-right-inset, 8px) - 44px)',
               'z-index': '11',
             }}
           >
@@ -2974,7 +2977,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
               position: 'absolute',
               top: searchOpen() ? '52px' : '8px',
               left: '8px',
-              right: '44px',
+              right: 'calc(var(--terminal-toolbar-right-inset, 8px) + 36px)',
               'z-index': '12',
               background: 'color-mix(in srgb, var(--island-bg) 88%, rgba(18, 22, 28, 0.18))',
             }}

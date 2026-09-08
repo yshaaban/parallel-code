@@ -11,8 +11,7 @@ import type {
 export type TerminalViewStatus = 'binding' | 'attaching' | 'restoring' | 'ready' | 'error';
 export type TerminalSessionAttachUnavailableReason =
   | TerminalSessionUnavailableReason
-  | 'attach-transport-unavailable'
-  | 'task-control-unavailable';
+  | 'attach-transport-unavailable';
 export type { TerminalPresentationMode, TerminalPresentationModeKind };
 
 export function getTerminalRestoreUnavailableMessage(
@@ -27,7 +26,7 @@ export function getTerminalRestoreUnavailableMessage(
     'restore-failed': 'The terminal could not be restored.',
     'session-state-unavailable': 'Session restore is still starting.',
     'task-shell-restore-unavailable': 'This task terminal cannot be restored yet.',
-    'task-control-unavailable': 'Another client currently controls this task terminal.',
+    'task-control-unavailable': 'Task control is required to open or restore this terminal.',
     'task-unavailable': 'This terminal is no longer available.',
   };
   return messages[reason];

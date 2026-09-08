@@ -431,7 +431,7 @@ describe('AttachTerminalSession', () => {
       handlers[IPC.AttachTerminalSession]?.(
         buildAttachRequest({ compatibilityIntent: 'create', controllerId: 'client-1' }),
       ),
-    ).rejects.toThrow('Task is controlled by another client');
+    ).resolves.toMatchObject({ kind: 'unavailable', reason: 'task-control-unavailable' });
     expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
 
     resetTaskCommandLeasesForTest();
@@ -441,6 +441,31 @@ describe('AttachTerminalSession', () => {
         buildAttachRequest({ compatibilityIntent: 'create', controllerId: 'client-1' }),
       ),
     ).resolves.toMatchObject({ kind: 'attached' });
+  });
+
+  it('reports missing browser task control as a recoverable blocker for a canonical auxiliary shell', async () => {
+    hasAgentSessionMock.mockReturnValue(false);
+    spawnTaskAgentWorkflowMock.mockReturnValue({ channelAttached: true, kind: 'created-session' });
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    const request = buildAttachRequest({ controllerId: 'client-1' });
+
+    await expect(handlers[IPC.AttachTerminalSession]?.(request)).resolves.toMatchObject({
+      channelBound: false,
+      kind: 'unavailable',
+      reason: 'task-control-unavailable',
+      recovery: null,
+    });
+    expect(spawnTaskAgentWorkflowMock).not.toHaveBeenCalled();
+    expect(context.sendToChannel).not.toHaveBeenCalled();
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+
+    acquireTaskCommandLease('task-1', 'client-1', 'client-owner', 'restore a terminal');
+    await expect(handlers[IPC.AttachTerminalSession]?.(request)).resolves.toMatchObject({
+      kind: 'attached',
+      disposition: 'created',
+    });
+    expect(spawnTaskAgentWorkflowMock).toHaveBeenCalledTimes(1);
   });
 
   it('binds standalone creation provenance to transport identity and uses exact existing attach on reload', async () => {

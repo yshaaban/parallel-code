@@ -1,8 +1,5 @@
 import type { JSX } from 'solid-js';
 
-import { theme } from '../lib/theme';
-import { typography } from '../lib/typography';
-
 interface TaskControlBannerProps {
   busy?: boolean;
   message: string;
@@ -14,59 +11,25 @@ interface TaskControlBannerProps {
 
 export function TaskControlBanner(props: TaskControlBannerProps): JSX.Element {
   return (
-    <div
-      style={{
-        display: 'flex',
-        'align-items': 'center',
-        'justify-content': 'space-between',
-        gap: '12px',
-        padding: '10px 12px',
-        background: 'color-mix(in srgb, var(--panel-bg, transparent) 70%, rgba(0,0,0,0.22))',
-        border: `1px solid ${theme.border}`,
-        'border-radius': '10px',
-        color: theme.fg,
-        ...typography.meta,
-        'box-shadow': '0 10px 24px rgba(0, 0, 0, 0.18)',
-        ...props.style,
-      }}
-    >
-      <div style={{ ...typography.meta, flex: '1', 'min-width': '0', color: theme.fgMuted }}>
+    <div class="task-control-notice" style={props.style}>
+      <span class="task-control-notice__message" title={props.message} role="status">
         {props.message}
-      </div>
+      </span>
       {props.onDismiss ? (
         <button
           type="button"
+          class="compact-action task-control-notice__dismiss"
           aria-label="Dismiss control notice"
           onClick={() => props.onDismiss?.()}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: theme.fgMuted,
-            cursor: 'pointer',
-            'font-size': '14px',
-            'line-height': '1',
-            padding: '0',
-          }}
         >
           ×
         </button>
       ) : null}
       <button
         type="button"
-        class="btn-primary"
+        class="compact-action"
         disabled={props.busy === true}
         onClick={() => props.onTakeOver()}
-        style={{
-          'flex-shrink': '0',
-          padding: '6px 12px',
-          background: theme.accent,
-          color: theme.accentText,
-          border: 'none',
-          'border-radius': '999px',
-          cursor: props.busy === true ? 'wait' : 'pointer',
-          opacity: props.busy === true ? '0.7' : '1',
-          ...typography.metaStrong,
-        }}
       >
         {props.busy === true ? 'Taking over…' : (props.takeOverLabel ?? 'Take Over')}
       </button>
