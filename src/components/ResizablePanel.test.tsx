@@ -14,7 +14,7 @@ vi.mock('../app/panel-resize-drag', () => ({
   endPanelResizeDrag: endPanelResizeDragMock,
 }));
 
-import { ResizablePanel, type ResizablePanelHandle } from './ResizablePanel';
+import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
 
 describe('ResizablePanel', () => {
   beforeEach(() => {
@@ -300,4 +300,245 @@ describe('ResizablePanel', () => {
       }
     }
   });
+
+  it('leaves manual persisted sizing alone when a one-shot request is cleared and descriptors refresh', () => {
+    const [requestedSize, setRequestedSize] = createSignal<number>();
+    const [revision, setRevision] = createSignal(0);
+    const children = () => {
+      revision();
+      return [
+        {
+          id: 'prompt',
+          initialSize: 120,
+          requestSize: requestedSize,
+          content: () => <textarea aria-label="Sized draft" />,
+        },
+        { id: 'neighbor', initialSize: 300, content: () => <div>Neighbor</div> },
+      ];
+    };
+    const result = render(() => (
+      <ResizablePanel direction="horizontal" fitContent persistKey="layout" children={children()} />
+    ));
+    const editor = screen.getByRole('textbox', { name: 'Sized draft' }) as HTMLTextAreaElement;
+    expect(editor.parentElement?.style.width).toBe('120px');
+    setRequestedSize(200);
+    expect(editor.parentElement?.style.width).toBe('200px');
+    setRequestedSize(undefined);
+    expect(editor.parentElement?.style.width).toBe('200px');
+    const handle = result.container.querySelector('.resize-handle');
+    if (!(handle instanceof HTMLElement)) throw new Error('Expected panel resize handle');
+    fireEvent.mouseDown(handle, { clientX: 200 });
+    fireEvent.mouseMove(window, { clientX: 240 });
+    fireEvent.mouseUp(window);
+    expect(editor.parentElement?.style.width).toBe('240px');
+    expect(store.panelSizes['layout:prompt']).toBe(240);
+    editor.value = 'Keep this draft';
+    editor.focus();
+    editor.setSelectionRange(1, 4);
+    setRevision(1);
+    expect(editor.parentElement?.style.width).toBe('240px');
+    expect(screen.getByRole('textbox', { name: 'Sized draft' })).toBe(editor);
+    expect(editor.value).toBe('Keep this draft');
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(1);
+  });
+
+  it('preserves a stable prompt panel manual size across unrelated flex-layout descriptor refreshes', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+    try {
+      const [revision, setRevision] = createSignal(0);
+      const children = () => {
+        revision();
+        return [
+          {
+            id: 'prompt',
+            initialSize: 120,
+            stable: true,
+            requestSize: () => undefined,
+            content: () => <textarea aria-label="Stable draft" />,
+          },
+          { id: 'neighbor', minSize: 50, content: () => <div>Neighbor</div> },
+        ];
+      };
+      const result = render(() => (
+        <ResizablePanel direction="vertical" persistKey="layout" children={children()} />
+      ));
+      const editor = screen.getByRole('textbox', { name: 'Stable draft' });
+      const handle = result.container.querySelector('.resize-handle');
+      if (!(handle instanceof HTMLElement)) throw new Error('Expected panel resize handle');
+      fireEvent.mouseDown(handle, { clientY: 120 });
+      fireEvent.mouseMove(window, { clientY: 160 });
+      fireEvent.mouseUp(window);
+      expect(store.panelSizes['layout:prompt']).toBe(160);
+      expect(editor.parentElement?.style.flex).toBe('0 0 160px');
+      setRevision(1);
+      expect(editor.parentElement?.style.flex).toBe('0 0 160px');
+    } finally {
+      height.mockRestore();
+    }
+  });
+
+  it('preserves an unpersisted disclosure size across identical geometry descriptor refreshes', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+    try {
+      const [requestedSize, setRequestedSize] = createSignal<number>();
+      const [revision, setRevision] = createSignal(0);
+      const children = () => {
+        revision();
+        return [
+          {
+            id: 'prompt',
+            initialSize: 72,
+            minSize: 54,
+            maxSize: 300,
+            stable: true,
+            requestSize: requestedSize,
+            content: () => <textarea aria-label="Expanded disclosure draft" />,
+          },
+          { id: 'neighbor', minSize: 50, content: () => <div>Neighbor</div> },
+        ];
+      };
+      render(() => (
+        <ResizablePanel direction="vertical" persistKey="layout" children={children()} />
+      ));
+      const editor = screen.getByRole('textbox', {
+        name: 'Expanded disclosure draft',
+      }) as HTMLTextAreaElement;
+      expect(editor.parentElement?.style.flex).toBe('0 0 72px');
+      setRequestedSize(200);
+      setRequestedSize(undefined);
+      expect(editor.parentElement?.style.flex).toBe('0 0 200px');
+      expect(store.panelSizes['layout:prompt']).toBeUndefined();
+      editor.value = 'Keep this reviewed draft visible';
+      editor.focus();
+      setRevision(1);
+      expect(screen.getByRole('textbox', { name: 'Expanded disclosure draft' })).toBe(editor);
+      expect(document.activeElement).toBe(editor);
+      expect(editor.value).toBe('Keep this reviewed draft visible');
+      expect(editor.parentElement?.style.flex).toBe('0 0 200px');
+    } finally {
+      height.mockRestore();
+    }
+  });
+
+  it('restores stable persisted sizes within their bounds without changing fixed headers', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+    try {
+      setStore('panelSizes', { 'layout:header': 180, 'layout:prompt': 800, 'layout:footer': 2 });
+      render(() => (
+        <ResizablePanel
+          direction="vertical"
+          persistKey="layout"
+          children={[
+            { id: 'header', fixed: true, initialSize: 30, content: () => <div>Fixed header</div> },
+            {
+              id: 'prompt',
+              stable: true,
+              initialSize: 72,
+              minSize: 54,
+              maxSize: 300,
+              content: () => <div>Stable prompt</div>,
+            },
+            {
+              id: 'footer',
+              stable: true,
+              initialSize: 72,
+              minSize: 54,
+              maxSize: 300,
+              content: () => <div>Stable footer</div>,
+            },
+            { id: 'neighbor', minSize: 50, content: () => <div>Flexible neighbor</div> },
+          ]}
+        />
+      ));
+      expect(screen.getByText('Fixed header').parentElement?.style.flex).toBe('0 0 30px');
+      expect(screen.getByText('Stable prompt').parentElement?.style.flex).toBe('0 0 300px');
+      expect(screen.getByText('Stable footer').parentElement?.style.flex).toBe('0 0 54px');
+    } finally {
+      height.mockRestore();
+    }
+  });
+
+  it.each([
+    ['initialSize', { initialSize: 96 }, '0 0 96px'],
+    ['minSize', { minSize: 100 }, '0 0 100px'],
+    ['maxSize', { maxSize: 60 }, '0 0 60px'],
+    ['fixed', { fixed: true }, '0 0 72px'],
+    ['stable', { stable: false }, '72 1 0px'],
+    ['identity', { id: 'replacement' }, '0 0 72px'],
+  ] satisfies Array<[string, Partial<PanelChild>, string]>)(
+    'applies changed %s geometry after a one-shot disclosure request',
+    (_field, changed, expectedFlex) => {
+      const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+      try {
+        const [requestedSize, setRequestedSize] = createSignal<number>();
+        const [patch, setPatch] = createSignal<Partial<PanelChild>>({});
+        const children = () => [
+          {
+            id: 'prompt',
+            initialSize: 72,
+            minSize: 54,
+            maxSize: 300,
+            stable: true,
+            requestSize: requestedSize,
+            content: () => <div>Geometry prompt</div>,
+            ...patch(),
+          },
+          { id: 'neighbor', minSize: 50, content: () => <div>Neighbor</div> },
+        ];
+        render(() => <ResizablePanel direction="vertical" children={children()} />);
+        setRequestedSize(200);
+        setRequestedSize(undefined);
+        expect(screen.getByText('Geometry prompt').parentElement?.style.flex).toBe('0 0 200px');
+        setPatch(changed);
+        expect(screen.getByText('Geometry prompt').parentElement?.style.flex).toBe(expectedFlex);
+      } finally {
+        height.mockRestore();
+      }
+    },
+  );
+
+  it.each(['direction', 'fitContent', 'persistKey', 'order'] as const)(
+    'reinitializes sizing when the %s layout owner changes',
+    (owner) => {
+      const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+      const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+      try {
+        const [requestedSize, setRequestedSize] = createSignal<number>();
+        const [changed, setChanged] = createSignal(false);
+        setStore('panelSizes', 'next:prompt', 156);
+        const children = () => {
+          const panels = [
+            {
+              id: 'prompt',
+              initialSize: 72,
+              stable: true,
+              requestSize: requestedSize,
+              content: () => <div>Layout prompt</div>,
+            },
+            { id: 'neighbor', minSize: 50, content: () => <div>Neighbor</div> },
+          ];
+          return owner === 'order' && changed() ? panels.reverse() : panels;
+        };
+        render(() => (
+          <ResizablePanel
+            direction={owner === 'direction' && changed() ? 'horizontal' : 'vertical'}
+            fitContent={owner === 'fitContent' && changed()}
+            persistKey={owner === 'persistKey' && changed() ? 'next' : 'layout'}
+            children={children()}
+          />
+        ));
+        setRequestedSize(200);
+        setRequestedSize(undefined);
+        expect(screen.getByText('Layout prompt').parentElement?.style.flex).toBe('0 0 200px');
+        setChanged(true);
+        const style = screen.getByText('Layout prompt').parentElement?.style;
+        if (owner === 'fitContent') expect(style?.height).toBe('72px');
+        else expect(style?.flex).toBe(`0 0 ${owner === 'persistKey' ? 156 : 72}px`);
+      } finally {
+        height.mockRestore();
+        width.mockRestore();
+      }
+    },
+  );
 });

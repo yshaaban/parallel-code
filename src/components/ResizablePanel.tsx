@@ -28,8 +28,8 @@ export interface PanelChild {
   transient?: boolean;
   minSize?: number;
   maxSize?: number;
-  /** Reactive getter — when the returned value changes, the panel resizes to it. */
-  requestSize?: () => number;
+  /** Reactive pixel-size request. Return undefined to leave the current/manual size alone. */
+  requestSize?: () => number | undefined;
   content: () => JSX.Element;
 }
 
@@ -183,12 +183,19 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     const savedSizes = children.map((child) =>
       usePersisted ? getSavedPanelSize(child) : undefined,
     );
-    const fixedTotal = children.reduce((sum, child) => {
+    const fixedTotal = children.reduce((sum, child, index) => {
       if (!isFixedSizePanel(child)) {
         return sum;
       }
 
-      return sum + clampPanelSize(child, child.initialSize ?? 0, { fallback: 0 });
+      return (
+        sum +
+        clampPanelSize(
+          child,
+          (!child.fixed ? savedSizes[index] : undefined) ?? child.initialSize ?? 0,
+          { fallback: 0 },
+        )
+      );
     }, 0);
     const resizableSpace = Math.max(0, totalSpace - fixedTotal - handleSpace);
     const resizableCount = children.filter((child) => !isFixedSizePanel(child)).length;
@@ -197,7 +204,11 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     // First pass: assign saved sizes, initialSizes, or 0
     const initial = children.map((child, index) => {
       if (isFixedSizePanel(child)) {
-        return clampPanelSize(child, child.initialSize ?? 0, { fallback: 0 });
+        return clampPanelSize(
+          child,
+          (!child.fixed ? savedSizes[index] : undefined) ?? child.initialSize ?? 0,
+          { fallback: 0 },
+        );
       }
       const saved = savedSizes[index];
       if (saved !== undefined) {
@@ -284,9 +295,24 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     props.onHandle?.(undefined);
   });
 
-  // Re-init when children change (untrack initSizes to avoid store reads creating dependencies)
+  // Descriptor identity can change without layout changes; preserve current user sizing.
+  const geometry = createMemo(() =>
+    JSON.stringify([
+      props.direction,
+      props.fitContent,
+      props.persistKey,
+      props.children.map((child) => [
+        child.id,
+        child.initialSize,
+        child.fixed,
+        child.stable,
+        child.minSize,
+        child.maxSize,
+      ]),
+    ]),
+  );
   createEffect(() => {
-    void props.children.length;
+    geometry();
     untrack(() => initSizes());
   });
 
@@ -303,7 +329,9 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
     for (let i = 0; i < props.children.length; i++) {
       const child = props.children[i];
       if (!child.requestSize) continue;
-      const requested = clampPanelSize(child, child.requestSize(), {
+      const request = child.requestSize();
+      if (request === undefined) continue;
+      const requested = clampPanelSize(child, request, {
         max: getRequestedPanelResponsiveCap(i),
       });
       if (Math.abs(next[i] - requested) < 1) continue;
