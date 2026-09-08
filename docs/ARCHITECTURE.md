@@ -1091,6 +1091,9 @@ The renderer path has one transport-neutral owner:
   memory and installs `beforeunload` protection only while a draft is unsafe;
 - desktop uses a one-second UI debounce, while the lazy remote Notes tab uses explicit Save; neither
   surface owns operation identity or lifecycle truth;
+- desktop read-only recovery keeps real error/conflict messages visible. Its Check status action
+  performs a Get rather than replaying an Issue/Update. Delayed clipboard fallback and recovered-draft
+  discard confirmation revalidate their captured draft before affecting the current editor;
 - `task_notes_changed` contains only task id, revision, and source id. Both shells validate it and
   publish it through `src/runtime/task-notes-invalidation.ts`; note content is fetched on demand.
 
@@ -1369,6 +1372,24 @@ Important property:
   or rejected by the current task owner. Reattaching an existing session must not implicitly resize
   the shared PTY; explicit resize commands own that mutation, and recovery responses carry both
   backend rows and columns so the renderer aligns to backend PTY geometry before replay
+- an absent browser compatibility shell without task control returns the typed
+  `task-control-unavailable` blocker before process admission. Passive attachment never acquires
+  control. An explicit **Restore terminal** action uses the existing task-command lease and peer
+  takeover workflow, then retries the same canonical identity without inventing creation intent.
+  Managed restart evidence and exact existing-session attachment remain unchanged. Attach failures
+  are announced by the accessible terminal overlay, not written into xterm as if they were process
+  output
+- peer-control notices share a compact single-row presentation across terminal and prompt surfaces.
+  Dismissal retains the owner and explicit takeover action without changing row height; long names
+  truncate visually while the complete message remains available to assistive technology and hover.
+  Presentation never acquires task control or changes the peer approval workflow
+- desired viewport geometry stays with the existing input-pipeline resize owner while task control
+  is unavailable. Legitimate control acquisition commits the latest requested size, not the old
+  xterm grid. The fit manager forwards valid resize observations even when they equal the current
+  local grid, so restoring a window can cancel an older deferred fullscreen size. Resize observation
+  and maximize remain non-acquiring; peer-control and backend acknowledgement still gate mutation.
+  Auxiliary xterm content stays fully opaque across focus changes; focus styling belongs to the
+  surrounding pane rather than an opacity animation on the terminal canvas
 - dense-overload and surface-role reductions remain explicitly experimental and
   presentation/runtime-only; they may reduce browser work under load, but backend recovery truth and
   switch ownership stay unchanged
@@ -1732,6 +1753,18 @@ waiting-session record; unavailable tracking cannot be bypassed by spawning firs
 binds to the admitted agent generation, and `InitialPromptDeliveryControl` is a lazy
 renderer projection/editor rather than a second delivery owner. Automatic/manual writes and draft
 clearing occur only through the backend owner after the matching removal cutover epoch is active.
+The task panel retains that editor by delivery identity across selected-agent changes, preserving
+unsaved text, selection, and save ownership. If the canonical delivery clears or changes during a
+local edit, the old editor remains read-only recovery until explicit confirmed discard. Copy and
+late acknowledgements do not discard it. Once no unsafe local edit remains, the ordinary composer
+resumes its selected-agent lifetime. The compact prompt panel remains manually resizable.
+Explicit Review/View disclosure requests space through the existing task-panel size owner, and Hide
+restores its previous height. Status updates never request a resize; constrained recovery details
+remain scrollable, and the one-shot request does not override subsequent manual resizing.
+`ResizablePanel` initializes from ordered geometry and layout-mode changes, not short-lived
+descriptor object identity. Identical descriptors retain current expansion and editor/terminal
+identity; real constraints, orientation, ordering, and persistence-key changes still reinitialize
+through the existing size owner.
 Supervision events wake this owner but do not solely drive it: a bounded safety observation polls
 pending readiness, runtime discovery, and post-write evidence through their existing deadlines, so
 presentation-event coalescing cannot strand an otherwise observable delivery. A delivery without a
@@ -1748,6 +1781,20 @@ manual-only canonical mode and a sealed recovery record atomically, before runti
 Unknown prior delivery is an explicit durable fact, not a fabricated write attempt. Valid records
 are never replaced; mismatched identities fail closed. Recovery does not authorize automatic replay,
 and manual admission still requires the existing inspection/confirmation protocol.
+A legacy delivery may still name an original agent that the user legitimately replaced before
+recovery. The projection query returns a typed, read-only `recovery-unavailable` issue for this
+identity mismatch instead of throwing an internal error or retargeting the delivery. It includes
+the exact canonical task/delivery identity, current server instance, and bounded saved text for
+inspection or copying, but no fabricated delivery snapshot, editable draft acknowledgement, or send
+authority. Task removal and owner availability are rechecked after inspection; unknown deliveries,
+closed tasks, and dark owners retain the existing null result. Unexpected storage failures remain
+errors rather than being relabeled as recoverable history.
+The renderer reliability client revokes its active capability before forwarding a matching restart
+invalidation to mounted consumers. Prompt controls fence older refresh completions against newer live
+events and invalidate write actions when status cannot be verified, without discarding local text.
+Recovery UI uses the shared compact action style and an always-visible summary; draft details are
+disclosed on demand, while unsaved edits and conflicts keep their editor visible. Read-only legacy
+recovery exposes saved text for inspection/copy, never as an acknowledged sendable draft.
 Projection fanout has one runtime-owned pending obligation per delivery. A thrown or temporarily
 null projection keeps that obligation dirty, and a later safety turn retries it even when durable
 status did not change. With no listeners the obligation is complete because subscribers bootstrap
@@ -2576,11 +2623,24 @@ Non-obvious current rule:
   closing, removing, and error rows; only the backend structural owner may change canonical task
   membership
 - renderer rename, active/collapsed reorder, project-setting, task-setting, and shared workspace
-  edits use a bounded typed intent queue. Incoming canonical replacement replays only when the exact
-  target still equals the intent's acknowledged base. Same-field changes and removed targets keep
-  the canonical value, retire the conflicting local intent, and raise a persistent warning; safe
-  unrelated intents remain queued against the new revision. Task addition/removal, prompt drafts,
-  and note drafts are not generic replayable JSON edits
+  edits use a bounded typed intent queue. Save dispatch marks represented values as submitted before
+  invoking IPC, including pagehide writes. Only the unsubmitted same-field tail coalesces; submitted
+  values remain ordered until canonical acknowledgement, so editing or undoing during a save cannot
+  erase the final local choice. A newer canonical match to a later result acknowledges the satisfied
+  same-field prefix, including skipped save responses. Otherwise replay requires the target to equal
+  the edit's base; a genuine peer same-field change or removed target keeps canonical truth, retires
+  the conflicting intent, and raises a persistent warning. Safe unrelated edits stay queued.
+- auxiliary-shell membership uses per-shell intents in that same queue, preserving unrelated sibling
+  changes and deriving `shellCount` from exact IDs. A matching newer revision acknowledges membership;
+  an equal-revision snapshot cannot retire a close while an earlier add can still commit. The queue
+  never reconstructs a removed task or removes a managed primary shell. Close reserves bounded edit
+  capacity before terminating the process, publishes removal only after successful termination, and
+  releases its reservation on every exit path. Existing autosave remains the retry owner; membership
+  intent grants neither process-creation nor task-control authority. Task addition/removal, prompt
+  drafts, and note drafts are not generic replayable JSON edits
+- desktop and browser autosave acknowledge the snapshot submitted by that save, not whatever is
+  visible when its response arrives. Edits made during an in-flight save remain pending for the
+  existing serialized follow-up save
 
 Important property:
 

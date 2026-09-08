@@ -1190,6 +1190,11 @@ Edge cases that are easy to miss:
   byte admissions. Unknown prior delivery must remain explicit through draft edits and restart;
   zero recorded attempts is not proof that a legacy prompt was never sent. The browser companion
   must preserve the visible draft across reload and require explicit manual confirmation.
+  Also replace the original agent before missing-history recovery: projection must return a typed
+  read-only issue with the saved text, preserve canonical/private state, and reject both manual send
+  and draft revision without lease or byte admission. Cover changed draft/task identity, bounded
+  text validation, denied observation, and task/owner closure during inspection. Do not mask an
+  unexpected persistence failure as an expected recovery result or fabricate a delivery snapshot.
   Fresh creation must establish tracking after canonical commit but before process launch, preserve
   it when launch fails, and avoid spawning when tracking rejects or throws. Exact creation replay
   cannot enqueue or launch again, and rejected flights must not leak cleanup-promise rejections.
@@ -1208,6 +1213,17 @@ Edge cases that are easy to miss:
   draft. Failure followed by edit offers a fresh `send` with the revised fingerprint/revision and
   derived operation ID, never a retry action for the superseded operation; write-accepted and
   ambiguous outcomes remain blocking
+- prompt UI lifecycle tests must retain failed/in-flight edits across selected-agent changes,
+  keep live projections ahead of stale refresh replies, revoke write affordances on status failure
+  or runtime invalidation, and distinguish an acknowledged completed draft from genuinely local
+  unsaved text. The browser recovery case includes a replaced original agent over real HTTP,
+  copy-only text across reload, compact themed controls, and keyboard disclosure. Opening details
+  must expose the editor/actions without clipping at normal size; refreshing status must not resize
+  the panel, and Hide must restore its previous height. Stable-panel descriptor refresh must retain
+  manual geometry while fixed headers and restored min/max constraints remain unchanged.
+  Canonical delivery clear/replacement during an edit must retain read-only local recovery across
+  late acknowledgements. Canceled discard preserves text/selection; confirmed discard releases the
+  retired editor and resumes the current selected-agent composer without further send authority.
 - missing/invalid primary crossed with missing/invalid/stale/equal/higher temp and backup evidence;
   no test may assert automatic candidate promotion
 - inactive and independently activated protected-policy fixtures, including stale-revision-before-
@@ -1218,6 +1234,14 @@ Edge cases that are easy to miss:
 - current and stale full-save attempts cannot add/omit task IDs, smuggle membership through either
   order, replace a same-ID task root/location, or delete nested writer provenance; semantic add and
   remove each produce at most one shared commit and exact retries are unchanged
+- pending workspace edits must survive a save response arriving after further edits, including
+  undo-to-original, every setting/order family, skipped intermediate acknowledgements, and recovery
+  after an unknown save result. Genuine peer conflicts still win canonically. Prove both rebase
+  preview and acknowledgement through the actual save seam, with bounded submitted history and
+  coalescing of only the unsubmitted tail. Auxiliary-shell tests cover concurrent sibling membership,
+  add/close before acknowledgement, revision-conflict reload/resave, task deletion during kill, and
+  protected primary identity. Capacity must be admitted before kill, remain reserved while it awaits,
+  and be released on failure or task removal without publishing an unconfirmed removal
 - closing, removing, and error presentation rows remain present in both app and shared persistence;
   tests must not use renderer lifecycle flags as proof of canonical removal
 - typed-intent acknowledgement by operation ID or exact canonical result, bounded/coalesced queues,
@@ -1458,6 +1482,28 @@ Edge cases that are easy to miss:
 - focused typing while a background terminal redraws heavily
 - ANSI/control sequences split across transport chunks
 - startup failures that should clear shared progress state instead of leaving stale queued entries
+- an absent auxiliary shell after reload must explain missing task control without claiming a
+  transport interruption or silently acquiring control. Prove explicit restore across peer denial
+  and approval, exact shell identity, sibling continuity, and unmount while acquisition is pending;
+  existing-session observers must remain lease-free
+- attach failure text belongs only in the accessible overlay, never in the xterm output buffer;
+  shell close, maximize, and control actions must retain separate pointer targets in normal and
+  maximized layouts
+- expanded and dismissed peer-control notices must retain the same compact row height, including
+  long names in narrow panes. Keep the full accessible owner message, keyboard dismissal and takeover,
+  disabled pending action, and the real peer-approval/input-blocking workflow intact
+- secondary-terminal fullscreen must fill both the renderer grid and the authorized backend PTY,
+  not just the outer pane. Cover maximize before control acquisition, fullscreen then restore before
+  acknowledgement, repeated auxiliary focus switches, large output, and DPR2 canvas geometry. An
+  unowned resize never acquires control or sends IPC; later legitimate acquisition commits the latest
+  desired geometry. Returning to the current local grid must cancel an older deferred size, including
+  peer-controlled resize. Auxiliary content remains opaque across focus/selection changes
+- initial-prompt draft lifetime belongs to the task delivery, not the selected agent. Changing the
+  selected agent must preserve the editor DOM, local unsaved text and collapse protection without
+  remounting the terminal; clearing that delivery must restore the ordinary selected-agent composer.
+  Explicit draft disclosure must request useful editor space and Hide must restore the prior height;
+  status updates must not resize the panel, replace its editor, or undo subsequent manual resizing.
+  Expanded initial-prompt actions must remain reachable inside a constrained resized panel
 
 Preferred proof:
 

@@ -537,6 +537,14 @@ outlived the owner that was supposed to clear them.
 - add one deterministic churn test for repeated enter/exit cycles, not just a one-shot happy path
 - for browser-visible states, add one assertion that the UI is operationally ready again, not only
   visually settled
+- capability invalidation must reach mounted consumers after authority is revoked; stopping the
+  transport subscription alone leaves stale actions and labels on screen
+- keep task-owned drafts outside selected-agent keyed lifetimes. Agent selection must not dispose
+  failed or unacknowledged edits, and late confirmations/clipboard fallbacks must still match the
+  exact current recovery draft before discarding text or moving focus
+- stable, manually resizable panels must honor their saved size when layout descriptors refresh;
+  explicit disclosure requests are one-shot actions, not a background resize policy. Test both
+  retained editor/terminal identity and retained manual geometry during unrelated updates
 
 ### 21. Stress tests should fail on invariant leaks, not just missing copy
 
