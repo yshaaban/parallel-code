@@ -138,13 +138,15 @@
 
 .task-experience__search:focus-visible,
 .task-experience__button:focus-visible,
+.task-notes__button:focus-visible,
 .task-card:focus-visible,
 .task-session-card:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(46, 200, 255, 0.18);
 }
 
-.task-experience__button {
+.task-experience__button,
+.task-notes__button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -159,7 +161,8 @@
   cursor: pointer;
 }
 
-.task-experience__button:hover:not(:disabled) {
+.task-experience__button:hover:not(:disabled),
+.task-notes__button:hover:not(:disabled) {
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
@@ -175,7 +178,8 @@
   padding: 0;
 }
 
-.task-experience__button:disabled {
+.task-experience__button:disabled,
+.task-notes__button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -462,6 +466,7 @@
   .task-experience__header,
   .task-experience__search,
   .task-experience__button,
+  .task-notes__button,
   .task-experience__banner,
   .task-experience__empty,
   .task-project,
@@ -476,6 +481,7 @@
 
   .task-experience__search:focus-visible,
   .task-experience__button:focus-visible,
+  .task-notes__button:focus-visible,
   .task-experience__session-button:focus-visible,
   .task-card:focus-visible,
   .task-session-card:focus-visible {
@@ -486,6 +492,7 @@
   }
 
   .task-experience__button:disabled,
+  .task-notes__button:disabled,
   .task-session-card:disabled {
     border-color: GrayText;
     color: GrayText;

@@ -1,4 +1,4 @@
-import { For, createUniqueId, type JSX } from 'solid-js';
+import { For, createUniqueId, onCleanup, type JSX } from 'solid-js';
 
 import {
   discardRecoveredDesktopTaskNotes,
@@ -15,6 +15,13 @@ interface DesktopTaskNotesRecoveryProps {
 export function DesktopTaskNotesRecovery(props: DesktopTaskNotesRecoveryProps): JSX.Element {
   const editors = new Map<string, HTMLTextAreaElement>();
   const descriptionId = createUniqueId();
+  let disposed = false;
+  onCleanup(() => {
+    disposed = true;
+    editors.clear();
+  });
+  const isCurrentDraft = (draft: DetachedDesktopTaskNotesDraft) =>
+    !disposed && props.drafts.includes(draft);
 
   function selectDraft(taskId: string): void {
     const editor = editors.get(taskId);
@@ -26,7 +33,7 @@ export function DesktopTaskNotesRecovery(props: DesktopTaskNotesRecoveryProps): 
     try {
       await navigator.clipboard.writeText(draft.draft);
     } catch {
-      selectDraft(draft.taskId);
+      if (isCurrentDraft(draft)) selectDraft(draft.taskId);
     }
   }
 
@@ -40,7 +47,7 @@ export function DesktopTaskNotesRecovery(props: DesktopTaskNotesRecoveryProps): 
         title: 'Discard recovered task notes?',
       },
     );
-    if (!approved) return;
+    if (!approved || !isCurrentDraft(draft)) return;
     discardRecoveredDesktopTaskNotes(draft.taskId);
   }
 
@@ -93,13 +100,17 @@ export function DesktopTaskNotesRecovery(props: DesktopTaskNotesRecoveryProps): 
               />
             </label>
             <div style={{ display: 'flex', gap: '8px', 'margin-top': '8px', 'flex-wrap': 'wrap' }}>
-              <button type="button" onClick={() => void copyDraft(draft)}>
+              <button type="button" class="compact-action" onClick={() => void copyDraft(draft)}>
                 Copy draft
               </button>
-              <button type="button" onClick={() => selectDraft(draft.taskId)}>
+              <button
+                type="button"
+                class="compact-action"
+                onClick={() => selectDraft(draft.taskId)}
+              >
                 Select all
               </button>
-              <button type="button" onClick={() => void discardDraft(draft)}>
+              <button type="button" class="compact-action" onClick={() => void discardDraft(draft)}>
                 Discard draft
               </button>
             </div>

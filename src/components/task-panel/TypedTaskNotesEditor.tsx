@@ -22,7 +22,7 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
   let controller: ReturnType<typeof mountDesktopTaskNotes>['controller'] | undefined;
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let textarea: HTMLTextAreaElement | undefined;
-  let focusAfterReload = false;
+  let focusAfterReload: typeof controller;
 
   function clearAutosave(): void {
     if (autosaveTimer) clearTimeout(autosaveTimer);
@@ -47,12 +47,16 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
     const canWrite = props.capability.write;
     const mounted = mount(taskId, props.taskName);
     controller = mounted.controller;
+    focusAfterReload = undefined;
+    setSnapshot(undefined);
+    let active = true;
     let previousDraft: string | undefined;
     let previousKind: TaskNotesControllerSnapshot['state']['kind'] | undefined;
     props.onDraftChange('');
     // Controller snapshots are the external reactive source for this adapter.
     // eslint-disable-next-line solid/reactivity
     const unsubscribe = mounted.controller.subscribe((next) => {
+      if (!active || next.state.taskId !== taskId) return;
       setSnapshot(next);
       props.onDraftChange(next.state.draft);
       if (
@@ -68,6 +72,7 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
     });
 
     onCleanup(() => {
+      active = false;
       clearAutosave();
       unsubscribe();
       mounted.release();
@@ -78,8 +83,11 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
   createEffect(() => {
     const kind = snapshot()?.state.kind;
     if (!focusAfterReload || !kind || kind === 'loading') return;
-    focusAfterReload = false;
-    queueMicrotask(() => textarea?.focus());
+    const expectedController = focusAfterReload;
+    focusAfterReload = undefined;
+    queueMicrotask(() => {
+      if (controller === expectedController && textarea?.isConnected) textarea.focus();
+    });
   });
 
   onCleanup(() => props.setNotesRef(undefined));
@@ -98,16 +106,22 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
 
   async function copyDraft(): Promise<void> {
     const draft = snapshot()?.state.draft ?? '';
+    const copiedController = controller;
     try {
       await navigator.clipboard.writeText(draft);
     } catch {
-      selectDraft();
+      if (
+        copiedController === controller &&
+        snapshot()?.state.draft === draft &&
+        textarea?.isConnected
+      )
+        selectDraft();
     }
   }
 
   function discardReplacedDraft(): void {
     if (!window.confirm('Discard the recovered draft and load notes for the current task?')) return;
-    focusAfterReload = true;
+    focusAfterReload = controller;
     controller?.discard();
   }
 
@@ -124,14 +138,17 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
         value={snapshot()?.state.draft ?? ''}
         disabled={isLoading()}
         readOnly={isReadOnly()}
-        onInput={(event) => controller?.edit(event.currentTarget.value)}
+        onInput={(event) => {
+          if (!isReadOnly()) controller?.edit(event.currentTarget.value);
+        }}
         placeholder="Notes..."
         style={{
           width: '100%',
           flex: '1',
           background: theme.taskPanelBg,
           border: 'none',
-          padding: '6px 34px 64px 8px',
+          padding: '6px 34px 30px 8px',
+          'min-height': '0',
           color: theme.fg,
           resize: 'none',
           ...typography.monoUi,
@@ -150,15 +167,13 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
               id={statusId}
               role="status"
               style={{
-                position: 'absolute',
-                left: '8px',
-                right: '38px',
-                bottom: '6px',
+                padding: status().message || isReadOnly() ? '0 38px 6px 8px' : '0',
                 display: 'flex',
                 'align-items': 'center',
                 'flex-wrap': 'wrap',
                 gap: '4px',
-                'max-height': '52px',
+                'max-height': '64px',
+                'flex-shrink': '0',
                 overflow: 'auto',
                 color:
                   status().tone === 'error'
@@ -170,21 +185,25 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
               }}
             >
               <span>
-                {props.capability.write || !status().editable
-                  ? status().message
-                  : 'Notes are read-only in this session. You can select and copy them.'}
+                {status().message || (!props.capability.write ? 'Read-only in this session' : '')}
               </span>
-              <Show when={status().canRetry}>
-                <button type="button" onClick={() => controller?.retry()}>
+              <Show when={status().canRetry && props.capability.write}>
+                <button type="button" class="compact-action" onClick={() => controller?.retry()}>
                   Retry
                 </button>
               </Show>
               <Show when={current().state.kind === 'conflict'}>
-                <button type="button" onClick={() => controller?.useLatest()}>
+                <button
+                  type="button"
+                  class="compact-action"
+                  onClick={() => controller?.useLatest()}
+                >
                   Use latest
                 </button>
                 <button
                   type="button"
+                  class="compact-action"
+                  disabled={isReadOnly()}
                   onClick={() => {
                     if (
                       window.confirm('Overwrite the latest notes with this draft?') &&
@@ -197,21 +216,30 @@ export function TypedTaskNotesEditor(props: TypedTaskNotesEditorProps): JSX.Elem
                   Overwrite
                 </button>
               </Show>
-              <Show when={isReadOnly()}>
-                <button type="button" onClick={() => void copyDraft()}>
-                  Copy draft
+              <Show when={isReadOnly() && current().state.draft.length > 0}>
+                <button
+                  type="button"
+                  class="compact-action"
+                  aria-label="Copy draft"
+                  onClick={() => void copyDraft()}
+                >
+                  Copy
                 </button>
-                <button type="button" onClick={selectDraft}>
+                <button type="button" class="compact-action" onClick={selectDraft}>
                   Select all
                 </button>
-                <Show when={isRecoveryReadOnly()}>
-                  <button type="button" onClick={() => controller?.checkStatus()}>
-                    Check status
-                  </button>
-                </Show>
+              </Show>
+              <Show when={isRecoveryReadOnly() || (!props.capability.write && status().canRetry)}>
+                <button
+                  type="button"
+                  class="compact-action"
+                  onClick={() => controller?.checkStatus()}
+                >
+                  Check status
+                </button>
               </Show>
               <Show when={isReplacement()}>
-                <button type="button" onClick={discardReplacedDraft}>
+                <button type="button" class="compact-action" onClick={discardReplacedDraft}>
                   Discard draft and reload
                 </button>
               </Show>

@@ -1660,7 +1660,8 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                             <div style={{ color: theme.fg }}>{approval.actionSummary}</div>
                             <div style={{ display: 'flex', gap: '6px' }}>
                               <button
-                                class="btn-secondary"
+                                type="button"
+                                class="compact-action"
                                 disabled={
                                   approval.approvalGateReason !== undefined ||
                                   busyAction() === 'approve-actions'
@@ -1669,7 +1670,6 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                                 onClick={() =>
                                   void resolveWorkflowApproval(workflow().id, approval.id, true)
                                 }
-                                style={{ 'font-size': sf(11), padding: '4px 8px' }}
                               >
                                 <Show when={busyAction() === 'approve-actions'}>
                                   <span
@@ -1681,7 +1681,8 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                                 Approve
                               </button>
                               <button
-                                class="btn-danger"
+                                type="button"
+                                class="compact-action compact-action--danger"
                                 disabled={
                                   approval.approvalGateReason !== undefined ||
                                   busyAction() === 'deny-actions'
@@ -1690,7 +1691,6 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                                 onClick={() =>
                                   void resolveWorkflowApproval(workflow().id, approval.id, false)
                                 }
-                                style={{ 'font-size': sf(11), padding: '4px 8px' }}
                               >
                                 {denyConfirmApprovalId() === approval.id ? 'Confirm deny' : 'Deny'}
                               </button>
@@ -1749,13 +1749,13 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                               </Show>
                             </div>
                             <button
-                              class="btn-secondary"
+                              type="button"
+                              class="compact-action"
                               disabled={
                                 lane.retryGateReason !== undefined || busyAction() === 'retry-lane'
                               }
                               title={lane.retryGateReason}
                               onClick={() => void retryWorkflowLane(workflow().id, lane.laneId)}
-                              style={{ 'font-size': sf(11), padding: '4px 8px' }}
                             >
                               <Show when={busyAction() === 'retry-lane'}>
                                 <span
@@ -1958,7 +1958,8 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     <Show when={tab() === 'tail'}>
                       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
                         <button
-                          class="btn-secondary"
+                          type="button"
+                          class="compact-action"
                           disabled={
                             busyAction() === 'inspect-output' || Boolean(outputAction()?.disabled)
                           }
@@ -1997,7 +1998,8 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                     <Show when={tab() === 'diff'}>
                       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
                         <button
-                          class="btn-secondary"
+                          type="button"
+                          class="compact-action"
                           disabled={
                             busyAction() === 'inspect-diff' || Boolean(diffAction()?.disabled)
                           }
@@ -2115,11 +2117,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                       <For each={footerActions()}>
                         {(action) => (
                           <button
-                            class={action.danger ? 'btn-danger' : 'btn-secondary'}
+                            type="button"
+                            class="compact-action"
+                            classList={{ 'compact-action--danger': action.danger }}
                             disabled={action.disabled || busyAction() === action.id}
                             title={action.reason}
                             onClick={() => void runToolAction(action, chip())}
-                            style={{ 'font-size': sf(11), padding: '4px 8px' }}
                           >
                             {action.id === 'close' && closeConfirmTaskId() === chip().taskId
                               ? 'Confirm close'
@@ -2162,11 +2165,12 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                   style={{ resize: 'vertical' }}
                 />
                 <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '6px' }}>
-                  <button class="btn-secondary" onClick={closePopover}>
+                  <button type="button" class="compact-action" onClick={closePopover}>
                     Cancel
                   </button>
                   <button
-                    class="btn-primary"
+                    type="button"
+                    class="compact-action compact-action--primary"
                     disabled={busyAction() === 'spawn-subtask'}
                     onClick={() => void spawnSubtask()}
                   >
@@ -2188,7 +2192,11 @@ export function TaskCoordinatorSection(props: TaskCoordinatorSectionProps): JSX.
                 <div style={{ color: theme.fg, 'font-size': sf(12), 'font-weight': 700 }}>
                   Debug
                 </div>
-                <button class="btn-secondary" onClick={() => void copyDebugCommand()}>
+                <button
+                  type="button"
+                  class="compact-action"
+                  onClick={() => void copyDebugCommand()}
+                >
                   Copy list_tasks command
                 </button>
                 <pre

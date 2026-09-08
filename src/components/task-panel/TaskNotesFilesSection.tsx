@@ -436,6 +436,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       style={{
                         flex: '1',
                         display: 'flex',
+                        'flex-direction': 'column',
                         'min-height': '0',
                         position: 'relative',
                       }}

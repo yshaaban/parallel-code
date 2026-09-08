@@ -139,7 +139,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 type="button"
-                class="btn-secondary"
+                class="compact-action"
                 disabled={props.busy}
                 onClick={() => {
                   props.onDeny(request().requestId, request().taskId);
@@ -149,7 +149,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               </button>
               <button
                 type="button"
-                class="btn-primary"
+                class="compact-action compact-action--primary"
                 disabled={props.busy}
                 onClick={() => {
                   props.onApprove(request().requestId, request().taskId);

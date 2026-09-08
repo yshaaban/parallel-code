@@ -35,7 +35,7 @@ function TaskNotesFilesSectionState(props: {
     >
       <span>{failed() ? 'Notes and files are temporarily unavailable.' : 'Loading notes…'}</span>
       {failed() && props.reset ? (
-        <button type="button" onClick={props.reset}>
+        <button type="button" class="compact-action" onClick={props.reset}>
           Retry
         </button>
       ) : null}
