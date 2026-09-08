@@ -17,6 +17,7 @@ import {
   isSendTaskInitialPromptManuallyRequest,
   isSendTaskInitialPromptManuallyResult,
   isTaskInitialPromptDeliveryProjection,
+  isTaskInitialPromptDeliveryRecoveryIssue,
   type GetTaskInitialPromptDeliveryProjectionRequest,
   type ResolveManualInitialPromptSendAmbiguityRequest,
   type ResolveManualInitialPromptSendAmbiguityResult,
@@ -24,7 +25,7 @@ import {
   type ReviseTaskInitialPromptDraftResult,
   type SendTaskInitialPromptManuallyRequest,
   type SendTaskInitialPromptManuallyResult,
-  type TaskInitialPromptDeliveryProjection,
+  type TaskInitialPromptDeliveryProjectionResult,
 } from '../domain/task-initial-prompt-delivery.js';
 import {
   DARK_TASK_RELIABILITY_RUNTIME_CAPABILITIES,
@@ -88,7 +89,7 @@ export interface TaskReliabilityClient {
     getProjection(
       request: GetTaskInitialPromptDeliveryProjectionRequest,
       signal?: AbortSignal,
-    ): Promise<TaskInitialPromptDeliveryProjection | null>;
+    ): Promise<TaskInitialPromptDeliveryProjectionResult>;
     resolveAmbiguity(
       request: ResolveManualInitialPromptSendAmbiguityRequest,
       signal?: AbortSignal,
@@ -229,7 +230,6 @@ export function createTaskReliabilityClient(
     }
     if (value.kind === 'task-reliability-capabilities-invalidated') {
       deactivate(true);
-      return;
     }
     for (const listener of listeners) listener(value);
   }
@@ -377,6 +377,13 @@ export function createTaskReliabilityClient(
         const response = await transport.initialPromptDelivery.getProjection(request, signal);
         assertCapabilitiesUnchanged(expected, 'initial-prompt-delivery');
         if (response === null) return null;
+        if (isTaskInitialPromptDeliveryRecoveryIssue(response)) {
+          assertCurrentServer(response.serverInstanceId, expected, 'initial-prompt recovery');
+          if (response.deliveryId !== request.deliveryId) {
+            throw invalidResponse('initial-prompt recovery identity');
+          }
+          return response;
+        }
         const projection = requireResponse(
           response,
           isTaskInitialPromptDeliveryProjection,

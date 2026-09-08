@@ -37,6 +37,30 @@ function createService(): TaskInitialPromptDeliveryService {
 }
 
 describe('unregistered initial prompt delivery handlers', () => {
+  it('preserves read-only recovery results and checks observation authority before reading a draft', async () => {
+    const service = createService();
+    const issue = {
+      deliveryId: 'legacy:original-agent',
+      kind: 'recovery-unavailable' as const,
+      reason: 'legacy-draft-identity-mismatch' as const,
+      savedDraft: 'Saved text',
+      serverInstanceId: 'server-1',
+      taskId: 'task-1',
+    };
+    vi.mocked(service.getProjection).mockResolvedValue(issue);
+    let allowed = true;
+    const handlers = createUnregisteredTaskInitialPromptDeliveryHandlers({
+      authorize: () => allowed,
+      service,
+    });
+    await expect(handlers.getProjection(issue.deliveryId)).resolves.toEqual(issue);
+    allowed = false;
+    await expect(handlers.getProjection(issue.deliveryId)).rejects.toBeInstanceOf(
+      TaskInitialPromptAuthorizationError,
+    );
+    expect(service.getProjection).toHaveBeenCalledExactlyOnceWith(issue.deliveryId);
+    expect(service.sendManually).not.toHaveBeenCalled();
+  });
   it('has no transport registration and preserves typed dark rejection', async () => {
     const service = createService();
     const handlers = createUnregisteredTaskInitialPromptDeliveryHandlers({

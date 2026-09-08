@@ -57,6 +57,8 @@ interface PromptInputProps {
   taskId: string;
   agentId: string;
   initialPromptDeliveryId?: string;
+  initialPromptRetired?: boolean;
+  onInitialPromptDetailsToggle?: (expanded: boolean) => void;
   onInitialPromptUnsavedChange?: (unsaved: boolean) => void;
   prefillPrompt?: string;
   onPrefillConsumed?: () => void;
@@ -342,6 +344,8 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
       style={{
         display: 'flex',
         height: '100%',
+        'min-height': '0',
+        'overflow-y': 'auto',
         padding: '4px 6px',
         'border-radius': '12px',
         'flex-direction': 'column',
@@ -392,12 +396,14 @@ export function PromptInput(props: PromptInputProps): JSX.Element {
               agentId={agentId}
               deliveryId={deliveryId}
               getAgentGeneration={(targetAgentId) => store.agents[targetAgentId]?.generation}
+              onDetailsToggle={props.onInitialPromptDetailsToggle}
               onInspectTerminal={(targetAgentId) => {
                 setActiveAgent(targetAgentId);
                 setTaskFocusedPanel(taskId, 'ai-terminal');
               }}
               onUnsavedChange={props.onInitialPromptUnsavedChange}
               readOnly={isPeerControlled()}
+              retired={props.initialPromptRetired}
               taskId={taskId}
             />
           </Suspense>

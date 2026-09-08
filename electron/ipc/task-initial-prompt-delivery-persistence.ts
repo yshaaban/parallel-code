@@ -14,6 +14,7 @@ import {
   type ReviseTaskInitialPromptDraftRequest,
   type ReviseTaskInitialPromptDraftResult,
   type TaskInitialPromptDeliverySnapshot,
+  type TaskInitialPromptDeliveryRecoveryIssue,
   type TaskInitialPromptDraftSnapshot,
 } from '../../src/domain/task-initial-prompt-delivery.js';
 import { isWellFormedUnicodeScalarString } from '../../src/lib/unicode-scalar.js';
@@ -72,7 +73,9 @@ export interface WorkspaceTaskInitialPromptPersistence {
   ): Promise<TaskInitialPromptProtectionCutoverResult>;
   ensureDarkJournalReady(): Promise<void>;
   recoverLegacyDrafts(cutoverEpoch: string, isTaskOpen: (taskId: string) => boolean): Promise<void>;
-  getMissingLegacyDeliveryIssue(deliveryId: string): Promise<string | null>;
+  getMissingLegacyDeliveryIssue(
+    deliveryId: string,
+  ): Promise<Omit<TaskInitialPromptDeliveryRecoveryIssue, 'serverInstanceId'> | null>;
   journal: TaskInitialPromptDeliveryJournal;
   repository: TaskInitialPromptDraftRepository;
   verifyPromptProtectionCutover(cutoverEpoch: string): Promise<void>;
@@ -1162,7 +1165,9 @@ export function createWorkspaceTaskInitialPromptPersistence(
     });
   }
 
-  async function getMissingLegacyDeliveryIssue(deliveryId: string): Promise<string | null> {
+  async function getMissingLegacyDeliveryIssue(
+    deliveryId: string,
+  ): ReturnType<WorkspaceTaskInitialPromptPersistence['getMissingLegacyDeliveryIssue']> {
     requireHealthy();
     if (!deliveryId.startsWith('legacy:')) return null;
     const result = await authority.mutate(
@@ -1176,9 +1181,19 @@ export function createWorkspaceTaskInitialPromptPersistence(
             task.initialPromptDeliveryId === deliveryId &&
             !canRecoverLegacyDraft(taskId, task)
           ) {
-            return unchanged(
-              'This saved prompt no longer matches its original task or draft. It cannot be recovered safely. Inspect the terminal; keep this task to preserve its saved draft.',
-            );
+            const text = task.initialPrompt;
+            return unchanged({
+              deliveryId,
+              kind: 'recovery-unavailable' as const,
+              reason: 'legacy-draft-identity-mismatch' as const,
+              savedDraft:
+                typeof text === 'string' &&
+                isWellFormedUnicodeScalarString(text) &&
+                isTaskInitialPromptDraftWithinLimit(text)
+                  ? text
+                  : null,
+              taskId,
+            });
           }
         }
         return unchanged(null);

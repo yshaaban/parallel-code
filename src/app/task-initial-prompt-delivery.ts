@@ -320,8 +320,8 @@ export function createTaskInitialPromptDraftController(
         saveError = 'This initial-prompt delivery is closed. Your text remains local.';
         trailingText = null;
       }
-    } catch (error) {
-      saveError = error instanceof Error ? error.message : String(error);
+    } catch {
+      saveError = 'Draft saving is temporarily unavailable. Your text remains local.';
     }
   }
 

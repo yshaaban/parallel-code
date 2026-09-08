@@ -3,6 +3,7 @@ import {
   Show,
   Suspense,
   createEffect,
+  createMemo,
   createSignal,
   onCleanup,
   untrack,
@@ -110,6 +111,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const taskActivityNow = useTaskActivityNow();
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
   const [initialPromptUnsaved, setInitialPromptUnsaved] = createSignal(false);
+  const initialPromptDeliveryId = createMemo<string | undefined>((previous) =>
+    initialPromptUnsaved() ? previous : props.task.initialPromptDeliveryId,
+  );
+  const [requestedPromptSize, setRequestedPromptSize] = createSignal<number>();
+  let promptPanelRef: HTMLDivElement | undefined;
+  let compactPromptSize: { deliveryId: string; height: number } | undefined;
   let previouslyActive = false;
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
@@ -339,16 +346,33 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     };
   }
 
+  function handleInitialPromptDetailsToggle(expanded: boolean): void {
+    const deliveryId = props.task.initialPromptDeliveryId;
+    if (!deliveryId) return;
+    if (expanded) {
+      const height = promptPanelRef?.getBoundingClientRect().height || 72;
+      compactPromptSize = { deliveryId, height };
+      setRequestedPromptSize(Math.max(200, height));
+    } else if (compactPromptSize?.deliveryId === deliveryId) {
+      setRequestedPromptSize(compactPromptSize.height);
+      compactPromptSize = undefined;
+    }
+    // This is an explicit disclosure request, not a persistent size policy.
+    queueMicrotask(() => setRequestedPromptSize(undefined));
+  }
+
   function promptInput(): PanelChild {
     return {
       id: 'prompt',
-      initialSize: props.task.initialPromptDeliveryId ? 150 : 72,
+      initialSize: 72,
       stable: true,
-      minSize: props.task.initialPromptDeliveryId ? 112 : 54,
+      minSize: 54,
       maxSize: 300,
+      requestSize: requestedPromptSize,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
           <div
+            ref={promptPanelRef}
             onFocusIn={() => observeTaskPanelFocus(props.task.id, 'prompt')}
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
             style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
@@ -363,12 +387,25 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                 />
               )}
             </For>
-            <Show when={promptAgentId()} keyed>
-              {(agentId) => (
+            <Show
+              when={
+                initialPromptDeliveryId()
+                  ? `delivery:${initialPromptDeliveryId()}`
+                  : promptAgentId()
+              }
+              keyed
+            >
+              {(_identity) => (
                 <PromptInput
                   taskId={props.task.id}
-                  agentId={agentId}
-                  initialPromptDeliveryId={props.task.initialPromptDeliveryId}
+                  // The initial draft belongs to its delivery, not the selected agent.
+                  // Once cleared, ordinary composition resumes with an agent-keyed owner.
+                  agentId={promptAgentId() ?? ''}
+                  initialPromptDeliveryId={initialPromptDeliveryId()}
+                  initialPromptRetired={
+                    initialPromptDeliveryId() !== props.task.initialPromptDeliveryId
+                  }
+                  onInitialPromptDetailsToggle={handleInitialPromptDetailsToggle}
                   onInitialPromptUnsavedChange={setInitialPromptUnsaved}
                   prefillPrompt={props.task.prefillPrompt}
                   onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}

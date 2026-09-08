@@ -11,7 +11,7 @@ import {
   type ReviseTaskInitialPromptDraftResult,
   type SendTaskInitialPromptManuallyRequest,
   type SendTaskInitialPromptManuallyResult,
-  type TaskInitialPromptDeliveryProjection,
+  type TaskInitialPromptDeliveryProjectionResult,
   type TaskInitialPromptDeliveryRequest,
 } from '../../src/domain/task-initial-prompt-delivery.js';
 import type { TaskInitialPromptDeliveryService } from './task-initial-prompt-delivery.js';
@@ -25,7 +25,7 @@ export type TaskInitialPromptDeliveryAction =
 
 export interface TaskInitialPromptDeliveryHandlers {
   readonly registrationState: 'active' | 'unregistered';
-  getProjection(deliveryId: string): Promise<TaskInitialPromptDeliveryProjection | null>;
+  getProjection(deliveryId: string): Promise<TaskInitialPromptDeliveryProjectionResult>;
   queue(request: TaskInitialPromptDeliveryRequest): Promise<QueueTaskInitialPromptDeliveryResult>;
   resolveManualAmbiguity(
     request: ResolveManualInitialPromptSendAmbiguityRequest,

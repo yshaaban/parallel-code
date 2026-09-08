@@ -298,6 +298,21 @@ export interface TaskInitialPromptDeliveryProjection {
   manualSendOperation?: ManualInitialPromptSendOperationSnapshot;
 }
 
+/** Read-only recovery information; this is not a delivery or draft-send admission. */
+export interface TaskInitialPromptDeliveryRecoveryIssue {
+  deliveryId: string;
+  kind: 'recovery-unavailable';
+  reason: 'legacy-draft-identity-mismatch';
+  savedDraft: string | null;
+  serverInstanceId: string;
+  taskId: string;
+}
+
+export type TaskInitialPromptDeliveryProjectionResult =
+  | TaskInitialPromptDeliveryProjection
+  | TaskInitialPromptDeliveryRecoveryIssue
+  | null;
+
 export interface TaskInitialPromptDeliveryProjectionWithManualOperation extends TaskInitialPromptDeliveryProjection {
   manualSendOperation: ManualInitialPromptSendOperationSnapshot;
 }
@@ -866,6 +881,31 @@ export function isGetTaskInitialPromptDeliveryProjectionRequest(
 ): value is GetTaskInitialPromptDeliveryProjectionRequest {
   return (
     isRecord(value) && hasExactKeys(value, ['deliveryId']) && isBoundedWireString(value.deliveryId)
+  );
+}
+
+export function isTaskInitialPromptDeliveryRecoveryIssue(
+  value: unknown,
+): value is TaskInitialPromptDeliveryRecoveryIssue {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'deliveryId',
+      'kind',
+      'reason',
+      'savedDraft',
+      'serverInstanceId',
+      'taskId',
+    ]) &&
+    value.kind === 'recovery-unavailable' &&
+    value.reason === 'legacy-draft-identity-mismatch' &&
+    isBoundedWireString(value.deliveryId) &&
+    isBoundedWireString(value.serverInstanceId) &&
+    isBoundedWireString(value.taskId, 512) &&
+    (value.savedDraft === null ||
+      (typeof value.savedDraft === 'string' &&
+        isWellFormedUnicodeScalarString(value.savedDraft) &&
+        isTaskInitialPromptDraftWithinLimit(value.savedDraft)))
   );
 }
 

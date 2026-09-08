@@ -400,6 +400,32 @@ describe('initial prompt renderer projection', () => {
     });
   });
 
+  it('keeps the exact retry identity and local edit without leaking transport errors into the draft UI', async () => {
+    const submit = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Internal error: private backend detail'))
+      .mockResolvedValueOnce({
+        kind: 'saved-manual-draft',
+        current: draft({ editRevision: 1, text: 'Keep this edit' }),
+      });
+    const controller = createTaskInitialPromptDraftController({
+      createEditOperationId: () => 'edit-1',
+      deliveryId: 'delivery-1',
+      initialDraft: draft(),
+      submit,
+      taskId: 'task-1',
+    });
+    controller.setVisibleText('Keep this edit');
+    await controller.flush();
+    expect(controller.getSnapshot()).toMatchObject({
+      visibleText: 'Keep this edit',
+      saveError: 'Draft saving is temporarily unavailable. Your text remains local.',
+    });
+    await controller.flush();
+    expect(submit.mock.calls[1]?.[0]).toEqual(submit.mock.calls[0]?.[0]);
+    expect(controller.getSnapshot().saveError).toBeNull();
+  });
+
   it('blocks Send until visible text matches the acknowledged fingerprint', () => {
     const acknowledged = draft();
     expect(

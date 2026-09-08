@@ -13,6 +13,10 @@ import {
 } from '../../../server/build-artifacts.js';
 import { rewriteDistServerRelativeImports } from '../../../server/rewrite-dist-server-relative-imports.mjs';
 import { createTestShellEnv } from '../../../src/lib/test-shell-env.js';
+import {
+  deriveLegacyTaskInitialPromptDeliveryId,
+  TASK_INITIAL_PROMPT_READINESS_POLICY,
+} from '../../../src/domain/task-initial-prompt-delivery.js';
 import type { AgentDef } from '../../../src/ipc/types.js';
 import {
   buildProjectGitIsolationFields,
@@ -438,6 +442,14 @@ export async function seedBrowserState(
   const taskEntries = createSeededTaskEntries(project, scenario, branchName);
   if (scenario.legacyInitialPrompt !== undefined && taskEntries[0]) {
     taskEntries[0].task.savedInitialPrompt = scenario.legacyInitialPrompt;
+    if (scenario.legacyInitialPromptOriginalAgentId !== undefined) {
+      taskEntries[0].task.initialPromptDeliveryId = deriveLegacyTaskInitialPromptDeliveryId({
+        agentId: scenario.legacyInitialPromptOriginalAgentId,
+        readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+        taskId: taskEntries[0].taskId,
+        text: scenario.legacyInitialPrompt,
+      });
+    }
   }
   const taskIds = taskEntries.map((entry) => entry.taskId);
   const agentIds = taskEntries.map((entry) => entry.agentId);

@@ -3,6 +3,7 @@ import {
   deriveLegacyTaskInitialPromptDeliveryId,
   TASK_INITIAL_PROMPT_READINESS_POLICY,
   type TaskInitialPromptDeliveryProjection,
+  type TaskInitialPromptDeliveryRecoveryIssue,
 } from '../../src/domain/task-initial-prompt-delivery.js';
 import type { AgentSupervisionSnapshot } from '../../src/domain/server-state.js';
 import type { CreateTaskResult } from '../../src/ipc/types.js';
@@ -105,6 +106,9 @@ test.describe('legacy initial-prompt recovery', () => {
       return Buffer.from(encoded, 'base64').toString('utf8');
     };
 
+    await expect(control).toContainText('Delivery unknown');
+    await expect(control.getByLabel('Initial prompt draft')).toBeHidden();
+    await control.getByRole('button', { name: 'Review draft', exact: true }).click();
     await expect(control.getByLabel('Initial prompt draft')).toHaveValue(prompt);
     await expect(control).toContainText('Previous delivery is unknown');
     await expect
@@ -130,6 +134,7 @@ test.describe('legacy initial-prompt recovery', () => {
     });
 
     await page.reload();
+    await control.getByRole('button', { name: 'Review draft', exact: true }).click();
     await expect(control.getByLabel('Initial prompt draft')).toHaveValue(prompt);
     const reloaded = await readProjection();
     expect(reloaded?.delivery).toEqual(recovered?.delivery);
@@ -162,5 +167,100 @@ test.describe('legacy initial-prompt recovery', () => {
     await browserLab.waitForAgentScrollback(request, agentId, prompt);
     await expect(control).toHaveCount(0);
     expect((await readOutput()).split(prompt)).toHaveLength(2);
+  });
+});
+
+test.describe('legacy prompt with a replaced original agent', () => {
+  const prompt = 'Keep the old prompt readable without sending it to the replacement';
+  const originalAgentId = 'replaced-original-agent';
+  test.use({
+    scenario: {
+      ...createPersistentPromptReadyScenario(80),
+      legacyInitialPrompt: prompt,
+      legacyInitialPromptOriginalAgentId: originalAgentId,
+    },
+  });
+
+  test('shows compact read-only recovery over real HTTP and preserves it across reload', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, { displayName: 'Recovery Tester' });
+    const { taskId, agentId } = browserLab.server;
+    const deliveryId = deriveLegacyTaskInitialPromptDeliveryId({
+      agentId: originalAgentId,
+      readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+      taskId,
+      text: prompt,
+    });
+    const control = page
+      .locator(`[data-task-id="${taskId}"]`)
+      .getByRole('region', { name: 'Initial prompt delivery' });
+    const result = await browserLab.invokeSessionIpc<TaskInitialPromptDeliveryRecoveryIssue>(
+      request,
+      page,
+      IPC.GetInitialPromptDeliveryProjection,
+      { deliveryId },
+    );
+    expect(result).toMatchObject({
+      deliveryId,
+      kind: 'recovery-unavailable',
+      reason: 'legacy-draft-identity-mismatch',
+      savedDraft: prompt,
+      taskId,
+    });
+
+    for (let visit = 0; visit < 2; visit += 1) {
+      if (visit > 0) await page.reload();
+      await browserLab.waitForTerminalReady(page);
+      await expect(control).not.toContainText('internal error');
+      const reveal = control.getByRole('button', { name: 'View saved draft', exact: true });
+      await expect(reveal).toBeVisible();
+      expect((await control.boundingBox())?.height).toBeLessThan(60);
+      const panel = control.locator('..');
+      const readPanelHeight = async () => {
+        const bounds = await panel.boundingBox();
+        if (!bounds) throw new Error('Expected a visible prompt panel');
+        return bounds.height;
+      };
+      const compactHeight = await readPanelHeight();
+      const actionStyle = await reveal.evaluate((button) => ({
+        background: getComputedStyle(button).backgroundColor,
+        height: button.getBoundingClientRect().height,
+      }));
+      expect(actionStyle.height).toBeLessThanOrEqual(26);
+      expect(actionStyle.background).not.toBe('rgb(239, 239, 239)');
+      expect(actionStyle.background).not.toBe('rgb(255, 255, 255)');
+      await reveal.focus();
+      await reveal.press('Enter');
+      const draft = control.getByRole('textbox');
+      await expect(draft).toHaveValue(prompt);
+      await expect(draft).toHaveAttribute('readonly', '');
+      await expect(draft).toBeInViewport({ ratio: 1 });
+      await expect(control.getByRole('button', { name: 'Send initial prompt' })).toHaveCount(0);
+      const copy = control.getByRole('button', { name: 'Copy draft', exact: true });
+      await expect(copy).toBeEnabled();
+      await expect(copy).toBeInViewport({ ratio: 1 });
+      const expandedHeight = await readPanelHeight();
+      await control.getByRole('button', { name: 'Refresh status', exact: true }).click();
+      await expect(draft).toHaveValue(prompt);
+      expect(Math.abs((await readPanelHeight()) - expandedHeight)).toBeLessThan(0.5);
+      await browserLab.waitForTerminalReady(page);
+      const output = await browserLab.invokeIpc<string>(request, IPC.GetAgentScrollback, {
+        agentId,
+      });
+      expect(Buffer.from(output, 'base64').toString('utf8')).not.toContain(prompt);
+      await control.getByRole('button', { name: 'Hide draft', exact: true }).click();
+      await expect(draft).toBeHidden();
+      await expect
+        .poll(async () => Math.abs((await readPanelHeight()) - compactHeight))
+        .toBeLessThan(0.5);
+      await reveal.click();
+    }
+    await test.info().attach('legacy-replaced-agent-recovery', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
   });
 });

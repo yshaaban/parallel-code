@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { createRenderEffect, createSignal, For, Show, type JSX } from 'solid-js';
+import {
+  createRenderEffect,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+  untrack,
+  type JSX,
+} from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setStore } from '../store/core';
+import { setStore, store } from '../store/core';
 import {
   createTestAgent,
   createTestProject,
@@ -207,10 +215,27 @@ vi.mock('./ScalablePanel', () => ({
 }));
 
 vi.mock('./ResizablePanel', () => ({
-  ResizablePanel: (props: { children: Array<{ id: string; content: () => JSX.Element }> }) => (
+  ResizablePanel: (props: {
+    children: Array<{
+      id: string;
+      initialSize?: number;
+      minSize?: number;
+      requestSize?: () => number | undefined;
+      content: () => JSX.Element;
+    }>;
+  }) => (
     <div>
       <For each={props.children}>
-        {(child) => <div data-panel-id={child.id}>{child.content()}</div>}
+        {(child) => (
+          <div
+            data-panel-id={child.id}
+            data-initial-size={child.initialSize}
+            data-min-size={child.minSize}
+            data-request-size={child.requestSize?.()}
+          >
+            {child.content()}
+          </div>
+        )}
       </For>
     </div>
   ),
@@ -249,26 +274,44 @@ vi.mock('./TaskBranchInfoBar', () => ({
 
 vi.mock('./PromptInput', () => ({
   PromptInput: (props: {
+    agentId: string;
+    initialPromptRetired?: boolean;
+    onInitialPromptDetailsToggle?: (expanded: boolean) => void;
+    onInitialPromptUnsavedChange?: (unsaved: boolean) => void;
     setTextareaRef?: (element: HTMLTextAreaElement | undefined) => void;
     onHandle?: (
       handle: { getText: () => string; setText: (value: string) => void } | undefined,
     ) => void;
   }) => {
     let textarea!: HTMLTextAreaElement;
+    const initialAgentId = untrack(() => props.agentId);
+    onCleanup(() => props.onInitialPromptUnsavedChange?.(false));
     return (
-      <textarea
-        aria-label="Prompt input"
-        ref={(element) => {
-          textarea = element;
-          props.setTextareaRef?.(element);
-          props.onHandle?.({
-            getText: () => textarea.value,
-            setText: (value: string) => {
-              textarea.value = value;
-            },
-          });
-        }}
-      />
+      <>
+        <button onClick={() => props.onInitialPromptDetailsToggle?.(true)}>Review draft</button>
+        <button onClick={() => props.onInitialPromptDetailsToggle?.(false)}>Hide draft</button>
+        <Show when={props.initialPromptRetired}>
+          <button onClick={() => props.onInitialPromptUnsavedChange?.(false)}>
+            Resolve recovered draft
+          </button>
+        </Show>
+        <textarea
+          aria-label="Prompt input"
+          data-initial-agent-id={initialAgentId}
+          readOnly={props.initialPromptRetired}
+          onInput={() => props.onInitialPromptUnsavedChange?.(true)}
+          ref={(element) => {
+            textarea = element;
+            props.setTextareaRef?.(element);
+            props.onHandle?.({
+              getText: () => textarea.value,
+              setText: (value: string) => {
+                textarea.value = value;
+              },
+            });
+          }}
+        />
+      </>
     );
   },
 }));
@@ -429,6 +472,83 @@ describe('TaskPanel', () => {
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it('retains task-owned initial draft and unsaved protection while switching selected agents', () => {
+    setStore('tasks', 'task-1', 'agentIds', ['agent-1', 'agent-2']);
+    setStore('tasks', 'task-1', 'initialPromptDeliveryId', 'delivery-1');
+    setStore('agents', 'agent-2', createTestAgent({ id: 'agent-2' }));
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+    render(() => <TaskPanel task={store.tasks['task-1']} isActive />);
+    const draft = screen.getByLabelText<HTMLTextAreaElement>('Prompt input');
+    const terminal = screen.getByText('AI terminal');
+    expect(draft.closest('[data-panel-id="prompt"]')?.getAttribute('data-initial-size')).toBe('72');
+    expect(draft.closest('[data-panel-id="prompt"]')?.getAttribute('data-min-size')).toBe('54');
+    fireEvent.input(draft, { target: { value: 'Unsaved original delivery draft' } });
+    draft.setSelectionRange(3, 12);
+
+    for (const selectedAgentId of ['agent-2', 'agent-1', 'agent-2']) {
+      setStore('activeAgentId', selectedAgentId);
+      expect(screen.getByLabelText('Prompt input')).toBe(draft);
+      expect(draft.value).toBe('Unsaved original delivery draft');
+      expect([draft.selectionStart, draft.selectionEnd]).toEqual([3, 12]);
+      expect(screen.getByText('AI terminal')).toBe(terminal);
+    }
+    expect(draft.getAttribute('data-initial-agent-id')).toBe('agent-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse task' }));
+    expect(collapseTaskMock).not.toHaveBeenCalled();
+    expect(showNotificationMock).toHaveBeenCalledWith(expect.stringContaining('finish saving'));
+
+    setStore('tasks', 'task-1', 'initialPromptDeliveryId', undefined);
+    expect(screen.getByLabelText('Prompt input')).toBe(draft);
+    expect(draft.value).toBe('Unsaved original delivery draft');
+    expect(draft.readOnly).toBe(true);
+    setStore('tasks', 'task-1', 'initialPromptDeliveryId', 'replacement-delivery');
+    expect(screen.getByLabelText('Prompt input')).toBe(draft);
+    expect(draft.value).toBe('Unsaved original delivery draft');
+    setStore('tasks', 'task-1', 'initialPromptDeliveryId', undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve recovered draft' }));
+    expect(screen.getByLabelText('Prompt input')).not.toBe(draft);
+    expect(screen.getByLabelText('Prompt input').getAttribute('data-initial-agent-id')).toBe(
+      'agent-2',
+    );
+    expect((screen.getByLabelText('Prompt input') as HTMLTextAreaElement).readOnly).toBe(false);
+  });
+
+  it('requests space only for explicit draft disclosure and restores the previous height', async () => {
+    setStore('tasks', 'task-1', 'initialPromptDeliveryId', 'delivery-1');
+    render(() => <TaskPanel task={store.tasks['task-1']} isActive />);
+    const draft = screen.getByLabelText<HTMLTextAreaElement>('Prompt input');
+    const terminal = screen.getByText('AI terminal');
+    const promptPanel = draft.closest('[data-panel-id="prompt"]');
+    const promptContent = draft.parentElement;
+    if (!promptPanel || !promptContent) throw new Error('Expected the task-owned prompt panel');
+    let renderedHeight = 108;
+    vi.spyOn(promptContent, 'getBoundingClientRect').mockImplementation(
+      () => ({ height: renderedHeight }) as DOMRect,
+    );
+    expect(promptPanel.hasAttribute('data-request-size')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Review draft' }));
+    expect(promptPanel.getAttribute('data-request-size')).toBe('200');
+    await Promise.resolve();
+    expect(promptPanel.hasAttribute('data-request-size')).toBe(false);
+    renderedHeight = 245;
+    setStore('tasks', 'task-1', 'name', 'Unrelated live update');
+    expect(promptPanel.hasAttribute('data-request-size')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Hide draft' }));
+    expect(promptPanel.getAttribute('data-request-size')).toBe('108');
+    await Promise.resolve();
+    expect(promptPanel.hasAttribute('data-request-size')).toBe(false);
+    expect(screen.getByLabelText('Prompt input')).toBe(draft);
+    expect(screen.getByText('AI terminal')).toBe(terminal);
+
+    // A manually enlarged compact panel must not shrink when its draft is opened.
+    fireEvent.click(screen.getByRole('button', { name: 'Review draft' }));
+    expect(promptPanel.getAttribute('data-request-size')).toBe('245');
+    await Promise.resolve();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide draft' }));
+    expect(promptPanel.getAttribute('data-request-size')).toBe('245');
   });
 
   it.each(['editor', 'button'])(

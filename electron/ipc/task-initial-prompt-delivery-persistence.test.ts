@@ -393,9 +393,13 @@ describe('durable initial prompt persistence', () => {
       await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
       expect((await storage.loadCurrent()).record).toEqual(before);
       expect(await persistence.journal.load(deliveryId)).toBeNull();
-      expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toContain(
-        'cannot be recovered safely',
-      );
+      expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toEqual({
+        deliveryId,
+        kind: 'recovery-unavailable',
+        reason: 'legacy-draft-identity-mismatch',
+        savedDraft: _label === 'edited draft' ? 'A newer saved draft' : 'Ship it',
+        taskId: 'task-1',
+      });
     },
   );
 
@@ -413,6 +417,29 @@ describe('durable initial prompt persistence', () => {
     expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toBeNull();
     expect(await persistence.getMissingLegacyDeliveryIssue('legacy:unknown')).toBeNull();
   });
+
+  it.each(['\ud800', 'a'.repeat(65_537)])(
+    'does not put malformed or oversized saved text in the recovery response',
+    async (initialPrompt) => {
+      const { cutover, deliveryId } = await activatePromptOwner();
+      await workspace
+        .createPrivateMutationAuthority()
+        .mutate({ operation: 'seed-unusable-legacy-text' }, (slices) => {
+          const shared = cloneJsonObject(slices.sharedState);
+          const task = getTask(shared, 'task-1');
+          if (!task) throw new Error('fixture task missing');
+          task.initialPrompt = initialPrompt;
+          return changed({ nextSharedState: shared }, undefined);
+        });
+      const before = (await storage.loadCurrent()).record;
+      await persistence.recoverLegacyDrafts(cutover.cutoverEpoch, () => true);
+      expect(await persistence.getMissingLegacyDeliveryIssue(deliveryId)).toMatchObject({
+        kind: 'recovery-unavailable',
+        savedDraft: null,
+      });
+      expect((await storage.loadCurrent()).record).toEqual(before);
+    },
+  );
 
   it('retains the original canonical draft and missing journal on a failed recovery write', async () => {
     const { cutover, deliveryId } = await activatePromptOwner();

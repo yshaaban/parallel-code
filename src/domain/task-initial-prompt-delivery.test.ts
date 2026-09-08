@@ -13,6 +13,7 @@ import {
   isSendTaskInitialPromptManuallyRequest,
   isSendTaskInitialPromptManuallyResult,
   isTaskInitialPromptDeliveryProjection,
+  isTaskInitialPromptDeliveryRecoveryIssue,
   isTaskInitialPromptDeliverySnapshot,
   isManualInitialPromptSendTerminalPhase,
   isTaskInitialPromptDraftWithinLimit,
@@ -40,6 +41,33 @@ function snapshot(
 }
 
 describe('initial prompt delivery domain contract', () => {
+  it('keeps read-only recovery issues separate from delivery and send authority', () => {
+    const issue = {
+      deliveryId: 'legacy:task-1:old-agent:fingerprint',
+      kind: 'recovery-unavailable',
+      reason: 'legacy-draft-identity-mismatch',
+      savedDraft: 'Preserve this exact draft 🦊',
+      serverInstanceId: 'server-1',
+      taskId: 'task-1',
+    };
+    expect(isTaskInitialPromptDeliveryRecoveryIssue(issue)).toBe(true);
+    expect(isTaskInitialPromptDeliveryRecoveryIssue({ ...issue, savedDraft: null })).toBe(true);
+    expect(isTaskInitialPromptDeliveryProjection(issue)).toBe(false);
+    expect(isSendTaskInitialPromptManuallyRequest(issue)).toBe(false);
+    expect(isReviseTaskInitialPromptDraftRequest(issue)).toBe(false);
+    for (const change of [
+      { deliveryId: '' },
+      { taskId: '' },
+      { serverInstanceId: '' },
+      { kind: 'delivered' },
+      { reason: 'unknown' },
+      { savedDraft: '\ud800' },
+      { savedDraft: 'a'.repeat(TASK_INITIAL_PROMPT_DRAFT_MAX_UTF8_BYTES + 1) },
+      { delivery: snapshot() },
+    ]) {
+      expect(isTaskInitialPromptDeliveryRecoveryIssue({ ...issue, ...change })).toBe(false);
+    }
+  });
   it('keeps unknown prior delivery distinct from zero attempts through edits and rejects automatic states with unknown history', () => {
     const recovered = snapshot({ priorDeliveryUnknown: true, status: 'manual-required' });
     expect(isTaskInitialPromptDeliverySnapshot(recovered)).toBe(true);

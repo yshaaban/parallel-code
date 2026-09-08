@@ -8,8 +8,11 @@ import type {
   AgentSupervisionEvent,
   AgentSupervisionSnapshot,
 } from '../../src/domain/server-state.js';
+import type { TaskRemovalCurrentProjection } from '../../src/domain/task-catalog.js';
+import type { TaskRemovalParticipantGate } from '../../src/domain/task-removal-owner.js';
 import {
   deriveManualInitialPromptSendOperationId,
+  deriveTaskInitialPromptDraftFingerprint,
   TASK_INITIAL_PROMPT_HOOK_SET_VERSION,
   TASK_INITIAL_PROMPT_QUIESCENCE_MS,
   TASK_INITIAL_PROMPT_READINESS_POLICY,
@@ -35,7 +38,7 @@ import {
   readTaskPromptInputAdmissionCurrentState,
 } from './task-prompt-input-handler.js';
 import type { TaskStructureMutationService } from './task-structure-mutations.js';
-import { WorkspaceMutationService } from './workspace-state-mutations.js';
+import { changed, WorkspaceMutationService } from './workspace-state-mutations.js';
 import { createStandaloneWorkspaceStateStorage } from './workspace-state-storage.js';
 
 const FINGERPRINT = 'ab'.repeat(32);
@@ -131,22 +134,25 @@ function createHarness(
     },
     verifyPromptProtectionCutover: vi.fn(async () => undefined),
   };
-  const current = {
+  const current: TaskRemovalCurrentProjection = {
     catalogVersion: 2,
     serverInstanceId: 'server-1',
     taskClosing: false,
     taskState: 'present' as const,
   };
   const gate = {
-    getTaskSnapshot: vi.fn(() =>
-      options.removalActive === false
-        ? ({ kind: 'unavailable' as const } as const)
-        : ({
-            current,
-            cutoverEpoch: 'epoch-1',
-            hookSetVersion: TASK_INITIAL_PROMPT_HOOK_SET_VERSION,
-            kind: 'active' as const,
-          } as const),
+    getTaskSnapshot: vi.fn(
+      (): ReturnType<
+        TaskRemovalParticipantGate<typeof TASK_INITIAL_PROMPT_HOOK_SET_VERSION>['getTaskSnapshot']
+      > =>
+        options.removalActive === false
+          ? ({ kind: 'unavailable' as const } as const)
+          : ({
+              current,
+              cutoverEpoch: 'epoch-1',
+              hookSetVersion: TASK_INITIAL_PROMPT_HOOK_SET_VERSION,
+              kind: 'active' as const,
+            } as const),
     ),
     verifyCommittedRemoval: vi.fn(() => true),
   };
@@ -326,6 +332,151 @@ describe('production initial prompt runtime activation', () => {
     }
   });
 
+  it('returns a read-only saved draft when the original legacy agent was replaced before recovery', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-replaced-prompt-agent-'));
+    const storage = await createStandaloneWorkspaceStateStorage({
+      isPackaged: true,
+      userDataPath: root,
+    });
+    const workspace = new WorkspaceMutationService(storage);
+    const persistence = createWorkspaceTaskInitialPromptPersistence(workspace);
+    const harness = createHarness({ persistence });
+    try {
+      await workspace.replaceSharedState(
+        { operation: 'seed-legacy-task' },
+        {
+          tasks: {
+            'task-1': {
+              agentId: 'original-agent',
+              id: 'task-1',
+              savedInitialPrompt: 'Preserve this saved draft',
+              taskMode: 'agent',
+            },
+          },
+        },
+        undefined,
+      );
+      await persistence.ensureDarkJournalReady();
+      await persistence.activatePromptProtectionAndDisableLegacyWriters('epoch-1');
+      const tasks = (await storage.loadCurrent()).record.sharedState.tasks as Record<
+        string,
+        { initialPromptDeliveryId: string }
+      >;
+      const deliveryId = tasks['task-1'].initialPromptDeliveryId;
+      await workspace
+        .createPrivateMutationAuthority()
+        .mutate({ operation: 'replace-original-agent' }, (slices) =>
+          changed(
+            {
+              nextSharedState: {
+                ...slices.sharedState,
+                tasks: { 'task-1': { ...tasks['task-1'], agentId: 'replacement-agent' } },
+              },
+            },
+            undefined,
+          ),
+        );
+      const before = (await storage.loadCurrent()).record;
+      await harness.runtime.activate();
+      await expect(harness.runtime.getHandlers()?.getProjection(deliveryId)).resolves.toEqual({
+        deliveryId,
+        kind: 'recovery-unavailable',
+        reason: 'legacy-draft-identity-mismatch',
+        savedDraft: 'Preserve this saved draft',
+        serverInstanceId: 'server-1',
+        taskId: 'task-1',
+      });
+      const fingerprint = deriveTaskInitialPromptDraftFingerprint({
+        agentId: 'replacement-agent',
+        readinessPolicy: TASK_INITIAL_PROMPT_READINESS_POLICY,
+        taskId: 'task-1',
+        text: 'Preserve this saved draft',
+      });
+      await expect(
+        harness.runtime.getHandlers()?.sendManually({
+          ...MANUAL_REQUEST,
+          agentId: 'replacement-agent',
+          confirmPossiblePriorAutomaticWrite: true,
+          deliveryId,
+          expectedDraftFingerprint: fingerprint,
+          manualSendOperationId: deriveManualInitialPromptSendOperationId({
+            acknowledgedDraftFingerprint: fingerprint,
+            acknowledgedEditRevision: 0,
+            deliveryId,
+          }),
+        }),
+      ).resolves.toMatchObject({ kind: 'domain-rejected', recovery: { kind: 'none' } });
+      await expect(
+        harness.runtime.getHandlers()?.reviseDraft({
+          editOperationId: 'read-only-edit',
+          expectedDraftFingerprint: fingerprint,
+          expectedEditRevision: 0,
+          revisedText: 'Must not replace the saved draft',
+          sourceDeliveryId: deliveryId,
+          taskId: 'task-1',
+        }),
+      ).resolves.toEqual({ current: null, kind: 'delivery-closed' });
+      expect(await persistence.journal.load(deliveryId)).toBeNull();
+      expect((await storage.loadCurrent()).record).toEqual(before);
+      expect(harness.acquireLease).not.toHaveBeenCalled();
+      expect(harness.writeFrame).not.toHaveBeenCalled();
+    } finally {
+      await harness.runtime.close();
+      await storage.close();
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it.each(['closing', 'missing', 'epoch-changed', 'closed'] as const)(
+    'does not disclose a recovery draft when its task or owner becomes %s during inspection',
+    async (state) => {
+      const harness = createHarness();
+      const deliveryId = 'legacy:task-1:original-agent:missing';
+      await harness.runtime.activate();
+      vi.mocked(harness.persistence.getMissingLegacyDeliveryIssue).mockImplementationOnce(
+        async () => {
+          if (state === 'closed') await harness.runtime.close();
+          else if (state === 'closing') harness.setTaskClosing(true);
+          else {
+            const gate = harness.gate.getTaskSnapshot();
+            if (gate.kind !== 'active') throw new Error('fixture gate unavailable');
+            harness.gate.getTaskSnapshot.mockReturnValue({
+              ...gate,
+              ...(state === 'epoch-changed' ? { cutoverEpoch: 'another-epoch' } : {}),
+              current: {
+                ...gate.current,
+                ...(state === 'missing' ? { taskState: 'not-visible' as const } : {}),
+              },
+            });
+          }
+          return {
+            deliveryId,
+            kind: 'recovery-unavailable',
+            reason: 'legacy-draft-identity-mismatch',
+            savedDraft: 'Private saved text',
+            taskId: 'task-1',
+          };
+        },
+      );
+      await expect(harness.runtime.service.getProjection(deliveryId)).resolves.toBeNull();
+      expect(harness.acquireLease).not.toHaveBeenCalled();
+      expect(harness.writeFrame).not.toHaveBeenCalled();
+      await harness.runtime.close();
+    },
+  );
+
+  it('does not convert unexpected persistence failures into a recoverable draft issue', async () => {
+    const harness = createHarness();
+    await harness.runtime.activate();
+    vi.mocked(harness.persistence.getMissingLegacyDeliveryIssue).mockRejectedValueOnce(
+      new Error('private storage unavailable'),
+    );
+    await expect(harness.runtime.service.getProjection('legacy:missing')).rejects.toThrow(
+      'private storage unavailable',
+    );
+    await harness.runtime.close();
+  });
+
   it('stays effect-free and handler-dark before the exact removal cutover', async () => {
     const harness = createHarness();
     await harness.runtime.startup();
@@ -389,9 +540,9 @@ describe('production initial prompt runtime activation', () => {
       'deliver initial prompt',
     );
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
     expect(harness.getDraft()).not.toBeNull();
 
     harness.emit({
@@ -407,9 +558,9 @@ describe('production initial prompt runtime activation', () => {
       updatedAt: 3_600,
     });
     await vi.waitFor(async () => {
-      expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-        'delivered',
-      );
+      await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+        delivery: { status: 'delivered' },
+      });
     });
     expect(harness.getDraft()).toBeNull();
     expect(harness.releaseLease).toHaveBeenCalledWith(
@@ -429,9 +580,9 @@ describe('production initial prompt runtime activation', () => {
     const harness = createHarness({ runningAgent: false });
     await harness.runtime.activate();
     await harness.runtime.service.queue(REQUEST);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'waiting-agent-session',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'waiting-agent-session' },
+    });
     expect(harness.writeFrame).not.toHaveBeenCalled();
 
     harness.setRunningAgent(true);
@@ -450,9 +601,9 @@ describe('production initial prompt runtime activation', () => {
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
 
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('discovers a silently restored agent session without relying on a supervision event', async () => {
@@ -464,9 +615,9 @@ describe('production initial prompt runtime activation', () => {
     await vi.advanceTimersByTimeAsync(1_000 + TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
 
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('keeps discovering a silent agent session after the ready deadline would have elapsed', async () => {
@@ -475,18 +626,18 @@ describe('production initial prompt runtime activation', () => {
     await harness.runtime.service.queue(REQUEST);
 
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_READY_DEADLINE_MS + 1_000);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'waiting-agent-session',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'waiting-agent-session' },
+    });
     expect(harness.writeFrame).not.toHaveBeenCalled();
 
     harness.setRunningAgent(true);
     await vi.advanceTimersByTimeAsync(1_000 + TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
 
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('safety-observes prompt readiness when a same-preview update emits no event', async () => {
@@ -532,9 +683,9 @@ describe('production initial prompt runtime activation', () => {
     await harness.runtime.activate();
     await harness.runtime.service.queue(REQUEST);
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
 
     harness.setScrollback('Parallel Code\n❯ Please inspect the repository\n❯');
     harness.setSupervision({
@@ -551,9 +702,9 @@ describe('production initial prompt runtime activation', () => {
     });
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
 
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'delivered',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'delivered' },
+    });
     expect(harness.getDraft()).toBeNull();
   });
 
@@ -562,16 +713,16 @@ describe('production initial prompt runtime activation', () => {
     await harness.runtime.activate();
     await harness.runtime.service.queue(REQUEST);
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
 
     harness.setRunningAgent(false);
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_VERIFICATION_WINDOW_MS);
 
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'manual-required',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'manual-required' },
+    });
     expect(harness.releaseLease).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_VERIFICATION_WINDOW_MS);
@@ -591,9 +742,9 @@ describe('production initial prompt runtime activation', () => {
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_RETRY_BACKOFF_MS);
 
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('rearms safety observation after a transient journal read failure', async () => {
@@ -607,9 +758,9 @@ describe('production initial prompt runtime activation', () => {
 
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_RETRY_BACKOFF_MS);
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('keeps the next safety observation armed when projection loading throws', async () => {
@@ -666,9 +817,9 @@ describe('production initial prompt runtime activation', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
   });
 
   it('retries a null terminal projection without runtime or another status change', async () => {
@@ -679,9 +830,9 @@ describe('production initial prompt runtime activation', () => {
     await harness.runtime.service.queue(REQUEST);
     await vi.advanceTimersByTimeAsync(TASK_INITIAL_PROMPT_STABLE_OBSERVATION_MS);
     expect(harness.writeFrame).toHaveBeenCalledTimes(1);
-    expect((await harness.runtime.service.getProjection('delivery-1'))?.delivery.status).toBe(
-      'verifying',
-    );
+    await expect(harness.runtime.service.getProjection('delivery-1')).resolves.toMatchObject({
+      delivery: { status: 'verifying' },
+    });
 
     observer.mockClear();
     harness.setRunningAgent(false);

@@ -370,6 +370,39 @@ describe('task reliability renderer client', () => {
     ).rejects.toThrow('Invalid initial-prompt projection response');
   });
 
+  it('validates read-only legacy recovery without admitting draft writes', async () => {
+    const raw = createRawTransport();
+    const client = createTaskReliabilityClient(raw.transport);
+    raw.transport.capabilities.read.mockResolvedValue(capabilities());
+    await client.refreshCapabilities();
+    const issue = {
+      deliveryId: 'delivery-1',
+      kind: 'recovery-unavailable',
+      reason: 'legacy-draft-identity-mismatch',
+      savedDraft: promptText,
+      serverInstanceId: 'server-1',
+      taskId: 'task-1',
+    };
+    raw.transport.initialPromptDelivery.getProjection.mockResolvedValue(issue);
+    await expect(
+      client.initialPromptDelivery.getProjection({ deliveryId: 'delivery-1' }),
+    ).resolves.toEqual(issue);
+    expect(raw.transport.initialPromptDelivery.sendManually).not.toHaveBeenCalled();
+    expect(raw.transport.initialPromptDelivery.reviseDraft).not.toHaveBeenCalled();
+
+    for (const invalid of [
+      { ...issue, serverInstanceId: 'previous-server' },
+      { ...issue, deliveryId: 'different-delivery' },
+      { ...issue, reason: 'unrecognized-reason' },
+      { ...issue, currentDraft: promptProjection().currentDraft },
+    ]) {
+      raw.transport.initialPromptDelivery.getProjection.mockResolvedValue(invalid);
+      await expect(
+        client.initialPromptDelivery.getProjection({ deliveryId: 'delivery-1' }),
+      ).rejects.toThrow(/Invalid initial-prompt (?:recovery|projection)/u);
+    }
+  });
+
   it('rejects validly shaped responses correlated to another request', async () => {
     const raw = createRawTransport();
     const client = createTaskReliabilityClient(raw.transport);
@@ -516,6 +549,41 @@ describe('task reliability renderer client', () => {
     client.dispose();
     client.dispose();
     await expect(client.refreshCapabilities()).resolves.toMatchObject({ kind: 'dark' });
+  });
+
+  it('notifies every mounted consumer after revoking capabilities on restart', async () => {
+    const raw = createRawTransport();
+    const client = createTaskReliabilityClient(raw.transport);
+    raw.transport.capabilities.read.mockResolvedValue(capabilities());
+    await client.refreshCapabilities();
+    const observed: unknown[] = [];
+    const first = vi.fn((event) => {
+      observed.push(client.getCapabilities());
+      expect(event.kind).toBe('task-reliability-capabilities-invalidated');
+    });
+    const second = vi.fn();
+    client.subscribe(first);
+    client.subscribe(second);
+    const event = {
+      kind: 'task-reliability-capabilities-invalidated',
+      serverInstanceId: 'server-1',
+    };
+
+    raw.emit(event);
+    raw.emit(event);
+
+    expect(first).toHaveBeenCalledExactlyOnceWith(event);
+    expect(second).toHaveBeenCalledExactlyOnceWith(event);
+    expect(observed).toEqual([expect.objectContaining({ kind: 'dark' })]);
+    await expect(
+      client.initialPromptDelivery.sendManually(manualSendRequest()),
+    ).rejects.toBeInstanceOf(TaskReliabilityCapabilityError);
+    expect(raw.transport.initialPromptDelivery.sendManually).not.toHaveBeenCalled();
+
+    await client.refreshCapabilities();
+    raw.emit(event);
+    expect(first).toHaveBeenCalledTimes(2);
+    expect(second).toHaveBeenCalledTimes(2);
   });
 
   it('does not apply a response after its capability epoch is invalidated', async () => {

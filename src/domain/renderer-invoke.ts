@@ -73,7 +73,7 @@ import type {
   ReviseTaskInitialPromptDraftResult,
   SendTaskInitialPromptManuallyRequest,
   SendTaskInitialPromptManuallyResult,
-  TaskInitialPromptDeliveryProjection,
+  TaskInitialPromptDeliveryProjectionResult,
 } from './task-initial-prompt-delivery.js';
 import type { ActiveTaskReliabilityRuntimeCapabilities } from './task-reliability-runtime.js';
 import type {
@@ -231,6 +231,7 @@ export type TerminalSessionUnavailableReason =
   | Extract<ManagedAgentSessionRestoreResult, { kind: 'unavailable' }>['reason']
   | Extract<ManagedTaskShellSessionRestoreResult, { kind: 'unavailable' }>['reason']
   | 'channel-unavailable'
+  | 'task-control-unavailable'
   | 'task-shell-restore-unavailable';
 
 export type AttachTerminalSessionResult =
@@ -805,7 +806,7 @@ export interface RendererInvokeResponseMap {
   [IPC.ExecuteAgentSessionOperation]: AgentSessionOperationResult;
   [IPC.GetAgentSessionOperationProjection]: AgentSessionOperationProjection | null;
   [IPC.GetTaskReliabilityCapabilities]: ActiveTaskReliabilityRuntimeCapabilities;
-  [IPC.GetInitialPromptDeliveryProjection]: TaskInitialPromptDeliveryProjection | null;
+  [IPC.GetInitialPromptDeliveryProjection]: TaskInitialPromptDeliveryProjectionResult;
   [IPC.ResolveInitialPromptAmbiguity]: ResolveManualInitialPromptSendAmbiguityResult;
   [IPC.ReviseInitialPromptDraft]: ReviseTaskInitialPromptDraftResult;
   [IPC.SendInitialPromptManually]: SendTaskInitialPromptManuallyResult;

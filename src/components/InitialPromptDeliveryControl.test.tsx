@@ -1,4 +1,5 @@
 import { fireEvent, render } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,8 +11,10 @@ import {
   type TaskInitialPromptDeliveryProjection,
   type TaskInitialPromptDraftSnapshot,
 } from '../domain/task-initial-prompt-delivery';
+import type { TaskReliabilityRuntimeEvent } from '../domain/task-reliability-runtime';
 
 const {
+  confirmMock,
   getProjectionMock,
   refreshCapabilitiesMock,
   resolveAmbiguityMock,
@@ -19,13 +22,16 @@ const {
   sendManuallyMock,
   subscribeMock,
 } = vi.hoisted(() => ({
+  confirmMock: vi.fn(),
   getProjectionMock: vi.fn(),
   refreshCapabilitiesMock: vi.fn(),
   resolveAmbiguityMock: vi.fn(),
   reviseDraftMock: vi.fn(),
   sendManuallyMock: vi.fn(),
-  subscribeMock: vi.fn(() => vi.fn()),
+  subscribeMock: vi.fn((_listener: (event: TaskReliabilityRuntimeEvent) => void) => vi.fn()),
 }));
+
+vi.mock('../lib/dialog', () => ({ confirm: confirmMock }));
 
 vi.mock('../app/task-reliability-production', () => ({
   getProductionTaskReliabilityClient: () => ({
@@ -126,6 +132,12 @@ function renderControl(
   ));
 }
 
+async function openDraft(result: ReturnType<typeof renderControl>): Promise<void> {
+  (
+    await result.findByRole('button', { name: /^(Review draft|View draft|View saved draft)$/ })
+  ).click();
+}
+
 describe('InitialPromptDeliveryControl', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -169,6 +181,7 @@ describe('InitialPromptDeliveryControl', () => {
     });
     const inspectTerminal = vi.fn();
     let result = renderControl({ onInspectTerminal: inspectTerminal });
+    await openDraft(result);
     expect(
       await result.findByText(
         'Previous delivery is unknown. Inspect the terminal before sending this saved prompt.',
@@ -187,6 +200,7 @@ describe('InitialPromptDeliveryControl', () => {
     expect(sendManuallyMock.mock.calls[0]?.[0].confirmPossiblePriorAutomaticWrite).toBe(false);
     result.unmount();
     result = renderControl({ onInspectTerminal: inspectTerminal });
+    await openDraft(result);
     const confirm = await result.findByRole('button', { name: 'Confirm send' });
     expect(sendManuallyMock).toHaveBeenCalledOnce();
     confirm.click();
@@ -200,8 +214,8 @@ describe('InitialPromptDeliveryControl', () => {
 
   it('offers inspection but no send for an unrecoverable legacy identity and clears the error after a successful refresh', async () => {
     const message =
-      'This saved prompt no longer matches its original task or draft. It cannot be recovered safely.';
-    getProjectionMock.mockRejectedValueOnce(new Error(message));
+      'Initial-prompt status is unavailable. Refresh or inspect the terminal before sending.';
+    getProjectionMock.mockRejectedValueOnce(new Error('Internal error'));
     const inspectTerminal = vi.fn();
     const result = renderControl({ onInspectTerminal: inspectTerminal });
     expect(await result.findByText(message)).toBeTruthy();
@@ -209,6 +223,7 @@ describe('InitialPromptDeliveryControl', () => {
     result.getByRole('button', { name: 'Inspect terminal' }).click();
     expect(inspectTerminal).toHaveBeenCalledWith('agent-1');
     result.getByRole('button', { name: 'Refresh status' }).click();
+    await openDraft(result);
     expect(await result.findByLabelText('Initial prompt draft')).toBeTruthy();
     expect(result.queryByText(message)).toBeNull();
     expect(sendManuallyMock).not.toHaveBeenCalled();
@@ -221,6 +236,7 @@ describe('InitialPromptDeliveryControl', () => {
       }),
     );
     const result = renderControl({ readOnly: true });
+    await openDraft(result);
     const textarea = (await result.findByLabelText('Initial prompt draft')) as HTMLTextAreaElement;
     expect(textarea.readOnly).toBe(true);
     const send = result.getByRole('button', { name: 'Send initial prompt' }) as HTMLButtonElement;
@@ -238,6 +254,7 @@ describe('InitialPromptDeliveryControl', () => {
       recovery: { kind: 'none' },
     });
     const result = renderControl();
+    await openDraft(result);
     (await result.findByRole('button', { name: 'Send initial prompt' })).click();
     await vi.waitFor(() => expect(getProjectionMock).toHaveBeenCalledTimes(2));
     expect(result.getByText('You no longer control this task.')).toBeTruthy();
@@ -253,6 +270,7 @@ describe('InitialPromptDeliveryControl', () => {
         }),
     );
     const result = renderControl({ onUnsavedChange });
+    await openDraft(result);
     const textarea = (await result.findByLabelText('Initial prompt draft')) as HTMLTextAreaElement;
     const sendButton = result.getByRole('button', { name: 'Send initial prompt' });
 
@@ -299,6 +317,7 @@ describe('InitialPromptDeliveryControl', () => {
     });
     const inspectTerminal = vi.fn();
     const result = renderControl({ onInspectTerminal: inspectTerminal });
+    await openDraft(result);
 
     expect(await result.findByText(/write outcome is uncertain/i)).toBeTruthy();
     expect(result.queryByRole('button', { name: /send initial prompt/i })).toBeNull();
@@ -325,6 +344,7 @@ describe('InitialPromptDeliveryControl', () => {
       projection({ manualSendOperation: operation('confirmation-required') }),
     );
     const result = renderControl();
+    await openDraft(result);
 
     const confirm = await result.findByRole('button', { name: 'Confirm send' });
     confirm.click();
@@ -344,6 +364,7 @@ describe('InitialPromptDeliveryControl', () => {
     });
     reviseDraftMock.mockResolvedValue({ current: revised, kind: 'saved-manual-draft' });
     const result = renderControl();
+    await openDraft(result);
 
     const textarea = (await result.findByLabelText('Initial prompt draft')) as HTMLTextAreaElement;
     expect(result.getByRole('button', { name: 'Retry safe send' })).toBeTruthy();
@@ -372,6 +393,7 @@ describe('InitialPromptDeliveryControl', () => {
 
   it('disables editing and sending for peer control or a stale agent generation', async () => {
     const readOnlyResult = renderControl({ readOnly: true });
+    await openDraft(readOnlyResult);
     const readOnlyDraft = (await readOnlyResult.findByLabelText(
       'Initial prompt draft',
     )) as HTMLTextAreaElement;
@@ -383,6 +405,7 @@ describe('InitialPromptDeliveryControl', () => {
     readOnlyResult.unmount();
 
     const staleResult = renderControl({ agentGeneration: 5 });
+    await openDraft(staleResult);
     const staleSend = (await staleResult.findByRole('button', {
       name: 'Send initial prompt',
     })) as HTMLButtonElement;
@@ -396,6 +419,7 @@ describe('InitialPromptDeliveryControl', () => {
       agentId: 'agent-2',
       getAgentGeneration: (targetAgentId) => (targetAgentId === 'agent-1' ? 4 : 9),
     });
+    await openDraft(result);
 
     const send = await result.findByRole('button', { name: 'Send initial prompt' });
     expect((send as HTMLButtonElement).disabled).toBe(false);
@@ -408,5 +432,255 @@ describe('InitialPromptDeliveryControl', () => {
       expectedAgentGeneration: 4,
       taskId: 'task-1',
     });
+  });
+
+  it('starts compact and retains the same editor and selection through disclosure and fresh projections', async () => {
+    const onDetailsToggle = vi.fn();
+    const result = renderControl({ onDetailsToggle });
+    const review = await result.findByRole('button', { name: 'Review draft' });
+    expect(result.queryByRole('textbox')).toBeNull();
+    expect(result.queryByRole('button', { name: 'Send initial prompt' })).toBeNull();
+    expect(onDetailsToggle).not.toHaveBeenCalled();
+    review.click();
+    expect(onDetailsToggle).toHaveBeenLastCalledWith(true);
+    const editor = result.getByRole('textbox') as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(1, 3);
+    subscribeMock.mock.calls[0]?.[0]({
+      kind: 'initial-prompt-delivery-changed',
+      projection: projection(),
+      serverInstanceId: 'server-1',
+      cutoverEpoch: 'epoch-1',
+    });
+    expect(result.getByRole('textbox')).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(1);
+    expect(onDetailsToggle).toHaveBeenCalledOnce();
+    result.getByRole('button', { name: 'Hide draft' }).click();
+    expect(onDetailsToggle).toHaveBeenLastCalledWith(false);
+    expect(result.queryByRole('textbox')).toBeNull();
+    await openDraft(result);
+    expect(result.getByRole('textbox')).toBe(editor);
+    expect(onDetailsToggle.mock.calls).toEqual([[true], [false], [true]]);
+  });
+
+  it('retires a sent acknowledged draft without inventing unsaved changes or hiding a local edit', async () => {
+    const unsaved = vi.fn();
+    const result = renderControl({ onUnsavedChange: unsaved });
+    await openDraft(result);
+    const complete = projection({
+      currentDraft: null,
+      delivery: { ...projection().delivery, status: 'delivered', version: 3 },
+    });
+    subscribeMock.mock.calls[0]?.[0]({
+      kind: 'initial-prompt-delivery-changed',
+      projection: complete,
+      serverInstanceId: 'server-1',
+      cutoverEpoch: 'epoch-1',
+    });
+    expect(result.getByText('Initial prompt sent')).toBeTruthy();
+    expect(result.queryByRole('textbox')).toBeNull();
+    expect(result.queryByRole('button', { name: /draft/i })).toBeNull();
+    expect(unsaved).toHaveBeenLastCalledWith(false);
+    result.unmount();
+
+    reviseDraftMock.mockImplementation(() => new Promise(() => {}));
+    const editing = renderControl({ onUnsavedChange: unsaved });
+    await openDraft(editing);
+    const editor = editing.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.input(editor, { target: { value: 'Keep my local revision' } });
+    subscribeMock.mock.calls.at(-1)?.[0]({
+      kind: 'initial-prompt-delivery-changed',
+      projection: complete,
+      serverInstanceId: 'server-1',
+      cutoverEpoch: 'epoch-1',
+    });
+    expect(editing.getByRole('textbox')).toBe(editor);
+    expect(editor.value).toBe('Keep my local revision');
+    expect(editor.readOnly).toBe(true);
+    expect(unsaved).toHaveBeenLastCalledWith(true);
+    expect(
+      (editing.getByRole('button', { name: 'Hide draft' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(editing.getByRole('button', { name: 'Copy draft' })).toBeTruthy();
+  });
+
+  it('preserves retired local edits through late save acknowledgements until explicit confirmed discard', async () => {
+    let completeSave!: (result: ReviseTaskInitialPromptDraftResult) => void;
+    reviseDraftMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completeSave = resolve;
+        }),
+    );
+    const unsaved = vi.fn();
+    const [retired, setRetired] = createSignal(false);
+    const result = render(() => (
+      <InitialPromptDeliveryControl
+        taskId="task-1"
+        deliveryId="delivery-1"
+        agentId="agent-1"
+        agentGeneration={4}
+        retired={retired()}
+        onUnsavedChange={unsaved}
+      />
+    ));
+    await openDraft(result);
+    const editor = result.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.input(editor, { target: { value: 'Keep this local edit' } });
+    editor.focus();
+    editor.setSelectionRange(2, 6);
+    setRetired(true);
+    expect(result.getByRole('textbox')).toBe(editor);
+    expect(editor.readOnly).toBe(true);
+    expect(editor.value).toBe('Keep this local edit');
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(2);
+    expect(result.queryByRole('button', { name: 'Send initial prompt' })).toBeNull();
+    expect(result.getByRole('button', { name: 'Copy draft' })).toBeTruthy();
+    completeSave({
+      kind: 'saved-manual-draft',
+      current: draft({ editRevision: 1, text: 'Keep this local edit' }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    subscribeMock.mock.calls.at(-1)?.[0]({
+      kind: 'initial-prompt-delivery-changed',
+      projection: projection({
+        currentDraft: null,
+        delivery: { ...projection().delivery, status: 'delivered', version: 3 },
+      }),
+      serverInstanceId: 'server-1',
+      cutoverEpoch: 'epoch-1',
+    });
+    expect(editor.value).toBe('Keep this local edit');
+    expect(unsaved).toHaveBeenLastCalledWith(true);
+    confirmMock.mockResolvedValueOnce(false);
+    result.getByRole('button', { name: 'Discard local draft' }).click();
+    await Promise.resolve();
+    expect(unsaved).toHaveBeenLastCalledWith(true);
+    expect(editor.value).toBe('Keep this local edit');
+    confirmMock.mockResolvedValueOnce(true);
+    result.getByRole('button', { name: 'Discard local draft' }).click();
+    await vi.waitFor(() => expect(unsaved).toHaveBeenLastCalledWith(false));
+    expect(result.queryByRole('textbox')).toBeNull();
+    expect(reviseDraftMock.mock.calls[0]?.[1].aborted).toBe(true);
+    expect(sendManuallyMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a mismatched saved draft only for read-only recovery with no send or edit authority', async () => {
+    getProjectionMock.mockResolvedValue({
+      kind: 'recovery-unavailable',
+      reason: 'legacy-draft-identity-mismatch',
+      deliveryId: 'delivery-1',
+      taskId: 'task-1',
+      serverInstanceId: 'server-1',
+      savedDraft: 'Preserve this exact text',
+    });
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: copy },
+    });
+    const result = renderControl({ onInspectTerminal: vi.fn() });
+    expect(await result.findByText('Saved prompt needs recovery')).toBeTruthy();
+    await openDraft(result);
+    const editor = result.getByRole('textbox') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Preserve this exact text');
+    expect(editor.readOnly).toBe(true);
+    expect(result.queryByRole('button', { name: /send|replace/i })).toBeNull();
+    result.getByRole('button', { name: 'Copy draft' }).click();
+    expect(copy).toHaveBeenCalledWith('Preserve this exact text');
+    fireEvent.input(editor, { target: { value: 'Changed' } });
+    expect(reviseDraftMock).not.toHaveBeenCalled();
+    expect(sendManuallyMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes authority on restart and ignores the pending refresh until explicitly refreshed', async () => {
+    let complete!: (value: TaskInitialPromptDeliveryProjection) => void;
+    getProjectionMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const result = renderControl();
+    await vi.waitFor(() => expect(getProjectionMock).toHaveBeenCalledOnce());
+    subscribeMock.mock.calls[0]?.[0]({
+      kind: 'task-reliability-capabilities-invalidated',
+      serverInstanceId: 'server-2',
+    });
+    complete(projection());
+    await vi.waitFor(() => expect(result.getByText('Initial prompt unavailable')).toBeTruthy());
+    expect(result.queryByRole('button', { name: 'Review draft' })).toBeNull();
+    result.getByRole('button', { name: 'Refresh status' }).click();
+    await openDraft(result);
+    const send = result.getByRole('button', { name: 'Send initial prompt' }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    subscribeMock.mock.calls[0]?.[0]({
+      kind: 'task-reliability-capabilities-invalidated',
+      serverInstanceId: 'server-2',
+    });
+    expect(send.disabled).toBe(true);
+    expect((result.getByRole('textbox') as HTMLTextAreaElement).readOnly).toBe(true);
+  });
+
+  it('does not let a late refresh failure hide newer live status or its send authority', async () => {
+    let fail!: (error: Error) => void;
+    getProjectionMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const result = renderControl();
+    await vi.waitFor(() => expect(getProjectionMock).toHaveBeenCalledOnce());
+    subscribeMock.mock.calls[0]?.[0]({
+      kind: 'initial-prompt-delivery-changed',
+      projection: projection(),
+      serverInstanceId: 'server-1',
+      cutoverEpoch: 'epoch-1',
+    });
+    await openDraft(result);
+    fail(new Error('Internal error'));
+    await Promise.resolve();
+    expect(
+      (result.getByRole('button', { name: 'Send initial prompt' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(result.queryByText('Initial prompt unavailable')).toBeNull();
+    expect(result.queryByText('Internal error')).toBeNull();
+  });
+
+  it('isolates pending requests and local editors when the task and delivery change', async () => {
+    let completeOld!: (value: TaskInitialPromptDeliveryProjection) => void;
+    getProjectionMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeOld = resolve;
+        }),
+    );
+    const [taskId, setTaskId] = createSignal('task-1');
+    const result = render(() => (
+      <InitialPromptDeliveryControl
+        taskId={taskId()}
+        deliveryId={taskId() === 'task-1' ? 'delivery-1' : 'delivery-2'}
+        agentId="agent-1"
+        agentGeneration={4}
+      />
+    ));
+    await vi.waitFor(() => expect(getProjectionMock).toHaveBeenCalledOnce());
+    getProjectionMock.mockResolvedValue(
+      projection({
+        delivery: { ...projection().delivery, deliveryId: 'delivery-2', taskId: 'task-2' },
+        currentDraft: draft({ text: 'Second task' }),
+      }),
+    );
+    setTaskId('task-2');
+    await openDraft(result);
+    completeOld(projection());
+    await Promise.resolve();
+    expect((result.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Second task');
+    expect(getProjectionMock.mock.calls[0]?.[1].aborted).toBe(true);
+    expect(reviseDraftMock).not.toHaveBeenCalled();
   });
 });

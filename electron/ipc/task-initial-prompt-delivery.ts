@@ -34,6 +34,7 @@ import {
   type SendTaskInitialPromptManuallyResult,
   type TaskInitialPromptDeliveryProjection,
   type TaskInitialPromptDeliveryProjectionWithManualOperation,
+  type TaskInitialPromptDeliveryProjectionResult,
   type TaskInitialPromptDeliveryRequest,
   type TaskInitialPromptDeliverySnapshot,
   type TaskInitialPromptDraftSnapshot,
@@ -236,7 +237,7 @@ export interface TaskInitialPromptDeliveryService {
   finalizeRemovedTaskInitialPromptState(
     request: FinalizeRemovedTaskInitialPromptStateRequest,
   ): Promise<FinalizeRemovedTaskInitialPromptStateResult>;
-  getProjection(deliveryId: string): Promise<TaskInitialPromptDeliveryProjection | null>;
+  getProjection(deliveryId: string): Promise<TaskInitialPromptDeliveryProjectionResult>;
   getOwnerAvailability(): TaskInitialPromptOwnerAvailability;
   expireDueDelivery(
     deliveryId: string,
@@ -453,7 +454,8 @@ function mapAdmissionIssue(
 
 export function createTaskInitialPromptDeliveryService(
   dependencies: TaskInitialPromptDeliveryDependencies,
-): TaskInitialPromptDeliveryService & {
+): Omit<TaskInitialPromptDeliveryService, 'getProjection'> & {
+  getProjection(deliveryId: string): Promise<TaskInitialPromptDeliveryProjection | null>;
   getResourceDiagnostics(): TaskInitialPromptDeliveryResourceDiagnostics;
 } {
   const clock = dependencies.clock ?? DEFAULT_CLOCK;

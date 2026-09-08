@@ -15,7 +15,10 @@ import { createAgentSessionWriterRuntime } from './agent-session-writer-authorit
 import type { TaskStructureMutationService } from './task-structure-mutations.js';
 import type { WorkspacePrivateMutationAuthority } from './workspace-state-mutations.js';
 import type { JsonObject } from './workspace-state-storage.js';
-import type { QueueTaskInitialPromptDeliveryResult } from '../../src/domain/task-initial-prompt-delivery.js';
+import type {
+  QueueTaskInitialPromptDeliveryResult,
+  TaskInitialPromptDeliveryProjectionResult,
+} from '../../src/domain/task-initial-prompt-delivery.js';
 import {
   TASK_CREATION_JOURNAL_TOMBSTONE_RETENTION_MS,
   TaskCreationConflictAdmissionError,
@@ -500,7 +503,7 @@ function makeHarness(
     ),
   };
   const initialPrompt = {
-    getProjection: vi.fn(async () => null),
+    getProjection: vi.fn(async (): Promise<TaskInitialPromptDeliveryProjectionResult> => null),
     queue: vi.fn(
       async (request): Promise<QueueTaskInitialPromptDeliveryResult> => ({
         kind: 'accepted',
@@ -1562,6 +1565,37 @@ describe('task-creation workflow', () => {
       expect(test.structure.addManagedTask).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('does not mistake a read-only prompt recovery issue for a delivery snapshot on creation replay', async () => {
+    const test = makeHarness('agent');
+    const request = await test.intent({
+      launch: {
+        agentDefId: 'agent-def-1',
+        initialPrompt: 'Preserve this draft',
+        kind: 'agent',
+        skipPermissions: false,
+      },
+    });
+    await test.workflow.create(test.auth, request);
+    test.initialPrompt.getProjection.mockResolvedValue({
+      deliveryId: 'delivery-1',
+      kind: 'recovery-unavailable',
+      reason: 'legacy-draft-identity-mismatch',
+      savedDraft: 'Preserve this draft',
+      serverInstanceId: 'server-1',
+      taskId: 'task-1',
+    });
+    const replay = await test.workflow.create(test.auth, request);
+    expect(replay).toMatchObject({
+      kind: 'snapshot',
+      outcome: 'replayed',
+      snapshot: { phase: 'active' },
+    });
+    if (replay.kind !== 'snapshot') throw new Error('Expected creation snapshot');
+    expect(replay.snapshot).not.toHaveProperty('promptDelivery');
+    expect(test.execute).toHaveBeenCalledOnce();
+    expect(test.initialPrompt.queue).toHaveBeenCalledOnce();
+  });
 
   it('releases a rejected creation flight without an unhandled cleanup rejection or relaunch', async () => {
     const test = makeHarness('agent');

@@ -65,10 +65,17 @@ vi.mock('../app/task-workflows', () => ({
 vi.mock('./InitialPromptDeliveryControl', () => ({
   InitialPromptDeliveryControl: (props: {
     deliveryId: string;
+    retired?: boolean;
+    onDetailsToggle?: (expanded: boolean) => void;
     onInspectTerminal?: (agentId: string) => void;
   }) => (
-    <div aria-label="Initial prompt owner">
+    <div aria-label="Initial prompt owner" data-retired={props.retired}>
       {props.deliveryId}
+      <button
+        type="button"
+        aria-label="Review initial draft"
+        onClick={() => props.onDetailsToggle?.(true)}
+      />
       <button
         type="button"
         aria-label="Inspect canonical initial prompt terminal"
@@ -378,14 +385,28 @@ describe('PromptInput', () => {
   });
 
   it('does not expose the generic prompt sender while initial delivery is unresolved', async () => {
+    const onDetailsToggle = vi.fn();
     const result = render(() => (
-      <PromptInput taskId="task-1" agentId="agent-1" initialPromptDeliveryId="delivery-1" />
+      <PromptInput
+        taskId="task-1"
+        agentId="agent-1"
+        initialPromptDeliveryId="delivery-1"
+        initialPromptRetired
+        onInitialPromptDetailsToggle={onDetailsToggle}
+      />
     ));
 
     expect((await result.findByLabelText('Initial prompt owner')).textContent).toBe('delivery-1');
+    expect(result.getByLabelText('Initial prompt owner').getAttribute('data-retired')).toBe('true');
+    const promptPanel = result.container.querySelector<HTMLElement>('.prompt-input-panel');
+    expect(promptPanel?.style.overflowY).toBe('auto');
+    expect(promptPanel?.style.minHeight).toBe('0px');
     expect(result.queryByTitle('Send prompt')).toBeNull();
     expect(result.queryByPlaceholderText(/Send a prompt/iu)).toBeNull();
     expect(sendPromptMock).not.toHaveBeenCalled();
+    expect(onDetailsToggle).not.toHaveBeenCalled();
+    result.getByLabelText('Review initial draft').click();
+    expect(onDetailsToggle).toHaveBeenCalledExactlyOnceWith(true);
 
     result.getByLabelText('Inspect canonical initial prompt terminal').click();
     expect(setActiveAgentMock).toHaveBeenCalledWith('agent-canonical');

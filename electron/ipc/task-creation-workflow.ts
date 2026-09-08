@@ -1532,9 +1532,10 @@ class TaskCreationWorkflowImpl implements ActiveTaskCreationWorkflow {
       record.taskMode === 'agent' &&
       record.identities.deliveryId
     ) {
-      promptDelivery = (
-        await this.dependencies.initialPrompt.getProjection(record.identities.deliveryId)
-      )?.delivery;
+      const projection = await this.dependencies.initialPrompt.getProjection(
+        record.identities.deliveryId,
+      );
+      if (projection && 'delivery' in projection) promptDelivery = projection.delivery;
     }
     const candidate: unknown = {
       commit: record.commit.kind,

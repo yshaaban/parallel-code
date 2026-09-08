@@ -751,7 +751,20 @@ export function createProductionTaskInitialPromptRuntime(
       const projection = await coreService.getProjection(deliveryId);
       if (!projection && getOwnerAvailability().kind === 'active') {
         const issue = await persistence.getMissingLegacyDeliveryIssue(deliveryId);
-        if (issue) throw new Error(issue);
+        if (issue) {
+          const availability = getOwnerAvailability();
+          const gate = removalGate.getTaskSnapshot(issue.taskId);
+          if (
+            availability.kind === 'active' &&
+            gate.kind === 'active' &&
+            gate.cutoverEpoch === availability.cutoverEpoch &&
+            gate.hookSetVersion === availability.hookSetVersion &&
+            gate.current.taskState === 'present' &&
+            !gate.current.taskClosing
+          ) {
+            return { ...issue, serverInstanceId: gate.current.serverInstanceId };
+          }
+        }
       }
       return projection;
     },
