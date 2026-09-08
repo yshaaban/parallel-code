@@ -50,7 +50,7 @@ function scheduleWorkspaceAutosave(): void {
           if (autosaveGeneration !== workspaceAutosaveGeneration) {
             return;
           }
-          autosaveSnapshot = getWorkspaceStateSnapshotJson();
+          autosaveSnapshot = snapshot;
           pendingWorkspaceAutosaveSnapshot =
             pendingWorkspaceAutosaveSnapshot === snapshot ? null : pendingWorkspaceAutosaveSnapshot;
         })

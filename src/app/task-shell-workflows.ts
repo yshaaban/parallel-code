@@ -1,5 +1,6 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
+import { hasTaskClosingState } from '../domain/task-closing';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { invoke, isElectronRuntime } from '../lib/ipc';
 import { hasShellPromptReadyInTail } from '../lib/prompt-detection';
@@ -11,6 +12,10 @@ import {
   markCompatibilityTerminalCreationPending,
 } from '../runtime/compatibility-terminal-creation';
 import { saveBrowserWorkspaceState } from '../store/persistence';
+import {
+  enqueueWorkspaceTaskShellMembership,
+  reserveWorkspaceEditIntentCapacity,
+} from '../store/persistence-session';
 import { setTaskFocusedPanel } from '../store/focus';
 import { getSelectedTaskRuntimeAgentId } from '../store/task-agent-selection';
 import { setStore, store } from '../store/state';
@@ -39,10 +44,11 @@ function persistBrowserWorkspaceShellLayout(): void {
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
   const shellId = createRandomId();
   const task = store.tasks[taskId];
-  if (!task) {
+  if (!task || hasTaskClosingState(task)) {
     return shellId;
   }
 
+  enqueueWorkspaceTaskShellMembership(taskId, shellId, true);
   markCompatibilityTerminalCreationPending(taskId, shellId);
   let nextShellIndex: number | null = null;
   if (initialCommand) {
@@ -113,43 +119,61 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
 }
 
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
-  const closedIndex = store.tasks[taskId]?.shellAgentIds.indexOf(shellId) ?? -1;
+  const task = store.tasks[taskId];
+  const closedIndex = task?.shellAgentIds.indexOf(shellId) ?? -1;
+  if (!task || closedIndex < 0 || hasTaskClosingState(task)) return;
+  if (
+    task.taskInitialShellOwnership?.kind === 'managed-terminal-v1' &&
+    task.taskInitialShellOwnership.sessionId === shellId
+  )
+    return;
 
-  const creationWasPending = isCompatibilityTerminalCreationPending(taskId, shellId);
-  completeCompatibilityTerminalCreation(taskId, shellId);
+  const releaseCapacity = reserveWorkspaceEditIntentCapacity();
   try {
-    await invoke(IPC.KillAgent, { agentId: shellId });
-  } catch (error) {
-    if (creationWasPending && store.tasks[taskId]?.shellAgentIds.includes(shellId)) {
-      markCompatibilityTerminalCreationPending(taskId, shellId);
-    }
-    throw error;
-  }
-  clearAgentActivity(shellId);
-  clearAgentSupervisionSnapshots([shellId]);
-  setStore(
-    produce((state) => {
-      const task = state.tasks[taskId];
-      if (task) {
-        task.shellAgentIds = task.shellAgentIds.filter((id) => id !== shellId);
-        if (state.activeTaskId === taskId && state.activeAgentId === shellId) {
-          state.activeAgentId = getSelectedTaskRuntimeAgentId(task);
-        }
+    const creationWasPending = isCompatibilityTerminalCreationPending(taskId, shellId);
+    completeCompatibilityTerminalCreation(taskId, shellId);
+    try {
+      await invoke(IPC.KillAgent, { agentId: shellId });
+    } catch (error) {
+      if (creationWasPending && store.tasks[taskId]?.shellAgentIds.includes(shellId)) {
+        markCompatibilityTerminalCreationPending(taskId, shellId);
       }
-    }),
-  );
-  persistBrowserWorkspaceShellLayout();
+      throw error;
+    }
+    const currentTask = store.tasks[taskId];
+    if (!currentTask || hasTaskClosingState(currentTask)) return;
+    if (
+      currentTask.taskInitialShellOwnership?.kind === 'managed-terminal-v1' &&
+      currentTask.taskInitialShellOwnership.sessionId === shellId
+    )
+      return;
+    // Replace the reservation synchronously; no other edit can spend this slot.
+    releaseCapacity();
+    enqueueWorkspaceTaskShellMembership(taskId, shellId, false);
+    clearAgentActivity(shellId);
+    clearAgentSupervisionSnapshots([shellId]);
+    setStore(
+      produce((state) => {
+        const task = state.tasks[taskId];
+        if (task) {
+          task.shellAgentIds = task.shellAgentIds.filter((id) => id !== shellId);
+          if (state.activeTaskId === taskId && state.activeAgentId === shellId) {
+            state.activeAgentId = getSelectedTaskRuntimeAgentId(task);
+          }
+        }
+      }),
+    );
+    persistBrowserWorkspaceShellLayout();
 
-  if (closedIndex < 0) {
-    return;
+    const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
+    if (remaining === 0) {
+      setTaskFocusedPanel(taskId, 'shell-toolbar:0');
+      return;
+    }
+
+    const focusIndex = Math.min(closedIndex, remaining - 1);
+    setTaskFocusedPanel(taskId, `shell:${focusIndex}`);
+  } finally {
+    releaseCapacity();
   }
-
-  const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
-  if (remaining === 0) {
-    setTaskFocusedPanel(taskId, 'shell-toolbar:0');
-    return;
-  }
-
-  const focusIndex = Math.min(closedIndex, remaining - 1);
-  setTaskFocusedPanel(taskId, `shell:${focusIndex}`);
 }

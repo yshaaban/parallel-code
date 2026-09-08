@@ -36,6 +36,8 @@ export type WorkspaceScalarEditableField =
 interface WorkspaceEditIntentBase {
   acknowledgedBaseRevision: number;
   operationId: string;
+  /** Submitted values stay immutable until canonical acknowledgement or conflict. */
+  submitted?: boolean;
 }
 
 export interface RenameTaskWorkspaceIntent extends WorkspaceEditIntentBase {
@@ -75,17 +77,25 @@ export interface EditWorkspaceFieldIntent extends WorkspaceEditIntentBase {
   nextValue: unknown;
 }
 
+export interface SetTaskShellMembershipIntent extends WorkspaceEditIntentBase {
+  kind: 'set-task-shell-membership';
+  present: boolean;
+  shellId: string;
+  taskId: string;
+}
+
 export type WorkspaceEditIntent =
   | EditProjectFieldWorkspaceIntent
   | EditTaskFieldWorkspaceIntent
   | EditWorkspaceFieldIntent
   | RenameTaskWorkspaceIntent
-  | ReorderWorkspaceIntent;
+  | ReorderWorkspaceIntent
+  | SetTaskShellMembershipIntent;
 
 export type WorkspaceEditIntentInput = {
   [TKind in WorkspaceEditIntent['kind']]: Omit<
     Extract<WorkspaceEditIntent, { kind: TKind }>,
-    'acknowledgedBaseRevision'
+    'acknowledgedBaseRevision' | 'submitted'
   >;
 }[WorkspaceEditIntent['kind']];
 
@@ -154,69 +164,86 @@ function replaceField(
   return 'applied';
 }
 
-function applyRenameTask(
+type IntentField = [target: UnknownRecord, field: string, baseValue: unknown, nextValue: unknown];
+
+function resolveIntentField(state: UnknownRecord, intent: WorkspaceEditIntent): IntentField | null {
+  switch (intent.kind) {
+    case 'rename-task':
+    case 'edit-task-field': {
+      const task = isRecord(state.tasks) ? state.tasks[intent.taskId] : undefined;
+      if (!isRecord(task)) return null;
+      return intent.kind === 'rename-task'
+        ? [task, 'name', intent.baseName, intent.nextName]
+        : [task, intent.field, intent.baseValue, intent.nextValue];
+    }
+    case 'reorder-tasks':
+      return [
+        state,
+        intent.list === 'active' ? 'taskOrder' : 'collapsedTaskOrder',
+        intent.baseOrder,
+        intent.nextOrder,
+      ];
+    case 'edit-project-field': {
+      const project = Array.isArray(state.projects)
+        ? state.projects.find((entry) => isRecord(entry) && entry.id === intent.projectId)
+        : undefined;
+      return isRecord(project) ? [project, intent.field, intent.baseValue, intent.nextValue] : null;
+    }
+    case 'edit-workspace-field':
+      return [state, intent.field, intent.baseValue, intent.nextValue];
+    case 'set-task-shell-membership':
+      return null;
+  }
+}
+
+function matchesIntentResult(state: UnknownRecord, intent: WorkspaceEditIntent): boolean {
+  const field = resolveIntentField(state, intent);
+  return field !== null && valuesEqual(field[0][field[1]], field[3]);
+}
+
+function applyShellMembership(
   state: UnknownRecord,
-  intent: RenameTaskWorkspaceIntent,
+  intent: SetTaskShellMembershipIntent,
+  canonicalRevision?: number,
 ): 'acknowledged' | 'applied' | 'conflict' | 'target-missing' {
-  const tasks = state.tasks;
-  if (!isRecord(tasks)) return 'target-missing';
-  const task = tasks[intent.taskId];
+  const task = isRecord(state.tasks) ? state.tasks[intent.taskId] : undefined;
   if (!isRecord(task)) return 'target-missing';
-  return replaceField(task, 'name', intent.baseName, intent.nextName);
-}
+  const shells = task.shellAgentIds;
+  const ownership = task.taskInitialShellOwnership;
+  if (
+    task.id !== intent.taskId ||
+    !Array.isArray(shells) ||
+    (isRecord(ownership) &&
+      ownership.kind === 'managed-terminal-v1' &&
+      (!shells.includes(ownership.sessionId) ||
+        (!intent.present && ownership.sessionId === intent.shellId)))
+  )
+    return 'conflict';
 
-function applyReorder(
-  state: UnknownRecord,
-  intent: ReorderWorkspaceIntent,
-): 'acknowledged' | 'applied' | 'conflict' {
-  const field = intent.list === 'active' ? 'taskOrder' : 'collapsedTaskOrder';
-  return replaceField(state, field, intent.baseOrder, intent.nextOrder);
-}
-
-function applyProjectField(
-  state: UnknownRecord,
-  intent: EditProjectFieldWorkspaceIntent,
-): 'acknowledged' | 'applied' | 'conflict' | 'target-missing' {
-  if (!Array.isArray(state.projects)) return 'target-missing';
-  const project = state.projects.find((entry) => isRecord(entry) && entry.id === intent.projectId);
-  if (!isRecord(project)) return 'target-missing';
-  return replaceField(project, intent.field, intent.baseValue, intent.nextValue);
-}
-
-function applyTaskField(
-  state: UnknownRecord,
-  intent: EditTaskFieldWorkspaceIntent,
-): 'acknowledged' | 'applied' | 'conflict' | 'target-missing' {
-  const tasks = state.tasks;
-  if (!isRecord(tasks)) return 'target-missing';
-  const task = tasks[intent.taskId];
-  if (!isRecord(task)) return 'target-missing';
-  return replaceField(task, intent.field, intent.baseValue, intent.nextValue);
-}
-
-function applyWorkspaceField(
-  state: UnknownRecord,
-  intent: EditWorkspaceFieldIntent,
-): 'acknowledged' | 'applied' | 'conflict' {
-  return replaceField(state, intent.field, intent.baseValue, intent.nextValue);
+  const present = shells.includes(intent.shellId);
+  // An equal-revision snapshot cannot acknowledge a close while an earlier add is in flight.
+  // A newer matching canonical revision fences that older write through the server CAS.
+  if (
+    present === intent.present &&
+    canonicalRevision !== undefined &&
+    canonicalRevision > intent.acknowledgedBaseRevision
+  )
+    return 'acknowledged';
+  if (intent.present && !present) shells.push(intent.shellId);
+  else if (!intent.present) task.shellAgentIds = shells.filter((id) => id !== intent.shellId);
+  task.shellCount = (task.shellAgentIds as unknown[]).length;
+  return 'applied';
 }
 
 function applyIntent(
   state: UnknownRecord,
   intent: WorkspaceEditIntent,
+  canonicalRevision?: number,
 ): 'acknowledged' | 'applied' | 'conflict' | 'target-missing' {
-  switch (intent.kind) {
-    case 'rename-task':
-      return applyRenameTask(state, intent);
-    case 'reorder-tasks':
-      return applyReorder(state, intent);
-    case 'edit-project-field':
-      return applyProjectField(state, intent);
-    case 'edit-task-field':
-      return applyTaskField(state, intent);
-    case 'edit-workspace-field':
-      return applyWorkspaceField(state, intent);
-  }
+  if (intent.kind === 'set-task-shell-membership')
+    return applyShellMembership(state, intent, canonicalRevision);
+  const field = resolveIntentField(state, intent);
+  return field ? replaceField(...field) : 'target-missing';
 }
 
 function assertIntent(intent: WorkspaceEditIntent): void {
@@ -243,6 +270,10 @@ function intentsTargetSameField(left: WorkspaceEditIntent, right: WorkspaceEditI
       return right.kind === left.kind && left.taskId === right.taskId && left.field === right.field;
     case 'edit-workspace-field':
       return right.kind === left.kind && left.field === right.field;
+    case 'set-task-shell-membership':
+      return (
+        right.kind === left.kind && left.taskId === right.taskId && left.shellId === right.shellId
+      );
   }
 }
 
@@ -251,23 +282,15 @@ function coalesceIntent(
   incoming: WorkspaceEditIntent,
 ): WorkspaceEditIntent {
   if (!intentsTargetSameField(existing, incoming)) return cloneValue(incoming);
-  switch (existing.kind) {
-    case 'rename-task':
-      if (incoming.kind !== existing.kind) return cloneValue(incoming);
-      return { ...incoming, baseName: existing.baseName, operationId: existing.operationId };
-    case 'reorder-tasks':
-      if (incoming.kind !== existing.kind) return cloneValue(incoming);
-      return { ...incoming, baseOrder: existing.baseOrder, operationId: existing.operationId };
-    case 'edit-project-field':
-      if (incoming.kind !== existing.kind) return cloneValue(incoming);
-      return { ...incoming, baseValue: existing.baseValue, operationId: existing.operationId };
-    case 'edit-task-field':
-      if (incoming.kind !== existing.kind) return cloneValue(incoming);
-      return { ...incoming, baseValue: existing.baseValue, operationId: existing.operationId };
-    case 'edit-workspace-field':
-      if (incoming.kind !== existing.kind) return cloneValue(incoming);
-      return { ...incoming, baseValue: existing.baseValue, operationId: existing.operationId };
-  }
+  const base =
+    existing.kind === 'rename-task'
+      ? { baseName: existing.baseName }
+      : existing.kind === 'reorder-tasks'
+        ? { baseOrder: existing.baseOrder }
+        : existing.kind === 'set-task-shell-membership'
+          ? {}
+          : { baseValue: existing.baseValue };
+  return { ...incoming, ...base, operationId: existing.operationId };
 }
 
 function intentReturnsToBase(intent: WorkspaceEditIntent): boolean {
@@ -280,6 +303,8 @@ function intentReturnsToBase(intent: WorkspaceEditIntent): boolean {
     case 'edit-task-field':
     case 'edit-workspace-field':
       return valuesEqual(intent.baseValue, intent.nextValue);
+    case 'set-task-shell-membership':
+      return false;
   }
 }
 
@@ -287,25 +312,36 @@ export function rebaseWorkspaceEditIntents<TState extends object>(
   canonicalState: TState,
   intents: readonly WorkspaceEditIntent[],
   acknowledgedOperationIds: ReadonlySet<string> = new Set(),
+  canonicalRevision?: number,
 ): WorkspaceIntentRebaseResult<TState> {
   const state = cloneValue(canonicalState) as TState & UnknownRecord;
   const pendingIntents: WorkspaceEditIntent[] = [];
   const conflicts: WorkspaceIntentConflict[] = [];
   const acknowledged: string[] = [];
 
-  for (const intent of intents) {
+  for (const [index, intent] of intents.entries()) {
     assertIntent(intent);
-    if (acknowledgedOperationIds.has(intent.operationId)) {
+    // A later exact result acknowledges its same-field prefix even when intermediate
+    // save responses were skipped. Compare the canonical input, not earlier replayed edits.
+    const canonicalAcknowledgement = intents.some(
+      (candidate, candidateIndex) =>
+        candidateIndex >= index &&
+        intentsTargetSameField(intent, candidate) &&
+        (canonicalRevision === undefined ||
+          canonicalRevision > candidate.acknowledgedBaseRevision) &&
+        matchesIntentResult(canonicalState as UnknownRecord, candidate),
+    );
+    if (acknowledgedOperationIds.has(intent.operationId) || canonicalAcknowledgement) {
       acknowledged.push(intent.operationId);
       continue;
     }
 
-    const outcome = applyIntent(state, intent);
-    if (outcome === 'acknowledged') {
+    const outcome = applyIntent(state, intent, canonicalRevision);
+    if (outcome === 'acknowledged' && intent.kind === 'set-task-shell-membership') {
       acknowledged.push(intent.operationId);
       continue;
     }
-    if (outcome === 'applied') {
+    if (outcome === 'applied' || outcome === 'acknowledged') {
       pendingIntents.push(cloneValue(intent));
       continue;
     }
@@ -326,36 +362,19 @@ export function rebaseWorkspaceEditIntents<TState extends object>(
 }
 
 function getIntentTargetValue(state: UnknownRecord, intent: WorkspaceEditIntent): unknown {
-  switch (intent.kind) {
-    case 'rename-task': {
-      const tasks = state.tasks;
-      if (!isRecord(tasks)) return undefined;
-      const task = tasks[intent.taskId];
-      return isRecord(task) ? task.name : undefined;
-    }
-    case 'reorder-tasks':
-      return state[intent.list === 'active' ? 'taskOrder' : 'collapsedTaskOrder'];
-    case 'edit-project-field': {
-      const project = Array.isArray(state.projects)
-        ? state.projects.find((entry) => isRecord(entry) && entry.id === intent.projectId)
-        : undefined;
-      return isRecord(project) ? project[intent.field] : undefined;
-    }
-    case 'edit-task-field': {
-      const tasks = state.tasks;
-      if (!isRecord(tasks)) return undefined;
-      const task = tasks[intent.taskId];
-      return isRecord(task) ? task[intent.field] : undefined;
-    }
-    case 'edit-workspace-field':
-      return state[intent.field];
+  if (intent.kind === 'set-task-shell-membership') {
+    const task = isRecord(state.tasks) ? state.tasks[intent.taskId] : undefined;
+    return isRecord(task) ? task.shellAgentIds : undefined;
   }
+  const field = resolveIntentField(state, intent);
+  return field?.[0][field[1]];
 }
 
 export class WorkspaceEditIntentQueue<TState extends object> {
   private lastAcknowledgedRevision: number;
   private lastAcknowledgedState: TState;
   private pendingIntents: WorkspaceEditIntent[] = [];
+  private reservedCapacity = 0;
 
   constructor(
     initialState: TState,
@@ -380,8 +399,10 @@ export class WorkspaceEditIntentQueue<TState extends object> {
     if (this.pendingIntents.some((pending) => pending.operationId === intent.operationId)) {
       throw new Error(`Duplicate workspace edit operation ID: ${intent.operationId}`);
     }
-    const existingIndex = this.pendingIntents.findIndex((pending) =>
-      intentsTargetSameField(pending, intent),
+    const existingIndex = this.pendingIntents.findIndex(
+      (pending) =>
+        intentsTargetSameField(pending, intent) &&
+        (!pending.submitted || intent.kind === 'set-task-shell-membership'),
     );
     if (existingIndex >= 0) {
       const existing = this.pendingIntents[existingIndex];
@@ -392,10 +413,29 @@ export class WorkspaceEditIntentQueue<TState extends object> {
       return;
     }
     if (intentReturnsToBase(intent)) return;
-    if (this.pendingIntents.length >= this.capacity) {
+    if (this.pendingIntents.length + this.reservedCapacity >= this.capacity) {
       throw new Error('Workspace edit intent queue is full');
     }
     this.pendingIntents.push(cloneValue(intent));
+  }
+
+  markSubmitted(state: TState): void {
+    for (const intent of this.pendingIntents) {
+      if (matchesIntentResult(state as UnknownRecord, intent)) intent.submitted = true;
+    }
+  }
+
+  reserveCapacity(): () => void {
+    if (this.pendingIntents.length + this.reservedCapacity >= this.capacity) {
+      throw new Error('Workspace edit intent queue is full');
+    }
+    this.reservedCapacity += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reservedCapacity -= 1;
+    };
   }
 
   replaceCanonicalBase(
@@ -406,7 +446,12 @@ export class WorkspaceEditIntentQueue<TState extends object> {
     if (!Number.isSafeInteger(revision) || revision < this.lastAcknowledgedRevision) {
       throw new Error('Workspace canonical revision cannot move backwards');
     }
-    const result = rebaseWorkspaceEditIntents(state, this.pendingIntents, acknowledgedOperationIds);
+    const result = rebaseWorkspaceEditIntents(
+      state,
+      this.pendingIntents,
+      acknowledgedOperationIds,
+      revision,
+    );
     this.lastAcknowledgedRevision = revision;
     this.lastAcknowledgedState = cloneValue(state);
     this.pendingIntents = result.pendingIntents.map((intent) => ({

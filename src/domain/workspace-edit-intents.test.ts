@@ -30,6 +30,257 @@ function intent(value: WorkspaceEditIntentInput): WorkspaceEditIntent {
 }
 
 describe('typed workspace edit intent rebase', () => {
+  it.each<WorkspaceEditIntentInput>([
+    {
+      kind: 'rename-task',
+      taskId: 'task-1',
+      operationId: 'first',
+      baseName: 'One',
+      nextName: 'Two',
+    },
+    {
+      kind: 'reorder-tasks',
+      list: 'active',
+      operationId: 'first',
+      baseOrder: ['task-1', 'task-2'],
+      nextOrder: ['task-2', 'task-1'],
+    },
+    {
+      kind: 'edit-project-field',
+      projectId: 'project-1',
+      field: 'baseBranch',
+      operationId: 'first',
+      baseValue: 'main',
+      nextValue: 'trunk',
+    },
+    {
+      kind: 'edit-task-field',
+      taskId: 'task-1',
+      field: 'planFileName',
+      operationId: 'first',
+      baseValue: 'first.md',
+      nextValue: 'second.md',
+    },
+    {
+      kind: 'edit-workspace-field',
+      field: 'hydraCommand',
+      operationId: 'first',
+      baseValue: 'old',
+      nextValue: 'new',
+    },
+    {
+      kind: 'set-task-shell-membership',
+      taskId: 'task-1',
+      shellId: 'shell-1',
+      operationId: 'first',
+      present: true,
+    },
+  ])('coalesces $kind while preserving its original base and operation identity', (first) => {
+    const queue = new WorkspaceEditIntentQueue(state(), 4);
+    queue.enqueue(intent(first));
+    let next: WorkspaceEditIntentInput;
+    let expected: WorkspaceEditIntent;
+    switch (first.kind) {
+      case 'rename-task':
+        next = { ...first, operationId: 'second', baseName: first.nextName, nextName: 'Latest' };
+        expected = intent({ ...first, nextName: 'Latest' });
+        break;
+      case 'reorder-tasks':
+        next = {
+          ...first,
+          operationId: 'second',
+          baseOrder: first.nextOrder,
+          nextOrder: ['task-2'],
+        };
+        expected = intent({ ...first, nextOrder: ['task-2'] });
+        break;
+      case 'set-task-shell-membership':
+        next = { ...first, operationId: 'second', present: false };
+        expected = intent({ ...first, present: false });
+        break;
+      default:
+        next = { ...first, operationId: 'second', baseValue: first.nextValue, nextValue: 'Latest' };
+        expected = intent({ ...first, nextValue: 'Latest' });
+    }
+    queue.enqueue(intent(next));
+    expect(queue.snapshot().pendingIntents).toEqual([expected]);
+  });
+
+  function renameIntent(
+    baseName: string,
+    nextName: string,
+    operationId: string,
+  ): WorkspaceEditIntent {
+    return intent({ kind: 'rename-task', taskId: 'task-1', baseName, nextName, operationId });
+  }
+
+  it('keeps submitted edits ordered and acknowledges a skipped same-field prefix before replaying its tail', () => {
+    const queue = new WorkspaceEditIntentQueue(state(), 4);
+    let previous = 'One';
+    for (const next of ['Two', 'Three', 'Four']) {
+      queue.enqueue(renameIntent(previous, next, next));
+      const submitted = state();
+      submitted.tasks['task-1'].name = next;
+      queue.markSubmitted(submitted);
+      previous = next;
+    }
+    queue.enqueue(renameIntent('Four', 'Latest local', 'tail'));
+    expect(queue.replaceCanonicalBase(state(), 4).pendingIntents).toHaveLength(4);
+    const canonical = state();
+    canonical.tasks['task-1'].name = 'Four';
+
+    // Preview runs before the store records the new canonical base.
+    expect(
+      rebaseWorkspaceEditIntents(canonical, queue.snapshot().pendingIntents).state.tasks['task-1']
+        .name,
+    ).toBe('Latest local');
+    const result = queue.replaceCanonicalBase(canonical, 5);
+    expect(result.conflicts).toEqual([]);
+    expect(result.acknowledgedOperationIds).toEqual(['Two', 'Three', 'Four']);
+    expect(result.pendingIntents).toEqual([
+      expect.objectContaining({ operationId: 'tail', acknowledgedBaseRevision: 5 }),
+    ]);
+    expect(result.state.tasks['task-1'].name).toBe('Latest local');
+  });
+
+  it('still surfaces a genuine peer same-field change instead of replaying a submitted chain over it', () => {
+    const queue = new WorkspaceEditIntentQueue(state(), 4);
+    queue.enqueue(renameIntent('One', 'Intermediate', 'first'));
+    const submitted = state();
+    submitted.tasks['task-1'].name = 'Intermediate';
+    queue.markSubmitted(submitted);
+    queue.enqueue(renameIntent('Intermediate', 'One', 'second'));
+    const peer = state();
+    peer.tasks['task-1'].name = 'Peer';
+    const result = queue.replaceCanonicalBase(peer, 5);
+    expect(result.state.tasks['task-1'].name).toBe('Peer');
+    expect(result.pendingIntents).toEqual([]);
+    expect(result.conflicts).toHaveLength(2);
+  });
+
+  it('bounds submitted history and releases capacity after a later exact result', () => {
+    const queue = new WorkspaceEditIntentQueue(state(), 4, 2);
+    queue.enqueue(renameIntent('One', 'Two', 'first'));
+    const submitted = state();
+    submitted.tasks['task-1'].name = 'Two';
+    queue.markSubmitted(submitted);
+    queue.enqueue(renameIntent('Two', 'Three', 'second'));
+    submitted.tasks['task-1'].name = 'Three';
+    queue.markSubmitted(submitted);
+    expect(() => queue.enqueue(renameIntent('Three', 'Four', 'overflow'))).toThrow('full');
+    expect(queue.replaceCanonicalBase(submitted, 5).pendingIntents).toEqual([]);
+    expect(() =>
+      queue.enqueue({ ...renameIntent('Three', 'Four', 'next'), acknowledgedBaseRevision: 5 }),
+    ).not.toThrow();
+  });
+
+  it('counts reserved capacity against new edits and releases a reservation only once', () => {
+    const queue = new WorkspaceEditIntentQueue(state(), 4, 1);
+    const release = queue.reserveCapacity();
+    expect(() => queue.enqueue(renameIntent('One', 'Two', 'blocked'))).toThrow('full');
+    expect(() => queue.reserveCapacity()).toThrow('full');
+    release();
+    release();
+    queue.enqueue(renameIntent('One', 'Two', 'admitted'));
+    expect(() => queue.reserveCapacity()).toThrow('full');
+  });
+
+  function shellState(shellAgentIds = ['primary', 'local']) {
+    return {
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          shellAgentIds,
+          shellCount: shellAgentIds.length,
+          taskInitialShellOwnership: { kind: 'managed-terminal-v1', sessionId: 'primary' },
+        },
+      },
+    };
+  }
+
+  function shellIntent(shellId: string, present: boolean): WorkspaceEditIntent {
+    return intent({
+      kind: 'set-task-shell-membership',
+      operationId: `${shellId}:${present}`,
+      shellId,
+      present,
+      taskId: 'task-1',
+    });
+  }
+
+  it('rebases per-shell additions and removals without replacing canonical sibling membership', () => {
+    const canonical = shellState(['primary', 'peer', 'local']);
+    const result = rebaseWorkspaceEditIntents(canonical, [
+      shellIntent('local', false),
+      shellIntent('new', true),
+    ]);
+    expect(result.state.tasks['task-1']).toMatchObject({
+      shellAgentIds: ['primary', 'peer', 'new'],
+      shellCount: 3,
+    });
+    expect(result.conflicts).toEqual([]);
+    expect(result.pendingIntents).toHaveLength(2);
+    expect(canonical.tasks['task-1'].shellAgentIds).toEqual(['primary', 'peer', 'local']);
+  });
+
+  it('coalesces add then close without acknowledging the original absence or a late add', () => {
+    const initial = shellState(['primary']);
+    const queue = new WorkspaceEditIntentQueue(initial, 4, 1);
+    queue.enqueue(shellIntent('new', true));
+    queue.enqueue(shellIntent('new', false));
+    expect(queue.replaceCanonicalBase(initial, 4).pendingIntents).toHaveLength(1);
+    const lateAdd = queue.replaceCanonicalBase(shellState(['primary', 'new']), 5);
+    expect(lateAdd.state.tasks['task-1'].shellAgentIds).toEqual(['primary']);
+    expect(lateAdd.pendingIntents).toEqual([
+      expect.objectContaining({ present: false, acknowledgedBaseRevision: 5 }),
+    ]);
+    expect(queue.replaceCanonicalBase(initial, 5).pendingIntents).toHaveLength(1);
+    expect(queue.replaceCanonicalBase(initial, 6).pendingIntents).toEqual([]);
+  });
+
+  it('coalesces against the latest canonical revision and keeps the queue bounded by shell', () => {
+    const initial = shellState(['primary']);
+    const queue = new WorkspaceEditIntentQueue(initial, 4, 1);
+    queue.enqueue(shellIntent('new', true));
+    queue.replaceCanonicalBase(initial, 5);
+    queue.enqueue({ ...shellIntent('new', false), acknowledgedBaseRevision: 5 });
+    expect(queue.replaceCanonicalBase(initial, 5).pendingIntents).toHaveLength(1);
+    expect(() =>
+      queue.enqueue({ ...shellIntent('another', true), acknowledgedBaseRevision: 5 }),
+    ).toThrow('full');
+    expect(queue.snapshot().pendingIntents).toEqual([
+      expect.objectContaining({ shellId: 'new', present: false, acknowledgedBaseRevision: 5 }),
+    ]);
+  });
+
+  it('retires shell intents for removed tasks without recreating tasks', () => {
+    const result = rebaseWorkspaceEditIntents({ tasks: {} }, [shellIntent('new', true)]);
+    expect(result.state).toEqual({ tasks: {} });
+    expect(result.pendingIntents).toEqual([]);
+    expect(result.conflicts).toEqual([expect.objectContaining({ reason: 'target-missing' })]);
+  });
+
+  it.each([
+    'remove-primary',
+    'missing-primary',
+    'changed-task-identity',
+    'legacy-missing-shell-ids',
+  ])('does not replay membership against %s', (scenario) => {
+    const canonical = shellState() as { tasks: Record<string, Record<string, unknown>> };
+    const task = canonical.tasks['task-1'];
+    if (!task) throw new Error('Expected task fixture');
+    if (scenario === 'missing-primary') task.shellAgentIds = ['local'];
+    if (scenario === 'changed-task-identity') task.id = 'replacement';
+    if (scenario === 'legacy-missing-shell-ids') delete task.shellAgentIds;
+    const before = structuredClone(canonical);
+    const result = rebaseWorkspaceEditIntents(canonical, [
+      shellIntent(scenario === 'remove-primary' ? 'primary' : 'new', scenario !== 'remove-primary'),
+    ]);
+    expect(result.state).toEqual(before);
+    expect(result.pendingIntents).toEqual([]);
+    expect(result.conflicts).toEqual([expect.objectContaining({ reason: 'same-field-changed' })]);
+  });
+
   it('replays rename, order, project, task, and workspace reducers on untouched target fields', () => {
     const intents: WorkspaceEditIntent[] = [
       intent({

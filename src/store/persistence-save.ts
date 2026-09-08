@@ -6,6 +6,7 @@ import {
   getLoadedWorkspaceRevision,
   getLoadedWorkspaceStateJson,
   getStateSyncSourceId,
+  markWorkspaceEditIntentsSubmitted,
   recordLoadedStateJson,
   recordLoadedWorkspaceState,
 } from './persistence-session';
@@ -19,6 +20,7 @@ function createBrowserWorkspaceStateSaveRequest(json: string): {
   json: string;
   sourceId: string;
 } {
+  markWorkspaceEditIntentsSubmitted(json);
   return {
     baseRevision: getLoadedWorkspaceRevision(),
     json,
@@ -43,6 +45,7 @@ export async function saveState(): Promise<void> {
   const baseRevision = getLoadedWorkspaceRevision();
 
   try {
+    markWorkspaceEditIntentsSubmitted(sharedJson);
     await invoke(IPC.SaveAppState, {
       baseRevision,
       json,
@@ -65,6 +68,7 @@ export async function saveBrowserWorkspaceState(): Promise<void> {
 }
 
 export async function saveBrowserWorkspaceStateSnapshot(json: string): Promise<void> {
+  // Callers capture the latest pending layout synchronously with dispatch (including autosave).
   try {
     const response = await invoke(
       IPC.SaveWorkspaceState,

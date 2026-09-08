@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   enqueueWorkspaceEditIntent,
   getPendingWorkspaceEditIntents,
   getRebasedWorkspaceStateJson,
   getWorkspaceEditIntentConflicts,
   recordLoadedWorkspaceState,
+  reserveWorkspaceEditIntentCapacity,
   resetPersistenceSessionStateForTests,
 } from './persistence-session.js';
 
@@ -19,6 +20,26 @@ function workspace(name = 'One', completedTaskCount = 0): string {
 
 describe('persistence session workspace intents', () => {
   beforeEach(() => resetPersistenceSessionStateForTests());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reuses an initialized queue without reparsing canonical JSON for each edit or reservation', () => {
+    recordLoadedWorkspaceState(workspace(), 4);
+    const parse = vi.spyOn(JSON, 'parse');
+    for (let index = 0; index < 3; index += 1) {
+      enqueueWorkspaceEditIntent({
+        kind: 'rename-task',
+        taskId: 'task-1',
+        operationId: `rename-${index}`,
+        baseName: index === 0 ? 'One' : `Local ${index - 1}`,
+        nextName: `Local ${index}`,
+      });
+      reserveWorkspaceEditIntentCapacity()();
+    }
+    expect(parse).not.toHaveBeenCalled();
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({ operationId: 'rename-0', baseName: 'One', nextName: 'Local 2' }),
+    ]);
+  });
 
   it('rebases a pending typed edit over an unrelated canonical update', () => {
     recordLoadedWorkspaceState(workspace(), 4);

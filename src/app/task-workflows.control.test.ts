@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { buildCoordinatorInitialPrompt } from '../domain/coordinator-instructions';
+import { MAX_PENDING_WORKSPACE_EDIT_INTENTS } from '../domain/workspace-edit-intents';
 import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { consumePendingShellCommand } from '../lib/bookmarks';
 import { setStore, store } from '../store/core';
-import { resetPersistenceSessionStateForTests } from '../store/persistence-session';
+import {
+  enqueueWorkspaceEditIntent,
+  getPendingWorkspaceEditIntents,
+  recordLoadedWorkspaceState,
+  resetPersistenceSessionStateForTests,
+} from '../store/persistence-session';
+import { getWorkspaceStateSnapshotJson } from '../store/persistence-save';
 import { applyLoadedWorkspaceStateJson } from '../store/persistence-load';
 import { resetTaskCommandControllerStateForTests } from '../store/task-command-controllers';
 import { clearAgentBusyState, markAgentOutput } from '../store/taskStatus';
@@ -100,6 +108,16 @@ import {
 
 let taskCommandControllerVersion = 0;
 let taskCommandLeaseGeneration = 0;
+
+function enqueuePendingRename(index: number): void {
+  enqueueWorkspaceEditIntent({
+    kind: 'rename-task',
+    taskId: `pending-${index}`,
+    operationId: `rename-${index}`,
+    baseName: 'Before',
+    nextName: 'After',
+  });
+}
 
 function createMemoryStorage(options: { failWrites?: boolean } = {}): Storage {
   const values = new Map<string, string>();
@@ -1926,12 +1944,84 @@ describe('task workflow control leases', () => {
     expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
   });
 
+  it('retains an opening shell across an unrelated canonical publication before its save settles', () => {
+    const canonical = getWorkspaceStateSnapshotJson();
+    recordLoadedWorkspaceState(canonical, 4);
+    const shellId = spawnShellForTask('task-1');
+    const peer = JSON.parse(canonical);
+    peer.tasks['task-1'].name = 'Peer rename';
+
+    applyLoadedWorkspaceStateJson(JSON.stringify(peer), 5);
+
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1', shellId]);
+    expect(store.tasks['task-1']?.name).toBe('Peer rename');
+    expect(isCompatibilityTerminalCreationPending('task-1', shellId)).toBe(true);
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({ kind: 'set-task-shell-membership', shellId, present: true }),
+    ]);
+  });
+
+  it('does not resurrect a closed shell from a delayed opening save acknowledgement', async () => {
+    const canonical = getWorkspaceStateSnapshotJson();
+    recordLoadedWorkspaceState(canonical, 4);
+    const shellId = spawnShellForTask('task-1');
+    const openingSnapshot = getWorkspaceStateSnapshotJson();
+    await closeShell('task-1', shellId);
+
+    applyLoadedWorkspaceStateJson(canonical, 4);
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({ shellId, present: false, acknowledgedBaseRevision: 4 }),
+    ]);
+    recordLoadedWorkspaceState(openingSnapshot, 5);
+    applyLoadedWorkspaceStateJson(openingSnapshot, 5);
+
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({ shellId, present: false, acknowledgedBaseRevision: 5 }),
+    ]);
+    recordLoadedWorkspaceState(getWorkspaceStateSnapshotJson(), 6);
+    expect(getPendingWorkspaceEditIntents()).toEqual([]);
+  });
+
   it('does not stage orphaned shell activity or pending commands for a missing task', async () => {
     const shellId = spawnShellForTask('task-missing', 'npm test');
 
     expect(store.tasks['task-missing']).toBeUndefined();
     expect(store.agentActive[shellId]).toBeUndefined();
     expect(consumePendingShellCommand(shellId)).toBeUndefined();
+    expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
+  });
+
+  it('declines opening or closing shells once task removal has started', async () => {
+    setStore('tasks', 'task-1', 'closeState', { kind: 'removing' });
+    const shellId = spawnShellForTask('task-1');
+    await closeShell('task-1', 'shell-1');
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(isCompatibilityTerminalCreationPending('task-1', shellId)).toBe(false);
+    expect(getPendingWorkspaceEditIntents()).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('never closes the managed primary shell through auxiliary membership editing', async () => {
+    setStore('tasks', 'task-1', 'taskInitialShellOwnership', {
+      kind: 'managed-terminal-v1',
+      sessionId: 'shell-1',
+      expectedGeneration: 0,
+      launchOperationId: 'initial',
+    });
+    await closeShell('task-1', 'shell-1');
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(getPendingWorkspaceEditIntents()).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects shell creation before optimistic state changes when the edit queue is full', () => {
+    for (let index = 0; index < MAX_PENDING_WORKSPACE_EDIT_INTENTS; index += 1)
+      enqueuePendingRename(index);
+    const activity = { ...store.agentActive };
+    expect(() => spawnShellForTask('task-1', 'echo hello')).toThrow('queue is full');
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(store.agentActive).toEqual(activity);
     expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
   });
 
@@ -2470,6 +2560,67 @@ describe('task workflow control leases', () => {
     expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
   });
 
+  it('declines closing a shell before Kill or compatibility changes when the edit queue is full', async () => {
+    markCompatibilityTerminalCreationPending('task-1', 'shell-1');
+    for (let index = 0; index < MAX_PENDING_WORKSPACE_EDIT_INTENTS; index += 1)
+      enqueuePendingRename(index);
+
+    await expect(closeShell('task-1', 'shell-1')).rejects.toThrow('queue is full');
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(isCompatibilityTerminalCreationPending('task-1', 'shell-1')).toBe(true);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
+  });
+
+  it('reserves close membership capacity while Kill is pending without publishing removal early', async () => {
+    const killDeferred = createDeferredPromise<undefined>();
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.KillAgent) return killDeferred.promise;
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+    const closing = closeShell('task-1', 'shell-1');
+    for (let index = 0; index < MAX_PENDING_WORKSPACE_EDIT_INTENTS - 1; index += 1)
+      enqueuePendingRename(index);
+    expect(() => enqueuePendingRename(MAX_PENDING_WORKSPACE_EDIT_INTENTS - 1)).toThrow(
+      'queue is full',
+    );
+    expect(getPendingWorkspaceEditIntents()).not.toContainEqual(
+      expect.objectContaining({ kind: 'set-task-shell-membership' }),
+    );
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    killDeferred.resolve(undefined);
+    await closing;
+
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(IPC.KillAgent, { agentId: 'shell-1' });
+    expect(getPendingWorkspaceEditIntents()).toHaveLength(MAX_PENDING_WORKSPACE_EDIT_INTENTS);
+    expect(getPendingWorkspaceEditIntents()).toContainEqual(
+      expect.objectContaining({
+        kind: 'set-task-shell-membership',
+        shellId: 'shell-1',
+        present: false,
+      }),
+    );
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+    expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledOnce();
+  });
+
+  it('retains a successful shell close across a canonical sibling addition', async () => {
+    const canonical = getWorkspaceStateSnapshotJson();
+    recordLoadedWorkspaceState(canonical, 4);
+    await closeShell('task-1', 'shell-1');
+    const peer = JSON.parse(canonical);
+    peer.tasks['task-1'].shellAgentIds.push('peer-shell');
+    peer.tasks['task-1'].shellCount = 2;
+
+    applyLoadedWorkspaceStateJson(JSON.stringify(peer), 5);
+
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['peer-shell']);
+    expect(getPendingWorkspaceEditIntents()).toEqual([
+      expect.objectContaining({ shellId: 'shell-1', present: false }),
+    ]);
+  });
+
   it('keeps the shell attached locally when backend shell termination fails', async () => {
     markCompatibilityTerminalCreationPending('task-1', 'shell-1');
     invokeMock.mockImplementation((channel: IPC) => {
@@ -2485,8 +2636,44 @@ describe('task workflow control leases', () => {
 
     expect(store.tasks['task-1']?.shellAgentIds).toContain('shell-1');
     expect(isCompatibilityTerminalCreationPending('task-1', 'shell-1')).toBe(true);
+    expect(getPendingWorkspaceEditIntents()).toEqual([]);
     expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
+    for (let index = 0; index < MAX_PENDING_WORKSPACE_EDIT_INTENTS; index += 1)
+      enqueuePendingRename(index);
+    expect(getPendingWorkspaceEditIntents()).toHaveLength(MAX_PENDING_WORKSPACE_EDIT_INTENTS);
   });
+
+  it.each(['removed', 'closing'] as const)(
+    'releases close capacity without journaling when the task is %s during Kill',
+    async (taskState) => {
+      const killDeferred = createDeferredPromise<undefined>();
+      invokeMock.mockImplementation((channel: IPC) => {
+        if (channel === IPC.KillAgent) return killDeferred.promise;
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      });
+      const closePromise = closeShell('task-1', 'shell-1');
+      for (let index = 0; index < MAX_PENDING_WORKSPACE_EDIT_INTENTS - 1; index += 1)
+        enqueuePendingRename(index);
+      if (taskState === 'removed')
+        setStore(
+          'tasks',
+          produce((tasks) => {
+            delete tasks['task-1'];
+          }),
+        );
+      else setStore('tasks', 'task-1', 'closeState', { kind: 'removing' });
+      killDeferred.resolve(undefined);
+      await closePromise;
+      expect(getPendingWorkspaceEditIntents()).not.toContainEqual(
+        expect.objectContaining({ kind: 'set-task-shell-membership' }),
+      );
+      if (taskState === 'removed') expect(store.tasks['task-1']).toBeUndefined();
+      else expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+      expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
+      enqueuePendingRename(MAX_PENDING_WORKSPACE_EDIT_INTENTS - 1);
+      expect(getPendingWorkspaceEditIntents()).toHaveLength(MAX_PENDING_WORKSPACE_EDIT_INTENTS);
+    },
+  );
 
   it('does not restore pending creation when the task removes the shell during a failed close', async () => {
     const killDeferred = createDeferredPromise<undefined>();

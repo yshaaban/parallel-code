@@ -71,13 +71,27 @@ function parseWorkspaceStateObject(json: string): Record<string, unknown> | null
   }
 }
 
+function getWorkspaceEditIntentQueue(): WorkspaceEditIntentQueue<Record<string, unknown>> {
+  return (workspaceEditIntentQueue ??= new WorkspaceEditIntentQueue(
+    parseWorkspaceStateObject(lastLoadedWorkspaceStateJson ?? '{}') ?? {},
+    lastLoadedWorkspaceRevision,
+  ));
+}
+
 export function enqueueWorkspaceEditIntent(intent: WorkspaceEditIntentInput): void {
-  const canonical = parseWorkspaceStateObject(lastLoadedWorkspaceStateJson ?? '{}') ?? {};
-  workspaceEditIntentQueue ??= new WorkspaceEditIntentQueue(canonical, lastLoadedWorkspaceRevision);
-  workspaceEditIntentQueue.enqueue({
+  getWorkspaceEditIntentQueue().enqueue({
     ...intent,
     acknowledgedBaseRevision: lastLoadedWorkspaceRevision,
   } as WorkspaceEditIntent);
+}
+
+export function markWorkspaceEditIntentsSubmitted(json: string): void {
+  const submitted = parseWorkspaceStateObject(json);
+  if (submitted) workspaceEditIntentQueue?.markSubmitted(submitted);
+}
+
+export function reserveWorkspaceEditIntentCapacity(): () => void {
+  return getWorkspaceEditIntentQueue().reserveCapacity();
 }
 
 function clonePersistedIntentValue(value: unknown): unknown {
@@ -110,6 +124,20 @@ export function enqueueWorkspaceTaskFieldEdit(
     kind: 'edit-task-field',
     nextValue: clonePersistedIntentValue(nextValue),
     operationId: createRandomId(),
+    taskId,
+  });
+}
+
+export function enqueueWorkspaceTaskShellMembership(
+  taskId: string,
+  shellId: string,
+  present: boolean,
+): void {
+  enqueueWorkspaceEditIntent({
+    kind: 'set-task-shell-membership',
+    operationId: createRandomId(),
+    present,
+    shellId,
     taskId,
   });
 }
