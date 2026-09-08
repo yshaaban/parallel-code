@@ -1224,6 +1224,9 @@ Edge cases that are easy to miss:
   Canonical delivery clear/replacement during an edit must retain read-only local recovery across
   late acknowledgements. Canceled discard preserves text/selection; confirmed discard releases the
   retired editor and resumes the current selected-agent composer without further send authority.
+  Combine fixed-to-flexible geometry changes with explicit expansion requests in one reactive turn:
+  a toolbar-only shell section must open to its requested size, close, and reopen without losing
+  neighboring DOM or being reset by a later geometry initialization.
 - missing/invalid primary crossed with missing/invalid/stale/equal/higher temp and backup evidence;
   no test may assert automatic candidate promotion
 - inactive and independently activated protected-policy fixtures, including stale-revision-before-

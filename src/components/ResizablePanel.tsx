@@ -311,13 +311,15 @@ export function ResizablePanel(props: ResizablePanelProps): JSX.Element {
       ]),
     ]),
   );
+  let initializedGeometry: string | undefined;
+  // Initialize geometry before applying requests in one owner. Independent effects
+  // can otherwise overwrite a simultaneous fixed-panel change and opening request.
   createEffect(() => {
-    geometry();
-    untrack(() => initSizes());
-  });
-
-  // Watch requestSize getters and adjust sizes dynamically
-  createEffect(() => {
+    const nextGeometry = geometry();
+    if (nextGeometry !== initializedGeometry) {
+      initializedGeometry = nextGeometry;
+      untrack(() => initSizes());
+    }
     const current = untrack(() => sizes());
     if (current.length === 0) return;
 

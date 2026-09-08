@@ -421,6 +421,52 @@ describe('ResizablePanel', () => {
     }
   });
 
+  it('applies shell opening requests after fixed-panel geometry changes without replacing neighboring content', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+    try {
+      const [shells, setShells] = createSignal<string[]>([]);
+      render(() => (
+        <ResizablePanel
+          direction="vertical"
+          children={[
+            {
+              id: 'shell-section',
+              initialSize: 28,
+              minSize: 28,
+              get fixed() {
+                return shells().length === 0;
+              },
+              requestSize: () => (shells().length > 0 ? 200 : 28),
+              content: () => <div>Shell toolbar</div>,
+            },
+            {
+              id: 'ai-terminal',
+              minSize: 80,
+              content: () => <textarea aria-label="Existing terminal input" />,
+            },
+          ]}
+        />
+      ));
+      const editor = screen.getByRole('textbox', {
+        name: 'Existing terminal input',
+      }) as HTMLTextAreaElement;
+      editor.value = 'Keep the existing terminal input';
+      const shellStyle = () => screen.getByText('Shell toolbar').parentElement?.style;
+      expect(shellStyle()?.flex).toBe('0 0 28px');
+
+      for (let cycle = 0; cycle < 3; cycle++) {
+        setShells([`shell-${cycle}`]);
+        expect(shellStyle()?.flex).toBe('200 1 0px');
+        expect(screen.getByRole('textbox', { name: 'Existing terminal input' })).toBe(editor);
+        expect(editor.value).toBe('Keep the existing terminal input');
+        setShells([]);
+        expect(shellStyle()?.flex).toBe('0 0 28px');
+      }
+    } finally {
+      height.mockRestore();
+    }
+  });
+
   it('restores stable persisted sizes within their bounds without changing fixed headers', () => {
     const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
     try {

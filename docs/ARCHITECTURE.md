@@ -1764,7 +1764,9 @@ remain scrollable, and the one-shot request does not override subsequent manual 
 `ResizablePanel` initializes from ordered geometry and layout-mode changes, not short-lived
 descriptor object identity. Identical descriptors retain current expansion and editor/terminal
 identity; real constraints, orientation, ordering, and persistence-key changes still reinitialize
-through the existing size owner.
+through the existing size owner. Geometry initialization and explicit size requests run in one
+ordered update, so opening a previously fixed toolbar section cannot reset its requested expansion
+and strand a terminal with no measurable content height.
 Supervision events wake this owner but do not solely drive it: a bounded safety observation polls
 pending readiness, runtime discovery, and post-write evidence through their existing deadlines, so
 presentation-event coalescing cannot strand an otherwise observable delivery. A delivery without a
