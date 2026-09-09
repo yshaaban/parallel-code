@@ -42,6 +42,7 @@ type MockTerminal = {
 };
 
 type MockWebglAddon = {
+  textureAtlas?: HTMLCanvasElement;
   clearTextureAtlas: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   triggerContextLoss: () => void;
@@ -463,7 +464,7 @@ describe('webglPool', () => {
     expect(terminals[4].refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('queues visible contexts once and repairs focused-first at one entry per frame', async () => {
+  it('queues independent atlases once and repairs focused-first at one atlas per frame', async () => {
     const { acquireWebglAddon, requestVisibleWebglAtlasRepair, setWebglAddonPriority } =
       await importReadyWebglPool();
     const terminals = Array.from({ length: 3 }, () => createTerminal());
@@ -546,6 +547,147 @@ describe('webglPool', () => {
     expect(replacementAddon.clearTextureAtlas).not.toHaveBeenCalled();
   });
 
+  it('rebuilds every shared-atlas model before any sibling can repaint', async () => {
+    const { acquireWebglAddon, requestVisibleWebglAtlasRepair } = await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    let atlasVersion = 0;
+    const paints: Array<() => void> = [];
+    const models = Array.from({ length: 3 }, () => ({ version: 0, invalidated: false }));
+    const terminals = models.map(() => createTerminal());
+    const addons = terminals.map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        undefined,
+        index === 0 ? 'focused' : 'visible',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = atlas;
+      // xterm shares texture storage but invalidates only the clearing renderer's model.
+      addon.clearTextureAtlas.mockImplementation(() => {
+        atlasVersion += 1;
+        models[index].invalidated = true;
+      });
+      terminal.refresh.mockImplementation(() => {
+        paints.push(() => {
+          if (models[index].invalidated) {
+            models[index].version = atlasVersion;
+            models[index].invalidated = false;
+          }
+        });
+      });
+      return addon;
+    });
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      expect(requestVisibleWebglAtlasRepair('manual')).toBe(3);
+      while (animationFrames.size > 0) {
+        flushNextAnimationFrame();
+        for (const paint of paints.splice(0)) paint();
+      }
+      expect(models.map((model) => model.version)).toEqual(Array(3).fill(atlasVersion));
+      expect(addons.every((addon) => addon.dispose.mock.calls.length === 0)).toBe(true);
+    }
+  });
+
+  it('invalidates retained hidden atlas siblings without refreshing them or unrelated atlases', async () => {
+    platformState.isMac = true;
+    const { acquireWebglAddon, setWebglAddonPriority } = await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    const terminals = Array.from({ length: 4 }, () => createTerminal());
+    const addons = terminals.map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        undefined,
+        index === 1 || index === 3 ? 'visible' : 'hidden',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = index === 3 ? ({} as HTMLCanvasElement) : atlas;
+      return addon;
+    });
+
+    // Only this transition requests repair, not the already visible or hidden siblings.
+    setWebglAddonPriority(getAgentId(0), 'focused');
+    flushNextAnimationFrame();
+    expect(addons.map((addon) => addon.clearTextureAtlas.mock.calls.length)).toEqual([1, 1, 1, 0]);
+    expect(terminals.map((terminal) => terminal.refresh.mock.calls.length)).toEqual([1, 1, 0, 0]);
+    const lastClear = Math.max(
+      ...addons.slice(0, 3).map((addon) => addon.clearTextureAtlas.mock.invocationCallOrder[0]),
+    );
+    expect(lastClear).toBeLessThan(terminals[0].refresh.mock.invocationCallOrder[0]);
+    expect(lastClear).toBeLessThan(terminals[1].refresh.mock.invocationCallOrder[0]);
+    expect(animationFrames.size).toBe(0);
+  });
+
+  it('resolves current atlas groups without clearing retired generations', async () => {
+    const { acquireWebglAddon, requestVisibleWebglAtlasRepair, releaseWebglAddon } =
+      await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    const terminals = Array.from({ length: 3 }, () => createTerminal());
+    const addons = terminals.map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        undefined,
+        index === 0 ? 'focused' : 'visible',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = atlas;
+      return addon;
+    });
+    requestVisibleWebglAtlasRepair('manual');
+    // A font/DPR change moves this generation to a distinct atlas before the queued repair.
+    addons[1].textureAtlas = {} as HTMLCanvasElement;
+    releaseWebglAddon(getAgentId(2));
+    const replacement = acquireWebglAddon(
+      getAgentId(2),
+      asTerminal(createTerminal()),
+      undefined,
+      'visible',
+    ) as unknown as MockWebglAddon;
+    replacement.textureAtlas = addons[1].textureAtlas;
+
+    flushNextAnimationFrame();
+    expect(addons[0].clearTextureAtlas).toHaveBeenCalledTimes(1);
+    expect(addons[1].clearTextureAtlas).not.toHaveBeenCalled();
+    expect(addons[2].clearTextureAtlas).not.toHaveBeenCalled();
+    expect(replacement.clearTextureAtlas).not.toHaveBeenCalled();
+    flushNextAnimationFrame();
+    expect(addons[1].clearTextureAtlas).toHaveBeenCalledTimes(1);
+    // The live replacement shares the second group's CURRENT atlas, not the stale request.
+    expect(replacement.clearTextureAtlas).toHaveBeenCalledTimes(1);
+    expect(addons[2].clearTextureAtlas).not.toHaveBeenCalled();
+    expect(animationFrames.size).toBe(0);
+  });
+
+  it('falls back only the failed sharing renderer without replaying bytes', async () => {
+    const { acquireWebglAddon, requestVisibleWebglAtlasRepair, getWebglPoolRuntimeSnapshot } =
+      await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    const onRendererLost = vi.fn();
+    const terminals = Array.from({ length: 3 }, () => createTerminal());
+    const addons = terminals.map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        onRendererLost,
+        index === 0 ? 'focused' : 'visible',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = atlas;
+      return addon;
+    });
+    addons[1].clearTextureAtlas.mockImplementationOnce(() => {
+      throw new Error('lost renderer');
+    });
+    requestVisibleWebglAtlasRepair('manual');
+    flushNextAnimationFrame();
+    await Promise.resolve();
+    expect(addons.map((addon) => addon.clearTextureAtlas.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(addons.map((addon) => addon.dispose.mock.calls.length)).toEqual([0, 1, 0]);
+    expect(getWebglPoolRuntimeSnapshot().activeContextsCurrent).toBe(2);
+    expect(terminals.every((terminal) => terminal.refresh.mock.calls.length === 1)).toBe(true);
+    expect(onRendererLost).not.toHaveBeenCalled();
+    expect(animationFrames.size).toBe(0);
+  });
+
   it('isolates atlas failures and continues draining later entries', async () => {
     const { acquireWebglAddon, requestVisibleWebglAtlasRepair } = await importReadyWebglPool();
     const firstTerminal = createTerminal();
@@ -570,9 +712,64 @@ describe('webglPool', () => {
     flushNextAnimationFrame();
     flushNextAnimationFrame();
 
-    expect(firstTerminal.refresh).not.toHaveBeenCalled();
+    expect(firstAddon.dispose).toHaveBeenCalledTimes(1);
+    expect(firstTerminal.refresh).toHaveBeenCalledWith(0, 23);
     expect(secondAddon.clearTextureAtlas).toHaveBeenCalledTimes(1);
     expect(secondTerminal.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('contains a viewport-refresh failure without replaying or losing healthy siblings', async () => {
+    const { acquireWebglAddon, requestVisibleWebglAtlasRepair } = await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    const onRendererLost = vi.fn();
+    const first = createTerminal();
+    const second = createTerminal();
+    const addons = [first, second].map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        onRendererLost,
+        'visible',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = atlas;
+      return addon;
+    });
+    first.refresh.mockImplementationOnce(() => {
+      throw new Error('renderer refresh failed');
+    });
+    requestVisibleWebglAtlasRepair('manual');
+    flushNextAnimationFrame();
+    await Promise.resolve();
+    expect(addons[0].dispose).toHaveBeenCalledTimes(1);
+    expect(addons[1].dispose).not.toHaveBeenCalled();
+    expect(second.refresh).toHaveBeenCalledWith(0, 23);
+    expect(onRendererLost).not.toHaveBeenCalled();
+    expect(animationFrames.size).toBe(0);
+  });
+
+  it('does not clear or refresh a sibling released during the shared transaction', async () => {
+    const { acquireWebglAddon, requestVisibleWebglAtlasRepair, releaseWebglAddon } =
+      await importReadyWebglPool();
+    const atlas = {} as HTMLCanvasElement;
+    const terminals = Array.from({ length: 2 }, () => createTerminal());
+    const addons = terminals.map((terminal, index) => {
+      const addon = acquireWebglAddon(
+        getAgentId(index),
+        asTerminal(terminal),
+        undefined,
+        'visible',
+      ) as unknown as MockWebglAddon;
+      addon.textureAtlas = atlas;
+      return addon;
+    });
+    addons[0].clearTextureAtlas.mockImplementationOnce(() => releaseWebglAddon(getAgentId(1)));
+    requestVisibleWebglAtlasRepair('manual');
+    flushNextAnimationFrame();
+    expect(addons[1].dispose).toHaveBeenCalledTimes(1);
+    expect(addons[1].clearTextureAtlas).not.toHaveBeenCalled();
+    expect(terminals[1].refresh).not.toHaveBeenCalled();
+    expect(terminals[0].refresh).toHaveBeenCalledWith(0, 23);
+    expect(animationFrames.size).toBe(0);
   });
 
   it('repairs once for a macOS foreground edge despite paired browser events', async () => {

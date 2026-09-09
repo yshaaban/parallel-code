@@ -1309,9 +1309,14 @@ Current shape:
     resize churn so large-buffer resize replay does not fall back to the slow DOM repaint path.
     The same pool is the only desktop owner of paint-only atlas recovery: macOS foreground and
     retained-visibility edges plus the cross-platform manual redraw action enqueue exact current
-    generations, focused/recent first and one per animation frame. Eligibility is rechecked before
-    atlas clear plus viewport refresh, so this cosmetic repair cannot become output replay,
-    terminal recovery, context acquisition, or component-owned global listeners.
+    generations, focused/recent first. At drain time it resolves current shared-atlas identity and
+    invalidates every sharing model synchronously, then refreshes visible members. One atlas group
+    runs per animation frame, within the six-context bound; grouped pending requests are consumed
+    together. This prevents xterm's per-renderer model cache from retaining coordinates into a
+    cleared shared texture. Hidden sharers receive model invalidation but no explicit refresh.
+    Eligibility and exact entry identity are rechecked. Repair cannot become output replay,
+    terminal recovery, context acquisition, or component-owned global listeners; a throwing renderer
+    alone falls back to DOM.
 13. terminal-local search stays behind the session facade. Its runtime lazily imports and attaches
     `@xterm/addon-search` only for an open overlay with a nonempty query, owns latest-generation
     result ordering and frame-bounded incremental scans, and disposes the addon/listener with that

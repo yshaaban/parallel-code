@@ -3,8 +3,16 @@ import { performance } from 'node:perf_hooks';
 import type { Terminal } from '@xterm/xterm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+const { atlasGroups } = vi.hoisted(() => ({
+  atlasGroups: { count: 6, next: 0, canvases: Array.from({ length: 6 }, () => ({})) },
+}));
+
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
+    private index = atlasGroups.next++;
+    get textureAtlas(): object | undefined {
+      return atlasGroups.canvases[this.index % atlasGroups.count];
+    }
     clearTextureAtlas(): void {}
     dispose(): void {}
     onContextLoss(): void {}
@@ -62,32 +70,39 @@ describe('WebGL atlas repair benchmark', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps six-surface queue and per-frame dispatch work bounded', async () => {
-    const { requestVisibleWebglAtlasRepair } = await import('./webglPool.js');
-    const queueDurations: number[] = [];
-    const frameDurations: number[] = [];
+  it.each([1, 3, 6])(
+    'keeps six-surface repair bounded with %i shared atlases',
+    async (groupCount) => {
+      atlasGroups.count = groupCount;
+      const { requestVisibleWebglAtlasRepair } = await import('./webglPool.js');
+      const queueDurations: number[] = [];
+      const frameDurations: number[] = [];
 
-    for (let iteration = 0; iteration < 500; iteration += 1) {
-      const queueStartedAt = performance.now();
-      expect(requestVisibleWebglAtlasRepair('manual')).toBe(6);
-      queueDurations.push(performance.now() - queueStartedAt);
+      for (let iteration = 0; iteration < 500; iteration += 1) {
+        const queueStartedAt = performance.now();
+        expect(requestVisibleWebglAtlasRepair('manual')).toBe(6);
+        queueDurations.push(performance.now() - queueStartedAt);
 
-      let drainedFrames = 0;
-      while (animationFrames.length > 0) {
-        const callback = animationFrames.shift();
-        if (!callback) {
-          break;
+        let drainedFrames = 0;
+        while (animationFrames.length > 0) {
+          const callback = animationFrames.shift();
+          if (!callback) {
+            break;
+          }
+          const frameStartedAt = performance.now();
+          callback(performance.now());
+          frameDurations.push(performance.now() - frameStartedAt);
+          drainedFrames += 1;
         }
-        const frameStartedAt = performance.now();
-        callback(performance.now());
-        frameDurations.push(performance.now() - frameStartedAt);
-        drainedFrames += 1;
+        expect(drainedFrames).toBe(groupCount);
       }
-      expect(drainedFrames).toBe(6);
-    }
 
-    expect(percentile(queueDurations, 0.95)).toBeLessThanOrEqual(2);
-    expect(percentile(frameDurations, 0.95)).toBeLessThanOrEqual(2);
-    expect(Math.max(...frameDurations)).toBeLessThan(50);
-  });
+      expect(percentile(queueDurations, 0.95)).toBeLessThanOrEqual(2);
+      expect(percentile(frameDurations, 0.95)).toBeLessThanOrEqual(2);
+      expect(Math.max(...frameDurations)).toBeLessThan(50);
+      process.stdout.write(
+        `${JSON.stringify({ groupCount, queueP95Ms: percentile(queueDurations, 0.95), frameP95Ms: percentile(frameDurations, 0.95) })}\n`,
+      );
+    },
+  );
 });

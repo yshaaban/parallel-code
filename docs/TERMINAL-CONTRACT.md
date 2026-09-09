@@ -322,10 +322,16 @@ Desktop-grade terminal capabilities are shared policy, not ad hoc view behavior:
 - `src/lib/webglPool.ts` exclusively owns WebGL atlas repair. On macOS it queues current visible
   generations after a real foreground edge or retained nonvisible-to-visible transition; the
   remappable `app.redraw-terminals` action queues the same work on every desktop platform. The
-  focused generation runs first, at most one generation runs per animation frame, and every entry
-  is revalidated before `clearTextureAtlas()` followed by one full viewport refresh. Repair never
-  replays bytes, requests recovery, changes renderer ownership, or touches a hidden/DOM/stale
-  surface.
+  focused generation's atlas runs first, with at most one shared-atlas group per animation frame
+  (bounded by the six-context pool). Atlas identity is resolved at drain time using the addon's
+  public `textureAtlas` canvas. Every current sharing renderer's model must be invalidated
+  synchronously before any explicit viewport refresh: xterm 0.19 shares the texture but does not
+  invalidate sibling models when it is cleared. Hidden sharing models participate in invalidation
+  so they cannot later paint stale glyph coordinates; only visible positive-row members receive
+  explicit refreshes. Grouped pending requests are consumed together. Unrelated atlases, DOM
+  terminals, and stale generations remain untouched. Repair never replays bytes or requests
+  recovery; a renderer that throws during repair falls back to DOM without replay, while its
+  healthy siblings keep their existing contexts.
 - Remote/mobile accepted startup or recovery payloads repaint only after the recovery write and the
   final already-buffered live write have completed. The exact terminal, agent, request, and restore
   generation must still be current; ordinary live output and watchdog/disconnect completion do not

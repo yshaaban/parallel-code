@@ -138,6 +138,65 @@ function selectNextPendingRepair(): PendingWebglRepair | null {
   return repairs[0] ?? null;
 }
 
+function repairSharedAtlas(repair: PendingWebglRepair, target: PoolEntry): void {
+  // xterm 0.19 shares this canvas across equal font/theme/DPR configurations, but
+  // clearTextureAtlas invalidates only the caller's glyph model (xterm.js#6014).
+  // Clear every sharing model in one synchronous transaction before any can paint.
+  // Hidden sharers need invalidation too, otherwise their next paint uses stale UVs.
+  const atlas = target.addon.textureAtlas;
+  const group = atlas
+    ? [...activeContexts].filter(([, entry]) => entry.addon.textureAtlas === atlas)
+    : ([[repair.id, target]] as const);
+  const cleared: Array<{ id: string; entry: PoolEntry; requestedAt: number }> = [];
+  const failed: Array<{ id: string; entry: PoolEntry }> = [];
+
+  for (const [id, entry] of group) {
+    if (activeContexts.get(id) !== entry) {
+      continue;
+    }
+    const key = getRepairKey(id, entry.generation);
+    const requestedAt = pendingRepairs.get(key)?.requestedAt ?? repair.requestedAt;
+    pendingRepairs.delete(key);
+    try {
+      entry.addon.clearTextureAtlas();
+      cleared.push({ id, entry, requestedAt });
+    } catch {
+      failed.push({ id, entry });
+      recordTerminalRendererAtlasRepair({ type: 'failed' });
+    }
+  }
+
+  // A failed clear may already have mutated shared storage. Finish invalidating
+  // siblings before activating fallback; never replay terminal output for repair.
+  for (const { id, entry } of failed) {
+    if (activeContexts.get(id) === entry) {
+      evictEntry(id, false);
+    }
+  }
+  for (const { id, entry, requestedAt } of cleared) {
+    if (
+      activeContexts.get(id) !== entry ||
+      !isDocumentVisible() ||
+      !isRepairablePriority(entry.priority) ||
+      entry.term.rows <= 0
+    ) {
+      continue;
+    }
+    try {
+      entry.term.refresh(0, entry.term.rows - 1);
+      recordTerminalRendererAtlasRepair({
+        delayMs: Math.max(0, getRepairNow() - requestedAt),
+        type: 'applied',
+      });
+    } catch {
+      recordTerminalRendererAtlasRepair({ type: 'failed' });
+      if (activeContexts.get(id) === entry) {
+        evictEntry(id, false);
+      }
+    }
+  }
+}
+
 function scheduleRepairDrain(): void {
   if (repairAnimationFrame !== null || pendingRepairs.size === 0) {
     return;
@@ -161,16 +220,7 @@ function scheduleRepairDrain(): void {
     } else if (entry.term.rows <= 0) {
       recordTerminalRendererAtlasRepair({ type: 'skipped', reason: 'ineligible' });
     } else {
-      try {
-        entry.addon.clearTextureAtlas();
-        entry.term.refresh(0, entry.term.rows - 1);
-        recordTerminalRendererAtlasRepair({
-          delayMs: Math.max(0, getRepairNow() - repair.requestedAt),
-          type: 'applied',
-        });
-      } catch {
-        recordTerminalRendererAtlasRepair({ type: 'failed' });
-      }
+      repairSharedAtlas(repair, entry);
     }
 
     scheduleRepairDrain();
