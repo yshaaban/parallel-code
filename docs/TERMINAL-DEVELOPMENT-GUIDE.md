@@ -265,8 +265,18 @@ intact, use the remappable `Redraw terminals (fix rendering glitches)` action (d
 Cmd/Ctrl+Shift+L). This is a paint-only pool operation: a successful repair must not increase
 recovery, renderer acquisition/eviction, resize, or PTY-input counters. Validate changes with the
 pool state-machine suite and `tests/browser/terminal-webgl-repaint.spec.ts`; a browser lane without
-WebGL must report that limitation explicitly and prove the DOM no-context branch instead of passing
-the repair assertion silently.
+WebGL cannot pass the shared-atlas repair regression. Its explicit DOM no-context case remains a
+separate degraded-mode proof. The strict shared-atlas case uses software ANGLE at DPR2, requires
+live WebGL contexts and nonempty glyph pixels, records the actual renderer, and compares unchanged
+sibling pixels across repair. Run it with:
+
+```bash
+npm run prepare:browser-artifacts
+npm run test:browser:run -- tests/browser/terminal-webgl-repaint.spec.ts --project chromium --workers=1
+```
+
+Software WebGL proves the shared-atlas invalidation mechanism, not physical GPU/driver behavior.
+Preserve that distinction in reports and retain before/after glyph screenshots for regressions.
 
 For real optimization work, do not stop at one baseline browser profile.
 

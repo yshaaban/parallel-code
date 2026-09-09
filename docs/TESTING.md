@@ -608,7 +608,7 @@ For lifecycle-heavy work, test invariants as well as transitions:
   excessive steady-state recovery, repeated viewport refresh, or sustained redraw-control pressure
   should fail the relevant stress seam even if the terminal never fully crashes
 - paint-only WebGL recovery needs both owner-state proof (platform edge, generation, priority,
-  dedupe, one-per-frame drain, failure isolation, listener cleanup) and real-browser cause/effect
+  dedupe, one-atlas-group-per-frame drain, failure isolation, listener cleanup) and real-browser cause/effect
   proof. A DOM-only lane must assert zero queued/applied work, and remote restore repaint tests must
   prove refresh occurs after the final buffered write while stale/disconnect/live-output paths stay
   at zero.
@@ -1501,6 +1501,13 @@ Edge cases that are easy to miss:
   unowned resize never acquires control or sends IPC; later legitimate acquisition commits the latest
   desired geometry. Returning to the current local grid must cancel an older deferred size, including
   peer-controlled resize. Auxiliary content remains opaque across focus/selection changes
+- WebGL repair must preserve unchanged glyph pixels across terminals sharing an atlas, including
+  a retained hidden sibling and a newly visible repair requester. Owner tests must model shared
+  texture storage and separate per-renderer glyph coordinates, not just count independent clear
+  calls. Real-WebGL regression tests must require live contexts and compare a stable glyph region
+  before/after repair; DOM fallback is a separate degraded-mode test, never proof of WebGL repair.
+  Record DPR and the actual renderer backend, distinguishing software WebGL from physical GPU
+  evidence. Repair must not recreate healthy contexts, replay bytes, resize the PTY, or take control
 - initial-prompt draft lifetime belongs to the task delivery, not the selected agent. Changing the
   selected agent must preserve the editor DOM, local unsaved text and collapse protection without
   remounting the terminal; clearing that delivery must restore the ordinary selected-agent composer.

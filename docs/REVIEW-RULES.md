@@ -814,6 +814,13 @@ Presentation-only terminal mirrors still need streaming UTF-8. Overlay-only corr
 real bug, so decode incrementally and add at least one regression test that splits a multibyte
 character across chunk boundaries.
 
+Treat shared graphics storage and per-view render models as one invalidation transaction. Clearing
+one xterm WebGL atlas can invalidate several terminals even though its API is on a single addon.
+Invalidate all current sharing models before repaint, including retained hidden sharers, and group
+pending repairs so a later sibling repair cannot corrupt an earlier one again. Independent no-op
+addon mocks and fallback-only browser passes cannot prove this contract; require shared-resource
+owner tests and a real-WebGL stable-glyph pixel comparison.
+
 Hot-path diagnostics must no-op when disabled. If diagnostics code is allowed in a scheduler,
 decoder, or write path, the disabled path must stay cheap and directly testable.
 
